@@ -6,6 +6,14 @@ Conductor is an architect-governed work-package review system. This repository i
 currently implementing Milestone 1: immutable package revisions, independent
 exact-revision approval, and automatic approval invalidation after an edit.
 
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [System architecture and roadmap](docs/architecture/system.md)
+- [Milestone 1 domain and sequence diagrams](docs/architecture/milestone-1.md)
+- [Local development and troubleshooting](docs/operations/local-development.md)
+- [Current OpenAPI contract](api/openapi.yaml)
+
 ## Local development
 
 ```sh
@@ -31,5 +39,7 @@ Package content can be supplied as a JSON object with `--file package.json` (or
 `--file -` for standard input). Mutating commands require the revision the caller
 inspected; a conflict never silently refreshes the command.
 
-See [`specs/001-work-package-review/spec.md`](specs/001-work-package-review/spec.md)
-and [`specs/001-work-package-review/plan.md`](specs/001-work-package-review/plan.md).
+The [feature specification](specs/001-work-package-review/spec.md) defines normative
+behavior; the [implementation plan](specs/001-work-package-review/plan.md) tracks
+the refined delivery sequence. Proposed architectural decisions live under
+[`docs/adr`](docs/adr/).
