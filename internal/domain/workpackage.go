@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,9 +15,28 @@ var (
 	ErrStaleApproval = errors.New("approval does not match current revision")
 	ErrSelfApproval  = errors.New("authors cannot approve their own revision")
 	ErrNotSubmitted  = errors.New("revision is not submitted for review")
+	ErrInvalidInput  = errors.New("invalid input")
+	ErrNotFound      = errors.New("work package not found")
 )
 
 type Content map[string]any
+
+func ValidateContent(content Content) error {
+	if len(content) == 0 {
+		return fmt.Errorf("%w: package content is required", ErrInvalidInput)
+	}
+	return nil
+}
+
+func ValidateActor(actor string) error {
+	if actor == "" {
+		return fmt.Errorf("%w: actor is required", ErrInvalidInput)
+	}
+	if len(actor) > 128 || strings.ContainsAny(actor, "\r\n\x00") {
+		return fmt.Errorf("%w: actor is invalid", ErrInvalidInput)
+	}
+	return nil
+}
 
 func Digest(content Content) (string, error) {
 	b, err := json.Marshal(content)
@@ -54,6 +74,9 @@ type Package struct {
 }
 
 func ValidateApproval(r Revision, revision int64, digest, reviewer string) error {
+	if err := ValidateActor(reviewer); err != nil {
+		return err
+	}
 	if r.Number != revision || r.Digest != digest {
 		return ErrStaleApproval
 	}
