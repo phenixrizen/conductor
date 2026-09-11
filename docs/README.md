@@ -17,6 +17,7 @@ not mistaken for working capabilities.
 | [ADR 0001](adr/0001-immutable-work-package-revisions.md) | Proposed immutable-revision decision |
 | [ADR 0002](adr/0002-single-domain-command-path.md) | Proposed shared command-path decision |
 | [OpenAPI contract](../api/openapi.yaml) | Current HTTP resources and payloads |
+| [Agent and contributor guidance](../AGENTS.md) | Canonical repository-wide engineering instructions |
 
 ## Status legend
 

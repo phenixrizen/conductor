@@ -14,6 +14,10 @@ exact-revision approval, and automatic approval invalidation after an edit.
 - [Local development and troubleshooting](docs/operations/local-development.md)
 - [Current OpenAPI contract](api/openapi.yaml)
 
+Repository-wide implementation and review conventions are defined in
+[`AGENTS.md`](AGENTS.md). `CLAUDE.md` imports that canonical guidance for Claude
+Code rather than maintaining a divergent copy.
+
 ## Local development
 
 ```sh
