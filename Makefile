@@ -1,0 +1,9 @@
+.PHONY: test check web
+test:
+	go test ./...
+check:
+	go test -race ./...
+	go vet ./...
+web:
+	npm --prefix apps/web run typecheck
+	npm --prefix apps/web run build
