@@ -88,7 +88,7 @@ func TestRejectsStaleAndSelfApproval(t *testing.T) {
 	s := New(&memory{})
 	p, _ := s.Create(ctx, "developer", domain.Content{"intent": "change"})
 	p, _ = s.Submit(ctx, p.ID, "developer", 1)
-	if _, e := s.Approve(ctx, p.ID, "reviewer", 1, "wrong"); e != domain.ErrStaleApproval {
+	if _, e := s.Approve(ctx, p.ID, "reviewer", 1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); e != domain.ErrStaleApproval {
 		t.Fatalf("got %v", e)
 	}
 	if _, e := s.Approve(ctx, p.ID, "developer", 1, p.Revision.Digest); e != domain.ErrSelfApproval {

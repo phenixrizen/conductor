@@ -7,34 +7,40 @@ paths:
       summary: Create an initial immutable work-package revision
       parameters: [{$ref: '#/components/parameters/Actor'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ContentCommand'}}}}
-      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}}
   /api/v1/changes/{id}:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     get:
       summary: Inspect the latest revision and its effective approval
-      responses: {'200': {description: Found, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}}
+      responses: {'200': {description: Found, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
   /api/v1/changes/{id}/revisions:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     post:
       summary: Append a revision using optimistic concurrency
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [expectedRevision, content], properties: {expectedRevision: {type: integer}, content: {type: object, additionalProperties: true}}}}}}
-      responses: {'201': {description: Revised}, '409': {description: Revision conflict}}
+      responses: {'201': {description: Revised}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/review-requests:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     post:
       summary: Submit the exact current revision
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision], properties: {revision: {type: integer}}}}}}
-      responses: {'200': {description: Submitted}, '409': {description: Revision conflict}}
+      responses: {'200': {description: Submitted}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/approvals:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     post:
       summary: Approve the exact inspected revision and digest
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision, digest], properties: {revision: {type: integer}, digest: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}}
-      responses: {'201': {description: Approved}, '409': {description: Stale inspected content}, '422': {description: Approval rejected}}
+      responses: {'201': {description: Approved}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
 components:
+  responses:
+    BadRequest: {description: Invalid command, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unauthorized: {description: Local identity missing or invalid, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: Change not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Conflict: {description: Inspected revision is stale, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   parameters:
     ID: {name: id, in: path, required: true, schema: {type: string}}
     Actor: {name: X-Conductor-Actor, in: header, required: true, description: Local development only, schema: {type: string}}
   schemas:
     ContentCommand: {type: object, required: [content], properties: {content: {type: object, additionalProperties: true}}}
     Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, revision: {type: object}, approval: {type: object}, approved: {type: boolean}}}
+    Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, correlationId], properties: {code: {type: string}, message: {type: string}, correlationId: {type: string}}}}}

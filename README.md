@@ -17,7 +17,8 @@ go run ./cmd/conductord
 In another terminal:
 
 ```sh
-go run ./cmd/conductor create --title "Replay handling" --author developer
+go run ./cmd/conductor create --title "Replay handling" --actor developer
+go run ./cmd/conductor revise --actor developer --revision 1 --file package.json CHG-...
 go run ./cmd/conductor submit --actor developer --revision 1 CHG-...
 go run ./cmd/conductor show --actor reviewer CHG-...
 go run ./cmd/conductor approve --actor reviewer --revision 1 --digest <digest> CHG-...
@@ -25,6 +26,10 @@ go run ./cmd/conductor approve --actor reviewer --revision 1 --digest <digest> C
 
 Development identities are supplied explicitly through `X-Conductor-Actor`; this
 mechanism is intentionally local-only and must not be used in production.
+
+Package content can be supplied as a JSON object with `--file package.json` (or
+`--file -` for standard input). Mutating commands require the revision the caller
+inspected; a conflict never silently refreshes the command.
 
 See [`specs/001-work-package-review/spec.md`](specs/001-work-package-review/spec.md)
 and [`specs/001-work-package-review/plan.md`](specs/001-work-package-review/plan.md).

@@ -1,6 +1,6 @@
 # Feature 001: Durable work-package review
 
-**Status:** Proposed
+**Status:** In progress
 
 ## Goal
 
@@ -41,3 +41,10 @@ schema evolution without lossy UI round trips.
 
 Agent execution, production authentication, Temporal, GitLab, Linear, CodeGraph,
 Groundcover, artifact storage, and automatic merge are not part of this slice.
+
+## Implementation status
+
+The domain rules, PostgreSQL command store, HTTP endpoints, Go client, initial CLI,
+and web inspector are implemented. HTTP-level tests cover the complete review and
+invalidation path. PostgreSQL restart acceptance tests, the Bubble Tea TUI, and
+reviewed frontend dependency locks remain before the Milestone 1 exit is met.
