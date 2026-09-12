@@ -3,6 +3,38 @@ info: {title: Conductor API, version: 0.1.0}
 servers: [{url: http://localhost:8080}]
 paths:
   /api/v1/changes:
+    get:
+      summary: Discover changes shared through the central store
+      description: >-
+        Lists each change's latest revision and effective current approval, ordered
+        by change creation time descending, then ID descending. Other developers'
+        committed packages and revisions are visible through this same store.
+        This endpoint does not report active agents or execution. Repository filters
+        match the latest content.repositoryContext.repository string exactly;
+        malformed or missing repository labels are omitted. Pagination uses immutable
+        change creation coordinates; new entries appear when starting a new listing.
+        Unknown, repeated, malformed, or out-of-range query parameters are rejected.
+      parameters:
+        - $ref: '#/components/parameters/Actor'
+        - name: repository
+          in: query
+          description: Exact repository identity; omitted or empty lists all changes; at most 2048 UTF-8 bytes
+          schema: {type: string, maxLength: 2048}
+        - name: before
+          in: query
+          description: Opaque continuation cursor from nextBefore; omitted or empty starts a new listing
+          schema: {type: string, maxLength: 1024}
+        - $ref: '#/components/parameters/HistoryLimit'
+      responses:
+        '200':
+          description: Bounded shared change listing, including an empty list when nothing matches
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChangePage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
     post:
       summary: Create an initial immutable work-package revision
       parameters: [{$ref: '#/components/parameters/Actor'}]
@@ -107,7 +139,7 @@ components:
     NotFound: {description: Change or revision not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Conflict: {description: Inspected revision is stale, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     InternalError: {description: Internal error with details withheld, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-    Unavailable: {description: History service unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unavailable: {description: Requested service unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   parameters:
     ID: {name: id, in: path, required: true, schema: {type: string}}
     Actor: {name: X-Conductor-Actor, in: header, required: true, description: Local development only, schema: {type: string}}
@@ -127,6 +159,35 @@ components:
       description: Maximum number of entries in one page
       schema: {type: integer, minimum: 1, maximum: 100, default: 20}
   schemas:
+    ChangeSummary:
+      type: object
+      required: [id, revision, digest, author, createdAt, approved]
+      additionalProperties: false
+      properties:
+        id: {type: string}
+        revision: {type: integer, format: int64, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        author: {type: string}
+        createdAt:
+          type: string
+          format: date-time
+          description: Immutable change creation time, retained when a new revision is appended
+        approved:
+          type: boolean
+          description: Effective approval for this current revision and digest only
+        repository:
+          type: string
+          description: Latest revision's repository identity when present as a nonempty string
+    ChangePage:
+      type: object
+      required: [changes]
+      additionalProperties: false
+      properties:
+        changes: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ChangeSummary'}}
+        nextBefore:
+          type: string
+          maxLength: 1024
+          description: Opaque cursor when further matching changes exist; otherwise omitted
     ContentCommand: {type: object, required: [content], properties: {content: {type: object, additionalProperties: true}}}
     Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, revision: {$ref: '#/components/schemas/Revision'}, approval: {$ref: '#/components/schemas/Approval'}, approved: {type: boolean}}}
     Revision:

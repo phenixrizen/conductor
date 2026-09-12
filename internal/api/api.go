@@ -33,6 +33,7 @@ func New(s packageService) http.Handler {
 	a := &API{service: s}
 	a.historyService, _ = s.(historyService)
 	m := http.NewServeMux()
+	m.HandleFunc("GET /api/v1/changes", a.list)
 	m.HandleFunc("POST /api/v1/changes", a.create)
 	m.HandleFunc("GET /api/v1/changes/{id}", a.get)
 	m.HandleFunc("GET /api/v1/changes/{id}/history", a.history)

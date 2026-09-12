@@ -11,7 +11,7 @@ const (
 	MaxHistoricalApprovals = 100
 )
 
-var ErrUnavailable = errors.New("history is unavailable")
+var ErrUnavailable = errors.New("requested service is unavailable")
 
 // RevisionSummary reports retained approval facts, not effective approval of the
 // current package. Historical inspection never grants approval to newer content.
