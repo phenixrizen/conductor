@@ -39,8 +39,9 @@ schema evolution without lossy UI round trips.
 
 ## Non-goals
 
-Agent execution, production authentication, Temporal, GitLab, Linear, CodeGraph,
-Groundcover, artifact storage, and automatic merge are not part of this slice.
+Agent execution, production authentication, Temporal, GitHub/GitLab delivery,
+Linear/Jira synchronization, CodeGraph, Groundcover, artifact storage, and automatic
+merge are not part of this slice.
 
 ## Implementation status
 

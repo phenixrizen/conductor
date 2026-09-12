@@ -32,10 +32,22 @@ The shared list shows recorded work; live presence and execution tracking are no
 implemented yet.
 
 The current identity header is for local development. Authenticated workspaces,
-repository permissions, coding-agent execution, GitLab publication, and production
-integrations are planned. Spec Kit and ADRKit files can be captured as native text;
+repository permissions, coding-agent execution, GitHub/GitLab publication, and
+production integrations are planned. Spec Kit and ADRKit files can be captured as native text;
 their command/API integrations are not implemented. Collected context is evidence
 of what was captured, not proof that tests passed or a decision was approved.
+
+Both **GitHub and GitLab** are planned providers for managed repositories: GitHub
+pull requests and GitLab merge requests will follow the same Conductor approval
+and evidence rules. The local Git collector works with a checkout from either
+provider; remote discovery, publication, and checks adapters are still pending.
+
+Each workspace will choose **one work tracker: Linear or Jira**. Conductor will
+link tickets to related packages, changes across GitHub/GitLab repositories, and
+verification evidence, with explicit rules for synchronizing fields and status.
+This does not mirror tickets between Linear and Jira. Ticket updates will not grant
+design approval or turn missing verification into a passing result. See the
+[work-tracking plan](docs/architecture/work-tracking.md).
 
 ## Run locally
 
@@ -93,6 +105,8 @@ The current implementation focuses on durable review and shared context. Tempora
 workflow execution and external adapters are later increments. See the
 [system architecture](docs/architecture/system.md) and
 [shared-context model](docs/architecture/collaboration.md) for those boundaries.
+The [repository provider plan](docs/architecture/repository-providers.md) describes
+how GitHub and GitLab fit into the same workflow.
 
 ## Checks and contributor guidance
 

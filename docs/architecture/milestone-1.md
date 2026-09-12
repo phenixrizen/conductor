@@ -163,7 +163,8 @@ The exact payload contract is maintained in `api/openapi.yaml`.
 
 - Local actor headers are not a production authentication mechanism.
 - Package-level and repository-level authorization are not yet implemented.
-- No Temporal workflow, assistant, GitLab, Linear, context, or runtime adapter runs.
+- No Temporal workflow, assistant, GitHub/GitLab delivery, Linear/Jira, or runtime adapter
+  runs. Local Git context collection is available as described in Feature 002.
 - Shared discovery, historical revision inspection, and audit-query endpoints are
   available; see [Feature 002](../../specs/002-context-history/spec.md).
 - Full API/database restart was checked manually; automated restart coverage is

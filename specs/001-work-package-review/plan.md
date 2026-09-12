@@ -34,6 +34,12 @@ avoids building three divergent state machines in the API, TUI, and web client.
 
 Add production identity/repository authorization, the durable workflow outbox, and
 one revision-pinned repository context adapter before enabling agent execution.
+Managed repository delivery must support both GitHub and GitLab through the same
+domain workflow; remote discovery and publication adapters remain planned. See the
+[repository provider plan](../../docs/architecture/repository-providers.md).
+Each workspace will select either Linear or Jira as its single work tracker, with
+explicit field/status ownership when synchronizing Conductor and linked repository
+work. See the [work-tracking plan](../../docs/architecture/work-tracking.md).
 
 ### Proposed sequencing refinement
 
