@@ -15,7 +15,8 @@ for the new revision.
 
 ## What works today
 
-- Create, revise, submit, inspect, and approve packages through the HTTP API or Go CLI.
+- Create, revise, submit, inspect, and approve packages through the HTTP API, Go CLI,
+  or interactive terminal workbench.
 - Browse shared changes and filter by repository so teammates can find related work.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
 - Capture selected specification, ADR, and other text files from one Git commit,
@@ -90,6 +91,17 @@ go run ./cmd/conductor show --actor reviewer CHG-...
 go run ./cmd/conductor history --actor reviewer CHG-...
 ```
 
+For an interactive terminal session, browse shared packages or open a change:
+
+```bash
+go run ./cmd/conductor tui --actor reviewer
+go run ./cmd/conductor tui --actor reviewer CHG-...
+```
+
+The terminal workbench previews imported JSON files and asks for confirmation
+before submitting, revising, or approving the displayed content. See the
+[terminal review guide](docs/operations/terminal-review.md) for the full workflow.
+
 The [context and history walkthrough](docs/operations/context-review.md) explains
 capturing repository files, checking freshness, and reviewing changes. The
 [local development guide](docs/operations/local-development.md) covers approval,
@@ -97,7 +109,8 @@ configuration, troubleshooting, and database lifecycle.
 
 ## How it is built
 
-- **Go:** HTTP API, domain rules, PostgreSQL store, shared client, and CLI.
+- **Go and Bubble Tea:** HTTP API, domain rules, PostgreSQL store, shared client,
+  CLI, and interactive terminal workbench.
 - **PostgreSQL:** shared package revisions, approval records, and audit history.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
 
@@ -122,6 +135,12 @@ npm --prefix apps/web run build
 Set `CONDUCTOR_TEST_DATABASE_URL` to a test database to run the real PostgreSQL and
 shared-client acceptance tests. Otherwise these tests explicitly skip. They create
 and remove isolated schemas; no existing application data is reset.
+
+Set `CONDUCTOR_TEST_PROCESS_RESTART=1` when running the acceptance tests to also
+verify persistence across real API and PostgreSQL process restarts. This separate
+test creates and removes its own temporary Docker container and volume. It does
+not restart your development database. See the
+[local development guide](docs/operations/local-development.md) for the command.
 
 Read [AGENTS.md](AGENTS.md) for engineering rules; [CLAUDE.md](CLAUDE.md) points to the
 same instructions. Keep changes focused, comment the reasons behind important

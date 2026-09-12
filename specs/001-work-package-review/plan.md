@@ -32,9 +32,9 @@ avoids building three divergent state machines in the API, TUI, and web client.
 
 ## Next increment
 
-Close Milestone 1 with the terminal review workflow and automated API/PostgreSQL
-process-restart acceptance described in the specification. Keep these as separate
-implementation commits, then validate them together against real PostgreSQL.
+The terminal review workflow and automated API/PostgreSQL process-restart
+acceptance now complete the local Milestone 1 scope described in the specification.
+The terminal, CLI, and browser all use the same version-checked command path.
 
 The following increment is authenticated workspace and repository-aware review:
 server-verified identity, workspace membership, canonical repository identity, and

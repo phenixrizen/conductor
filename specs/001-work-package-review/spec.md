@@ -1,6 +1,7 @@
 # Feature 001: Durable work-package review
 
-**Status:** In progress
+**Status:** Implemented for local development; shared deployment remains blocked
+on authentication and authorization.
 
 ## Goal
 
@@ -78,11 +79,18 @@ merge are not part of this slice.
 
 ## Implementation status
 
-The domain rules, PostgreSQL command store, HTTP endpoints, Go client, initial CLI,
-and web inspector are implemented. HTTP-level tests cover the complete review and
-invalidation path. Go and frontend dependency locks are committed and the frontend
-build is verified. Live PostgreSQL tests cover concurrent edits, approval
-invalidation, audit rollback, missing packages, and connection-pool reopen
-durability. Full API/database restart persistence was checked manually; an
-automated process-restart suite and the Bubble Tea TUI remain before the
-Milestone 1 exit is met.
+The domain rules, PostgreSQL command store, HTTP endpoints, Go client, CLI,
+Bubble Tea terminal workbench, and web inspector are implemented. HTTP-level tests
+cover the complete review and invalidation path. Go and frontend dependency locks
+are committed. Live PostgreSQL tests cover concurrent edits, approval invalidation,
+audit rollback, missing packages, and connection-pool reopen durability.
+
+The opt-in process-restart suite also verifies actual API and PostgreSQL process
+restarts, with exact historical approval, audit, and shared-discovery retention.
+Real PTY acceptance exercises terminal file import, submission, stale approval
+without an implicit refresh, renewed inspection, independent approval, and revision
+invalidation through the API and PostgreSQL. See the
+[terminal guide](../../docs/operations/terminal-review.md) and
+[local development guide](../../docs/operations/local-development.md) to reproduce
+these checks. These complete the local Milestone 1 workflow; they do not establish
+production identity, workspace isolation, or external integration readiness.

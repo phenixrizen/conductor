@@ -6,12 +6,14 @@ The current vertical slice supports creating an immutable package revision,
 submitting the current revision, inspecting it, approving its exact revision and
 digest, and appending a revision that makes the prior approval ineffective.
 
-The Go CLI, HTTP API, domain service, PostgreSQL schema/store, and minimal React
-inspector exist, with committed Go and frontend dependency locks. The Bubble Tea
-TUI and automated full-process restart acceptance suite remain incomplete. Live
-PostgreSQL tests cover the review lifecycle, concurrent edits, transactional audit
-rollback, missing packages, and connection-pool reopen durability. A manual check
-also verified persistence after restarting both PostgreSQL and the API.
+The Go CLI, Bubble Tea terminal workbench, HTTP API, domain service, PostgreSQL
+schema/store, and React inspector implement the local review workflow, with
+committed dependency locks. Live PostgreSQL tests cover concurrent edits,
+transactional audit rollback, missing packages, and connection-pool reopen.
+An opt-in acceptance suite separately restarts the actual API and PostgreSQL
+processes and verifies preserved content, approvals, history, audit, and discovery.
+Real PTY acceptance exercises the terminal through that same API/store path.
+Authentication and authorization remain required before shared deployment.
 
 ## Domain model
 
@@ -84,7 +86,7 @@ view to `Draft` while leaving all historical evidence intact.
 sequenceDiagram
     autonumber
     participant Reviewer
-    participant Client as Web / CLI client
+    participant Client as Web / CLI / TUI client
     participant API
     participant Service as Domain service
     participant DB as PostgreSQL
@@ -145,6 +147,9 @@ unrelated changes remain independent.
 | Approve | `conductor approve` | `POST /api/v1/changes/{id}/approvals` | Inspected revision and digest |
 
 The exact payload contract is maintained in `api/openapi.yaml`.
+The [terminal workbench](../operations/terminal-review.md) invokes these same Go
+client commands with the revision displayed before confirmation. Conflicts and
+uncertain mutation outcomes block further writes until explicit inspection.
 
 ## Invariants
 
@@ -167,8 +172,10 @@ The exact payload contract is maintained in `api/openapi.yaml`.
   runs. Local Git context collection is available as described in Feature 002.
 - Shared discovery, historical revision inspection, and audit-query endpoints are
   available; see [Feature 002](../../specs/002-context-history/spec.md).
-- Full API/database restart was checked manually; automated restart coverage is
-  limited to reopening the database connection pool.
+- Process-restart acceptance proves persistence across completed commands and
+  process restarts. It does not prove power-loss durability, high availability,
+  point-in-time recovery, or recovery of future external workflows.
 - The schema currently rejects duplicate content within a change; unchanged edits
   and exact content reverts need an explicit domain policy and error contract.
-- The web inspector is minimal, and the Bubble Tea TUI is pending.
+- The terminal workbench supports current-package review. Historical inspection
+  remains available in the CLI and web; revision comparison is available in the web.
