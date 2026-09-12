@@ -31,6 +31,39 @@ actor.
 8. Clients show conflicts rather than silently approving refreshed content.
 9. Package state and its audit event are committed in one database transaction.
 
+## Terminal review acceptance
+
+The Bubble Tea interface uses the shared Go API client and the same domain commands
+as the web and CLI. It must support one complete local-development review loop:
+
+1. Create a package from an explicitly selected JSON file, discover shared packages,
+   and inspect the current package's complete content, revision, and digest.
+2. Submit the displayed current revision. An independent reviewer can confirm an
+   approval bound to the displayed revision and digest without a refresh request
+   inside that action.
+3. Revise from an explicitly selected JSON file using the displayed expected
+   revision. Unknown structured fields in that file survive the command.
+4. A conflict or uncertain mutation outcome disables further mutations until the
+   user explicitly inspects the latest revision. Never retry an approval silently.
+5. Keep any historical inspection read-only. Historical approvals are records, not
+   approval for the current package.
+6. Bound file input and HTTP operations, support cancellation and scrolling, and
+   render untrusted terminal controls as inert text. The selected local actor is
+   development identity only and does not establish workspace permissions.
+
+## Process-restart acceptance
+
+An opt-in automated suite must run the compiled API as an operating-system process
+against its own temporary PostgreSQL container and persistent volume. Record review
+content, exact digests, submission, independent approval, subsequent revision, and
+audit events before restarting the API and PostgreSQL processes. After restarting,
+retrieve those facts through fresh API clients and verify they are unchanged.
+Stale approval must still fail, and a new valid command must still succeed.
+
+The suite owns and cleans up only resources it creates. It must never restart an
+externally configured test database or the developer's existing database. Missing
+opt-in reports a skip; missing dependencies after opt-in report a failure.
+
 ## Initial content
 
 The package captures intent, design, context, scope, tasks, verification, and

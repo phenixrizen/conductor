@@ -32,8 +32,19 @@ avoids building three divergent state machines in the API, TUI, and web client.
 
 ## Next increment
 
-Add production identity/repository authorization, the durable workflow outbox, and
-one revision-pinned repository context adapter before enabling agent execution.
+Close Milestone 1 with the terminal review workflow and automated API/PostgreSQL
+process-restart acceptance described in the specification. Keep these as separate
+implementation commits, then validate them together against real PostgreSQL.
+
+The following increment is authenticated workspace and repository-aware review:
+server-verified identity, workspace membership, canonical repository identity, and
+permissions covering discovery, historical reads, and every mutation. Prove both
+isolation between workspaces/repositories and collaboration within them before
+shared deployment. The local revision-pinned context collector is already available.
+
+Introduce the durable workflow outbox when the first external workflow operation
+exists. Execution remains disabled until identity, authorization, context evidence,
+and durable recovery meet their exit criteria.
 Managed repository delivery must support both GitHub and GitLab through the same
 domain workflow; remote discovery and publication adapters remain planned. See the
 [repository provider plan](../../docs/architecture/repository-providers.md).
