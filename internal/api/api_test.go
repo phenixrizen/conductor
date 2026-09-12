@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,5 +125,40 @@ func TestRejectsUnauthenticatedAndMalformedCommands(t *testing.T) {
 	malformed := perform(t, h, http.MethodPost, "/api/v1/changes", "developer", map[string]any{"content": map[string]any{"intent": "x"}, "unknown": true})
 	if malformed.Code != http.StatusBadRequest {
 		t.Fatalf("got %d", malformed.Code)
+	}
+}
+
+type failingCreateService struct{ reviewService }
+
+func (s *failingCreateService) Create(context.Context, string, domain.Content) (domain.Package, error) {
+	return domain.Package{}, errors.New("connect to database: password=synthetic-secret host=synthetic-internal-host")
+}
+
+func TestUnexpectedServiceErrorDoesNotExposeInternalDetails(t *testing.T) {
+	h := New(&failingCreateService{})
+	res := perform(t, h, http.MethodPost, "/api/v1/changes", "developer", map[string]any{"content": map[string]any{"intent": "x"}})
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("got %d", res.Code)
+	}
+	for _, detail := range []string{"password", "synthetic-secret", "synthetic-internal-host", "connect to database"} {
+		if strings.Contains(res.Body.String(), detail) {
+			t.Fatalf("response exposed internal detail %q", detail)
+		}
+	}
+	var envelope struct {
+		Error struct {
+			Code          string `json:"code"`
+			Message       string `json:"message"`
+			CorrelationID string `json:"correlationId"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "internal_error" || envelope.Error.Message != "internal server error" {
+		t.Fatalf("unexpected error envelope: %#v", envelope.Error)
+	}
+	if envelope.Error.CorrelationID != res.Header().Get("X-Correlation-ID") {
+		t.Fatalf("correlation ID did not match response header: %#v", envelope.Error)
 	}
 }

@@ -60,6 +60,9 @@ func (p *Postgres) Revise(ctx context.Context, id, actor string, expected int64,
 	}
 	var current int64
 	if err = tx.QueryRow(ctx, `SELECT revision FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1`, id).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Package{}, ErrNotFound
+		}
 		return domain.Package{}, err
 	}
 	if current != expected {
@@ -91,6 +94,9 @@ func (p *Postgres) Submit(ctx context.Context, id, actor string, expected int64,
 	}
 	var current int64
 	if err = tx.QueryRow(ctx, `SELECT revision FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1`, id).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Package{}, ErrNotFound
+		}
 		return domain.Package{}, err
 	}
 	if current != expected {
@@ -133,7 +139,7 @@ func (p *Postgres) Approve(ctx context.Context, id, reviewer string, revision in
 	if err != nil {
 		return domain.Package{}, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_events(change_id,event_type,actor,revision,data,created_at) VALUES($1,'review.approved',$2,$3,jsonb_build_object('digest',$4),$5)`, id, reviewer, revision, digest, now)
+	_, err = tx.Exec(ctx, `INSERT INTO audit_events(change_id,event_type,actor,revision,data,created_at) VALUES($1,'review.approved',$2,$3,jsonb_build_object('digest',$4::text),$5)`, id, reviewer, revision, digest, now)
 	if err != nil {
 		return domain.Package{}, err
 	}

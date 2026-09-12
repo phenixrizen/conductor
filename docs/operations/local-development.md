@@ -72,7 +72,9 @@ go run ./cmd/conductor approve \
   CHG-...
 ```
 
-Revise using the expected current revision:
+Edit `/tmp/package.json` to change the intended behavior, then revise using the
+expected current revision. The current schema rejects duplicate content within a
+change, so submitting the unchanged file is not a valid edit:
 
 ```bash
 go run ./cmd/conductor revise \
@@ -115,6 +117,19 @@ npm --prefix apps/web ci
 npm --prefix apps/web run typecheck
 npm --prefix apps/web run build
 ```
+
+Run the PostgreSQL integration tests against an explicitly selected test database:
+
+```bash
+CONDUCTOR_TEST_DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable' \
+  go test -race ./internal/store -count=1 -v
+```
+
+Each test creates an isolated schema, applies the ordered migrations, and drops
+its schema afterward. The database user needs permission to create schemas.
+Without this variable the live tests report a skip. The suite covers lifecycle,
+concurrent edits, audit rollback, missing packages, and connection-pool reopen
+durability; pool reopen does not restart PostgreSQL.
 
 A missing dependency, database, or scanner is **not** a passing check. Report the
 check as unavailable and preserve the reason.

@@ -79,6 +79,7 @@ func reject(w http.ResponseWriter, r *http.Request, status int, code, message st
 
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
+	message := err.Error()
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
@@ -91,8 +92,9 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if status == http.StatusInternalServerError {
 		slog.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))
+		message = "internal server error"
 	}
-	reject(w, r, status, code, err.Error())
+	reject(w, r, status, code, message)
 }
 
 func (a *API) create(w http.ResponseWriter, r *http.Request) {

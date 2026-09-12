@@ -18,19 +18,19 @@ paths:
     post:
       summary: Append a revision using optimistic concurrency
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [expectedRevision, content], properties: {expectedRevision: {type: integer}, content: {type: object, additionalProperties: true}}}}}}
-      responses: {'201': {description: Revised}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {$ref: '#/components/responses/Conflict'}}
+      responses: {'201': {description: Revised}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/review-requests:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     post:
       summary: Submit the exact current revision
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision], properties: {revision: {type: integer}}}}}}
-      responses: {'200': {description: Submitted}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {$ref: '#/components/responses/Conflict'}}
+      responses: {'200': {description: Submitted}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/approvals:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     post:
       summary: Approve the exact inspected revision and digest
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision, digest], properties: {revision: {type: integer}, digest: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}}
-      responses: {'201': {description: Approved}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
+      responses: {'201': {description: Approved}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
 components:
   responses:
     BadRequest: {description: Invalid command, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

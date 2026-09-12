@@ -46,5 +46,9 @@ Groundcover, artifact storage, and automatic merge are not part of this slice.
 
 The domain rules, PostgreSQL command store, HTTP endpoints, Go client, initial CLI,
 and web inspector are implemented. HTTP-level tests cover the complete review and
-invalidation path. PostgreSQL restart acceptance tests, the Bubble Tea TUI, and
-reviewed frontend dependency locks remain before the Milestone 1 exit is met.
+invalidation path. Go and frontend dependency locks are committed and the frontend
+build is verified. Live PostgreSQL tests cover concurrent edits, approval
+invalidation, audit rollback, missing packages, and connection-pool reopen
+durability. Full API/database restart persistence was checked manually; an
+automated process-restart suite and the Bubble Tea TUI remain before the
+Milestone 1 exit is met.

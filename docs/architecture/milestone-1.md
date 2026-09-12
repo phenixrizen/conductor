@@ -7,8 +7,11 @@ submitting the current revision, inspecting it, approving its exact revision and
 digest, and appending a revision that makes the prior approval ineffective.
 
 The Go CLI, HTTP API, domain service, PostgreSQL schema/store, and minimal React
-inspector exist. The Bubble Tea TUI, reviewed dependency lockfiles, and
-PostgreSQL-backed restart acceptance suite remain incomplete.
+inspector exist, with committed Go and frontend dependency locks. The Bubble Tea
+TUI and automated full-process restart acceptance suite remain incomplete. Live
+PostgreSQL tests cover the review lifecycle, concurrent edits, transactional audit
+rollback, missing packages, and connection-pool reopen durability. A manual check
+also verified persistence after restarting both PostgreSQL and the API.
 
 ## Domain model
 
@@ -163,5 +166,8 @@ The exact payload contract is maintained in `api/openapi.yaml`.
 - No Temporal workflow, assistant, GitLab, Linear, context, or runtime adapter runs.
 - The current API returns only the latest revision view; historical retrieval and
   audit-query endpoints are not exposed yet.
-- PostgreSQL restart and real concurrent-transaction acceptance tests are pending.
+- Full API/database restart was checked manually; automated restart coverage is
+  limited to reopening the database connection pool.
+- The schema currently rejects duplicate content within a change; unchanged edits
+  and exact content reverts need an explicit domain policy and error contract.
 - The web inspector is minimal, and the Bubble Tea TUI is pending.
