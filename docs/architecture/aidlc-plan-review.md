@@ -162,7 +162,9 @@ actionable recovery instructions and preserve the package while access is repair
 3. Add the durable execution boundary and prove restart, retry, cancellation, stale
    evidence, and ambiguous-result recovery with one bounded workflow.
 4. Add one assistant producing a patch and a trusted service producing a draft
-   GitLab merge request. Treat merge and deployment as separate authorizations.
+   GitHub pull request or GitLab merge request, according to the managed
+   repository's provider. Verify both adapters before declaring dual-provider
+   delivery complete. Treat merge and deployment as separate authorizations.
 
 Do not copy the full stage catalog, optional-agent roster, plugin marketplace, or
 adaptive composer into Milestone 1. Do not copy profile controls that reduce review

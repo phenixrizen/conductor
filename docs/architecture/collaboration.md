@@ -64,3 +64,8 @@ publication credentials just because it can read the same package.
 The next authentication increment must test isolation between workspaces and
 repositories as well as collaboration within them. Execution and publication must
 remain disabled until those boundaries and durable recovery are verified.
+
+Managed repositories may use GitHub or GitLab. Canonical identity must include
+provider and host as well as the provider's repository ID, so similarly named
+repositories cannot share permissions or context accidentally. Both providers
+follow the same collaboration rules; see the [provider plan](repository-providers.md).

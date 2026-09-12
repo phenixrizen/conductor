@@ -6,10 +6,14 @@ Conductor turns engineering intent into revision-pinned work packages and, over
 later milestones, coordinates context gathering, implementation, verification,
 and delivery. It governs coding assistants rather than replacing them.
 
-GitHub hosts Conductor's own source and project development. GitLab is a future
-delivery integration for application repositories managed by Conductor. These are
-separate responsibilities: Conductor must not treat its GitHub project state as an
-application delivery fact.
+Conductor will manage application repositories on both GitHub and GitLab. Each
+repository's configured provider supplies its pull/merge requests, checks, and
+delivery facts through a provider-specific adapter. Both follow the same Conductor
+approval and evidence rules.
+
+GitHub also hosts Conductor's own source. Project hosting is a separate
+responsibility from managed application delivery, even when both use GitHub. See
+the [repository provider plan](repository-providers.md) for scope and boundaries.
 
 ## Target system context
 
@@ -43,6 +47,7 @@ flowchart LR
         Workers[Isolated workers]
     end
 
+    GitHubDelivery[GitHub application delivery]
     GitLab[GitLab application delivery]
     Linear[Linear work tracking]
     GitHub[GitHub: Conductor source]
@@ -57,11 +62,12 @@ flowchart LR
     Policy -. planned context .-> Evidence
     Engine -. planned execution .-> Execution
     Gate -. planned publication .-> GitLab
+    Gate -. planned publication .-> GitHubDelivery
     API -. planned projection .-> Linear
     GitHub -->|hosts this project| Conductor
 
     classDef planned stroke-dasharray: 6 4,fill:#f7f7f7,color:#555;
-    class Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitLab,Linear planned;
+    class Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitHubDelivery,GitLab,Linear planned;
 ```
 
 ## Architectural layers
@@ -75,7 +81,7 @@ flowchart TB
     Store[(PostgreSQL revisions, approvals, audit)]
     Temporal[Temporal workflows]
     Artifacts[(S3-compatible artifact storage)]
-    Integrations[GitLab / Linear / context / assistants]
+    Integrations[GitHub / GitLab / Linear / context / assistants]
 
     UI --> Client --> HTTP --> Domain --> Store
     Domain -. Milestone 2+ .-> Temporal
@@ -101,6 +107,7 @@ flowchart LR
     Untrusted[Repository text, tickets, logs, tool output]
     Worker[Future isolated worker]
     Publisher[Future publication service]
+    GitHubDelivery[GitHub]
     GitLab[GitLab]
 
     User -->|production identity: planned| API
@@ -110,6 +117,7 @@ flowchart LR
     API -. approved package .-> Worker
     Worker -. patch only .-> Publisher
     Publisher -. revalidated action .-> GitLab
+    Publisher -. revalidated action .-> GitHubDelivery
 
     subgraph TrustedControl[Trusted control plane]
         API
@@ -129,7 +137,7 @@ authorization exist. Future workers do not receive publication credentials.
 | Package revisions, submissions, approvals, audit events | PostgreSQL | Partial implementation |
 | Workflow sequencing, waits, retries, cancellation | Temporal | Planned |
 | Immutable large artifacts | S3-compatible storage | Planned |
-| Application merge, pipeline, deployment facts | GitLab | Planned |
+| Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |
 | Priority and assignment where configured | Linear | Planned |
 | Cross-repository graph | Derived Conductor read model | Planned |
 | Conductor source and project history | GitHub | Implemented externally |
@@ -139,7 +147,7 @@ authorization exist. Future workers do not receive publication credentials.
 ```mermaid
 flowchart LR
     M1[1. Durable package review] --> M2[2. Orchestration and context]
-    M2 --> M3[3. One assistant to draft MR]
+    M2 --> M3[3. One assistant to draft GitHub PR or GitLab MR]
     M3 --> M4[4. Assistant choice and Linear]
     M4 --> M5[5. Cross-repository runtime intelligence]
     M5 --> M6[6. Security, performance, bounded autonomy]
