@@ -25,6 +25,11 @@ func ValidateContent(content Content) error {
 	if len(content) == 0 {
 		return fmt.Errorf("%w: package content is required", ErrInvalidInput)
 	}
+	if snapshot, ok := content["repositoryContext"]; ok {
+		if err := ValidateRepositoryContext(snapshot); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

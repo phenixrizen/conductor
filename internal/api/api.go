@@ -24,13 +24,21 @@ type packageService interface {
 	Approve(context.Context, string, string, int64, string) (domain.Package, error)
 }
 
-type API struct{ service packageService }
+type API struct {
+	service        packageService
+	historyService historyService
+}
 
 func New(s packageService) http.Handler {
 	a := &API{service: s}
+	a.historyService, _ = s.(historyService)
 	m := http.NewServeMux()
+	m.HandleFunc("GET /api/v1/changes", a.list)
 	m.HandleFunc("POST /api/v1/changes", a.create)
 	m.HandleFunc("GET /api/v1/changes/{id}", a.get)
+	m.HandleFunc("GET /api/v1/changes/{id}/history", a.history)
+	m.HandleFunc("GET /api/v1/changes/{id}/revisions/{revision}", a.revision)
+	m.HandleFunc("GET /api/v1/changes/{id}/events", a.events)
 	m.HandleFunc("POST /api/v1/changes/{id}/revisions", a.revise)
 	m.HandleFunc("POST /api/v1/changes/{id}/review-requests", a.submit)
 	m.HandleFunc("POST /api/v1/changes/{id}/approvals", a.approve)
@@ -89,6 +97,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusUnprocessableEntity, "approval_rejected"
 	case errors.Is(err, domain.ErrInvalidInput):
 		status, code = http.StatusBadRequest, "invalid_input"
+	case errors.Is(err, domain.ErrUnavailable):
+		status, code = http.StatusServiceUnavailable, "service_unavailable"
 	}
 	if status == http.StatusInternalServerError {
 		slog.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))

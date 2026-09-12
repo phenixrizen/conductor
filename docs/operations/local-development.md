@@ -12,15 +12,16 @@ treat the affected surface as incomplete; do not invent checksums.
 ## Start PostgreSQL and the API
 
 ```bash
-docker compose -f deploy/local/compose.yaml up -d
+./scripts/start-local-db.sh
 export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable'
 go run ./cmd/conductord
 ```
 
-The Compose volume mounts `migrations/` into PostgreSQL's initialization directory.
-Initialization scripts run only when the database volume is first created. Until a
-migration command is added, apply later migrations deliberately rather than
-assuming a restarted existing volume was upgraded.
+The startup script pipes Compose configuration and the initial migration into
+Docker, so Docker Snap can work with a checkout under `/mnt`. PostgreSQL data lives
+in a named volume. The initial migration runs atomically only for an empty database;
+existing review history is retained. Apply later migrations deliberately rather
+than assuming a restarted existing volume was upgraded.
 
 Configuration:
 
@@ -137,14 +138,14 @@ check as unavailable and preserve the reason.
 ## Reset and troubleshooting
 
 ```bash
-docker compose -f deploy/local/compose.yaml logs postgres
-docker compose -f deploy/local/compose.yaml down
+docker compose --project-name conductor-local --file - logs postgres < deploy/local/compose.yaml
+docker compose --project-name conductor-local --file - down < deploy/local/compose.yaml
 ```
 
 Adding `--volumes` destroys local review history and should be intentional:
 
 ```bash
-docker compose -f deploy/local/compose.yaml down --volumes
+docker compose --project-name conductor-local --file - down --volumes < deploy/local/compose.yaml
 ```
 
 Common failures:

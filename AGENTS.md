@@ -9,8 +9,8 @@ Conductor is an architect-governed platform for software design and agentic
 programming: **Engineering intent, orchestrated.** Implement it incrementally as
 working, tested software. Favor a small complete workflow over broad scaffolding.
 
-The current focus is Milestone 1, durable work-package review. Read these before
-changing behavior:
+The current focus is durable work-package review, shared discovery, and pinned
+repository context. Read these before changing behavior:
 
 1. `docs/README.md` — documentation map and status vocabulary.
 2. `specs/001-work-package-review/spec.md` — normative feature behavior.
@@ -18,6 +18,9 @@ changing behavior:
 4. `docs/architecture/milestone-1.md` — current model and invariants.
 5. `.specify/memory/constitution.md` — governing principles.
 6. Applicable proposed decisions under `docs/adr/`.
+7. `specs/002-context-history/spec.md` and `plan.md` for shared discovery, history,
+   context provenance, evidence states, and client behavior.
+8. `docs/architecture/collaboration.md` for shared-data and authority boundaries.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -70,6 +73,7 @@ packages to mirror the target diagram.
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, local auth boundary, and error mapping |
 | `internal/store/` | PostgreSQL transaction implementation |
+| `internal/repositorycontext/` | Bounded local Git artifact collection and freshness checks |
 | `pkg/client/` | Reusable Go API client |
 | `apps/web/` | React/TypeScript review workbench |
 | `api/openapi.yaml` | Implemented HTTP contract |
@@ -79,6 +83,30 @@ packages to mirror the target diagram.
 | `docs/architecture/` | Current and target architecture documentation |
 | `docs/operations/` | Reproducible runbooks |
 | `tests/` | Cross-component fixtures and acceptance tests when introduced |
+
+## Shared context and history
+
+- Clients using the same API share the PostgreSQL dataset. Keep package context
+  and review facts in the service, not private browser or agent-session memory.
+- Shared discovery filters author-supplied repository labels exactly. These labels
+  and human perspective selectors confer no authorization. Authenticate users and
+  enforce workspace/repository membership before shared deployment.
+- Historical approvals describe the inspected historical revision. They must not
+  be rendered as effective approval for the latest revision or enable an approval
+  action from a historical view.
+- Preserve bounded keyset pagination and explicit truncation flags. Do not silently
+  return an incomplete history as if it were complete.
+- `repositoryContext` is a versioned optional content field. Validate it without
+  discarding unknown extension fields or changing the immutable package digest.
+- Context collection reads explicit paths from a resolved local Git commit, not
+  dirty working-tree files. Keep path/output bounds, literal path handling, blocked
+  transports, and cancellation. Never run repository scripts during collection.
+- Collected source is not passed verification. Missing, unavailable, truncated, and
+  stale evidence must stay visible. Client-supplied digests establish internal
+  consistency, not authenticated provenance.
+- Native Spec Kit/ADRKit files are currently imported as text artifacts. Do not
+  claim command/API compatibility, accepted decisions, or execution authority from
+  their contents.
 
 ## Go conventions
 
@@ -149,6 +177,9 @@ packages to mirror the target diagram.
   improves comprehension. Keep a textual or table equivalent for important review
   information.
 - Keep local Markdown links valid and code fences balanced.
+- Keep the README understandable to a new developer: describe the purpose, current
+  capabilities, shared-data model, setup, and limits in plain language. Comment code
+  where the rationale or invariant is important; avoid restating obvious operations.
 - Use synthetic examples only. Never include company source, customer data,
   credentials, production topology, or protected health information.
 
@@ -170,6 +201,13 @@ Also validate `api/openapi.yaml`, local documentation links, migrations, and
 meaningful UI acceptance paths when changed. A command blocked by missing Docker,
 network, credentials, dependencies, or browser tooling is a reported limitation,
 not a pass. Do not fabricate a successful check.
+
+For persistence, history, shared-client, or context workflow changes, set
+`CONDUCTOR_TEST_DATABASE_URL` and run the applicable live PostgreSQL tests, including
+`tests/acceptance`. An unset variable produces explicit skips. Tests create isolated
+schemas and must clean them up. Connection-pool reopen is not a database restart.
+Use `scripts/start-local-db.sh` for the persistent local database; it pipes inputs
+to Docker to support Snap installations with checkouts outside the home directory.
 
 Before finishing:
 
