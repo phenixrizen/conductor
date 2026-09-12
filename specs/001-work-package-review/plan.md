@@ -34,3 +34,12 @@ avoids building three divergent state machines in the API, TUI, and web client.
 
 Add production identity/repository authorization, the durable workflow outbox, and
 one revision-pinned repository context adapter before enabling agent execution.
+
+### Proposed sequencing refinement
+
+The [AI-DLC inspiration and plan review](../../docs/architecture/aidlc-plan-review.md)
+proposes splitting this increment into Milestone 1 closure, authenticated review
+with history and pinned context/evidence, then one durable execution workflow.
+It also reviews human perspectives, stage contracts, verification, recovery, and
+knowledge reuse alongside the planned Spec Kit and ADRKit integrations. These are
+proposals for architectural review; they do not grant approval or enable execution.
