@@ -1,6 +1,7 @@
 # Feature 002: inspectable history and pinned repository context
 
-**Status:** In progress.
+**Status:** Implemented for local development; shared deployment requires production
+identity and repository permissions.
 
 ## Outcome
 
@@ -38,6 +39,16 @@ and see missing context without confusing collection with successful verificatio
    The optional `repositoryContext` field has a validated versioned contract.
 10. Human perspectives (architect, QC, developer, product) organize review prompts.
     They confer no permissions and do not represent an authenticated role model.
+11. Developers and agent clients pointed at the same Conductor API use one shared
+    PostgreSQL dataset. Work is discoverable through a paginated change list and an
+    exact repository-identity filter; knowing another person's change ID is not
+    required to find their context.
+12. Shared listings show the latest package revision and its author/approval view.
+    Related work links to recoverable package content and audit history. It does
+    not claim that a developer or agent is currently executing a task.
+13. Concurrent clients use the existing expected-revision and inspected-digest
+    checks. One client's edit becomes visible to the other, and a stale edit or
+    approval is rejected rather than overwriting or approving refreshed content.
 
 ## Integration and authority boundaries
 
@@ -51,6 +62,11 @@ Snapshots are author-supplied evidence; digest validation checks internal integr
 not independent provenance or repository authorization. The current local actor
 header remains local-development-only. Production identity and repository-aware
 permissions remain prerequisites for shared deployment. Execution is disabled.
+
+Repository identity is currently supplied by the author and matched exactly for
+discovery. It is a grouping label, not proof of repository access or a permission
+boundary. A future authenticated workspace will own canonical repository identity
+and membership rather than trusting a client-supplied role or grouping label.
 
 ## Deferred work
 

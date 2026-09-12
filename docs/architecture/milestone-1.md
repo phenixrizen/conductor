@@ -164,8 +164,8 @@ The exact payload contract is maintained in `api/openapi.yaml`.
 - Local actor headers are not a production authentication mechanism.
 - Package-level and repository-level authorization are not yet implemented.
 - No Temporal workflow, assistant, GitLab, Linear, context, or runtime adapter runs.
-- The current API returns only the latest revision view; historical retrieval and
-  audit-query endpoints are not exposed yet.
+- Shared discovery, historical revision inspection, and audit-query endpoints are
+  available; see [Feature 002](../../specs/002-context-history/spec.md).
 - Full API/database restart was checked manually; automated restart coverage is
   limited to reopening the database connection pool.
 - The schema currently rejects duplicate content within a change; unchanged edits
