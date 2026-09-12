@@ -58,10 +58,17 @@ Do not describe an incomplete integration or mocked path as implemented. Keep
   publish them. Repository-controlled commands must not receive publication or
   production credentials.
 - Before adding Spec Kit, ADRKit, CodeGraph, Groundcover, Temporal, GitHub, GitLab,
-  Linear, Claude Code, or Codex integration code, inspect current official documentation
-  and source, pin a tested version, and record actual capabilities and limitations.
+  Linear, Jira, Claude Code, or Codex integration code, inspect current official
+  documentation and source, pin a tested version, and record actual capabilities
+  and limitations.
 - Do not invent upstream commands, schemas, licensing, resumption behavior, tier
   availability, or compatibility guarantees.
+- Each workspace selects one work tracker: Linear or Jira. Synchronize Conductor
+  and linked repository work with that tracker; do not introduce Linear-to-Jira
+  mirroring. Keep field ownership and synchronization mappings explicit: ticket
+  state cannot grant package approval, establish a passing check, or prove a merge
+  or deployment. See `docs/architecture/work-tracking.md` before adding
+  synchronization behavior.
 
 ## Repository layout
 

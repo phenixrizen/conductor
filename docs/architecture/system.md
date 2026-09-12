@@ -49,7 +49,7 @@ flowchart LR
 
     GitHubDelivery[GitHub application delivery]
     GitLab[GitLab application delivery]
-    Linear[Linear work tracking]
+    Tracker[Linear or Jira work tracking]
     GitHub[GitHub: Conductor source]
 
     Architect --> Interfaces
@@ -63,11 +63,11 @@ flowchart LR
     Engine -. planned execution .-> Execution
     Gate -. planned publication .-> GitLab
     Gate -. planned publication .-> GitHubDelivery
-    API -. planned projection .-> Linear
+    API -. planned synchronization .-> Tracker
     GitHub -->|hosts this project| Conductor
 
     classDef planned stroke-dasharray: 6 4,fill:#f7f7f7,color:#555;
-    class Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitHubDelivery,GitLab,Linear planned;
+    class Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitHubDelivery,GitLab,Tracker planned;
 ```
 
 ## Architectural layers
@@ -81,7 +81,7 @@ flowchart TB
     Store[(PostgreSQL revisions, approvals, audit)]
     Temporal[Temporal workflows]
     Artifacts[(S3-compatible artifact storage)]
-    Integrations[GitHub / GitLab / Linear / context / assistants]
+    Integrations[GitHub / GitLab / Linear or Jira / context / assistants]
 
     UI --> Client --> HTTP --> Domain --> Store
     Domain -. Milestone 2+ .-> Temporal
@@ -138,7 +138,7 @@ authorization exist. Future workers do not receive publication credentials.
 | Workflow sequencing, waits, retries, cancellation | Temporal | Planned |
 | Immutable large artifacts | S3-compatible storage | Planned |
 | Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |
-| Priority and assignment where configured | Linear | Planned |
+| Priority, assignment, and ticket planning workflow where configured | Selected Linear or Jira tracker | Planned |
 | Cross-repository graph | Derived Conductor read model | Planned |
 | Conductor source and project history | GitHub | Implemented externally |
 
@@ -148,7 +148,7 @@ authorization exist. Future workers do not receive publication credentials.
 flowchart LR
     M1[1. Durable package review] --> M2[2. Orchestration and context]
     M2 --> M3[3. One assistant to draft GitHub PR or GitLab MR]
-    M3 --> M4[4. Assistant choice and Linear]
+    M3 --> M4[4. Assistant choice and Linear or Jira synchronization]
     M4 --> M5[5. Cross-repository runtime intelligence]
     M5 --> M6[6. Security, performance, bounded autonomy]
 
@@ -160,3 +160,9 @@ flowchart LR
 
 Agent execution remains disabled until the review foundation, production identity,
 authorization, durable recovery, and context evidence meet their exit criteria.
+
+Each workspace selects one tracker, Linear or Jira. Work-tracking integrations
+link its tickets to packages and GitHub/GitLab delivery records across repositories.
+Field ownership and explicit status mappings must prevent synchronization loops or
+ticket changes from inventing approvals and verification results. See the
+[work-tracking plan](work-tracking.md).

@@ -42,6 +42,13 @@ pull requests and GitLab merge requests will follow the same Conductor approval
 and evidence rules. The local Git collector works with a checkout from either
 provider; remote discovery, publication, and checks adapters are still pending.
 
+Each workspace will choose **one work tracker: Linear or Jira**. Conductor will
+link tickets to related packages, changes across GitHub/GitLab repositories, and
+verification evidence, with explicit rules for synchronizing fields and status.
+This does not mirror tickets between Linear and Jira. Ticket updates will not grant
+design approval or turn missing verification into a passing result. See the
+[work-tracking plan](docs/architecture/work-tracking.md).
+
 ## Run locally
 
 You need Go 1.24+, Node.js 22.12+, npm, Git, and Docker with Compose. Go dependencies
