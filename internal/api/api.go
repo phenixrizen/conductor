@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,15 +11,22 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/domain"
-	"github.com/phenixrizen/conductor/internal/service"
-	"github.com/phenixrizen/conductor/internal/store"
 )
 
-type API struct{ service *service.Service }
+type packageService interface {
+	Create(context.Context, string, domain.Content) (domain.Package, error)
+	Get(context.Context, string) (domain.Package, error)
+	Revise(context.Context, string, string, int64, domain.Content) (domain.Package, error)
+	Submit(context.Context, string, string, int64) (domain.Package, error)
+	Approve(context.Context, string, string, int64, string) (domain.Package, error)
+}
 
-func New(s *service.Service) http.Handler {
+type API struct{ service packageService }
+
+func New(s packageService) http.Handler {
 	a := &API{service: s}
 	m := http.NewServeMux()
 	m.HandleFunc("POST /api/v1/changes", a.create)
@@ -26,141 +36,176 @@ func New(s *service.Service) http.Handler {
 	m.HandleFunc("POST /api/v1/changes/{id}/approvals", a.approve)
 	return requestID(m)
 }
+
 func actor(r *http.Request) (string, error) {
 	v := strings.TrimSpace(r.Header.Get("X-Conductor-Actor"))
 	if v == "" {
 		return "", errors.New("X-Conductor-Actor is required (local development only)")
 	}
+	if len(v) > 128 || strings.ContainsAny(v, "\r\n\x00") {
+		return "", errors.New("X-Conductor-Actor is invalid")
+	}
 	return v, nil
 }
-func decode(r *http.Request, v any) error {
-	d := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	var extra any
+	if err := d.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON value")
+		}
+		return err
+	}
+	return nil
 }
-func write(w http.Response, status int, v any) {
+
+func write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func fail(w http.Response, r *http.Request, err error) {
-	status := http.StatusInternalServerError
-	code := "internal_error"
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		status = http.StatusNotFound
-		code = "not_found"
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrStaleApproval):
-		status = http.StatusConflict
-		code = "revision_conflict"
-	case errors.Is(err, domain.ErrSelfApproval), errors.Is(err, domain.ErrNotSubmitted):
-		status = http.StatusUnprocessableEntity
-		code = "approval_rejected"
-	}
-	if status == 500 {
-		slog.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))
-	}
-	write(w, status, map[string]any{"error": map[string]string{"code": code, "message": err.Error(), "correlationId": r.Header.Get("X-Correlation-ID")}})
+
+func reject(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	write(w, status, map[string]any{"error": map[string]string{
+		"code": code, "message": message, "correlationId": r.Header.Get("X-Correlation-ID"),
+	}})
 }
+
+func fail(w http.ResponseWriter, r *http.Request, err error) {
+	status, code := http.StatusInternalServerError, "internal_error"
+	message := err.Error()
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrStaleApproval):
+		status, code = http.StatusConflict, "revision_conflict"
+	case errors.Is(err, domain.ErrSelfApproval), errors.Is(err, domain.ErrNotSubmitted):
+		status, code = http.StatusUnprocessableEntity, "approval_rejected"
+	case errors.Is(err, domain.ErrInvalidInput):
+		status, code = http.StatusBadRequest, "invalid_input"
+	}
+	if status == http.StatusInternalServerError {
+		slog.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))
+		message = "internal server error"
+	}
+	reject(w, r, status, code, message)
+}
+
 func (a *API) create(w http.ResponseWriter, r *http.Request) {
-	u, e := actor(r)
-	if e != nil {
-		write(w, 401, map[string]string{"error": e.Error()})
+	u, err := actor(r)
+	if err != nil {
+		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
 	var in struct {
 		Content domain.Content `json:"content"`
 	}
-	if e = decode(r, &in); e != nil {
-		write(w, 400, map[string]string{"error": e.Error()})
+	if err = decode(w, r, &in); err != nil {
+		reject(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	p, e := a.service.Create(r.Context(), u, in.Content)
-	if e != nil {
-		fail(w, r, e)
+	p, err := a.service.Create(r.Context(), u, in.Content)
+	if err != nil {
+		fail(w, r, err)
 		return
 	}
-	write(w, 201, p)
+	write(w, http.StatusCreated, p)
 }
+
 func (a *API) get(w http.ResponseWriter, r *http.Request) {
-	if _, e := actor(r); e != nil {
-		write(w, 401, map[string]string{"error": e.Error()})
+	if _, err := actor(r); err != nil {
+		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
-	p, e := a.service.Get(r.Context(), r.PathValue("id"))
-	if e != nil {
-		fail(w, r, e)
+	p, err := a.service.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, r, err)
 		return
 	}
-	write(w, 200, p)
+	write(w, http.StatusOK, p)
 }
+
 func (a *API) revise(w http.ResponseWriter, r *http.Request) {
-	u, e := actor(r)
-	if e != nil {
-		write(w, 401, map[string]string{"error": e.Error()})
+	u, err := actor(r)
+	if err != nil {
+		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
 	var in struct {
 		ExpectedRevision int64          `json:"expectedRevision"`
 		Content          domain.Content `json:"content"`
 	}
-	if e = decode(r, &in); e != nil {
-		write(w, 400, map[string]string{"error": e.Error()})
+	if err = decode(w, r, &in); err != nil {
+		reject(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	p, e := a.service.Revise(r.Context(), r.PathValue("id"), u, in.ExpectedRevision, in.Content)
-	if e != nil {
-		fail(w, r, e)
+	p, err := a.service.Revise(r.Context(), r.PathValue("id"), u, in.ExpectedRevision, in.Content)
+	if err != nil {
+		fail(w, r, err)
 		return
 	}
-	write(w, 201, p)
+	write(w, http.StatusCreated, p)
 }
+
 func (a *API) submit(w http.ResponseWriter, r *http.Request) {
-	u, e := actor(r)
-	if e != nil {
-		write(w, 401, map[string]string{"error": e.Error()})
+	u, err := actor(r)
+	if err != nil {
+		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
 	var in struct {
 		Revision int64 `json:"revision"`
 	}
-	if e = decode(r, &in); e != nil {
-		write(w, 400, map[string]string{"error": e.Error()})
+	if err = decode(w, r, &in); err != nil {
+		reject(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	p, e := a.service.Submit(r.Context(), r.PathValue("id"), u, in.Revision)
-	if e != nil {
-		fail(w, r, e)
+	p, err := a.service.Submit(r.Context(), r.PathValue("id"), u, in.Revision)
+	if err != nil {
+		fail(w, r, err)
 		return
 	}
-	write(w, 200, p)
+	write(w, http.StatusOK, p)
 }
+
 func (a *API) approve(w http.ResponseWriter, r *http.Request) {
-	u, e := actor(r)
-	if e != nil {
-		write(w, 401, map[string]string{"error": e.Error()})
+	u, err := actor(r)
+	if err != nil {
+		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
 	var in struct {
 		Revision int64  `json:"revision"`
 		Digest   string `json:"digest"`
 	}
-	if e = decode(r, &in); e != nil {
-		write(w, 400, map[string]string{"error": e.Error()})
+	if err = decode(w, r, &in); err != nil {
+		reject(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	p, e := a.service.Approve(r.Context(), r.PathValue("id"), u, in.Revision, in.Digest)
-	if e != nil {
-		fail(w, r, e)
+	p, err := a.service.Approve(r.Context(), r.PathValue("id"), u, in.Revision, in.Digest)
+	if err != nil {
+		fail(w, r, err)
 		return
 	}
-	write(w, 201, p)
+	write(w, http.StatusCreated, p)
 }
+
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Correlation-ID")
 		if id == "" {
-			id = strconv.FormatInt(int64(len(r.URL.Path))+r.ContentLength, 36)
+			var b [16]byte
+			if _, err := rand.Read(b[:]); err == nil {
+				id = hex.EncodeToString(b[:])
+			} else {
+				id = strconv.FormatInt(time.Now().UnixNano(), 36)
+			}
 		}
 		r.Header.Set("X-Correlation-ID", id)
 		w.Header().Set("X-Correlation-ID", id)

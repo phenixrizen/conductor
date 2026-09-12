@@ -11,7 +11,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/domain"
 )
 
-var ErrNotFound = errors.New("work package not found")
+var ErrNotFound = domain.ErrNotFound
 
 type Postgres struct{ pool *pgxpool.Pool }
 
@@ -55,8 +55,14 @@ func (p *Postgres) Revise(ctx context.Context, id, actor string, expected int64,
 		return domain.Package{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, id); err != nil {
+		return domain.Package{}, err
+	}
 	var current int64
-	if err = tx.QueryRow(ctx, `SELECT revision FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1 FOR UPDATE`, id).Scan(&current); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT revision FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1`, id).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Package{}, ErrNotFound
+		}
 		return domain.Package{}, err
 	}
 	if current != expected {
@@ -83,8 +89,14 @@ func (p *Postgres) Submit(ctx context.Context, id, actor string, expected int64,
 		return domain.Package{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, id); err != nil {
+		return domain.Package{}, err
+	}
 	var current int64
-	if err = tx.QueryRow(ctx, `SELECT revision FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1 FOR UPDATE`, id).Scan(&current); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT revision FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1`, id).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Package{}, ErrNotFound
+		}
 		return domain.Package{}, err
 	}
 	if current != expected {
@@ -113,7 +125,10 @@ func (p *Postgres) Approve(ctx context.Context, id, reviewer string, revision in
 		return domain.Package{}, err
 	}
 	defer tx.Rollback(ctx)
-	r, err := getRevisionForUpdate(ctx, tx, id)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, id); err != nil {
+		return domain.Package{}, err
+	}
+	r, err := getRevision(ctx, tx, id)
 	if err != nil {
 		return domain.Package{}, err
 	}
@@ -124,7 +139,7 @@ func (p *Postgres) Approve(ctx context.Context, id, reviewer string, revision in
 	if err != nil {
 		return domain.Package{}, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_events(change_id,event_type,actor,revision,data,created_at) VALUES($1,'review.approved',$2,$3,jsonb_build_object('digest',$4),$5)`, id, reviewer, revision, digest, now)
+	_, err = tx.Exec(ctx, `INSERT INTO audit_events(change_id,event_type,actor,revision,data,created_at) VALUES($1,'review.approved',$2,$3,jsonb_build_object('digest',$4::text),$5)`, id, reviewer, revision, digest, now)
 	if err != nil {
 		return domain.Package{}, err
 	}
@@ -132,15 +147,6 @@ func (p *Postgres) Approve(ctx context.Context, id, reviewer string, revision in
 		return domain.Package{}, err
 	}
 	return p.Get(ctx, id)
-}
-
-func getRevisionForUpdate(ctx context.Context, q rowQuerier, id string) (domain.Revision, error) {
-	var r domain.Revision
-	err := q.QueryRow(ctx, `SELECT change_id,revision,schema_version,digest,content,author,created_at,submitted_at FROM work_package_revisions WHERE change_id=$1 ORDER BY revision DESC LIMIT 1 FOR UPDATE`, id).Scan(&r.ChangeID, &r.Number, &r.SchemaVersion, &r.Digest, &r.Content, &r.Author, &r.CreatedAt, &r.SubmittedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return r, ErrNotFound
-	}
-	return r, err
 }
 
 type rowQuerier interface {
