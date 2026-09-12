@@ -8,14 +8,26 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 // Object key order is not a content change. Arrays retain their meaningful order.
 function equal(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((value, index) => equal(value, right[index]));
+  // Accepted JSON can exceed the JavaScript call-stack depth. Traverse iteratively
+  // so the rendering depth limit below cannot be bypassed by this equality check.
+  const pending: [unknown, unknown][] = [[left, right]];
+  while (pending.length > 0) {
+    const [before, after] = pending.pop()!;
+    if (before === after) continue;
+    if (Array.isArray(before) && Array.isArray(after)) {
+      if (before.length !== after.length) return false;
+      for (let index = 0; index < before.length; index++) pending.push([before[index], after[index]]);
+      continue;
+    }
+    if (!isObject(before) || !isObject(after)) return false;
+    const keys = Object.keys(before);
+    if (keys.length !== Object.keys(after).length) return false;
+    for (const key of keys) {
+      if (!Object.hasOwn(after, key)) return false;
+      pending.push([before[key], after[key]]);
+    }
   }
-  if (!isObject(left) || !isObject(right)) return false;
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length
-    && keys.every(key => Object.hasOwn(right, key) && equal(left[key], right[key]));
+  return true;
 }
 
 function differences(before: unknown, after: unknown, path = '$', depth = 0): Difference[] {

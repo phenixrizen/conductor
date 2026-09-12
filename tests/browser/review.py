@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import urllib.request
 import uuid
 
@@ -115,6 +116,22 @@ with sync_playwright() as playwright:
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "mobile horizontal overflow"
     page.screenshot(path=str(screenshot.with_name(screenshot.stem + "-mobile.png")), full_page=True)
+    # Deep but valid package JSON must not overflow the comparison call stack.
+    sys.setrecursionlimit(20000)
+    nested = "before"
+    for _ in range(3000):
+        nested = {"nested": nested}
+    deep = command("/changes", "developer", {"content": {"deep": nested}})
+    nested = "after"
+    for _ in range(3000):
+        nested = {"nested": nested}
+    command("/changes/" + deep["id"] + "/revisions", "developer",
+            {"expectedRevision": 1, "content": {"deep": nested}})
+    page.get_by_label("Change ID", exact=True).fill(deep["id"])
+    page.get_by_role("button", name="Inspect latest revision", exact=True).click()
+    expect(page.get_by_role("heading", name="Revision 2", exact=True)).to_be_visible()
+    page.get_by_role("button", name="Compare revisions", exact=True).click()
+    expect(page.locator(".comparison")).to_contain_text("1 content difference")
     assert not errors, errors
     browser.close()
     print("PASS: shared discovery and related work, pinned context, perspective prompts, stale approval, comparison, retained historical approval, mobile layout")
