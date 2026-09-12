@@ -13,6 +13,75 @@ paths:
     get:
       summary: Inspect the latest revision and its effective approval
       responses: {'200': {description: Found, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/changes/{id}/history:
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    get:
+      summary: Inspect revision summaries and retained approval counts
+      description: >-
+        Returns revisions in descending number order. Approval counts describe
+        historical records and do not grant effective approval to the current
+        package. Unknown, repeated, empty, or malformed query parameters are rejected.
+      parameters:
+        - $ref: '#/components/parameters/BeforeRevision'
+        - $ref: '#/components/parameters/HistoryLimit'
+      responses:
+        '200':
+          description: Bounded revision history, including an empty page after exhaustion
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HistoryPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/changes/{id}/revisions/{revision}:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/Actor'
+      - name: revision
+        in: path
+        required: true
+        schema: {type: integer, format: int64, minimum: 1}
+    get:
+      summary: Inspect exact revision content and its retained approval records
+      description: >-
+        This read-only record has no effective approved flag. Approvals are ordered
+        by creation time, then reviewer, and capped at 100. approvalsTruncated is
+        true when further approval records exist. Unknown query parameters are
+        rejected; this operation accepts none.
+      responses:
+        '200':
+          description: Exact revision and bounded historical approvals
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RevisionRecord'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/changes/{id}/events:
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    get:
+      summary: Inspect the change's audit events in sequence order
+      description: >-
+        Returns events in ascending sequence order. Sequence numbers may contain
+        gaps. Unknown, repeated, empty, or malformed query parameters are rejected.
+      parameters:
+        - $ref: '#/components/parameters/AfterSequence'
+        - $ref: '#/components/parameters/HistoryLimit'
+      responses:
+        '200':
+          description: Bounded audit history, including an empty page after exhaustion
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuditPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/revisions:
     parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
     post:
@@ -33,14 +102,113 @@ paths:
       responses: {'201': {description: Approved}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
 components:
   responses:
-    BadRequest: {description: Invalid command, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    BadRequest: {description: Invalid command or query parameters, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unauthorized: {description: Local identity missing or invalid, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-    NotFound: {description: Change not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: Change or revision not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Conflict: {description: Inspected revision is stale, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    InternalError: {description: Internal error with details withheld, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unavailable: {description: History service unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   parameters:
     ID: {name: id, in: path, required: true, schema: {type: string}}
     Actor: {name: X-Conductor-Actor, in: header, required: true, description: Local development only, schema: {type: string}}
+    BeforeRevision:
+      name: beforeRevision
+      in: query
+      description: Exclusive revision-number cursor; zero starts at the latest revision
+      schema: {type: integer, format: int64, minimum: 0, default: 0}
+    AfterSequence:
+      name: afterSequence
+      in: query
+      description: Exclusive audit-sequence cursor; zero starts at the first event
+      schema: {type: integer, format: int64, minimum: 0, default: 0}
+    HistoryLimit:
+      name: limit
+      in: query
+      description: Maximum number of entries in one page
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
   schemas:
     ContentCommand: {type: object, required: [content], properties: {content: {type: object, additionalProperties: true}}}
-    Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, revision: {type: object}, approval: {type: object}, approved: {type: boolean}}}
+    Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, revision: {$ref: '#/components/schemas/Revision'}, approval: {$ref: '#/components/schemas/Approval'}, approved: {type: boolean}}}
+    Revision:
+      type: object
+      required: [changeId, number, schemaVersion, digest, content, author, createdAt]
+      additionalProperties: false
+      properties:
+        changeId: {type: string}
+        number: {type: integer, format: int64, minimum: 1}
+        schemaVersion: {type: integer, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        content: {type: object, additionalProperties: true}
+        author: {type: string}
+        createdAt: {type: string, format: date-time}
+        submittedAt: {type: string, format: date-time}
+    Approval:
+      type: object
+      required: [changeId, revision, digest, reviewer, createdAt]
+      additionalProperties: false
+      properties:
+        changeId: {type: string}
+        revision: {type: integer, format: int64, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        reviewer: {type: string}
+        createdAt: {type: string, format: date-time}
+    RevisionSummary:
+      type: object
+      required: [number, digest, author, createdAt, approvalCount]
+      additionalProperties: false
+      properties:
+        number: {type: integer, format: int64, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        author: {type: string}
+        createdAt: {type: string, format: date-time}
+        submittedAt: {type: string, format: date-time}
+        approvalCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total retained approval records; not an effective approval decision
+    HistoryPage:
+      type: object
+      required: [revisions]
+      additionalProperties: false
+      properties:
+        revisions: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/RevisionSummary'}}
+        nextBeforeRevision:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Last returned revision number when more revisions exist; otherwise omitted
+    RevisionRecord:
+      type: object
+      required: [revision, approvals, approvalsTruncated]
+      additionalProperties: false
+      properties:
+        revision: {$ref: '#/components/schemas/Revision'}
+        approvals: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/Approval'}}
+        approvalsTruncated:
+          type: boolean
+          description: True when more than 100 historical approval records exist
+    AuditEvent:
+      type: object
+      required: [sequence, changeId, eventType, actor, revision, data, createdAt]
+      additionalProperties: false
+      properties:
+        sequence: {type: integer, format: int64, minimum: 1}
+        changeId: {type: string}
+        eventType: {type: string}
+        actor: {type: string}
+        revision: {type: integer, format: int64, minimum: 1}
+        data: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+    AuditPage:
+      type: object
+      required: [events]
+      additionalProperties: false
+      properties:
+        events: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/AuditEvent'}}
+        nextAfterSequence:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Last returned event sequence when more events exist; otherwise omitted
     Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, correlationId], properties: {code: {type: string}, message: {type: string}, correlationId: {type: string}}}}}
