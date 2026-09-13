@@ -2,8 +2,10 @@
 
 Conductor can use a configured OpenID Connect provider to sign people into the web
 workbench. Reviewers choose an available workspace and repository, inspect shared
-packages and history, and approve the exact content on screen. PostgreSQL owns the
-shared record and permissions. Review perspectives change prompts, not access.
+packages and history, and approve the exact content on screen. Repository authors
+can also request shared context and attach an inspected receipt as a new draft.
+PostgreSQL owns the shared record and permissions. Review perspectives change
+prompts, not access.
 
 ## Configure the service
 
@@ -69,11 +71,14 @@ access; changing a label or persona cannot add it.
 Discover a package or enter its change ID. Inspect the revision and digest before
 approval. Another engineer's edit produces a conflict and requires a new explicit
 inspection. History and comparison remain available; historical approval is not
-approval of the latest revision. The CLI, terminal workbench, and API supply
-package authoring.
+approval of the latest revision. The browser can attach an existing source receipt;
+the CLI, terminal workbench, and API supply general package creation, editing, and
+submission.
 
 Changing the selected workspace, repository, or session clears the old inspection
-and cancels pending requests. A denied or expired session also removes it. An old
+and cancels pending requests, including collection drafts, receipts, and
+confirmations. A denied or expired session also removes it, even when its HTTP
+error body cannot be read. An old
 tab's request secret cannot be used with a newly signed-in account. Approval never
 reloads identity or content as part of its action.
 
@@ -81,6 +86,66 @@ reloads identity or content as part of its action.
 out of the identity provider, so the next login may reuse that provider's session.
 Sessions last one hour, without silent refresh. Revocation or expiry blocks later
 requests; an already authorized command can finish.
+
+## Collect shared repository context
+
+First follow the [durable context runbook](durable-context.md) to apply migration
+004, enable the repository's read integration, configure its trusted worker, and
+enable collection on the OIDC API. The browser reuses these existing commands and
+does not need provider tokens. Remote collection is unavailable in local mode.
+Browser sign-in still requires a provisioned human principal; agents use the
+authenticated API, CLI, or terminal.
+
+In **Shared context collections**, choose **Refresh collections** to discover
+requests in the selected repository. The page holds at most 20 requests and shows
+when more exist. **Load more collections** replaces it with the next bounded page;
+refresh returns to the first page. Inspect a request to see its canonical source,
+exact input, optional immutable receipt, and timestamped execution observation.
+
+Authors can expand **Request repository context**, enter a full lowercase 40-hex
+commit ID and 1–32 unique relative file paths, and inspect the visible idempotency
+key before choosing **Request collection**. Files are read from the configured
+repository at that commit. Branch names, abbreviated IDs, scripts, and arbitrary
+URLs are not collection inputs. A recorded request confirms saved intent, even
+when its worker is offline; it does not establish completed execution or coverage.
+
+If a response is lost or uncertain, the form retains and locks the exact input and
+key. Choose **Retry same request** to recover that request explicitly. The browser
+does not retry automatically. After a confirmed request, **Start a new request**
+creates a separate draft and key. Changing keys starts new work and is not recovery
+for an unknown result.
+
+Choose **Refresh inspected collection** to read later facts. The workbench does
+not poll. Execution observations become stale after 30 seconds; missing,
+unavailable, or unresolved progress stays explicit. Inspect each path's collected,
+missing, unavailable, or truncated state. Even completed execution can leave gaps.
+Collected source is not proof that a check passed or that a design was approved.
+
+The currently authorized requester can choose **Request cancellation**, inspect
+the displayed collection identity, then **Confirm cancellation request**. This
+records intent. Only a timestamped `cancelled` execution observation confirms the
+execution stopped. A receipt committed before cancellation remains available.
+An uncertain cancellation result requires another collection inspection.
+
+To attach source, first inspect the current package revision in the same selected
+repository and inspect a collection with a receipt. Choose **Attach receipt to
+inspected revision**. The confirmation displays the package ID, revision and
+digest, plus the collection ID and receipt digest. **Confirm attachment** sends
+those captured facts without refreshing source or package content. It creates a
+new draft; previous approval does not apply. Read-only access, historical views,
+and stale inspections cannot attach. After a conflict or unknown attachment
+result, inspect both the latest package and the collection again before another
+attachment or approval. The recovery warning identifies both records and provides
+explicit inspection buttons. Clearing a selection or receiving a different command
+response does not count as renewed inspection.
+
+Version 2 context displays source metadata, coverage, and text alongside complete
+JSON. A package's embedded receipt ID remains an unchecked reference until you
+choose **Inspect linked collection** and the complete snapshot matches the scoped
+server receipt. Unknown nested snapshot fields participate in that comparison.
+Version 1 extensions retain their original meaning; attachment preserves unknown
+outer package fields. The linkage records captured source, not independently
+verified provider compatibility or a passing implementation check.
 
 ## Protocol and storage limits
 

@@ -7,6 +7,8 @@ import { RepositoryContext } from './RepositoryContext';
 import { Events, History } from './Records';
 import { SharedChanges } from './SharedChanges';
 import type { RelatedRequest } from './SharedChanges';
+import { ContextCollections } from './ContextCollections';
+import type { Collection } from './collections';
 
 const perspectives = {
   Architect: 'Inspect boundaries, contracts, constraints, and the decisions behind this design.',
@@ -16,6 +18,7 @@ const perspectives = {
 };
 
 interface Job { token: number; signal: AbortSignal; access: RequestAccess }
+interface AttachmentRecovery { packageID: string; collectionID: string; packageInspected: boolean; collectionInspected: boolean }
 
 export function ReviewWorkbench({ access: browserAccess, sessionControls, onAccessFailure }: {
   access?: BrowserAccess;
@@ -39,10 +42,15 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   const [comparisonTarget, setComparisonTarget] = useState('previous');
   const [comparison, setComparison] = useState<Revision>();
   const [related, setRelated] = useState<RelatedRequest>();
+  const [collectionBusy, setCollectionBusy] = useState(false);
+  const [inspectedCollection, setInspectedCollection] = useState<Collection>();
+  const [requestedCollection, setRequestedCollection] = useState<{ id: string; sequence: number }>();
+  const [attachmentRecovery, setAttachmentRecovery] = useState<AttachmentRecovery>();
   const sequence = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
   const working = useRef(false);
-  const busy = pending !== '';
+  const collectionWorking = useRef(false);
+  const busy = pending !== '' || collectionBusy;
   const access: RequestAccess = browserAccess ?? { mode: 'local', actor };
   const reviewer = access.mode === 'browser' ? access.principalID : access.actor;
   const approvalPermission = access.mode === 'local' || (access.principalKind === 'human' && access.canApprove);
@@ -70,7 +78,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
 
   function begin(label: string): Job | undefined {
     // The ref also prevents two actions before React renders the disabled state.
-    if (working.current) return;
+    if (working.current || collectionWorking.current) return;
     working.current = true;
     controller.current?.abort();
     controller.current = new AbortController();
@@ -153,6 +161,10 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
       const value = await request<WorkPackage>(changePath(packageID), job.access, job.signal);
       if (!current(job)) return;
       checkPackage(value, job, packageID);
+      setAttachmentRecovery(previous => {
+        if (!previous || previous.packageID !== value.id) return previous;
+        return previous.collectionInspected ? undefined : { ...previous, packageInspected: true };
+      });
       setPackage(value);
       setView(latestView(value));
       setHistorical(false);
@@ -229,7 +241,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     } finally { finish(job); }
   }
 
-  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !busy
+  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !attachmentRecovery && !busy
     && !!view.revision.submittedAt && !pkg.approved && reviewer !== view.revision.author && approvalPermission;
 
   async function approve() {
@@ -267,6 +279,36 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   const repository = context !== null && typeof context === 'object' && 'repository' in context
     && typeof context.repository === 'string' ? context.repository : undefined;
 
+  function collectionWork(active: boolean): boolean {
+    if (active && working.current) return false;
+    collectionWorking.current = active;
+    setCollectionBusy(active);
+    return true;
+  }
+
+  function attached(value: WorkPackage) {
+    setPackage(value); setView(latestView(value)); setHistorical(false);
+    setHistory(undefined); setEvents(undefined); setComparison(undefined);
+    setHistoryError('Records have not been refreshed for this new revision.');
+    setEventsError('Events have not been refreshed after attachment.');
+    setNotice('Context attached as a new draft. Inspect its content, then refresh history and events explicitly.');
+  }
+
+  function collectionInspected(value?: Collection, freshInspection = false) {
+    setInspectedCollection(value);
+    // Only a successful explicit collection GET satisfies recovery. Clearing a
+    // selection, replaying creation, or receiving a mutation response does not.
+    if (freshInspection && value) setAttachmentRecovery(previous => {
+      if (!previous || previous.collectionID !== value.id) return previous;
+      return previous.packageInspected ? undefined : { ...previous, collectionInspected: true };
+    });
+  }
+
+  function requestCollectionInspection(collectionID: string) {
+    setRequestedCollection(previous => ({ id: collectionID, sequence: (previous?.sequence ?? 0) + 1 }));
+    document.getElementById('collections-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   return <main>
     <WorkbenchHeader />
     {sessionControls}
@@ -286,9 +328,24 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
       <div><p>{perspectives[perspective]}</p><p className="muted">Changes review prompts only. This selection grants no permissions or approval rights.</p></div>
     </section>
     <SharedChanges key={reviewer} access={access} disabled={busy} related={related} onInspect={packageID => void inspectLatest(packageID)} onAccessFailure={onAccessFailure} />
+    {browserAccess ? <ContextCollections access={browserAccess} disabled={pending !== ''}
+      target={pkg && view && !historical && !inspectionRequired && !attachmentRecovery && pending === ''
+        ? { id: pkg.id, revision: view.revision.number, digest: view.revision.digest, content: view.revision.content } : undefined}
+      requestedInspection={requestedCollection} onAccessFailure={onAccessFailure} onBusyChange={collectionWork}
+      onInspected={collectionInspected} onAttached={attached}
+      onAttachmentUncertain={(packageID, collectionID) => {
+        setAttachmentRecovery({ packageID, collectionID, packageInspected: false, collectionInspected: false });
+        setInspectionRequired('A context attachment was stale or could not be confirmed. Inspect the latest package and collection before another attachment or approval.');
+      }} />
+      : <section className="panel local-collections" aria-label="Remote collection availability"><h3>Shared context collections</h3><p className="muted">Remote collection requires authenticated workspace and repository access. It is unavailable in local mode.</p></section>}
     <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
     {error && <p role="alert" className="error banner">{error}</p>}
     {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}
+    {attachmentRecovery && <div className="warning banner" role="alert"><strong>Attachment recovery requires both inspections.</strong>
+      <p>Package <code>{attachmentRecovery.packageID}</code>: {attachmentRecovery.packageInspected ? 'inspected again' : 'latest inspection required'}. Collection <code>{attachmentRecovery.collectionID}</code>: {attachmentRecovery.collectionInspected ? 'inspected again' : 'inspection required'}. Approval and attachment stay blocked until both are inspected.</p>
+      <div className="control-row"><button className="secondary" disabled={busy} onClick={() => void inspectLatest(attachmentRecovery.packageID)}>Inspect recovery package</button>
+        <button className="secondary" disabled={busy} onClick={() => requestCollectionInspection(attachmentRecovery.collectionID)}>Inspect recovery collection</button></div>
+    </div>}
     {!pkg && !busy && !error && <section className="empty"><h2>A clear record for every decision.</h2><p>Enter a change ID to inspect its revision, context, approvals, and audit history.</p></section>}
     {pkg && view && <div className="workbench-grid" aria-busy={busy}>
       <article className="review panel" aria-labelledby="revision-title">
@@ -310,7 +367,8 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
           </ul>
           {view.approvalsTruncated && <p className="warning">Approval records are truncated. The full approval history is not displayed.</p>}
         </section>
-        <RepositoryContext content={view.revision.content} />
+        <RepositoryContext content={view.revision.content} linkedReceipt={inspectedCollection?.receipt} disabled={busy}
+          onInspectCollection={browserAccess ? requestCollectionInspection : undefined} />
         {repository && <button className="secondary related-work" disabled={busy} onClick={() => {
           setRelated(previous => ({ repository, sequence: (previous?.sequence ?? 0) + 1 }));
           document.getElementById('shared-work-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });

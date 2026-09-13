@@ -20,14 +20,15 @@ p { margin: .6rem 0 1rem; }
 .panel { background: #fff; border: 1px solid #bfc9be; padding: 1.5rem; }
 .lookup { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; box-shadow: 5px 5px 0 #263d35; }
 label { display: grid; gap: .4rem; font-size: .85rem; font-weight: 700; flex: 1; }
-input, select, button { font: inherit; font-size: .9rem; min-height: 44px; padding: .65rem .8rem; border: 1px solid #708172; border-radius: 2px; }
-input, select { min-width: 0; width: 100%; color: #18211c; background: #fff; }
+input, select, textarea, button { font: inherit; font-size: .9rem; min-height: 44px; padding: .65rem .8rem; border: 1px solid #708172; border-radius: 2px; }
+input, select, textarea { min-width: 0; width: 100%; color: #18211c; background: #fff; }
+textarea { resize: vertical; }
 button { background: #263d35; color: #fff; font-weight: 700; cursor: pointer; }
 button:hover:not(:disabled) { background: #385648; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.secondary { background: #f3f5f0; color: #263d35; }
 button.secondary:hover:not(:disabled) { background: #e3e9dd; }
-button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #a44727; outline-offset: 3px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #a44727; outline-offset: 3px; }
 a:focus-visible { outline: 3px solid #a44727; outline-offset: 3px; }
 .authentication { max-width: 48rem; box-shadow: 5px 5px 0 #263d35; }
 .authentication h2, .access-panel h2 { margin: .4rem 0 1rem; }
@@ -132,8 +133,24 @@ aside .panel { margin-bottom: 1rem; padding: 1.2rem; }
 .shared-state { color: #88381f; font-weight: 650; }
 .related-work { margin-top: .8rem; }
 .empty-list { font-size: .9rem; padding: 1rem 0; border-top: 1px solid #d5ded0; }
+.context-collections, .local-collections { margin: 1.5rem 0; }
+.context-collections h2 { font-size: 1.6rem; margin: 0 0 .7rem; }
+.context-collections .eyebrow { margin: 0 0 .5rem; }
+.collection-create { border-block: 1px solid #d5ded0; padding: .4rem 0; }
+.collection-create form { padding: .5rem 0 1rem; }
+.collection-create textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 400; }
+.collection-create .control-row, .collection-create label { margin-bottom: .7rem; }
+.collection-inspection { margin-top: 1.5rem; border-top: 1px solid #bfc9be; padding-top: 1.5rem; }
+.collection-inspection .panel { background: #f7f9f3; }
+.literal-paths { margin: 0; padding-left: 1.2rem; white-space: pre-wrap; }
+.collection-actions { margin: 1.2rem 0; }
+.collection-confirmation { margin-top: 1.5rem; }
+.collection-execution { padding-block: .5rem; }
 
 @media (max-width: 600px) {
   .shared-list { grid-template-columns: minmax(0, 1fr); }
   .shared-work { padding: 1rem; }
+  .context-collections { padding: 1rem; }
+  .context-collections .control-row { align-items: stretch; }
+  .context-collections .control-row > * { flex-basis: 100%; min-width: 0; }
 }

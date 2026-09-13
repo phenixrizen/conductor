@@ -29,6 +29,7 @@ export type BrowserAccess = Readonly<{
   csrfToken: string;
   workspaceID: string;
   repositoryID: string;
+  canAuthor: boolean;
   canApprove: boolean;
 }>;
 export type RequestAccess = Readonly<{ mode: 'local'; actor: string }> | BrowserAccess;
@@ -121,6 +122,7 @@ export async function request<T>(
   access: RequestAccess | undefined,
   signal: AbortSignal,
   body?: unknown,
+  options?: Readonly<{ idempotencyKey: string }>,
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
@@ -131,9 +133,11 @@ export async function request<T>(
   // does not replace caller cancellation when identity or scope changes.
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20_000);
   try {
-    return await requestWithSignal<T>(path, access, controller.signal, body);
+    return await requestWithSignal<T>(path, access, controller.signal, body, options);
   } catch (failure) {
-    if (timedOut && !signal.aborted) throw new Error('The server did not respond within 20 seconds. Retry when it is available.');
+    if (timedOut && !signal.aborted && !(failure instanceof APIError && (failure.status === 401 || failure.status === 403))) {
+      throw new Error('The server did not respond within 20 seconds. Retry when it is available.');
+    }
     throw failure;
   } finally {
     clearTimeout(timer);
@@ -141,8 +145,16 @@ export async function request<T>(
   }
 }
 
-async function requestWithSignal<T>(path: string, access: RequestAccess | undefined, signal: AbortSignal, body?: unknown): Promise<T> {
+async function requestWithSignal<T>(path: string, access: RequestAccess | undefined, signal: AbortSignal, body?: unknown, options?: Readonly<{ idempotencyKey: string }>): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  // Only collection creation accepts this extra header. Callers cannot replace
+  // identity, scope, CSRF, or transport controls through arbitrary headers.
+  if (options) {
+    if (path !== '/context-collections' || body === undefined || !/^[\x21-\x2b\x2d-\x7e]{1,128}$/.test(options.idempotencyKey)) {
+      throw new Error('A collection request requires a valid idempotency key.');
+    }
+    headers['Idempotency-Key'] = options.idempotencyKey;
+  }
   if (access?.mode === 'local') headers['X-Conductor-Actor'] = access.actor;
   if (access?.mode === 'browser') {
     if (access.workspaceID) headers['X-Conductor-Workspace'] = access.workspaceID;
@@ -160,6 +172,12 @@ async function requestWithSignal<T>(path: string, access: RequestAccess | undefi
     cache: 'no-store',
     signal,
   });
+  // Denial headers are sufficient to invalidate this inspection. A broken or
+  // stalled error body must never turn revoked access into an ordinary retry.
+  if (response.status === 401 || response.status === 403) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new APIError(response.status === 401 ? 'Your session has ended.' : 'Your access could not be confirmed.', response.status);
+  }
   // Bound response consumption before decoding, including chunked responses.
   const reader = response.body?.getReader();
   if (!reader) throw new APIError('The server returned an empty response.', response.status);

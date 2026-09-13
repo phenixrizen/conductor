@@ -1,6 +1,7 @@
 # Feature 004: browser sign-in and shared review
 
-**Status:** Implemented browser authentication and review. Verification uses a
+**Status:** Implemented browser authentication, review, and shared context controls.
+Authentication verification uses a
 signed synthetic identity provider, PostgreSQL, and a real browser; it does not
 certify an enterprise identity-provider deployment.
 
@@ -51,19 +52,58 @@ An account label or review perspective never establishes authority.
    unavailable login, denied access, and request errors explicitly. Capabilities
    affect available controls; the service remains authoritative.
 10. Changing identity, session, workspace, or repository cancels pending work and
-    clears all package/history/comparison/discovery state. Capture immutable access
+    clears all package/history/comparison/discovery state, collection drafts,
+    receipts, and confirmations. Capture immutable access
     details for each request and ignore superseded responses. Authentication or
-    permission failure removes inspection and requires deliberate recovery.
+    permission failure removes inspection and requires deliberate recovery, even
+    when the denial response body is missing, interrupted, or stalled.
 11. Approval still submits exactly the displayed revision and digest without a
     refresh inside that action. Stale or uncertain results require renewed
     inspection. Historical records remain read-only. A persona cannot enable
     approval, and an author cannot approve their own revision.
+12. Bring the existing [Feature 006](../006-durable-context/spec.md) collection
+    commands into the authenticated repository workbench. Read permission allows
+    bounded shared discovery and inspection. Author permission comes only from
+    validated repository discovery; the service still requires current permission
+    and an operator-enabled read integration. Local mode cannot collect remotely.
+13. Request an exact lowercase 40-hex commit and 1–32 explicit relative file paths
+    with a visible idempotency key. Capture the input and key before sending.
+    An uncertain result keeps that exact draft locked for an explicit same-request
+    retry. Do not retry automatically or silently replace its key. Starting new
+    work after a confirmed request is a separate action.
+14. Refresh collection lists and inspections only on explicit actions. Show absent,
+    unavailable, unresolved, and stale execution observations with their timestamps.
+    Age progress locally after 30 seconds without polling the service. Cancellation
+    intent does not confirm that execution stopped. A receipt is immutable source;
+    its missing, unavailable, or truncated paths remain visible even after workflow
+    completion. Source collection never establishes a passing check.
+15. Only the currently authorized requester can request cancellation. Confirm the
+    displayed collection identity before sending. Attach a receipt only to a current,
+    non-stale package inspection in the selected repository, with a confirmation
+    capturing package ID, revision, package digest, collection ID, and receipt digest.
+    Neither confirmation refreshes source or package content inside its command.
+    Attachment creates an ordinary new draft and does not carry forward approval.
+    An uncertain or conflicting result requires renewed inspection; uncertain
+    attachment also blocks package approval until both the current package and
+    collection have been explicitly inspected again. Clearing a selection or
+    receiving another mutation response does not satisfy this recovery.
+16. Render version 2 source metadata and coverage as escaped text while keeping
+    complete JSON available. An embedded receipt ID is an unverified reference.
+    Describe linkage to an inspected server receipt only after a scoped collection
+    response and full snapshot JSON comparison, including unknown nested fields.
+    Preserve version 1 extension meaning and unknown outer package fields.
 
 ## Boundaries
 
-The browser reviews saved packages and their history. Package authoring remains
+The browser supports human sessions only. It reviews saved packages and their
+history and lets repository authors request context and explicitly attach an
+inspected receipt. General package creation, editing, and submission remain
 available through the CLI/API and the authenticated terminal in
-[Feature 005](../005-authenticated-terminal/spec.md). CLI token acquisition,
+[Feature 005](../005-authenticated-terminal/spec.md). Agent identities use those
+authenticated API clients and cannot obtain browser sessions or approve designs.
+CLI token acquisition,
 provider-specific certification, session refresh, federated logout, and deployment
-automation are following work. Execution, publication, and tracker synchronization
-remain separate capabilities. No ADR is accepted by this implementation.
+automation are following work. Context execution uses the existing local Temporal
+deployment profile; browser controls add no workflow or provider authority. Live
+GitHub/GitLab compatibility, assistant execution, publication, and tracker
+synchronization remain separate work. No ADR is accepted by this implementation.
