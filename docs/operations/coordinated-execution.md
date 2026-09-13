@@ -1,6 +1,7 @@
 # Coordinated execution setup and inspection
 
-**Implemented:** shared plan admission and a trusted local Temporal/Docker runtime.
+**Implemented:** shared plan admission and a trusted Temporal/Docker runtime.
+Workers support explicit local loopback or the shared [remote TLS/mTLS profile](temporal-tls.md).
 An accepted authorization alone does not prove that a producer started, completed
 or passed verification. Inspect separate task receipts and observed execution.
 

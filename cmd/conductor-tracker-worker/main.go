@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/phenixrizen/conductor/internal/temporalconnection"
 	"github.com/phenixrizen/conductor/internal/trackerworker"
 	"github.com/phenixrizen/conductor/internal/trackerworkflow"
 	"go.temporal.io/sdk/client"
@@ -29,19 +30,20 @@ func loopback(address string) bool {
 	return e == nil && ip != nil && ip.IsLoopback() && port != ""
 }
 func run() error {
-	if os.Getenv("CONDUCTOR_TEMPORAL_MODE") != "local" || os.Getenv("DATABASE_URL") == "" {
-		return errors.New("DATABASE_URL and explicit local Temporal mode are required")
+	if os.Getenv("DATABASE_URL") == "" {
+		return errors.New("DATABASE_URL is required")
 	}
-	address := os.Getenv("CONDUCTOR_TEMPORAL_ADDRESS")
-	if address == "" {
-		address = "127.0.0.1:7233"
+	temporal, e := temporalconnection.Load(os.Getenv)
+	if e != nil {
+		return e
 	}
+	address := temporal.Address
 	listen := os.Getenv("CONDUCTOR_TRACKER_WEBHOOK_ADDRESS")
 	if listen == "" {
 		listen = "127.0.0.1:8091"
 	}
-	if !loopback(address) || !loopback(listen) {
-		return errors.New("tracker worker requires literal loopback Temporal and webhook addresses; use a trusted HTTPS reverse proxy")
+	if !loopback(listen) {
+		return errors.New("tracker webhook requires a literal loopback address; use a trusted HTTPS reverse proxy")
 	}
 	credentials, e := trackerworker.LoadCredentials(os.Getenv("CONDUCTOR_TRACKER_CREDENTIALS_FILE"))
 	if e != nil {
@@ -56,7 +58,7 @@ func run() error {
 		return errors.New("tracker database unavailable")
 	}
 	defer db.Close()
-	engine, e := client.DialContext(startup, client.Options{HostPort: address, Namespace: os.Getenv("CONDUCTOR_TEMPORAL_NAMESPACE"), Identity: "conductor-tracker-worker-v1", Logger: safeLogger{}, ConnectionOptions: client.ConnectionOptions{MaxPayloadSize: 1 << 20}})
+	engine, e := client.DialContext(startup, temporal.Options("conductor-tracker-worker-v1", safeLogger{}))
 	if e != nil {
 		return errors.New("tracker Temporal unavailable")
 	}
@@ -65,7 +67,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	dispatcher, e := trackerworker.NewDispatcher(startup, db, engine, address, os.Getenv("CONDUCTOR_TEMPORAL_NAMESPACE"))
+	dispatcher, e := trackerworker.NewDispatcher(startup, db, engine, address, temporal.Namespace)
 	if e != nil {
 		return errors.New("tracker runtime binding unavailable")
 	}

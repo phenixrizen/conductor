@@ -113,7 +113,8 @@ CONDUCTOR_TEST_TEMPORAL=1 go test -race ./tests/acceptance -run TrackerTemporal 
 Owned runtime acceptance requires the verified Temporal CLI 1.8.3. Tests own their
 schemas and Temporal SQLite/processes; they never restart the development database.
 Provider fixtures are synthetic. Live tenant credentials, webhook HTTPS routing
-and hosted/TLS Temporal remain separate deployment verification prerequisites.
+and hosted-account deployment remain separate verification prerequisites. The
+shared [remote TLS/mTLS profile](temporal-tls.md) has local protocol coverage.
 See [API research](../architecture/tracker-integration-research.md) for exact sources.
 
 ## Browser workflow

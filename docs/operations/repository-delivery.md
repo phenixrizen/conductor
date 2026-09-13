@@ -15,8 +15,8 @@ Use Go 1.25 or later (the repository pins its tested toolchain), Git, PostgreSQL
 OIDC workspace access, the context/coding integrations and retained full-source
 bundles. Apply migrations through 008 in numeric order. Run the verified local
 Temporal CLI 1.8.3 / server 1.31.2 with persistent history and a namespace retaining
-at least one day. The publisher currently supports a literal loopback Temporal
-address; hosted Temporal/TLS authentication is not implied.
+at least one day, or configure the shared [remote TLS/mTLS profile](temporal-tls.md).
+Hosted-account compatibility and production deployment remain unverified.
 
 Enable the authenticated API with `CONDUCTOR_DELIVERIES=1`. Local actor mode cannot
 enable publication. The separate `executionGrants` section of `conductor-admin`
