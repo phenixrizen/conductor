@@ -293,6 +293,14 @@ func TestCollectionRequestFileStrictBoundedAndCanonical(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got.Paths, []string{"README.md", "z.md"}) || got.IdempotencyKey != "stable-key" {
 		t.Fatalf("canonical request: %+v %v", got, err)
 	}
+	full := strings.TrimSuffix(valid, "}") + `,"fullSource":true}`
+	if err = os.WriteFile(path, []byte(full), 0600); err != nil {
+		t.Fatal(err)
+	}
+	complete, err := readCollectionDraft(context.Background(), path)
+	if err != nil || !complete.input().FullSource {
+		t.Fatal("whole-source request omitted from preview/input", err)
+	}
 	for _, invalid := range []string{"-", dir, ""} {
 		if _, err := readCollectionDraft(context.Background(), invalid); err == nil {
 			t.Fatal("non-file input accepted")

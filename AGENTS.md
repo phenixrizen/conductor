@@ -358,6 +358,13 @@ packages to mirror the target diagram.
   complete scoped server receipt before marking a snapshot as matching. Preserve
   version 1 extensions and show full escaped JSON for uninterpreted content.
 
+- Release terminal views use `conductor tui --view graphs|runs|deliveries|tracker`
+  and the shared API client. Explicit request files contain `idempotencyKey` and
+  `input`; preview rejects duplicate/case-aliased fields and retains the exact key
+  after uncertain writes. Human execution authorization binds inspected profile,
+  image and plan pins; publication controls additionally require artifact review.
+  Access failure clears all release views and pending confirmations.
+
 ## Documentation
 
 - The user explicitly requested stacked PRs on 2026-09-13. Target each PR at its

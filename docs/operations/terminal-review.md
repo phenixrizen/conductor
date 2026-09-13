@@ -5,7 +5,9 @@ CLI and browser. It lets a developer import and submit a package, and lets an
 independent reviewer inspect and approve its exact content. PostgreSQL retains the
 shared record. Authenticated collaborators can also request repository context,
 inspect shared source receipts, and attach them to a package as a new revision.
-A local actor name is development identity, not authentication.
+A local actor name is development identity, not authentication. The separate
+[release workbench](release-terminal.md) adds graphs, coordinated agent plans,
+publication artifacts and tracker synchronization using the same fixed identity.
 
 ## Authenticated workspace review
 
@@ -108,9 +110,10 @@ synthetic commit with a real full commit ID from the selected repository:
 }
 ```
 
-The file must be a regular UTF-8 JSON file of at most 64 KiB with exactly those
-three fields. Use a full lowercase 40-hex commit ID and 1–32 unique relative file
-paths. Branch names, abbreviated IDs, traversal, and directories are not supported.
+The file must be a regular UTF-8 JSON file of at most 64 KiB with those three
+required fields and an optional boolean `fullSource`. Set `fullSource: true` to
+request a whole-source Git bundle and CodeGraph index for coordinated work. Use a
+full lowercase 40-hex commit ID and 1–32 unique relative file paths. Branch names, abbreviated IDs, traversal, and directories are not supported.
 The key is 1–128 printable ASCII characters without spaces or commas; keep it with
 the input for recovery. Unknown, duplicate, case-aliased, or null fields are rejected.
 The terminal sorts validated paths before preview and never runs the selected file.
@@ -296,4 +299,6 @@ and [program options](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/op
 for cancellation and the alternate screen. Authenticated terminal review and
 collection controls use the existing API credential and permission boundary; these
 controls add no server routes or migrations. Background collection uses the
-Feature 006 worker. Coding execution and repository publication remain later work.
+Feature 006 worker. The separate release workbench exposes coding and publication
+review through the existing authenticated API; repository commands run only in the
+trusted workers.

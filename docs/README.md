@@ -35,6 +35,7 @@ not mistaken for working capabilities.
 | [Work tracking](architecture/work-tracking.md) | Linear/Jira options, linked work, and synchronization ownership |
 | [Tracker setup and review](operations/work-tracking.md) | Configure one tracker per workspace, inspect linked work, synchronize and resolve conflicts |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
+| [Release terminal](operations/release-terminal.md) | CLI and interactive graph, coordinated run, delivery artifact and tracker workflows |
 | [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, collection controls, imports, and recovery |
 | [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |
 | [Feature 005 plan](../specs/005-authenticated-terminal/plan.md) | Terminal implementation and signed-issuer real PTY validation |

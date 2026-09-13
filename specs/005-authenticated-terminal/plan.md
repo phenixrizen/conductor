@@ -40,3 +40,11 @@ a dependent PR ready; do not require reviewers to manage stacked merge order.
 The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
 the earlier main-only sequencing guidance above. Follow the required gates and
 explicit dependency order in the [full release contract](../../docs/full-release.md).
+
+## Full-release terminal delivery
+
+Shared CLI commands and the separate authenticated release workbench cover graph
+creation/query, task proposals and human execution decisions, exact artifact review
+and publication authorization, and workspace tracker linking/synchronization.
+Strict request-file previews retain keys across explicit retries. Actual signed
+API/PostgreSQL PTY coverage spans these controls alongside the original workbench.

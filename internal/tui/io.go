@@ -19,7 +19,7 @@ import (
 // Options selects local review inputs. Authenticated identity and canonical scope
 // come from the configured client and server, never a local actor or content label.
 type Options struct {
-	Actor, Repository, File, ID string
+	Actor, Repository, File, ID, View string
 }
 
 // Run keeps the program alive until quit or cancellation; each HTTP operation has
@@ -31,7 +31,15 @@ func Run(ctx context.Context, c *client.Client, options Options) error {
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(m, tea.WithContext(session), tea.WithAltScreen()).Run()
+	var selected tea.Model = m
+	if options.View != "" {
+		release, releaseErr := releaseSession(session, c, options)
+		if releaseErr != nil {
+			return releaseErr
+		}
+		selected = release
+	}
+	_, err = tea.NewProgram(selected, tea.WithContext(session), tea.WithAltScreen()).Run()
 	return err
 }
 

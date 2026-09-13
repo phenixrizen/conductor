@@ -34,10 +34,11 @@ type collectionDraft struct {
 	Commit         string   `json:"commit"`
 	Paths          []string `json:"paths"`
 	IdempotencyKey string   `json:"idempotencyKey"`
+	FullSource     bool     `json:"fullSource,omitempty"`
 }
 
 func (d collectionDraft) input() domain.CollectionInput {
-	return domain.CollectionInput{Commit: d.Commit, Paths: d.Paths}
+	return domain.CollectionInput{Commit: d.Commit, Paths: d.Paths, FullSource: d.FullSource}
 }
 
 func isCollectionOperation(op string) bool {
@@ -383,8 +384,8 @@ func readCollectionDraft(ctx context.Context, path string) (collectionDraft, err
 			return draft, errors.New("invalid request JSON")
 		}
 		name, ok := tok.(string)
-		if !ok || seen[name] || (name != "commit" && name != "paths" && name != "idempotencyKey") {
-			return draft, errors.New("request fields must be exactly commit, paths and idempotencyKey, with no duplicates")
+		if !ok || seen[name] || (name != "commit" && name != "paths" && name != "idempotencyKey" && name != "fullSource") {
+			return draft, errors.New("request fields are commit, paths, idempotencyKey and optional fullSource, with no duplicates")
 		}
 		seen[name] = true
 		var raw json.RawMessage
@@ -396,6 +397,8 @@ func readCollectionDraft(ctx context.Context, path string) (collectionDraft, err
 			err = json.Unmarshal(raw, &draft.Commit)
 		case "paths":
 			err = json.Unmarshal(raw, &draft.Paths)
+		case "fullSource":
+			err = json.Unmarshal(raw, &draft.FullSource)
 		case "idempotencyKey":
 			err = json.Unmarshal(raw, &draft.IdempotencyKey)
 		}
@@ -404,7 +407,7 @@ func readCollectionDraft(ctx context.Context, path string) (collectionDraft, err
 		}
 	}
 	tok, err = decoder.Token()
-	if err != nil || tok != json.Delim('}') || len(seen) != 3 {
+	if err != nil || tok != json.Delim('}') || !seen["commit"] || !seen["paths"] || !seen["idempotencyKey"] {
 		return draft, errors.New("request requires commit, paths and idempotencyKey")
 	}
 	if decoder.Decode(new(any)) != io.EOF {

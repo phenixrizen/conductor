@@ -92,3 +92,14 @@ with at most 1,000 visited page cursors retained per browsing session. CLI
 interactive login, token refresh, coding execution, repository publication, and
 work-tracker synchronization remain separate work. The terminal reuses the existing
 Feature 006 collection API; its controls add no migration or provider behavior.
+
+## Full-release workbench
+
+The authenticated terminal also exposes graph, coordinated execution, delivery and
+tracker views through the shared client. Its explicit request files retain the
+complete input and idempotency key. Exact human authorizations do not refresh
+inspection, missing profiles block execution controls, and publication requires
+inspected artifact identity and patch/check content. Every view clears private
+state on access failure; fixed identity, bounded pagination, escaped text and
+explicit uncertain-response recovery apply throughout. See the
+[release terminal runbook](../../docs/operations/release-terminal.md).
