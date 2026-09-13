@@ -72,10 +72,12 @@ type Approval struct {
 }
 
 type Package struct {
-	ID       string    `json:"id"`
-	Revision Revision  `json:"revision"`
-	Approval *Approval `json:"approval,omitempty"`
-	Approved bool      `json:"approved"`
+	WorkspaceID  string    `json:"workspaceId,omitempty"`
+	RepositoryID string    `json:"repositoryId,omitempty"`
+	ID           string    `json:"id"`
+	Revision     Revision  `json:"revision"`
+	Approval     *Approval `json:"approval,omitempty"`
+	Approved     bool      `json:"approved"`
 }
 
 func ValidateApproval(r Revision, revision int64, digest, reviewer string) error {

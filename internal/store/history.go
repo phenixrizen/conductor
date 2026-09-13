@@ -10,14 +10,7 @@ import (
 )
 
 func (p *Postgres) historyExists(ctx context.Context, id string) error {
-	var exists bool
-	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM changes WHERE id=$1)`, id).Scan(&exists); err != nil {
-		return fmt.Errorf("find history: %w", err)
-	}
-	if !exists {
-		return domain.ErrNotFound
-	}
-	return nil
+	return p.authorizeChange(ctx, p.queries(), id, "read")
 }
 
 func (p *Postgres) History(ctx context.Context, id string, beforeRevision int64, limit int) (domain.HistoryPage, error) {
@@ -27,7 +20,7 @@ func (p *Postgres) History(ctx context.Context, id string, beforeRevision int64,
 	if err := p.historyExists(ctx, id); err != nil {
 		return domain.HistoryPage{}, err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT r.revision,r.digest,r.author,r.created_at,r.submitted_at,
+	rows, err := p.queries().Query(ctx, `SELECT r.revision,r.digest,r.author,r.created_at,r.submitted_at,
 		(SELECT count(*) FROM approvals a WHERE a.change_id=r.change_id AND a.revision=r.revision AND a.digest=r.digest)
 		FROM work_package_revisions r WHERE r.change_id=$1 AND ($2::bigint=0 OR r.revision<$2)
 		ORDER BY r.revision DESC LIMIT $3`, id, beforeRevision, limit+1)
@@ -60,11 +53,20 @@ func (p *Postgres) Revision(ctx context.Context, id string, revision int64) (dom
 	// Submission and approval can still arrive while a revision is current. Read
 	// both from one snapshot so a record cannot pair an unsubmitted revision with
 	// an approval that committed after the revision was read.
-	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := p.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return domain.RevisionRecord{}, fmt.Errorf("begin revision inspection: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// Authenticated inspection shares an outer authorization transaction. Its
+	// savepoint cannot change isolation level, so this shared package lock also
+	// keeps submission and approval stable until the complete record is read.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, id); err != nil {
+		return domain.RevisionRecord{}, fmt.Errorf("lock revision inspection: %w", err)
+	}
+	if err = p.authorizeChange(ctx, tx, id, "read"); err != nil {
+		return domain.RevisionRecord{}, err
+	}
 	record := domain.RevisionRecord{Approvals: make([]domain.Approval, 0)}
 	r := &record.Revision
 	err = tx.QueryRow(ctx, `SELECT change_id,revision,schema_version,digest,content,author,created_at,submitted_at
@@ -111,7 +113,7 @@ func (p *Postgres) Events(ctx context.Context, id string, afterSequence int64, l
 	if err := p.historyExists(ctx, id); err != nil {
 		return domain.AuditPage{}, err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT sequence,change_id,event_type,actor,revision,data,created_at
+	rows, err := p.queries().Query(ctx, `SELECT sequence,change_id,event_type,actor,revision,data,created_at
 		FROM audit_events WHERE change_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`, id, afterSequence, limit+1)
 	if err != nil {
 		return domain.AuditPage{}, fmt.Errorf("read audit events: %w", err)
