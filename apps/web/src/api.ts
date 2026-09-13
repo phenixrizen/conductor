@@ -1,5 +1,38 @@
 export type Content = Record<string, unknown>;
 
+export interface Principal { id: string; kind: 'human' | 'agent' }
+export interface Workspace { id: string; name: string }
+export interface BrowserSession {
+  session: { principal: Principal; workspaces: Workspace[]; truncated: boolean };
+  csrfToken: string;
+}
+export interface AuthConfig { mode: 'local' | 'oidc'; browserLogin: boolean }
+export interface ManagedRepository {
+  id: string;
+  workspaceId: string;
+  provider: 'github' | 'gitlab';
+  host: string;
+  providerId: string;
+  name: string;
+  canRead: boolean;
+  canAuthor: boolean;
+  canApprove: boolean;
+}
+export interface RepositoryPage { repositories: ManagedRepository[]; truncated: boolean }
+
+// Every asynchronous operation captures one immutable access selection. Session
+// cookies are managed by the browser; access/ID tokens never enter this object.
+export type BrowserAccess = Readonly<{
+  mode: 'browser';
+  principalID: string;
+  principalKind: 'human' | 'agent';
+  csrfToken: string;
+  workspaceID: string;
+  repositoryID: string;
+  canApprove: boolean;
+}>;
+export type RequestAccess = Readonly<{ mode: 'local'; actor: string }> | BrowserAccess;
+
 export interface Revision {
   changeId: string;
   number: number;
@@ -19,6 +52,8 @@ export interface Approval {
 
 export interface WorkPackage {
   id: string;
+  workspaceId?: string;
+  repositoryId?: string;
   revision: Revision;
   approved: boolean;
   approval?: Approval;
@@ -60,6 +95,8 @@ export interface EventPage {
 
 export interface SharedChange {
   id: string;
+  workspaceId?: string;
+  repositoryId?: string;
   revision: number;
   digest: string;
   author: string;
@@ -81,14 +118,46 @@ export class APIError extends Error {
 
 export async function request<T>(
   path: string,
-  actor: string,
+  access: RequestAccess | undefined,
   signal: AbortSignal,
   body?: unknown,
 ): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const cancel = () => controller.abort();
+  if (signal.aborted) cancel();
+  else signal.addEventListener('abort', cancel, { once: true });
+  // The deadline covers both headers and a stalled/chunked response body. It
+  // does not replace caller cancellation when identity or scope changes.
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20_000);
+  try {
+    return await requestWithSignal<T>(path, access, controller.signal, body);
+  } catch (failure) {
+    if (timedOut && !signal.aborted) throw new Error('The server did not respond within 20 seconds. Retry when it is available.');
+    throw failure;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
+async function requestWithSignal<T>(path: string, access: RequestAccess | undefined, signal: AbortSignal, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (access?.mode === 'local') headers['X-Conductor-Actor'] = access.actor;
+  if (access?.mode === 'browser') {
+    if (access.workspaceID) headers['X-Conductor-Workspace'] = access.workspaceID;
+    if (access.repositoryID) headers['X-Conductor-Repository'] = access.repositoryID;
+    // Bind reads too: another tab may replace the shared session cookie while
+    // this inspection still belongs to the previous principal.
+    headers['X-Conductor-CSRF'] = access.csrfToken;
+  }
   const response = await fetch(`/api/v1${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Conductor-Actor': actor },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: 'same-origin',
+    redirect: 'error',
+    cache: 'no-store',
     signal,
   });
   // Bound response consumption before decoding, including chunked responses.
@@ -119,13 +188,17 @@ export async function request<T>(
     throw new APIError('The server response was not valid JSON. Check API connectivity.', response.status);
   }
   if (!response.ok) {
-    const message = typeof value.error?.message === 'string'
+    const message = typeof value?.error?.message === 'string'
       ? value.error.message : `Request failed (${response.status}).`;
-    const correlation = typeof value.error?.correlationId === 'string'
+    const correlation = typeof value?.error?.correlationId === 'string'
       ? ` Reference: ${value.error.correlationId}` : '';
     throw new APIError(message + correlation, response.status);
   }
   return value as T;
+}
+
+export function accessFailure(error: unknown, access: RequestAccess): error is APIError {
+  return access.mode === 'browser' && error instanceof APIError && (error.status === 401 || error.status === 403);
 }
 
 export function changePath(id: string): string {

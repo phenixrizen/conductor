@@ -1,316 +1,225 @@
 import { useEffect, useRef, useState } from 'react';
-import { APIError, changePath, dateLabel, errorMessage, request } from './api';
-import type { EventPage, HistoryPage, Revision, RevisionView, WorkPackage } from './api';
-import { Comparison } from './Comparison';
-import { RepositoryContext } from './RepositoryContext';
-import { Events, History } from './Records';
-import { SharedChanges } from './SharedChanges';
-import type { RelatedRequest } from './SharedChanges';
+import { APIError, errorMessage, request } from './api';
+import type { AuthConfig, BrowserAccess, BrowserSession, ManagedRepository, RepositoryPage } from './api';
+import { ReviewWorkbench, WorkbenchHeader } from './ReviewWorkbench';
 
-const perspectives = {
-  Architect: 'Inspect boundaries, contracts, constraints, and the decisions behind this design.',
-  'QC / QA': 'Inspect acceptance criteria, verification plans, and missing or unexecuted evidence.',
-  Developer: 'Inspect scope, task dependencies, implementation constraints, and verification commands.',
-  Product: 'Inspect the intended outcome, business rules, and measurable acceptance criteria.',
-};
-
-interface Job { token: number; signal: AbortSignal; actor: string }
+type Authentication =
+  | { kind: 'loading' }
+  | { kind: 'local' }
+  | { kind: 'ready'; config: AuthConfig; session: BrowserSession }
+  | { kind: 'signedOut'; config: AuthConfig; message?: string }
+  | { kind: 'blocked'; config: AuthConfig; message: string }
+  | { kind: 'loggingOut'; config: AuthConfig }
+  | { kind: 'unavailable'; config?: AuthConfig; message: string };
 
 export function App() {
-  const [id, setID] = useState('');
-  const [actor, setActor] = useState('reviewer');
-  const [perspective, setPerspective] = useState<keyof typeof perspectives>('Architect');
-  const [pkg, setPackage] = useState<WorkPackage>();
-  const [view, setView] = useState<RevisionView>();
-  const [historical, setHistorical] = useState(false);
-  const [history, setHistory] = useState<HistoryPage>();
-  const [events, setEvents] = useState<EventPage>();
-  const [historyError, setHistoryError] = useState('');
-  const [eventsError, setEventsError] = useState('');
-  const [error, setError] = useState('');
-  const [inspectionRequired, setInspectionRequired] = useState('');
-  const [notice, setNotice] = useState('');
-  const [pending, setPending] = useState('');
-  const [comparisonTarget, setComparisonTarget] = useState('previous');
-  const [comparison, setComparison] = useState<Revision>();
-  const [related, setRelated] = useState<RelatedRequest>();
-  const sequence = useRef(0);
-  const controller = useRef<AbortController | undefined>(undefined);
-  const working = useRef(false);
-  const busy = pending !== '';
+  const [authentication, setAuthentication] = useState<Authentication>({ kind: 'loading' });
+  const [reload, setReload] = useState(0);
+  const [workspaceID, setWorkspaceID] = useState('');
+  const [repositoryID, setRepositoryID] = useState('');
+  const [repositories, setRepositories] = useState<RepositoryPage>();
+  const [repositoryPending, setRepositoryPending] = useState(false);
+  const [repositoryError, setRepositoryError] = useState('');
+  const authSequence = useRef(0);
+  const scopeSequence = useRef(0);
+  const authController = useRef<AbortController | undefined>(undefined);
+  const scopeController = useRef<AbortController | undefined>(undefined);
 
-  useEffect(() => () => { sequence.current++; controller.current?.abort(); }, []);
-
-  function clearInspection() {
-    sequence.current++;
-    controller.current?.abort();
-    working.current = false;
-    setPending('');
-    setPackage(undefined);
-    setView(undefined);
-    setHistory(undefined);
-    setEvents(undefined);
-    setHistorical(false);
-    setComparison(undefined);
-    setHistoryError('');
-    setEventsError('');
-    setError('');
-    setNotice('');
-    setInspectionRequired('');
+  function clearScope() {
+    scopeSequence.current++;
+    scopeController.current?.abort();
+    setWorkspaceID('');
+    setRepositoryID('');
+    setRepositories(undefined);
+    setRepositoryPending(false);
+    setRepositoryError('');
   }
 
-  function begin(label: string): Job | undefined {
-    // The ref also prevents two actions before React renders the disabled state.
-    if (working.current) return;
-    working.current = true;
-    controller.current?.abort();
-    controller.current = new AbortController();
-    const token = ++sequence.current;
-    setPending(label);
-    setError('');
-    return { token, signal: controller.current.signal, actor };
-  }
-
-  // Cancellation alone cannot stop an already-resolved response from replacing a newer inspection.
-  function current(job: Job) { return sequence.current === job.token && !job.signal.aborted; }
-
-  function finish(job: Job) {
-    if (current(job)) { working.current = false; setPending(''); }
-  }
-
-  function failed(job: Job, failure: unknown) {
-    if (current(job)) setError(errorMessage(failure));
-  }
-
-  function latestView(value: WorkPackage): RevisionView {
-    return { revision: value.revision, approvals: value.approval ? [value.approval] : [], approvalsTruncated: false };
-  }
-
-  async function readRecords(job: Job, packageID: string, inspectedRevision: number) {
-    const path = changePath(packageID);
-    const results = await Promise.allSettled([
-      request<HistoryPage>(`${path}/history?beforeRevision=0&limit=20`, job.actor, job.signal),
-      request<EventPage>(`${path}/events?afterSequence=0&limit=20`, job.actor, job.signal),
-    ]);
-    if (!current(job)) return;
-    const [historyResult, eventsResult] = results;
-    if (historyResult.status === 'fulfilled') {
-      setHistory(historyResult.value);
-      setHistoryError('');
-      if (historyResult.value.revisions.some(revision => revision.number > inspectedRevision)) {
-        setInspectionRequired('History contains a newer revision. Inspect the latest revision before approving.');
+  useEffect(() => {
+    const generation = ++authSequence.current;
+    const controller = new AbortController();
+    authController.current = controller;
+    clearScope();
+    setAuthentication({ kind: 'loading' });
+    const current = () => !controller.signal.aborted && authSequence.current === generation;
+    void (async () => {
+      let config: AuthConfig | undefined;
+      try {
+        config = await request<AuthConfig>('/auth/config', undefined, controller.signal);
+        if (!current()) return;
+        if (!config || (config.mode !== 'local' && config.mode !== 'oidc') || typeof config.browserLogin !== 'boolean') {
+          throw new Error('The server returned an invalid authentication configuration.');
+        }
+        if (config.mode === 'local') {
+          setAuthentication({ kind: 'local' });
+          return;
+        }
+        if (!config.browserLogin) {
+          setAuthentication({ kind: 'unavailable', config, message: 'Browser sign-in is not configured on this server. Ask a workspace operator to enable it.' });
+          return;
+        }
+        const session = await request<BrowserSession>('/auth/session', undefined, controller.signal);
+        validateSession(session);
+        if (current()) setAuthentication({ kind: 'ready', config, session });
+      } catch (failure) {
+        if (!current()) return;
+        if (config?.mode === 'oidc' && failure instanceof APIError && failure.status === 401) {
+          setAuthentication({ kind: 'signedOut', config });
+        } else setAuthentication({ kind: 'unavailable', config, message: errorMessage(failure) });
       }
+    })();
+    return () => { controller.abort(); scopeSequence.current++; scopeController.current?.abort(); };
+  }, [reload]);
+
+  // A denied command never triggers a refresh inside its action. Hide all review
+  // state first; the user explicitly reloads the session or signs in again.
+  function denied(failure: APIError) {
+    authSequence.current++;
+    authController.current?.abort();
+    clearScope();
+    setAuthentication(previous => {
+      if (previous.kind !== 'ready') return previous;
+      return failure.status === 401
+        ? { kind: 'signedOut', config: previous.config, message: 'Your session has ended. Sign in again, then inspect the package before continuing.' }
+        : { kind: 'blocked', config: previous.config, message: 'Your access could not be confirmed. Reload your session and choose an available workspace and repository before inspecting again.' };
+    });
+  }
+
+  async function chooseWorkspace(next: string) {
+    if (authentication.kind !== 'ready') return;
+    clearScope();
+    if (!next) return;
+    // Only choices returned for this verified session may establish scope.
+    if (!authentication.session.session.workspaces.some(workspace => workspace.id === next)) return;
+    setWorkspaceID(next);
+    setRepositoryPending(true);
+    const generation = ++scopeSequence.current;
+    const controller = new AbortController();
+    scopeController.current = controller;
+    try {
+      const page = await request<RepositoryPage>('/repositories', accessFor(authentication.session, next), controller.signal);
+      if (controller.signal.aborted || generation !== scopeSequence.current) return;
+      validateRepositories(page, next);
+      setRepositories(page);
+    } catch (failure) {
+      if (controller.signal.aborted || generation !== scopeSequence.current) return;
+      if (failure instanceof APIError && (failure.status === 401 || failure.status === 403)) denied(failure);
+      else setRepositoryError(errorMessage(failure));
+    } finally {
+      if (!controller.signal.aborted && generation === scopeSequence.current) setRepositoryPending(false);
     }
-    else { setHistory(undefined); setHistoryError(errorMessage(historyResult.reason)); }
-    if (eventsResult.status === 'fulfilled') { setEvents(eventsResult.value); setEventsError(''); }
-    else { setEvents(undefined); setEventsError(errorMessage(eventsResult.reason)); }
-    return historyResult.status === 'fulfilled' && eventsResult.status === 'fulfilled';
   }
 
-  async function inspectLatest(packageID = id.trim()) {
-    if (!packageID || !actor.trim()) return;
-    const job = begin('Inspecting latest revision…');
-    if (!job) return;
-    setID(packageID);
-    setPackage(undefined);
-    setView(undefined);
-    setComparison(undefined);
-    setHistory(undefined);
-    setEvents(undefined);
-    setHistoryError('');
-    setEventsError('');
-    setInspectionRequired('');
-    setNotice('');
+  async function signOut() {
+    if (authentication.kind !== 'ready') return;
+    const { config, session } = authentication;
+    const generation = ++authSequence.current;
+    authController.current?.abort();
+    const controller = new AbortController();
+    authController.current = controller;
+    clearScope();
+    setAuthentication({ kind: 'loggingOut', config });
     try {
-      const value = await request<WorkPackage>(changePath(packageID), job.actor, job.signal);
-      if (!current(job)) return;
-      setPackage(value);
-      setView(latestView(value));
-      setHistorical(false);
-      setComparisonTarget('previous');
-      await readRecords(job, value.id, value.revision.number);
-    } catch (failure) { failed(job, failure); }
-    finally { finish(job); }
-  }
-
-  async function inspectHistory(revision: number) {
-    if (!pkg) return;
-    const job = begin(`Loading revision ${revision}…`);
-    if (!job) return;
-    try {
-      const value = await request<RevisionView>(`${changePath(pkg.id)}/revisions/${revision}`, job.actor, job.signal);
-      if (!current(job)) return;
-      setView(value);
-      // Even the newest numbered history record is read-only until the latest endpoint is inspected.
-      setHistorical(true);
-      setComparison(undefined);
-      setComparisonTarget(revision === 1 && pkg.revision.number !== 1 ? 'latest' : 'previous');
-      setNotice('');
-    } catch (failure) { failed(job, failure); }
-    finally { finish(job); }
-  }
-
-  async function compare() {
-    if (!pkg || !view) return;
-    const target = comparisonTarget === 'previous' ? view.revision.number - 1 : pkg.revision.number;
-    if (target < 1 || target === view.revision.number) return;
-    const job = begin(`Comparing with revision ${target}…`);
-    if (!job) return;
-    setComparison(undefined);
-    try {
-      const value = await request<RevisionView>(`${changePath(pkg.id)}/revisions/${target}`, job.actor, job.signal);
-      if (current(job)) setComparison(value.revision);
-    } catch (failure) { failed(job, failure); }
-    finally { finish(job); }
-  }
-
-  async function loadMore(kind: 'history' | 'events') {
-    if (!pkg) return;
-    const job = begin(`Loading more ${kind}…`);
-    if (!job) return;
-    try {
-      if (kind === 'history') {
-        const value = await request<HistoryPage>(`${changePath(pkg.id)}/history?beforeRevision=${history?.nextBeforeRevision ?? 0}&limit=20`, job.actor, job.signal);
-        if (current(job)) {
-          setHistory(previous => ({ ...value, revisions: [...(previous?.revisions ?? []), ...value.revisions] }));
-          setHistoryError('');
-        }
-      } else {
-        const value = await request<EventPage>(`${changePath(pkg.id)}/events?afterSequence=${events?.nextAfterSequence ?? 0}&limit=20`, job.actor, job.signal);
-        if (current(job)) {
-          setEvents(previous => ({ ...value, events: [...(previous?.events ?? []), ...value.events] }));
-          setEventsError('');
-        }
-      }
+      const result = await request<{ signedOut: boolean }>('/auth/logout', accessFor(session), controller.signal, {});
+      if (!result?.signedOut) throw new Error('The server did not confirm sign-out.');
+      if (!controller.signal.aborted && generation === authSequence.current) setAuthentication({ kind: 'signedOut', config, message: 'You have signed out of Conductor.' });
     } catch (failure) {
-      if (current(job)) (kind === 'history' ? setHistoryError : setEventsError)(errorMessage(failure));
-    } finally { finish(job); }
+      if (controller.signal.aborted || generation !== authSequence.current) return;
+      if (failure instanceof APIError && failure.status === 401) setAuthentication({ kind: 'signedOut', config });
+      else setAuthentication({ kind: 'unavailable', config, message: 'Sign-out could not be confirmed. Reload your session to check its status. ' + errorMessage(failure) });
+    }
   }
 
-  async function refreshRecords() {
-    if (!pkg) return;
-    const job = begin('Refreshing history and audit events…');
-    if (!job) return;
-    try {
-      const complete = await readRecords(job, pkg.id, pkg.revision.number);
-      if (current(job)) setNotice(complete
-        ? 'Records refreshed. The inspected content has not changed.'
-        : 'Some records are unavailable. The inspected content has not changed.');
-    } finally { finish(job); }
-  }
+  if (authentication.kind === 'local') return <ReviewWorkbench />;
 
-  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !busy
-    && !!view.revision.submittedAt && !pkg.approved && actor !== view.revision.author;
-
-  async function approve() {
-    if (!pkg || !view || !canApprove) return;
-    const inspected = view.revision;
-    const job = begin('Recording approval for the inspected revision…');
-    if (!job) return;
-    try {
-      // No read happens in this action: send only the revision/digest on screen.
-      const value = await request<WorkPackage>(`${changePath(pkg.id)}/approvals`, job.actor, job.signal,
-        { revision: inspected.number, digest: inspected.digest });
-      if (!current(job)) return;
-      if (value.revision.number !== inspected.number || value.revision.digest !== inspected.digest) {
-        setInspectionRequired('The approval response does not match the inspected content. Inspect the latest revision again.');
-        return;
-      }
-      setPackage(value);
-      setView(latestView(value));
-      setNotice('Approval recorded for the displayed revision. Refresh records to see the new audit event and approval count.');
-    } catch (failure) {
-      failed(job, failure);
-      if (current(job)) {
-        if (failure instanceof APIError && failure.status === 409) {
-          setInspectionRequired('This inspection is stale. Inspect the latest revision and review its content before approving again.');
-        } else if (!(failure instanceof APIError) || failure.status >= 500 || failure.status < 400) {
-          setInspectionRequired('The approval outcome could not be confirmed. Inspect the latest revision before taking another action.');
-        }
-      }
-    } finally { finish(job); }
-  }
-
-  const targetNumber = view && (comparisonTarget === 'previous' ? view.revision.number - 1 : pkg?.revision.number);
-  const context = view?.revision.content.repositoryContext;
-  const repository = context !== null && typeof context === 'object' && 'repository' in context
-    && typeof context.repository === 'string' ? context.repository : undefined;
-
-  return <main>
-    <header>
-      <p className="eyebrow">CONDUCTOR / REVIEW WORKBENCH</p>
-      <h1>Engineering intent,<br />orchestrated.</h1>
-      <p className="intro">Inspect the design. Follow its history. Approve the exact content you reviewed.</p>
-    </header>
-    <form className="lookup panel" onSubmit={event => { event.preventDefault(); void inspectLatest(); }}>
-      <label>Change ID<input value={id} maxLength={256} placeholder="CHG-…" disabled={busy} required
-        onChange={event => { clearInspection(); setID(event.target.value); }} /></label>
-      <label>Local reviewer<input value={actor} maxLength={128} disabled={busy} required
-        onChange={event => { clearInspection(); setRelated(undefined); setActor(event.target.value); }} /></label>
-      <button type="submit" disabled={busy || !id.trim() || !actor.trim()}>Inspect latest revision</button>
-      <p className="local-note">Local development identity only. Shared authentication and repository authorization are not available.</p>
-    </form>
-    <section className="perspective" aria-label="Review perspective guidance">
-      <label htmlFor="review-perspective">Review perspective<select id="review-perspective" value={perspective}
-        onChange={event => setPerspective(event.target.value as keyof typeof perspectives)}>
-        {Object.keys(perspectives).map(value => <option key={value}>{value}</option>)}
-      </select></label>
-      <div><p>{perspectives[perspective]}</p><p className="muted">Changes review prompts only. This selection grants no permissions or approval rights.</p></div>
+  if (authentication.kind !== 'ready') return <main>
+    <WorkbenchHeader />
+    <section className="authentication panel" aria-labelledby="authentication-title" aria-busy={authentication.kind === 'loading' || authentication.kind === 'loggingOut'}>
+      <p className="eyebrow">SHARED WORKSPACE ACCESS</p>
+      <h2 id="authentication-title">{authentication.kind === 'signedOut' ? 'Sign in to shared review' : authentication.kind === 'blocked' ? 'Check your access' : authentication.kind === 'unavailable' ? 'Shared review is unavailable' : 'Connecting to your workspace'}</h2>
+      {(authentication.kind === 'loading' || authentication.kind === 'loggingOut') && <p role="status">{authentication.kind === 'loggingOut' ? 'Signing out and clearing this inspection…' : 'Checking the server and your session…'}</p>}
+      {authentication.kind === 'signedOut' && <>
+        <p role="status">{authentication.message || 'Use your organization’s sign-in to find shared packages and review their exact content.'}</p>
+        <a className="button-link" href="/api/v1/auth/login">Sign in</a>
+        <button className="secondary" onClick={() => setReload(value => value + 1)}>Check session</button>
+      </>}
+      {(authentication.kind === 'blocked' || authentication.kind === 'unavailable') && <>
+        <p role="alert" className="error">{authentication.message}</p>
+        <button className="secondary" onClick={() => setReload(value => value + 1)}>Reload session</button>
+      </>}
     </section>
-    <SharedChanges key={actor} actor={actor} disabled={busy} related={related} onInspect={packageID => void inspectLatest(packageID)} />
-    <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
-    {error && <p role="alert" className="error banner">{error}</p>}
-    {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}
-    {!pkg && !busy && !error && <section className="empty"><h2>A clear record for every decision.</h2><p>Enter a change ID to inspect its revision, context, approvals, and audit history.</p></section>}
-    {pkg && view && <div className="workbench-grid" aria-busy={busy}>
-      <article className="review panel" aria-labelledby="revision-title">
-        <div className="status"><span>{pkg.id}</span><strong>{inspectionRequired ? 'INSPECTION STALE' : historical ? 'HISTORICAL VIEW' : pkg.approved ? 'DESIGN APPROVED' : view.revision.submittedAt ? 'REVIEW REQUIRED' : 'DRAFT'}</strong></div>
-        <div className="section-heading"><h2 id="revision-title">Revision {view.revision.number}</h2><span className="tag">{historical ? 'Preserved record' : 'Latest inspected'}</span></div>
-        <dl>
-          <dt>Digest</dt><dd><code>{view.revision.digest}</code></dd>
-          <dt>Author</dt><dd>{view.revision.author}</dd>
-          <dt>Created</dt><dd>{dateLabel(view.revision.createdAt)}</dd>
-          <dt>Submitted</dt><dd>{view.revision.submittedAt ? dateLabel(view.revision.submittedAt) : 'Not submitted'}</dd>
-        </dl>
-        {historical && <div className="warning"><p>Historical inspection is read-only. Its approvals are retained records and are not authority for a later revision.</p><button className="secondary" disabled={busy} onClick={() => void inspectLatest()}>Inspect latest revision again</button></div>}
-        <section className="approval-record" aria-labelledby="approvals-title">
-          <h3 id="approvals-title">{historical ? 'Historical approval records' : 'Effective approval at inspection'}</h3>
-          {view.approvals.length === 0 && <p className="muted">{historical ? 'No approvals were recorded for this revision.' : 'This inspected revision has no effective approval.'}</p>}
-          <ul className="record-list">
-            {view.approvals.map((approval, index) => <li key={`${approval.reviewer}-${index}`}><strong>{approval.reviewer}</strong> · {dateLabel(approval.createdAt)}<br /><span className="muted">{historical ? 'Historical approval' : 'Design approval'} for revision {approval.revision}</span><br /><code>{approval.digest}</code></li>)}
-          </ul>
-          {view.approvalsTruncated && <p className="warning">Approval records are truncated. The full approval history is not displayed.</p>}
-        </section>
-        <RepositoryContext content={view.revision.content} />
-        {repository && <button className="secondary related-work" disabled={busy} onClick={() => {
-          setRelated(previous => ({ repository, sequence: (previous?.sequence ?? 0) + 1 }));
-          document.getElementById('shared-work-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }}>Related work in this repository</button>}
-        <section className="content" aria-labelledby="content-title"><h3 id="content-title">Inspected package content</h3><p className="muted">Complete structured content, including fields this workbench does not interpret.</p><pre>{JSON.stringify(view.revision.content, null, 2)}</pre></section>
-        <section className="compare-controls" aria-labelledby="compare-title">
-          <h3 id="compare-title">Compare content</h3>
-          <div className="control-row"><label>Compare inspected revision with<select value={comparisonTarget} disabled={busy}
-            onChange={event => { setComparisonTarget(event.target.value); setComparison(undefined); }}>
-            <option value="previous" disabled={view.revision.number <= 1}>Previous revision{view.revision.number > 1 ? ` (${view.revision.number - 1})` : ' — none'}</option>
-            <option value="latest" disabled={view.revision.number === pkg.revision.number}>Latest inspected revision ({pkg.revision.number})</option>
-          </select></label><button className="secondary" disabled={busy || !targetNumber || targetNumber < 1 || targetNumber === view.revision.number} onClick={() => void compare()}>Compare revisions</button></div>
-          {view.revision.number === 1 && pkg.revision.number === 1 && <p className="muted">Only one revision has been inspected. There is no earlier revision to compare.</p>}
-          {comparison && <Comparison before={comparison} after={view.revision} />}
-        </section>
-        {!historical && <section className="approval-action" aria-labelledby="approval-title">
-          <h3 id="approval-title">Approve inspected design</h3>
-          <p>Approval binds only to revision <strong>{view.revision.number}</strong> and this digest:</p><code>{view.revision.digest}</code>
-          <p className="muted">Design approval does not assert that code, tests, deployment, or production outcomes were verified.</p>
-          {actor === view.revision.author && <p className="warning">An independent reviewer is required. You authored this revision.</p>}
-          {!view.revision.submittedAt && <p className="warning">This draft must be submitted before it can be approved.</p>}
-          <button disabled={!canApprove} onClick={() => void approve()}>{pkg.approved ? 'Design approval recorded' : 'Approve inspected revision'}</button>
-        </section>}
-      </article>
-      <aside>
-        <History page={history} error={historyError} selected={view.revision.number} disabled={busy} onSelect={revision => void inspectHistory(revision)} onMore={() => void loadMore('history')} />
-        <Events page={events} error={eventsError} disabled={busy} onMore={() => void loadMore('events')} />
-        <button className="secondary refresh" disabled={busy} onClick={() => void refreshRecords()}>Refresh history and events</button>
-      </aside>
-    </div>}
   </main>;
+
+  const session = authentication.session;
+  const principal = session.session.principal;
+  const selectedRepository = repositories?.repositories.find(repository => repository.id === repositoryID);
+  const controls = <section className="access-panel panel" aria-labelledby="access-title">
+    <div className="section-heading">
+      <div><p className="eyebrow">SIGNED IN / SHARED RECORDS</p><h2 id="access-title">Your workspace</h2></div>
+      <div className="session-actions"><button className="secondary" onClick={() => setReload(value => value + 1)}>Reload access</button><button className="secondary" onClick={() => void signOut()}>Sign out</button></div>
+    </div>
+    <p className="signed-in-identity">Signed in as <strong>{principal.id}</strong> <span className="tag">{principal.kind === 'human' ? 'Human' : 'Agent'}</span></p>
+    <div className="control-row">
+      <label htmlFor="workspace-selection">Workspace<select id="workspace-selection" aria-label="Workspace" value={workspaceID} onChange={event => void chooseWorkspace(event.target.value)}>
+        <option value="">Choose a workspace</option>
+        {session.session.workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.name} ({workspace.id})</option>)}
+      </select></label>
+      <label htmlFor="repository-selection">Managed repository<select id="repository-selection" aria-label="Managed repository" value={repositoryID} disabled={!repositories || repositoryPending} onChange={event => setRepositoryID(event.target.value)}>
+        <option value="">{repositoryPending ? 'Loading repositories…' : 'Choose a repository'}</option>
+        {repositories?.repositories.map(repository => <option key={repository.id} value={repository.id}>{repository.name} · {repository.provider} · {repository.host} ({repository.id})</option>)}
+      </select></label>
+    </div>
+    {session.session.workspaces.length === 0 && <p className="empty-list">No active workspace memberships are available. Ask a workspace operator for access, then reload access.</p>}
+    {session.session.truncated && <p className="warning">The workspace list is truncated. Only the first 100 available workspaces are shown; ask a workspace operator about a missing workspace.</p>}
+    {repositoryPending && <p role="status">Loading repositories for the selected workspace…</p>}
+    {repositoryError && <div className="error" role="alert"><p>{repositoryError}</p><button className="secondary" onClick={() => void chooseWorkspace(workspaceID)}>Retry repositories</button></div>}
+    {repositories?.repositories.length === 0 && <p className="empty-list">No readable repositories are available in this workspace. Ask a workspace operator for access.</p>}
+    {repositories?.truncated && <p className="warning">The repository list is truncated. Only the first 100 readable repositories are shown; ask a workspace operator about a missing repository.</p>}
+    {selectedRepository && <div className="repository-access">
+      <p>Selected repository: <strong>{selectedRepository.name}</strong> · {selectedRepository.provider} · {selectedRepository.host}</p>
+      <p className="muted">Canonical ID: <code>{selectedRepository.id}</code> · Provider ID: <code>{selectedRepository.providerId}</code></p>
+      <ul className="coverage" aria-label="Repository permissions"><li>Read: allowed</li><li>Author: {selectedRepository.canAuthor ? 'allowed' : 'not granted'}</li><li>Approve: {selectedRepository.canApprove && principal.kind === 'human' ? 'allowed after independent inspection' : 'not granted'}</li></ul>
+    </div>}
+  </section>;
+
+  if (!selectedRepository) return <main><WorkbenchHeader />{controls}<section className="empty"><h2>Choose where to review.</h2><p>Select a workspace and managed repository to discover its shared packages. Changing either selection clears the previous inspection.</p></section></main>;
+
+  const access = accessFor(session, workspaceID, selectedRepository);
+  // Remounting removes every package, historical record, comparison, discovery
+  // page and pending request when identity, session, or canonical scope changes.
+  return <ReviewWorkbench key={JSON.stringify([principal.id, session.csrfToken, workspaceID, repositoryID])}
+    access={access} sessionControls={controls} onAccessFailure={denied} />;
+}
+
+function accessFor(value: BrowserSession, workspaceID = '', repository?: ManagedRepository): BrowserAccess {
+  return { mode: 'browser', principalID: value.session.principal.id, principalKind: value.session.principal.kind,
+    csrfToken: value.csrfToken, workspaceID, repositoryID: repository?.id ?? '', canApprove: repository?.canApprove === true };
+}
+
+function identifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 && value.trim() === value && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+
+function validateSession(value: BrowserSession) {
+  const principal = value?.session?.principal;
+  const workspaces = value?.session?.workspaces;
+  if (!principal || !identifier(principal.id) || !['human', 'agent'].includes(principal.kind)
+    || typeof value.csrfToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.csrfToken)
+    || !Array.isArray(workspaces) || workspaces.length > 100 || typeof value.session.truncated !== 'boolean'
+    || workspaces.some(workspace => !workspace || !identifier(workspace.id) || typeof workspace.name !== 'string' || workspace.name.length < 1 || workspace.name.length > 256)
+    || new Set(workspaces.map(workspace => workspace.id)).size !== workspaces.length) {
+    throw new Error('The server returned an invalid session. Reload your session before reviewing work.');
+  }
+}
+
+function validateRepositories(value: RepositoryPage, workspaceID: string) {
+  if (!value || !Array.isArray(value.repositories) || value.repositories.length > 100 || typeof value.truncated !== 'boolean'
+    || value.repositories.some(repository => !repository || !identifier(repository.id) || repository.workspaceId !== workspaceID
+      || !['github', 'gitlab'].includes(repository.provider) || typeof repository.host !== 'string' || !repository.host || repository.host.length > 253
+      || typeof repository.providerId !== 'string' || !repository.providerId || repository.providerId.length > 256
+      || typeof repository.name !== 'string' || !repository.name || repository.name.length > 512
+      || repository.canRead !== true || typeof repository.canAuthor !== 'boolean' || typeof repository.canApprove !== 'boolean')
+    || new Set(value.repositories.map(repository => repository.id)).size !== value.repositories.length) {
+    throw new Error('The server returned an invalid repository selection. Reload access before reviewing work.');
+  }
 }
