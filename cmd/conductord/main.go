@@ -14,11 +14,13 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/authn"
+	"github.com/phenixrizen/conductor/internal/operational"
 	"github.com/phenixrizen/conductor/internal/service"
 	"github.com/phenixrizen/conductor/internal/store"
 )
 
 type config struct {
+	operationsAddress                            string
 	databaseURL, address, mode, issuer, audience string
 	publicOrigin, clientID, clientSecretFile     string
 	contextCollections                           bool
@@ -31,6 +33,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c := config{databaseURL: getenv("DATABASE_URL"), address: getenv("CONDUCTOR_ADDR"),
 		mode: getenv("CONDUCTOR_AUTH_MODE"), issuer: getenv("CONDUCTOR_OIDC_ISSUER"), audience: getenv("CONDUCTOR_OIDC_AUDIENCE"),
 		publicOrigin: getenv("CONDUCTOR_PUBLIC_ORIGIN"), clientID: getenv("CONDUCTOR_OIDC_CLIENT_ID"), clientSecretFile: getenv("CONDUCTOR_OIDC_CLIENT_SECRET_FILE")}
+	c.operationsAddress = getenv("CONDUCTOR_OPERATIONS_ADDR")
+	if c.operationsAddress != "" && !operational.ValidAddress(c.operationsAddress) {
+		return c, errors.New("CONDUCTOR_OPERATIONS_ADDR must be a literal loopback host and port")
+	}
 	if c.databaseURL == "" {
 		return c, errors.New("DATABASE_URL is required")
 	}
@@ -182,6 +188,19 @@ func run() error {
 	} else {
 		handler = api.New(service.New(db))
 	}
+	done := make(chan error, 2)
+	var operationsServer *http.Server
+	if c.operationsAddress != "" {
+		monitor := operational.New(db)
+		handler = monitor.Wrap(handler)
+		operationsListener, err := net.Listen("tcp", c.operationsAddress)
+		if err != nil {
+			return errors.New("operations listener unavailable")
+		}
+		operationsServer = &http.Server{Handler: monitor.Handler(), ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 4096}
+		defer operationsServer.Close()
+		go func() { done <- operationsServer.Serve(operationsListener) }()
+	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
@@ -191,7 +210,6 @@ func run() error {
 	}
 	defer server.Close()
 	log.Printf("conductord listening on %s (authentication mode: %s)", listener.Addr(), c.mode)
-	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	select {
 	case err := <-done:
