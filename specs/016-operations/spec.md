@@ -1,6 +1,6 @@
 # Feature 016: Operate and recover the shared platform
 
-**Status: Implementation produced; verification is recorded in [the plan](plan.md).**
+**Status: Implementation verified within the bounds recorded in [the plan](plan.md).**
 
 Operators can build a committed Linux release, run its separate authenticated
 services, inspect source-free diagnostics, apply reviewed migrations, and recover

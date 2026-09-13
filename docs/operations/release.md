@@ -25,7 +25,10 @@ untracked files, environment files, local tokens or dirty working-tree changes.
 The archive contains all Go commands, browser assets, ordered migrations, docs,
 deployment examples, module/dependency lists, the source commit and SHA256 checksums.
 Extract into a new operator-owned directory and run `sha256sum --check SHA256SUMS`
-from its `conductor` directory before choosing it as the installed release. The
+from its `conductor` directory before choosing it as the installed release. Run
+`python3 scripts/check-release.py /absolute/extracted/conductor` from the source
+checkout to verify checksums, the packaged systemd command and nginx TLS syntax
+using owned temporary fixtures; Docker, OpenSSL and systemd-analyze are required. The
 checksums detect changed bytes; a trusted release distribution/signature policy
 remains the operator's responsibility. No license is selected by this packaging.
 
@@ -158,7 +161,8 @@ make an untrusted archive safe. Keep the target quarantined while verifying it.
 Capture and compare immutable revisions/digests, approval history, audit events,
 source bundles, runtime bindings, outbox identities and receipt digests as relevant
 to your installation. The owned automated restore test compares exact package,
-approval/history/audit facts and migration records through real API processes; it
+approval/history/audit facts and migration records through real API processes, plus
+scoped collection requests, uncertain outbox leases and Temporal target bindings; it
 does not claim to restore an external Temporal cluster or provider account.
 
 Back up Temporal using the deployment's supported persistent-store procedure and

@@ -6,6 +6,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/phenixrizen/conductor/internal/databaseops"
 	"github.com/phenixrizen/conductor/internal/domain"
+	"github.com/phenixrizen/conductor/internal/service"
+	"github.com/phenixrizen/conductor/internal/store"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +85,7 @@ func TestOwnedBackupRestore(t *testing.T) {
 	if _, err = reviewer.Approve(ctx, pkg.ID, 1, pkg.Revision.Digest); err != nil {
 		t.Fatal(err)
 	}
+	dispatchBefore := seedBackupDispatch(t, ctx, sourceURL)
 	before := captureRestartState(t, ctx, reviewer, pkg.ID)
 	server.stop(t)
 	operator := filepath.Join(t.TempDir(), "conductor-db")
@@ -117,6 +120,9 @@ func TestOwnedBackupRestore(t *testing.T) {
 		t.Fatal("restored immutable package/history/approval/audit differ")
 	}
 	restored.stop(t)
+	if afterDispatch := captureBackupDispatch(t, ctx, restoredURL); afterDispatch != dispatchBefore {
+		t.Fatal("restore changed scoped request, audit, uncertain dispatch lease or Temporal target binding")
+	}
 	target, _ := pgx.Connect(ctx, restoredURL)
 	var count int
 	err = target.QueryRow(ctx, `SELECT count(*) FROM conductor_migrations WHERE origin='executed'`).Scan(&count)
@@ -129,4 +135,40 @@ func TestOwnedBackupRestore(t *testing.T) {
 		t.Fatal("modified archive accepted")
 	}
 	t.Log("Real PostgreSQL17 pg_dump/pg_restore retained exact approval/history/audit and migration ledger in a distinct empty database; failed migration, overwrites, nonempty restore and archive tampering rejected")
+}
+
+func seedBackupDispatch(t *testing.T, ctx context.Context, url string) string {
+	t.Helper()
+	p, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	cfg := domain.AccessConfig{Principals: []domain.PrincipalConfig{{ID: "backup-agent", Issuer: "https://backup.example.invalid", Subject: "agent", Kind: "agent", Active: true}}, Workspaces: []domain.WorkspaceConfig{{ID: "backup-workspace", Name: "Synthetic backup workspace"}}, Memberships: []domain.MembershipConfig{{WorkspaceID: "backup-workspace", PrincipalID: "backup-agent", Active: true}}, Repositories: []domain.RepositoryConfig{{ID: "backup-repository", WorkspaceID: "backup-workspace", Provider: "github", Host: "github.com", ProviderID: "123", Name: "synthetic/backup"}}, Grants: []domain.GrantConfig{{RepositoryID: "backup-repository", PrincipalID: "backup-agent", CanRead: true, CanAuthor: true}}, ContextIntegrations: []domain.ContextIntegrationConfig{{RepositoryID: "backup-repository", WorkspaceID: "backup-workspace", Profile: "github-rest/2026-03-10", Locator: "synthetic/backup", CredentialID: "synthetic-read", Enabled: true}}}
+	if err = p.ApplyAccessConfig(ctx, "synthetic-operator", cfg); err != nil {
+		t.Fatal(err)
+	}
+	scoped := domain.WithAccess(ctx, domain.AccessRequest{Identity: domain.AccessIdentity{Issuer: "https://backup.example.invalid", Subject: "agent"}, WorkspaceID: "backup-workspace", RepositoryID: "backup-repository"})
+	if _, err = service.NewAuthenticated(p).WithCollections().CreateCollection(scoped, "backup-context", domain.CollectionInput{Commit: strings.Repeat("a", 40), Paths: []string{"README.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := p.ClaimContextDispatch(ctx, strings.Repeat("b", 64), "backup-namespace")
+	if err != nil || dispatch == nil {
+		t.Fatal("claim exact durable dispatch", err)
+	}
+	return captureBackupDispatch(t, ctx, url)
+}
+func captureBackupDispatch(t *testing.T, ctx context.Context, url string) string {
+	t.Helper()
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var value string
+	err = conn.QueryRow(ctx, `SELECT jsonb_build_object('request',(SELECT to_jsonb(c) FROM context_collections c),'outbox',(SELECT to_jsonb(o) FROM context_outbox o),'binding',(SELECT to_jsonb(b) FROM context_runtime_bindings b),'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY sequence) FROM context_audit_events a))::text`).Scan(&value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
