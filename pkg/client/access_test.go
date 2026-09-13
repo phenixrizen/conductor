@@ -35,6 +35,10 @@ func TestAuthenticatedDiscoveryAndCommandHeaders(t *testing.T) {
 	c.HTTP = server.Client()
 	// This legacy public field cannot spoof the authenticated principal.
 	c.Actor = "forged-architect"
+	workspace, repository, authenticated := c.AuthenticatedScope()
+	if !authenticated || workspace != "workspace-1" || repository != "repo-1" {
+		t.Fatal("credential-free scope getter changed authenticated scope")
+	}
 	session, err := c.Session(context.Background())
 	if err != nil || session.Principal.ID != "person-1" || len(session.Workspaces) != 1 {
 		t.Fatalf("session: %+v %v", session, err)
@@ -48,6 +52,13 @@ func TestAuthenticatedDiscoveryAndCommandHeaders(t *testing.T) {
 	}
 	if calls.Load() != 3 {
 		t.Fatalf("unexpected request count: %d", calls.Load())
+	}
+}
+
+func TestLocalClientHasNoAuthenticatedScope(t *testing.T) {
+	workspace, repository, authenticated := New("http://127.0.0.1", "reviewer").AuthenticatedScope()
+	if authenticated || workspace != "" || repository != "" {
+		t.Fatal("local actor acquired authenticated scope")
 	}
 }
 
