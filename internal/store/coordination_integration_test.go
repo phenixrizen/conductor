@@ -3,6 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"github.com/phenixrizen/conductor/internal/execution"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,9 +18,12 @@ import (
 
 func coordinationFixture(t *testing.T) (context.Context, *Postgres, *service.AuthenticatedService, domain.CoordinationPlan) {
 	t.Helper()
-	ctx, p, s, input := graphFixture(t)
+	ctx, p, s := collectionStore(t)
+	input := domain.GraphInput{}
 	s = s.WithCoordination()
-	config := domain.AccessConfig{Grants: []domain.GrantConfig{
+	config := domain.AccessConfig{ExecutionProfiles: []domain.ExecutionProfileConfig{{WorkspaceID: "workspace-one", ID: "synthetic", Image: "sha256:" + strings.Repeat("a", 64), Profile: domain.WorkerProfile{Adapter: "command/v1", Command: []string{"sh", "-c", "printf new > src/app.txt"}}, Enabled: true}}, Grants: []domain.GrantConfig{
+		{RepositoryID: "repo-one", PrincipalID: "human-reviewer", CanRead: true, CanAuthor: true, CanApprove: true},
+		{RepositoryID: "repo-two", PrincipalID: "human-reviewer", CanRead: true, CanAuthor: true, CanApprove: true},
 		{RepositoryID: "repo-two", PrincipalID: "human-author", CanRead: true, CanAuthor: true},
 		{RepositoryID: "repo-two", PrincipalID: "agent-worker", CanRead: true, CanAuthor: true},
 	}}
@@ -28,13 +35,17 @@ func coordinationFixture(t *testing.T) (context.Context, *Postgres, *service.Aut
 	if err := p.ApplyAccessConfig(ctx, "synthetic-operator", config); err != nil {
 		t.Fatal(err)
 	}
+	for _, repo := range []string{"repo-one", "repo-two"} {
+		input.Sources = append(input.Sources, coordinationFullReceipt(t, ctx, p, s, repo))
+	}
+	profileDigest, _ := domain.JSONDigest(execution.Profile{Adapter: "command/v1", Command: []string{"sh", "-c", "printf new > src/app.txt"}})
 	reviewer := accessContext(ctx, "reviewer", "workspace-one", "repo-one")
 	g, err := s.CreateRepositoryGraph(reviewer, "coordination-graph", input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan := domain.CoordinationPlan{SchemaVersion: 1, GraphID: g.ID, GraphDigest: g.Digest, MaxParallel: 2, Tasks: []domain.CoordinationTask{}}
-	for i, source := range input.Sources {
+	for i, source := range g.Snapshot.Sources {
 		author := accessContext(ctx, "author", "workspace-one", source.RepositoryID)
 		pkg, err := s.Create(author, "ignored", domain.Content{"intent": "Synthetic coordinated change"})
 		if err != nil {
@@ -47,8 +58,8 @@ func coordinationFixture(t *testing.T) (context.Context, *Postgres, *service.Aut
 			t.Fatal(err)
 		}
 		plan.Packages = append(plan.Packages, domain.PackagePin{ChangeID: pkg.ID, RepositoryID: source.RepositoryID, Revision: 1, Digest: pkg.Revision.Digest})
-		plan.Repositories = append(plan.Repositories, domain.CoordinationRepository{RepositoryID: source.RepositoryID, Commit: collectionCommit, CollectionID: source.CollectionID, ReceiptDigest: source.Digest})
-		plan.Tasks = append(plan.Tasks, domain.CoordinationTask{ID: []string{"service", "library"}[i], Perspective: "developer", Profile: "synthetic", Prompt: "Update synthetic source", Scopes: []domain.TaskScope{{RepositoryID: source.RepositoryID, WritablePaths: []string{"src"}}}, TimeoutSeconds: 30})
+		plan.Repositories = append(plan.Repositories, domain.CoordinationRepository{RepositoryID: source.RepositoryID, Commit: source.Commit, CollectionID: source.CollectionID, ReceiptDigest: source.Digest, FullSourceDigest: source.FullSourceDigest})
+		plan.Tasks = append(plan.Tasks, domain.CoordinationTask{ID: []string{"service", "library"}[i], Perspective: "developer", Profile: "synthetic", ProfileDigest: profileDigest, Image: "sha256:" + strings.Repeat("a", 64), Prompt: "Update synthetic source", Scopes: []domain.TaskScope{{RepositoryID: source.RepositoryID, WritablePaths: []string{"src"}}}, TimeoutSeconds: 30})
 	}
 	return ctx, p, s, plan
 }
@@ -278,4 +289,54 @@ func TestCoordinationExecutionGrantHeldThroughAuthorizationCommit(t *testing.T) 
 	if _, err = s.CancelCoordination(reviewer, run.ID, run.Digest); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("revocation ineffective: %v", err)
 	}
+}
+
+// These transaction fixtures contain an actual Git bundle and explicitly report
+// text files as unsupported graph input. Native CodeGraph extraction is covered
+// by the separate opted-in integration acceptance, never implied by this fixture.
+func coordinationFullReceipt(t *testing.T, ctx context.Context, p *Postgres, s *service.AuthenticatedService, repo string) domain.GraphSource {
+	t.Helper()
+	root := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Synthetic", "GIT_AUTHOR_EMAIL=synthetic@example.invalid", "GIT_COMMITTER_NAME=Synthetic", "GIT_COMMITTER_EMAIL=synthetic@example.invalid"}
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("synthetic Git: %v %s", err, b)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	run("init", "--quiet", "--initial-branch=main")
+	if err := os.Mkdir(filepath.Join(root, "src"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	text := "old\n"
+	if err := os.WriteFile(filepath.Join(root, "src/app.txt"), []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blob := run("hash-object", "src/app.txt")
+	run("add", ".")
+	run("commit", "--quiet", "-m", "Synthetic fixture")
+	data := domain.SourceBundleData{Commit: run("rev-parse", "HEAD"), Tree: run("rev-parse", "HEAD^{tree}"), FileCount: 1, Artifacts: []domain.ContextArtifact{{Path: "src/app.txt", State: "collected", Text: &text, BlobOID: blob, Digest: execution.Sum([]byte(text))}}}
+	name := filepath.Join(t.TempDir(), "source.bundle")
+	run("bundle", "create", name, "--all")
+	var err error
+	data.Bundle, err = os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.Digest = execution.Sum(data.Bundle)
+	c, err := s.CreateCollection(accessContext(ctx, "reviewer", "workspace-one", repo), "coordination-full-source", domain.CollectionInput{Commit: data.Commit, Paths: []string{"src/app.txt"}, FullSource: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := collectionWork(t, ctx, p, c.ID)
+	index := domain.CodeGraphIndex{Indexer: domain.CodeGraphIndexer, KernelVersion: "0.1.0", Files: []domain.CodeGraphFile{{Path: "src/app.txt", State: "unsupported_or_deferred"}}, Nodes: []domain.CodeGraphNode{}, Edges: []domain.CodeGraphEdge{}}
+	receipt, err := p.CompleteCollectionWithSource(ctx, c.ID, w.Binding, data.Artifacts, data, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return domain.GraphSource{RepositoryID: repo, CollectionID: c.ID, Digest: receipt.Digest, FullSourceDigest: data.Digest}
 }
