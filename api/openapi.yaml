@@ -2,765 +2,369 @@ openapi: 3.1.0
 info:
   title: Conductor API
   version: 0.6.0
-  description: The server explicitly selects local or oidc authentication. Local mode requires X-Conductor-Actor
-    and exposes only unscoped legacy packages. OIDC mode requires an RFC 9068 RS256 bearer access token
-    or configured browser session and rejects local actor headers. Signed identity is mapped to server-managed
-    PostgreSQL permissions; token role claims grant no rights. Workspace selection is required for package
-    and repository operations. Inaccessible package IDs return the same 404 as unknown IDs.
-servers:
-- url: http://localhost:8080
+  description: >-
+    The server explicitly selects local or oidc authentication. Local mode requires
+    X-Conductor-Actor and exposes only unscoped legacy packages. OIDC mode requires
+    an RFC 9068 RS256 bearer access token or configured browser session and rejects local actor headers. Signed
+    identity is mapped to server-managed PostgreSQL permissions; token role claims
+    grant no rights. Workspace selection is required for package and repository
+    operations. Inaccessible package IDs return the same 404 as unknown IDs.
+servers: [{url: http://localhost:8080}]
 security:
-- BearerAuth: []
-- BrowserCookie: []
-- LocalActor: []
+  - BearerAuth: []
+  - BrowserCookie: []
+  - LocalActor: []
 paths:
   /api/v1/auth/config:
     get:
       summary: Discover the explicit server authentication mode
-      description: Public bounded metadata; no query parameters. An unavailable response must never cause
-        a local-actor fallback.
+      description: Public bounded metadata; no query parameters. An unavailable response must never cause a local-actor fallback.
       security: []
       responses:
-        '200':
-          description: Configured authentication
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                - mode
-                - browserLogin
-                properties:
-                  mode:
-                    type: string
-                    enum:
-                    - local
-                    - oidc
-                  browserLogin:
-                    type: boolean
-        '400':
-          $ref: '#/components/responses/BadRequest'
+        '200': {description: Configured authentication, content: {application/json: {schema: {type: object, required: [mode, browserLogin], properties: {mode: {type: string, enum: [local, oidc]}, browserLogin: {type: boolean}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
   /api/v1/auth/login:
     get:
       summary: Start a browser-bound OIDC authorization-code flow
-      description: Available only when browser login is configured. Accepts no query parameters, bearer
-        credentials, or local actor headers. Creates a five-minute one-use attempt and Secure HttpOnly
-        browser-binding cookie, then redirects to the fixed provider with state, nonce, and S256 PKCE.
+      description: Available only when browser login is configured. Accepts no query parameters, bearer credentials, or local actor headers. Creates a five-minute one-use attempt and Secure HttpOnly browser-binding cookie, then redirects to the fixed provider with state, nonce, and S256 PKCE.
       security: []
       responses:
-        '303':
-          description: Continue to the configured identity provider
-          headers:
-            Location:
-              schema:
-                type: string
-                format: uri
-        '400':
-          description: Invalid browser login request; fixed HTML error without provider diagnostics
-        '503':
-          description: Login could not start; fixed HTML error without credentials
+        '303': {description: Continue to the configured identity provider, headers: {Location: {schema: {type: string, format: uri}}}}
+        '400': {description: Invalid browser login request; fixed HTML error without provider diagnostics}
+        '503': {description: Login could not start; fixed HTML error without credentials}
   /api/v1/auth/callback:
     get:
       summary: Consume a matching OIDC callback and establish a Conductor session
-      description: Requires the browser-binding cookie and exact one-use state. Validates code exchange
-        and ID token; issues a one-hour Conductor cookie only for an active provisioned human. Provider
-        tokens are discarded. Replays, duplicate parameters, mixed identity headers, and mismatched issuer
-        fail. Unrecognized response extensions are ignored within 32 parameters, 4096 bytes per value,
-        and 16 KiB total query bounds.
+      description: Requires the browser-binding cookie and exact one-use state. Validates code exchange and ID token; issues a one-hour Conductor cookie only for an active provisioned human. Provider tokens are discarded. Replays, duplicate parameters, mixed identity headers, and mismatched issuer fail. Unrecognized response extensions are ignored within 32 parameters, 4096 bytes per value, and 16 KiB total query bounds.
       security: []
       parameters:
-      - name: state
-        in: query
-        required: true
-        schema:
-          type: string
-          minLength: 43
-          maxLength: 43
-      - name: code
-        in: query
-        schema:
-          type: string
-          maxLength: 4096
-      - name: iss
-        in: query
-        schema:
-          type: string
-          maxLength: 4096
-      - name: error
-        in: query
-        schema:
-          type: string
-          maxLength: 4096
-      - name: error_description
-        in: query
-        schema:
-          type: string
-          maxLength: 4096
-      - name: error_uri
-        in: query
-        schema:
-          type: string
-          maxLength: 4096
-      - name: session_state
-        in: query
-        schema:
-          type: string
-          maxLength: 4096
+        - {name: state, in: query, required: true, schema: {type: string, minLength: 43, maxLength: 43}}
+        - {name: code, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: iss, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: error, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: error_description, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: error_uri, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: session_state, in: query, schema: {type: string, maxLength: 4096}}
       responses:
-        '303':
-          description: Session established; return to workbench root
-          headers:
-            Location:
-              schema:
-                type: string
-                const: /
-        '400':
-          description: Login failed; fixed HTML without supplied or provider diagnostics
-        '403':
-          description: Browser session could not be established for this identity
-        '503':
-          description: Session replacement could not be confirmed
+        '303': {description: Session established; return to workbench root, headers: {Location: {schema: {type: string, const: '/'}}}}
+        '400': {description: Login failed; fixed HTML without supplied or provider diagnostics}
+        '403': {description: Browser session could not be established for this identity}
+        '503': {description: Session replacement could not be confirmed}
   /api/v1/auth/session:
     get:
       summary: Bootstrap the browser identity and session-bound request secret
-      description: Cookie only; no query parameters or mixed credentials. No workspace selection is needed.
-        Responses must not be cached or persisted in browser storage.
-      security:
-      - BrowserCookie: []
+      description: Cookie only; no query parameters or mixed credentials. No workspace selection is needed. Responses must not be cached or persisted in browser storage.
+      security: [{BrowserCookie: []}]
       responses:
-        '200':
-          description: Current browser session
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BrowserSession'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        '200': {description: Current browser session, content: {application/json: {schema: {$ref: '#/components/schemas/BrowserSession'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/auth/logout:
     post:
       summary: Revoke this Conductor browser session
-      description: Requires exact configured Origin and session request secret; accepts no query parameters.
-        Does not sign out at the identity provider or cancel already authorized commands.
-      security:
-      - BrowserCookie: []
-      parameters:
-      - $ref: '#/components/parameters/BrowserOrigin'
-      - $ref: '#/components/parameters/CSRF'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
+      description: Requires exact configured Origin and session request secret; accepts no query parameters. Does not sign out at the identity provider or cancel already authorized commands.
+      security: [{BrowserCookie: []}]
+      parameters: [{$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
       responses:
-        '200':
-          description: Session removed and cookie cleared
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                - signedOut
-                properties:
-                  signedOut:
-                    type: boolean
-                    const: true
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        '200': {description: Session removed and cookie cleared, content: {application/json: {schema: {type: object, required: [signedOut], properties: {signedOut: {type: boolean, const: true}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/session:
     get:
       summary: Inspect the authenticated principal and available workspaces
-      description: OIDC mode only. Accepts no query parameters. At most 100 workspaces; truncated reports
-        omitted entries.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: OIDC mode only. Accepts no query parameters. At most 100 workspaces; truncated reports omitted entries.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       responses:
-        '200':
-          description: Server-managed identity and membership
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Session'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        '200': {description: Server-managed identity and membership, content: {application/json: {schema: {$ref: '#/components/schemas/Session'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/repositories:
     get:
       summary: Inspect readable canonical repositories and server capabilities
-      description: OIDC mode only. Requires workspace selection and accepts no query parameters. At most
-        100 repositories; truncated reports omitted entries.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
-      parameters:
-      - $ref: '#/components/parameters/Workspace'
-      - $ref: '#/components/parameters/CSRF'
+      description: OIDC mode only. Requires workspace selection and accepts no query parameters. At most 100 repositories; truncated reports omitted entries.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters: [{$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/CSRF'}]
       responses:
-        '200':
-          description: Readable repositories in the selected workspace
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RepositoryPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        '200': {description: Readable repositories in the selected workspace, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/changes:
     get:
       summary: Discover changes shared through the central store
-      description: Lists each change's latest revision and effective current approval, ordered by change
-        creation time descending, then ID descending. Other developers' committed packages and revisions
-        are visible through this same store. This endpoint does not report active agents or execution.
-        Repository filters match the latest content.repositoryContext.repository string exactly; malformed
-        or missing repository labels are omitted. Pagination uses immutable change creation coordinates;
-        new entries appear when starting a new listing. Workspace/repository authorization filters rows
-        before pagination in OIDC mode; author-supplied repository labels never establish permissions.
+      description: >-
+        Lists each change's latest revision and effective current approval, ordered
+        by change creation time descending, then ID descending. Other developers'
+        committed packages and revisions are visible through this same store.
+        This endpoint does not report active agents or execution. Repository filters
+        match the latest content.repositoryContext.repository string exactly;
+        malformed or missing repository labels are omitted. Pagination uses immutable
+        change creation coordinates; new entries appear when starting a new listing.
+        Workspace/repository authorization filters rows before pagination in OIDC
+        mode; author-supplied repository labels never establish permissions.
         Unknown, repeated, malformed, or out-of-range query parameters are rejected.
       parameters:
-      - $ref: '#/components/parameters/Actor'
-      - $ref: '#/components/parameters/Workspace'
-      - $ref: '#/components/parameters/Repository'
-      - $ref: '#/components/parameters/CSRF'
-      - name: repository
-        in: query
-        description: Exact repository identity; omitted or empty lists all changes; at most 2048 UTF-8
-          bytes
-        schema:
-          type: string
-          maxLength: 2048
-      - name: before
-        in: query
-        description: Opaque continuation cursor from nextBefore; omitted or empty starts a new listing
-        schema:
-          type: string
-          maxLength: 1024
-      - $ref: '#/components/parameters/HistoryLimit'
+        - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Workspace'
+        - $ref: '#/components/parameters/Repository'
+        - $ref: '#/components/parameters/CSRF'
+        - name: repository
+          in: query
+          description: Exact repository identity; omitted or empty lists all changes; at most 2048 UTF-8 bytes
+          schema: {type: string, maxLength: 2048}
+        - name: before
+          in: query
+          description: Opaque continuation cursor from nextBefore; omitted or empty starts a new listing
+          schema: {type: string, maxLength: 1024}
+        - $ref: '#/components/parameters/HistoryLimit'
       responses:
         '200':
           description: Bounded shared change listing, including an empty list when nothing matches
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/ChangePage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+              schema: {$ref: '#/components/schemas/ChangePage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
     post:
       summary: Create an initial immutable work-package revision
-      description: Accepts no query parameters; identity and scope use the documented headers, and command
-        inputs use the JSON body.
-      parameters:
-      - $ref: '#/components/parameters/Actor'
-      - $ref: '#/components/parameters/Workspace'
-      - $ref: '#/components/parameters/Repository'
-      - $ref: '#/components/parameters/BrowserOrigin'
-      - $ref: '#/components/parameters/CSRF'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ContentCommand'
-      responses:
-        '201':
-          description: Created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Package'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      parameters: [{$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ContentCommand'}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}}
   /api/v1/changes/{id}:
-    parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/BrowserOrigin'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
     get:
       summary: Inspect the latest revision and its effective approval
-      description: Accepts no query parameters; identity and scope use the documented headers, and command
-        inputs use the JSON body.
-      responses:
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '200':
-          description: Found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Package'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      responses: {'400': {$ref: '#/components/responses/BadRequest'}, '200': {description: Found, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}}
   /api/v1/changes/{id}/history:
-    parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/BrowserOrigin'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
     get:
       summary: Inspect revision summaries and retained approval counts
-      description: Returns revisions in descending number order. Approval counts describe historical records
-        and do not grant effective approval to the current package. Unknown, repeated, empty, or malformed
-        query parameters are rejected.
+      description: >-
+        Returns revisions in descending number order. Approval counts describe
+        historical records and do not grant effective approval to the current
+        package. Unknown, repeated, empty, or malformed query parameters are rejected.
       parameters:
-      - $ref: '#/components/parameters/BeforeRevision'
-      - $ref: '#/components/parameters/HistoryLimit'
+        - $ref: '#/components/parameters/BeforeRevision'
+        - $ref: '#/components/parameters/HistoryLimit'
       responses:
         '200':
           description: Bounded revision history, including an empty page after exhaustion
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/HistoryPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+              schema: {$ref: '#/components/schemas/HistoryPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/revisions/{revision}:
     parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/CSRF'
-    - name: revision
-      in: path
-      required: true
-      schema:
-        type: integer
-        format: int64
-        minimum: 1
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/Actor'
+      - $ref: '#/components/parameters/Workspace'
+      - $ref: '#/components/parameters/Repository'
+      - $ref: '#/components/parameters/CSRF'
+      - name: revision
+        in: path
+        required: true
+        schema: {type: integer, format: int64, minimum: 1}
     get:
       summary: Inspect exact revision content and its retained approval records
-      description: This read-only record has no effective approved flag. Approvals are ordered by creation
-        time, then reviewer, and capped at 100. approvalsTruncated is true when further approval records
-        exist. Unknown query parameters are rejected; this operation accepts none.
+      description: >-
+        This read-only record has no effective approved flag. Approvals are ordered
+        by creation time, then reviewer, and capped at 100. approvalsTruncated is
+        true when further approval records exist. Unknown query parameters are
+        rejected; this operation accepts none.
       responses:
         '200':
           description: Exact revision and bounded historical approvals
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/RevisionRecord'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+              schema: {$ref: '#/components/schemas/RevisionRecord'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/events:
-    parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/BrowserOrigin'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
     get:
       summary: Inspect the change's audit events in sequence order
-      description: Returns events in ascending sequence order. Sequence numbers may contain gaps. Unknown,
-        repeated, empty, or malformed query parameters are rejected.
+      description: >-
+        Returns events in ascending sequence order. Sequence numbers may contain
+        gaps. Unknown, repeated, empty, or malformed query parameters are rejected.
       parameters:
-      - $ref: '#/components/parameters/AfterSequence'
-      - $ref: '#/components/parameters/HistoryLimit'
+        - $ref: '#/components/parameters/AfterSequence'
+        - $ref: '#/components/parameters/HistoryLimit'
       responses:
         '200':
           description: Bounded audit history, including an empty page after exhaustion
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/AuditPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+              schema: {$ref: '#/components/schemas/AuditPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/revisions:
-    parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/BrowserOrigin'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
     post:
       summary: Append a revision using optimistic concurrency
-      description: Accepts no query parameters; identity and scope use the documented headers, and command
-        inputs use the JSON body.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-              - expectedRevision
-              - content
-              properties:
-                expectedRevision:
-                  type: integer
-                content:
-                  type: object
-                  additionalProperties: true
-      responses:
-        '201':
-          description: Revised
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Package'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [expectedRevision, content], properties: {expectedRevision: {type: integer}, content: {type: object, additionalProperties: true}}}}}}
+      responses: {'201': {description: Revised, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/review-requests:
-    parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/BrowserOrigin'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
     post:
       summary: Submit the exact current revision
-      description: Accepts no query parameters; identity and scope use the documented headers, and command
-        inputs use the JSON body.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-              - revision
-              properties:
-                revision:
-                  type: integer
-      responses:
-        '200':
-          description: Submitted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Package'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [revision], properties: {revision: {type: integer}}}}}}
+      responses: {'200': {description: Submitted, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/approvals:
-    parameters:
-    - $ref: '#/components/parameters/ID'
-    - $ref: '#/components/parameters/Actor'
-    - $ref: '#/components/parameters/Workspace'
-    - $ref: '#/components/parameters/Repository'
-    - $ref: '#/components/parameters/BrowserOrigin'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}, {$ref: '#/components/parameters/BrowserOrigin'}, {$ref: '#/components/parameters/CSRF'}]
     post:
       summary: Approve the exact inspected revision and digest
-      description: Accepts no query parameters; identity and scope use the documented headers, and command
-        inputs use the JSON body.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-              - revision
-              - digest
-              properties:
-                revision:
-                  type: integer
-                digest:
-                  type: string
-                  pattern: ^[a-f0-9]{64}$
-      responses:
-        '201':
-          description: Approved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Package'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '422':
-          description: Approval rejected
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [revision, digest], properties: {revision: {type: integer}, digest: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}}
+      responses: {'201': {description: Approved, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
   /api/v1/context-collections:
     post:
       summary: Persist one explicit remote context collection request
-      description: Requires OIDC identity, selected workspace and repository, current author permission,
-        and an operator-enabled integration. Local or unconfigured services return 503. Unknown or duplicate
-        command fields and query parameters are rejected. The exact lowercase SHA-1 commit and 1-32 unique
-        paths are immutable; validated paths are sorted bytewise before input hashing. A single Idempotency-Key
-        is scoped to the requester and canonical repository. Reusing it with the same input returns the
-        original request; changed input conflicts. HTTP 202 establishes only persisted intent, not a completed
-        collection, passing evidence, or approval.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: >-
+        Requires OIDC identity, selected workspace and repository, current author
+        permission, and an operator-enabled integration. Local or unconfigured
+        services return 503. Unknown or duplicate command fields and query parameters are rejected. The exact lowercase
+        SHA-1 commit and 1-32 unique paths are immutable; validated paths are sorted
+        bytewise before input hashing. A single Idempotency-Key is scoped to the
+        requester and canonical repository. Reusing it with the same input returns
+        the original request; changed input conflicts. HTTP 202 establishes only
+        persisted intent, not a completed collection, passing evidence, or approval.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - $ref: '#/components/parameters/CollectionWorkspace'
-      - $ref: '#/components/parameters/CollectionRepository'
-      - $ref: '#/components/parameters/BrowserOrigin'
-      - $ref: '#/components/parameters/CSRF'
-      - $ref: '#/components/parameters/CollectionKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CollectionInput'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CSRF'
+        - $ref: '#/components/parameters/CollectionKey'
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CollectionInput'}}}}
       responses:
-        '202':
-          description: Persisted request or its idempotent replay
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Collection'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          description: Idempotency key already identifies different input (idempotency_conflict)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '429':
-          $ref: '#/components/responses/CollectionCapacity'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '202': {description: Persisted request or its idempotent replay, content: {application/json: {schema: {$ref: '#/components/schemas/Collection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Idempotency key already identifies different input (idempotency_conflict), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {$ref: '#/components/responses/CollectionCapacity'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
     get:
       summary: List shared context collection facts under current permissions
-      description: Requires a selected workspace and repository with current read permission. Returns
-        bounded summaries without source text, ordered by immutable creation time descending then ID descending.
-        Permission filtering occurs before the page limit. Unknown, repeated, malformed, or out-of-range
-        query parameters are rejected. An execution observation is separate from receipt coverage; missing
-        or stale observations never establish current progress.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: >-
+        Requires a selected workspace and repository with current read permission.
+        Returns bounded summaries without source text, ordered by immutable creation
+        time descending then ID descending. Permission filtering occurs before the
+        page limit. Unknown, repeated, malformed, or out-of-range query parameters
+        are rejected. An execution observation is separate from receipt coverage;
+        missing or stale observations never establish current progress.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - $ref: '#/components/parameters/CollectionWorkspace'
-      - $ref: '#/components/parameters/CollectionRepository'
-      - $ref: '#/components/parameters/CSRF'
-      - name: before
-        in: query
-        description: Opaque nextBefore cursor; omitted or empty starts a new listing
-        schema:
-          type: string
-          maxLength: 1024
-      - $ref: '#/components/parameters/HistoryLimit'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
+        - {name: before, in: query, description: Opaque nextBefore cursor; omitted or empty starts a new listing, schema: {type: string, maxLength: 1024}}
+        - $ref: '#/components/parameters/HistoryLimit'
       responses:
-        '200':
-          description: Shared collection summaries and explicit continuation
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CollectionPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '200': {description: Shared collection summaries and explicit continuation, content: {application/json: {schema: {$ref: '#/components/schemas/CollectionPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/context-collections/{id}:
     get:
       summary: Inspect a stored collection, receipt, and execution observation
-      description: Requires current read permission in the selected canonical scope. Unknown and inaccessible
-        IDs return the same 404. Historical source remains protected after revocation. Accepts no query
-        parameters. Inspection does not fetch provider content or refresh a receipt; absence of a receipt
+      description: >-
+        Requires current read permission in the selected canonical scope. Unknown
+        and inaccessible IDs return the same 404. Historical source remains
+        protected after revocation. Accepts no query parameters. Inspection does
+        not fetch provider content or refresh a receipt; absence of a receipt
         means no persisted result, not passing evidence.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - $ref: '#/components/parameters/CollectionID'
-      - $ref: '#/components/parameters/CollectionWorkspace'
-      - $ref: '#/components/parameters/CollectionRepository'
-      - $ref: '#/components/parameters/CSRF'
+        - $ref: '#/components/parameters/CollectionID'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
       responses:
-        '200':
-          description: Persisted request and available historical observations
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Collection'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '200': {description: Persisted request and available historical observations, content: {application/json: {schema: {$ref: '#/components/schemas/Collection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/context-collections/{id}/cancellation:
     post:
       summary: Persist cancellation intent for a collection requested by this principal
-      description: Requires the original requester with current author permission. Accepts an empty JSON
-        object and no query parameters; unknown or duplicate command fields are rejected. Repeated requests
-        retain the first intent. Cancellation requested is distinct from observed Temporal cancellation;
-        an unavailable workflow service cannot confirm that execution stopped. A receipt committed before
-        cancellation remains historical fact.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: >-
+        Requires the original requester with current author permission. Accepts an
+        empty JSON object and no query parameters; unknown or duplicate command fields are rejected. Repeated requests retain the
+        first intent. Cancellation requested is distinct from observed Temporal
+        cancellation; an unavailable workflow service cannot confirm that execution
+        stopped. A receipt committed before cancellation remains historical fact.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - $ref: '#/components/parameters/CollectionID'
-      - $ref: '#/components/parameters/CollectionWorkspace'
-      - $ref: '#/components/parameters/CollectionRepository'
-      - $ref: '#/components/parameters/BrowserOrigin'
-      - $ref: '#/components/parameters/CSRF'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
+        - $ref: '#/components/parameters/CollectionID'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CSRF'
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
       responses:
-        '202':
-          description: Current collection with persisted cancellation intent or an earlier committed receipt
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Collection'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/CollectionStopped'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '202': {description: Current collection with persisted cancellation intent or an earlier committed receipt, content: {application/json: {schema: {$ref: '#/components/schemas/Collection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/CollectionStopped'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/context-attachments:
     post:
       summary: Attach an inspected immutable collection receipt as a new package revision
-      description: Requires current author permission and a receipt in the exact same workspace and canonical
-        repository as the package. The command carries the inspected package revision, collection ID,
-        and receipt digest. The service resolves trusted stored content and preserves other package fields
-        transactionally. It does not collect newer source or carry approval onto the new revision. Unknown
-        or duplicate command fields and query parameters are rejected; stale input requires explicit renewed
-        inspection. A caller-written receipt ID is not trusted provenance by itself.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: >-
+        Requires current author permission and a receipt in the exact same
+        workspace and canonical repository as the package. The command carries
+        the inspected package revision, collection ID, and receipt digest.
+        The service resolves trusted stored content and preserves other package
+        fields transactionally. It does not collect newer source or carry approval
+        onto the new revision. Unknown or duplicate command fields and query parameters are rejected; stale input requires
+        explicit renewed inspection. A caller-written receipt ID is not trusted
+        provenance by itself.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - $ref: '#/components/parameters/ID'
-      - $ref: '#/components/parameters/CollectionWorkspace'
-      - $ref: '#/components/parameters/CollectionRepository'
-      - $ref: '#/components/parameters/BrowserOrigin'
-      - $ref: '#/components/parameters/CSRF'
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CSRF'
       requestBody:
         required: true
         content:
@@ -768,218 +372,85 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required:
-              - expectedRevision
-              - collectionId
-              - digest
+              required: [expectedRevision, collectionId, digest]
               properties:
-                expectedRevision:
-                  type: integer
-                  format: int64
-                  minimum: 1
-                collectionId:
-                  type: string
-                  pattern: ^[a-f0-9]{32}$
-                digest:
-                  type: string
-                  pattern: ^[a-f0-9]{64}$
-                  description: SHA-256 digest of the inspected stored receipt snapshot
+                expectedRevision: {type: integer, format: int64, minimum: 1}
+                collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+                digest: {type: string, pattern: '^[a-f0-9]{64}$', description: SHA-256 digest of the inspected stored receipt snapshot}
       responses:
-        '201':
-          description: New unapproved package revision containing the inspected snapshot
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Package'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          description: Stale package revision or inspected receipt digest (revision_conflict)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '201': {description: New unapproved package revision containing the inspected snapshot, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Stale package revision or inspected receipt digest (revision_conflict), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/repository-graphs:
-    parameters:
-    - $ref: '#/components/parameters/CollectionWorkspace'
-    - $ref: '#/components/parameters/CollectionRepository'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/CollectionWorkspace'}, {$ref: '#/components/parameters/CollectionRepository'}, {$ref: '#/components/parameters/CSRF'}]
     post:
       summary: Build an immutable shared graph from inspected repository receipts
-      description: Author permission on every source repository is held through graph/audit commit. The
-        selected anchor must be included. Receipt digests are resolved on the server; no source text or
-        arbitrary graph is accepted. Same workspace/creator key and normalized input returns the existing
-        graph. Graph evidence cannot grant approval or execution authority.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
-      parameters:
-      - $ref: '#/components/parameters/CollectionKey'
-      - $ref: '#/components/parameters/BrowserOrigin'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GraphInput'
+      description: Author permission on every source repository is held through graph/audit commit. The selected anchor must be included. Receipt digests are resolved on the server; no source text or arbitrary graph is accepted. Same workspace/creator key and normalized input returns the existing graph. Graph evidence cannot grant approval or execution authority.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CollectionKey'}, {$ref: '#/components/parameters/BrowserOrigin'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GraphInput'}}}}
       responses:
-        '201':
-          description: Immutable graph or its idempotent replay
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RepositoryGraph'
-        '409':
-          description: Idempotency key already identifies another graph input
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '201': {description: Immutable graph or its idempotent replay, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryGraph'}}}}
+        '409': {description: Idempotency key already identifies another graph input, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
     get:
       summary: List graphs readable across every included repository
-      description: Hidden or revoked endpoints hide the entire snapshot before pagination. Selected canonical
-        repository must be a graph source; no counts of hidden graphs are returned.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: Hidden or revoked endpoints hide the entire snapshot before pagination. Selected canonical repository must be a graph source; no counts of hidden graphs are returned.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - name: before
-        in: query
-        schema:
-          type: string
-          maxLength: 1024
-      - $ref: '#/components/parameters/HistoryLimit'
+        - {name: before, in: query, schema: {type: string, maxLength: 1024}}
+        - {$ref: '#/components/parameters/HistoryLimit'}
       responses:
-        '200':
-          description: Bounded authorized graph page
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RepositoryGraphPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '200': {description: Bounded authorized graph page, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryGraphPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/repository-graphs/{id}:
-    parameters:
-    - $ref: '#/components/parameters/CollectionID'
-    - $ref: '#/components/parameters/CollectionWorkspace'
-    - $ref: '#/components/parameters/CollectionRepository'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/CollectionID'}, {$ref: '#/components/parameters/CollectionWorkspace'}, {$ref: '#/components/parameters/CollectionRepository'}, {$ref: '#/components/parameters/CSRF'}]
     get:
       summary: Inspect one immutable graph and explicit source gaps
-      description: Requires current read permission on every source repository. Accepts no query parameters.
-        Source text is retained in context receipts, not graph nodes. Freshness stays unknown.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: Requires current read permission on every source repository. Accepts no query parameters. Source text is retained in context receipts, not graph nodes. Freshness stays unknown.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       responses:
-        '200':
-          description: Authorized graph snapshot
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RepositoryGraph'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '200': {description: Authorized graph snapshot, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryGraph'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/repository-graphs/{id}/query:
-    parameters:
-    - $ref: '#/components/parameters/CollectionID'
-    - $ref: '#/components/parameters/CollectionWorkspace'
-    - $ref: '#/components/parameters/CollectionRepository'
-    - $ref: '#/components/parameters/CSRF'
+    parameters: [{$ref: '#/components/parameters/CollectionID'}, {$ref: '#/components/parameters/CollectionWorkspace'}, {$ref: '#/components/parameters/CollectionRepository'}, {$ref: '#/components/parameters/CSRF'}]
     get:
       summary: Search or traverse an authorized immutable graph
-      description: Literal case-insensitive name/path search or an exact node ID, never both. Traverse
-        both edge directions to depth 0-5. Unknown, repeated or invalid query fields are rejected. Every
-        returned edge retains both endpoints; bounded results preserve gaps and explicit truncation.
-      security:
-      - BearerAuth: []
-      - BrowserCookie: []
+      description: Literal case-insensitive name/path search or an exact node ID, never both. Traverse both edge directions to depth 0-5. Unknown, repeated or invalid query fields are rejected. Every returned edge retains both endpoints; bounded results preserve gaps and explicit truncation.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
       parameters:
-      - name: search
-        in: query
-        schema:
-          type: string
-          maxLength: 256
-      - name: nodeId
-        in: query
-        schema:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-      - name: depth
-        in: query
-        schema:
-          type: integer
-          minimum: 0
-          maximum: 5
-          default: 1
-      - name: limit
-        in: query
-        schema:
-          type: integer
-          minimum: 1
-          maximum: 100
-          default: 100
+        - {name: search, in: query, schema: {type: string, maxLength: 256}}
+        - {name: nodeId, in: query, schema: {type: string, pattern: '^[a-f0-9]{64}$'}}
+        - {name: depth, in: query, schema: {type: integer, minimum: 0, maximum: 5, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
       responses:
-        '200':
-          description: Bounded structural evidence
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GraphQueryResult'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        '200': {description: Bounded structural evidence, content: {application/json: {schema: {$ref: '#/components/schemas/GraphQueryResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/execution-capabilities:
     parameters:
     - $ref: '#/components/parameters/CollectionWorkspace'
@@ -1298,619 +769,242 @@ components:
       type: apiKey
       in: cookie
       name: __Host-conductor-session
-      description: Configured browser login only. Secure HttpOnly host-only session; cannot be combined
-        with bearer or local credentials. Cookie mutations also require exact Origin and X-Conductor-CSRF.
-        A supplied CSRF header is checked on reads, protecting stale tabs after account changes.
+      description: Configured browser login only. Secure HttpOnly host-only session; cannot be combined with bearer or local credentials. Cookie mutations also require exact Origin and X-Conductor-CSRF. A supplied CSRF header is checked on reads, protecting stale tabs after account changes.
     BearerAuth:
       type: http
       scheme: bearer
       bearerFormat: RFC 9068 RS256 JWT access token
-      description: OIDC mode only; exact configured issuer and audience, at+jwt type, and signed required
-        claims. ID tokens are not accepted.
+      description: OIDC mode only; exact configured issuer and audience, at+jwt type, and signed required claims. ID tokens are not accepted.
     LocalActor:
       type: apiKey
       in: header
       name: X-Conductor-Actor
       description: Local development only. Not authentication and rejected in OIDC mode.
   responses:
-    CollectionCapacity:
-      description: Finite admission capacity exhausted (capacity_exceeded); existing requests are not
-        evicted
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    CollectionStopped:
-      description: Collection no longer permits new work (collection_stopped)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    BadRequest:
-      description: Invalid command or query parameters
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    Unauthorized:
-      description: Token or local identity missing or invalid
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    Forbidden:
-      description: Workspace membership or repository capability denied
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    NotFound:
-      description: Change, revision, or collection missing or inaccessible
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    Conflict:
-      description: Inspected revision is stale
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    InternalError:
-      description: Internal error with details withheld
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    Unavailable:
-      description: Requested service unavailable
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
+    CollectionCapacity: {description: Finite admission capacity exhausted (capacity_exceeded); existing requests are not evicted, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    CollectionStopped: {description: Collection no longer permits new work (collection_stopped), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    BadRequest: {description: Invalid command or query parameters, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unauthorized: {description: Token or local identity missing or invalid, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Forbidden: {description: Workspace membership or repository capability denied, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: "Change, revision, or collection missing or inaccessible", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Conflict: {description: Inspected revision is stale, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    InternalError: {description: Internal error with details withheld, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unavailable: {description: Requested service unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   parameters:
-    CollectionID:
-      name: id
-      in: path
-      required: true
-      schema:
-        type: string
-        pattern: ^[a-f0-9]{32}$
-    CollectionWorkspace:
-      name: X-Conductor-Workspace
-      in: header
-      required: true
-      description: Selected canonical workspace; current membership is checked on the server
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 128
-    CollectionRepository:
-      name: X-Conductor-Repository
-      in: header
-      required: true
-      description: Selected canonical repository; labels or provider URLs cannot replace this identity
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 128
+    CollectionID: {name: id, in: path, required: true, schema: {type: string, pattern: '^[a-f0-9]{32}$'}}
+    CollectionWorkspace: {name: X-Conductor-Workspace, in: header, required: true, description: Selected canonical workspace; current membership is checked on the server, schema: {type: string, minLength: 1, maxLength: 128}}
+    CollectionRepository: {name: X-Conductor-Repository, in: header, required: true, description: Selected canonical repository; labels or provider URLs cannot replace this identity, schema: {type: string, minLength: 1, maxLength: 128}}
     CollectionKey:
       name: Idempotency-Key
       in: header
       required: true
-      description: Exactly one 1-128 byte printable ASCII value without whitespace or comma; reuse the
-        same key and input to reconcile an uncertain request
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 128
-        pattern: ^[\x21-\x2B\x2D-\x7E]{1,128}$
+      description: Exactly one 1-128 byte printable ASCII value without whitespace or comma; reuse the same key and input to reconcile an uncertain request
+      schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[\x21-\x2B\x2D-\x7E]{1,128}$'}
     BrowserOrigin:
       name: Origin
       in: header
-      description: Required for cookie-authenticated commands; must equal the configured public HTTPS
-        origin. Browser clients set this automatically.
-      schema:
-        type: string
-        format: uri
+      description: Required for cookie-authenticated commands; must equal the configured public HTTPS origin. Browser clients set this automatically.
+      schema: {type: string, format: uri}
     CSRF:
       name: X-Conductor-CSRF
       in: header
-      description: Required for cookie-authenticated commands. Browser clients also send it on reads to
-        bind inspection to their bootstrapped session. Never store in a URL or persistent browser storage.
-      schema:
-        type: string
-        pattern: ^[A-Za-z0-9_-]{43}$
-    ID:
-      name: id
-      in: path
-      required: true
-      schema:
-        type: string
-    Actor:
-      name: X-Conductor-Actor
-      in: header
-      required: false
-      description: Required only in local mode; rejected in OIDC mode
-      schema:
-        type: string
-        maxLength: 128
+      description: Required for cookie-authenticated commands. Browser clients also send it on reads to bind inspection to their bootstrapped session. Never store in a URL or persistent browser storage.
+      schema: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
+    ID: {name: id, in: path, required: true, schema: {type: string}}
+    Actor: {name: X-Conductor-Actor, in: header, required: false, description: Required only in local mode; rejected in OIDC mode, schema: {type: string, maxLength: 128}}
     Workspace:
       name: X-Conductor-Workspace
       in: header
-      description: Required for OIDC package and repository operations; selected scope is not proof of
-        membership. At most 128 UTF-8 bytes.
-      schema:
-        type: string
-        maxLength: 128
+      description: Required for OIDC package and repository operations; selected scope is not proof of membership. At most 128 UTF-8 bytes.
+      schema: {type: string, maxLength: 128}
     Repository:
       name: X-Conductor-Repository
       in: header
-      description: Canonical repository ID. Required for OIDC package creation; optionally narrows every
-        other package operation. Immutable package ownership is separate from content labels.
-      schema:
-        type: string
-        maxLength: 128
+      description: Canonical repository ID. Required for OIDC package creation; optionally narrows every other package operation. Immutable package ownership is separate from content labels.
+      schema: {type: string, maxLength: 128}
     BeforeRevision:
       name: beforeRevision
       in: query
       description: Exclusive revision-number cursor; zero starts at the latest revision
-      schema:
-        type: integer
-        format: int64
-        minimum: 0
-        default: 0
+      schema: {type: integer, format: int64, minimum: 0, default: 0}
     AfterSequence:
       name: afterSequence
       in: query
       description: Exclusive audit-sequence cursor; zero starts at the first event
-      schema:
-        type: integer
-        format: int64
-        minimum: 0
-        default: 0
+      schema: {type: integer, format: int64, minimum: 0, default: 0}
     HistoryLimit:
       name: limit
       in: query
       description: Maximum number of entries in one page
-      schema:
-        type: integer
-        minimum: 1
-        maximum: 100
-        default: 20
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
   schemas:
     CollectionInput:
       type: object
       additionalProperties: false
-      required:
-      - commit
-      - paths
+      required: [commit, paths]
       properties:
-        fullSource:
-          type: boolean
-          default: false
-          description: Also acquire a bounded exact Git bundle and whole-tree CodeGraph index as separate
-            immutable facts; requires configured CodeGraph worker
-        commit:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-          description: Exact supported SHA-1 commit object ID; no branch names or abbreviated IDs
+        fullSource: {type: boolean, default: false, description: Also acquire a bounded exact Git bundle and whole-tree CodeGraph index as separate immutable facts; requires configured CodeGraph worker}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$', description: Exact supported SHA-1 commit object ID; no branch names or abbreviated IDs}
         paths:
           type: array
           minItems: 1
           maxItems: 32
           uniqueItems: true
-          description: Unique explicit clean relative file paths, sorted bytewise before hashing; no traversal,
-            backslashes, leading dash, or control characters
-          items:
-            type: string
-            minLength: 1
-            maxLength: 1024
-            description: At most 1024 UTF-8 bytes
+          description: Unique explicit clean relative file paths, sorted bytewise before hashing; no traversal, backslashes, leading dash, or control characters
+          items: {type: string, minLength: 1, maxLength: 1024, description: At most 1024 UTF-8 bytes}
     ContextSource:
       type: object
       additionalProperties: false
-      required:
-      - workspaceId
-      - repositoryId
-      - provider
-      - host
-      - providerId
-      - locator
-      - profile
-      - integrationVersion
+      required: [workspaceId, repositoryId, provider, host, providerId, locator, profile, integrationVersion]
       properties:
-        workspaceId:
-          type: string
-        repositoryId:
-          type: string
-        provider:
-          type: string
-          enum:
-          - github
-          - gitlab
-        host:
-          type: string
-          enum:
-          - github.com
-          - gitlab.com
-        providerId:
-          type: string
-          pattern: ^[1-9][0-9]*$
-          description: Stable canonical provider repository or project ID
-        locator:
-          type: string
-          description: Operator-selected GitHub owner/name; empty for GitLab's stable numeric project
-            ID
-        profile:
-          type: string
-          enum:
-          - github-rest/2026-03-10
-          - gitlab-rest/v4-19.3
-        integrationVersion:
-          type: integer
-          format: int64
-          minimum: 1
-          description: Integration configuration version bound when the request was persisted
+        workspaceId: {type: string}
+        repositoryId: {type: string}
+        provider: {type: string, enum: [github, gitlab]}
+        host: {type: string, enum: [github.com, gitlab.com]}
+        providerId: {type: string, pattern: '^[1-9][0-9]*$', description: Stable canonical provider repository or project ID}
+        locator: {type: string, description: Operator-selected GitHub owner/name; empty for GitLab's stable numeric project ID}
+        profile: {type: string, enum: ['github-rest/2026-03-10', 'gitlab-rest/v4-19.3']}
+        integrationVersion: {type: integer, format: int64, minimum: 1, description: Integration configuration version bound when the request was persisted}
     CollectionExecution:
       type: object
       additionalProperties: false
-      required:
-      - namespace
-      - workflowId
-      - runId
-      - state
-      - observedAt
-      - current
-      description: Last recorded Temporal observation, separate from request facts and receipt coverage;
-        absence means progress is unknown
+      required: [namespace, workflowId, runId, state, observedAt, current]
+      description: Last recorded Temporal observation, separate from request facts and receipt coverage; absence means progress is unknown
       properties:
-        namespace:
-          type: string
-          description: Recorded Temporal namespace; part of immutable execution identity
-        workflowId:
-          type: string
-        runId:
-          type: string
-          description: Recorded workflow run identity; may be empty before a run is established
-        state:
-          type: string
-          description: Observed workflow state; does not establish artifact completeness
-          passing checks: null
-          approval: null
-          merge: null
-          or deployment: null
-        observedAt:
-          type: string
-          format: date-time
-        current:
-          type: boolean
-          description: True only for a supported observation less than 30 seconds old; false includes
-            stale
-          unavailable: null
-          or unresolved progress: null
+        namespace: {type: string, description: Recorded Temporal namespace; part of immutable execution identity}
+        workflowId: {type: string}
+        runId: {type: string, description: Recorded workflow run identity; may be empty before a run is established}
+        state: {type: string, description: Observed workflow state; does not establish artifact completeness, passing checks, approval, merge, or deployment}
+        observedAt: {type: string, format: date-time}
+        current: {type: boolean, description: True only for a supported observation less than 30 seconds old; false includes stale, unavailable, or unresolved progress}
     ContextArtifact:
       type: object
-      required:
-      - path
-      - state
+      required: [path, state]
       properties:
-        path:
-          type: string
-          maxLength: 1024
-        state:
-          type: string
-          enum:
-          - collected
-          - missing
-          - unavailable
-          - truncated
-        blobOID:
-          type: string
-          pattern: ^[a-fA-F0-9]{40}$
-          description: Present for collected/truncated source; absent for missing paths
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-          description: SHA-256 of complete UTF-8 text; present only when collected
-        text:
-          type: string
-          maxLength: 65536
-          description: Complete UTF-8 text of at most 64 KiB; omitted for missing/unavailable/truncated
-            artifacts
-        message:
-          type: string
-          maxLength: 1024
-          description: Required bounded reason for missing/unavailable/truncated artifacts; at most 1024
-            bytes
+        path: {type: string, maxLength: 1024}
+        state: {type: string, enum: [collected, missing, unavailable, truncated]}
+        blobOID: {type: string, pattern: '^[a-fA-F0-9]{40}$', description: Present for collected/truncated source; absent for missing paths}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$', description: SHA-256 of complete UTF-8 text; present only when collected}
+        text: {type: string, maxLength: 65536, description: Complete UTF-8 text of at most 64 KiB; omitted for missing/unavailable/truncated artifacts}
+        message: {type: string, maxLength: 1024, description: Required bounded reason for missing/unavailable/truncated artifacts; at most 1024 bytes}
     RemoteContextSnapshot:
       type: object
-      required:
-      - schemaVersion
-      - repository
-      - commit
-      - requestedRef
-      - collectedAt
-      - collector
-      - artifacts
-      - collectionId
-      - source
-      description: Version 2 remote snapshot; existing version 1 local snapshots and their immutable digests
-        remain unchanged. Combined artifact text is limited to 256 KiB.
+      required: [schemaVersion, repository, commit, requestedRef, collectedAt, collector, artifacts, collectionId, source]
+      description: Version 2 remote snapshot; existing version 1 local snapshots and their immutable digests remain unchanged. Combined artifact text is limited to 256 KiB.
       properties:
-        schemaVersion:
-          type: integer
-          const: 2
-        repository:
-          type: string
-          maxLength: 1024
-          description: Descriptive source label; canonical ownership comes from source and the stored
-            receipt
-        commit:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        requestedRef:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-          description: Equal to the selected full commit; no later reference resolution
-        collectedAt:
-          type: string
-          format: date-time
-        collector:
-          type: string
-          const: conductor-remote/v1
-        collectionId:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        source:
-          $ref: '#/components/schemas/ContextSource'
-        artifacts:
-          type: array
-          minItems: 1
-          maxItems: 32
-          items:
-            $ref: '#/components/schemas/ContextArtifact'
+        schemaVersion: {type: integer, const: 2}
+        repository: {type: string, maxLength: 1024, description: Descriptive source label; canonical ownership comes from source and the stored receipt}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$'}
+        requestedRef: {type: string, pattern: '^[a-f0-9]{40}$', description: Equal to the selected full commit; no later reference resolution}
+        collectedAt: {type: string, format: date-time}
+        collector: {type: string, const: conductor-remote/v1}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        source: {$ref: '#/components/schemas/ContextSource'}
+        artifacts: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/ContextArtifact'}}
     CollectionReceipt:
       type: object
       additionalProperties: false
-      required:
-      - id
-      - digest
-      - snapshot
-      - createdAt
-      description: First committed immutable result for this collection. Workflow completion can retain
-        missing, unavailable, or truncated source.
+      required: [id, digest, snapshot, createdAt]
+      description: First committed immutable result for this collection. Workflow completion can retain missing, unavailable, or truncated source.
       properties:
-        id:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-          description: Equal to the collection ID
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-          description: SHA-256 digest of the persisted snapshot representation
-        snapshot:
-          $ref: '#/components/schemas/RemoteContextSnapshot'
-        createdAt:
-          type: string
-          format: date-time
+        id: {type: string, pattern: '^[a-f0-9]{32}$', description: Equal to the collection ID}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$', description: SHA-256 digest of the persisted snapshot representation}
+        snapshot: {$ref: '#/components/schemas/RemoteContextSnapshot'}
+        createdAt: {type: string, format: date-time}
     Collection:
       type: object
       additionalProperties: false
-      required:
-      - id
-      - workspaceId
-      - repositoryId
-      - requesterId
-      - input
-      - inputDigest
-      - source
-      - createdAt
+      required: [id, workspaceId, repositoryId, requesterId, input, inputDigest, source, createdAt]
       properties:
-        id:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        workspaceId:
-          type: string
-        repositoryId:
-          type: string
-        requesterId:
-          type: string
-          description: Server-derived principal ID
-          retained as historical attribution: null
-        input:
-          $ref: '#/components/schemas/CollectionInput'
-        inputDigest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        source:
-          $ref: '#/components/schemas/ContextSource'
-        createdAt:
-          type: string
-          format: date-time
-        cancelRequestedAt:
-          type: string
-          format: date-time
-          description: Durable cancellation intent; not confirmation that execution stopped
-        receipt:
-          $ref: '#/components/schemas/CollectionReceipt'
-        fullSource:
-          $ref: '#/components/schemas/SourceBundleSummary'
-        execution:
-          $ref: '#/components/schemas/CollectionExecution'
+        id: {type: string, pattern: '^[a-f0-9]{32}$'}
+        workspaceId: {type: string}
+        repositoryId: {type: string}
+        requesterId: {type: string, description: Server-derived principal ID, retained as historical attribution}
+        input: {$ref: '#/components/schemas/CollectionInput'}
+        inputDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        source: {$ref: '#/components/schemas/ContextSource'}
+        createdAt: {type: string, format: date-time}
+        cancelRequestedAt: {type: string, format: date-time, description: Durable cancellation intent; not confirmation that execution stopped}
+        receipt: {$ref: '#/components/schemas/CollectionReceipt'}
+        fullSource: {$ref: '#/components/schemas/SourceBundleSummary'}
+        execution: {$ref: '#/components/schemas/CollectionExecution'}
     CollectionSummary:
       type: object
       additionalProperties: false
-      required:
-      - id
-      - workspaceId
-      - repositoryId
-      - requesterId
-      - commit
-      - createdAt
+      required: [id, workspaceId, repositoryId, requesterId, commit, createdAt]
       properties:
-        id:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        workspaceId:
-          type: string
-        repositoryId:
-          type: string
-        requesterId:
-          type: string
-        commit:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        createdAt:
-          type: string
-          format: date-time
-        cancelRequestedAt:
-          type: string
-          format: date-time
-        receiptDigest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-          description: Present only when an immutable receipt exists; inspect the collection for actual
-            coverage
-        execution:
-          $ref: '#/components/schemas/CollectionExecution'
+        id: {type: string, pattern: '^[a-f0-9]{32}$'}
+        workspaceId: {type: string}
+        repositoryId: {type: string}
+        requesterId: {type: string}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$'}
+        createdAt: {type: string, format: date-time}
+        cancelRequestedAt: {type: string, format: date-time}
+        receiptDigest: {type: string, pattern: '^[a-f0-9]{64}$', description: Present only when an immutable receipt exists; inspect the collection for actual coverage}
+        execution: {$ref: '#/components/schemas/CollectionExecution'}
     CollectionPage:
       type: object
       additionalProperties: false
-      required:
-      - collections
+      required: [collections]
       properties:
-        collections:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/CollectionSummary'
-        nextBefore:
-          type: string
-          maxLength: 1024
-          description: Opaque cursor when further matching records exist; omitted otherwise
+        collections: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/CollectionSummary'}}
+        nextBefore: {type: string, maxLength: 1024, description: Opaque cursor when further matching records exist; omitted otherwise}
     BrowserSession:
       type: object
-      required:
-      - session
-      - csrfToken
+      required: [session, csrfToken]
       properties:
-        session:
-          $ref: '#/components/schemas/Session'
-        csrfToken:
-          type: string
-          pattern: ^[A-Za-z0-9_-]{43}$
+        session: {$ref: '#/components/schemas/Session'}
+        csrfToken: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
     Session:
       type: object
-      required:
-      - principal
-      - workspaces
-      - truncated
+      required: [principal, workspaces, truncated]
       properties:
         principal:
           type: object
-          required:
-          - id
-          - kind
+          required: [id, kind]
           properties:
-            id:
-              type: string
-            kind:
-              type: string
-              enum:
-              - human
-              - agent
+            id: {type: string}
+            kind: {type: string, enum: [human, agent]}
         workspaces:
           type: array
           maxItems: 100
           items:
             type: object
-            required:
-            - id
-            - name
+            required: [id, name]
             properties:
-              id:
-                type: string
-              name:
-                type: string
-        truncated:
-          type: boolean
+              id: {type: string}
+              name: {type: string}
+        truncated: {type: boolean}
     ManagedRepository:
       type: object
-      required:
-      - id
-      - workspaceId
-      - provider
-      - host
-      - providerId
-      - name
-      - canRead
-      - canAuthor
-      - canApprove
+      required: [id, workspaceId, provider, host, providerId, name, canRead, canAuthor, canApprove]
       properties:
-        id:
-          type: string
-        workspaceId:
-          type: string
-        provider:
-          type: string
-          enum:
-          - github
-          - gitlab
-        host:
-          type: string
-        providerId:
-          type: string
-        name:
-          type: string
-        canRead:
-          type: boolean
-        canAuthor:
-          type: boolean
-        canApprove:
-          type: boolean
-          description: Always false for an agent principal
+        id: {type: string}
+        workspaceId: {type: string}
+        provider: {type: string, enum: [github, gitlab]}
+        host: {type: string}
+        providerId: {type: string}
+        name: {type: string}
+        canRead: {type: boolean}
+        canAuthor: {type: boolean}
+        canApprove: {type: boolean, description: Always false for an agent principal}
     RepositoryPage:
       type: object
-      required:
-      - repositories
-      - truncated
+      required: [repositories, truncated]
       properties:
-        repositories:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/ManagedRepository'
-        truncated:
-          type: boolean
+        repositories: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ManagedRepository'}}
+        truncated: {type: boolean}
     ChangeSummary:
       type: object
-      required:
-      - id
-      - revision
-      - digest
-      - author
-      - createdAt
-      - approved
+      required: [id, revision, digest, author, createdAt, approved]
       additionalProperties: false
       properties:
-        id:
-          type: string
-        workspaceId:
-          type: string
-          description: Immutable ownership; omitted for local packages
-        repositoryId:
-          type: string
-          description: Canonical repository ownership; omitted for local packages
-        revision:
-          type: integer
-          format: int64
-          minimum: 1
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        author:
-          type: string
+        id: {type: string}
+        workspaceId: {type: string, description: Immutable ownership; omitted for local packages}
+        repositoryId: {type: string, description: Canonical repository ownership; omitted for local packages}
+        revision: {type: integer, format: int64, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        author: {type: string}
         createdAt:
           type: string
           format: date-time
@@ -1923,131 +1017,49 @@ components:
           description: Latest revision's repository identity when present as a nonempty string
     ChangePage:
       type: object
-      required:
-      - changes
+      required: [changes]
       additionalProperties: false
       properties:
-        changes:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/ChangeSummary'
+        changes: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ChangeSummary'}}
         nextBefore:
           type: string
           maxLength: 1024
           description: Opaque cursor when further matching changes exist; otherwise omitted
-    ContentCommand:
-      type: object
-      additionalProperties: false
-      required:
-      - content
-      properties:
-        content:
-          type: object
-          additionalProperties: true
-    Package:
-      type: object
-      required:
-      - id
-      - revision
-      - approved
-      properties:
-        id:
-          type: string
-        workspaceId:
-          type: string
-        repositoryId:
-          type: string
-        revision:
-          $ref: '#/components/schemas/Revision'
-        approval:
-          $ref: '#/components/schemas/Approval'
-        approved:
-          type: boolean
+    ContentCommand: {type: object, additionalProperties: false, required: [content], properties: {content: {type: object, additionalProperties: true}}}
+    Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, workspaceId: {type: string}, repositoryId: {type: string}, revision: {$ref: '#/components/schemas/Revision'}, approval: {$ref: '#/components/schemas/Approval'}, approved: {type: boolean}}}
     Revision:
       type: object
-      required:
-      - changeId
-      - number
-      - schemaVersion
-      - digest
-      - content
-      - author
-      - createdAt
+      required: [changeId, number, schemaVersion, digest, content, author, createdAt]
       additionalProperties: false
       properties:
-        changeId:
-          type: string
-        number:
-          type: integer
-          format: int64
-          minimum: 1
-        schemaVersion:
-          type: integer
-          minimum: 1
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        content:
-          type: object
-          additionalProperties: true
-        author:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-        submittedAt:
-          type: string
-          format: date-time
+        changeId: {type: string}
+        number: {type: integer, format: int64, minimum: 1}
+        schemaVersion: {type: integer, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        content: {type: object, additionalProperties: true}
+        author: {type: string}
+        createdAt: {type: string, format: date-time}
+        submittedAt: {type: string, format: date-time}
     Approval:
       type: object
-      required:
-      - changeId
-      - revision
-      - digest
-      - reviewer
-      - createdAt
+      required: [changeId, revision, digest, reviewer, createdAt]
       additionalProperties: false
       properties:
-        changeId:
-          type: string
-        revision:
-          type: integer
-          format: int64
-          minimum: 1
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        reviewer:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
+        changeId: {type: string}
+        revision: {type: integer, format: int64, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        reviewer: {type: string}
+        createdAt: {type: string, format: date-time}
     RevisionSummary:
       type: object
-      required:
-      - number
-      - digest
-      - author
-      - createdAt
-      - approvalCount
+      required: [number, digest, author, createdAt, approvalCount]
       additionalProperties: false
       properties:
-        number:
-          type: integer
-          format: int64
-          minimum: 1
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        author:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-        submittedAt:
-          type: string
-          format: date-time
+        number: {type: integer, format: int64, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        author: {type: string}
+        createdAt: {type: string, format: date-time}
+        submittedAt: {type: string, format: date-time}
         approvalCount:
           type: integer
           format: int64
@@ -2055,15 +1067,10 @@ components:
           description: Total retained approval records; not an effective approval decision
     HistoryPage:
       type: object
-      required:
-      - revisions
+      required: [revisions]
       additionalProperties: false
       properties:
-        revisions:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/RevisionSummary'
+        revisions: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/RevisionSummary'}}
         nextBeforeRevision:
           type: integer
           format: int64
@@ -2071,356 +1078,155 @@ components:
           description: Last returned revision number when more revisions exist; otherwise omitted
     RevisionRecord:
       type: object
-      required:
-      - revision
-      - approvals
-      - approvalsTruncated
+      required: [revision, approvals, approvalsTruncated]
       additionalProperties: false
       properties:
-        revision:
-          $ref: '#/components/schemas/Revision'
-        approvals:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/Approval'
+        revision: {$ref: '#/components/schemas/Revision'}
+        approvals: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/Approval'}}
         approvalsTruncated:
           type: boolean
           description: True when more than 100 historical approval records exist
     AuditEvent:
       type: object
-      required:
-      - sequence
-      - changeId
-      - eventType
-      - actor
-      - revision
-      - data
-      - createdAt
+      required: [sequence, changeId, eventType, actor, revision, data, createdAt]
       additionalProperties: false
       properties:
-        sequence:
-          type: integer
-          format: int64
-          minimum: 1
-        changeId:
-          type: string
-        eventType:
-          type: string
-        actor:
-          type: string
-        revision:
-          type: integer
-          format: int64
-          minimum: 1
-        data:
-          type: object
-          additionalProperties: true
-        createdAt:
-          type: string
-          format: date-time
+        sequence: {type: integer, format: int64, minimum: 1}
+        changeId: {type: string}
+        eventType: {type: string}
+        actor: {type: string}
+        revision: {type: integer, format: int64, minimum: 1}
+        data: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
     AuditPage:
       type: object
-      required:
-      - events
+      required: [events]
       additionalProperties: false
       properties:
-        events:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/AuditEvent'
+        events: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/AuditEvent'}}
         nextAfterSequence:
           type: integer
           format: int64
           minimum: 1
           description: Last returned event sequence when more events exist; otherwise omitted
-    Error:
-      type: object
-      required:
-      - error
-      properties:
-        error:
-          type: object
-          required:
-          - code
-          - message
-          - correlationId
-          properties:
-            code:
-              type: string
-            message:
-              type: string
-            correlationId:
-              type: string
+    Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, correlationId], properties: {code: {type: string}, message: {type: string}, correlationId: {type: string}}}}}
+
     GraphInput:
       type: object
       additionalProperties: false
-      required:
-      - sources
+      required: [sources]
       properties:
-        sources:
-          type: array
-          minItems: 1
-          maxItems: 16
-          items:
-            $ref: '#/components/schemas/GraphSource'
+        sources: {type: array, minItems: 1, maxItems: 16, items: {$ref: '#/components/schemas/GraphSource'}}
     GraphSource:
       type: object
       additionalProperties: false
-      required:
-      - repositoryId
-      - collectionId
-      - digest
+      required: [repositoryId, collectionId, digest]
       properties:
-        repositoryId:
-          type: string
-          minLength: 1
-          maxLength: 128
-        collectionId:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        fullSourceDigest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-          description: Explicitly inspected immutable whole-repository bundle digest; omitted selects
-            version 2 receipt paths
+        repositoryId: {type: string, minLength: 1, maxLength: 128}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        fullSourceDigest: {type: string, pattern: '^[a-f0-9]{64}$', description: Explicitly inspected immutable whole-repository bundle digest; omitted selects version 2 receipt paths}
     GraphSourceRecord:
       type: object
-      required:
-      - repositoryId
-      - collectionId
-      - digest
-      - commit
-      - collectedAt
-      - freshness
+      required: [repositoryId, collectionId, digest, commit, collectedAt, freshness]
       properties:
-        repositoryId:
-          type: string
-        collectionId:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        fullSourceDigest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-          description: Explicitly inspected immutable whole-repository bundle digest; omitted selects
-            version 2 receipt paths
-        commit:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        collectedAt:
-          type: string
-          format: date-time
-        freshness:
-          type: string
-          const: unknown
+        repositoryId: {type: string}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        fullSourceDigest: {type: string, pattern: '^[a-f0-9]{64}$', description: Explicitly inspected immutable whole-repository bundle digest; omitted selects version 2 receipt paths}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$'}
+        collectedAt: {type: string, format: date-time}
+        freshness: {type: string, const: unknown}
     GraphNode:
       type: object
-      required:
-      - id
-      - repositoryId
-      - collectionId
-      - kind
-      - name
+      required: [id, repositoryId, collectionId, kind, name]
       properties:
-        id:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        repositoryId:
-          type: string
-        collectionId:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        kind:
-          type: string
-          maxLength: 128
-        name:
-          type: string
-          maxLength: 1024
-        path:
-          type: string
-          maxLength: 1024
-        artifactDigest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        line:
-          type: integer
-          minimum: 0
+        id: {type: string, pattern: '^[a-f0-9]{64}$'}
+        repositoryId: {type: string}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        kind: {type: string, maxLength: 128}
+        name: {type: string, maxLength: 1024}
+        path: {type: string, maxLength: 1024}
+        artifactDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        line: {type: integer, minimum: 0}
     GraphEdge:
       type: object
-      required:
-      - from
-      - to
-      - kind
-      - evidence
+      required: [from, to, kind, evidence]
       properties:
-        from:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        to:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        kind:
-          type: string
-        evidence:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        provenance:
-          type: string
+        from: {type: string, pattern: '^[a-f0-9]{64}$'}
+        to: {type: string, pattern: '^[a-f0-9]{64}$'}
+        kind: {type: string}
+        evidence: {type: string, pattern: '^[a-f0-9]{64}$'}
+        provenance: {type: string}
     GraphGap:
       type: object
-      required:
-      - repositoryId
-      - state
-      - message
+      required: [repositoryId, state, message]
       properties:
-        repositoryId:
-          type: string
-        path:
-          type: string
-        state:
-          type: string
-        message:
-          type: string
+        repositoryId: {type: string}
+        path: {type: string}
+        state: {type: string}
+        message: {type: string}
     GraphSnapshot:
       type: object
-      required:
-      - schemaVersion
-      - indexer
-      - sources
-      - nodes
-      - edges
-      - gaps
-      - truncated
+      required: [schemaVersion, indexer, sources, nodes, edges, gaps, truncated]
       properties:
-        schemaVersion:
-          type: integer
-          const: 1
-        indexer:
-          type: string
-        sources:
-          type: array
-          minItems: 1
-          maxItems: 16
-          items:
-            $ref: '#/components/schemas/GraphSourceRecord'
-        nodes:
-          type: array
-          maxItems: 4096
-          items:
-            $ref: '#/components/schemas/GraphNode'
-        edges:
-          type: array
-          maxItems: 8192
-          items:
-            $ref: '#/components/schemas/GraphEdge'
-        gaps:
-          type: array
-          maxItems: 512
-          items:
-            $ref: '#/components/schemas/GraphGap'
-        truncated:
-          type: boolean
+        schemaVersion: {type: integer, const: 1}
+        indexer: {type: string}
+        sources: {type: array, minItems: 1, maxItems: 16, items: {$ref: '#/components/schemas/GraphSourceRecord'}}
+        nodes: {type: array, maxItems: 4096, items: {$ref: '#/components/schemas/GraphNode'}}
+        edges: {type: array, maxItems: 8192, items: {$ref: '#/components/schemas/GraphEdge'}}
+        gaps: {type: array, maxItems: 512, items: {$ref: '#/components/schemas/GraphGap'}}
+        truncated: {type: boolean}
     RepositoryGraph:
       type: object
-      required:
-      - id
-      - workspaceId
-      - creatorId
-      - digest
-      - createdAt
-      - snapshot
+      required: [id, workspaceId, creatorId, digest, createdAt, snapshot]
       properties:
-        id:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        workspaceId:
-          type: string
-        creatorId:
-          type: string
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        createdAt:
-          type: string
-          format: date-time
-        snapshot:
-          $ref: '#/components/schemas/GraphSnapshot'
+        id: {type: string, pattern: '^[a-f0-9]{32}$'}
+        workspaceId: {type: string}
+        creatorId: {type: string}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        createdAt: {type: string, format: date-time}
+        snapshot: {$ref: '#/components/schemas/GraphSnapshot'}
     RepositoryGraphPage:
       type: object
-      required:
-      - graphs
+      required: [graphs]
       properties:
         graphs:
           type: array
           maxItems: 100
           items:
             type: object
-            required:
-            - id
-            - digest
-            - createdAt
+            required: [id, digest, createdAt]
             properties:
-              id:
-                type: string
-                pattern: ^[a-f0-9]{32}$
-              digest:
-                type: string
-                pattern: ^[a-f0-9]{64}$
-              createdAt:
-                type: string
-                format: date-time
-        nextBefore:
-          type: string
-          maxLength: 1024
+              id: {type: string, pattern: '^[a-f0-9]{32}$'}
+              digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+              createdAt: {type: string, format: date-time}
+        nextBefore: {type: string, maxLength: 1024}
     GraphQueryResult:
       type: object
-      required:
-      - graphId
-      - digest
-      - indexer
-      - sources
-      - nodes
-      - edges
-      - gaps
-      - truncated
+      required: [graphId, digest, indexer, sources, nodes, edges, gaps, truncated]
       properties:
-        graphId:
-          type: string
-          pattern: ^[a-f0-9]{32}$
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        indexer:
-          type: string
-        sources:
-          type: array
-          maxItems: 16
-          items:
-            $ref: '#/components/schemas/GraphSourceRecord'
-        nodes:
-          type: array
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/GraphNode'
-        edges:
-          type: array
-          maxItems: 8192
-          items:
-            $ref: '#/components/schemas/GraphEdge'
-        gaps:
-          type: array
-          maxItems: 512
-          items:
-            $ref: '#/components/schemas/GraphGap'
-        truncated:
-          type: boolean
+        graphId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        indexer: {type: string}
+        sources: {type: array, maxItems: 16, items: {$ref: '#/components/schemas/GraphSourceRecord'}}
+        nodes: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/GraphNode'}}
+        edges: {type: array, maxItems: 8192, items: {$ref: '#/components/schemas/GraphEdge'}}
+        gaps: {type: array, maxItems: 512, items: {$ref: '#/components/schemas/GraphGap'}}
+        truncated: {type: boolean}
+
+    SourceBundleSummary:
+      type: object
+      required: [digest, tree, commit, size, fileCount, indexedFiles, truncated, createdAt]
+      properties:
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        tree: {type: string, pattern: '^[a-f0-9]{40}$'}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$'}
+        size: {type: integer, minimum: 1, maximum: 33554432}
+        fileCount: {type: integer, minimum: 0}
+        indexedFiles: {type: integer, minimum: 0, maximum: 512}
+        truncated: {type: boolean}
+        createdAt: {type: string, format: date-time}
     ExecutionCapabilities:
       type: object
       additionalProperties: false
@@ -2806,43 +1612,6 @@ components:
         nextBefore:
           type: string
           maxLength: 1024
-    SourceBundleSummary:
-      type: object
-      required:
-      - digest
-      - tree
-      - commit
-      - size
-      - fileCount
-      - indexedFiles
-      - truncated
-      - createdAt
-      properties:
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        tree:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        commit:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        size:
-          type: integer
-          minimum: 1
-          maximum: 33554432
-        fileCount:
-          type: integer
-          minimum: 0
-        indexedFiles:
-          type: integer
-          minimum: 0
-          maximum: 512
-        truncated:
-          type: boolean
-        createdAt:
-          type: string
-          format: date-time
     ExecutionProfile:
       type: object
       additionalProperties: false
