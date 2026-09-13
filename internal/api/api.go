@@ -32,7 +32,9 @@ type API struct {
 func New(s packageService) http.Handler {
 	a := &API{service: s}
 	a.historyService, _ = s.(historyService)
-	return requestID(routes(a))
+	mux := routes(a)
+	mux.HandleFunc("GET /api/v1/auth/config", authenticationConfig("local", false))
+	return requestID(mux)
 }
 
 func routes(a *API) *http.ServeMux {
