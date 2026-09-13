@@ -28,7 +28,8 @@ avoids building three divergent state machines in the API, TUI, and web client.
   begin only when an external workflow operation exists in Milestone 2.
 - Shared access requires verified identity and repository authorization. Feature
   003 supplies these for API/CLI review; the local identity header confers no shared
-  rights. Feature 004 adds browser login; authenticated TUI access remains pending.
+  rights. Feature 004 adds browser login; Feature 005 adds authenticated terminal
+  review using the same permission boundary.
 - The UI is an inspector and command surface, not an alternate source of truth.
 
 ## Next increment
@@ -46,8 +47,10 @@ compatibility claim.
 
 Feature 004 adds browser OIDC sign-in using those same service commands and
 repository capabilities, with durable sessions and cleared inspection on access
-changes. Authenticated terminal review is the next interface increment. The local revision-pinned context collector remains
-available independently of those login flows.
+changes. [Feature 005](../005-authenticated-terminal/spec.md) adds authenticated
+terminal review with a fixed identity and scope, capability discovery, and explicit
+recovery. The local revision-pinned context collector remains available independently
+of those login flows.
 
 Introduce the durable workflow outbox when the first external workflow operation
 exists. Execution remains disabled until identity, authorization, context evidence,
@@ -63,8 +66,9 @@ work. See the [work-tracking plan](../../docs/architecture/work-tracking.md).
 
 The [AI-DLC inspiration and plan review](../../docs/architecture/aidlc-plan-review.md)
 proposes Milestone 1 closure, authenticated review with history and pinned
-context/evidence, then one durable execution workflow. Authenticated API/CLI review
-is now implemented; the wider interface and execution sequence remains a proposal.
+context/evidence, then one durable execution workflow. Authenticated review is now
+implemented across the API, CLI, browser, and terminal; the external execution
+sequence remains a proposal.
 It also reviews human perspectives, stage contracts, verification, recovery, and
 knowledge reuse alongside the planned Spec Kit and ADRKit integrations. These are
 proposals for architectural review; they do not grant approval or enable execution.

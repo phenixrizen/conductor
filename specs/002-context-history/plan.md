@@ -24,4 +24,5 @@ permissions to the existing discovery, history, revision, audit, and review comm
 paths. Source snapshot labels remain evidence; canonical ownership lives outside
 immutable content. Existing local packages retain their history without acquiring
 shared authority. Feature 004 adds browser sign-in and protected sessions through
-these same context/history commands. Interactive terminal authentication follows.
+these same context/history commands. Feature 005 adds authenticated terminal review
+with fixed identity and scope through the same permission boundary.

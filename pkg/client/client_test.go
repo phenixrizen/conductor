@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -29,6 +30,52 @@ func TestReturnsTypedAPIError(t *testing.T) {
 	}
 	if apiErr.StatusCode != http.StatusConflict || apiErr.Code != "revision_conflict" || apiErr.CorrelationID != "request-1" {
 		t.Fatalf("unexpected error: %#v", apiErr)
+	}
+}
+
+func TestErrorStatusSurvivesInvalidOrOversizedBodies(t *testing.T) {
+	for _, status := range []int{401, 403, 503} {
+		for _, body := range []string{"<html>synthetic denial</html>", strings.Repeat("x", (2<<20)+1)} {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-Correlation-ID", "synthetic-error")
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, body)
+			}))
+			c, err := NewAuthenticated(server.URL, "synthetic.token", "team", "repository")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Session(context.Background())
+			server.Close()
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != status || apiErr.Code != "invalid_error_response" || apiErr.CorrelationID != "synthetic-error" {
+				t.Fatalf("lost error status %d: %v", status, err)
+			}
+			if strings.Contains(err.Error(), "synthetic denial") || len(err.Error()) > 256 {
+				t.Fatal("invalid response body leaked into diagnostic")
+			}
+		}
+	}
+}
+
+type errorBody struct{}
+
+func (errorBody) Read([]byte) (int, error) { return 0, context.Canceled }
+func (errorBody) Close() error             { return nil }
+
+type deniedTransport struct{}
+
+func (deniedTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 401, Header: make(http.Header), Body: errorBody{}}, nil
+}
+
+func TestDeniedBodyReadRetainsStatusAndCancellation(t *testing.T) {
+	c := New("http://127.0.0.1", "local")
+	c.HTTP.Transport = deniedTransport{}
+	_, err := c.Session(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 401 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("body failure lost status or cause: %v", err)
 	}
 }
 

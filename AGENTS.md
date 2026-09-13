@@ -26,6 +26,9 @@ authenticated workspace access. Read these before changing behavior:
    provisioning, and deployment limits.
 10. `specs/004-browser-sign-in/spec.md` and `plan.md` for browser sessions and
     `docs/operations/browser-sign-in.md` for provider and HTTPS setup.
+11. `specs/005-authenticated-terminal/spec.md` and `plan.md` for authenticated
+    terminal identity, scope, and recovery; `docs/operations/terminal-review.md`
+    for controls and real PTY acceptance.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -184,9 +187,9 @@ packages to mirror the target diagram.
   from a configured HTTPS issuer and audience. Do not claim arbitrary JWT, ID-token,
   opaque-token, or identity-provider compatibility from synthetic issuer tests.
 - Keep access tokens out of logs, actor fields, command-line arguments, and
-  repository commands. The noninteractive CLI reads an explicitly selected token
-  file; the browser uses an opaque server session. Authenticated TUI access is
-  the next interface increment.
+  repository commands. CLI and TUI commands read an explicitly selected token
+  file; the browser uses an opaque server session. The terminal reads its token
+  once for the session. Do not claim interactive CLI login or token refresh.
 - Browser login uses a fixed HTTPS origin, authorization code flow, S256 PKCE,
   browser-bound one-use state, and nonce validation. ID tokens authenticate login
   only; never treat them as API bearer tokens or persist provider tokens.
@@ -226,11 +229,20 @@ packages to mirror the target diagram.
   browser tooling is available. If unavailable, report that limitation.
 - Commit reviewed frontend lockfiles and use reproducible installs. Do not fabricate
   a lockfile or checksum when registries are unavailable.
-- The Bubble Tea session uses a fixed local actor and per-operation deadlines.
+- The Bubble Tea session keeps one identity and uses per-operation deadlines.
   Capture the displayed revision/digest before confirmation; never refresh inside
   a mutation. Conflicts and uncertain mutation outcomes require explicit inspection
   before another mutation. Cancel pending work when the session ends and ignore
   superseded asynchronous responses.
+- An authenticated terminal requires a selected workspace and canonical repository,
+  resolves its principal and capabilities through server discovery, and never uses
+  a local actor. Keep its credential and scope fixed until exit. Missing or truncated
+  discovery cannot invent access. Human/agent kind and capabilities govern controls;
+  the server still authorizes every command.
+- On terminal authentication or permission failure, clear inspection, capabilities,
+  imported drafts, and confirmation state. Explicit `r` recovery rechecks access with
+  the same credential before a fresh inspection. Never revalidate or load new content
+  inside an approval action, and never silently replace the session's token.
 - Import terminal package content only from an explicitly selected, bounded JSON
   file. Show a preview before replacing content and preserve unknown fields in the
   imported document. Escape terminal control characters in content and errors;
@@ -296,7 +308,11 @@ existing development volume to prove recovery. Missing opt-in is an explicit ski
 missing dependencies after opt-in are a failure.
 
 For terminal workflow changes, run the real PTY acceptance in `tests/terminal/`
-against an explicitly configured local API and compiled CLI. See
+against an explicitly configured local API and compiled CLI. Also opt into the
+signed-issuer authenticated PTY acceptance with `CONDUCTOR_TEST_TERMINAL=1` and
+`CONDUCTOR_TEST_DATABASE_URL`. It owns an isolated schema and temporary API/CLI
+resources; it must preserve existing development data. Missing opt-in is a skip;
+missing dependencies after opt-in are a failure. See
 `docs/operations/terminal-review.md` for controls, limits, and acceptance commands.
 
 Before finishing:

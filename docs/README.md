@@ -16,13 +16,15 @@ not mistaken for working capabilities.
 | [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
-| [Terminal review](operations/terminal-review.md) | Interactive shared review, JSON imports, exact approval, and conflict recovery |
+| [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, JSON imports, exact approval, and access recovery |
+| [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |
+| [Feature 005 plan](../specs/005-authenticated-terminal/plan.md) | Terminal implementation and signed-issuer real PTY validation |
 | [Browser sign-in](operations/browser-sign-in.md) | Configure OIDC login, sessions, and shared browser review |
 | [Feature 004 specification](../specs/004-browser-sign-in/spec.md) | Browser identity, session, and exact review contracts |
-| [Feature 004 plan](../specs/004-browser-sign-in/plan.md) | Browser implementation sequence and authenticated terminal follow-up |
-| [Authenticated review](operations/authenticated-review.md) | Configure identity, provision permissions, and review through the API/CLI |
+| [Feature 004 plan](../specs/004-browser-sign-in/plan.md) | Browser implementation sequence and later workflow boundaries |
+| [Authenticated review](operations/authenticated-review.md) | Configure identity, provision permissions, and review through the API, CLI, and terminal |
 | [Feature 003 specification](../specs/003-workspace-access/spec.md) | Workspace isolation, canonical repositories, and human/agent access contracts |
-| [Feature 003 plan](../specs/003-workspace-access/plan.md) | Authentication implementation scope and next interface increment |
+| [Feature 003 plan](../specs/003-workspace-access/plan.md) | Authentication implementation scope and additional review interfaces |
 | [Feature 002 specification](../specs/002-context-history/spec.md) | Shared discovery, historical review, and context evidence contracts |
 | [Local development](operations/local-development.md) | Run, configure, exercise, test, and troubleshoot the current slice |
 | [Feature 001 specification](../specs/001-work-package-review/spec.md) | Normative behavior and acceptance criteria |

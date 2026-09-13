@@ -132,12 +132,19 @@ class RecordingProxy:
 
 
 class Terminal:
-    def __init__(self, binary, proxy_url, args):
+    def __init__(self, binary, proxy_url, args, environment_overrides=None):
         self.master, slave = pty.openpty()
         self.output = bytearray()
         self.resize(120, 45)
         environment = os.environ.copy()
         environment.update({"CONDUCTOR_URL": proxy_url, "TERM": "xterm-256color"})
+        # Authenticated acceptance selects a credential file for each child,
+        # without mutating the parent process or placing credentials in argv.
+        for name, value in (environment_overrides or {}).items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
         try:
             self.process = subprocess.Popen(
                 [binary, "tui", *args],
