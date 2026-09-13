@@ -10,6 +10,7 @@ not mistaken for working capabilities.
 | Document | Purpose |
 |---|---|
 | [System architecture](architecture/system.md) | Product boundaries, target components, trust boundaries, and delivery roadmap |
+| [Release operations](operations/release.md) | Build reproducible archives, configure services, migrate, back up and restore shared data |
 | [Full release contract](full-release.md) | Required complete-platform capabilities, evidence gates, and stacked PR order |
 | [MCP setup](operations/mcp.md) | Connect agents to shared review and context through authenticated stdio |
 | [MCP specification](../specs/008-mcp/spec.md) | Fixed identity, strict tool inputs, bounded output, and shared authorization |

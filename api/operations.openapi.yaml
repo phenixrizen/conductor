@@ -1,0 +1,69 @@
+openapi: 3.1.0
+info:
+  title: Conductor loopback operator diagnostics
+  version: '1'
+  description: |
+    Optional separate literal-loopback listener. No public API authorization is
+    provided here. An operator proxy must not expose it to public clients.
+servers:
+  - url: http://127.0.0.1:9090
+paths:
+  /healthz:
+    get:
+      operationId: processLiveness
+      summary: Process can answer requests
+      responses:
+        '200':
+          description: Alive; does not prove dependency availability
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: alive}
+                additionalProperties: false
+  /readyz:
+    get:
+      operationId: databaseReadiness
+      summary: Database and release outbox schema availability
+      responses:
+        '200':
+          description: Database diagnostics available; no worker or provider assertion
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: ready}
+                additionalProperties: false
+        '503':
+          description: Database, required schema or bounded diagnostic capacity unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: unavailable}
+                additionalProperties: false
+  /metrics:
+    get:
+      operationId: aggregateMetrics
+      summary: Source-free Prometheus process and outbox metrics
+      responses:
+        '200':
+          description: |
+            Request count by fixed status class, aggregate duration, in-flight
+            requests, uptime, database readiness, pending and unresolved outbox
+            counts and oldest pending age by fixed workflow category. No resource
+            IDs, actors, request paths or provider/source labels.
+          content:
+            text/plain:
+              schema: {type: string}
+        '503':
+          description: Diagnostic read unavailable; no stale metrics are fabricated
+          content:
+            text/plain:
+              schema: {type: string}
