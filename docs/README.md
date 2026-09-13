@@ -9,15 +9,16 @@ not mistaken for working capabilities.
 
 | Document | Purpose |
 |---|---|
-| [System architecture](architecture/system.md) | Product boundaries, target components, trust boundaries, and delivery roadmap |
+| [System architecture](architecture/system.md) | Implemented components, shared workflows, trust boundaries and tested limits |
 | [Release operations](operations/release.md) | Build reproducible archives, configure services, migrate, back up and restore shared data |
 | [Full release contract](full-release.md) | Required complete-platform capabilities, evidence gates, and stacked PR order |
-| [MCP setup](operations/mcp.md) | Connect agents to shared review and context through authenticated stdio |
+| [MCP setup](operations/mcp.md) | Connect agents to shared source, plans, artifacts, delivery, tracker and runtime evidence through authenticated stdio |
 | [MCP specification](../specs/008-mcp/spec.md) | Fixed identity, strict tool inputs, bounded output, and shared authorization |
 | [MCP integration research](architecture/mcp-integration-research.md) | Pinned SDK, protocol, Go toolchain, and tested limits |
 | [Repository graph](architecture/repository-graph.md) | Immutable shared graphs, all-source permission checks, and explicit coverage |
 | [Graph setup](operations/repository-graph.md) | Build the pinned CodeGraph image and query shared repository relationships |
 | [CodeGraph research](architecture/codegraph-integration-research.md) | Selected upstream, tested Rust extraction, and version-specific adapter limits |
+| [Verification criteria](operations/verification-criteria.md) | Exact approved criterion links, independent check evidence and explicit unverified coverage |
 | [Coding workers](operations/coding-workers.md) | Isolated producers, cumulative patches, independent checks, and credential boundaries |
 | [Coordinated execution](architecture/coordinated-execution.md) | Shared plans, exact human authorization, path claims, and Temporal sequencing |
 | [Browser navigation](operations/browser-navigation.md) | Six focused workflows, keyboard/mobile controls and permission-free role guidance |
@@ -33,7 +34,7 @@ not mistaken for working capabilities.
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
 | [Repository providers](architecture/repository-providers.md) | Repository identity, provider boundaries and GitHub/GitLab delivery |
-| [Durable repository context](architecture/durable-context.md) | Partial background collection across clients, evidence, and recovery boundaries |
+| [Durable repository context](architecture/durable-context.md) | Shared background collection, source evidence, recovery and qualification limits |
 | [Context integration research](architecture/context-integration-research.md) | Pinned Temporal/GitHub/GitLab profiles and verified versus live-service limits |
 | [Feature 006 specification](../specs/006-durable-context/spec.md) | Remote collection contract with author and operator permission boundaries |
 | [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
@@ -42,10 +43,11 @@ not mistaken for working capabilities.
 | [Work tracking](architecture/work-tracking.md) | Linear/Jira options, linked work, and synchronization ownership |
 | [Tracker setup and review](operations/work-tracking.md) | Configure one tracker per workspace, inspect linked work, synchronize and resolve conflicts |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
-| [Release terminal](operations/release-terminal.md) | CLI and interactive graph, coordinated run, delivery artifact and tracker workflows |
+| [Release terminal](operations/release-terminal.md) | CLI and interactive graph, agent work, artifact, delivery, tracker and runtime workflows |
 | [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, collection controls, imports, and recovery |
 | [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |
 | [Feature 005 plan](../specs/005-authenticated-terminal/plan.md) | Terminal implementation and signed-issuer real PTY validation |
+| [Keycloak qualification](operations/keycloak-qualification.md) | Actual native HTTPS identity-provider acceptance and supported protocol limits |
 | [Browser sign-in](operations/browser-sign-in.md) | Configure OIDC login, sessions, shared review, and collection controls |
 | [Feature 004 specification](../specs/004-browser-sign-in/spec.md) | Browser identity, session, and exact review contracts |
 | [Feature 004 plan](../specs/004-browser-sign-in/plan.md) | Browser implementation sequence and later workflow boundaries |
@@ -55,7 +57,7 @@ not mistaken for working capabilities.
 | [Feature 002 specification](../specs/002-context-history/spec.md) | Shared discovery, historical review, and context evidence contracts |
 | [Local development](operations/local-development.md) | Run, configure, exercise, test, and troubleshoot the current slice |
 | [Feature 001 specification](../specs/001-work-package-review/spec.md) | Normative behavior and acceptance criteria |
-| [Feature 001 plan](../specs/001-work-package-review/plan.md) | Refined implementation sequence and next increment |
+| [Feature 001 plan](../specs/001-work-package-review/plan.md) | Original milestone sequence and implemented release follow-through |
 | [ADR 0001](adr/0001-immutable-work-package-revisions.md) | Proposed immutable-revision decision |
 | [ADR 0002](adr/0002-single-domain-command-path.md) | Proposed shared command-path decision |
 | [ADR 0003](adr/0003-durable-context-workflow.md) | Proposed pinned context workflow before assistant execution |

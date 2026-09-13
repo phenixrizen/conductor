@@ -1,9 +1,11 @@
 # Connect coding agents through MCP
 
-Conductor's MCP bridge lets a coding agent read shared packages, retained history
-and repository context and propose new drafts through the same API as other
-clients. Changes become visible to authorized collaborators in the shared
-PostgreSQL dataset. The bridge does not approve designs or publish repository work.
+Conductor's MCP bridge lets an agent inspect shared packages, source, graphs,
+execution artifacts, delivery observations, tracker links and runtime evidence.
+It can propose package drafts, coordinated plans and repository deliveries through
+the same authenticated API as other clients. Changes become visible to authorized
+collaborators in PostgreSQL. The bridge cannot approve designs or grant human
+execution/publication authorization; trusted workers perform authorized external work.
 
 ## Configure the stdio server
 
@@ -63,8 +65,15 @@ only for the existing development profile. Context requests additionally require
 | Derive and inspect cross-repository graphs | `conductor_create_graph`, `conductor_list_graphs`, `conductor_get_graph`, `conductor_query_graph` |
 | Propose and inspect coordinated work | `conductor_propose_run`, `conductor_list_runs`, `conductor_get_run` |
 | Inspect operator execution profiles/capabilities | `conductor_execution_profiles`, `conductor_execution_capabilities` |
-| Request cancellation | `conductor_cancel_collection` |
+| Request collection cancellation | `conductor_cancel_collection` |
 | Attach an inspected receipt as a new draft revision | `conductor_attach_collection` |
+| Inspect exact retained graph source | `conductor_read_graph_source` |
+| Inspect retained task output, including failed/read-only reports | `conductor_get_task_artifact` |
+| Propose and inspect repository delivery | `conductor_propose_delivery`, `conductor_list_deliveries`, `conductor_get_delivery`, `conductor_get_delivery_artifact` |
+| Request a fresh published-repository observation | `conductor_reconcile_delivery` |
+| Inspect the selected tracker and linked work | `conductor_get_tracker`, `conductor_list_tracker_links`, `conductor_get_tracker_link`, `conductor_get_tracker_sync` |
+| Link an existing ticket or synchronize its Conductor card | `conductor_link_tracker_issue`, `conductor_sync_tracker_link` |
+| Request and inspect scoped runtime evidence | `conductor_collect_runtime_evidence`, `conductor_list_runtime_evidence`, `conductor_get_runtime_evidence` |
 
 Call `tools/list` for strict JSON schemas and descriptions. List operations default
 to 20 entries and allow at most 100. Pass the returned continuation unchanged;
@@ -85,7 +94,12 @@ The concrete configured prefix is published by `resources/list` and
 `/graphs`, `/graphs/{id}`, `/runs`, and `/runs/{id}`.
 See the [coordinated workbench](coordinated-workbench.md) for shared plan proposals
 and human execution decisions. The MCP bridge exposes no execution authorization
-or run-cancellation command.
+or run-cancellation command. Delivery, task-artifact, tracker and runtime operations
+use tools; they add no resource URI suffixes. Configure their separate workers and
+permissions using [execution](coordinated-execution.md),
+[delivery](repository-delivery.md), [tracker](work-tracking.md) and
+[runtime](runtime-evidence.md) setup.
+
 Set `fullSource: true` on `conductor_request_collection` to additionally retain
 bounded whole-repository source. Inspect the returned `fullSource` summary; add its
 exact digest as `fullSourceDigest` in a `conductor_create_graph` source selector to
@@ -107,8 +121,9 @@ for the host to execute. A receipt is source evidence, not passing verification.
 - `conflict`: inspect the current package again; for attachment, inspect both
   package and receipt. Reconfirm the new tuple before another write.
 - `outcome_unknown`: a request may have committed. Do not automatically retry a
-  mutation. Inspect retained facts. A collection or graph request may be retried explicitly
-  with exactly the same idempotency key and complete normalized input; no new key is invented.
+  mutation. Inspect retained facts. Requests whose tool schema carries an idempotency
+  key may be retried explicitly with the same key and complete captured input,
+  provided that command's documented preconditions still hold. No new key is invented.
 - `access_denied`: discard retained inspection in the host. Restore the existing
   principal's grants, or restart with the correct credential. No local fallback
   or silent credential replacement occurs.
@@ -144,6 +159,11 @@ synthetic agent identity and the actual API/store. Synthetic stored receipts pro
 interface and authorization behavior, not a live GitHub/GitLab read. An unset
 `CONDUCTOR_TEST_DATABASE_URL` explicitly skips that acceptance.
 
+The [complete release gate](full-release-acceptance.md) additionally uses compiled
+MCP processes to author actual whole-source, native graph and Docker worker inputs,
+then joins trusted delivery, tracker and runtime activities with controlled provider
+data. It does not establish live external publication or paid model compatibility.
+
 No Streamable HTTP MCP listener or OAuth token delegation is implemented. Do not
 expose the stdio bridge behind an unauthenticated network proxy. A remote MCP
 listener would need an independently reviewed authorization boundary.
@@ -157,3 +177,14 @@ The session's workspace and anchor repository remain fixed. Every graph source
 must still be readable; a related repository ID is not permission to widen scope.
 Responses expose at most 64 KiB retained text with coverage, gaps and unknown
 freshness. Text is repository-controlled data, never instructions or verification.
+
+### Inspect reports without proposing publication
+
+After `conductor_get_run`, call `conductor_get_task_artifact` with the inspected
+`id`, `runDigest`, `taskId` and `artifactDigest`. The server holds read grants for
+all run repositories and validates the retained typed artifact and exact digest.
+Failed checks and reports with no patch remain readable under current repository
+read grants, independently of execution or publication permission. MCP's 2 MiB data bound
+fails explicitly for larger artifacts. Use the authenticated API, browser or
+[terminal artifact controls](release-terminal.md) for the complete artifact up to
+16 MiB in a dedicated 17 MiB response envelope.

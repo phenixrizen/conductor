@@ -1,11 +1,12 @@
 # Durable context delivery plan
 
-**Status: Partial implementation.** The API/CLI and browser/terminal workbenches,
-receipt and authorization model, both bounded provider read adapters, and a trusted
-local Temporal worker are present.
+**Status: Implemented bounded workflow; provider/deployment qualification is partial.**
+The API/CLI and browser/terminal workbenches, receipt and authorization model,
+both bounded provider read adapters, and trusted Temporal worker are present.
 Collection authorization was selected on 2026-09-13: author permission plus an
-operator-enabled repository read integration. Live provider compatibility
-and production deployment remain later work;
+operator-enabled repository read integration. Workers support explicit local or
+verified TLS/mTLS transport. The later whole-source work records one live GitHub
+read; live GitLab compatibility and production deployment remain unverified.
 ADR 0003 remains Proposed.
 
 ## Independently reviewable increments
@@ -38,11 +39,10 @@ ADR 0003 remains Proposed.
    contract for the other provider, then bring collection into the browser and
    terminal. Publish capability and deployment limits before adding assistant work.
 
-Each working increment gets focused commits and one reviewable PR targeting current
-`main`. Integrate prerequisites before marking it ready; contributors must not need
-to infer a merge order across stacked PRs. Proposed documentation must not be copied into OpenAPI as an
-implemented route. No existing migration is rewritten and no runtime directory is
-added solely to mirror the target diagram.
+Keep focused commits and the explicit dependency order of the authorized release
+stack. Proposed documentation must not be copied into OpenAPI as an implemented
+route. No shipped migration is rewritten and no runtime directory is added solely
+to mirror the target diagram.
 
 ## Completion evidence
 
@@ -62,9 +62,10 @@ passing its test does not approve this ADR or authorize assistant execution.
 The API/CLI path covers request, bounded shared inspection, cancellation intent,
 immutable receipt and explicit revision-checked attachment. Migration 004 adds
 request/audit/outbox facts, immutable runtime bindings and execution observations.
-The worker runs the pinned Temporal workflow against an explicitly trusted local
-service; current provider profiles are GitHub.com REST 2026-03-10 and GitLab.com
-REST v4/19.3. Source and credentials stay out of workflow history.
+The worker runs the pinned Temporal workflow against an explicitly configured
+local service or the [shared TLS/mTLS profile](../015-temporal-tls/plan.md). Current
+provider profiles are GitHub.com REST 2026-03-10 and GitLab.com REST v4/19.3. Source
+and credentials stay out of workflow history.
 
 The [runbook](../../docs/operations/durable-context.md) records finite admission,
 HTTP/output/retry limits, startup configuration and unresolved-recovery boundaries.
@@ -74,24 +75,28 @@ requester cancellation and explicit revision-bound attachment. Browser version 2
 rendering checks complete snapshots against explicitly inspected scoped receipts;
 the terminal retains escaped source and complete JSON. Actual Chromium and signed
 PTY suites exercise these commands with isolated PostgreSQL and receipt fixtures.
-Remote Temporal authentication, production operations and administrative repair of unresolved handoffs remain open exit criteria.
+Shared Temporal TLS/mTLS and [release operations](../016-operations/plan.md) now
+have owned protocol and recovery acceptance. A real production deployment and
+administrative repair of unresolved handoffs remain outside the verified scope.
 
-## Following work
+## Later implementation and remaining qualification
 
-Verify the pinned GitHub.com and GitLab.com read profiles against synthetic
-repositories with repository-limited read credentials, and define administrative
-recovery and a supported remote Temporal deployment before claiming those limits
-closed. Missing credentials or deployment evidence remain explicit limitations.
+The [CodeGraph research](../../docs/architecture/codegraph-integration-research.md)
+records one actual GitHub whole-source read of this repository at an exact commit.
+It does not certify arbitrary GitHub installations or live GitLab credentials.
+Broader provider qualification, production deployment and administrative recovery
+of unresolved handoffs still require their own evidence.
 
-Use the proven orchestration and context boundaries to specify an independently
-authorized coding attempt: immutable approved inputs, isolated patch-only worker,
-executed verification evidence, and a separately credentialed publisher. Deliver
-draft GitHub PRs and GitLab MRs before claiming dual-provider delivery support.
-Keep merge/deployment authorization and one Linear/Jira tracker per workspace as
-separate contracts.
+[Features 009–010](../009-coordinated-execution/plan.md) implement independently
+authorized coding attempts, isolated patch production and actual verification.
+[Feature 011](../011-repository-delivery/plan.md) adds a separately credentialed
+publisher for draft GitHub PRs and GitLab MRs; both paths pass controlled real HTTP
+acceptance. [Feature 012](../012-work-tracking/plan.md) implements one Linear/Jira
+tracker per workspace. Live publication and tracker tenants remain unverified;
+none of these records supplies merge or deployment authority.
 
 ## Current release delivery instruction
 
-The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
-the earlier main-only sequencing guidance above. Follow the required gates and
-explicit dependency order in the [full release contract](../../docs/full-release.md).
+The user authorized stacked PRs on 2026-09-13 for the full release. Follow its
+required gates and explicit dependency order in the
+[full release contract](../../docs/full-release.md).

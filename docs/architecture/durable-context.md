@@ -1,10 +1,12 @@
 # Durable repository context
 
-**Status: Partial.** The API/CLI and browser/terminal controls, shared immutable
-receipts, explicit attachment, bounded GitHub/GitLab reads and Temporal
-workflow are implemented with local or [verified TLS transport](temporal-tls.md).
-Local Git snapshot behavior is retained. Live provider compatibility and production
-deployment remain unverified. ADR 0003 remains Proposed.
+**Status: Implemented bounded workflow; provider/deployment qualification is partial.**
+The API/CLI and browser/terminal controls, shared immutable receipts, explicit
+attachment, bounded GitHub/GitLab reads and Temporal workflow are implemented with
+local or [verified TLS transport](temporal-tls.md). Local Git snapshot behavior is
+retained. The [whole-source research](codegraph-integration-research.md) records one
+actual GitHub read at an exact commit. Broader provider compatibility, live GitLab
+credentials and production deployment remain unverified. ADR 0003 remains Proposed.
 The [feature specification](../../specs/006-durable-context/spec.md) records the
 selected permission: repository authors may collect after an operator enables
 the repository read integration.
@@ -151,8 +153,11 @@ original meaning. Both interfaces clear collection state on access failure, and
 the browser discards it on account or scope changes. Real Chromium and PTY
 acceptance use stored receipt fixtures, separate from actual workflow recovery.
 
-Both GitHub and GitLab are required, with separately reported read
-profiles and live test evidence. Their remote publication, checks, and webhook
-capabilities remain later work, as described in the [provider plan](repository-providers.md).
+Both GitHub and GitLab are required, with separately reported read profiles and
+live test evidence. [Feature 011](../../specs/011-repository-delivery/plan.md) now
+implements separately authorized draft publication, check/merge/deployment
+observations and webhook reconciliation through controlled real HTTP adapters.
+Those operations do not acquire authority from collection or imply live external
+publication qualification. See the [provider boundaries](repository-providers.md).
 See the [delivery plan](../../specs/006-durable-context/plan.md) for implementation
 and process-restart acceptance boundaries.

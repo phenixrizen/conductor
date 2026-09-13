@@ -14,7 +14,7 @@ representations without rewriting their digests.
 | Exact receipt retention | Live PostgreSQL and signed typed-client tests retain multiple nested source records, key order and large finite JSON numbers; legacy mismatches fail closed after authorization |
 | Real API and MCP | Signed identity, actual MCP SDK calls and shared-client acceptance pass |
 | Temporal | Owned CLI 1.8.3 / server 1.31.2 protocol, binding and immutable receipt recovery tests pass |
-| Operator and worker | Bounded operator configuration/credentials and runnable local Temporal worker implemented |
+| Operator and worker | Bounded operator configuration/credentials and runnable Temporal worker with explicit local or shared TLS/mTLS transport implemented |
 | Regression checks | Full Go tests and race-enabled tests against the owned PostgreSQL instance, plus `go vet ./...`, pass |
 | Process durability | Owned API process and PostgreSQL postmaster restart acceptance passes; this does not test a live Groundcover account |
 | Contract and documentation | OpenAPI validation, local Markdown links, balanced fences and `git diff --check` pass |

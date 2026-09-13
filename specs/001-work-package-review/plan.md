@@ -23,7 +23,7 @@ avoids building three divergent state machines in the API, TUI, and web client.
   `approved` flag exists to forget to invalidate.
 - Revision content is canonical JSON, not a server-generated Markdown rendering.
 - Submission is recorded per revision, keeping package review state independent
-  from future execution runs.
+  from separately authorized execution runs.
 - The first slice has one Go module and one web package. Feature 006 introduces
   Temporal and outbox delivery for the first bounded remote context operation;
   review itself remains a PostgreSQL command workflow.
@@ -33,7 +33,7 @@ avoids building three divergent state machines in the API, TUI, and web client.
   review using the same permission boundary.
 - The UI is an inspector and command surface, not an alternate source of truth.
 
-## Next increment
+## Implemented follow-through
 
 The terminal review workflow and automated API/PostgreSQL process-restart
 acceptance now complete the local Milestone 1 scope described in the specification.
@@ -43,8 +43,9 @@ The terminal, CLI, and browser all use the same version-checked command path.
 review with verified identity, workspace membership, immutable canonical repository
 ownership, and permissions covering discovery, historical reads, and every mutation.
 Real PostgreSQL acceptance covers collaboration, isolation, revocation, and retained
-legacy data. Identity tests use a synthetic issuer and establish no vendor-specific
-compatibility claim.
+legacy data. The original identity tests use a synthetic issuer; later
+[Keycloak qualification](../017-provider-qualification/plan.md) exercises a pinned
+native browser-login profile without broadening the API access-token contract.
 
 Feature 004 adds browser OIDC sign-in using those same service commands and
 repository capabilities, with durable sessions and cleared inspection on access
@@ -53,27 +54,26 @@ terminal review with a fixed identity and scope, capability discovery, and expli
 recovery. The local revision-pinned context collector remains available independently
 of those login flows.
 
-[Feature 006](../006-durable-context/spec.md) now has an implementation for that
-first remote operation: author-requested context collection from an operator-enabled
-GitHub or GitLab repository, immutable shared receipts, and explicit attachment to
-an inspected package revision. The API/CLI request boundary, PostgreSQL outbox, and
-local Temporal worker preserve review authority separately from execution progress.
-Collection controls are opt-in; PR 14 adds structured version 2 browser inspection
-and browser/authenticated terminal collection controls. Targeted signed-issuer and
-PostgreSQL checks exercise scope, revocation, receipt integrity, and attachment.
-Controlled provider fixtures do not prove live provider compatibility. Full runtime
-acceptance and operational limits are tracked in the
-[durable context plan](../006-durable-context/plan.md) and
-[runbook](../../docs/operations/durable-context.md).
+[Feature 006](../006-durable-context/spec.md) implements author-requested context
+collection from operator-enabled GitHub or GitLab repositories, immutable shared
+receipts, and explicit attachment to an inspected package revision. The API, CLI,
+browser and terminal share this command boundary. PostgreSQL outbox delivery and
+Temporal preserve review authority separately from execution progress. Workers
+support explicit local or [TLS/mTLS transport](../015-temporal-tls/spec.md).
+The [durable context plan](../006-durable-context/plan.md) and
+[runbook](../../docs/operations/durable-context.md) distinguish controlled provider
+fixtures, the narrow live GitHub source-read result, and unverified deployment.
 
-Managed repository delivery must support both GitHub and GitLab through the same
-domain workflow. The current read adapters fetch explicit paths at a pinned commit;
-repository discovery, publication, draft PR/MR creation, and delivery reconciliation
-remain planned. See the
-[repository provider plan](../../docs/architecture/repository-providers.md).
-Each workspace will select either Linear or Jira as its single work tracker, with
-explicit field/status ownership when synchronizing Conductor and linked repository
-work. See the [work-tracking plan](../../docs/architecture/work-tracking.md).
+[Features 007–010](../009-coordinated-execution/plan.md) add shared repository graphs,
+MCP proposals, exact human execution authorization, isolated coding workers and
+retained verification evidence. [Feature 011](../011-repository-delivery/plan.md)
+implements separately authorized GitHub draft PR and GitLab draft MR publication,
+plus reconciliation and provider observations. Canonical repository registrations
+remain operator-managed; automatic discovery of a provider account is unsupported.
+Both publication adapters have controlled HTTP acceptance; live external writes
+remain unverified. Each workspace selects one Linear or Jira tracker, with existing
+ticket links and synchronization implemented in
+[Feature 012](../012-work-tracking/plan.md). Ticket state cannot approve or verify work.
 
 ### Proposed sequencing refinement
 
@@ -81,10 +81,12 @@ The [AI-DLC inspiration and plan review](../../docs/architecture/aidlc-plan-revi
 proposes Milestone 1 closure, authenticated review with history and pinned
 context/evidence, then one durable execution workflow. Authenticated review is now
 implemented across the API, CLI, browser, and terminal. The first bounded context
-workflow has an implementation; the wider execution sequence remains a proposal.
-It also reviews human perspectives, stage contracts, verification, recovery, and
-knowledge reuse alongside the planned Spec Kit and ADRKit integrations. These are
-proposals for architectural review; they do not grant approval or enable execution.
+workflow and the later coordinated execution features are now implemented. The
+original AI-DLC review remains Proposed. Its recommendations cover human
+perspectives, stage contracts, verification, recovery and knowledge reuse;
+[Feature 014](../014-design-tools/plan.md) now provides bounded native Spec Kit and
+ADRKit commands in an isolated image. These tools and perspective selectors cannot
+grant design approval or execution authority.
 
 The complete platform is the current release target; follow the
 [full release contract](../../docs/full-release.md) and its stacked review order.

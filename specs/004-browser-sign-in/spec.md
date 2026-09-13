@@ -101,12 +101,14 @@ inspected receipt. General package creation, editing, and submission remain
 available through the CLI/API and the authenticated terminal in
 [Feature 005](../005-authenticated-terminal/spec.md). Agent identities use those
 authenticated API clients and cannot obtain browser sessions or approve designs.
-CLI token acquisition,
-provider-specific certification, session refresh, federated logout, and deployment
-automation are following work. Context execution uses the existing local Temporal
-deployment profile; browser controls add no workflow or provider authority. Live
-GitHub/GitLab compatibility, assistant execution, publication, and tracker
-synchronization remain separate work. No ADR is accepted by this implementation.
+CLI token acquisition, session refresh, federated logout and deployment automation
+remain unsupported. [Feature 017](../017-provider-qualification/plan.md) qualifies
+one native Keycloak browser-login profile; it does not broaden API bearer support.
+Context workers support explicit local or [TLS/mTLS](../015-temporal-tls/spec.md)
+transport. Coordinated execution, publication, tracker synchronization and runtime
+evidence are implemented under their separate feature contracts; browser controls
+add no workflow or provider authority. Live provider and production qualification
+remain bounded as recorded in each plan. No ADR is accepted by this implementation.
 
 ## Current full-release workflow navigation
 

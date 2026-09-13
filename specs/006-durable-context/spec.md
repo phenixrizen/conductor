@@ -1,12 +1,14 @@
 # Feature 006: durable shared repository context
 
-**Status: Partial.** API/CLI, browser and authenticated terminal requests, shared
-receipts, explicit attachment, PostgreSQL outbox, Temporal sequencing and both
-bounded provider read profiles are implemented. The collection permission model was selected on 2026-09-13: repository
-authors may collect after operator enablement. Initial Temporal deployment is local
-only; live provider compatibility and production operations remain unverified.
-ADR 0003 remains Proposed. See the
-[operations guide](../../docs/operations/durable-context.md) for supported bounds.
+**Status: Implemented bounded workflow; provider/deployment qualification is partial.**
+API/CLI, browser and authenticated terminal requests, shared receipts, explicit
+attachment, PostgreSQL outbox, Temporal sequencing and both bounded provider read
+profiles are implemented. The collection permission model was selected on
+2026-09-13: repository authors may collect after operator enablement. Workers now
+support explicit local or [shared TLS/mTLS transport](../015-temporal-tls/spec.md).
+The [operations guide](../../docs/operations/durable-context.md) distinguishes
+controlled fixtures, one later live GitHub source read, and remaining provider and
+production deployment limits. ADR 0003 remains Proposed.
 
 ## Outcome
 
@@ -27,7 +29,7 @@ permission to request collection **only after an operator enables a read
 integration for that canonical repository**. This extends author permission to
 bounded context collection; it does not authorize coding or publication. There is
 no separate collection grant in this increment. This policy choice does not accept
-ADR 0003 or describe the integration as implemented.
+ADR 0003; implementation and verification evidence are recorded separately.
 
 Read permission governs access to stored collection records
 and text. Only the recorded requester with the currently required collection
@@ -216,12 +218,12 @@ Manual workflow-history deletion inside the horizon cannot be distinguished from
 a lost start that never arrived. Do not delete/reset retained executions to recover
 dispatch. Administrative repair of unresolved records is not implemented.
 
-GitHub and GitLab read profiles may land separately. Report their verified
-capabilities separately and retain explicit unavailable behavior for the other
-provider. Live provider checks use synthetic repositories and read-only credentials;
-missing access is a limitation, not a pass. Publication, check ingestion, webhook
-reconciliation, assistant execution, and Linear/Jira synchronization remain later
-work. The workspace still selects exactly one tracker.
+Report GitHub and GitLab verification separately. Live provider checks require
+explicitly authorized repositories and read-only credentials; missing access is a
+limitation, not a pass. Coordinated coding, separately authorized publication,
+provider observations/webhooks and one Linear/Jira tracker are now implemented in
+Features 009–012. They remain separate from collection authority and have their
+own fixture and live-service qualification limits.
 
 See the [delivery plan](plan.md), [architecture contract](../../docs/architecture/durable-context.md),
 and [proposed decision](../../docs/adr/0003-durable-context-workflow.md).

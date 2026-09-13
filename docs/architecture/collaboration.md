@@ -151,14 +151,23 @@ uncertainty after a lost response and clear inspection on access failure. See th
 [durable context guide](../operations/durable-context.md) for the local Temporal
 deployment profile, provider limits, and recovery procedures.
 
-## Later integrations
+## Coordinated work and linked systems
 
-Coding-agent execution and repository publication remain planned. The context
-worker has bounded read credentials; future coding workers do not receive human
-publication credentials merely because they can read the same package.
+Coding-agent execution and repository publication now use separate exact human
+authorizations. Shared task plans bind every package, graph, source receipt,
+execution profile and image. Path claims expose overlapping work across engineers
+and agents; receipts and cleanup facts preserve recoverable context after a session
+ends. All-source grants protect graph, task-artifact, delivery and runtime reads.
 
-Each workspace will select one work tracker, Linear or Jira. A ticket can then link
-related packages and changes across multiple GitHub/GitLab repositories. The tracker
-will own configured planning fields; Conductor owns revisions, approvals, and
-evidence. Tracker configuration and synchronization remain planned; see
-[work tracking](work-tracking.md).
+Each workspace selects one work tracker, Linear or Jira. Tickets link exact package
+revisions and immutable publication receipts across repositories. The tracker owns
+planning fields; Conductor owns approvals, evidence and its link projection.
+Synchronization conflicts require an explicit authorized human resolution, and a
+tracker status cannot approve work or establish a successful delivery. See
+[work tracking](work-tracking.md) and [coordinated execution](coordinated-execution.md).
+
+Runtime evidence similarly retains an exact delivery observation, deployment,
+commit, environment and time window. Only source-bound approved criteria can be
+evaluated; stale or incomplete evidence remains distinct from historical results
+and does not prove current application health. These records are shared service
+facts, never private agent memory. See [runtime evidence](../operations/runtime-evidence.md).

@@ -20,7 +20,7 @@ npm --prefix apps/web ci
 npm --prefix apps/web run dev -- --host 127.0.0.1
 ```
 
-Vite proxies `/api` to `http://localhost:8080`. Set `CONDUCTOR_API_URL` when the API
+Vite proxies `/api` to `http://127.0.0.1:8080`. Set `CONDUCTOR_API_URL` when the API
 uses a different address. Open the local URL Vite prints.
 
 ## Capture committed files

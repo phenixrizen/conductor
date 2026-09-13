@@ -1,6 +1,7 @@
 # Work tracking and synchronization
 
-**Status: Implemented backend with controlled-provider and owned-runtime acceptance.**
+**Status: Implemented across API, MCP, browser, CLI and terminal, with controlled
+provider and owned-runtime acceptance.**
 Conductor supports existing Linear or Jira tickets. Each workspace selects exactly
 one tracker, giving people one ticketing system synchronized with Conductor and
 linked repository work. Linear-to-Jira mirroring is outside this scope.
@@ -74,5 +75,8 @@ and recovery against each supported tracker before declaring its synchronization
 verified. The [implemented contract](../../specs/012-work-tracking/spec.md),
 [API research](tracker-integration-research.md) and
 [operator runbook](../operations/work-tracking.md) document the current bounded
-profile. Ticket creation and planning-field writes are unsupported. Live tenant
-compatibility and full interface coverage remain separately verified release gates.
+profile. Ticket creation and planning-field writes are unsupported. Browser and
+terminal controls have signed API/PostgreSQL acceptance, and the
+[complete release gate](../operations/full-release-acceptance.md) covers both
+tracker fixtures with actual worker/publication outputs. Live tenant compatibility
+remains unverified.

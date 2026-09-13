@@ -94,7 +94,7 @@ See [source architecture](../architecture/source-bundles.md) for finite limits.
 
 ## Browser workflow
 
-Sign in and select the workspace and repository. In **Repository relationships**,
+Sign in and select the workspace and repository. Open **Source & graph → Repository relationships**,
 refresh graphs to inspect shared relationships and their exact source digests.
 Search a symbol/path or explore a returned node, choosing a depth from zero to five.
 The graph and query show bounded coverage, unresolved evidence and unknown freshness.

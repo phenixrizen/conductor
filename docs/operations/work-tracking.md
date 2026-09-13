@@ -119,7 +119,8 @@ See [API research](../architecture/tracker-integration-research.md) for exact so
 
 ## Browser workflow
 
-Select a workspace and repository, then choose **Refresh tracker and links**. The
+Select a workspace and repository, open **Tracker**, then choose
+**Refresh tracker and links**. The
 workbench shows the workspace's one configured provider, its status mappings and
 your read/sync/conflict-resolution capabilities. Existing tickets are linked by
 stable issue ID; the browser does not create tickets or mirror Linear into Jira.

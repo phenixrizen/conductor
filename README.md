@@ -2,114 +2,61 @@
 
 **Engineering intent, orchestrated.**
 
-Conductor is a shared workspace for engineers to plan software changes, review
-exact versions of a design, and keep the supporting repository context and review
-history available to their team. It is being built to coordinate AI coding agents
-under human architectural authority.
+Conductor coordinates engineers and coding agents in a shared workspace. Teams
+review software designs, discover relationships across repositories, authorize
+bounded implementation work, inspect its evidence, and publish reviewed changes
+to GitHub or GitLab. PostgreSQL keeps the shared record; Temporal coordinates
+background work and recovery.
 
-The [full release contract](docs/full-release.md) tracks the required coordinated
-platform: cross-repository relationships, CodeGraph, MCP, coding agents, verification,
-GitHub/GitLab delivery, and workspace-selected Linear/Jira synchronization. The
-current capabilities below are working parts of that release, not a complete release.
+A **work package** describes a change: its intent, design, scope, tasks, context
+and verification requirements. Every edit creates an immutable revision. An
+independent human approves the exact revision and digest they inspected. Editing
+it preserves that historical approval while requiring review of the new revision.
+Design approval, permission to execute, publication, merge, deployment and production
+outcome are separate facts.
 
-A **work package** describes a proposed change: its intent, design, scope, tasks,
-context, and verification requirements. Every edit creates an immutable revision.
-An independent reviewer approves the exact revision and digest they inspected.
-Editing the package preserves that approval in history while making it ineffective
-for the new revision.
+The [full release contract](docs/full-release.md) records implementation, verification
+and the ordered PR stack. This branch contains release work awaiting review and
+merge. It has not been deployed. The [documentation map](docs/README.md) connects
+each capability to its specification, setup and tested limits.
 
-## What works today
+## What you can do
 
-- Create, revise, submit, inspect, and approve packages through the HTTP API and Go CLI.
-- Share work within authenticated workspaces, with repository permissions for
-  reading, authoring, and independent human approval.
-- Browse related packages and history that your workspace and repository grants allow.
-- Connect coding agents through an authenticated MCP stdio bridge to the same
-  packages, history, context requests, and draft commands used by other clients.
-- Build and query shared graphs across repositories in the browser, API and MCP,
-  with inspected source references, dependency relationships and visible coverage gaps.
-  Read retained source text from any authorized graph repository without changing scope. An optional
-  pinned CodeGraph Rust parser extracts symbols during background collection.
-- Propose shared dependent task plans through MCP or browser JSON import; inspect
-  exact source, design and profile pins before separate human execution decisions.
-- Propose GitHub/GitLab publication from a retained task artifact, inspect complete
-  patches and check output in the browser, and separately authorize a new draft PR/MR.
-  Share timestamped provider check, merge and deployment observations.
-- Link existing Linear or Jira tickets to exact package revisions and publication
-  receipts, inspect shared planning fields, and resolve synchronization conflicts.
-  Each workspace selects one tracker; ticket status cannot grant approval.
-- Sign in to the browser through a configured OpenID Connect provider and select shared work.
-- Import, submit, and review shared packages in the interactive terminal workbench.
-- Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
-- Capture selected specification, ADR, and other text files from one Git commit,
-  with their original content, source IDs, and explicit collection gaps.
-- Collect selected files from exact GitHub/GitLab commits in the background through
-  the API, CLI, browser or authenticated terminal. Share the saved results, inspect
-  missing files, request cancellation, and attach context as a new package draft.
-- Retain bounded whole-repository Git source at an exact commit for graph and
-  coding work, while keeping review artifacts and source coverage explicit.
-- Run native Spec Kit/ADRKit artifact and decision checks inside reviewed isolated
-  execution profiles, retaining tool identity and exact source/check evidence.
-- Check whether a local repository ref still matches the captured commit.
-- Review through architect, QC, developer, or product perspectives. These tailor
-  questions and do not grant permissions.
-- Keep revisions and audit records in PostgreSQL, with conflict checks when clients
-  edit or approve content that another client has changed.
+| Workflow | Implemented behavior |
+|---|---|
+| Shared design review | Create, edit, submit and independently approve immutable work packages; inspect history, comparisons and audit records |
+| Repository context | Capture selected files or bounded whole-repository source at an exact Git commit; share receipts and expose missing, stale or unavailable source |
+| Cross-repository understanding | Build shared dependency and symbol graphs with the selected CodeGraph Rust extractor; read exact retained source from related authorized repositories |
+| Coordinated agents | Propose dependent tasks, inspect source/design/profile pins, obtain separate human execution authorization, run independent work concurrently, and recover interrupted work |
+| Implementation evidence | Inspect complete retained patches and reports; link independent checks to exact approved criteria and see supported, unlinked or unverified evidence, including failed tasks |
+| GitHub and GitLab delivery | Authorize an exact artifact for a new draft PR/MR; reconcile uncertain publication and retain provider check, merge and deployment observations |
+| Work tracking | Select one tracker per workspace, Linear or Jira; link existing tickets to package revisions and publication receipts, synchronize planning context and resolve conflicting Conductor-owned links |
+| Specifications and decisions | Run pinned Spec Kit scaffold/template/prerequisite commands and ADRKit Proposed-ADR, lint, applicability and graph commands inside isolated workers |
+| Runtime evidence | Collect scoped Groundcover metrics, logs and traces for an exact deployment/commit/window; compare complete evidence with explicitly approved criteria |
+| Team access | Use a configurable OpenID Connect provider for browser sign-in; provision server-owned human/agent identities and workspace/repository permissions |
 
-Developers and agent clients using the **same API and database share the same saved
-context**, subject to their workspace and repository permissions. Work belongs to
-the service, not an individual browser or conversation. Agent identities can read
-and author permitted work; they cannot grant design approval. Background context requests and coordinated coding runs have shared execution
-observations and retained receipts. Live presence is not implemented.
+The React/TypeScript browser workbench has six workflow tabs: Review, Source &
+graph, Agent work, Delivery, Tracker and Runtime. The browser, Go CLI, Bubble Tea
+terminal and MCP bridge use the same API and authorization rules. Human review perspectives help organize the questions to ask;
+they confer no permissions. Agents may author permitted work and produce evidence,
+but cannot grant design, execution or publication approval.
 
-Authenticated review supports the browser, API, CLI, and terminal workbench. An operator
-configures the OpenID Connect issuer and provisions access. The browser signs people
-in and keeps its session on the server; the CLI and terminal read an API access token
-from a selected file. A terminal session keeps one identity, workspace, and repository.
-Explicit local mode remains available for development and cannot access authenticated
-workspace packages. See the
-[browser sign-in guide](docs/operations/browser-sign-in.md) and
-[authenticated setup](docs/operations/authenticated-review.md). Signed synthetic tests
-exercise the protocol; compatibility with a particular identity provider has not
-yet been certified.
+Developers and agents using the **same API and database share the same saved
+context**. Work is not private to a browser or conversation. Cross-repository reads
+require current access to every included repository. Shared execution plans and
+path reservations expose overlapping work; live presence and private conversation
+synchronization are not implemented.
 
-The [release terminal workbench](docs/operations/release-terminal.md) lets developers
-inspect shared graphs and agent plans, review exact patches and checks, authorize
-publication, and synchronize linked tickets. Its CLI commands use the same shared
-API and permissions as the browser and MCP clients.
-
-Isolated coding-worker and independent verification components are implemented;
-shared execution plans, separate human authorization and write reservations are
-available through the API. A trusted worker runs related tasks in isolated Docker
-containers, carries earlier changes into dependent tasks, and records independent
-checks through durable Temporal workflows; see
-[execution setup](docs/operations/coordinated-execution.md). A separate trusted publisher
-creates draft GitHub PRs and GitLab MRs after exact human authorization; see
-[delivery setup and review](docs/operations/repository-delivery.md). The selected Linear/Jira tracker synchronizes shared linked work through the browser,
-API, MCP, CLI and terminal; see [tracker setup](docs/operations/work-tracking.md). Pinned Spec Kit and ADRKit commands create new templates and Proposed ADRs,
-check artifact prerequisites, lint decisions and report applicable decisions inside
-isolated workers; see [native design tools](docs/operations/design-tools.md). Collected context records what was captured,
-not proof that tests passed or a decision was approved.
-
-**GitHub and GitLab** repositories can be registered for governed review. Their
-delivery adapters implement draft pull/merge requests under the same Conductor
-approval and evidence rules. Controlled provider fixtures are verified; live provider
-writes and deployment have not been performed. The local Git collector works with a checkout from either
-provider. Bounded remote reads are available for GitHub.com and GitLab.com;
-repository discovery, publication, and checks adapters are still pending. The read
-profiles have controlled provider tests; live provider compatibility remains unverified.
-
-Each workspace will choose **one work tracker: Linear or Jira**. Conductor will
-link tickets to related packages, changes across GitHub/GitLab repositories, and
-verification evidence, with explicit rules for synchronizing fields and status.
-This does not mirror tickets between Linear and Jira. Ticket updates will not grant
-design approval or turn missing verification into a passing result. See the
-[work-tracking plan](docs/architecture/work-tracking.md).
+Coding workers receive bounded source and produce patches in isolated Docker
+containers. Independent checks run separately. A trusted publication worker holds
+repository write credentials; repository-controlled commands receive no publication,
+production or Conductor credentials. Collected source, an agent's opinion, a ticket
+status or a successful deployment cannot substitute for passing verification.
 
 ## Run locally
 
-You need Go 1.25+ (tested toolchain 1.26.8), Node.js 22.12+, npm, Git, and Docker with Compose. Go dependencies
-and frontend dependencies have committed lockfiles.
+Use Go 1.25+ with the tested Go 1.26.8 toolchain, Node.js 22.14.0, npm, Git and
+Docker with Compose. Dependencies and frontend lockfiles are committed.
 
 ```bash
 ./scripts/start-local-db.sh
@@ -117,170 +64,120 @@ export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?ssl
 CONDUCTOR_AUTH_MODE=local CONDUCTOR_ADDR=127.0.0.1:8080 go run ./cmd/conductord
 ```
 
-The startup script creates a persistent PostgreSQL volume and initializes empty
-databases with ordered migrations. Existing review data is retained; an older
-database stops setup with explicit upgrade instructions. It also works with Docker
-Snap when the checkout is under `/mnt`.
-If Docker access has just been enabled, start a new login session or use
-`sg docker -c './scripts/start-local-db.sh'` until your session has the new group.
+The script creates a persistent development database, preserves existing data and
+reports required upgrades. It supports Docker Snap with checkouts under `/mnt`.
+After enabling Docker group access, start a new login session or use
+`sg docker -c './scripts/start-local-db.sh'` until the current session has that group.
 
-In another terminal, start the React/TypeScript workbench:
+Start the React/TypeScript workbench in another terminal:
 
 ```bash
 npm --prefix apps/web ci
 npm --prefix apps/web run dev -- --host 127.0.0.1
 ```
 
-Open the local URL printed by Vite. The workbench forwards API requests to port
-8080; set `CONDUCTOR_API_URL` to use another local API address.
+Open Vite's printed URL. The development proxy forwards API calls to port 8080;
+`CONDUCTOR_API_URL` selects another local API address.
 
-Create a synthetic package and find it from another client:
+Create synthetic work and inspect it from another client:
 
 ```bash
 go run ./cmd/conductor create --actor developer --title 'Review replay handling'
 go run ./cmd/conductor list --actor reviewer
-```
-
-Use the returned change ID to submit and inspect it:
-
-```bash
-go run ./cmd/conductor submit --actor developer --revision 1 CHG-...
 go run ./cmd/conductor show --actor reviewer CHG-...
-go run ./cmd/conductor history --actor reviewer CHG-...
-```
-
-For an interactive terminal session, browse shared packages or open a change:
-
-```bash
 go run ./cmd/conductor tui --actor reviewer
-go run ./cmd/conductor tui --actor reviewer CHG-...
 ```
 
-The terminal workbench previews imported JSON files and asks for confirmation
-before submitting, revising, or approving the displayed content. See the
-[terminal review guide](docs/operations/terminal-review.md) for the full workflow.
+Use the actual returned change ID in place of `CHG-...`. Explicit local mode
+supports local review only and cannot access authenticated workspace packages.
+Shared collection, coding, delivery and tracker workflows require the authenticated
+setup below. See [local development](docs/operations/local-development.md) for more.
 
-The [context and history walkthrough](docs/operations/context-review.md) explains
-capturing repository files, checking freshness, and reviewing changes. The
-[local development guide](docs/operations/local-development.md) covers approval,
-configuration, troubleshooting, and database lifecycle.
+## Configure a shared team workspace
 
-## How it is built
+Start with [authenticated review](docs/operations/authenticated-review.md) and
+[browser sign-in](docs/operations/browser-sign-in.md). An operator configures the
+OIDC issuer and provisions identities, workspaces and canonical repository grants.
+The browser uses an opaque server session. CLI, terminal and MCP sessions read an
+explicitly selected API-token file and keep identity and scope fixed until exit.
 
-- **Go and Bubble Tea:** HTTP API, domain rules, PostgreSQL store, shared client,
-  CLI, and interactive terminal workbench.
-- **PostgreSQL:** shared package revisions, approvals, workspace membership,
-  repository permissions, and audit history.
-- **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
-- **Temporal Go SDK 1.44.1:** background context sequencing, retries and cancellation;
-  workers use an explicit local Temporal server or verified remote TLS/mTLS; see
-  [Temporal connection setup](docs/operations/temporal-tls.md).
-- **MCP Go SDK 1.7.0:** a bounded stdio bridge for agents with one fixed identity
-  and workspace/repository selection. See the [MCP setup guide](docs/operations/mcp.md).
-- **CodeGraph 1.6.0:** the selected
-  [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) Rust extraction
-  kernel runs in a container without network access or credentials. Graphs currently
-  cover selected review paths or explicitly requested whole-repository source; see [graph setup and limits](docs/operations/repository-graph.md).
-- **Codex 0.154.0 and Claude Code 2.1.270:** pinned producer adapters inside an
-  isolated Docker worker, followed by checks in a separate container. Predecessor
-  patches are preserved in cumulative results. See [worker setup and verification limits](docs/operations/coding-workers.md).
+Browser sign-in is qualified against actual self-hosted Keycloak 26.7.3 over HTTPS;
+see [provider qualification](docs/operations/keycloak-qualification.md). API tokens
+use the documented RFC 9068 RS256 profile. Keycloak's default access tokens and ID
+tokens are rejected by that API profile; browser qualification does not imply bearer
+token compatibility with every provider. Interactive terminal login and token
+refresh are not implemented.
 
-The current implementation focuses on durable review, shared context, and
-controlled team access. Background context collection requires an operator-enabled
-repository read integration and current author permission. A separate worker uses
-Temporal to collect an exact commit; PostgreSQL keeps the shared result. It never
-runs repository commands or edits a package automatically. See the
-[background context setup](docs/operations/durable-context.md) for credentials,
-commands, recovery and limits. In the signed-in browser, open **Shared context
-collections**; in the authenticated terminal, press **g**. Requests and results are
-shared with other repository readers. Refresh explicitly for later progress;
-request cancellation and workflow cancellation are separate facts. Attaching
-context requires confirmation against the package revision you inspected.
-The first deployment profile uses a local development Temporal server; production
-operation and live provider compatibility remain unverified. See the
-[system architecture](docs/architecture/system.md) and
-[shared-context model](docs/architecture/collaboration.md) for those boundaries.
-The [repository provider plan](docs/architecture/repository-providers.md) describes
-how GitHub and GitLab fit into the same workflow.
+Enable the integrations you need using separate operator-owned configuration:
 
-## Checks and contributor guidance
+- [MCP](docs/operations/mcp.md): connect agents to shared scoped commands and evidence.
+- [Repository source](docs/operations/durable-context.md) and [CodeGraph](docs/operations/repository-graph.md): collect exact commits and build shared graphs.
+- [Coordinated execution](docs/operations/coordinated-execution.md): configure isolated profiles, execution grants, source pins and independent checks.
+- [Native design tools](docs/operations/design-tools.md): create or validate Spec Kit/ADRKit artifacts without inheriting approval from their contents.
+- [Repository delivery](docs/operations/repository-delivery.md): configure trusted GitHub/GitLab publication and provider observations.
+- [Linear or Jira](docs/operations/work-tracking.md): select one tracker and define synchronization ownership and status mappings.
+- [Runtime evidence](docs/operations/runtime-evidence.md): bind Groundcover collection to allowed services, metrics and approved requirement criteria.
+- [Verification criteria](docs/operations/verification-criteria.md): link independent checks to the exact approved requirements they support.
+- [Release terminal](docs/operations/release-terminal.md): inspect and act through the CLI or authenticated interactive terminal.
 
-```bash
-go test ./...
-go test -race ./...
-go vet ./...
-npm --prefix apps/web ci
-npm --prefix apps/web run typecheck
-npm --prefix apps/web run build
-```
+For shared operation, use the [release runbook](docs/operations/release.md) and
+[Temporal TLS/mTLS setup](docs/operations/temporal-tls.md). They cover reproducible
+Linux archives, HTTPS, separate service accounts, checked migrations, private
+health/queue metrics and PostgreSQL backup/restore into an empty recovery database.
+Temporal history and runtime identity require their own supported retention and
+recovery procedure; a PostgreSQL backup does not replace them.
 
-Set `CONDUCTOR_TEST_DATABASE_URL` to a test database to run the real PostgreSQL and
-shared-client acceptance tests. Otherwise these tests explicitly skip. They create
-and remove isolated schemas; no existing application data is reset.
+## Underlying tools
 
-Set `CONDUCTOR_TEST_TEMPORAL=1` alongside that database URL to run owned Temporal
-process recovery and durable collection acceptance. Install the pinned CLI first;
-see the [background context guide](docs/operations/durable-context.md).
+| System | Responsibility and tested pin |
+|---|---|
+| Go, Bubble Tea | API, domain rules, shared client, CLI and interactive terminal; Go toolchain 1.26.8 |
+| PostgreSQL 17 | Shared revisions, approvals, identities, evidence, durable dispatch and audit history |
+| React 19, TypeScript, Vite | Browser workflow workbench with plain CSS |
+| Temporal Go SDK 1.44.1 | Durable context, task DAG, delivery, tracker and runtime sequencing; tested CLI 1.8.3 / server 1.31.2 |
+| MCP Go SDK 1.7.0 | Authenticated stdio bridge with fixed workspace/repository scope |
+| [CodeGraph 1.6.0](https://github.com/colbymchenry/codegraph) | Selected upstream's pinned native Rust extraction kernel in an isolated container |
+| Codex 0.154.0 / Claude Code 2.1.270 | Pinned producer adapters behind bounded execution profiles and a credential gateway |
+| Spec Kit 1.0.6 / ADRKit CLI 0.13.0 | Separately pinned native design artifacts and deterministic commands; no implied extension compatibility |
+| GitHub / GitLab | Provider-specific adapters under common publication and observation commands |
+| Linear / Jira | One workspace-selected tracker with explicit field ownership |
+| Groundcover SDK schema 1.424.0 | Inspected REST compatibility profile for read-only correlated telemetry; Conductor uses a bounded direct HTTP adapter |
 
-Set `CONDUCTOR_TEST_TERMINAL=1` alongside that database URL to exercise authenticated
-review and collection controls in a real terminal, using a signed synthetic issuer
-and the compiled CLI.
-See the [terminal guide](docs/operations/terminal-review.md) for this acceptance
-command and the separate local-mode regression.
+Exact source commits, image pins, protocol boundaries and evidence are documented
+in each integration's research and runbook. AI-DLC inspired role perspectives,
+explicit stage inputs, source-bound review, recovery and evidence distinctions;
+Conductor does not import a second workflow authority. See the
+[AI-DLC plan review](docs/architecture/aidlc-plan-review.md).
 
-Set `CONDUCTOR_TEST_BROWSER=1` with that database URL and
-`CONDUCTOR_BROWSER_PYTHON` pointing to the pinned Playwright environment to exercise
-browser login, shared review and collection controls in Chromium. Build the web
-app first; the [browser guide](docs/operations/browser-sign-in.md) gives setup and
-commands. These client tests use synthetic identity and receipt fixtures.
+## Verification and limits
 
-Set `CONDUCTOR_TEST_PROCESS_RESTART=1` when running the acceptance tests to also
-verify persistence across real API and PostgreSQL process restarts. This separate
-test creates and removes its own temporary Docker container and volume. It does
-not restart your development database. See the
-[local development guide](docs/operations/local-development.md) for the command.
+[Complete release acceptance](docs/operations/full-release-acceptance.md) joins two
+synthetic repositories through actual Git, native CodeGraph, compiled MCP/executor
+processes, Docker producers/checks, PostgreSQL and Temporal. Controlled provider
+HTTP endpoints exercise both GitHub/GitLab draft publication and each Linear/Jira
+workspace choice, including lost acknowledgments, exact Git trees, runtime criteria,
+related-repository revocation and restart recovery. Actual Chromium and PTY tests
+cover the shared interfaces. Backup/restore and deterministic archive builds have
+also been exercised.
 
-Read [AGENTS.md](AGENTS.md) for engineering rules; [CLAUDE.md](CLAUDE.md) points to the
-same instructions. Keep changes focused, comment the reasons behind important
-invariants, and update documentation alongside behavior.
+These results establish the documented local and protocol behavior. Live SaaS write
+qualification, paid model inference, hosted Temporal operation and a deployment of
+Conductor remain unverified. A retained historical runtime criterion result does
+not establish current health or a broad production outcome. GitHub.com/GitLab.com
+are the implemented hosted repository profiles; do not infer enterprise-provider
+compatibility. Tracker integration links existing tickets and does not create them,
+change their status/assignment, or mirror Linear and Jira.
 
-- [Documentation index](docs/README.md)
-- [Package review specification](specs/001-work-package-review/spec.md)
-- [Context and history specification](specs/002-context-history/spec.md)
-- [Authenticated workspace specification](specs/003-workspace-access/spec.md)
-- [Browser sign-in specification](specs/004-browser-sign-in/spec.md)
-- [Authenticated terminal specification](specs/005-authenticated-terminal/spec.md)
-- [Durable context specification](specs/006-durable-context/spec.md)
-- [OpenAPI contract](api/openapi.yaml)
-- [AI-DLC inspiration and plan review](docs/architecture/aidlc-plan-review.md)
-- [Proposed architectural decisions](docs/adr/)
+Run the applicable checks in [AGENTS.md](AGENTS.md), including explicit opt-ins for
+PostgreSQL, browser, terminal, Docker, Temporal and process recovery. Missing opt-ins
+produce reported skips, not passes. The [release contract](docs/full-release.md)
+tracks the remaining review and verification gates.
 
-Developers and agents can inspect retained task reports and failed check output
-before proposing publication. The API, MCP, CLI and terminal workbench share the
-same exact artifact digests and repository permissions; a readable report does
-not grant approval or prove implementation passed verification.
+## Contributing
 
-### Runtime evidence
-
-The [runtime workbench](docs/operations/runtime-evidence.md) shares read-only
-Groundcover metrics, logs and traces for an exact repository deployment and time
-window. People and agents can request evidence; the browser shows its retained
-source, gaps and comparisons against explicitly approved criteria. Historical results
-and current freshness stay separate. Controlled protocol and browser tests pass;
-a live Groundcover account and overall production outcome remain unverified.
-
-### Release operations
-
-The [release runbook](docs/operations/release.md) covers reproducible Linux archives,
-separate API/worker service accounts, HTTPS, checked migrations, private diagnostics,
-and PostgreSQL backup/restore into an empty recovery database. Immutable package,
-approval, audit and dispatch records survive tested recovery. Temporal history needs
-its own supported retention and recovery procedure; a database backup does not
-replace it. Deployment templates are provided but have not been deployed for you.
-
-The [complete release acceptance](docs/operations/full-release-acceptance.md)
-walkthrough exercises two repositories through the same shared design and worker
-flow, exact draft publication, one workspace tracker, and correlated runtime
-criteria. It uses real local processes and controlled provider fixtures, including
-lost write responses and a Temporal restart. It does not perform live external
-writes or paid model calls.
+Read [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md) and the applicable specification
+before changing behavior. Keep source/evidence bounds, immutable review digests,
+server-derived authority, cancellation and recovery intact. Proposed ADRs remain
+proposed until an authorized person accepts them. Use focused commits and review
+stacked PRs in their documented dependency order; publishing a PR is not authority
+to merge or deploy it.

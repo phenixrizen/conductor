@@ -90,7 +90,7 @@ go run ./cmd/conductor-publisher
 
 ## Review and publication
 
-Use the authenticated API/shared client or the **Repository deliveries** browser workbench.
+Use the authenticated API/shared client or **Delivery → Repository deliveries** in the browser.
 All requests select a fixed workspace and canonical target repository. Authoring
 calls accept no actor, provider URL or credential.
 
@@ -203,7 +203,7 @@ merging changes. Live repository writes require an explicitly authorized test ta
 
 ## Browser controls
 
-Sign in, select a workspace/repository and choose **Refresh deliveries and access**.
+Sign in, select a workspace/repository, open **Delivery** and choose **Refresh deliveries and access**.
 Inspect a shared proposal, or open the proposal form and copy the exact run ID,
 retained task ID and artifact digest from coordinated execution. Preview the inputs
 before recording. A lost creation response offers an exact retry with the same key.

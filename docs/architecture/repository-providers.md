@@ -4,7 +4,7 @@
 permissions are implemented for GitHub and GitLab registrations. The opt-in
 [durable context workflow](durable-context.md) now implements bounded remote reads
 through authenticated API/CLI and workbench commands, a PostgreSQL outbox, and a
-local Temporal worker.
+trusted Temporal worker with explicit local or verified remote TLS configuration.
 Both provider profiles have controlled fixture coverage; live provider compatibility
 and production operation remain unverified. Trusted exact-artifact draft publication, check/merge/deployment observations and
 verified webhook reconciliation are implemented in [Feature 011](../../specs/011-repository-delivery/spec.md).
@@ -90,9 +90,9 @@ Adapters must expose capability differences and unavailable, stale, unknown, or
 unverified results explicitly. An unsupported capability cannot return successful
 verification. Event handling must verify authenticity, deduplicate deliveries, and
 reconcile delayed, missing, or ambiguous outcomes before retrying consequential
-actions. PostgreSQL owns governance facts and context receipts. Temporal currently
-sequences bounded context activity through the local deployment profile; wider
-delivery workflows remain planned, as described in the system architecture.
+actions. PostgreSQL owns governance facts and context receipts. Temporal
+sequences context and trusted delivery activities through the shared explicit local
+or verified remote TLS profile, as described in the system architecture.
 
 ## Credentials and delivery sequence
 
@@ -104,18 +104,16 @@ source text remain outside Temporal workflow history. See the
 [integration research](context-integration-research.md) for official references,
 tested versions, and the limits of these compatibility checks.
 
-Publication credentials will belong to trusted publishing services with separate
+Publication credentials belong to trusted publishing services with separate
 repository authorization. Repository-controlled commands and coding workers must
 not receive those credentials. Provider responses and repository files remain
 evidence, never instructions that grant authority.
 
-Delivery implementation may proceed one adapter at a time after identity and
-recovery boundaries exist. Each adapter requires pinned, researched dependencies
-and live acceptance coverage of publication, draft review requests, revision-bound evidence,
-events, failures, and reconciliation. Report each adapter's verified capabilities
-separately. Dual-provider delivery support is complete only after both GitHub and
-GitLab pass their applicable acceptance checks. The implemented bounded reads and
-controlled provider fixtures do not meet that delivery exit criterion.
+Both provider adapters pass controlled HTTP and actual Git-tree publication,
+shared PostgreSQL, Temporal reconciliation and browser/terminal review acceptance.
+Those tests establish the documented protocol boundary. Live SaaS write credentials
+and targets have not been exercised, so production provider qualification remains
+explicitly unverified; bounded source collection alone is not publication evidence.
 
 ## Implemented publication boundary
 

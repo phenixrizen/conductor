@@ -1,9 +1,9 @@
 # One work tracker per workspace
 
-**Status: Implemented backend, provider adapters and MCP commands; fixture and
-owned-runtime acceptance verified.** Live Linear/Jira tenant compatibility and
-interface coverage are separately tracked release gates. Existing tickets are
-linked and synchronized; ticket creation and planning-field writes are unsupported.
+**Status: Implemented API, provider adapters, MCP, browser and CLI/TUI commands;
+fixture and owned-runtime acceptance verified.** Live Linear/Jira tenants remain
+unverified. Existing tickets are linked and synchronized; ticket creation and
+planning-field writes are unsupported. See [verification evidence](plan.md).
 
 Each workspace selects exactly one Linear organization/team or Jira Cloud site/
 project. A trusted operator provisions that binding, versioned status-ID mappings,

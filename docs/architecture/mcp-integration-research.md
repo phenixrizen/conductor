@@ -24,8 +24,8 @@ The [current MCP specification](https://modelcontextprotocol.io/specification/20
 defines tools, resources and per-request protocol metadata. The bridge uses these
 standard features and emits JSON tool schemas. It does not implement optional
 sampling, roots, logging, subscriptions, elicitation or task extensions. Long-lived
-Conductor context execution remains in its existing Temporal workflow and is
-inspected through persisted request/receipt tools.
+Conductor collection, coding, publication, tracker and runtime work remains in
+its Temporal workflows and is inspected through persisted request/receipt tools.
 
 ## Source inspection and selected controls
 

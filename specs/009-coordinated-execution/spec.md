@@ -3,8 +3,10 @@
 Status: **Implemented and verified runtime.** Shared plan admission, human execution
 authorization, retained whole-source/profile pins, durable dispatch, isolated coding
 workers, dependent cumulative artifacts and actual independent checks are tested.
-Browser and other review controls, publication and full-release validation remain
-separate stack work. No paid model-provider execution is claimed by fixture runs.
+Browser, CLI/TUI and MCP review controls are implemented through the same command
+boundary. Separately authorized publication and the complete release gate have
+their own recorded acceptance. No paid model-provider execution is claimed by
+fixture runs.
 
 Conductor coordinates work across canonical repositories in one workspace. A plan
 pins one current package revision and digest per repository, one retained source

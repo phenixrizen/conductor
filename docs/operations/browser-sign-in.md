@@ -15,17 +15,13 @@ active human principal matching their provider's exact issuer and subject. Agent
 use API credentials, including in the [terminal workbench](terminal-review.md),
 and cannot obtain browser review sessions or approvals.
 
-Apply each missing migration in order. An existing database at migration 001 needs
-002 first; a database at 002 needs the following additive migration once:
-
-```bash
-docker exec -i conductor-local-postgres-1 psql -U conductor -d conductor \
-  --set ON_ERROR_STOP=1 --single-transaction < migrations/003_browser_sessions.sql
-```
-
-Migration 003 adds login attempts and sessions without changing package content,
-digests, approvals, ownership, or grants. Empty local databases receive every
-ordered migration from the setup script. Existing volumes are retained.
+Apply all missing migrations through the
+[release migration procedure](release.md#apply-or-upgrade-the-database).
+Migration 003 introduced login attempts and sessions without changing package
+content, digests, approvals, ownership or grants. It follows access migration 002;
+later release workflows require the subsequent ordered migrations. Empty local
+databases receive all SQL from the setup script, while existing volumes are
+retained and need an inspected upgrade or legacy baseline.
 
 Register a confidential OIDC client with authorization code flow, RS256 ID tokens,
 S256 PKCE, and `client_secret_basic`. Register this exact callback using your real
@@ -92,8 +88,8 @@ requests; an already authorized command can finish.
 
 ## Collect shared repository context
 
-First follow the [durable context runbook](durable-context.md) to apply migration
-004, enable the repository's read integration, configure its trusted worker, and
+First follow the [durable context runbook](durable-context.md) to prepare the
+current schema, enable the repository's read integration, configure its worker, and
 enable collection on the OIDC API. The browser reuses these existing commands and
 does not need provider tokens. Remote collection is unavailable in local mode.
 Browser sign-in still requires a provisioned human principal; agents use the
@@ -157,7 +153,8 @@ The implementation uses [OIDC Core](https://openid.net/specs/openid-connect-core
 [PKCE](https://www.rfc-editor.org/rfc/rfc7636.html). It pins
 [go-oidc v3.17.0](https://github.com/coreos/go-oidc/tree/v3.17.0),
 [oauth2 v0.35.0](https://github.com/golang/oauth2/tree/v0.35.0), and
-[go-jose v4.1.4](https://github.com/go-jose/go-jose/tree/v4.1.4) for Go 1.24.
+[go-jose v4.1.4](https://github.com/go-jose/go-jose/tree/v4.1.4). The current module
+requires Go 1.25 and pins the tested Go 1.26.8 toolchain.
 
 Discovery must advertise code flow, RS256, and HTTPS authorization/token endpoints.
 Omitted token authentication metadata uses the standard Basic default; an explicit

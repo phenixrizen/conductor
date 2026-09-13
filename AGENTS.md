@@ -37,6 +37,10 @@ Read these before changing behavior:
     `docs/architecture/durable-context.md`, `docs/operations/durable-context.md`, and ADR 0003 (still Proposed). The selected collection
     policy requires author permission plus an operator-enabled repository read
     integration; it does not grant coding or publication authority.
+13. For coordinated coding and verification, read features 009, 010 and 018,
+    `docs/architecture/coordinated-execution.md`, and
+    `docs/operations/verification-criteria.md`. For the complete deployment surface,
+    use the documentation map and `docs/operations/release.md`.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -70,8 +74,8 @@ Do not describe an incomplete integration or mocked path as implemented. Keep
   Do not create two execution authorities.
 - External calls belong in workflow activities. Bridge database commits and Temporal
   operations using durable inbox/outbox processing and reconciliation.
-- Coding workers will produce patches; a separate trusted integration service will
-  publish them. Repository-controlled commands must not receive publication or
+- Coding workers produce patches; a separate trusted publication service
+  publishes human-authorized artifacts. Repository-controlled commands must not receive publication or
   production credentials.
 - Before adding Spec Kit, ADRKit, CodeGraph, Groundcover, Temporal, GitHub, GitLab,
   Linear, Jira, Claude Code, or Codex integration code, inspect current official
@@ -98,6 +102,12 @@ packages to mirror the target diagram.
 | `cmd/conductor-worker/` | Trusted Temporal worker and context dispatcher |
 | `cmd/conductor-executor/` | Trusted Temporal coding worker, dispatcher and orphan recovery |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
+| `cmd/conductor-publisher/`, `internal/deliveryworker/`, `internal/delivery/` | Trusted exact GitHub/GitLab publication, provider reconciliation and observations |
+| `cmd/conductor-webhooks/` | Signed repository webhook inbox |
+| `cmd/conductor-tracker-admin/`, `cmd/conductor-tracker-worker/`, `internal/tracker/` | Workspace tracker provisioning, synchronization and webhook processing |
+| `cmd/conductor-runtime-worker/`, `internal/runtimeworker/`, `internal/runtimeevidence/` | Scoped Groundcover collection and criterion evidence |
+| `cmd/conductor-db/`, `internal/databaseops/`, `internal/operational/` | Checked migrations, backup/restore and private diagnostics |
+| `cmd/conductor-design-tools/`, `internal/designtools/` | Bounded native Spec Kit and ADRKit commands |
 | `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
 | `cmd/conductor-sandbox/`, `internal/execution/` | Isolated patch producers, credential gateway, and separate verification |
 | `internal/domain/` | Domain types, invariants, and typed errors |
@@ -111,6 +121,7 @@ packages to mirror the target diagram.
 | `internal/coordinationworker/` | Reviewed profile matching, immutable attempts, Docker activity and cleanup reconciliation |
 | `internal/collectionworker/` | Credential binding, context activity, fenced dispatch, and reconciliation |
 | `internal/contextworkflow/` | Pinned Temporal workflow, runtime identity and history validation |
+| `internal/temporaltest/` | Bounded readiness probes for test-owned Temporal processes |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
 | `pkg/client/` | Reusable Go API client |
 | `apps/web/` | React/TypeScript review workbench |
@@ -123,6 +134,16 @@ packages to mirror the target diagram.
 | `tests/` | Cross-component fixtures and acceptance tests when introduced |
 
 ## Shared context and history
+
+- Optional `verificationCriteria` is author-supplied package content. Check links
+  bind exact package/revision/digest/criterion IDs and must match the selected
+  task's packages. Preserve omitted-field serialization and every legacy digest.
+  Validate links during admission, execution, receipt commit and publication.
+- Criterion support is derived outside the immutable artifact JSON. Validate the
+  selected task and exact linked check evidence before displaying `supported`;
+  missing, failed, truncated, unexecuted or unlinked evidence is `not_verified`.
+  Historical support names its original revision and never verifies all business
+  requirements or grants approval, execution, publication or production authority.
 
 - Plan imports reject duplicate/unknown command fields and require a structured
   preview. Browser execution decisions use the displayed run digest without a
@@ -216,6 +237,11 @@ packages to mirror the target diagram.
   never start a second producer. Load full bundles and maximal predecessor patches
   under the recorded human's current all-repository grants and inspected pins.
   A public profile ID alone is insufficient: bind its digest and immutable image.
+- Bound an original attempt from before admission I/O through final authorization,
+  credential reads and Docker execution. A delayed response cannot grant a new
+  execution window after recovery is eligible. Preserve incomplete provider streams
+  as transport failures and recover committed publication receipts before retrying
+  provider calls after unknown database acknowledgments.
 - Release write claims only after observed terminal Temporal execution, every
   task's non-unresolved receipt and confirmed cleanup of all admitted attempts.
   A receipt by itself does not prove an unknown workflow stopped. Source, prompts,
@@ -257,6 +283,10 @@ packages to mirror the target diagram.
 - Private diagnostics bind a separate literal loopback address. Never expose them
   through the public API/reverse proxy or label metrics with source/identity data.
 
+- Runtime receipts use PostgreSQL `json` to preserve exact embedded JSON bytes.
+  Validate retained receipt digests after all source-access checks. Legacy `jsonb`
+  normalization cannot be repaired by recomputing or replacing historical digests;
+  unavailable integrity stays unavailable.
 - Package mutations and their audit events must commit in one transaction.
 - Serialize commands for the same package and enforce optimistic revision checks;
   allow unrelated packages to progress independently.
@@ -389,7 +419,7 @@ packages to mirror the target diagram.
   complete scoped server receipt before marking a snapshot as matching. Preserve
   version 1 extensions and show full escaped JSON for uninterpreted content.
 
-- Release terminal views use `conductor tui --view graphs|runs|deliveries|tracker`
+- Release terminal views use `conductor tui --view graphs|runs|deliveries|tracker|runtime`
   and the shared API client. Explicit request files contain `idempotencyKey` and
   `input`; preview rejects duplicate/case-aliased fields and retains the exact key
   after uncertain writes. Human execution authorization binds inspected profile,
@@ -420,6 +450,17 @@ packages to mirror the target diagram.
   credentials, production topology, or protected health information.
 
 ## Testing and completion
+
+- Give owned process-recovery fixtures their intended bounded timeout when they
+  are constructed; a child context cannot extend a shorter parent. Preserve every
+  producer-count, retained-receipt, cleanup and unresolved-claim assertion.
+- Startup probes must verify the service needed by the test. PostgreSQL readiness
+  waits for the final TCP server; Temporal readiness requires its API and the
+  configured registered namespace. An open socket alone does not establish readiness.
+  Keep these waits bounded and separate from consequential workflow commands.
+- Browser fixture filenames must not shadow Python standard-library modules.
+  PTY recovery tests should await the recorded operations and inspect a fresh
+  terminal frame; unchanged UI content may correctly produce no new output bytes.
 
 Run the narrowest relevant checks while developing, then the full applicable set:
 

@@ -1,210 +1,145 @@
 # Conductor system architecture
 
-## Purpose and boundaries
+**Status: Implemented on the release integration branch within the tested bounds
+in the [release contract](../full-release.md).** Implementation, verified local
+protocol behavior, merge, deployment and production outcome remain separate.
+The public review stack is not merged or deployed by this document.
 
-Conductor turns engineering intent into revision-pinned work packages and, over
-later milestones, coordinates context gathering, implementation, verification,
-and delivery. It governs coding assistants rather than replacing them.
+## Purpose and system context
 
-Conductor will manage application repositories on both GitHub and GitLab. Each
-repository's future provider adapter will supply pull/merge requests, checks, and
-delivery facts. Both follow the same Conductor
-approval and evidence rules.
-
-GitHub also hosts Conductor's own source. Project hosting is a separate
-responsibility from managed application delivery, even when both use GitHub. See
-the [repository provider plan](repository-providers.md) for scope and boundaries.
-
-## Target system context
-
-> **Status:** Durable review and authenticated workspace access through the API,
-> CLI, browser, and interactive terminal are implemented. The browser uses OIDC
-> sign-in; CLI and terminal credentials come from an explicitly selected token.
-> Background context collection across clients is partial, using bounded provider
-> reads and a trusted local Temporal worker. MCP, coding execution, delivery adapters,
-> and components with dashed borders are planned.
-> Identity-provider compatibility has not been established beyond synthetic tests.
+Conductor carries engineering intent through shared design, exact human review,
+repository understanding, coordinated implementation, verification and trusted
+publication. It governs coding assistants rather than replacing them. GitHub hosts
+Conductor itself; each managed application repository independently selects the
+supported GitHub or GitLab delivery profile.
 
 ```mermaid
 flowchart LR
-    Architect[Architect / reviewer]
-    Developer[Developer]
-    DomainOwner[Domain owner]
-
-    subgraph Conductor[Conductor control plane]
-        Interfaces[Web / CLI / TUI]
-        API[Authenticated API]
-        MCP[Future MCP interface]
-        Policy[Domain policy and context]
-        Engine[Durable orchestration]
-        Gate[Future execution verification gate]
-    end
-
-    subgraph Evidence[Context and evidence providers]
-        SpecKit[Spec Kit]
-        ADRKit[ADRKit]
-        CodeGraph[CodeGraph]
-        Groundcover[Groundcover]
-    end
-
-    subgraph Execution[Bounded execution]
-        Claude[Claude Code adapter]
-        Codex[Codex adapter]
-        Workers[Isolated workers]
-    end
-
-    GitHubDelivery[GitHub application delivery]
-    GitLab[GitLab application delivery]
-    Tracker[Linear or Jira work tracking]
-    GitHub[GitHub: Conductor source]
-
-    Architect --> Interfaces
-    Developer --> Interfaces
-    DomainOwner --> Interfaces
-    Interfaces --> API
-    MCP -. planned commands .-> API
-    API --> Policy
-    Policy --> Engine
-    Engine --> Gate
-    Policy -. planned context .-> Evidence
-    Engine -. planned execution .-> Execution
-    Gate -. planned publication .-> GitLab
-    Gate -. planned publication .-> GitHubDelivery
-    API -. planned synchronization .-> Tracker
-    GitHub -->|hosts this project| Conductor
-
-    classDef planned stroke-dasharray: 6 4,fill:#f7f7f7,color:#555;
-    class MCP,Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitHubDelivery,GitLab,Tracker planned;
+    People[Engineers and reviewers] --> UI[Browser / CLI / terminal]
+    Agents[Agent clients] --> MCP[Scoped MCP stdio]
+    UI --> API[Authenticated API]
+    MCP --> API
+    API --> Policy[Transactional domain and authority rules]
+    Policy --> DB[(PostgreSQL shared facts)]
+    DB --> Outbox[Durable fenced dispatch]
+    Outbox --> Temporal[Temporal workflows]
+    Temporal --> Source[GitHub / GitLab source activities]
+    Source --> Graph[Isolated native CodeGraph]
+    Temporal --> Coding[Isolated coding and design tools]
+    Coding --> Checks[Independent verification]
+    Temporal --> Publisher[Trusted publication activities]
+    Publisher --> Providers[GitHub PRs / GitLab MRs]
+    Temporal --> Tracker[One Linear or Jira workspace tracker]
+    Temporal --> Runtime[Read-only Groundcover evidence]
+    Source --> DB
+    Graph --> DB
+    Checks --> DB
+    Publisher --> DB
+    Tracker --> DB
+    Runtime --> DB
 ```
 
-## Architectural layers
+All interfaces invoke common API/domain commands. PostgreSQL retains immutable
+revisions, approvals, graph/source receipts, task artifacts, publication and tracker
+facts, runtime criteria/evidence and concise audit records. Temporal alone sequences
+activities. A database execution observation describes a timestamped observation
+of Temporal; it is not a second workflow authority.
 
-```mermaid
-flowchart TB
-    UI[React workbench / Go CLI / Bubble Tea TUI]
-    Client[Shared API clients]
-    HTTP[HTTP command boundary]
-    Access[Verified identity and repository permissions]
-    Domain[Domain service and approval policy]
-    Store[(PostgreSQL review and authorization records)]
-    Dispatch[Durable context outbox]
-    Temporal[Temporal context workflow]
-    Reads[Bounded GitHub / GitLab reads]
-    Artifacts[(S3-compatible artifact storage)]
-    Integrations[GitHub / GitLab / Linear or Jira / context / assistants]
+External reads and writes occur in activities. Durable outboxes bridge committed
+intent and Temporal admission; bindings identify the actual cluster, namespace,
+workflow and opaque inputs before dispatch. Fencing, retained receipts and explicit
+reconciliation handle lost acknowledgments. A known missing history or unknown
+cleanup state never silently creates a replacement run.
 
-    UI --> Client --> HTTP --> Access --> Domain --> Store
-    Store --> Dispatch --> Temporal --> Reads
-    Reads --> Store
-    Domain -. Milestone 2+ .-> Artifacts
-    Temporal -. Later coding and tracking .-> Integrations
+## Shared data and authority
 
-    classDef planned stroke-dasharray: 6 4,fill:#f7f7f7,color:#555;
-    class Artifacts,Integrations planned;
-```
+| Concern | Owner and invariant |
+|---|---|
+| Human/agent identity | Verified issuer/subject resolves to an active PostgreSQL principal; token role claims and perspective selectors grant nothing |
+| Workspace and repository access | Server-owned membership and canonical grants; every included source repository is checked inside the committing/read transaction |
+| Design | Immutable package revision/digest; only an independent authorized human can approve it |
+| Source and graph | Retained exact commits, artifact/bundle digests, explicit graph coverage and all-source permissions |
+| Execution permission | A separate human authorizes the exact plan, source/design/profile/image pins, writable paths and checks |
+| Overlapping work | Shared write claims remain until observed terminal execution, retained task outcomes and confirmed cleanup |
+| Produced implementation | Isolated worker patches plus independently executed checks; failed reports remain inspectable |
+| Publication | Separate trusted worker publishes only the exactly inspected artifact under current human authorization |
+| Tracker planning fields | Selected Linear or Jira issue owns title, description, priority, assignee and status; Conductor owns its package/publication link projection |
+| Runtime conclusions | Exact approved criteria evaluated against correlated complete telemetry for the captured deployment/window; broader production outcome stays unverified |
+| Recovery and audit | PostgreSQL immutable records and Temporal retained history/bindings; neither source text nor credentials enter workflow history |
 
-All interfaces invoke the same domain command path. The authenticated service
-wraps those commands in a transaction that resolves the principal, checks workspace
-membership and repository capabilities, and holds permissions through command
-commit. PostgreSQL owns review state, authorization metadata and immutable context
-receipts. Temporal owns background context sequencing; its timestamped database
-observations do not become a second workflow authority. Other execution remains planned.
+Each workspace chooses one tracker; Linear-to-Jira mirroring is not implemented.
+A ticket status, source-recorded ADR status, successful assistant response or
+provider deployment cannot substitute for a Conductor approval or passing check.
+See [collaboration](collaboration.md), [repository providers](repository-providers.md)
+and [work tracking](work-tracking.md) for the detailed boundaries.
 
 ## Trust boundaries
 
 ```mermaid
-flowchart LR
-    User[Authenticated person or agent]
-    LocalHeader[Local identity header]
-    API[Conductor API]
-    DB[(PostgreSQL)]
-    Untrusted[Repository text, tickets, logs, tool output]
-    Worker[Future isolated worker]
-    Publisher[Future publication service]
-    GitHubDelivery[GitHub]
-    GitLab[GitLab]
-
-    User -->|verified identity and server grants| API
-    LocalHeader -->|explicit local mode / unscoped data only| API
-    API --> DB
-    Untrusted -->|evidence, never authority| API
-    API -. approved package .-> Worker
-    Worker -. patch only .-> Publisher
-    Publisher -. revalidated action .-> GitLab
-    Publisher -. revalidated action .-> GitHubDelivery
-
-    subgraph TrustedControl[Trusted control plane]
-        API
-        DB
-        Publisher
-    end
+flowchart TB
+    Untrusted[Repository source / specifications / ADRs / tickets / telemetry]
+    Identity[Configured OIDC issuer] --> API[Trusted API and domain service]
+    Untrusted -->|evidence only| API
+    API --> DB[(Shared PostgreSQL)]
+    DB -->|exact authorized references| Activity[Trusted activity]
+    Activity -->|bounded source and task| Sandbox[Isolated producer]
+    Sandbox -->|patch and report| Activity
+    Activity --> Verify[Separate credential-free checks]
+    Activity --> Publisher[Separately credentialed publisher]
+    Publisher -->|exact reviewed artifact| Provider[GitHub or GitLab]
+    Gateway[Restricted model credential gateway] --- Sandbox
 ```
 
-`CONDUCTOR_AUTH_MODE=local` permits the `X-Conductor-Actor` header only on a
-loopback-bound server, with access to unscoped local data. OIDC mode rejects that
-header and verifies the configured HTTPS issuer, audience, and supported signed
-access-token profile. It maps issuer/subject to server-owned principal records;
-client role claims cannot alter human/agent kind or repository capabilities.
+Repository-controlled commands have no publication, production or Conductor
+credentials. The native coding adapter uses a task-scoped gateway with a bounded
+provider capability profile; the independent check container has no provider key
+or package-registry network access. Operator-selected immutable images define
+available tools. Docker provides a container boundary; it is not a claim of VM
+isolation or hostile multi-tenant production qualification.
 
-The browser, API, CLI, and terminal support authenticated review. Browser
-login uses PKCE, one-use state, verified ID tokens, and protected PostgreSQL
-sessions. [Browser setup](../operations/browser-sign-in.md) describes the exact
-protocol and session limits. The terminal uses the existing API access-token
-credential and keeps one verified principal, workspace, and repository per session.
-It clears inspection after access failure and requires explicit access recovery.
-Interactive CLI token acquisition and compatibility validation against real identity
-providers remain pending.
-Configuration and transport requirements are in the
-[authenticated review guide](../operations/authenticated-review.md). Future workers
-do not receive publication credentials. The context worker only reads selected
-provider objects. Coding execution and delivery integrations remain unavailable.
+Explicit local development mode accepts a local actor header only on loopback and
+only for unscoped legacy/local packages. OIDC mode rejects that header and fails
+closed. Browser sign-in uses HTTPS, authorization code/S256 PKCE, one-use state,
+nonce verification and opaque server sessions. Cookie commands bind exact Origin
+and session CSRF; scope or identity changes invalidate inspection. CLI/TUI/MCP use
+an explicitly selected token file, fixed identity/scope and bounded requests.
 
-## State ownership
+Actual Keycloak 26.7.3 browser login is qualified separately from the strict RFC 9068
+API bearer profile. Default Keycloak JWT and ID tokens remain rejected by that API
+profile. Interactive CLI login/token refresh and arbitrary vendor compatibility
+are not implied. See [browser setup](../operations/browser-sign-in.md) and
+[actual provider qualification](../operations/keycloak-qualification.md).
 
-| State | Authority | Current status |
-|---|---|---|
-| Package revisions, submissions, approvals, audit events | PostgreSQL | Implemented for local and authenticated review |
-| Principals, workspace membership, canonical repository ownership, access grants | PostgreSQL | Implemented; operator-provisioned and audited |
-| Context requests, immutable receipts and dispatch bindings | PostgreSQL | Implemented for shared collection across clients |
-| Workflow sequencing, retries, cancellation | Temporal | Partial: bounded context collection, trusted local deployment |
-| Immutable large artifacts | S3-compatible storage | Planned |
-| Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |
-| Priority, assignment, and ticket planning workflow where configured | Selected Linear or Jira tracker | Planned |
-| Cross-repository graph | Derived Conductor read model | Planned |
-| Conductor source and project history | GitHub | Implemented externally |
+## Native artifacts and provenance
 
-## Delivery sequence
+Spec Kit and ADRKit run separately pinned native artifact/check commands in an
+isolated image; their native content does not confer architectural authority.
+CodeGraph 1.6.0 uses the user-selected upstream's native Rust extractor for supported
+bounded source; coverage gaps and unknown freshness remain visible. Retained graph
+source reads never fetch newer provider content or expose raw bundle credentials.
+[Native design tools](../operations/design-tools.md),
+[graph research](codegraph-integration-research.md) and
+[coordinated execution](coordinated-execution.md) record exact pins and limits.
 
-```mermaid
-flowchart LR
-    M1[1. Durable package review] --> Access[Authenticated API and CLI review]
-    Access --> Browser[Browser sign-in]
-    Browser --> Terminal[Authenticated terminal review]
-    Terminal --> M2[2. Orchestration and context]
-    M2 --> M3[3. One assistant to draft GitHub PR or GitLab MR]
-    M3 --> M4[4. Assistant choice and Linear or Jira synchronization]
-    M4 --> M5[5. Cross-repository runtime intelligence]
-    M5 --> M6[6. Security, performance, bounded autonomy]
+## Operations and completion
 
-    classDef active fill:#e8f1ec,stroke:#244c3f,stroke-width:2px;
-    classDef planned fill:#f7f7f7,stroke:#777,stroke-dasharray:6 4;
-    class M1,Access,Browser,Terminal,M2 active;
-    class M3,M4,M5,M6 planned;
-```
+Release archives contain committed binaries, web assets, migrations, API contracts
+and documentation with checksums. Operator migrations retain a checksum ledger;
+backup/restore preserves shared facts into an explicitly empty quarantined target.
+Private diagnostics expose bounded aggregate process/queue facts on a separate
+literal loopback listener. Temporal connections support explicit local or verified
+remote TLS/mTLS with retained runtime identity. See
+[release operations](../operations/release.md) and
+[Temporal connections](../operations/temporal-tls.md).
 
-Authenticated review is implemented across these interfaces.
-[Durable context collection](durable-context.md) is partial: the API, CLI, browser
-and authenticated terminal support selected files from an exact managed-repository
-commit, a shared immutable receipt,
-and explicit attachment. The PostgreSQL outbox and local Temporal worker enforce
-reconciliation, cancellation and revocation boundaries. Live provider compatibility
-and production operations remain unverified.
-Collection permission requires author access plus operator enablement. Agent execution remains disabled
-pending its own verified identity, authorization, durable recovery, context, and
-execution boundaries. Review access alone does not authorize execution.
+Actual local Git, native CodeGraph, Docker producers/checks, signed MCP, PostgreSQL,
+Temporal restart, Chromium, PTY and Keycloak tests establish their recorded protocol
+boundaries. Controlled HTTP fixtures exercise both delivery providers, both tracker
+choices and exact runtime criteria, including ambiguous-write recovery. Live SaaS
+writes, paid model inference, hosted Temporal operation and an actual Conductor
+deployment remain unverified. See [complete acceptance](../operations/full-release-acceptance.md).
 
-Each workspace selects one tracker, Linear or Jira. Work-tracking integrations
-link its tickets to packages and GitHub/GitLab delivery records across repositories.
-Field ownership and explicit status mappings must prevent synchronization loops or
-ticket changes from inventing approvals and verification results. See the
-[work-tracking plan](work-tracking.md).
+External object storage, live presence, interactive token acquisition and a second
+learning/policy engine are not implemented or required to infer authority. Large
+artifacts currently remain bounded PostgreSQL facts. Do not add another execution
+state machine or describe planned storage as the current source of truth.
