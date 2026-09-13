@@ -89,3 +89,9 @@ executed verification evidence, and a separately credentialed publisher. Deliver
 draft GitHub PRs and GitLab MRs before claiming dual-provider delivery support.
 Keep merge/deployment authorization and one Linear/Jira tracker per workspace as
 separate contracts.
+
+## Current release delivery instruction
+
+The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
+the earlier main-only sequencing guidance above. Follow the required gates and
+explicit dependency order in the [full release contract](../../docs/full-release.md).

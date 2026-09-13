@@ -28,3 +28,9 @@ repository-context collection. Coding execution remains later work. Deliver each
 complete increment on a focused branch with a PR targeting the current `main`.
 Integrate prerequisite work before marking a dependent PR ready, so reviewers do
 not need to manage a chain of branches or choose a merge order.
+
+## Current release delivery instruction
+
+The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
+the earlier main-only sequencing guidance above. Follow the required gates and
+explicit dependency order in the [full release contract](../../docs/full-release.md).

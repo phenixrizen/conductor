@@ -7,6 +7,11 @@ exact versions of a design, and keep the supporting repository context and revie
 history available to their team. It is being built to coordinate AI coding agents
 under human architectural authority.
 
+The [full release contract](docs/full-release.md) tracks the required coordinated
+platform: cross-repository relationships, CodeGraph, MCP, coding agents, verification,
+GitHub/GitLab delivery, and workspace-selected Linear/Jira synchronization. The
+current capabilities below are working parts of that release, not a complete release.
+
 A **work package** describes a proposed change: its intent, design, scope, tasks,
 context, and verification requirements. Every edit creates an immutable revision.
 An independent reviewer approves the exact revision and digest they inspected.

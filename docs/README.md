@@ -10,6 +10,7 @@ not mistaken for working capabilities.
 | Document | Purpose |
 |---|---|
 | [System architecture](architecture/system.md) | Product boundaries, target components, trust boundaries, and delivery roadmap |
+| [Full release contract](full-release.md) | Required complete-platform capabilities, evidence gates, and stacked PR order |
 | [Milestone 1 architecture](architecture/milestone-1.md) | Implemented work-package model, lifecycle, API flow, persistence, and invariants |
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |

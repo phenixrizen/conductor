@@ -34,3 +34,9 @@ Implementation checks do not approve an ADR, grant a package approval, authorize
 merge, or establish deployment. Publish focused commits and a PR targeting the
 current `main` for each complete increment. Integrate prerequisites before marking
 a dependent PR ready; do not require reviewers to manage stacked merge order.
+
+## Current release delivery instruction
+
+The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
+the earlier main-only sequencing guidance above. Follow the required gates and
+explicit dependency order in the [full release contract](../../docs/full-release.md).
