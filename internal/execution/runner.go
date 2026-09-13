@@ -3,8 +3,6 @@ package execution
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +24,7 @@ type Runner struct {
 	AllowProviderNetwork bool
 }
 
-func (r Runner) Run(ctx context.Context, request Request) (Result, error) {
+func (r Runner) Run(ctx context.Context, request Request) (result Result, err error) {
 	if err := ValidateRequest(request); err != nil {
 		return Result{}, err
 	}
@@ -52,19 +50,30 @@ func (r Runner) Run(ctx context.Context, request Request) (Result, error) {
 	// One deadline covers production and every fresh verification container.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
 	defer cancel()
+	// Stable resource names let a trusted redelivery clean up an uncertain
+	// attempt without ever starting a second producer.
+	defer func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelCleanup()
+		clean, cleanupErr := r.CleanupAttempt(cleanupCtx, InputDigest(request))
+		result.CleanupConfirmed = clean
+		if err == nil && cleanupErr != nil {
+			err = cleanupErr
+		}
+	}()
 	network := "none"
 	endpoint := ""
 	if credential != "" {
 		var cleanup func()
 		var err error
-		network, endpoint, credential, cleanup, err = r.startProxy(ctx, credential, request.TimeoutSeconds)
+		network, endpoint, credential, cleanup, err = r.startProxyForAttempt(ctx, credential, request.TimeoutSeconds, InputDigest(request))
 		if err != nil {
 			return Result{}, err
 		}
 		defer cleanup()
 	}
 	w := wireRequest{Stage: "produce", Request: request, Profile: r.Profile, Credential: credential, ProviderURL: endpoint}
-	result, err := r.sandbox(ctx, w, network)
+	result, err = r.sandbox(ctx, w, network)
 	if err != nil {
 		return Result{}, err
 	}
@@ -140,11 +149,7 @@ func (r Runner) sandbox(ctx context.Context, w wireRequest, network string) (Res
 	if err != nil || len(input) > MaxInputBytes {
 		return Result{}, fmt.Errorf("%w: serialized task exceeds byte bound", ErrInvalid)
 	}
-	var random [16]byte
-	if _, err = rand.Read(random[:]); err != nil {
-		return Result{}, fmt.Errorf("create sandbox identity: %w", err)
-	}
-	name := "conductor-task-" + hex.EncodeToString(random[:])
+	name := "conductor-task-" + InputDigest(w.Request)[:32] + "-" + w.Stage
 	docker := r.DockerBinary
 	if docker == "" {
 		docker = "docker"

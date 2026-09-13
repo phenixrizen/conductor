@@ -109,3 +109,12 @@ No dedicated OpenAI or Anthropic API key was configured during initial acceptanc
 The verified claims are real sandbox execution, native CLI discovery, protocol
 parsing and controlled gateway behavior. Paid model execution and real-provider
 compatibility remain unverified until separately exercised with synthetic source.
+
+Each admitted task attempt owns deterministic Docker resource names derived from its
+complete input digest. The trusted coordinator persists that digest before starting
+a producer. A recovered attempt can remove its exact containers and network and
+confirm their absence without starting another producer. The runner reports
+`cleanupConfirmed`; missing cleanup confirmation retains write reservations.
+Do not invoke the same request concurrently outside this durable attempt boundary.
+Canonical repository IDs remain unchanged in receipts; a SHA-256 directory mapping
+in the prompt prevents IDs containing slashes or Unicode from becoming host paths.

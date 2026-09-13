@@ -329,3 +329,32 @@ func TestDockerDependentAgentsAndSharedAncestor(t *testing.T) {
 		t.Fatal("unverified dependency tree accepted")
 	}
 }
+
+func TestDockerCanonicalRepositoryIdentityAndCleanup(t *testing.T) {
+	runner, request := dockerFixture(t)
+	id := "team/工程.repo"
+	request.Repositories[0].ID = id
+	request.Checks[0].RepositoryID = id
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CleanupConfirmed || result.Patches[0].RepositoryID != id || result.Checks[0].State != "passed" {
+		t.Fatalf("identity or cleanup lost: %+v", result)
+	}
+	if !strings.HasPrefix(RepositoryDirectory(id), "/work/repos/r-") || strings.Contains(RepositoryDirectory(id), "工程") {
+		t.Fatal("canonical identity used as filesystem path")
+	}
+	// Simulate a process death after the immutable attempt was admitted. Recovery
+	// removes this exact orphan and leaves unrelated Docker resources untouched.
+	name := "conductor-task-" + InputDigest(request)[:32] + "-produce"
+	b, err := runner.docker(context.Background(), "run", "--detach", "--name", name, "--network", "none", "--entrypoint", "/bin/sleep", runner.Image, "30")
+	if err != nil {
+		t.Fatalf("create owned orphan: %v %s", err, b)
+	}
+	t.Cleanup(func() { _, _ = runner.docker(context.Background(), "rm", "--force", name) })
+	clean, err := runner.CleanupAttempt(context.Background(), InputDigest(request))
+	if err != nil || !clean {
+		t.Fatalf("cleanup recovery: %v %v", clean, err)
+	}
+}

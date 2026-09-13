@@ -37,13 +37,24 @@ func isolatedNetworkArgs(name string) []string {
 }
 
 func (r Runner) startProxy(ctx context.Context, key string, seconds int) (network, endpoint, token string, cleanup func(), err error) {
+	var identity [32]byte
+	if _, err = rand.Read(identity[:]); err != nil {
+		return "", "", "", nil, err
+	}
+	return r.startProxyForAttempt(ctx, key, seconds, hex.EncodeToString(identity[:]))
+}
+
+func (r Runner) startProxyForAttempt(ctx context.Context, key string, seconds int, inputDigest string) (network, endpoint, token string, cleanup func(), err error) {
+	if !digest.MatchString(inputDigest) {
+		return "", "", "", nil, ErrInvalid
+	}
 	var random [32]byte
 	if _, err = rand.Read(random[:]); err != nil {
 		return "", "", "", nil, err
 	}
 	token = hex.EncodeToString(random[:])
-	network = "conductor-isolated-" + token[:24]
-	name := "conductor-proxy-" + token[:24]
+	network = "conductor-isolated-" + inputDigest[:32]
+	name := "conductor-proxy-" + inputDigest[:32]
 	var process *exec.Cmd
 	ownedNetwork := network
 	release := func() {

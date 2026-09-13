@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -58,6 +60,7 @@ type Request struct {
 	Revision          int64        `json:"revision"`
 	Digest            string       `json:"digest"`
 	GraphDigest       string       `json:"graphDigest"`
+	PlanDigest        string       `json:"planDigest,omitempty"`
 	DependencyDigests []string     `json:"dependencyDigests,omitempty"`
 	Repositories      []Repository `json:"repositories"`
 	Prompt            string       `json:"prompt"`
@@ -99,16 +102,17 @@ type Patch struct {
 }
 
 type Result struct {
-	InputDigest    string     `json:"inputDigest"`
-	ProfileDigest  string     `json:"profileDigest"`
-	Image          string     `json:"image"`
-	Adapter        string     `json:"adapter"`
-	AdapterVersion string     `json:"adapterVersion"`
-	Producer       Evidence   `json:"producer"`
-	Patches        []Patch    `json:"patches"`
-	Checks         []Evidence `json:"checks"`
-	StartedAt      time.Time  `json:"startedAt"`
-	FinishedAt     time.Time  `json:"finishedAt"`
+	CleanupConfirmed bool       `json:"cleanupConfirmed"`
+	InputDigest      string     `json:"inputDigest"`
+	ProfileDigest    string     `json:"profileDigest"`
+	Image            string     `json:"image"`
+	Adapter          string     `json:"adapter"`
+	AdapterVersion   string     `json:"adapterVersion"`
+	Producer         Evidence   `json:"producer"`
+	Patches          []Patch    `json:"patches"`
+	Checks           []Evidence `json:"checks"`
+	StartedAt        time.Time  `json:"startedAt"`
+	FinishedAt       time.Time  `json:"finishedAt"`
 }
 
 func Sum(b []byte) string { value := sha256.Sum256(b); return hex.EncodeToString(value[:]) }
@@ -126,6 +130,15 @@ func safePath(p string) bool {
 	}
 	return true
 }
+
+// Canonical repository IDs are labels, not paths. Their opaque directory mapping
+// supports every bounded server ID without permitting traversal or collisions
+// with another repository's spelling.
+func validRepositoryID(id string) bool {
+	return id != "" && len(id) <= 128 && utf8.ValidString(id) && strings.TrimSpace(id) == id && !strings.ContainsFunc(id, unicode.IsControl)
+}
+func RepositoryDirectory(id string) string { return "/work/repos/r-" + Sum([]byte(id)) }
+func directoryKey(id string) string        { return "r-" + Sum([]byte(id)) }
 
 func allowedPath(p string, prefixes []string) bool {
 	for _, prefix := range prefixes {
@@ -151,7 +164,7 @@ func ValidateRequest(r Request) error {
 	repos := map[string]bool{}
 	total := 0
 	for _, repo := range r.Repositories {
-		if !identifier.MatchString(repo.ID) || repos[repo.ID] || !oid.MatchString(repo.Commit) || len(repo.Bundle) == 0 || len(repo.Bundle) > MaxSourceBytes || len(repo.WritablePaths) > 128 {
+		if !validRepositoryID(repo.ID) || repos[repo.ID] || !oid.MatchString(repo.Commit) || len(repo.Bundle) == 0 || len(repo.Bundle) > MaxSourceBytes || len(repo.WritablePaths) > 128 {
 			return fmt.Errorf("%w: repository identity or bounds", ErrInvalid)
 		}
 		repos[repo.ID] = true
