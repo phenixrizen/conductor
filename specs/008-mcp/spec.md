@@ -75,3 +75,8 @@ subscriptions and background polling are not required or exposed by this bridge.
 
 See the [plan](plan.md), [runbook](../../docs/operations/mcp.md), and
 [upstream research](../../docs/architecture/mcp-integration-research.md).
+
+Collection requests accept an explicit optional `fullSource` flag. Graph selectors
+accept an optional inspected `fullSourceDigest`. The bridge preserves these fields
+and the exact idempotency key without fetching replacement source during mutation;
+whole-source availability and index gaps remain separate from verification.

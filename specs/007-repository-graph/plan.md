@@ -17,6 +17,9 @@ The user's current instruction explicitly requests stacked PRs. Publish focused
 commits with an explicit numbered base/dependency chain; never merge them or mark
 external deployment/compatibility as verified without corresponding evidence.
 
-The first four items have implementation and targeted acceptance. Item 5 remains
-required for the broader release. [Operations](../../docs/operations/repository-graph.md)
+The backend items, including bounded whole-repository source acquisition and
+CodeGraph indexing, have implementation and targeted acceptance. Browser graph
+controls now have actual signed-login/PostgreSQL/Chromium acceptance for multi-repository
+inspection, retained-key retry, queries, scope/denial clearing and read-only access.
+Terminal controls and coordinated-agent consumption remain required for the broader release. [Operations](../../docs/operations/repository-graph.md)
 records reproducible native runtime setup and remaining limits.

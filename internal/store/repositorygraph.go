@@ -79,6 +79,17 @@ func (p *Postgres) CreateRepositoryGraph(ctx context.Context, id, key string, in
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return domain.RepositoryGraph{}, err
 		}
+		if source.FullSourceDigest != "" {
+			var fullIndex domain.CodeGraphIndex
+			e := p.tx.QueryRow(ctx, `SELECT artifacts,truncated,index_data FROM context_source_bundles WHERE collection_id=$1 AND workspace_id=$2 AND repository_id=$3 AND receipt_digest=$4 AND commit_oid=$5 AND bundle_digest=$6`, source.CollectionID, c.WorkspaceID, source.RepositoryID, source.Digest, c.Input.Commit, source.FullSourceDigest).Scan(&r.FullArtifacts, &r.FullTruncated, &fullIndex)
+			if errors.Is(e, pgx.ErrNoRows) {
+				return domain.RepositoryGraph{}, domain.ErrInvalidInput
+			}
+			if e != nil {
+				return domain.RepositoryGraph{}, e
+			}
+			r.Index = &fullIndex
+		}
 		receipts = append(receipts, r)
 	}
 	snapshot, err := repositorygraph.Build(ctx, receipts)

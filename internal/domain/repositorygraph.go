@@ -21,9 +21,10 @@ const (
 // GraphSource selects an already inspected immutable receipt. Repository labels
 // and client-supplied source text cannot establish graph provenance.
 type GraphSource struct {
-	RepositoryID string `json:"repositoryId"`
-	CollectionID string `json:"collectionId"`
-	Digest       string `json:"digest"`
+	RepositoryID     string `json:"repositoryId"`
+	CollectionID     string `json:"collectionId"`
+	Digest           string `json:"digest"`
+	FullSourceDigest string `json:"fullSourceDigest,omitempty"`
 }
 type GraphInput struct {
 	Sources []GraphSource `json:"sources"`
@@ -108,7 +109,7 @@ func NormalizeGraphInput(input GraphInput) (GraphInput, error) {
 	input.Sources = append([]GraphSource(nil), input.Sources...)
 	sort.Slice(input.Sources, func(i, j int) bool { return input.Sources[i].RepositoryID < input.Sources[j].RepositoryID })
 	for i, s := range input.Sources {
-		if ValidateAccessID(s.RepositoryID) != nil || !IsLowerHex(s.CollectionID, 32) || !IsLowerHex(s.Digest, 64) || i > 0 && input.Sources[i-1].RepositoryID == s.RepositoryID {
+		if ValidateAccessID(s.RepositoryID) != nil || !IsLowerHex(s.CollectionID, 32) || !IsLowerHex(s.Digest, 64) || s.FullSourceDigest != "" && !IsLowerHex(s.FullSourceDigest, 64) || i > 0 && input.Sources[i-1].RepositoryID == s.RepositoryID {
 			return GraphInput{}, ErrInvalidInput
 		}
 	}
@@ -267,7 +268,7 @@ func (s *GraphSource) UnmarshalJSON(data []byte) error {
 			return ErrInvalidInput
 		}
 		name, ok := key.(string)
-		if !ok || seen[name] || name != "repositoryId" && name != "collectionId" && name != "digest" {
+		if !ok || seen[name] || name != "repositoryId" && name != "collectionId" && name != "digest" && name != "fullSourceDigest" {
 			return ErrInvalidInput
 		}
 		seen[name] = true
@@ -296,16 +297,17 @@ func (s *GraphSource) UnmarshalJSON(data []byte) error {
 // immutable provenance fields through encoding/json's promoted-method rules.
 func (s *GraphSourceRecord) UnmarshalJSON(data []byte) error {
 	var value struct {
-		RepositoryID string    `json:"repositoryId"`
-		CollectionID string    `json:"collectionId"`
-		Digest       string    `json:"digest"`
-		Commit       string    `json:"commit"`
-		CollectedAt  time.Time `json:"collectedAt"`
-		Freshness    string    `json:"freshness"`
+		RepositoryID     string    `json:"repositoryId"`
+		CollectionID     string    `json:"collectionId"`
+		Digest           string    `json:"digest"`
+		Commit           string    `json:"commit"`
+		CollectedAt      time.Time `json:"collectedAt"`
+		Freshness        string    `json:"freshness"`
+		FullSourceDigest string    `json:"fullSourceDigest,omitempty"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
-	*s = GraphSourceRecord{GraphSource: GraphSource{RepositoryID: value.RepositoryID, CollectionID: value.CollectionID, Digest: value.Digest}, Commit: value.Commit, CollectedAt: value.CollectedAt, Freshness: value.Freshness}
+	*s = GraphSourceRecord{GraphSource: GraphSource{RepositoryID: value.RepositoryID, CollectionID: value.CollectionID, Digest: value.Digest, FullSourceDigest: value.FullSourceDigest}, Commit: value.Commit, CollectedAt: value.CollectedAt, Freshness: value.Freshness}
 	return nil
 }

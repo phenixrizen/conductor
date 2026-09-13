@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Conductor API
-  version: 0.5.0
+  version: 0.6.0
   description: >-
     The server explicitly selects local or oidc authentication. Local mode requires
     X-Conductor-Actor and exposes only unscoped legacy packages. OIDC mode requires
@@ -531,6 +531,7 @@ components:
       additionalProperties: false
       required: [commit, paths]
       properties:
+        fullSource: {type: boolean, default: false, description: Also acquire a bounded exact Git bundle and whole-tree CodeGraph index as separate immutable facts; requires configured CodeGraph worker}
         commit: {type: string, pattern: '^[a-f0-9]{40}$', description: Exact supported SHA-1 commit object ID; no branch names or abbreviated IDs}
         paths:
           type: array
@@ -613,6 +614,7 @@ components:
         createdAt: {type: string, format: date-time}
         cancelRequestedAt: {type: string, format: date-time, description: Durable cancellation intent; not confirmation that execution stopped}
         receipt: {$ref: '#/components/schemas/CollectionReceipt'}
+        fullSource: {$ref: '#/components/schemas/SourceBundleSummary'}
         execution: {$ref: '#/components/schemas/CollectionExecution'}
     CollectionSummary:
       type: object
@@ -811,6 +813,7 @@ components:
         repositoryId: {type: string, minLength: 1, maxLength: 128}
         collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
         digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        fullSourceDigest: {type: string, pattern: '^[a-f0-9]{64}$', description: Explicitly inspected immutable whole-repository bundle digest; omitted selects version 2 receipt paths}
     GraphSourceRecord:
       type: object
       required: [repositoryId, collectionId, digest, commit, collectedAt, freshness]
@@ -818,6 +821,7 @@ components:
         repositoryId: {type: string}
         collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
         digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        fullSourceDigest: {type: string, pattern: '^[a-f0-9]{64}$', description: Explicitly inspected immutable whole-repository bundle digest; omitted selects version 2 receipt paths}
         commit: {type: string, pattern: '^[a-f0-9]{40}$'}
         collectedAt: {type: string, format: date-time}
         freshness: {type: string, const: unknown}
@@ -898,3 +902,16 @@ components:
         edges: {type: array, maxItems: 8192, items: {$ref: '#/components/schemas/GraphEdge'}}
         gaps: {type: array, maxItems: 512, items: {$ref: '#/components/schemas/GraphGap'}}
         truncated: {type: boolean}
+
+    SourceBundleSummary:
+      type: object
+      required: [digest, tree, commit, size, fileCount, indexedFiles, truncated, createdAt]
+      properties:
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        tree: {type: string, pattern: '^[a-f0-9]{40}$'}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$'}
+        size: {type: integer, minimum: 1, maximum: 33554432}
+        fileCount: {type: integer, minimum: 0}
+        indexedFiles: {type: integer, minimum: 0, maximum: 512}
+        truncated: {type: boolean}
+        createdAt: {type: string, format: date-time}

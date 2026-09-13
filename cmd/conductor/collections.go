@@ -13,6 +13,7 @@ type collectionOptions struct {
 	paths                                     []string
 	limit                                     int
 	expectedRevision                          int64
+	fullSource                                bool
 }
 
 func collectionCommand(command string) bool {
@@ -29,7 +30,7 @@ func runCollectionCommand(ctx context.Context, c *client.Client, command string,
 		if len(args) != 0 || options.commit == "" || len(options.paths) == 0 || options.key == "" {
 			return nil, errors.New("context-collect requires --commit, one or more --path flags, and --idempotency-key; no positional arguments")
 		}
-		return c.CreateCollection(ctx, options.key, domain.CollectionInput{Commit: options.commit, Paths: options.paths})
+		return c.CreateCollection(ctx, options.key, domain.CollectionInput{Commit: options.commit, Paths: options.paths, FullSource: options.fullSource})
 	case "context-collections":
 		if len(args) != 0 || options.limit < 1 || options.limit > domain.MaxHistoryPageSize {
 			return nil, errors.New("context-collections accepts --page and --limit 1-100; no positional arguments")

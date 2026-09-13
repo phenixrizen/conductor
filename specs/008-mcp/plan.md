@@ -32,7 +32,9 @@ covered by Feature 007 and the combined MCP/database acceptance. The latter
 passes with race detection against a real compiled stdio process: two repository
 receipts produce one idempotent graph, bounded queries retain provenance, and
 revoking one source hides graph reads/query/listing while anchor package reads
-remain available. The graph API prerequisite must precede the MCP graph commit.
+remain available. The graph API prerequisite must precede the MCP graph commit. The whole-source
+follow-up preserves explicit collection intent and inspected bundle digests through
+the same strict tool schemas; SDK-client tests verify the exact forwarded inputs.
 
 This branch forms one ordered PR in the full-release review stack requested by the
 user. Implemented and tested behavior does not grant merge, deployment or ADR

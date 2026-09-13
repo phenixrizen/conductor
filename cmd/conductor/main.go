@@ -37,6 +37,7 @@ func main() {
 	repository := f.String("repository", "", "repository identity recorded in the snapshot")
 	ref := f.String("ref", "HEAD", "Git ref to resolve to a commit")
 	commit := f.String("commit", "", "full commit object ID for remote context collection")
+	fullSource := f.Bool("full-source", false, "also acquire an exact Git bundle and whole-tree CodeGraph index")
 	idempotencyKey := f.String("idempotency-key", "", "stable key for an explicitly requested remote collection")
 	collectionID := f.String("collection-id", "", "inspected remote collection ID for attachment")
 	expectedRevision := f.Int64("expected-revision", 0, "inspected package revision for context attachment")
@@ -78,7 +79,7 @@ func main() {
 	switch cmd {
 	case "context-collect", "context-collections", "context-collection", "context-cancel", "context-attach":
 		p, err = runCollectionCommand(ctx, c, cmd, args, collectionOptions{
-			commit: *commit, paths: paths, key: *idempotencyKey, before: *page, limit: *limit,
+			commit: *commit, paths: paths, key: *idempotencyKey, fullSource: *fullSource, before: *page, limit: *limit,
 			collectionID: *collectionID, digest: *digest, expectedRevision: *expectedRevision,
 		})
 	case "session":

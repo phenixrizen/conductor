@@ -60,6 +60,64 @@ CONDUCTOR_TEST_TEMPORAL=1 go test ./internal/contextworkflow ./tests/acceptance 
 The CodeGraph opt-in requires the image ID environment variable and Docker access;
 missing prerequisites fail after opting in. PostgreSQL tests own isolated schemas.
 Temporal process tests own their own services, never the developer database.
-The current collector's 32 explicitly selected paths are partial coverage. Complete
-repository acquisition, broader platform/language certification and production
-Temporal deployment remain separate unfinished work.
+Selected-path collections cover at most 32 explicit paths. The whole-repository
+mode below acquires the complete bounded Git bundle and records indexing gaps.
+Broader platform/language certification and production Temporal deployment remain
+separate unfinished work.
+
+## Whole repository source
+
+Use `conductor context-collect --full-source` with the normal commit/path/key
+flags, or set `fullSource: true` in a collection request to acquire an exact Git bundle and
+index its tree using the configured CodeGraph adapter. Keep the normal explicit
+paths for the version 2 package context receipt. Inspect `collection.fullSource`
+and supply its digest as `fullSourceDigest` on the graph source selector to use
+that whole-tree index. A changed digest is a new inspected input; do not refresh
+inside graph or package confirmation.
+
+This path needs Git 2.43.0 and util-linux `prlimit` at `/usr/bin/` on the trusted
+worker, plus migration 008. Provider credentials remain in the trusted HTTP proxy;
+Git and CodeGraph receive none. Both required repository providers use their
+existing read integration. GitLab credentials also need Git-over-HTTPS read access,
+not merely permission to inspect API metadata. No new source-read/publication
+permission is inferred from a ticket or graph.
+
+```bash
+go test -race ./internal/repositorycontext/remote -run FullSource -count=1
+CONDUCTOR_TEST_CODEGRAPH=1 go test -race ./tests/acceptance -run FullSource -count=1
+```
+
+The first test uses real Git smart HTTP with controlled provider metadata. The
+second uses an actual Git bundle, native CodeGraph container and isolated database.
+Add `CONDUCTOR_TEST_TEMPORAL=1` to include the owned Temporal workflow path.
+See [source architecture](../architecture/source-bundles.md) for finite limits.
+
+## Browser workflow
+
+Sign in and select the workspace and repository. In **Repository relationships**,
+refresh graphs to inspect shared relationships and their exact source digests.
+Search a symbol/path or explore a returned node, choosing a depth from zero to five.
+The graph and query show bounded coverage, unresolved evidence and unknown freshness.
+
+Authors can open **Build a graph from inspected receipts**, load available
+repositories, then inspect one retained receipt per repository and add it to the
+source list. Include the selected repository. Whole-source receipts offer an
+explicit index checkbox and bundle digest. Record the graph after inspecting its
+sources. If the response is lost, **Retry exact graph request** reuses the complete
+input and key without refreshing source. Changing scope or losing source access
+clears inspection and source selections.
+
+The **Shared context collections** request form also offers whole-repository source.
+The returned bundle summary exposes its commit, tree, digest and index coverage;
+a successful request alone is not a completed collection or passing verification.
+
+After building the web app, run the actual signed-login and PostgreSQL browser paths:
+
+```bash
+CONDUCTOR_TEST_BROWSER=1 go test -race ./tests/acceptance -run 'TestBrowser(RepositoryGraphs|ContextCollections)$' -count=1
+```
+
+Set the database and pinned browser Python environment as documented in the
+[browser runbook](browser-sign-in.md). Graph browser fixtures retain real Git bundles
+with explicitly unexecuted index entries; native CodeGraph and provider acquisition
+are verified by their separate actual-process acceptance above.

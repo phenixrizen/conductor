@@ -87,7 +87,7 @@ func (a *API) createCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input *domain.CollectionInput
-	if err := decodeCollectionCommand(w, r, &input, "commit", "paths"); err != nil || input == nil {
+	if err := decodeCollectionCommand(w, r, &input, "commit", "paths", "fullSource"); err != nil || input == nil {
 		reject(w, r, http.StatusBadRequest, "invalid_request", "a collection object with commit and paths is required")
 		return
 	}

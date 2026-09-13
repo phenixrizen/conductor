@@ -224,7 +224,7 @@ func TestCancellationReachesAPI(t *testing.T) {
 }
 func TestCollectionUsesCapturedIdempotencyKeyAndNormalizesPaths(t *testing.T) {
 	_, session, f := newTestBridge(t)
-	args := map[string]any{"commit": strings.Repeat("a", 40), "paths": []string{"z.md", "a.md"}, "idempotencyKey": "same-key"}
+	args := map[string]any{"commit": strings.Repeat("a", 40), "paths": []string{"z.md", "a.md"}, "idempotencyKey": "same-key", "fullSource": true}
 	for range 2 {
 		if result := call(t, session, "conductor_request_collection", args); result.IsError {
 			t.Fatalf("collection failed: %+v", result)
@@ -238,7 +238,7 @@ func TestCollectionUsesCapturedIdempotencyKeyAndNormalizesPaths(t *testing.T) {
 			writes = append(writes, request)
 		}
 	}
-	if len(writes) != 2 || !reflect.DeepEqual(writes[0], writes[1]) || writes[0].Key != "same-key" || !reflect.DeepEqual(writes[0].Body["paths"], []any{"a.md", "z.md"}) {
+	if len(writes) != 2 || !reflect.DeepEqual(writes[0], writes[1]) || writes[0].Key != "same-key" || writes[0].Body["fullSource"] != true || !reflect.DeepEqual(writes[0].Body["paths"], []any{"a.md", "z.md"}) {
 		t.Fatalf("retry changed input: %+v", writes)
 	}
 }
@@ -249,7 +249,7 @@ func TestGraphToolsPreserveSourceTuplesAndQueryBounds(t *testing.T) {
 	receiptID := strings.Repeat("b", 32)
 	digest := strings.Repeat("c", 64)
 	args := map[string]any{"idempotencyKey": "graph-retry-key", "sources": []any{
-		map[string]any{"repositoryId": "z-library", "collectionId": receiptID, "digest": digest},
+		map[string]any{"repositoryId": "z-library", "collectionId": receiptID, "digest": digest, "fullSourceDigest": strings.Repeat("d", 64)},
 		map[string]any{"repositoryId": "application", "collectionId": receiptID, "digest": digest},
 	}}
 	f.mu.Lock()
@@ -265,7 +265,7 @@ func TestGraphToolsPreserveSourceTuplesAndQueryBounds(t *testing.T) {
 		t.Fatalf("graph command refreshed or changed key: %+v", requests)
 	}
 	sources := requests[0].Body["sources"].([]any)
-	if sources[0].(map[string]any)["repositoryId"] != "application" || sources[1].(map[string]any)["digest"] != digest {
+	if sources[0].(map[string]any)["repositoryId"] != "application" || sources[1].(map[string]any)["digest"] != digest || sources[1].(map[string]any)["fullSourceDigest"] != strings.Repeat("d", 64) {
 		t.Fatalf("graph source tuple changed: %+v", sources)
 	}
 	if result := call(t, session, "conductor_query_graph", map[string]any{"id": graphID, "search": "call", "depth": 5, "limit": 3}); result.IsError {

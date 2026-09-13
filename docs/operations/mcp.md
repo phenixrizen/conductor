@@ -81,6 +81,11 @@ The concrete configured prefix is published by `resources/list` and
 `/packages/{id}`, `/packages/{id}/history`,
 `/packages/{id}/revisions/{revision}`, `/collections`, `/collections/{id}`,
 `/graphs`, and `/graphs/{id}`.
+Set `fullSource: true` on `conductor_request_collection` to additionally retain
+bounded whole-repository source. Inspect the returned `fullSource` summary; add its
+exact digest as `fullSourceDigest` in a `conductor_create_graph` source selector to
+use that index. Omitting it preserves selected-path behavior.
+
 Graphs are created from exact inspected receipt tuples, one per source repository
 (up to 16). The selected repository must be included. All source repositories
 remain subject to current server access checks, including query/list operations.

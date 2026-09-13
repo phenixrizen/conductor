@@ -41,6 +41,7 @@ type collectArgs struct {
 	IdempotencyKey string   `json:"idempotencyKey"`
 	Commit         string   `json:"commit"`
 	Paths          []string `json:"paths"`
+	FullSource     bool     `json:"fullSource,omitempty"`
 }
 type attachArgs struct {
 	ID               string `json:"id"`
@@ -94,11 +95,11 @@ func (b *Bridge) registerTools() {
 	collectionID := map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"}
 	digest := map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}
 	addTool(b, "conductor_get_collection", "Inspect the scoped request, receipt digest, complete source snapshot and execution observation. A missing receipt or stale observation establishes no passing evidence.", schema(map[string]any{"id": collectionID}, "id"), false, true, func(ctx context.Context, a idArgs) (any, error) { return b.api.GetCollection(ctx, a.ID) })
-	addTool(b, "conductor_request_collection", "Request bounded remote context at an exact commit and literal paths. Requires author permission and an enabled repository integration. Keep the same key and complete input after an uncertain result; retry only explicitly. This does not run repository commands.", schema(map[string]any{"idempotencyKey": stringSchema(128), "commit": map[string]any{"type": "string", "pattern": "^[0-9a-f]{40}$"}, "paths": map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": stringSchema(512)}}, "idempotencyKey", "commit", "paths"), true, true, func(ctx context.Context, a collectArgs) (any, error) {
+	addTool(b, "conductor_request_collection", "Request bounded remote context at an exact commit and literal paths. fullSource additionally retains bounded whole-repository source for indexing and coding; inspect its separate digest and coverage. Requires author permission and an enabled repository integration. Keep the same key and complete input after an uncertain result; retry only explicitly. This does not run repository commands.", schema(map[string]any{"idempotencyKey": stringSchema(128), "commit": map[string]any{"type": "string", "pattern": "^[0-9a-f]{40}$"}, "paths": map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": stringSchema(512)}, "fullSource": map[string]any{"type": "boolean"}}, "idempotencyKey", "commit", "paths"), true, true, func(ctx context.Context, a collectArgs) (any, error) {
 		if domain.ValidateCollectionKey(a.IdempotencyKey) != nil {
 			return nil, domain.ErrInvalidInput
 		}
-		input, err := domain.NormalizeCollectionInput(domain.CollectionInput{Commit: a.Commit, Paths: a.Paths})
+		input, err := domain.NormalizeCollectionInput(domain.CollectionInput{Commit: a.Commit, Paths: a.Paths, FullSource: a.FullSource})
 		if err != nil {
 			return nil, domain.ErrInvalidInput
 		}

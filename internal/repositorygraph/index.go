@@ -18,9 +18,11 @@ import (
 )
 
 type Receipt struct {
-	Source  domain.GraphSource
-	Receipt domain.CollectionReceipt
-	Index   *domain.CodeGraphIndex
+	Source        domain.GraphSource
+	Receipt       domain.CollectionReceipt
+	Index         *domain.CodeGraphIndex
+	FullArtifacts []domain.ContextArtifact
+	FullTruncated bool
 }
 type dependency struct{ node, repository, name, ecosystem string }
 type module struct{ node, repository, name, ecosystem string }
@@ -47,8 +49,22 @@ func Build(ctx context.Context, receipts []Receipt) (domain.GraphSnapshot, error
 			return domain.GraphSnapshot{}, domain.ErrInvalidInput
 		}
 		b.graph.Sources = append(b.graph.Sources, domain.GraphSourceRecord{GraphSource: r.Source, Commit: s.Commit, CollectedAt: s.CollectedAt, Freshness: "unknown"})
+		if r.Source.FullSourceDigest != "" {
+			if r.FullArtifacts == nil || r.Index == nil {
+				return domain.GraphSnapshot{}, domain.ErrInvalidInput
+			}
+			s.Artifacts = r.FullArtifacts
+			r.Receipt.Snapshot.Artifacts = r.FullArtifacts
+			if r.FullTruncated {
+				b.graph.Truncated = true
+			}
+		}
 		root := b.node(r.Source, "repository", r.Source.RepositoryID, "", "", 0)
-		b.gap(r.Source.RepositoryID, "", "partial", "Only explicitly collected paths were indexed; branch freshness and uncollected files are unknown.")
+		if r.Source.FullSourceDigest == "" {
+			b.gap(r.Source.RepositoryID, "", "partial", "Only explicitly collected paths were indexed; branch freshness and uncollected files are unknown.")
+		} else {
+			b.gap(r.Source.RepositoryID, "", "partial", "Exact Git bundle supplied the repository tree; binary, generated, unsupported and bounded-out paths remain unverified. Branch freshness is unknown.")
+		}
 		for _, a := range s.Artifacts {
 			if err := ctx.Err(); err != nil {
 				return domain.GraphSnapshot{}, err

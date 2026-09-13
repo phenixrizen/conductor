@@ -146,6 +146,19 @@ aside .panel { margin-bottom: 1rem; padding: 1.2rem; }
 .collection-actions { margin: 1.2rem 0; }
 .collection-confirmation { margin-top: 1.5rem; }
 .collection-execution { padding-block: .5rem; }
+.checkbox-label { display: flex; flex-direction: row; align-items: center; gap: .6rem; margin-block: 1rem; }
+.checkbox-label input { width: auto; min-width: 1rem; }
+.repository-graphs { margin: 1.5rem 0; overflow-wrap: anywhere; min-width: 0; }
+.repository-graphs button { max-width: 100%; overflow-wrap: anywhere; }
+.repository-graphs h2 { font-size: 1.6rem; }
+.graph-create, .graph-inspection { border-top: 1px solid #bfc9be; margin-top: 1rem; padding-top: 1rem; }
+.graph-create > label, .graph-create > button, .source-inspection > button { margin-block: .6rem; }
+.source-receipts li { display: grid; gap: .5rem; }
+.graph-table { overflow-x: auto; margin-top: 1rem; }
+.graph-table table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.graph-table th, .graph-table td { text-align: left; vertical-align: top; border-bottom: 1px solid #d5ded0; padding: .7rem; overflow-wrap: anywhere; }
+.graph-table th { color: #263d35; background: #edf2e7; }
+.graph-gaps { max-height: 20rem; overflow: auto; margin-block: 1rem; }
 
 @media (max-width: 600px) {
   .shared-list { grid-template-columns: minmax(0, 1fr); }
