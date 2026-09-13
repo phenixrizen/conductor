@@ -121,6 +121,9 @@ packages to mirror the target diagram.
 
 ## Shared context and history
 
+- Browser graph creation captures inspected receipt and optional whole-source
+  digests. An uncertain response retains the exact input/key for explicit retry.
+  Scope changes and source denial clear the captured graph and source selections.
 - A repository graph is visible only while the principal can read every included
   repository. Apply this before pagination and retain explicit coverage gaps and
   unknown freshness. Graph creation projects stored receipts and indexes; it must

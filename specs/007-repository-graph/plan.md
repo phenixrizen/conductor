@@ -18,6 +18,8 @@ commits with an explicit numbered base/dependency chain; never merge them or mar
 external deployment/compatibility as verified without corresponding evidence.
 
 The backend items, including bounded whole-repository source acquisition and
-CodeGraph indexing, have implementation and targeted acceptance. Item 5 interface
-controls and coordinated-agent consumption remain required for the broader release. [Operations](../../docs/operations/repository-graph.md)
+CodeGraph indexing, have implementation and targeted acceptance. Browser graph
+controls now have actual signed-login/PostgreSQL/Chromium acceptance for multi-repository
+inspection, retained-key retry, queries, scope/denial clearing and read-only access.
+Terminal controls and coordinated-agent consumption remain required for the broader release. [Operations](../../docs/operations/repository-graph.md)
 records reproducible native runtime setup and remaining limits.

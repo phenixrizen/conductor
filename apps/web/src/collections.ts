@@ -1,7 +1,8 @@
 import { APIError } from './api';
 import type { BrowserAccess, Content } from './api';
 
-export interface CollectionInput { commit: string; paths: string[] }
+export interface CollectionInput { commit: string; paths: string[]; fullSource?: boolean }
+export interface SourceBundleSummary { digest: string; tree: string; commit: string; size: number; fileCount: number; indexedFiles: number; truncated: boolean; createdAt: string }
 export interface ContextSource {
   workspaceId: string; repositoryId: string; provider: string; host: string;
   providerId: string; locator: string; profile: string; integrationVersion: number;
@@ -21,6 +22,7 @@ export interface CollectionSummary {
 }
 export interface Collection extends Omit<CollectionSummary, 'commit' | 'receiptDigest'> {
   input: CollectionInput; inputDigest: string; source: ContextSource; receipt?: CollectionReceipt;
+  fullSource?: SourceBundleSummary;
 }
 export interface CollectionPage { collections: CollectionSummary[]; nextBefore?: string }
 export interface AttachmentTarget { id: string; revision: number; digest: string; content: Content }
@@ -89,6 +91,11 @@ export function validateCollection(value: Collection, access: BrowserAccess, exp
     throw new Error('The collection response does not match this repository or is incomplete. Inspect it again before taking an action.');
   }
   const receipt = value.receipt;
+  if (value.input.fullSource !== undefined && typeof value.input.fullSource !== 'boolean') throw new Error('The full-source collection option is invalid.');
+  if (value.fullSource !== undefined && (!value.input.fullSource || !receipt || !hex(value.fullSource.digest, 64) || !hex(value.fullSource.tree, 40)
+    || value.fullSource.commit !== value.input.commit || !Number.isSafeInteger(value.fullSource.size) || value.fullSource.size < 1 || value.fullSource.size > 32 * 1024 * 1024
+    || !Number.isSafeInteger(value.fullSource.fileCount) || value.fullSource.fileCount < 0 || !Number.isSafeInteger(value.fullSource.indexedFiles) || value.fullSource.indexedFiles < 0 || value.fullSource.indexedFiles > value.fullSource.fileCount
+    || typeof value.fullSource.truncated !== 'boolean' || !timestamp(value.fullSource.createdAt))) throw new Error('The whole-repository source does not match the inspected receipt.');
   if (receipt !== undefined && (!receipt || receipt.id !== value.id || !hex(receipt.digest, 64) || !timestamp(receipt.createdAt)
     || !remoteSnapshot(receipt.snapshot) || receipt.snapshot.collectionId !== value.id || !sameJSON(receipt.snapshot.source, value.source)
     || receipt.snapshot.commit !== value.input.commit || !sameJSON(receipt.snapshot.artifacts.map(artifact => artifact.path), value.input.paths))) {

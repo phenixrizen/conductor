@@ -91,3 +91,33 @@ The first test uses real Git smart HTTP with controlled provider metadata. The
 second uses an actual Git bundle, native CodeGraph container and isolated database.
 Add `CONDUCTOR_TEST_TEMPORAL=1` to include the owned Temporal workflow path.
 See [source architecture](../architecture/source-bundles.md) for finite limits.
+
+## Browser workflow
+
+Sign in and select the workspace and repository. In **Repository relationships**,
+refresh graphs to inspect shared relationships and their exact source digests.
+Search a symbol/path or explore a returned node, choosing a depth from zero to five.
+The graph and query show bounded coverage, unresolved evidence and unknown freshness.
+
+Authors can open **Build a graph from inspected receipts**, load available
+repositories, then inspect one retained receipt per repository and add it to the
+source list. Include the selected repository. Whole-source receipts offer an
+explicit index checkbox and bundle digest. Record the graph after inspecting its
+sources. If the response is lost, **Retry exact graph request** reuses the complete
+input and key without refreshing source. Changing scope or losing source access
+clears inspection and source selections.
+
+The **Shared context collections** request form also offers whole-repository source.
+The returned bundle summary exposes its commit, tree, digest and index coverage;
+a successful request alone is not a completed collection or passing verification.
+
+After building the web app, run the actual signed-login and PostgreSQL browser paths:
+
+```bash
+CONDUCTOR_TEST_BROWSER=1 go test -race ./tests/acceptance -run 'TestBrowser(RepositoryGraphs|ContextCollections)$' -count=1
+```
+
+Set the database and pinned browser Python environment as documented in the
+[browser runbook](browser-sign-in.md). Graph browser fixtures retain real Git bundles
+with explicitly unexecuted index entries; native CodeGraph and provider acquisition
+are verified by their separate actual-process acceptance above.

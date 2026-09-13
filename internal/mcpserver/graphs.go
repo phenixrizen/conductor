@@ -22,7 +22,7 @@ type graphQueryArgs struct {
 func (b *Bridge) registerGraphs() {
 	id := map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"}
 	digest := map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}
-	source := schema(map[string]any{"repositoryId": stringSchema(128), "collectionId": id, "digest": digest}, "repositoryId", "collectionId", "digest")
+	source := schema(map[string]any{"repositoryId": stringSchema(128), "collectionId": id, "digest": digest, "fullSourceDigest": digest}, "repositoryId", "collectionId", "digest")
 	addTool(b, "conductor_create_graph", "Derive a shared cross-repository graph from 1–16 exact inspected scoped receipts, including the selected repository. Every source requires current access; source repository IDs do not change this session's scope. Structural relations, source gaps and unknown freshness are evidence, never passing checks. Retry an uncertain request only explicitly with the same key and sources.", schema(map[string]any{"idempotencyKey": stringSchema(128), "sources": map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": source}}, "idempotencyKey", "sources"), true, true, func(ctx context.Context, a graphCreateArgs) (any, error) {
 		if domain.ValidateCollectionKey(a.IdempotencyKey) != nil {
 			return nil, domain.ErrInvalidInput

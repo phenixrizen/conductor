@@ -26,6 +26,7 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const [commit, setCommit] = useState('');
   const [paths, setPaths] = useState('');
+  const [fullSource, setFullSource] = useState(false);
   const [key, setKey] = useState<string>(() => crypto.randomUUID());
   const [creation, setCreation] = useState<Creation>();
   const [pending, setPending] = useState('');
@@ -73,7 +74,7 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
       controller.current?.abort();
       working.current = false;
       setPending(''); setPage(undefined); setSelected(undefined); setConfirmation(undefined);
-      setCreation(undefined); setCommit(''); setPaths(''); setKey(''); setNotice(''); setError('');
+      setCreation(undefined); setCommit(''); setPaths(''); setFullSource(false); setKey(''); setNotice(''); setError('');
       onInspected(undefined); onBusyChange(false); onAccessFailure?.(failure);
     } else setError(errorMessage(failure));
   }
@@ -117,7 +118,7 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
     if (!access.canAuthor || creation?.outcome === 'recorded') return;
     let captured: Creation;
     try {
-      captured = creation?.outcome === 'uncertain' ? creation : { input: collectionInput(commit, paths), key, outcome: 'pending' };
+      captured = creation?.outcome === 'uncertain' ? creation : { input: { ...collectionInput(commit, paths), ...(fullSource ? { fullSource: true } : {}) }, key, outcome: 'pending' };
       if (!/^[\x21-\x2b\x2d-\x7e]{1,128}$/.test(captured.key)) throw new Error('Use a 1–128 character printable ASCII idempotency key without spaces or commas.');
     } catch (failure) { setError(errorMessage(failure)); return; }
     const job = begin('Recording collection request…');
@@ -143,7 +144,7 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
 
   function newRequest() {
     if (busy || creation?.outcome === 'uncertain') return;
-    setCreation(undefined); setCommit(''); setPaths(''); setKey(crypto.randomUUID()); setError(''); setNotice('');
+    setCreation(undefined); setCommit(''); setPaths(''); setFullSource(false); setKey(crypto.randomUUID()); setError(''); setNotice('');
   }
 
   async function confirm() {
@@ -211,6 +212,8 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
         <div className="control-row"><label htmlFor="collection-commit">Exact commit<input id="collection-commit" value={commit} maxLength={40} placeholder="Full lowercase 40-hex commit ID" required disabled={busy || lockedDraft} onChange={event => setCommit(event.target.value)} /></label>
           <label htmlFor="collection-key">Idempotency key<input id="collection-key" value={key} maxLength={128} required disabled={busy || lockedDraft} onChange={event => setKey(event.target.value)} /></label></div>
         <label htmlFor="collection-paths">Explicit paths (one per line)<textarea id="collection-paths" value={paths} rows={4} maxLength={33000} required disabled={busy || lockedDraft} placeholder={'specs/example/spec.md\ndocs/adr/example.md'} onChange={event => setPaths(event.target.value)} /></label>
+        <label className="checkbox-label"><input type="checkbox" checked={fullSource} disabled={busy || lockedDraft} onChange={event => setFullSource(event.target.checked)} /> Include whole-repository source for graph and coding work</label>
+        {fullSource && <p className="muted">Retain the original Git commit and complete bounded source bundle, alongside the selected review files. Index coverage has separate file and text limits; gaps remain visible.</p>}
         <p className="muted">Use 1–32 unique relative file paths. The server sorts them and reads the operator-configured repository. Collection does not execute source or modify a package. Keep the same key and input when retrying an unknown result.</p>
         <div className="control-row"><button disabled={busy || creation?.outcome === 'recorded'} type="submit">{creation?.outcome === 'uncertain' ? 'Retry same request' : creation?.outcome === 'recorded' ? 'Request recorded' : 'Request collection'}</button>
           {creation?.outcome === 'recorded' && <button className="secondary" type="button" disabled={busy} onClick={newRequest}>Start a new request</button>}</div>
@@ -237,6 +240,11 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
         <dt>Workspace</dt><dd>{selected.workspaceId}</dd><dt>Repository</dt><dd>{selected.repositoryId}</dd><dt>Provider</dt><dd>{selected.source.provider} · {selected.source.host} · {selected.source.providerId}</dd>
         <dt>Locator</dt><dd>{selected.source.locator || 'Canonical provider ID'}</dd><dt>Read profile</dt><dd>{selected.source.profile} · integration version {selected.source.integrationVersion}</dd></dl>
       <Execution execution={selected.execution} now={now} />
+      {selected.input.fullSource && <section aria-label="Whole-repository source"><h4>Whole-repository source</h4>{selected.fullSource ? <><dl>
+        <dt>Bundle digest</dt><dd><code>{selected.fullSource.digest}</code></dd><dt>Original tree</dt><dd><code>{selected.fullSource.tree}</code></dd>
+        <dt>Files</dt><dd>{selected.fullSource.fileCount} in the source tree; {selected.fullSource.indexedFiles} retained index artifacts</dd><dt>Bundle size</dt><dd>{selected.fullSource.size.toLocaleString()} bytes</dd>
+        <dt>Retained</dt><dd>{dateLabel(selected.fullSource.createdAt)}</dd></dl><p className={selected.fullSource.truncated ? 'warning' : 'muted'}>{selected.fullSource.truncated ? 'Index coverage is truncated. The graph must retain these gaps.' : 'Index artifacts fit the collection bounds. Unsupported files and unresolved relationships remain separate evidence gaps.'}</p></>
+        : <p className="warning">No whole-repository bundle is recorded. Coding source remains unavailable.</p>}</section>}
       {selected.cancelRequestedAt && <p className="warning">Cancellation requested at {dateLabel(selected.cancelRequestedAt)}. This request is not proof that execution stopped; check the timestamped execution observation.</p>}
       {needsInspection && <p className="warning" role="alert">Renewed collection inspection required before another mutation.</p>}
       {selected.receipt ? <section aria-label="Inspected collection receipt"><h4>Immutable source receipt</h4><dl><dt>Receipt digest</dt><dd><code>{selected.receipt.digest}</code></dd><dt>Committed</dt><dd>{dateLabel(selected.receipt.createdAt)}</dd></dl>

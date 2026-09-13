@@ -67,6 +67,16 @@ The index accepts up to 512 paths and 4 MiB text. Complete Git objects do not es
 complete semantic coverage: binary/LFS/submodule/symlink/unsupported and bounded-out
 paths remain visible gaps. See [source bundles](../../docs/architecture/source-bundles.md).
 
+## Browser interaction
+
+The authenticated workbench discovers graphs in bounded pages, inspects exact
+source tuples and queries retained symbols/relationships. Authors explicitly
+inspect one receipt per repository before creating a graph. Whole-source indexing
+requires the displayed bundle digest. An uncertain creation retains the complete
+input and idempotency key for explicit retry; no mutation fetches newer receipts.
+A source denial or scope change clears graph inspection and captured source inputs.
+Read-only users can discover/query shared graphs without author controls.
+
 ## Acceptance
 
 - Two repository manifests and their source yield a shared dependency relationship.

@@ -26,8 +26,8 @@ for the new revision.
 - Browse related packages and history that your workspace and repository grants allow.
 - Connect coding agents through an authenticated MCP stdio bridge to the same
   packages, history, context requests, and draft commands used by other clients.
-- Build and query shared graphs across repository context receipts, with source
-  references, dependency relationships, and visible coverage gaps. An optional
+- Build and query shared graphs across repositories in the browser, API and MCP,
+  with inspected source references, dependency relationships and visible coverage gaps. An optional
   pinned CodeGraph Rust parser extracts symbols during background collection.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
@@ -37,6 +37,8 @@ for the new revision.
 - Collect selected files from exact GitHub/GitLab commits in the background through
   the API, CLI, browser or authenticated terminal. Share the saved results, inspect
   missing files, request cancellation, and attach context as a new package draft.
+- Retain bounded whole-repository Git source at an exact commit for graph and
+  coding work, while keeping review artifacts and source coverage explicit.
 - Check whether a local repository ref still matches the captured commit.
 - Review through architect, QC, developer, or product perspectives. These tailor
   questions and do not grant permissions.
@@ -153,7 +155,7 @@ configuration, troubleshooting, and database lifecycle.
 - **CodeGraph 1.6.0:** the selected
   [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) Rust extraction
   kernel runs in a container without network access or credentials. Graphs currently
-  cover explicitly collected paths; see [graph setup and limits](docs/operations/repository-graph.md).
+  cover selected review paths or explicitly requested whole-repository source; see [graph setup and limits](docs/operations/repository-graph.md).
 - **Codex 0.154.0 and Claude Code 2.1.270:** pinned producer adapters inside an
   isolated Docker worker, followed by checks in a separate container. Predecessor
   patches are preserved in cumulative results. See [worker setup and verification limits](docs/operations/coding-workers.md).
