@@ -59,7 +59,7 @@ func TestBrowserContextCollections(t *testing.T) {
 	if python == "" {
 		python = "python3"
 	}
-	command := exec.CommandContext(f.ctx, python, "../browser/collections.py")
+	command := exec.CommandContext(f.ctx, python, "../browser/context_collections.py")
 	command.Env = append(os.Environ(), "CONDUCTOR_BROWSER_WEB_URL="+f.app.URL, "CONDUCTOR_BROWSER_CHANGE_ID="+pkg.ID,
 		"CONDUCTOR_BROWSER_AUTHOR_TOKEN="+f.tokens["author"], "CONDUCTOR_BROWSER_COLLECTION_ID="+selected.ID,
 		"CONDUCTOR_BROWSER_RECEIPT_DIGEST="+receipt.Digest, "CONDUCTOR_BROWSER_SCREENSHOT=/tmp/conductor-context-workbench.png")
