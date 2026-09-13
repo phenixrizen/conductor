@@ -19,6 +19,7 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Sign in as reader", exact=True).click()
     page.get_by_label("Workspace", exact=True).select_option("team")
     page.get_by_label("Managed repository", exact=True).select_option("application")
+    page.get_by_role("tab", name="Agent work", exact=True).click()
     panel = page.locator(".coordinated-runs")
     panel.get_by_label("Run ID", exact=True).fill(os.environ["CONDUCTOR_BROWSER_CRITERIA_RUN"])
     panel.get_by_role("button", name="Inspect shared run", exact=True).click()
