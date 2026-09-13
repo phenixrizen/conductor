@@ -36,7 +36,13 @@ func coordinationAcceptance(t *testing.T, modes ...string) (*accessFixture, *coo
 	if !domain.ExecutionImagePinned(image) {
 		t.Fatal("immutable CONDUCTOR_TEST_WORKER_IMAGE required")
 	}
-	f := collectionFixture(t)
+	fixtureTimeout := time.Minute
+	if len(modes) > 0 && modes[0] == "crash" {
+		// This process-recovery test includes setup and the immutable attempt's
+		// cleanup grace. A child timeout cannot extend the shared fixture budget.
+		fixtureTimeout = 150 * time.Second
+	}
+	f := collectionFixtureWithTimeout(t, fixtureTimeout)
 	f.server.Close()
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db).WithCollections().WithCoordination(), f.verifier))
 	config := domain.AccessConfig{Repositories: []domain.RepositoryConfig{{ID: "related", WorkspaceID: "team", Provider: "gitlab", Host: "gitlab.com", ProviderID: "101", Name: "synthetic/application"}}, Grants: []domain.GrantConfig{{RepositoryID: "related", PrincipalID: "person-author", CanRead: true, CanAuthor: true, CanApprove: true}, {RepositoryID: "related", PrincipalID: "person-reviewer", CanRead: true, CanAuthor: true, CanApprove: true}, {RepositoryID: "related", PrincipalID: "person-agent", CanRead: true, CanAuthor: true}}, ExecutionGrants: []domain.ExecutionGrantConfig{{RepositoryID: "application", PrincipalID: "person-reviewer", CanExecute: true}, {RepositoryID: "related", PrincipalID: "person-reviewer", CanExecute: true}}, ContextIntegrations: []domain.ContextIntegrationConfig{{WorkspaceID: "team", RepositoryID: "related", Profile: "gitlab-rest/v4-19.3", CredentialID: "synthetic-only", Enabled: true}}}
@@ -577,7 +583,7 @@ func TestCoordinatedExecutorProcessCrashNeverRepeatsProducer(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("executor did not reconcile lost attempt: %v", err)
+			t.Fatalf("executor did not reconcile lost attempt: %v (context: %v)", err, ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
