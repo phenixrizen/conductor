@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.24 or the version declared in `go.mod`.
+- Go 1.25 or later, using the tested Go 1.26.8 toolchain declared in `go.mod`.
 - Docker with Compose for the local PostgreSQL dependency.
 - Node.js and npm for the optional web workbench.
 

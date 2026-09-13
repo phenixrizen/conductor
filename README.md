@@ -24,6 +24,8 @@ for the new revision.
 - Share work within authenticated workspaces, with repository permissions for
   reading, authoring, and independent human approval.
 - Browse related packages and history that your workspace and repository grants allow.
+- Connect coding agents through an authenticated MCP stdio bridge to the same
+  packages, history, context requests, and draft commands used by other clients.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
@@ -76,7 +78,7 @@ design approval or turn missing verification into a passing result. See the
 
 ## Run locally
 
-You need Go 1.24+, Node.js 22.12+, npm, Git, and Docker with Compose. Go dependencies
+You need Go 1.25+ (tested toolchain 1.26.8), Node.js 22.12+, npm, Git, and Docker with Compose. Go dependencies
 and frontend dependencies have committed lockfiles.
 
 ```bash
@@ -142,6 +144,8 @@ configuration, troubleshooting, and database lifecycle.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
 - **Temporal Go SDK 1.44.1:** background context sequencing, retries and cancellation;
   the first worker uses a trusted local Temporal server.
+- **MCP Go SDK 1.7.0:** a bounded stdio bridge for agents with one fixed identity
+  and workspace/repository selection. See the [MCP setup guide](docs/operations/mcp.md).
 
 The current implementation focuses on durable review, shared context, and
 controlled team access. Background context collection requires an operator-enabled

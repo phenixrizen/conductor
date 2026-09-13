@@ -97,6 +97,7 @@ packages to mirror the target diagram.
 | `cmd/conductord/` | HTTP control-plane server |
 | `cmd/conductor-worker/` | Trusted local Temporal worker and context dispatcher |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
+| `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
@@ -173,6 +174,12 @@ packages to mirror the target diagram.
   live GitHub/GitLab compatibility. See the durable-context runbook for tested bounds.
 
 ## Go conventions
+
+- The module requires Go 1.25 and pins the tested Go 1.26.8 toolchain for MCP SDK
+  1.7.0. Run checks with that toolchain; keep its version documented with upgrades.
+- MCP stdio uses one token-file credential and fixed workspace/repository until
+  exit. Expose no approval tool or caller-selected identity. Preserve exact write
+  inputs without preflight refreshes and keep stdout exclusively for MCP frames.
 
 - Keep one Go module until a demonstrated isolation or release requirement justifies
   another. If modules are added, test every module independently.
