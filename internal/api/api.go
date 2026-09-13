@@ -32,6 +32,10 @@ type API struct {
 func New(s packageService) http.Handler {
 	a := &API{service: s}
 	a.historyService, _ = s.(historyService)
+	return requestID(routes(a))
+}
+
+func routes(a *API) *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /api/v1/changes", a.list)
 	m.HandleFunc("POST /api/v1/changes", a.create)
@@ -42,10 +46,15 @@ func New(s packageService) http.Handler {
 	m.HandleFunc("POST /api/v1/changes/{id}/revisions", a.revise)
 	m.HandleFunc("POST /api/v1/changes/{id}/review-requests", a.submit)
 	m.HandleFunc("POST /api/v1/changes/{id}/approvals", a.approve)
-	return requestID(m)
+	return m
 }
 
 func actor(r *http.Request) (string, error) {
+	if _, ok := domain.AccessFromContext(r.Context()); ok {
+		// AuthenticatedService derives the durable actor inside its authorization
+		// transaction. This marker is never stored as an author or reviewer.
+		return "authenticated", nil
+	}
 	v := strings.TrimSpace(r.Header.Get("X-Conductor-Actor"))
 	if v == "" {
 		return "", errors.New("X-Conductor-Actor is required (local development only)")
@@ -89,6 +98,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	message := err.Error()
 	switch {
+	case errors.Is(err, domain.ErrUnauthenticated):
+		status, code = http.StatusUnauthorized, "authentication_required"
+	case errors.Is(err, domain.ErrForbidden):
+		status, code = http.StatusForbidden, "permission_denied"
 	case errors.Is(err, domain.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrStaleApproval):
@@ -107,10 +120,24 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	reject(w, r, status, code, message)
 }
 
+// Package commands and current inspection take their scope from headers and
+// consequential inputs from the command body. Reject extra query parameters so
+// a caller cannot mistake an ignored URL value for the scope or revision used.
+func noQuery(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.RawQuery != "" {
+		fail(w, r, domain.ErrInvalidInput)
+		return false
+	}
+	return true
+}
+
 func (a *API) create(w http.ResponseWriter, r *http.Request) {
 	u, err := actor(r)
 	if err != nil {
 		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
+		return
+	}
+	if !noQuery(w, r) {
 		return
 	}
 	var in struct {
@@ -133,6 +160,9 @@ func (a *API) get(w http.ResponseWriter, r *http.Request) {
 		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
+	if !noQuery(w, r) {
+		return
+	}
 	p, err := a.service.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		fail(w, r, err)
@@ -145,6 +175,9 @@ func (a *API) revise(w http.ResponseWriter, r *http.Request) {
 	u, err := actor(r)
 	if err != nil {
 		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
+		return
+	}
+	if !noQuery(w, r) {
 		return
 	}
 	var in struct {
@@ -169,6 +202,9 @@ func (a *API) submit(w http.ResponseWriter, r *http.Request) {
 		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
+	if !noQuery(w, r) {
+		return
+	}
 	var in struct {
 		Revision int64 `json:"revision"`
 	}
@@ -188,6 +224,9 @@ func (a *API) approve(w http.ResponseWriter, r *http.Request) {
 	u, err := actor(r)
 	if err != nil {
 		reject(w, r, http.StatusUnauthorized, "authentication_required", err.Error())
+		return
+	}
+	if !noQuery(w, r) {
 		return
 	}
 	var in struct {

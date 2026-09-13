@@ -355,11 +355,12 @@ func startRestartServer(t *testing.T, ctx context.Context, binary, databaseURL s
 	}
 	server := &restartServer{cmd: exec.CommandContext(ctx, binary), url: "http://" + address, done: make(chan struct{})}
 	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "DATABASE_URL=") && !strings.HasPrefix(value, "CONDUCTOR_ADDR=") {
+		if !strings.HasPrefix(value, "DATABASE_URL=") && !strings.HasPrefix(value, "CONDUCTOR_ADDR=") &&
+			!strings.HasPrefix(value, "CONDUCTOR_AUTH_MODE=") && !strings.HasPrefix(value, "CONDUCTOR_OIDC_") {
 			server.cmd.Env = append(server.cmd.Env, value)
 		}
 	}
-	server.cmd.Env = append(server.cmd.Env, "DATABASE_URL="+databaseURL, "CONDUCTOR_ADDR="+address)
+	server.cmd.Env = append(server.cmd.Env, "DATABASE_URL="+databaseURL, "CONDUCTOR_ADDR="+address, "CONDUCTOR_AUTH_MODE=local")
 	server.cmd.Stdout, server.cmd.Stderr = &server.logs, &server.logs
 	if err := server.cmd.Start(); err != nil {
 		t.Fatalf("start conductord child: %v", err)
