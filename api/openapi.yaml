@@ -1260,6 +1260,38 @@ paths:
                   pattern: ^[a-f0-9]{64}$
       parameters:
       - $ref: '#/components/parameters/BrowserOrigin'
+  /api/v1/execution-profiles:
+    get:
+      summary: Discover enabled operator execution profiles for the selected workspace
+      description: Requires explicit OIDC coordination and repository read access. Public profile/image
+        digests are inspected before authorizing a plan. Secret paths and credentials are never returned.
+        Discovery is capped at 100 entries with explicit truncation.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/CollectionRepository'
+      - $ref: '#/components/parameters/CSRF'
+      responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '200':
+          description: Bounded public execution profile catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionProfilePage'
 components:
   securitySchemes:
     BrowserCookie:
@@ -2389,43 +2421,6 @@ components:
             $ref: '#/components/schemas/GraphGap'
         truncated:
           type: boolean
-    SourceBundleSummary:
-      type: object
-      required:
-      - digest
-      - tree
-      - commit
-      - size
-      - fileCount
-      - indexedFiles
-      - truncated
-      - createdAt
-      properties:
-        digest:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-        tree:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        commit:
-          type: string
-          pattern: ^[a-f0-9]{40}$
-        size:
-          type: integer
-          minimum: 1
-          maximum: 33554432
-        fileCount:
-          type: integer
-          minimum: 0
-        indexedFiles:
-          type: integer
-          minimum: 0
-          maximum: 512
-        truncated:
-          type: boolean
-        createdAt:
-          type: string
-          format: date-time
     ExecutionCapabilities:
       type: object
       additionalProperties: false
@@ -2488,19 +2483,23 @@ components:
         receiptDigest:
           type: string
           pattern: ^[a-f0-9]{64}$
+        fullSourceDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
     CoordinationTaskScope:
       type: object
       additionalProperties: false
       required:
       - repositoryId
-      - writablePaths
       properties:
         repositoryId:
           type: string
           minLength: 1
           maxLength: 128
         writablePaths:
-          type: array
+          type:
+          - array
+          - 'null'
           minItems: 0
           maxItems: 128
           items:
@@ -2564,7 +2563,9 @@ components:
           minLength: 1
           maxLength: 32768
         dependsOn:
-          type: array
+          type:
+          - array
+          - 'null'
           minItems: 0
           maxItems: 32
           items:
@@ -2577,7 +2578,9 @@ components:
           items:
             $ref: '#/components/schemas/CoordinationTaskScope'
         checks:
-          type: array
+          type:
+          - array
+          - 'null'
           minItems: 0
           maxItems: 16
           items:
@@ -2586,6 +2589,14 @@ components:
           type: integer
           minimum: 1
           maximum: 1800
+        profileDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        image:
+          type: string
+          maxLength: 512
+          description: Inspected immutable Docker image reference; required with profileDigest before
+            authorization.
     CoordinationPlan:
       type: object
       additionalProperties: false
@@ -2795,3 +2806,89 @@ components:
         nextBefore:
           type: string
           maxLength: 1024
+    SourceBundleSummary:
+      type: object
+      required:
+      - digest
+      - tree
+      - commit
+      - size
+      - fileCount
+      - indexedFiles
+      - truncated
+      - createdAt
+      properties:
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        tree:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        size:
+          type: integer
+          minimum: 1
+          maximum: 33554432
+        fileCount:
+          type: integer
+          minimum: 0
+        indexedFiles:
+          type: integer
+          minimum: 0
+          maximum: 512
+        truncated:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    ExecutionProfile:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - profileDigest
+      - image
+      - adapter
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9._-]{1,64}$
+        profileDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        image:
+          type: string
+          maxLength: 512
+        adapter:
+          type: string
+          enum:
+          - command/v1
+          - codex/0.154.0
+          - claude-code/2.1.270
+        model:
+          type: string
+          maxLength: 128
+        command:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 16384
+        maxBudgetUsd:
+          type: string
+          maxLength: 8
+    ExecutionProfilePage:
+      type: object
+      required:
+      - profiles
+      - truncated
+      properties:
+        profiles:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ExecutionProfile'
+        truncated:
+          type: boolean

@@ -19,6 +19,21 @@ revoke the corresponding capability without deleting historical attribution.
 GET `/api/v1/execution-capabilities` reports the selected repository's effective
 human execution and publication capabilities; it cannot grant access elsewhere.
 
+Provision the public execution profile separately from its worker credential file.
+The operator command validates the actual adapter contract and computes its digest:
+
+```json
+{"executionProfiles":[{"workspaceId":"engineering","id":"synthetic-check","image":"sha256:REPLACE_WITH_64_HEX_IMAGE_DIGEST","profile":{"adapter":"command/v1","command":["/bin/true"]},"enabled":true}]}
+```
+
+GET `/api/v1/execution-profiles` lists up to 100 enabled profiles with an explicit
+truncation flag. Inspect each task's `profileDigest` and immutable `image` before
+authorization. The plan must also carry each repository's `fullSourceDigest`, matching
+the inspected whole-source graph. Missing pins permit a proposal for discussion,
+but cannot authorize execution. Updating or disabling an operator profile invalidates
+future admission under its old pin. Never put credentials in public profile fields
+or command arguments; the executor's private credential catalog stays outside this API.
+
 POST `/api/v1/coordination-runs` accepts one `Idempotency-Key` and the strict
 `CoordinationPlan` documented in [OpenAPI](../../api/openapi.yaml). Inspect that plan's
 exact digest before POST `/{id}/authorization` with `{"digest":"..."}`. Cancellation

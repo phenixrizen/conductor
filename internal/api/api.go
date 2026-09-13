@@ -59,6 +59,7 @@ func routes(a *API) *http.ServeMux {
 	m.HandleFunc("POST /api/v1/changes/{id}/context-attachments", a.attachCollection)
 	m.HandleFunc("POST /api/v1/coordination-runs", a.createCoordination)
 	m.HandleFunc("GET /api/v1/execution-capabilities", a.executionCapabilities)
+	m.HandleFunc("GET /api/v1/execution-profiles", a.executionProfiles)
 	m.HandleFunc("GET /api/v1/coordination-runs", a.listCoordinations)
 	m.HandleFunc("GET /api/v1/coordination-runs/{id}", a.getCoordination)
 	m.HandleFunc("POST /api/v1/coordination-runs/{id}/authorization", a.authorizeCoordination)

@@ -14,6 +14,11 @@ tasks. Each task names an operator-configured execution profile, a human perspec
 instructions, repository write paths, dependencies and explicit verification argv.
 Perspectives tailor work; they grant no authority.
 
+Before authorization, each repository also pins its retained whole-source digest,
+and each task pins the inspected operator profile digest and immutable image. Public
+profile discovery is workspace-scoped and bounded; it contains no credential paths.
+Updating the operator catalog cannot silently change an already inspected plan.
+
 An author may propose a plan. Creating it records immutable intent and audit facts,
 without scheduling a producer. A separately provisioned human execution grant on
 every repository is required to authorize its exact digest. Authorization checks

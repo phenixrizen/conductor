@@ -102,6 +102,7 @@ type AccessConfig struct {
 	Grants              []GrantConfig              `json:"grants"`
 	ContextIntegrations []ContextIntegrationConfig `json:"contextIntegrations,omitempty"`
 	ExecutionGrants     []ExecutionGrantConfig     `json:"executionGrants,omitempty"`
+	ExecutionProfiles   []ExecutionProfileConfig   `json:"executionProfiles,omitempty"`
 }
 
 const MaxAccessPageSize = 100
@@ -157,7 +158,7 @@ func NormalizeRepositoryHost(host string) (string, error) {
 	return host, nil
 }
 func ValidateAccessConfig(c AccessConfig) error {
-	if len(c.Principals)+len(c.Workspaces)+len(c.Memberships)+len(c.Repositories)+len(c.Grants)+len(c.ContextIntegrations)+len(c.ExecutionGrants) > 500 {
+	if len(c.Principals)+len(c.Workspaces)+len(c.Memberships)+len(c.Repositories)+len(c.Grants)+len(c.ContextIntegrations)+len(c.ExecutionGrants)+len(c.ExecutionProfiles) > 500 {
 		return fmt.Errorf("%w: at most 500 access records", ErrInvalidInput)
 	}
 	for _, p := range c.Principals {
@@ -196,6 +197,11 @@ func ValidateAccessConfig(c AccessConfig) error {
 	for _, grant := range c.ExecutionGrants {
 		if ValidateAccessID(grant.RepositoryID) != nil || ValidateAccessID(grant.PrincipalID) != nil {
 			return ErrInvalidInput
+		}
+	}
+	for _, profile := range c.ExecutionProfiles {
+		if err := ValidateExecutionProfileConfig(profile); err != nil {
+			return err
 		}
 	}
 	return nil
