@@ -14,7 +14,6 @@ import (
 	"github.com/phenixrizen/conductor/internal/domain"
 	"github.com/phenixrizen/conductor/internal/repositorycontext"
 	"github.com/phenixrizen/conductor/internal/tui"
-	"github.com/phenixrizen/conductor/pkg/client"
 )
 
 func main() {
@@ -24,6 +23,8 @@ func main() {
 	cmd := os.Args[1]
 	f := flag.NewFlagSet(cmd, flag.ExitOnError)
 	actor := f.String("actor", "", "local development identity")
+	workspace := f.String("workspace", env("CONDUCTOR_WORKSPACE", ""), "authenticated workspace ID")
+	repositoryID := f.String("repository-id", env("CONDUCTOR_REPOSITORY_ID", ""), "canonical managed repository ID for authenticated requests")
 	title := f.String("title", "", "package title")
 	file := f.String("file", "", "JSON package content file ('-' for stdin)")
 	rev := f.Int64("revision", 0, "inspected revision")
@@ -42,11 +43,17 @@ func main() {
 	})
 	_ = f.Parse(os.Args[2:])
 	*actor = strings.TrimSpace(*actor)
-	if *actor == "" && cmd != "context" && cmd != "context-check" {
-		fmt.Fprintln(os.Stderr, "--actor is required")
+	actorSet := false
+	f.Visit(func(option *flag.Flag) {
+		if option.Name == "actor" {
+			actorSet = true
+		}
+	})
+	c, clientErr := clientForCommand(cmd, *actor, actorSet, *workspace, *repositoryID)
+	if clientErr != nil {
+		fmt.Fprintln(os.Stderr, clientErr)
 		os.Exit(2)
 	}
-	c := client.New(env("CONDUCTOR_URL", "http://localhost:8080"), *actor)
 	if cmd == "tui" {
 		id := ""
 		if len(f.Args()) > 0 {
@@ -65,6 +72,10 @@ func main() {
 	exitCode := 0
 	args := f.Args()
 	switch cmd {
+	case "session":
+		p, err = c.Session(ctx)
+	case "repositories":
+		p, err = c.Repositories(ctx)
 	case "list":
 		p, err = c.ListChanges(ctx, *repository, *page, *limit)
 	case "create":
@@ -156,7 +167,7 @@ func env(k, d string) string {
 	return d
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: conductor <tui|list|create|revise|show|history|events|submit|approve|context|context-check> [flags] [id]")
+	fmt.Fprintln(os.Stderr, "usage: conductor <tui|session|repositories|list|create|revise|show|history|events|submit|approve|context|context-check> [flags] [id]")
 	os.Exit(2)
 }
 

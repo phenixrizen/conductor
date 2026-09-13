@@ -27,6 +27,9 @@ func (e *APIError) Error() string {
 type Client struct {
 	BaseURL, Actor string
 	HTTP           *http.Client
+	bearerToken    string
+	workspaceID    string
+	repositoryID   string
 }
 
 func New(base, actor string) *Client {
@@ -39,6 +42,13 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (domain.
 }
 
 func (c *Client) doInto(ctx context.Context, method, path string, body, output any) error {
+	// BaseURL is retained as a public field for existing local clients. Recheck
+	// it at the credential boundary so later mutation cannot downgrade TLS.
+	if c.bearerToken != "" {
+		if err := validateCredentialURL(c.BaseURL); err != nil {
+			return err
+		}
+	}
 	var b bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&b).Encode(body); err != nil {
@@ -50,7 +60,17 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Conductor-Actor", c.Actor)
+	if c.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+		if c.workspaceID != "" {
+			req.Header.Set("X-Conductor-Workspace", c.workspaceID)
+		}
+		if c.repositoryID != "" {
+			req.Header.Set("X-Conductor-Repository", c.repositoryID)
+		}
+	} else {
+		req.Header.Set("X-Conductor-Actor", c.Actor)
+	}
 	configured := c.HTTP
 	if configured == nil {
 		configured = &http.Client{Timeout: 30 * time.Second}
@@ -60,6 +80,9 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 	// Copy the client so concurrent requests never mutate caller configuration.
 	transportClient := *configured
 	transportClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if c.bearerToken != "" {
+		transportClient.Jar = nil
+	}
 	res, err := transportClient.Do(req)
 	if err != nil {
 		return err
