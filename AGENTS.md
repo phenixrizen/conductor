@@ -104,6 +104,7 @@ packages to mirror the target diagram.
 | `internal/authn/` | Bounded issuer discovery, API token verification, and browser code exchange |
 | `internal/store/` | PostgreSQL transaction implementation |
 | `internal/repositorycontext/` | Bounded local Git collection, remote provider reads, and local freshness checks |
+| `internal/repositorygraph/`, `internal/codegraph/` | Shared graph projection and isolated pinned CodeGraph extraction |
 | `internal/collectionworker/` | Credential binding, context activity, fenced dispatch, and reconciliation |
 | `internal/contextworkflow/` | Pinned Temporal workflow, runtime identity and history validation |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
@@ -118,6 +119,15 @@ packages to mirror the target diagram.
 | `tests/` | Cross-component fixtures and acceptance tests when introduced |
 
 ## Shared context and history
+
+- A repository graph is visible only while the principal can read every included
+  repository. Apply this before pagination and retain explicit coverage gaps and
+  unknown freshness. Graph creation projects stored receipts and indexes; it must
+  not perform external collection or turn structural relationships into verification.
+- CodeGraph indexing belongs in the collection activity, with its receipt and index
+  committed together. Pin an immutable image ID. The trusted launcher sets and checks
+  Linux no_new_privs before parsing; never remove the restriction to work around
+  Docker Snap startup behavior. Keep source and credentials outside workflow history.
 
 - Clients using the same API share the PostgreSQL dataset. Keep package context
   and review facts in the service, not private browser or agent-session memory.

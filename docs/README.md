@@ -14,6 +14,9 @@ not mistaken for working capabilities.
 | [MCP setup](operations/mcp.md) | Connect agents to shared review and context through authenticated stdio |
 | [MCP specification](../specs/008-mcp/spec.md) | Fixed identity, strict tool inputs, bounded output, and shared authorization |
 | [MCP integration research](architecture/mcp-integration-research.md) | Pinned SDK, protocol, Go toolchain, and tested limits |
+| [Repository graph](architecture/repository-graph.md) | Immutable shared graphs, all-source permission checks, and explicit coverage |
+| [Graph setup](operations/repository-graph.md) | Build the pinned CodeGraph image and query shared repository relationships |
+| [CodeGraph research](architecture/codegraph-integration-research.md) | Selected upstream, tested Rust extraction, and version-specific adapter limits |
 | [Milestone 1 architecture](architecture/milestone-1.md) | Implemented work-package model, lifecycle, API flow, persistence, and invariants |
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
