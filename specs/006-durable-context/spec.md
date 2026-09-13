@@ -1,7 +1,7 @@
 # Feature 006: durable shared repository context
 
-**Status: Proposed.** This is the next workflow contract, not an implemented
-integration. Collection authorization is awaiting a product decision. Temporal,
+**Status: Proposed workflow contract.** The collection permission model was selected
+on 2026-09-13: repository authors may collect after operator enablement. Temporal,
 remote collection, and the commands described here are unavailable today.
 
 ## Outcome
@@ -18,16 +18,14 @@ bounded workflow used to prove durable orchestration before coding workers.
 
 ## Authorization decision
 
-The existing `read`, `author`, and `approve` permissions govern package review;
-they do not currently authorize background use of provider credentials.
-
-The proposed default is to allow an active human or agent with repository author
+The selected policy allows an active human or agent with repository author
 permission to request collection **only after an operator enables a read
-integration for that canonical repository**. The alternative is a new separately
-provisioned collection permission. This choice must be resolved before enabling
-the request command; neither option is implemented by this proposal.
+integration for that canonical repository**. This extends author permission to
+bounded context collection; it does not authorize coding or publication. There is
+no separate collection grant in this increment. This policy choice does not accept
+ADR 0003 or describe the integration as implemented.
 
-Under either option, read permission governs access to stored collection records
+Read permission governs access to stored collection records
 and text. Only the recorded requester with the currently required collection
 permission may request cancellation through the initial client workflow. Operator
 revocation provides the administrative stop boundary. Design approval is neither

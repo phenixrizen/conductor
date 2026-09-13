@@ -16,7 +16,7 @@ not mistaken for working capabilities.
 | [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
 | [Durable repository context](architecture/durable-context.md) | Proposed first background workflow, evidence, and recovery boundaries |
 | [Context integration research](architecture/context-integration-research.md) | Researched Temporal/GitHub/GitLab candidates, without compatibility claims |
-| [Feature 006 specification](../specs/006-durable-context/spec.md) | Proposed remote collection contract and unresolved permission choice |
+| [Feature 006 specification](../specs/006-durable-context/spec.md) | Proposed remote collection contract with author and operator permission boundaries |
 | [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |

@@ -20,10 +20,10 @@ idempotent result persistence. Keep credentials and source text out of workflow
 history. Attach results only through explicit version-checked package authoring.
 
 The [feature contract](../../specs/006-durable-context/spec.md) specifies proposed
-recovery, cancellation, revocation, and coverage behavior. Collection authority
-requires a separate product decision: existing author permission plus an
-operator-enabled integration, or an explicit collection grant. This ADR does not
-select or grant that authority.
+recovery, cancellation, revocation, and coverage behavior. The product permission
+choice was selected on 2026-09-13: existing author permission plus an
+operator-enabled repository read integration. Recording that choice does not
+accept this proposed architectural decision or grant permissions to any principal.
 
 ## Consequences
 

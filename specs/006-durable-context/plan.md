@@ -1,13 +1,14 @@
 # Durable context delivery plan
 
-**Status: Proposed; implementation has not started.** Resolve collection
-authorization before enabling a command that uses server-held provider access.
+**Status: Proposed delivery plan.** Collection authorization was selected on
+2026-09-13: author permission plus an operator-enabled repository read integration.
+The contract does not itself implement a command or external workflow.
 
 ## Independently reviewable increments
 
 1. **Contract and policy:** review the request, authority, canonical input, receipt,
    cancellation, revocation, and evidence contracts in the [specification](spec.md).
-   Record the selected collection permission without changing design approval.
+   Apply the selected author-plus-operator permission without changing design approval.
 2. **Researched integration profiles:** inspect official source and documentation,
    pin a Temporal SDK/server test tool and each provider API profile, and record
    real capabilities. Choose finite output, tree, request, concurrency, and retry

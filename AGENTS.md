@@ -31,8 +31,9 @@ authenticated workspace access. Read these before changing behavior:
     for controls and real PTY acceptance.
 12. Before introducing remote context or Temporal, read the proposed
     `specs/006-durable-context/spec.md` and `plan.md`,
-    `docs/architecture/durable-context.md`, and ADR 0003. Collection permission is
-    unresolved; the proposal does not enable a remote operation or grant authority.
+    `docs/architecture/durable-context.md`, and ADR 0003. The selected collection
+    policy requires author permission plus an operator-enabled repository read
+    integration; it does not grant coding or publication authority.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,

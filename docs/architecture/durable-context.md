@@ -3,8 +3,9 @@
 **Status: Proposed.** Conductor currently imports bounded text from local Git into
 immutable package revisions. This document defines the next shared background
 workflow. No Temporal or remote repository adapter is implemented by this design.
-The [feature specification](../../specs/006-durable-context/spec.md) includes an
-unresolved choice of collection permission.
+The [feature specification](../../specs/006-durable-context/spec.md) records the
+selected permission: repository authors may collect after an operator enables
+the repository read integration.
 The [integration research](context-integration-research.md) records inspected
 Temporal and provider source versions and their untested limitations.
 
