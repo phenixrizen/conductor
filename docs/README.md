@@ -20,6 +20,7 @@ not mistaken for working capabilities.
 | [CodeGraph research](architecture/codegraph-integration-research.md) | Selected upstream, tested Rust extraction, and version-specific adapter limits |
 | [Coding workers](operations/coding-workers.md) | Isolated producers, cumulative patches, independent checks, and credential boundaries |
 | [Coordinated execution](architecture/coordinated-execution.md) | Shared plans, exact human authorization, path claims, and Temporal sequencing |
+| [Browser navigation](operations/browser-navigation.md) | Six focused workflows, keyboard/mobile controls and permission-free role guidance |
 | [Execution workbench](operations/coordinated-workbench.md) | Inspect MCP proposals and confirm exact human execution/cancellation in the browser |
 | [Complete release acceptance](operations/full-release-acceptance.md) | Actual shared source, graph, worker, publication, tracker and runtime path with owned process recovery |
 | [Execution setup](operations/coordinated-execution.md) | Enable plan admission, provision execution grants, inspect and cancel shared work |

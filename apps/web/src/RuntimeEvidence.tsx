@@ -1,3 +1,4 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { useEffect, useRef, useState } from 'react';
 import { APIError, accessFailure, dateLabel, errorMessage, request } from './api';
 import type { BrowserAccess } from './api';
@@ -12,7 +13,7 @@ type Job = { sequence: number; signal: AbortSignal };
 type Creation = { input: RuntimeInput; key: string; outcome: 'pending' | 'recorded' | 'uncertain' };
 const sourceJSON = (v: unknown) => visibleControls(JSON.stringify(v, null, 2));
 
-export function RuntimeEvidence({ access, onAccessFailure }: { access: BrowserAccess; onAccessFailure?: (failure: APIError) => void }) {
+export function RuntimeEvidence({ access, visible = true, onAccessFailure }: { access: BrowserAccess; visible?: boolean; onAccessFailure?: (failure: APIError) => void }) {
   const [page, setPage] = useState<RuntimePage>();
   const [evidence, setEvidence] = useState<Evidence>();
   const [id, setID] = useState('');
@@ -24,18 +25,23 @@ export function RuntimeEvidence({ access, onAccessFailure }: { access: BrowserAc
   const working = useRef(false), sequence = useRef(0), controller = useRef<AbortController | undefined>(undefined);
   const busy = !!pending, locked = creation?.outcome === 'pending' || creation?.outcome === 'uncertain';
 
+  const workflowActive = useWorkflowActivity(visible, () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    setCreation(value => value?.outcome === 'pending' ? { ...value, outcome: 'uncertain' } : value);
+  });
+
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 5000);
     return () => { clearInterval(timer); sequence.current++; controller.current?.abort(); };
   }, []);
 
   function begin(label: string): Job | undefined {
-    if (working.current) return;
+    if (!workflowActive.current || working.current) return;
     working.current = true; controller.current?.abort(); controller.current = new AbortController();
     setPending(label); setError(''); setNotice('');
     return { sequence: ++sequence.current, signal: controller.current.signal };
   }
-  function active(job: Job) { return sequence.current === job.sequence && !job.signal.aborted; }
+  function active(job: Job) { return workflowActive.current && sequence.current === job.sequence && !job.signal.aborted; }
   function finish(job: Job) { if (active(job)) { working.current = false; setPending(''); } }
   function fail(job: Job, failure: unknown) {
     if (!active(job)) return;

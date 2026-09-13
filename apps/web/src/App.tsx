@@ -177,11 +177,11 @@ export function App() {
     {repositoryError && <div className="error" role="alert"><p>{repositoryError}</p><button className="secondary" onClick={() => void chooseWorkspace(workspaceID)}>Retry repositories</button></div>}
     {repositories?.repositories.length === 0 && <p className="empty-list">No readable repositories are available in this workspace. Ask a workspace operator for access.</p>}
     {repositories?.truncated && <p className="warning">The repository list is truncated. Only the first 100 readable repositories are shown; ask a workspace operator about a missing repository.</p>}
-    {selectedRepository && <div className="repository-access">
+    {selectedRepository && <details className="repository-access"><summary>Repository permissions and identity</summary>
       <p>Selected repository: <strong>{selectedRepository.name}</strong> · {selectedRepository.provider} · {selectedRepository.host}</p>
       <p className="muted">Canonical ID: <code>{selectedRepository.id}</code> · Provider ID: <code>{selectedRepository.providerId}</code></p>
       <ul className="coverage" aria-label="Repository permissions"><li>Read: allowed</li><li>Author: {selectedRepository.canAuthor ? 'allowed' : 'not granted'}</li><li>Approve: {selectedRepository.canApprove && principal.kind === 'human' ? 'allowed after independent inspection' : 'not granted'}</li></ul>
-    </div>}
+    </details>}
   </section>;
 
   if (!selectedRepository) return <main><WorkbenchHeader />{controls}<section className="empty"><h2>Choose where to review.</h2><p>Select a workspace and managed repository to discover its shared packages. Changing either selection clears the previous inspection.</p></section></main>;

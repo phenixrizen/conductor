@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 import os
 from urllib.parse import urlparse
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Error, expect, sync_playwright
 
 expect.set_options(timeout=15000)
 origin = os.environ["CONDUCTOR_BROWSER_WEB_URL"].rstrip("/")
@@ -22,6 +22,7 @@ def sign_in(page, who):
     expect(page.locator(".signed-in-identity")).to_contain_text("person-" + who)
     page.get_by_label("Workspace", exact=True).select_option("team")
     page.get_by_label("Managed repository", exact=True).select_option("application")
+    page.get_by_role("tab", name="Runtime", exact=True).click()
 
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=os.environ.get("CONDUCTOR_CHROME", "/usr/bin/google-chrome"), headless=True)
@@ -71,15 +72,25 @@ with sync_playwright() as p:
     expected = json.load(open(os.environ["CONDUCTOR_BROWSER_RUNTIME_FILE"]))
     expect(preview).to_contain_text(expected["deliveryDigest"])
     collection_url = origin + "/api/v1/runtime-evidence"
-    attempts = []; requests = []
+    attempts = []; requests = []; held = []
     def capture(request):
         if "/api/" in request.url: requests.append((request.method, urlparse(request.url).path))
     def lose_creation(route):
         response = route.fetch(); assert response.status == 202, response.text()
         attempts.append((route.request.post_data_json, route.request.headers["idempotency-key"], response.json()))
-        route.abort()
+        held.append((route, response))
+        page.evaluate("window.runtimeRequestCaptured = true")
     page.on("request", capture); page.route(collection_url, lose_creation)
     panel.get_by_role("button", name="Record runtime request", exact=True).click()
+    expect(panel.get_by_role("button", name="Record runtime request", exact=True)).to_be_disabled()
+    page.wait_for_function("window.runtimeRequestCaptured === true")
+    page.get_by_role("tab", name="Review", exact=True).click()
+    assert len(held) == 1
+    try:
+        held[0][0].fulfill(response=held[0][1])
+    except Error as error:
+        assert any(word in str(error).lower() for word in ["cancel", "closed", "already handled"]), str(error)
+    page.get_by_role("tab", name="Runtime", exact=True).click()
     expect(panel.get_by_role("button", name="Retry exact runtime request", exact=True)).to_be_visible()
     assert len(attempts) == 1 and requests == [("POST", "/api/v1/runtime-evidence")], requests
     page.unroute(collection_url, lose_creation)
@@ -95,9 +106,11 @@ with sync_playwright() as p:
     panel.get_by_label("Runtime evidence ID", exact=True).fill(shared_id)
     panel.get_by_role("button", name="Inspect shared runtime evidence", exact=True).click()
     expect(inspected.get_by_role("region", name="Retained runtime receipt")).to_be_visible()
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-runtime-workbench.png", full_page=True)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "mobile runtime overflow"
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-runtime-workbench-mobile.png", full_page=True)
     page.route(shared_url, lambda route: route.fulfill(status=403, body=""))
     panel.get_by_role("button", name="Refresh inspected runtime evidence", exact=True).click()

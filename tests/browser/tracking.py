@@ -18,6 +18,7 @@ def sign_in(page,who,hint=False):
     expect(page.locator(".signed-in-identity")).to_contain_text("person-"+who)
     page.get_by_label("Workspace",exact=True).select_option("team")
     page.get_by_label("Managed repository",exact=True).select_option("application")
+    page.get_by_role("tab", name="Tracker", exact=True).click()
 
 with sync_playwright() as p:
     browser=p.chromium.launch(executable_path=os.environ.get("CONDUCTOR_CHROME","/usr/bin/google-chrome"),headless=True)
@@ -86,6 +87,10 @@ with sync_playwright() as p:
         else:assert body.get("expectedProjectionDigest","")==""
         if lose:
             expect(panel.get_by_role("button",name="Retry exact tracker synchronization",exact=True)).to_be_visible()
+            page.get_by_role("tab",name="Review",exact=True).click()
+            page.get_by_role("tab",name="Tracker",exact=True).click()
+            expect(panel.get_by_role("dialog",name="Confirm tracker synchronization")).to_have_count(0)
+            expect(panel.get_by_role("region",name="Uncertain tracker synchronization")).to_be_visible()
             page.unroute(sync_url,lose_ack)
             with page.expect_request(lambda r:r.method=="POST" and r.url==sync_url) as retry:
                 panel.get_by_role("button",name="Retry exact tracker synchronization",exact=True).click()
@@ -106,9 +111,11 @@ with sync_playwright() as p:
     inspected.locator("summary").filter(has_text="Observed provider attachment or remote link").click()
     expect(inspected).to_contain_text("External edit <script>")
     assert page.evaluate("window.trackerInjected === undefined")
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-tracker-"+provider+".png",full_page=True)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"),"mobile tracker overflow"
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-tracker-"+provider+"-mobile.png",full_page=True)
     synchronize("restore","Resolve inspected link conflict",True)
     inspect_until("synchronized")

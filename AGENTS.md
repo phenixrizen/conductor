@@ -314,6 +314,12 @@ packages to mirror the target diagram.
 
 ## Web and terminal interfaces
 
+- Browser workflow tabs share the App-owned session and canonical scope. Leaving
+  a tab must abort/fence its requests and clear unsubmitted confirmations without
+  losing uncertain request inputs or idempotency keys. Never refresh on navigation
+  or replay a hidden command. Scope/session denial clears every hidden workflow.
+  Role perspectives, including Operations, change guidance only.
+
 - Task-artifact reads capture the inspected run/task/artifact tuple and validate
   profile, image, source and displayed byte digests. Failed tasks and read-only
   reports remain inspectable without publication eligibility. Clear the run and

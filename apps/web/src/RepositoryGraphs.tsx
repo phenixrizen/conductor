@@ -1,3 +1,4 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { useEffect, useRef, useState } from 'react';
 import { APIError, accessFailure, dateLabel, errorMessage, request } from './api';
 import type { BrowserAccess, RepositoryPage } from './api';
@@ -11,8 +12,8 @@ import { visibleControls } from './sourceText';
 type Job = { sequence: number; signal: AbortSignal };
 type Creation = { input: { sources: GraphSource[] }; key: string; outcome: 'pending' | 'recorded' | 'uncertain' | 'rejected' };
 
-export function RepositoryGraphs({ access, onAccessFailure, onInspected }: {
-  access: BrowserAccess; onAccessFailure?: (failure: APIError) => void; onInspected?: (graph?: RepositoryGraph) => void;
+export function RepositoryGraphs({ access, visible = true, onAccessFailure, onInspected }: {
+  access: BrowserAccess; visible?: boolean; onAccessFailure?: (failure: APIError) => void; onInspected?: (graph?: RepositoryGraph) => void;
 }) {
   const [page, setPage] = useState<GraphPage>();
   const [graph, setGraph] = useState<RepositoryGraph>();
@@ -37,15 +38,20 @@ export function RepositoryGraphs({ access, onAccessFailure, onInspected }: {
   const working = useRef(false);
   const busy = pending !== '';
   const locked = creation?.outcome === 'uncertain' || creation?.outcome === 'pending' || creation?.outcome === 'recorded';
+  const workflowActive = useWorkflowActivity(visible, () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    setCreation(value => value?.outcome === 'pending' ? { ...value, outcome: 'uncertain' } : value);
+  });
+
   useEffect(() => () => { sequence.current++; controller.current?.abort(); }, []);
 
   function begin(label: string): Job | undefined {
-    if (working.current) return;
+    if (!workflowActive.current || working.current) return;
     working.current = true; controller.current?.abort(); controller.current = new AbortController();
     setPending(label); setError(''); setNotice('');
     return { sequence: ++sequence.current, signal: controller.current.signal };
   }
-  function current(job: Job) { return sequence.current === job.sequence && !job.signal.aborted; }
+  function current(job: Job) { return workflowActive.current && sequence.current === job.sequence && !job.signal.aborted; }
   function finish(job: Job) { if (current(job)) { working.current = false; setPending(''); } }
   function inspected(value?: RepositoryGraph) { setArtifact(undefined); setArtifactPath(''); setArtifactRepositoryID(access.repositoryID); setGraph(value); setQuery(undefined); onInspected?.(value); }
   function fail(job: Job, failure: unknown) {

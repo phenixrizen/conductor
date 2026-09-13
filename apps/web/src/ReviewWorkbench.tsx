@@ -1,4 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { WorkflowNavigation, workflows } from './WorkflowNavigation';
+import type { Workflow } from './WorkflowNavigation';
+import { useWorkflowActivity } from './workflowActivity';
+import { readTrackerLinkHint } from './trackerLinkHint';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { APIError, accessFailure, changePath, dateLabel, errorMessage, request } from './api';
 import type { BrowserAccess, EventPage, HistoryPage, RequestAccess, Revision, RevisionView, WorkPackage } from './api';
@@ -19,6 +23,7 @@ const perspectives = {
   Architect: 'Inspect boundaries, contracts, constraints, and the decisions behind this design.',
   'QC / QA': 'Inspect acceptance criteria, verification plans, and missing or unexecuted evidence.',
   Developer: 'Inspect scope, task dependencies, implementation constraints, and verification commands.',
+  Operations: 'Inspect deployment scope, recovery, observability, and the freshness of runtime evidence.',
   Product: 'Inspect the intended outcome, business rules, and measurable acceptance criteria.',
 };
 
@@ -30,6 +35,15 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   sessionControls?: ReactNode;
   onAccessFailure?: (failure: APIError) => void;
 }) {
+  const [workflow, setWorkflow] = useState<Workflow>(() => readTrackerLinkHint() ? 'tracker' : 'review');
+  const lastWorkflow = useRef(workflow);
+  useLayoutEffect(() => {
+    if (lastWorkflow.current === workflow) return;
+    lastWorkflow.current = workflow;
+    // A tab chosen deep in a long report opens the next workflow at its start.
+    // This changes scroll position only; focus stays on the selected tab.
+    document.getElementById(`workflow-${workflow}`)?.scrollIntoView({ block: 'start' });
+  }, [workflow]);
   const [id, setID] = useState('');
   const [actor, setActor] = useState('reviewer');
   const [perspective, setPerspective] = useState<keyof typeof perspectives>('Architect');
@@ -60,6 +74,10 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   const reviewer = access.mode === 'browser' ? access.principalID : access.actor;
   const approvalPermission = access.mode === 'local' || (access.principalKind === 'human' && access.canApprove);
 
+  const reviewActive = useWorkflowActivity(workflow === 'review', () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    if (pending) setInspectionRequired('Review was interrupted. Inspect the latest revision before another decision. An already sent command may have completed.');
+  });
   useEffect(() => () => { sequence.current++; controller.current?.abort(); }, []);
 
   function clearInspection() {
@@ -83,7 +101,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
 
   function begin(label: string): Job | undefined {
     // The ref also prevents two actions before React renders the disabled state.
-    if (working.current || collectionWorking.current) return;
+    if (!reviewActive.current || working.current || collectionWorking.current) return;
     working.current = true;
     controller.current?.abort();
     controller.current = new AbortController();
@@ -94,7 +112,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   }
 
   // Cancellation alone cannot stop an already-resolved response from replacing a newer inspection.
-  function current(job: Job) { return sequence.current === job.token && !job.signal.aborted; }
+  function current(job: Job) { return reviewActive.current && sequence.current === job.token && !job.signal.aborted; }
 
   function finish(job: Job) {
     if (current(job)) { working.current = false; setPending(''); }
@@ -310,13 +328,24 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   }
 
   function requestCollectionInspection(collectionID: string) {
+    setWorkflow('source');
     setRequestedCollection(previous => ({ id: collectionID, sequence: (previous?.sequence ?? 0) + 1 }));
-    document.getElementById('collections-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  return <main>
-    <WorkbenchHeader />
+  const selectedWorkflow = workflows.find(value => value.id === workflow)!;
+  return <main className="workbench-shell">
+    <WorkbenchHeader compact />
     {sessionControls}
+    <section className="perspective" aria-label="Review perspective guidance">
+      <label htmlFor="review-perspective">Review perspective<select id="review-perspective" aria-label="Review perspective" value={perspective}
+        onChange={event => setPerspective(event.target.value as keyof typeof perspectives)}>
+        {Object.keys(perspectives).map(value => <option key={value}>{value}</option>)}
+      </select></label>
+      <div><p>{perspectives[perspective]}</p><p className="muted">Changes review prompts only. This selection grants no permissions or approval rights.</p></div>
+    </section>
+    <WorkflowNavigation selected={workflow} onSelect={setWorkflow} />
+    <div className="workflow-introduction"><p className="eyebrow">{selectedWorkflow.label}</p><p>{selectedWorkflow.description}</p></div>
+    <section role="tabpanel" id="workflow-review" aria-labelledby="workflow-tab-review" tabIndex={0} hidden={workflow !== 'review'}>
     <form className="lookup panel" onSubmit={event => { event.preventDefault(); void inspectLatest(); }}>
       <label>Change ID<input value={id} maxLength={256} placeholder="CHG-…" disabled={busy} required
         onChange={event => { clearInspection(); setID(event.target.value); }} /></label>
@@ -325,29 +354,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
       <button type="submit" disabled={busy || !id.trim() || !reviewer.trim()}>Inspect latest revision</button>
       <p className="local-note">{browserAccess ? 'Inspection is limited to your selected workspace and managed repository.' : 'Local development identity only. These packages are separate from authenticated workspaces.'}</p>
     </form>
-    <section className="perspective" aria-label="Review perspective guidance">
-      <label htmlFor="review-perspective">Review perspective<select id="review-perspective" value={perspective}
-        onChange={event => setPerspective(event.target.value as keyof typeof perspectives)}>
-        {Object.keys(perspectives).map(value => <option key={value}>{value}</option>)}
-      </select></label>
-      <div><p>{perspectives[perspective]}</p><p className="muted">Changes review prompts only. This selection grants no permissions or approval rights.</p></div>
-    </section>
-    <SharedChanges key={reviewer} access={access} disabled={busy} related={related} onInspect={packageID => void inspectLatest(packageID)} onAccessFailure={onAccessFailure} />
-    {browserAccess ? <ContextCollections access={browserAccess} disabled={pending !== ''}
-      target={pkg && view && !historical && !inspectionRequired && !attachmentRecovery && pending === ''
-        ? { id: pkg.id, revision: view.revision.number, digest: view.revision.digest, content: view.revision.content } : undefined}
-      requestedInspection={requestedCollection} onAccessFailure={onAccessFailure} onBusyChange={collectionWork}
-      onInspected={collectionInspected} onAttached={attached}
-      onAttachmentUncertain={(packageID, collectionID) => {
-        setAttachmentRecovery({ packageID, collectionID, packageInspected: false, collectionInspected: false });
-        setInspectionRequired('A context attachment was stale or could not be confirmed. Inspect the latest package and collection before another attachment or approval.');
-      }} />
-      : <section className="panel local-collections" aria-label="Remote collection availability"><h3>Shared context collections</h3><p className="muted">Remote collection requires authenticated workspace and repository access. It is unavailable in local mode.</p></section>}
-    {browserAccess && <RepositoryGraphs access={browserAccess} onAccessFailure={onAccessFailure} />}
-    {browserAccess && <CoordinatedRuns access={browserAccess} onAccessFailure={onAccessFailure} />}
-    {browserAccess && <RepositoryDeliveries access={browserAccess} onAccessFailure={onAccessFailure} />}
-    {browserAccess && <WorkTracking access={browserAccess} onAccessFailure={onAccessFailure} />}
-    {browserAccess && <RuntimeEvidence access={browserAccess} onAccessFailure={onAccessFailure} />}
+    <SharedChanges key={reviewer} access={access} visible={workflow === 'review'} disabled={busy} related={related} onInspect={packageID => void inspectLatest(packageID)} onAccessFailure={onAccessFailure} />
     <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
     {error && <p role="alert" className="error banner">{error}</p>}
     {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}
@@ -410,13 +417,49 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         <button className="secondary refresh" disabled={busy} onClick={() => void refreshRecords()}>Refresh history and events</button>
       </aside>
     </div>}
+    </section>
+    <section role="tabpanel" id="workflow-source" aria-labelledby="workflow-tab-source" tabIndex={0} hidden={workflow !== 'source'}>
+      <section className="panel attachment-target" aria-label="Package for source attachment">
+        <h3>Attach source to a reviewed package</h3>
+        {pkg && view ? <><p>{pkg.id} · revision {view.revision.number} · {historical ? 'Historical; attachment unavailable' : inspectionRequired || attachmentRecovery ? 'Renewed inspection required' : 'Latest inspected revision'}</p><code>{view.revision.digest}</code></> : <p>Inspect a package in Review to select the exact revision for attachment.</p>}
+        <button className="secondary" onClick={() => setWorkflow('review')}>Review package</button>
+        {attachmentRecovery && <p className="warning">Attachment recovery requires both inspections. Review the latest package and inspect this collection again before another decision.</p>}
+      </section>
+    {browserAccess ? <ContextCollections access={browserAccess} visible={workflow === 'source'} disabled={pending !== ''}
+      target={pkg && view && !historical && !inspectionRequired && !attachmentRecovery && pending === ''
+        ? { id: pkg.id, revision: view.revision.number, digest: view.revision.digest, content: view.revision.content } : undefined}
+      requestedInspection={requestedCollection} onAccessFailure={onAccessFailure} onBusyChange={collectionWork}
+      onInspected={collectionInspected} onAttached={attached}
+      onAttachmentUncertain={(packageID, collectionID) => {
+        setAttachmentRecovery({ packageID, collectionID, packageInspected: false, collectionInspected: false });
+        setInspectionRequired('A context attachment was stale or could not be confirmed. Inspect the latest package and collection before another attachment or approval.');
+      }} />
+      : <section className="panel local-collections" aria-label="Remote collection availability"><h3>Shared context collections</h3><p className="muted">Remote collection requires authenticated workspace and repository access. It is unavailable in local mode.</p></section>}
+      {browserAccess && <RepositoryGraphs access={browserAccess} visible={workflow === 'source'} onAccessFailure={onAccessFailure} />}
+    </section>
+    <section role="tabpanel" id="workflow-agents" aria-labelledby="workflow-tab-agents" tabIndex={0} hidden={workflow !== 'agents'}>
+      {browserAccess ? <CoordinatedRuns access={browserAccess} visible={workflow === 'agents'} onAccessFailure={onAccessFailure} /> : <SharedAccessRequired />}
+    </section>
+    <section role="tabpanel" id="workflow-delivery" aria-labelledby="workflow-tab-delivery" tabIndex={0} hidden={workflow !== 'delivery'}>
+      {browserAccess ? <RepositoryDeliveries access={browserAccess} visible={workflow === 'delivery'} onAccessFailure={onAccessFailure} /> : <SharedAccessRequired />}
+    </section>
+    <section role="tabpanel" id="workflow-tracker" aria-labelledby="workflow-tab-tracker" tabIndex={0} hidden={workflow !== 'tracker'}>
+      {browserAccess ? <WorkTracking access={browserAccess} visible={workflow === 'tracker'} onAccessFailure={onAccessFailure} /> : <SharedAccessRequired />}
+    </section>
+    <section role="tabpanel" id="workflow-runtime" aria-labelledby="workflow-tab-runtime" tabIndex={0} hidden={workflow !== 'runtime'}>
+      {browserAccess ? <RuntimeEvidence access={browserAccess} visible={workflow === 'runtime'} onAccessFailure={onAccessFailure} /> : <SharedAccessRequired />}
+    </section>
   </main>;
 }
 
-export function WorkbenchHeader() {
-  return <header>
-    <p className="eyebrow">CONDUCTOR / REVIEW WORKBENCH</p>
-    <h1>Engineering intent,<br />orchestrated.</h1>
-    <p className="intro">Inspect the design. Follow its history. Approve the exact content you reviewed.</p>
+function SharedAccessRequired() {
+  return <section className="panel"><h2>Shared workspace access required</h2><p>This workflow needs an authenticated workspace and managed repository. Local packages remain available in Review.</p></section>;
+}
+
+export function WorkbenchHeader({ compact = false }: { compact?: boolean }) {
+  return <header className={compact ? 'compact-header' : undefined}>
+    <p className="eyebrow">CONDUCTOR / ENGINEERING WORKBENCH</p>
+    <h1>{compact ? "Engineering intent, orchestrated." : <>Engineering intent,<br />orchestrated.</>}</h1>
+    <p className="intro">Shared design, coordinated agents, and evidence for every decision.</p>
   </header>;
 }

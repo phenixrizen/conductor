@@ -1,12 +1,14 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { useEffect, useRef, useState } from 'react';
 import { accessFailure, dateLabel, errorMessage, request } from './api';
 import type { APIError, RequestAccess, SharedPage } from './api';
 
 export interface RelatedRequest { repository: string; sequence: number }
 
-export function SharedChanges({ access, disabled, related, onInspect, onAccessFailure }: {
+export function SharedChanges({ access, visible = true, disabled, related, onInspect, onAccessFailure }: {
   access: RequestAccess;
   disabled: boolean;
+  visible?: boolean;
   related?: RelatedRequest;
   onInspect: (id: string) => void;
   onAccessFailure?: (failure: APIError) => void;
@@ -19,9 +21,14 @@ export function SharedChanges({ access, disabled, related, onInspect, onAccessFa
   const generation = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
 
+  const workflowActive = useWorkflowActivity(visible, () => {
+    generation.current++; controller.current?.abort(); setPending(false);
+  });
+
   useEffect(() => () => { generation.current++; controller.current?.abort(); }, []);
 
   async function browse(filter: string, before?: string) {
+    if (!workflowActive.current) return;
     controller.current?.abort();
     const token = ++generation.current;
     const abort = new AbortController();
@@ -34,14 +41,14 @@ export function SharedChanges({ access, disabled, related, onInspect, onAccessFa
     if (before) query.set('before', before);
     try {
       const value = await request<SharedPage>(`/changes?${query}`, access, abort.signal);
-      if (generation.current !== token || abort.signal.aborted) return;
+      if (!workflowActive.current || generation.current !== token || abort.signal.aborted) return;
       if (access.mode === 'browser' && value.changes.some(change => change.workspaceId !== access.workspaceID || change.repositoryId !== access.repositoryID)) {
         throw new Error('The server returned work outside the selected repository. Reload access before reviewing.');
       }
       setPage(previous => before ? { ...value, changes: [...(previous?.changes ?? []), ...value.changes] } : value);
       setLoadedAt(new Date().toLocaleTimeString());
     } catch (failure) {
-      if (generation.current === token && !abort.signal.aborted) {
+      if (workflowActive.current && generation.current === token && !abort.signal.aborted) {
         if (accessFailure(failure, access)) {
           setPage(undefined);
           setLoadedAt('');
@@ -49,7 +56,7 @@ export function SharedChanges({ access, disabled, related, onInspect, onAccessFa
         } else setError(errorMessage(failure));
       }
     } finally {
-      if (generation.current === token && !abort.signal.aborted) setPending(false);
+      if (workflowActive.current && generation.current === token && !abort.signal.aborted) setPending(false);
     }
   }
 

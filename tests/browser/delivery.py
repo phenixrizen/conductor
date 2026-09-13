@@ -6,7 +6,7 @@
 import json
 import os
 from urllib.parse import urlparse
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Error, expect, sync_playwright
 # This acceptance intentionally renders a multi-megabyte patch. Give assertions
 # the same bounded deadline as browser actions while concurrent suites use CPU.
 expect.set_options(timeout=15000)
@@ -22,6 +22,7 @@ def sign_in(page,who):
     expect(page.locator(".signed-in-identity")).to_contain_text("person-"+who)
     page.get_by_label("Workspace",exact=True).select_option("team")
     page.get_by_label("Managed repository",exact=True).select_option("application")
+    page.get_by_role("tab", name="Delivery", exact=True).click()
 
 with sync_playwright() as p:
     browser=p.chromium.launch(executable_path=os.environ.get("CONDUCTOR_CHROME","/usr/bin/google-chrome"),headless=True)
@@ -79,12 +80,21 @@ with sync_playwright() as p:
     dialog=panel.get_by_role("dialog",name="Confirm publication decision")
     expect(dialog).to_contain_text(created["digest"])
     authorization_url=proposal_url+"/"+created["id"]+"/authorizations"
-    authorizations=[]
+    authorizations=[];held_authorization=[]
     def lose_authorization(route):
         response=route.fetch();assert response.status==202,response.text()
-        authorizations.append(response.json());route.abort()
+        authorizations.append(response.json());held_authorization.append((route,response))
+        page.evaluate("window.publicationCaptured = true")
     page.route(authorization_url,lose_authorization);requests.clear();page.on("request",capture)
     panel.get_by_role("button",name="Confirm publication authorization",exact=True).click()
+    page.wait_for_function("window.publicationCaptured === true")
+    page.get_by_role("tab",name="Tracker",exact=True).click()
+    try:
+        held_authorization[0][0].fulfill(response=held_authorization[0][1])
+    except Error as error:
+        assert any(word in str(error).lower() for word in ["cancel","closed","already handled"]),str(error)
+    page.get_by_role("tab",name="Delivery",exact=True).click()
+    expect(dialog).to_have_count(0)
     expect(panel.get_by_text("Renewed delivery and artifact inspection required before publication authorization.",exact=True)).to_be_visible()
     assert len(authorizations)==1 and requests==[("POST",urlparse(authorization_url).path,{"digest":created["digest"]})],requests
     expect(panel.get_by_role("region",name="Inspected implementation artifact")).to_have_count(0)
@@ -111,11 +121,13 @@ with sync_playwright() as p:
     page.remove_listener("request",capture)
     panel.get_by_role("button",name="Inspect complete implementation artifact",exact=True).click()
     expect(panel.get_by_role("region",name="Inspected implementation artifact")).to_be_visible()
+    page.evaluate("window.scrollTo(0, 0)")
     # Full-page PNG capture of this multi-megabyte fixture needs its own bounded
     # budget on hosted Chromium; UI actions and assertions retain their 15s limit.
     page.screenshot(path="/tmp/conductor-delivery-workbench.png",full_page=True,timeout=30000)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"),"mobile delivery overflow"
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-delivery-workbench-mobile.png",full_page=True,timeout=30000)
     # A denied source read must clear prior private patches even if its error body
     # is empty. The same browser session may no longer display cached inspection.

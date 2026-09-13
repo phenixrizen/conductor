@@ -46,7 +46,16 @@ def sign_in(page, identity):
     page.get_by_label("Managed repository", exact=True).select_option("application")
 
 
+def review(page):
+    page.get_by_role("tab", name="Review", exact=True).click()
+
+
+def source(page):
+    page.get_by_role("tab", name="Source & graph", exact=True).click()
+
+
 def inspect_package(page, revision):
+    review(page)
     page.get_by_label("Change ID", exact=True).fill(change_id)
     page.get_by_role("button", name="Inspect latest revision", exact=True).click()
     expect(page.get_by_role("heading", name=f"Revision {revision}", exact=True)).to_be_visible()
@@ -54,6 +63,7 @@ def inspect_package(page, revision):
 
 
 def inspect_receipt(page):
+    source(page)
     page.get_by_role("button", name="Refresh collections", exact=True).click()
     page.get_by_role("button", name="Inspect collection " + collection_id, exact=True).click()
     expect(page.get_by_role("region", name="Inspected collection receipt")).to_contain_text(receipt_digest)
@@ -89,6 +99,7 @@ with sync_playwright() as playwright:
     inspect_package(page, 1)
     expect(page.get_by_text("DESIGN APPROVED", exact=True)).to_be_visible()
 
+    source(page)
     # The client keeps one bounded page, and makes omitted records explicit.
     page.get_by_role("button", name="Refresh collections", exact=True).click()
     shared = page.get_by_role("list", name="Shared collections", exact=True)
@@ -104,10 +115,13 @@ with sync_playwright() as playwright:
     expect(receipt.locator(".source-text")).to_contain_text("Synthetic shared source")
 
     attach = page.get_by_role("button", name="Attach receipt to inspected revision", exact=True)
+    review(page)
     page.get_by_role("button", name="Inspect historical revision 1", exact=True).click()
     expect(page.get_by_text("HISTORICAL VIEW", exact=True)).to_be_visible()
+    source(page)
     expect(attach).to_be_disabled()
     inspect_package(page, 1)
+    source(page)
     attach.click()
     dialog = page.get_by_role("dialog", name="Confirm context attachment")
     expect(dialog).to_contain_text(receipt_digest)
@@ -119,24 +133,31 @@ with sync_playwright() as playwright:
     author_command(change_path + "/review-requests", {"revision": 2})
     confirm_command(page, "Confirm attachment", change_path + "/context-attachments",
                     {"expectedRevision": 1, "collectionId": collection_id, "digest": receipt_digest})
+    review(page)
     expect(page.get_by_text("Renewed inspection required.", exact=True)).to_be_visible()
+    source(page)
     expect(page.get_by_text("Renewed collection inspection required before another mutation.", exact=True)).to_be_visible()
     expect(attach).to_be_disabled()
     inspect_package(page, 2)
     expect(page.get_by_role("button", name="Approve inspected revision", exact=True)).to_be_disabled()
+    source(page)
     expect(attach).to_be_disabled()
     page.get_by_role("button", name="Refresh inspected collection", exact=True).click()
     expect(attach).to_be_enabled()
+    review(page)
     expect(page.get_by_role("button", name="Approve inspected revision", exact=True)).to_be_enabled()
+    source(page)
     attach.click()
     confirm_command(page, "Confirm attachment", change_path + "/context-attachments",
                     {"expectedRevision": 2, "collectionId": collection_id, "digest": receipt_digest})
+    review(page)
     expect(page.get_by_role("heading", name="Revision 3", exact=True)).to_be_visible()
     expect(page.get_by_text("DRAFT", exact=True)).to_be_visible()
     expect(page.get_by_text("This inspected revision has no effective approval.", exact=True)).to_be_visible()
 
     # Lose only the acknowledgment after a real request commits. A new request or
     # automatic retry would create unseen work; the explicit retry keeps its key.
+    source(page)
     page.locator("summary").filter(has_text="Request repository context").click()
     page.get_by_label("Exact commit", exact=True).fill("c" * 40)
     page.get_by_label("Explicit paths (one per line)", exact=True).fill("😀.md\n\ue000.md")
@@ -176,35 +197,47 @@ with sync_playwright() as playwright:
     recovery = author_command("/api/v1/changes", {"content": {
         "intent": {"title": "Uncertain browser attachment"}, "futureField": {"retained": True}}})
     recovery_id = recovery["id"]
+    review(page)
     page.get_by_label("Change ID", exact=True).fill(recovery_id)
     page.get_by_role("button", name="Inspect latest revision", exact=True).click()
     expect(page.get_by_role("heading", name="Revision 1", exact=True)).to_be_visible()
     inspect_receipt(page)
     attach.click()
     attachment_url = origin + "/api/v1/changes/" + recovery_id + "/context-attachments"
-    lost_attachments = []
+    lost_attachments = []; held_attachment = []
     mutation_requests = []
 
     def lose_attachment_ack(route):
         response = route.fetch()
         assert response.status == 201
         lost_attachments.append(response.json())
-        route.abort()
+        held_attachment.append((route, response))
+        page.evaluate("window.attachmentCaptured = true")
 
     capture_mutation = lambda request: mutation_requests.append((request.method, request.url))
     page.route(attachment_url, lose_attachment_ack)
     page.on("request", capture_mutation)
     page.get_by_role("button", name="Confirm attachment", exact=True).click()
+    page.wait_for_function("window.attachmentCaptured === true")
+    review(page)
+    try:
+        held_attachment[0][0].fulfill(response=held_attachment[0][1])
+    except Error as error:
+        assert any(word in str(error).lower() for word in ["cancel", "closed", "already handled"]), str(error)
     expect(page.get_by_text("Attachment recovery requires both inspections.", exact=True)).to_be_visible()
     assert len(lost_attachments) == 1 and lost_attachments[0]["revision"]["number"] == 2
     assert [item for item in mutation_requests if "/api/" in item[1]] == [("POST", attachment_url)]
     expect(page.get_by_role("heading", name="Revision 1", exact=True)).to_be_visible()
+    source(page)
     expect(attach).to_be_disabled()
     page.remove_listener("request", capture_mutation)
     page.unroute(attachment_url, lose_attachment_ack)
+    review(page)
     page.get_by_role("button", name="Inspect recovery package", exact=True).click()
     expect(page.get_by_role("heading", name="Revision 2", exact=True)).to_be_visible()
+    source(page)
     expect(attach).to_be_disabled()
+    review(page)
     page.get_by_role("button", name="Inspect recovery collection", exact=True).click()
     expect(attach).to_be_enabled()
     expect(page.get_by_text("Attachment recovery requires both inspections.", exact=True)).to_have_count(0)
@@ -217,10 +250,14 @@ with sync_playwright() as playwright:
 
     def hold_collection(route):
         held.append((route, route.fetch()))
+        page.evaluate("window.collectionReadCaptured = true")
 
     page.route(collection_url, hold_collection)
     page.get_by_role("button", name="Refresh inspected collection", exact=True).click()
     expect(page.get_by_role("button", name="Refresh collections", exact=True)).to_be_disabled()
+    # Exercise a completed server read arriving after scope loss. A disabled
+    # button alone does not establish that the intercepted read has finished.
+    page.wait_for_function("window.collectionReadCaptured === true")
     page.get_by_label("Managed repository", exact=True).select_option("private")
     expect(page.get_by_role("heading", name="Collection inspection", exact=True)).to_have_count(0)
     expect(page.get_by_role("heading", name="Revision 3", exact=True)).to_have_count(0)
@@ -267,9 +304,11 @@ with sync_playwright() as playwright:
     expect(observation).to_contain_text("Progress unknown")
 
     screenshot = Path(os.environ.get("CONDUCTOR_BROWSER_SCREENSHOT", "/tmp/conductor-context-workbench.png"))
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path=str(screenshot), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "mobile horizontal overflow"
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path=str(screenshot.with_name(screenshot.stem + "-mobile.png")), full_page=True)
 
     # A forbidden status is decisive even when its response body does not finish.

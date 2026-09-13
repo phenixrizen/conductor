@@ -50,3 +50,10 @@ stacked PRs. Merge remains a human action; successful tests do not grant approva
 The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
 the earlier main-only sequencing guidance above. Follow the required gates and
 explicit dependency order in the [full release contract](../../docs/full-release.md).
+
+
+The full-release browser navigation is implemented: six focused workflows,
+Operations guidance, shared session/scope ownership, suspended requests and exact
+retry retention. Actual signed Chromium tests cover keyboard/mobile navigation,
+permissions, interrupted reads and writes, dismissed confirmations and hidden-state
+clearing after scope changes or denied access.
