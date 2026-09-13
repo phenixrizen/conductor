@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,7 +35,17 @@ type Provider struct {
 	base   string
 }
 
-func NewProvider(target domain.DeliveryTarget, token string) (*Provider, error) {
+// Options supports owned literal-loopback HTTP fixtures. Production executables
+// supply no override; this does not add enterprise or self-managed support.
+type Options struct {
+	Origin                string
+	AllowInsecureLoopback bool
+}
+
+func NewProvider(target domain.DeliveryTarget, token string, options ...Options) (*Provider, error) {
+	if len(options) > 1 {
+		return nil, ErrProvider
+	}
 	if token == "" || len(token) > 16<<10 || strings.ContainsAny(token, "\r\n\x00") {
 		return nil, ErrProvider
 	}
@@ -55,6 +66,18 @@ func NewProvider(target domain.DeliveryTarget, token string) (*Provider, error) 
 	}
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{}, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	provider.http = &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if len(options) == 1 && options[0].Origin != "" {
+		u, err := url.Parse(options[0].Origin)
+		if err != nil || !options[0].AllowInsecureLoopback || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback() {
+			return nil, ErrProvider
+		}
+		prefix := "/repos/" + target.Locator
+		if target.Provider == "gitlab" {
+			prefix = "/api/v4/projects/" + target.ProviderID
+		}
+		provider.base = options[0].Origin + prefix
+	}
+
 	return provider, nil
 }
 

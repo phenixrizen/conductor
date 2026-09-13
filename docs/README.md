@@ -21,6 +21,7 @@ not mistaken for working capabilities.
 | [Coding workers](operations/coding-workers.md) | Isolated producers, cumulative patches, independent checks, and credential boundaries |
 | [Coordinated execution](architecture/coordinated-execution.md) | Shared plans, exact human authorization, path claims, and Temporal sequencing |
 | [Execution workbench](operations/coordinated-workbench.md) | Inspect MCP proposals and confirm exact human execution/cancellation in the browser |
+| [Complete release acceptance](operations/full-release-acceptance.md) | Actual shared source, graph, worker, publication, tracker and runtime path with owned process recovery |
 | [Execution setup](operations/coordinated-execution.md) | Enable plan admission, provision execution grants, inspect and cancel shared work |
 | [Repository delivery](operations/repository-delivery.md) | Propose, inspect and authorize exact patches; configure trusted GitHub/GitLab publication and observations |
 | [Runtime evidence](operations/runtime-evidence.md) | Collect and review scoped deployment telemetry and exact approved criteria |

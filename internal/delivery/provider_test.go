@@ -221,3 +221,26 @@ func TestProviderRejectsRedirectAndRevokedAccess(t *testing.T) {
 }
 
 var _ = strconv.Itoa
+
+func TestOwnedLoopbackFixtureOriginCannotWidenProductionProfile(t *testing.T) {
+	target := domain.DeliveryTarget{WorkspaceID: "workspace", RepositoryID: "repo", Provider: "github", Host: "github.com", ProviderID: "42", Profile: domain.GitHubDeliveryProfile, Locator: "synthetic/repo"}
+	for _, origin := range []string{"http://localhost:1234", "http://example.invalid", "https://127.0.0.1:1234", "http://127.0.0.1:1234/path", "http://user@127.0.0.1:1234", "http://127.0.0.1:1234?x=1", "http://127.0.0.1:1234#x"} {
+		if _, err := NewProvider(target, "synthetic-secret", Options{Origin: origin, AllowInsecureLoopback: true}); err == nil {
+			t.Fatalf("unsafe fixture origin accepted: %s", origin)
+		}
+	}
+	if _, err := NewProvider(target, "synthetic-secret", Options{Origin: "http://127.0.0.1:1234"}); err == nil {
+		t.Fatal("implicit fixture override")
+	}
+	if _, err := NewProvider(target, "synthetic-secret", Options{}, Options{}); err == nil {
+		t.Fatal("ambiguous fixture options")
+	}
+	provider, err := NewProvider(target, "synthetic-secret", Options{Origin: "http://127.0.0.1:1234", AllowInsecureLoopback: true})
+	if err != nil || provider.base != "http://127.0.0.1:1234/repos/synthetic/repo" {
+		t.Fatal("fixture lost canonical repository prefix")
+	}
+	normal, err := NewProvider(target, "synthetic-secret")
+	if err != nil || normal.base != "https://api.github.com/repos/synthetic/repo" {
+		t.Fatal("official production origin changed")
+	}
+}

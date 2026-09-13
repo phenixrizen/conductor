@@ -146,3 +146,12 @@ of a delivery proposal. Artifact reads capture run/task/artifact digests, valida
 profile/image/source linkage and displayed patch/output bytes, and clear retained
 source after denied reads or scope changes. The same display supports failed or
 read-only reports; it confers no execution or publication authority.
+
+The complete release gate now joins real whole-source acquisition and native
+cross-repository graph extraction with compiled MCP/executor processes, Docker
+DAG production/checks, exact trusted publication to both controlled provider HTTP
+fixtures, one Linear or Jira workspace tracker, and correlated Groundcover
+samples. Recovery preserves retained Temporal receipts and reconciles lost write
+responses without duplicate branches, reviews or tracker cards. Provider/model
+data remain explicitly synthetic; no live publication or inference is claimed.
+See [the release gate runbook](../../docs/operations/full-release-acceptance.md).

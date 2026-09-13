@@ -488,3 +488,12 @@ Before finishing:
   read grant through the complete bounded typed-result read. Failed/checkless
   reports remain reviewable without a publication proposal or current execute
   grant. Reading output must never reclassify it as passing or publishable.
+
+For the complete cross-repository release gate, run
+`scripts/test-full-release.sh` with explicit PostgreSQL, immutable worker and
+native CodeGraph image inputs. It sets `CONDUCTOR_TEST_RELEASE=1` and the required
+execution/CodeGraph/Temporal opt-ins. The gate runs compiled MCP/executor processes,
+actual Git/Docker/Temporal and controlled HTTP provider fixtures for GitHub, GitLab,
+Linear, Jira and Groundcover. Keep all provider/model data synthetic, retain exact
+source/package/profile/artifact pins, inspect decoded workflow payloads for private
+data, and never treat fixture deployment or tracker status as production success.

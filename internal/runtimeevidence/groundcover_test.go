@@ -195,3 +195,26 @@ func TestEvaluationRequiresApprovedWindowDeploymentAndCurrentEvidence(t *testing
 		}
 	}
 }
+
+func TestOwnedLoopbackRuntimeFixtureKeepsExplicitOriginBoundary(t *testing.T) {
+	check := func(context.Context) error { return nil }
+	for _, origin := range []string{"http://localhost:1234", "http://example.invalid", "https://127.0.0.1:1234", "http://127.0.0.1:1234/path", "http://user@127.0.0.1:1234", "http://127.0.0.1:1234?x=1", "http://127.0.0.1:1234#x"} {
+		if _, err := New("synthetic-runtime-secret", check, Options{Origin: origin, AllowInsecureLoopback: true}); err == nil {
+			t.Fatalf("unsafe fixture origin accepted: %s", origin)
+		}
+	}
+	if _, err := New("synthetic-runtime-secret", check, Options{Origin: "http://127.0.0.1:1234"}); err == nil {
+		t.Fatal("implicit fixture override")
+	}
+	if _, err := New("synthetic-runtime-secret", check, Options{}, Options{}); err == nil {
+		t.Fatal("ambiguous fixture options")
+	}
+	collector, err := New("synthetic-runtime-secret", check, Options{Origin: "http://127.0.0.1:1234", AllowInsecureLoopback: true})
+	if err != nil || collector.origin != "http://127.0.0.1:1234" {
+		t.Fatal("explicit owned origin unavailable")
+	}
+	normal, err := New("synthetic-runtime-secret", check)
+	if err != nil || normal.origin != "https://"+Host {
+		t.Fatal("official production origin changed")
+	}
+}

@@ -22,6 +22,11 @@ type Publisher interface {
 	Publish(context.Context, domain.Delivery, delivery.Prepared, func(context.Context) error) (domain.DeliveryObservation, error)
 	Observe(context.Context, domain.Delivery, func(context.Context) error) (domain.DeliveryObservation, error)
 }
+
+// Factory is a trusted constructor seam for controlled provider fixtures.
+// The executable always uses the fixed-origin production adapter.
+type Factory func(domain.DeliveryTarget, string) (Publisher, error)
+
 type SourceLoader func(context.Context, string, string) ([]byte, error)
 type CredentialResolver func(context.Context, domain.DeliveryTarget, string) (string, error)
 type Activity struct {
@@ -31,11 +36,15 @@ type Activity struct {
 	provider    func(domain.DeliveryTarget, string) (Publisher, error)
 }
 
-func NewActivity(db ActivityStore, source SourceLoader, credentials CredentialResolver) (*Activity, error) {
-	if db == nil || source == nil || credentials == nil {
+func NewActivity(db ActivityStore, source SourceLoader, credentials CredentialResolver, factories ...Factory) (*Activity, error) {
+	if db == nil || source == nil || credentials == nil || len(factories) > 1 {
 		return nil, domain.ErrInvalidInput
 	}
-	return &Activity{db: db, source: source, credentials: credentials, provider: func(t domain.DeliveryTarget, s string) (Publisher, error) { return delivery.NewProvider(t, s) }}, nil
+	factory := Factory(func(t domain.DeliveryTarget, s string) (Publisher, error) { return delivery.NewProvider(t, s) })
+	if len(factories) == 1 && factories[0] != nil {
+		factory = factories[0]
+	}
+	return &Activity{db: db, source: source, credentials: credentials, provider: factory}, nil
 }
 func (a *Activity) Publish(ctx context.Context, ref contextworkflow.Reference) (contextworkflow.Result, error) {
 	if !domain.IsLowerHex(ref.ID, 32) || !domain.IsLowerHex(ref.Binding, 32) {
