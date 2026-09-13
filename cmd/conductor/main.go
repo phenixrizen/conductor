@@ -26,7 +26,11 @@ func main() {
 	workspace := f.String("workspace", env("CONDUCTOR_WORKSPACE", ""), "authenticated workspace ID")
 	repositoryID := f.String("repository-id", env("CONDUCTOR_REPOSITORY_ID", ""), "canonical managed repository ID for authenticated requests")
 	title := f.String("title", "", "package title")
-	file := f.String("file", "", "JSON package content file ('-' for stdin)")
+	file := f.String("file", "", "JSON content or request file; request previews require a regular file")
+	view := f.String("view", "", "terminal view: graphs, runs, deliveries or tracker (default package review)")
+	search := f.String("search", "", "bounded graph text search")
+	node := f.String("node", "", "inspected graph node ID for traversal")
+	depth := f.Int("depth", 1, "graph traversal depth 0-5")
 	rev := f.Int64("revision", 0, "inspected revision")
 	digest := f.String("digest", "", "inspected digest")
 	before := f.Int64("before", 0, "history cursor: revisions before this number")
@@ -40,6 +44,9 @@ func main() {
 	fullSource := f.Bool("full-source", false, "also acquire an exact Git bundle and whole-tree CodeGraph index")
 	idempotencyKey := f.String("idempotency-key", "", "stable key for an explicitly requested remote collection")
 	collectionID := f.String("collection-id", "", "inspected remote collection ID for attachment")
+	sourceRepository := f.String("source-repository", "", "canonical graph source repository ID; the authenticated anchor stays fixed")
+	receiptDigest := f.String("receipt-digest", "", "inspected graph source receipt digest")
+	fullSourceDigest := f.String("full-source-digest", "", "inspected whole-source graph bundle digest")
 	expectedRevision := f.Int64("expected-revision", 0, "inspected package revision for context attachment")
 	var paths []string
 	f.Func("path", "explicit repository-relative artifact path (repeatable)", func(path string) error {
@@ -64,7 +71,7 @@ func main() {
 		if len(f.Args()) > 0 {
 			id = f.Args()[0]
 		}
-		if err := tui.Run(context.Background(), c, tui.Options{Actor: *actor, Repository: *repository, File: *file, ID: id}); err != nil {
+		if err := tui.Run(context.Background(), c, tui.Options{Actor: *actor, Repository: *repository, File: *file, ID: id, View: *view}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -76,82 +83,91 @@ func main() {
 	var err error
 	exitCode := 0
 	args := f.Args()
-	switch cmd {
-	case "context-collect", "context-collections", "context-collection", "context-cancel", "context-attach":
-		p, err = runCollectionCommand(ctx, c, cmd, args, collectionOptions{
-			commit: *commit, paths: paths, key: *idempotencyKey, fullSource: *fullSource, before: *page, limit: *limit,
-			collectionID: *collectionID, digest: *digest, expectedRevision: *expectedRevision,
-		})
-	case "session":
-		p, err = c.Session(ctx)
-	case "repositories":
-		p, err = c.Repositories(ctx)
-	case "list":
-		p, err = c.ListChanges(ctx, *repository, *page, *limit)
-	case "create":
-		content, readErr := contentFrom(*file, *title)
-		if readErr != nil {
-			err = readErr
-			break
+	switch {
+	case releaseCommand(cmd):
+		artifactPath := ""
+		if len(paths) == 1 {
+			artifactPath = paths[0]
 		}
-		p, err = c.Create(ctx, content)
-	case "revise":
-		need(args)
-		content, readErr := contentFrom(*file, *title)
-		if readErr != nil {
-			err = readErr
-			break
-		}
-		p, err = c.Revise(ctx, args[0], *rev, content)
-	case "show":
-		need(args)
-		if *rev != 0 {
-			p, err = c.Revision(ctx, args[0], *rev)
-		} else {
-			p, err = c.Get(ctx, args[0])
-		}
-	case "history":
-		need(args)
-		p, err = c.History(ctx, args[0], *before, *limit)
-	case "events":
-		need(args)
-		p, err = c.Events(ctx, args[0], *after, *limit)
-	case "submit":
-		need(args)
-		p, err = c.Submit(ctx, args[0], *rev)
-	case "approve":
-		need(args)
-		p, err = c.Approve(ctx, args[0], *rev, *digest)
-	case "context":
-		content, readErr := contentFrom(*file, *title)
-		if readErr != nil {
-			err = readErr
-			break
-		}
-		var snapshot domain.RepositoryContext
-		snapshot, err = repositorycontext.Collect(ctx, *repo, *repository, *ref, paths)
-		if err == nil {
-			content["repositoryContext"] = snapshot
-			err = domain.ValidateContent(content)
-			p = content
-		}
-	case "context-check":
-		content, readErr := contentFrom(*file, "")
-		if readErr != nil {
-			err = readErr
-			break
-		}
-		var snapshot domain.RepositoryContext
-		snapshot, err = snapshotFrom(content)
-		if err == nil {
-			freshness := repositorycontext.CheckFreshness(ctx, *repo, *ref, snapshot)
-			p = freshness
-			if freshness.State != "current" {
-				exitCode = 1
-			}
-		}
+		p, err = runReleaseCommand(ctx, c, cmd, args, releaseOptions{file: *file, digest: *digest, key: *idempotencyKey, before: *page, limit: *limit, search: *search, node: *node, depth: *depth, artifact: domain.GraphArtifactQuery{GraphDigest: *digest, RepositoryID: *sourceRepository, CollectionID: *collectionID, ReceiptDigest: *receiptDigest, FullSourceDigest: *fullSourceDigest, Path: artifactPath}})
 	default:
-		usage()
+		switch cmd {
+		case "context-collect", "context-collections", "context-collection", "context-cancel", "context-attach":
+			p, err = runCollectionCommand(ctx, c, cmd, args, collectionOptions{
+				commit: *commit, paths: paths, key: *idempotencyKey, fullSource: *fullSource, before: *page, limit: *limit,
+				collectionID: *collectionID, digest: *digest, expectedRevision: *expectedRevision,
+			})
+		case "session":
+			p, err = c.Session(ctx)
+		case "repositories":
+			p, err = c.Repositories(ctx)
+		case "list":
+			p, err = c.ListChanges(ctx, *repository, *page, *limit)
+		case "create":
+			content, readErr := contentFrom(*file, *title)
+			if readErr != nil {
+				err = readErr
+				break
+			}
+			p, err = c.Create(ctx, content)
+		case "revise":
+			need(args)
+			content, readErr := contentFrom(*file, *title)
+			if readErr != nil {
+				err = readErr
+				break
+			}
+			p, err = c.Revise(ctx, args[0], *rev, content)
+		case "show":
+			need(args)
+			if *rev != 0 {
+				p, err = c.Revision(ctx, args[0], *rev)
+			} else {
+				p, err = c.Get(ctx, args[0])
+			}
+		case "history":
+			need(args)
+			p, err = c.History(ctx, args[0], *before, *limit)
+		case "events":
+			need(args)
+			p, err = c.Events(ctx, args[0], *after, *limit)
+		case "submit":
+			need(args)
+			p, err = c.Submit(ctx, args[0], *rev)
+		case "approve":
+			need(args)
+			p, err = c.Approve(ctx, args[0], *rev, *digest)
+		case "context":
+			content, readErr := contentFrom(*file, *title)
+			if readErr != nil {
+				err = readErr
+				break
+			}
+			var snapshot domain.RepositoryContext
+			snapshot, err = repositorycontext.Collect(ctx, *repo, *repository, *ref, paths)
+			if err == nil {
+				content["repositoryContext"] = snapshot
+				err = domain.ValidateContent(content)
+				p = content
+			}
+		case "context-check":
+			content, readErr := contentFrom(*file, "")
+			if readErr != nil {
+				err = readErr
+				break
+			}
+			var snapshot domain.RepositoryContext
+			snapshot, err = snapshotFrom(content)
+			if err == nil {
+				freshness := repositorycontext.CheckFreshness(ctx, *repo, *ref, snapshot)
+				p = freshness
+				if freshness.State != "current" {
+					exitCode = 1
+				}
+			}
+		default:
+			usage()
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -177,7 +193,14 @@ func env(k, d string) string {
 	return d
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: conductor <tui|session|repositories|list|create|revise|show|history|events|submit|approve|context|context-check|context-collect|context-collections|context-collection|context-cancel|context-attach> [flags] [id]")
+	fmt.Fprintln(os.Stderr, `usage: conductor <command> [flags] [id]
+Review: tui, session, repositories, list, create, revise, show, history, events, submit, approve
+Context: context, context-check, context-collect, context-collections, context-collection, context-cancel, context-attach
+Graphs: graphs, graph, graph-query, graph-artifact, graph-preview, graph-create
+Agent work: runs, run, run-preview, run-propose, run-authorize, run-cancel, execution-profiles, execution-capabilities
+Delivery: deliveries, delivery, delivery-preview, delivery-propose, delivery-artifact, delivery-authorize, delivery-reconcile
+Tracker: tracker, tracker-links, tracker-link, tracker-link-preview, tracker-link-create, tracker-sync-preview, tracker-sync, tracker-sync-show
+Use --help after a command for flags. Release request files and controls: docs/operations/release-terminal.md`)
 	os.Exit(2)
 }
 

@@ -5,7 +5,9 @@ CLI and browser. It lets a developer import and submit a package, and lets an
 independent reviewer inspect and approve its exact content. PostgreSQL retains the
 shared record. Authenticated collaborators can also request repository context,
 inspect shared source receipts, and attach them to a package as a new revision.
-A local actor name is development identity, not authentication.
+A local actor name is development identity, not authentication. The separate
+[release workbench](release-terminal.md) adds graphs, coordinated agent plans,
+publication artifacts and tracker synchronization using the same fixed identity.
 
 ## Authenticated workspace review
 
@@ -297,4 +299,6 @@ and [program options](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/op
 for cancellation and the alternate screen. Authenticated terminal review and
 collection controls use the existing API credential and permission boundary; these
 controls add no server routes or migrations. Background collection uses the
-Feature 006 worker. Coding execution and repository publication remain later work.
+Feature 006 worker. The separate release workbench exposes coding and publication
+review through the existing authenticated API; repository commands run only in the
+trusted workers.

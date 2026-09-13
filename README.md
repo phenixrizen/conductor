@@ -71,6 +71,11 @@ workspace packages. See the
 exercise the protocol; compatibility with a particular identity provider has not
 yet been certified.
 
+The [release terminal workbench](docs/operations/release-terminal.md) lets developers
+inspect shared graphs and agent plans, review exact patches and checks, authorize
+publication, and synchronize linked tickets. Its CLI commands use the same shared
+API and permissions as the browser and MCP clients.
+
 Isolated coding-worker and independent verification components are implemented;
 shared execution plans, separate human authorization and write reservations are
 available through the API. A trusted worker runs related tasks in isolated Docker

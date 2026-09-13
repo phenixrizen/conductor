@@ -13,7 +13,7 @@ import (
 func clientForCommand(command, actor string, actorSet bool, workspace, repositoryID string) (*client.Client, error) {
 	// These operations only inspect local files/Git. Unrelated credential
 	// environment configuration must not read files or make them fail.
-	if command == "context" || command == "context-check" {
+	if command == "context" || command == "context-check" || releasePreview(command) {
 		return nil, nil
 	}
 	token, configured, err := accessTokenFromEnvironment()
@@ -28,12 +28,12 @@ func clientForCommand(command, actor string, actorSet bool, workspace, repositor
 		if command == "tui" && (workspace == "" || repositoryID == "") {
 			return nil, errors.New("authenticated terminal review requires --workspace and --repository-id (or CONDUCTOR_WORKSPACE and CONDUCTOR_REPOSITORY_ID)")
 		}
-		if collectionCommand(command) && (workspace == "" || repositoryID == "") {
+		if (collectionCommand(command) || releaseCommand(command)) && (workspace == "" || repositoryID == "") {
 			return nil, errors.New("remote context commands require --workspace and --repository-id (or CONDUCTOR_WORKSPACE and CONDUCTOR_REPOSITORY_ID)")
 		}
 		return client.NewAuthenticated(base, token, workspace, repositoryID)
 	}
-	if command == "session" || command == "repositories" || collectionCommand(command) {
+	if command == "session" || command == "repositories" || collectionCommand(command) || releaseCommand(command) {
 		return nil, errors.New("this command requires CONDUCTOR_TOKEN_FILE or CONDUCTOR_TOKEN")
 	}
 	if workspace != "" || repositoryID != "" {
