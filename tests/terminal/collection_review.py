@@ -28,6 +28,7 @@ class CollectionProxy:
         self.requests = []
         self.lock = threading.Lock()
         self.drop_next_create = False
+        self.delay_next_read = 0
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -58,6 +59,11 @@ class CollectionProxy:
                             "localActor": "X-Conductor-Actor" in self.headers}
                 with owner.lock:
                     owner.requests.append(observed)
+                    delay = owner.delay_next_read if self.command == "GET" else 0
+                    if self.command == "GET":
+                        owner.delay_next_read = 0
+                if delay:
+                    threading.Event().wait(delay)
                 headers = {"Content-Type": "application/json", "Authorization": bearer}
                 for name in ("X-Conductor-Workspace", "X-Conductor-Repository", "Idempotency-Key"):
                     if name in self.headers:
@@ -153,6 +159,29 @@ def main():
         terminal.wait_text(identifier, start)
         terminal.settle()
 
+    def navigate_page(terminal, key, number):
+        since = len(proxy.snapshot())
+        # A page footer changes before the response arrives. Deliberately keep
+        # this read slower than settle() so headers/history cannot prove ready.
+        with proxy.lock:
+            proxy.delay_next_read = 0.8
+        terminal.send(key)
+        terminal.wait(lambda: len(proxy.snapshot()) > since
+                      and all(item["status"] is not None for item in proxy.snapshot()[since:]),
+                      "collection page request did not finish")
+        requests = proxy.snapshot()[since:]
+        assert len(requests) == 1 and requests[0]["method"] == "GET" and requests[0]["status"] == 200, requests
+        assert requests[0]["path"].startswith("/api/v1/context-collections?"), requests
+        # Force a current frame after the captured read. This also handles a
+        # fast response coalescing with a redraw; old page text cannot satisfy it.
+        start = len(terminal.output)
+        terminal.resize(121, 46)
+        terminal.wait_text("Shared collections loaded", start)
+        terminal.wait_text("Collection page " + str(number), start)
+        terminal.resize(120, 45)
+        terminal.settle()
+        return requests[0]
+
     def send_confirmation(terminal, key, action):
         start = len(terminal.output)
         terminal.send(key)
@@ -194,14 +223,8 @@ def main():
         start = len(reviewer.output)
         reviewer.send("g")
         reviewer.wait_text("Shared collections loaded", start)
-        since = len(proxy.snapshot())
-        reviewer.send("n")
-        reviewer.wait_text("Collection page 2")
-        reviewer.settle()
-        assert len(proxy.snapshot()) == since + 1 and "before=" in proxy.snapshot()[-1]["path"]
-        reviewer.send("p")
-        reviewer.wait_text("Collection page 1", start)
-        reviewer.settle()
+        assert "before=" in navigate_page(reviewer, "n", 2)["path"]
+        assert "before=" not in navigate_page(reviewer, "p", 1)["path"]
         open_collection(reviewer, shared["id"])
         reviewer.wait_text("Coverage: docs/missing.md | missing")
         reviewer.wait_text("unknown: no execution observation")
