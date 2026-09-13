@@ -190,3 +190,7 @@ Common failures:
 | `approval_rejected` | Confirm the revision is submitted and the reviewer is independent. |
 | Missing `go.sum` or npm lock | Generate and review it in a dependency-enabled environment. |
 | Existing DB lacks a new table | Initialization SQL does not migrate existing volumes; apply the migration deliberately. |
+
+Shared browser deployments use [configurable OIDC sign-in](browser-sign-in.md),
+protected server sessions, and a fixed HTTPS origin. The local Vite workflow above
+continues to use explicit development identity and unscoped local data.

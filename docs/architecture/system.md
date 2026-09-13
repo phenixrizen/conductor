@@ -18,7 +18,8 @@ the [repository provider plan](repository-providers.md) for scope and boundaries
 ## Target system context
 
 > **Status:** Durable review and authenticated workspace access through the API
-> and noninteractive CLI are implemented. Browser/TUI review remains local-only.
+> and noninteractive CLI are implemented, including browser OIDC sign-in.
+> TUI review remains local-only.
 > MCP, execution, delivery adapters, and components with dashed borders are planned.
 > Identity-provider compatibility has not been established beyond synthetic tests.
 
@@ -140,8 +141,11 @@ header and verifies the configured HTTPS issuer, audience, and supported signed
 access-token profile. It maps issuer/subject to server-owned principal records;
 client role claims cannot alter human/agent kind or repository capabilities.
 
-The API and noninteractive CLI support authenticated review. The browser/TUI login
-flow and compatibility validation against real identity providers remain pending.
+The browser, API, and noninteractive CLI support authenticated review. Browser
+login uses PKCE, one-use state, verified ID tokens, and protected PostgreSQL
+sessions. [Browser setup](../operations/browser-sign-in.md) describes the exact
+protocol and session limits. Authenticated TUI access and compatibility validation
+against real identity providers remain pending.
 Configuration and transport requirements are in the
 [authenticated review guide](../operations/authenticated-review.md). Future workers
 do not receive publication credentials. No execution or delivery integration runs.
@@ -173,12 +177,12 @@ flowchart LR
 
     classDef active fill:#e8f1ec,stroke:#244c3f,stroke-width:2px;
     classDef planned fill:#f7f7f7,stroke:#777,stroke-dasharray:6 4;
-    class M1,Access active;
-    class Browser,M2,M3,M4,M5,M6 planned;
+    class M1,Access,Browser active;
+    class M2,M3,M4,M5,M6 planned;
 ```
 
-Authenticated API/CLI review is the current completed slice; browser sign-in is
-next. Agent execution remains disabled pending its own verified identity,
+Authenticated browser/API/CLI review is implemented; authenticated terminal
+review follows. Agent execution remains disabled pending its own verified identity,
 authorization, durable recovery, context, and execution boundaries. Review access
 alone does not authorize execution.
 

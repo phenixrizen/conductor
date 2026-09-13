@@ -24,6 +24,8 @@ authenticated workspace access. Read these before changing behavior:
 9. `specs/003-workspace-access/spec.md` and `plan.md` for authenticated API/CLI
    review; `docs/operations/authenticated-review.md` for supported identity,
    provisioning, and deployment limits.
+10. `specs/004-browser-sign-in/spec.md` and `plan.md` for browser sessions and
+    `docs/operations/browser-sign-in.md` for provider and HTTPS setup.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -86,7 +88,7 @@ packages to mirror the target diagram.
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
-| `internal/authn/` | Bounded issuer discovery and signed access-token verification |
+| `internal/authn/` | Bounded issuer discovery, API token verification, and browser code exchange |
 | `internal/store/` | PostgreSQL transaction implementation |
 | `internal/repositorycontext/` | Bounded local Git artifact collection and freshness checks |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
@@ -183,7 +185,21 @@ packages to mirror the target diagram.
   opaque-token, or identity-provider compatibility from synthetic issuer tests.
 - Keep access tokens out of logs, actor fields, command-line arguments, and
   repository commands. The noninteractive CLI reads an explicitly selected token
-  file; browser and TUI authentication remain a separate increment.
+  file; the browser uses an opaque server session. Authenticated TUI access is
+  the next interface increment.
+- Browser login uses a fixed HTTPS origin, authorization code flow, S256 PKCE,
+  browser-bound one-use state, and nonce validation. ID tokens authenticate login
+  only; never treat them as API bearer tokens or persist provider tokens.
+- Ignore bounded, unrecognized OAuth callback extensions as the protocol requires;
+  do not reinterpret them as scope or command inputs. Reject duplicate callback
+  parameters, and keep package commands strict about their own query/body fields.
+- Cookie commands require exact Origin and a session-bound CSRF header. Browser
+  reads send that header too, preventing old tabs from acting as a newly signed-in
+  account. Identity or scope changes clear inspection and cancel pending requests.
+- Preserve server-side session expiry, admission limits, revocation, and hashed
+  cookie credentials. Expired rows remain unusable even before later creation
+  prunes them. Sign-out does not claim provider logout or cancellation of commands
+  already authorized.
 - Access provisioning is a trusted database-operator command, not a public API.
   Its operator label is audit context, not proof of identity. Apply bounded config
   updates with an audit event atomically; omitted records stay unchanged and false
@@ -266,6 +282,11 @@ PostgreSQL acceptance paths covering human collaboration, agent approval denial,
 workspace/repository isolation across every endpoint, revocation, forged identity,
 legacy migration, and access-audit rollback. Synthetic issuer tests establish the
 implemented protocol boundary, not compatibility with a real identity vendor.
+For browser sign-in changes also run the signed code-exchange/CSRF/session tests
+and opt into the actual Chromium acceptance with `CONDUCTOR_TEST_BROWSER=1`.
+Set `CONDUCTOR_BROWSER_PYTHON` to the Python environment with the pinned Playwright
+dependency and build the web app first; see the browser sign-in runbook. Missing
+opt-in is a skip; missing dependencies after opt-in are a failure.
 
 For API/process lifecycle or durability changes, run the opt-in process-restart
 acceptance with `CONDUCTOR_TEST_PROCESS_RESTART=1`. It owns a temporary PostgreSQL

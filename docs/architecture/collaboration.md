@@ -1,8 +1,8 @@
 # Shared engineering context
 
 **Status:** Shared storage, authenticated workspace and repository access, and
-review through the API/noninteractive CLI are implemented. Browser and interactive
-terminal review remain local-development interfaces; browser sign-in is next.
+review through the browser, API, and noninteractive CLI are implemented.
+Interactive terminal review still uses local development identity.
 
 ## One shared record
 
@@ -20,7 +20,7 @@ or approval.
 
 ```mermaid
 flowchart LR
-    Human[Authenticated engineer CLI] --> Shared[Authenticated API]
+    Human[Authenticated engineer browser / CLI] --> Shared[Authenticated API]
     Agent[Authenticated agent client] --> Shared
     Local[Local browser / terminal / CLI] --> LocalAPI[Explicit loopback API]
     Shared --> Scoped[(Workspace packages and permissions)]
@@ -67,7 +67,10 @@ OIDC mode supports the documented RFC 9068 RS256 access-token profile, not arbit
 provider JWTs, ID tokens, or opaque tokens. Tests exercise a synthetic issuer;
 compatibility with a particular identity vendor has not been established. The CLI
 reads a selected token file, and does not provide interactive identity-provider
-login. See the [authenticated review guide](../operations/authenticated-review.md)
+login. The browser separately uses authorization code flow with PKCE and protected
+PostgreSQL sessions; its ID tokens never become API bearer credentials. Session and
+scope changes clear the workbench inspection. See the
+[browser guide](../operations/browser-sign-in.md) and the [authenticated review guide](../operations/authenticated-review.md)
 and [Feature 003](../../specs/003-workspace-access/spec.md).
 
 ## Canonical repositories and context

@@ -23,5 +23,5 @@ checks with live PostgreSQL, and capture browser evidence for the interface chan
 permissions to the existing discovery, history, revision, audit, and review command
 paths. Source snapshot labels remain evidence; canonical ownership lives outside
 immutable content. Existing local packages retain their history without acquiring
-shared authority. Browser sign-in is the next interface increment; the browser and
-interactive terminal currently remain in local mode.
+shared authority. Feature 004 adds browser sign-in and protected sessions through
+these same context/history commands. Interactive terminal authentication follows.
