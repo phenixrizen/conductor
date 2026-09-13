@@ -95,11 +95,12 @@ type GrantConfig struct {
 	CanApprove   bool   `json:"canApprove"`
 }
 type AccessConfig struct {
-	Principals   []PrincipalConfig  `json:"principals"`
-	Workspaces   []WorkspaceConfig  `json:"workspaces"`
-	Memberships  []MembershipConfig `json:"memberships"`
-	Repositories []RepositoryConfig `json:"repositories"`
-	Grants       []GrantConfig      `json:"grants"`
+	Principals          []PrincipalConfig          `json:"principals"`
+	Workspaces          []WorkspaceConfig          `json:"workspaces"`
+	Memberships         []MembershipConfig         `json:"memberships"`
+	Repositories        []RepositoryConfig         `json:"repositories"`
+	Grants              []GrantConfig              `json:"grants"`
+	ContextIntegrations []ContextIntegrationConfig `json:"contextIntegrations,omitempty"`
 }
 
 const MaxAccessPageSize = 100
@@ -155,7 +156,7 @@ func NormalizeRepositoryHost(host string) (string, error) {
 	return host, nil
 }
 func ValidateAccessConfig(c AccessConfig) error {
-	if len(c.Principals)+len(c.Workspaces)+len(c.Memberships)+len(c.Repositories)+len(c.Grants) > 500 {
+	if len(c.Principals)+len(c.Workspaces)+len(c.Memberships)+len(c.Repositories)+len(c.Grants)+len(c.ContextIntegrations) > 500 {
 		return fmt.Errorf("%w: at most 500 access records", ErrInvalidInput)
 	}
 	for _, p := range c.Principals {
@@ -184,6 +185,11 @@ func ValidateAccessConfig(c AccessConfig) error {
 	for _, g := range c.Grants {
 		if ValidateAccessID(g.RepositoryID) != nil || ValidateAccessID(g.PrincipalID) != nil || (!g.CanRead && (g.CanAuthor || g.CanApprove)) {
 			return ErrInvalidInput
+		}
+	}
+	for _, integration := range c.ContextIntegrations {
+		if err := ValidateContextIntegrationConfig(integration); err != nil {
+			return err
 		}
 	}
 	return nil

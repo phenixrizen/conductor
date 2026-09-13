@@ -247,6 +247,11 @@ func (p *Postgres) ApplyAccessConfig(ctx context.Context, operator string, confi
 			return fmt.Errorf("provision repository grant: %w", err)
 		}
 	}
+	for _, v := range config.ContextIntegrations {
+		if err = p.applyContextIntegration(ctx, tx, v); err != nil {
+			return fmt.Errorf("configure context integration: %w", err)
+		}
+	}
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err
