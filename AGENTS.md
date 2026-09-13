@@ -95,8 +95,8 @@ packages to mirror the target diagram.
 |---|---|
 | `cmd/conductor/` | CLI and Bubble Tea entry point |
 | `cmd/conductord/` | HTTP control-plane server |
-| `cmd/conductor-worker/` | Trusted local Temporal worker and context dispatcher |
-| `cmd/conductor-executor/` | Trusted local Temporal coding worker, dispatcher and orphan recovery |
+| `cmd/conductor-worker/` | Trusted Temporal worker and context dispatcher |
+| `cmd/conductor-executor/` | Trusted Temporal coding worker, dispatcher and orphan recovery |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
 | `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
 | `cmd/conductor-sandbox/`, `internal/execution/` | Isolated patch producers, credential gateway, and separate verification |
@@ -204,8 +204,11 @@ packages to mirror the target diagram.
   PostgreSQL stores observations, not a second execution state machine. Unknown
   acknowledgment, stale progress and unresolved recovery must stay explicit.
 - Provider/source text and credentials never enter Temporal payloads, errors, logs
-  or heartbeat details. Keep the worker's initial Temporal mode explicitly local;
-  do not imply hosted/TLS or production compatibility. Fixture tests do not establish
+  or heartbeat details. Temporal uses the shared explicit local or verified remote
+  TLS/mTLS profile in `internal/temporalconnection`; never weaken hostname/CA
+  verification, use insecure fallback or bypass cluster/namespace identity checks.
+  See `docs/operations/temporal-tls.md` for verified protocol and hosted deployment
+  limits. Fixture tests do not establish
   live GitHub/GitLab compatibility. See the durable-context runbook for tested bounds.
 
 - Coordinated attempts are immutable and admitted before a producer starts. A

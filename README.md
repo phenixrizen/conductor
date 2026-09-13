@@ -173,7 +173,8 @@ configuration, troubleshooting, and database lifecycle.
   repository permissions, and audit history.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
 - **Temporal Go SDK 1.44.1:** background context sequencing, retries and cancellation;
-  the first worker uses a trusted local Temporal server.
+  workers use an explicit local Temporal server or verified remote TLS/mTLS; see
+  [Temporal connection setup](docs/operations/temporal-tls.md).
 - **MCP Go SDK 1.7.0:** a bounded stdio bridge for agents with one fixed identity
   and workspace/repository selection. See the [MCP setup guide](docs/operations/mcp.md).
 - **CodeGraph 1.6.0:** the selected
