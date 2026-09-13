@@ -58,6 +58,7 @@ func routes(a *API) *http.ServeMux {
 	m.HandleFunc("GET /api/v1/repository-deliveries/{id}/artifact", a.getDeliveryArtifact)
 	m.HandleFunc("POST /api/v1/repository-deliveries/{id}/authorizations", a.authorizeDelivery)
 	m.HandleFunc("POST /api/v1/repository-deliveries/{id}/reconciliations", a.reconcileDelivery)
+	m.HandleFunc("GET /api/v1/repository-graphs/{id}/artifact", a.getRepositoryGraphArtifact)
 	m.HandleFunc("POST /api/v1/context-collections", a.createCollection)
 	m.HandleFunc("GET /api/v1/context-collections", a.listCollections)
 	m.HandleFunc("GET /api/v1/context-collections/{id}", a.getCollection)

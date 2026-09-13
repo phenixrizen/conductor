@@ -23,3 +23,12 @@ controls now have actual signed-login/PostgreSQL/Chromium acceptance for multi-r
 inspection, retained-key retry, queries, scope/denial clearing and read-only access.
 Terminal controls and coordinated-agent consumption remain required for the broader release. [Operations](../../docs/operations/repository-graph.md)
 records reproducible native runtime setup and remaining limits.
+
+## Retained source inspection
+
+Implemented after the initial graph/source work: exact-tuple graph artifact reads
+through the authenticated API and shared Go client, with all-source transaction
+authorization and explicit coverage gaps. Signed PostgreSQL acceptance covers
+cross-repository reads, revocation, malformed tuples and paths, and bounded text
+from selected receipts and full Git source bundles. Browser/MCP controls remain
+a separate parent release-stack increment.
