@@ -108,9 +108,10 @@ synthetic commit with a real full commit ID from the selected repository:
 }
 ```
 
-The file must be a regular UTF-8 JSON file of at most 64 KiB with exactly those
-three fields. Use a full lowercase 40-hex commit ID and 1–32 unique relative file
-paths. Branch names, abbreviated IDs, traversal, and directories are not supported.
+The file must be a regular UTF-8 JSON file of at most 64 KiB with those three
+required fields and an optional boolean `fullSource`. Set `fullSource: true` to
+request a whole-source Git bundle and CodeGraph index for coordinated work. Use a
+full lowercase 40-hex commit ID and 1–32 unique relative file paths. Branch names, abbreviated IDs, traversal, and directories are not supported.
 The key is 1–128 printable ASCII characters without spaces or commas; keep it with
 the input for recovery. Unknown, duplicate, case-aliased, or null fields are rejected.
 The terminal sorts validated paths before preview and never runs the selected file.

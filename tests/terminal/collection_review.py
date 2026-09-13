@@ -234,7 +234,7 @@ def main():
 
         with tempfile.TemporaryDirectory(prefix="conductor-terminal-collections-") as directory:
             path = Path(directory) / "request.json"
-            draft = {"commit": "a" * 40, "paths": ["docs/missing.md", "README.md"], "idempotencyKey": "terminal-explicit-retry"}
+            draft = {"commit": "a" * 40, "paths": ["docs/missing.md", "README.md"], "idempotencyKey": "terminal-explicit-retry", "fullSource": True}
             path.write_text(json.dumps(draft))
             reviewer.send("g")
             reviewer.settle()
@@ -243,7 +243,7 @@ def main():
             since = len(proxy.snapshot())
             start = send_confirmation(reviewer, "s", "collect")
             reviewer.wait_text("Collection write not confirmed", start)
-            body = {"commit": draft["commit"], "paths": sorted(draft["paths"])}
+            body = {"commit": draft["commit"], "paths": sorted(draft["paths"]), "fullSource": True}
             only_post(reviewer, since, "/context-collections", body, 202, draft["idempotencyKey"])
             since = len(proxy.snapshot())
             start = send_confirmation(reviewer, "s", "collect")
