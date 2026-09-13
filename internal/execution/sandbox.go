@@ -88,6 +88,13 @@ func SandboxMain(ctx context.Context, input io.Reader, output io.Writer) error {
 }
 
 func noNewPrivileges() error {
+	// Producer children share this unprivileged UID. Protect the trusted
+	// supervisor's memory and /proc file descriptors independently of host Yama
+	// settings; a child must not forge the helper's result channel or inspect it.
+	if _, _, err := syscall.Syscall6(syscall.SYS_PRCTL, 4, 0, 0, 0, 0, 0); err != 0 {
+		return fmt.Errorf("%w: supervisor process protection unavailable", ErrSandbox)
+	}
+
 	// Set this after Docker has entered its AppArmor profile, but before decoding
 	// source or starting any subprocess. Snap Docker cannot perform its initial
 	// profile transition when the OCI flag is set before exec. The kernel flag is
@@ -529,7 +536,7 @@ func adapterCommand(p Profile, credential string) ([]string, []string, string, e
 	var argv, env []string
 	var version string
 	if p.Adapter == "codex/0.154.0" {
-		argv = []string{"codex", "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--color", "never", "--dangerously-bypass-approvals-and-sandbox"}
+		argv = []string{"codex", "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--color", "never", "--dangerously-bypass-approvals-and-sandbox", "-c", `web_search="disabled"`}
 		env = []string{"CODEX_HOME=/tmp/codex", "CODEX_API_KEY=" + credential}
 		version = CodexVersion
 	} else {

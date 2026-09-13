@@ -98,7 +98,7 @@ func (r Runner) startProxyForAttempt(ctx context.Context, key string, seconds in
 	if _, err = r.docker(ctx, "network", "connect", "bridge", name); err != nil {
 		return "", "", "", nil, err
 	}
-	config, _ := json.Marshal(proxyConfig{Adapter: r.Profile.Adapter, Token: token, Key: key, Seconds: seconds})
+	config, _ := json.Marshal(proxyConfig{Adapter: r.Profile.Adapter, Model: r.Profile.Model, Token: token, Key: key, Seconds: seconds})
 	docker := r.DockerBinary
 	if docker == "" {
 		docker = "docker"

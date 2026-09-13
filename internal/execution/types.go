@@ -32,6 +32,7 @@ var ErrUnavailable = errors.New("execution unavailable")
 var ErrSandbox = errors.New("sandbox failed")
 var ErrDependencyConflict = errors.New("dependency patches conflict")
 
+var checkIdentifier = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)
 var oid = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var digest = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -150,6 +151,9 @@ func allowedPath(p string, prefixes []string) bool {
 }
 
 func ValidateRequest(r Request) error {
+	if r.PlanDigest != "" && !digest.MatchString(r.PlanDigest) {
+		return ErrInvalid
+	}
 	if !identifier.MatchString(r.RunID) || !identifier.MatchString(r.TaskID) || !identifier.MatchString(r.ChangeID) || r.Revision < 1 || !digest.MatchString(r.Digest) || !digest.MatchString(r.GraphDigest) {
 		return fmt.Errorf("%w: exact task, package and graph identity required", ErrInvalid)
 	}
@@ -193,7 +197,7 @@ func ValidateRequest(r Request) error {
 	}
 	checks := map[string]bool{}
 	for _, c := range r.Checks {
-		if !identifier.MatchString(c.ID) || checks[c.ID] || !repos[c.RepositoryID] || c.TimeoutSeconds < 1 || c.TimeoutSeconds > r.TimeoutSeconds || !validArgv(c.Argv) {
+		if !checkIdentifier.MatchString(c.ID) || checks[c.ID] || !repos[c.RepositoryID] || c.TimeoutSeconds < 1 || c.TimeoutSeconds > r.TimeoutSeconds || !validArgv(c.Argv) {
 			return fmt.Errorf("%w: check identity, command or deadline", ErrInvalid)
 		}
 		checks[c.ID] = true
@@ -219,10 +223,16 @@ func (p Profile) Validate() error {
 	}
 	switch p.Adapter {
 	case "codex/0.154.0":
+		if strings.TrimSpace(p.Model) == "" {
+			return fmt.Errorf("%w: native profile requires an explicit operator model ID", ErrInvalid)
+		}
 		if len(p.Command) != 0 || p.MaxBudgetUSD != "" {
 			return fmt.Errorf("%w: Codex profile has no currency budget contract", ErrInvalid)
 		}
 	case "claude-code/2.1.270":
+		if strings.TrimSpace(p.Model) == "" {
+			return fmt.Errorf("%w: native profile requires an explicit operator model ID", ErrInvalid)
+		}
 		if len(p.Command) != 0 || !regexp.MustCompile(`^(?:[1-9][0-9]{0,2}|0\.[0-9]{1,2}|[1-9][0-9]{0,2}\.[0-9]{1,2})$`).MatchString(p.MaxBudgetUSD) || p.MaxBudgetUSD == "0.0" || p.MaxBudgetUSD == "0.00" {
 			return fmt.Errorf("%w: Claude requires an explicit bounded USD budget", ErrInvalid)
 		}

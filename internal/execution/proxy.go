@@ -24,6 +24,7 @@ const maxProviderTotal = 64 << 20
 
 type proxyConfig struct {
 	Adapter string `json:"adapter"`
+	Model   string `json:"model"`
 	Token   string `json:"token"`
 	Key     string `json:"key"`
 	Seconds int    `json:"seconds"`
@@ -72,7 +73,7 @@ func ProxyMain(ctx context.Context, input io.Reader) error {
 	if d.Decode(&config) != nil {
 		return ErrInvalid
 	}
-	if (config.Adapter != "codex/0.154.0" && config.Adapter != "claude-code/2.1.270") || !digest.MatchString(config.Token) || config.Key == "" || len(config.Key) > 8192 || strings.ContainsAny(config.Key, "\x00\r\n") || config.Seconds < 1 || config.Seconds > 3600 {
+	if (config.Adapter != "codex/0.154.0" && config.Adapter != "claude-code/2.1.270") || config.Model == "" || len(config.Model) > 128 || strings.ContainsAny(config.Model, "\x00\r\n") || !digest.MatchString(config.Token) || config.Key == "" || len(config.Key) > 8192 || strings.ContainsAny(config.Key, "\x00\r\n") || config.Seconds < 1 || config.Seconds > 3600 {
 		return ErrInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.Seconds)*time.Second)
@@ -132,6 +133,10 @@ func (p *providerProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var object map[string]json.RawMessage
 	if json.Unmarshal(body, &object) != nil || object == nil {
 		http.Error(w, "JSON object required", http.StatusBadRequest)
+		return
+	}
+	if !modelOnlyRequest(p.config.Adapter, p.config.Model, object) {
+		http.Error(w, "model-only request required", http.StatusBadRequest)
 		return
 	}
 	// Enforce a finite per-call generation ceiling independently of assistant

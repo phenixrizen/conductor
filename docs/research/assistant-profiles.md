@@ -52,3 +52,29 @@ Git dependency merging uses the inspected 2.39.5 binary and the official
 [merge-tree 2.39 documentation](https://git-scm.com/docs/git-merge-tree/2.39.0).
 Its write-tree mode performs a real three-way merge without modifying the working
 tree; a nonzero merge exit is treated as blocked, never a usable conflict tree.
+
+The trusted PID 1 also sets `PR_SET_DUMPABLE=0` before reading inputs or starting
+children. This protects its memory and `/proc` descriptors from producer processes
+sharing UID 10001, independently of the host's Yama setting. Actual producer and
+verifier acceptance checks deny access to supervisor memory and its result pipe.
+See the [Linux process-control reference](https://man7.org/linux/man-pages/man2/PR_SET_DUMPABLE.2const.html)
+and [kernel Yama documentation](https://docs.kernel.org/admin-guide/LSM/Yama.html).
+
+The gateway additionally validates a stateless model-only request profile using
+Codex's [pinned request structures](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/codex-api/src/common.rs),
+[Responses request reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+and [Claude Messages reference](https://platform.claude.com/docs/en/api/messages/create).
+The native profile requires an explicit operator model ID and rejects other models
+at the gateway. Codex receives `web_search="disabled"`. Hosted tools, remote input URLs,
+stored file/response/conversation references, additional dynamic tool declarations,
+background work and unsupported request fields are refused before upstream I/O.
+Inline text/media and local tool definitions/results remain supported; Codex storage
+is forced false. Nonstandard access-program requests are unsupported. Vendor routing
+of a requested model remains provider behavior, not an exact server-version promise.
+
+The gateway enforces request, token, response and time bounds. Claude's native
+`--max-budget-usd` is a CLI control, not an independent hard currency ceiling: code
+with the task gateway credential can make bounded direct model requests too. No
+adapter claims an account billing cap. Operator provider quotas remain separate.
+These stricter profiles need a credentialed native-provider acceptance run before
+claiming end-to-end compatibility with a paid vendor account.

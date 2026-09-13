@@ -3,6 +3,7 @@ package execution
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -96,7 +97,7 @@ func TestCredentialFileAndAdapterBoundaries(t *testing.T) {
 	if _, err := readCredential(link); err == nil {
 		t.Fatal("credential symlink accepted")
 	}
-	for _, profile := range []Profile{{Adapter: "codex/0.154.0"}, {Adapter: "claude-code/2.1.270", MaxBudgetUSD: "0.50"}} {
+	for _, profile := range []Profile{{Adapter: "codex/0.154.0", Model: "synthetic-model"}, {Adapter: "claude-code/2.1.270", Model: "synthetic-model", MaxBudgetUSD: "0.50"}} {
 		argv, env, version, err := adapterCommand(profile, "synthetic-key")
 		if err != nil || version == "" {
 			t.Fatal(err)
@@ -111,7 +112,7 @@ func TestCredentialFileAndAdapterBoundaries(t *testing.T) {
 	if _, _, _, err := adapterCommand(Profile{Adapter: "command/v1", Command: []string{"true"}}, "key"); !errors.Is(err, ErrInvalid) {
 		t.Fatal("command received credentials")
 	}
-	for _, p := range []Profile{{Adapter: "codex/latest"}, {Adapter: "claude-code/2.1.270"}, {Adapter: "codex/0.154.0", MaxBudgetUSD: "1"}, {Adapter: "claude-code/2.1.270", MaxBudgetUSD: "0.00"}} {
+	for _, p := range []Profile{{Adapter: "codex/latest"}, {Adapter: "claude-code/2.1.270"}, {Adapter: "codex/0.154.0", Model: "synthetic-model", MaxBudgetUSD: "1"}, {Adapter: "claude-code/2.1.270", Model: "synthetic-model", MaxBudgetUSD: "0.00"}} {
 		if p.Validate() == nil {
 			t.Fatal("unsupported profile accepted")
 		}
@@ -185,22 +186,38 @@ func dockerFixture(t *testing.T) (Runner, Request) {
 		t.Fatal("opt-in requires Docker")
 	}
 	r := validRequest()
+	r.RunID = Sum([]byte(t.TempDir()))[:32] // Concurrent acceptance processes own distinct attempts.
 	r.Repositories[0].Bundle, r.Repositories[0].Commit = fixtureBundle(t, map[string]string{"app.txt": "old\n", "untouched.txt": "preserved\n"})
 	return Runner{Image: image, Profile: Profile{Adapter: "command/v1", Command: []string{"sh", "-c", "printf 'new\\n' > app.txt"}}}, r
 }
 
 func TestDockerIsolatedPatchAndVerification(t *testing.T) {
 	runner, r := dockerFixture(t)
+	runner.Profile.Command = []string{"sh", "-c", "test ! -r /proc/1/mem && test ! -w /proc/1/fd/1 && printf 'new\\n' > app.txt"}
 	t.Setenv("GITHUB_TOKEN", "synthetic-must-not-cross")
 	t.Setenv("CONDUCTOR_TOKEN", "synthetic-must-not-cross")
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-must-not-cross")
-	r.Checks = append(r.Checks, Check{ID: "boundary", RepositoryID: "app", TimeoutSeconds: 10, Argv: []string{"sh", "-c", `test "$(id -u)" = 10001 && test "$(sed -n "s/^NoNewPrivs:[[:space:]]*//p" /proc/self/status)" = 1 && test ! -e /var/run/docker.sock && test -z "$GITHUB_TOKEN$CONDUCTOR_TOKEN$ANTHROPIC_API_KEY" && test "$(cat untouched.txt)" = preserved && test ! -w /usr/local/bin/conductor-sandbox && test "$(ls /sys/class/net | wc -l)" = 1`}})
+	r.Checks = append(r.Checks, Check{ID: "boundary", RepositoryID: "app", TimeoutSeconds: 10, Argv: []string{"sh", "-c", `test "$(id -u)" = 10001 && test "$(sed -n "s/^NoNewPrivs:[[:space:]]*//p" /proc/self/status)" = 1 && test ! -e /var/run/docker.sock && test ! -r /proc/1/mem && test ! -w /proc/1/fd/1 && test -z "$GITHUB_TOKEN$CONDUCTOR_TOKEN$ANTHROPIC_API_KEY" && test "$(cat untouched.txt)" = preserved && test ! -w /usr/local/bin/conductor-sandbox && test "$(ls /sys/class/net | wc -l)" = 1`}})
 	result, err := runner.Run(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.InputDigest != InputDigest(r) || result.Producer.State != "passed" || len(result.Patches) != 1 || len(result.Checks) != 2 {
 		t.Fatalf("incomplete result: %+v", result)
+	}
+	if outcome, err := ValidateResult(r, runner.Profile, runner.Image, result); err != nil || outcome != "succeeded" {
+		t.Fatalf("trusted result validation: %s %v", outcome, err)
+	}
+	for _, change := range []func(*Result){
+		func(r *Result) { r.CleanupConfirmed = false }, func(r *Result) { r.InputDigest = Sum(nil) }, func(r *Result) { r.Checks = r.Checks[:1] }, func(r *Result) { r.Checks[0].SourceDigest = Sum(nil) }, func(r *Result) { r.Checks[0].ExitCode = nil }, func(r *Result) { r.Patches[0].Paths = append(r.Patches[0].Paths, "unauthorized.txt") }, func(r *Result) { r.ProfileDigest = Sum(nil) },
+	} {
+		data, _ := json.Marshal(result)
+		var tampered Result
+		_ = json.Unmarshal(data, &tampered)
+		change(&tampered)
+		if _, err := ValidateResult(r, runner.Profile, runner.Image, tampered); err == nil {
+			t.Fatal("tampered result accepted")
+		}
 	}
 	p := result.Patches[0]
 	if p.BaseCommit != r.Repositories[0].Commit || p.BaseTree == p.ResultTree || p.Digest != Sum(p.Patch) || len(p.Paths) != 1 || p.Paths[0] != "app.txt" || !bytes.Contains(p.Patch, []byte("+new")) {
