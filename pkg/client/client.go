@@ -45,6 +45,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (domain.
 }
 
 func (c *Client) doInto(ctx context.Context, method, path string, body, output any) error {
+	return c.doIntoHeaders(ctx, method, path, body, output, nil)
+}
+
+func (c *Client) doIntoHeaders(ctx context.Context, method, path string, body, output any, headers http.Header) error {
 	// BaseURL is retained as a public field for existing local clients. Recheck
 	// it at the credential boundary so later mutation cannot downgrade TLS.
 	if c.bearerToken != "" {
@@ -63,6 +67,9 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for name, values := range headers {
+		req.Header[name] = append([]string(nil), values...)
+	}
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 		if c.workspaceID != "" {

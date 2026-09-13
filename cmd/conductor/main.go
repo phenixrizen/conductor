@@ -30,12 +30,16 @@ func main() {
 	rev := f.Int64("revision", 0, "inspected revision")
 	digest := f.String("digest", "", "inspected digest")
 	before := f.Int64("before", 0, "history cursor: revisions before this number")
-	page := f.String("page", "", "opaque cursor for the next shared change page")
+	page := f.String("page", "", "opaque continuation cursor for shared changes or context collections")
 	after := f.Int64("after", 0, "audit cursor: events after this sequence")
-	limit := f.Int("limit", 20, "history or audit page size (1-100)")
+	limit := f.Int("limit", 20, "list, history, or audit page size (1-100)")
 	repo := f.String("repo", ".", "local Git repository for context collection/check")
 	repository := f.String("repository", "", "repository identity recorded in the snapshot")
 	ref := f.String("ref", "HEAD", "Git ref to resolve to a commit")
+	commit := f.String("commit", "", "full commit object ID for remote context collection")
+	idempotencyKey := f.String("idempotency-key", "", "stable key for an explicitly requested remote collection")
+	collectionID := f.String("collection-id", "", "inspected remote collection ID for attachment")
+	expectedRevision := f.Int64("expected-revision", 0, "inspected package revision for context attachment")
 	var paths []string
 	f.Func("path", "explicit repository-relative artifact path (repeatable)", func(path string) error {
 		paths = append(paths, path)
@@ -72,6 +76,11 @@ func main() {
 	exitCode := 0
 	args := f.Args()
 	switch cmd {
+	case "context-collect", "context-collections", "context-collection", "context-cancel", "context-attach":
+		p, err = runCollectionCommand(ctx, c, cmd, args, collectionOptions{
+			commit: *commit, paths: paths, key: *idempotencyKey, before: *page, limit: *limit,
+			collectionID: *collectionID, digest: *digest, expectedRevision: *expectedRevision,
+		})
 	case "session":
 		p, err = c.Session(ctx)
 	case "repositories":
@@ -167,7 +176,7 @@ func env(k, d string) string {
 	return d
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: conductor <tui|session|repositories|list|create|revise|show|history|events|submit|approve|context|context-check> [flags] [id]")
+	fmt.Fprintln(os.Stderr, "usage: conductor <tui|session|repositories|list|create|revise|show|history|events|submit|approve|context|context-check|context-collect|context-collections|context-collection|context-cancel|context-attach> [flags] [id]")
 	os.Exit(2)
 }
 

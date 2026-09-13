@@ -28,9 +28,12 @@ func clientForCommand(command, actor string, actorSet bool, workspace, repositor
 		if command == "tui" && (workspace == "" || repositoryID == "") {
 			return nil, errors.New("authenticated terminal review requires --workspace and --repository-id (or CONDUCTOR_WORKSPACE and CONDUCTOR_REPOSITORY_ID)")
 		}
+		if collectionCommand(command) && (workspace == "" || repositoryID == "") {
+			return nil, errors.New("remote context commands require --workspace and --repository-id (or CONDUCTOR_WORKSPACE and CONDUCTOR_REPOSITORY_ID)")
+		}
 		return client.NewAuthenticated(base, token, workspace, repositoryID)
 	}
-	if command == "session" || command == "repositories" {
+	if command == "session" || command == "repositories" || collectionCommand(command) {
 		return nil, errors.New("this command requires CONDUCTOR_TOKEN_FILE or CONDUCTOR_TOKEN")
 	}
 	if workspace != "" || repositoryID != "" {

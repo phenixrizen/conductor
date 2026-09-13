@@ -21,6 +21,7 @@ import (
 type config struct {
 	databaseURL, address, mode, issuer, audience string
 	publicOrigin, clientID, clientSecretFile     string
+	contextCollections                           bool
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -29,6 +30,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 		publicOrigin: getenv("CONDUCTOR_PUBLIC_ORIGIN"), clientID: getenv("CONDUCTOR_OIDC_CLIENT_ID"), clientSecretFile: getenv("CONDUCTOR_OIDC_CLIENT_SECRET_FILE")}
 	if c.databaseURL == "" {
 		return c, errors.New("DATABASE_URL is required")
+	}
+	switch getenv("CONDUCTOR_CONTEXT_COLLECTIONS") {
+	case "", "0":
+	case "1":
+		c.contextCollections = true
+	default:
+		return c, errors.New("CONDUCTOR_CONTEXT_COLLECTIONS must be unset, 0, or 1")
 	}
 	if c.address == "" {
 		c.address = "127.0.0.1:8080"
@@ -39,6 +47,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	switch c.mode {
 	case "local":
+		if c.contextCollections {
+			return c, errors.New("remote context collection requires OIDC authentication; local mode cannot enable it")
+		}
 		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 			return c, errors.New("local authentication requires a literal loopback listen address")
 		}
@@ -100,15 +111,26 @@ func run() error {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
 	defer db.Close()
+	if c.contextCollections {
+		if err := db.CheckContextSchema(startup); err != nil {
+			return err
+		}
+	}
 	var handler http.Handler
 	if c.mode == "oidc" {
+		shared := service.NewAuthenticated(db)
+		if c.contextCollections {
+			// This opens the API capability only. Each repository still requires
+			// operator enablement and transactional author/read permission checks.
+			shared = shared.WithCollections()
+		}
 		if browser != nil {
-			handler, err = api.NewBrowserAuthenticated(service.NewAuthenticated(db), verifier, browser, db, api.BrowserConfig{Origin: c.publicOrigin, Issuer: c.issuer})
+			handler, err = api.NewBrowserAuthenticated(shared, verifier, browser, db, api.BrowserConfig{Origin: c.publicOrigin, Issuer: c.issuer})
 			if err != nil {
 				return err
 			}
 		} else {
-			handler = api.NewAuthenticated(service.NewAuthenticated(db), verifier)
+			handler = api.NewAuthenticated(shared, verifier)
 		}
 	} else {
 		handler = api.New(service.New(db))
