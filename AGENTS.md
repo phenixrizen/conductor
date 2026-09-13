@@ -77,13 +77,14 @@ packages to mirror the target diagram.
 
 | Path | Responsibility |
 |---|---|
-| `cmd/conductor/` | CLI and future Bubble Tea entry point |
+| `cmd/conductor/` | CLI and Bubble Tea entry point |
 | `cmd/conductord/` | HTTP control-plane server |
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, local auth boundary, and error mapping |
 | `internal/store/` | PostgreSQL transaction implementation |
 | `internal/repositorycontext/` | Bounded local Git artifact collection and freshness checks |
+| `internal/tui/` | Interactive terminal review through the shared Go API client |
 | `pkg/client/` | Reusable Go API client |
 | `apps/web/` | React/TypeScript review workbench |
 | `api/openapi.yaml` | Implemented HTTP contract |
@@ -161,6 +162,9 @@ packages to mirror the target diagram.
 - Escape resource IDs as path segments. Use idempotency keys for retryable external
   commands when those capabilities are introduced.
 - Do not expose fake success responses for unavailable integrations.
+- Go API commands must reject redirects, including with a caller-provided HTTP
+  client. A redirected POST may be replayed or converted into a GET; neither is a
+  valid substitute for the command the user confirmed.
 
 ## Web and terminal interfaces
 
@@ -177,6 +181,15 @@ packages to mirror the target diagram.
   browser tooling is available. If unavailable, report that limitation.
 - Commit reviewed frontend lockfiles and use reproducible installs. Do not fabricate
   a lockfile or checksum when registries are unavailable.
+- The Bubble Tea session uses a fixed local actor and per-operation deadlines.
+  Capture the displayed revision/digest before confirmation; never refresh inside
+  a mutation. Conflicts and uncertain mutation outcomes require explicit inspection
+  before another mutation. Cancel pending work when the session ends and ignore
+  superseded asynchronous responses.
+- Import terminal package content only from an explicitly selected, bounded JSON
+  file. Show a preview before replacing content and preserve unknown fields in the
+  imported document. Escape terminal control characters in content and errors;
+  repository text must never control the terminal or launch an editor/script.
 
 ## Documentation
 
@@ -218,6 +231,17 @@ For persistence, history, shared-client, or context workflow changes, set
 schemas and must clean them up. Connection-pool reopen is not a database restart.
 Use `scripts/start-local-db.sh` for the persistent local database; it pipes inputs
 to Docker to support Snap installations with checkouts outside the home directory.
+
+For API/process lifecycle or durability changes, run the opt-in process-restart
+acceptance with `CONDUCTOR_TEST_PROCESS_RESTART=1`. It owns a temporary PostgreSQL
+container and volume and starts the compiled API as a separate process. Never
+restart a database selected through `CONDUCTOR_TEST_DATABASE_URL` or delete an
+existing development volume to prove recovery. Missing opt-in is an explicit skip;
+missing dependencies after opt-in are a failure.
+
+For terminal workflow changes, run the real PTY acceptance in `tests/terminal/`
+against an explicitly configured local API and compiled CLI. See
+`docs/operations/terminal-review.md` for controls, limits, and acceptance commands.
 
 Before finishing:
 

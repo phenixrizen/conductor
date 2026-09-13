@@ -17,8 +17,9 @@ the [repository provider plan](repository-providers.md) for scope and boundaries
 
 ## Target system context
 
-> **Status:** The work-package control-plane slice is partial. Components with
-> dashed borders are planned and are not available in the current release.
+> **Status:** The local work-package review workflow is implemented. Production
+> authentication, MCP, and components with dashed borders are planned and are not
+> available in the current release.
 
 ```mermaid
 flowchart LR
@@ -74,7 +75,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    UI[React workbench / Go CLI / future Bubble Tea TUI]
+    UI[React workbench / Go CLI / Bubble Tea TUI]
     Client[Shared API clients]
     HTTP[HTTP command boundary]
     Domain[Domain service and approval policy]
@@ -134,7 +135,7 @@ authorization exist. Future workers do not receive publication credentials.
 
 | State | Authority | Current status |
 |---|---|---|
-| Package revisions, submissions, approvals, audit events | PostgreSQL | Partial implementation |
+| Package revisions, submissions, approvals, audit events | PostgreSQL | Implemented for local review |
 | Workflow sequencing, waits, retries, cancellation | Temporal | Planned |
 | Immutable large artifacts | S3-compatible storage | Planned |
 | Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |

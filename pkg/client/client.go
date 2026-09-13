@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/domain"
 )
@@ -29,7 +30,7 @@ type Client struct {
 }
 
 func New(base, actor string) *Client {
-	return &Client{BaseURL: strings.TrimRight(base, "/"), Actor: actor, HTTP: http.DefaultClient}
+	return &Client{BaseURL: strings.TrimRight(base, "/"), Actor: actor, HTTP: &http.Client{Timeout: 30 * time.Second}}
 }
 func (c *Client) do(ctx context.Context, method, path string, body any) (domain.Package, error) {
 	var p domain.Package
@@ -50,11 +51,25 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Conductor-Actor", c.Actor)
-	res, err := c.HTTP.Do(req)
+	configured := c.HTTP
+	if configured == nil {
+		configured = &http.Client{Timeout: 30 * time.Second}
+	}
+	// A redirect can replay a command or turn its POST into a refresh GET. Keep
+	// one request per command, even with a caller-provided transport or cookie jar.
+	// Copy the client so concurrent requests never mutate caller configuration.
+	transportClient := *configured
+	transportClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	res, err := transportClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
+	if res.StatusCode >= 300 && res.StatusCode < 400 {
+		return &APIError{StatusCode: res.StatusCode, Code: "unexpected_redirect",
+			Message:       "API redirects are not followed; configure the final Conductor URL",
+			CorrelationID: res.Header.Get("X-Correlation-ID")}
+	}
 	data, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
 	if err != nil {
 		return fmt.Errorf("read Conductor response: %w", err)

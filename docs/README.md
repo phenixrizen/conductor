@@ -16,6 +16,7 @@ not mistaken for working capabilities.
 | [Repository providers](architecture/repository-providers.md) | Planned GitHub and GitLab support for managed repositories |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
+| [Terminal review](operations/terminal-review.md) | Interactive shared review, JSON imports, exact approval, and conflict recovery |
 | [Feature 002 specification](../specs/002-context-history/spec.md) | Shared discovery, historical review, and context evidence contracts |
 | [Local development](operations/local-development.md) | Run, configure, exercise, test, and troubleshoot the current slice |
 | [Feature 001 specification](../specs/001-work-package-review/spec.md) | Normative behavior and acceptance criteria |

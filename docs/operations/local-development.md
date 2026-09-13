@@ -132,6 +132,32 @@ Without this variable the live tests report a skip. The suite covers lifecycle,
 concurrent edits, audit rollback, missing packages, and connection-pool reopen
 durability; pool reopen does not restart PostgreSQL.
 
+Run the separate process-restart suite with working Docker access:
+
+```bash
+CONDUCTOR_TEST_PROCESS_RESTART=1 \
+  go test -race ./tests/acceptance -run TestProcessRestartDurability -count=1 -v
+```
+
+It starts the compiled API as a separate process and provisions a unique temporary
+PostgreSQL container and named volume. It checks API-only restart, then restarts
+both API and PostgreSQL and checks exact package content, historical approvals,
+audit records, stale-request rejection, and new writes through fresh clients.
+The test removes only its own resources. It does not use or restart the database
+in `CONDUCTOR_TEST_DATABASE_URL` or your persistent development database.
+
+The suite skips unless explicitly enabled. Once enabled, unavailable Docker,
+an unavailable pinned PostgreSQL image, or failed readiness is a test failure.
+If the current shell lacks its newly assigned Docker group, use:
+
+```bash
+sg docker -c 'CONDUCTOR_TEST_PROCESS_RESTART=1 go test -race ./tests/acceptance -run TestProcessRestartDurability -count=1 -v'
+```
+
+For interactive terminal acceptance, see the
+[terminal review guide](terminal-review.md). The browser and terminal share the
+same domain commands; neither may refresh inside an approval action.
+
 A missing dependency, database, or scanner is **not** a passing check. Report the
 check as unavailable and preserve the reason.
 

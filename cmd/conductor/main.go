@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/domain"
 	"github.com/phenixrizen/conductor/internal/repositorycontext"
+	"github.com/phenixrizen/conductor/internal/tui"
 	"github.com/phenixrizen/conductor/pkg/client"
 )
 
@@ -39,11 +41,23 @@ func main() {
 		return nil
 	})
 	_ = f.Parse(os.Args[2:])
+	*actor = strings.TrimSpace(*actor)
 	if *actor == "" && cmd != "context" && cmd != "context-check" {
 		fmt.Fprintln(os.Stderr, "--actor is required")
 		os.Exit(2)
 	}
 	c := client.New(env("CONDUCTOR_URL", "http://localhost:8080"), *actor)
+	if cmd == "tui" {
+		id := ""
+		if len(f.Args()) > 0 {
+			id = f.Args()[0]
+		}
+		if err := tui.Run(context.Background(), c, tui.Options{Actor: *actor, Repository: *repository, File: *file, ID: id}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var p any
@@ -142,7 +156,7 @@ func env(k, d string) string {
 	return d
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: conductor <list|create|revise|show|history|events|submit|approve|context|context-check> [flags] [id]")
+	fmt.Fprintln(os.Stderr, "usage: conductor <tui|list|create|revise|show|history|events|submit|approve|context|context-check> [flags] [id]")
 	os.Exit(2)
 }
 
