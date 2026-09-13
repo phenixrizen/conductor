@@ -64,7 +64,9 @@ yet been certified.
 
 Isolated coding-worker and independent verification components are implemented;
 shared execution plans, separate human authorization and write reservations are
-available through the API. Their coordinated runtime is being connected; see
+available through the API. A trusted worker runs related tasks in isolated Docker
+containers, carries earlier changes into dependent tasks, and records independent
+checks through durable Temporal workflows; see
 [execution setup](docs/operations/coordinated-execution.md). GitHub/GitLab publication and tracker
 integrations remain planned. Spec Kit and ADRKit files can be captured as native text; their command/API
 integrations are not implemented. Collected context records what was captured,

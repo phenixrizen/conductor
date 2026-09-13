@@ -66,7 +66,7 @@ Do not describe an incomplete integration or mocked path as implemented. Keep
   with provider-specific adapters and explicit capability limits. See
   `docs/architecture/repository-providers.md` before adding provider behavior.
 - PostgreSQL owns package revisions, approval records, authorization metadata, and
-  audit events. Temporal owns durable context execution sequencing; other assistant execution remains planned.
+  audit events. Temporal owns durable context and coordinated coding execution sequencing.
   Do not create two execution authorities.
 - External calls belong in workflow activities. Bridge database commits and Temporal
   operations using durable inbox/outbox processing and reconciliation.
@@ -96,6 +96,7 @@ packages to mirror the target diagram.
 | `cmd/conductor/` | CLI and Bubble Tea entry point |
 | `cmd/conductord/` | HTTP control-plane server |
 | `cmd/conductor-worker/` | Trusted local Temporal worker and context dispatcher |
+| `cmd/conductor-executor/` | Trusted local Temporal coding worker, dispatcher and orphan recovery |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
 | `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
 | `cmd/conductor-sandbox/`, `internal/execution/` | Isolated patch producers, credential gateway, and separate verification |
@@ -107,6 +108,7 @@ packages to mirror the target diagram.
 | `internal/repositorycontext/` | Bounded local Git collection, remote provider reads, and local freshness checks |
 | `internal/repositorygraph/`, `internal/codegraph/` | Shared graph projection and isolated pinned CodeGraph extraction |
 | `internal/coordinationworkflow/` | Temporal task DAG sequencing using opaque references and retained receipt digests |
+| `internal/coordinationworker/` | Reviewed profile matching, immutable attempts, Docker activity and cleanup reconciliation |
 | `internal/collectionworker/` | Credential binding, context activity, fenced dispatch, and reconciliation |
 | `internal/contextworkflow/` | Pinned Temporal workflow, runtime identity and history validation |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
@@ -194,6 +196,18 @@ packages to mirror the target diagram.
   or heartbeat details. Keep the worker's initial Temporal mode explicitly local;
   do not imply hosted/TLS or production compatibility. Fixture tests do not establish
   live GitHub/GitLab compatibility. See the durable-context runbook for tested bounds.
+
+- Coordinated attempts are immutable and admitted before a producer starts. A
+  redelivery recovers the committed receipt or reconciles the same attempt; it must
+  never start a second producer. Load full bundles and maximal predecessor patches
+  under the recorded human's current all-repository grants and inspected pins.
+  A public profile ID alone is insufficient: bind its digest and immutable image.
+- Release write claims only after observed terminal Temporal execution, every
+  task's non-unresolved receipt and confirmed cleanup of all admitted attempts.
+  A receipt by itself does not prove an unknown workflow stopped. Source, prompts,
+  commands and credentials stay out of history/logs; repository commands receive
+  no publication, production or Conductor credentials. See the
+  [coordinated execution runbook](docs/operations/coordinated-execution.md).
 
 ## Go conventions
 

@@ -1,10 +1,10 @@
 # Coordinated execution
 
-Status: **Partial implementation.** Shared plan admission, human execution
-authorization, path claims, API/client commands, and Temporal DAG sequencing are
-implemented and tested. The trusted activity adapter, dispatcher, source-bundle
-integration and client workbenches are being completed in dependent commits.
-This status does not claim that the full release is verified.
+Status: **Implemented and verified runtime.** Shared plan admission, human execution
+authorization, retained whole-source/profile pins, durable dispatch, isolated coding
+workers, dependent cumulative artifacts and actual independent checks are tested.
+Browser and other review controls, publication and full-release validation remain
+separate stack work. No paid model-provider execution is claimed by fixture runs.
 
 Conductor coordinates work across canonical repositories in one workspace. A plan
 pins one current package revision and digest per repository, one retained source
@@ -52,4 +52,16 @@ as passed. Source receipt or graph evidence is not test execution evidence.
 
 The [plan](plan.md), [architecture](../../docs/architecture/coordinated-execution.md)
 and [runbook](../../docs/operations/coordinated-execution.md) track the working
-commands and remaining runtime acceptance.
+commands and explicit acceptance limits.
+
+Before the first external execution boundary, the trusted worker commits an
+immutable attempt containing its complete input digest, profile/image pins and
+bounded deadline. A redelivery cannot create a second producer for that task.
+Permission or profile changes during execution cancel the producer and discard its
+source-bearing output. Receipt and audit commit atomically under current authority.
+
+A lost attempt is reconciled after its database-measured deadline by removing its
+exact disposable containers/network. Recovery records uncertainty rather than
+inventing a patch or successful check. Release requires observed terminal Temporal
+execution, every task's non-unresolved receipt and confirmed cleanup of all admitted
+attempts. These rules also apply after cancellation and process failure.
