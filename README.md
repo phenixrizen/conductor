@@ -29,6 +29,8 @@ for the new revision.
 - Build and query shared graphs across repositories in the browser, API and MCP,
   with inspected source references, dependency relationships and visible coverage gaps. An optional
   pinned CodeGraph Rust parser extracts symbols during background collection.
+- Propose shared dependent task plans through MCP or browser JSON import; inspect
+  exact source, design and profile pins before separate human execution decisions.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.

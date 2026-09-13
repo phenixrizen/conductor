@@ -9,6 +9,7 @@ import { SharedChanges } from './SharedChanges';
 import type { RelatedRequest } from './SharedChanges';
 import { ContextCollections } from './ContextCollections';
 import { RepositoryGraphs } from './RepositoryGraphs';
+import { CoordinatedRuns } from './CoordinatedRuns';
 import type { Collection } from './collections';
 
 const perspectives = {
@@ -340,6 +341,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
       }} />
       : <section className="panel local-collections" aria-label="Remote collection availability"><h3>Shared context collections</h3><p className="muted">Remote collection requires authenticated workspace and repository access. It is unavailable in local mode.</p></section>}
     {browserAccess && <RepositoryGraphs access={browserAccess} onAccessFailure={onAccessFailure} />}
+    {browserAccess && <CoordinatedRuns access={browserAccess} onAccessFailure={onAccessFailure} />}
     <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
     {error && <p role="alert" className="error banner">{error}</p>}
     {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}

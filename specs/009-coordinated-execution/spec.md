@@ -54,6 +54,20 @@ The [plan](plan.md), [architecture](../../docs/architecture/coordinated-executio
 and [runbook](../../docs/operations/coordinated-execution.md) track the working
 commands and explicit acceptance limits.
 
+## Shared client review
+
+The browser and MCP share the authenticated plan API. MCP can discover execution
+profiles, propose strict bounded plans and inspect retained plans/receipts; it has
+no execution authorization or run-cancellation tool. Browser authors can import a
+bounded version 1 JSON plan, reject duplicate/unknown fields and inspect a structured
+preview before creating it. An uncertain proposal retains the exact input/key for
+an explicit retry. Humans inspect the complete stored plan and exact digest before
+execution authorization or cancellation. Neither action fetches replacement facts.
+Conflicts and uncertain mutation outcomes require explicit renewed run inspection.
+Scope changes and access denial clear private plans, imported drafts, capabilities
+and confirmation state. Read-only users retain inspection controls. Missing/stale
+execution observations and missing task receipts never render as verified outcomes.
+
 Before the first external execution boundary, the trusted worker commits an
 immutable attempt containing its complete input digest, profile/image pins and
 bounded deadline. A redelivery cannot create a second producer for that task.
@@ -65,3 +79,4 @@ exact disposable containers/network. Recovery records uncertainty rather than
 inventing a patch or successful check. Release requires observed terminal Temporal
 execution, every task's non-unresolved receipt and confirmed cleanup of all admitted
 attempts. These rules also apply after cancellation and process failure.
+

@@ -39,3 +39,9 @@ the same strict tool schemas; SDK-client tests verify the exact forwarded inputs
 This branch forms one ordered PR in the full-release review stack requested by the
 user. Implemented and tested behavior does not grant merge, deployment or ADR
 approval authority.
+
+The coordinator follow-up adds strict plan/profile discovery and proposal tools,
+with no human execution-authority tools. SDK-client tests cover preserved pins,
+optional empty arrays, empty command arguments, unchanged retry keys, nested scope
+injection denial and absent authorization tools. Signed shared MCP-to-browser
+acceptance proves an agent proposal is visible to a human and cannot self-authorize.

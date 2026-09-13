@@ -120,7 +120,7 @@ func TestToolsStrictSchemasAndExactMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 18 || list.CacheScope != "private" || list.TTLMs != 0 {
+	if len(list.Tools) != 23 || list.CacheScope != "private" || list.TTLMs != 0 {
 		t.Fatalf("tool catalog: %d %+v", len(list.Tools), list.Cacheable)
 	}
 	for _, tool := range list.Tools {
@@ -164,7 +164,7 @@ func TestResourcesAreScopedEscapedAndFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resources.Resources) != 4 || resources.CacheScope != "private" {
+	if len(resources.Resources) != 5 || resources.CacheScope != "private" {
 		t.Fatalf("resource catalog: %+v", resources)
 	}
 	result, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: bridge.baseURI + "/packages/package-1"})

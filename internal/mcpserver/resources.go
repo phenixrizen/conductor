@@ -46,6 +46,10 @@ func (b *Bridge) readResource(ctx context.Context, request *mcp.ReadResourceRequ
 	var data any
 	var err error
 	switch {
+	case len(parts) == 1 && parts[0] == "runs":
+		data, err = b.api.ListCoordinations(ctx, "", 20)
+	case len(parts) == 2 && parts[0] == "runs":
+		data, err = b.api.GetCoordination(ctx, parts[1])
 	case len(parts) == 1 && parts[0] == "access":
 		data, err = b.access(ctx)
 	case len(parts) == 1 && parts[0] == "packages":

@@ -80,3 +80,10 @@ Collection requests accept an explicit optional `fullSource` flag. Graph selecto
 accept an optional inspected `fullSourceDigest`. The bridge preserves these fields
 and the exact idempotency key without fetching replacement source during mutation;
 whole-source availability and index gaps remain separate from verification.
+
+Coordinated work tools inspect the enabled public profile catalog and current
+capability facts, propose exact bounded task DAGs, and read shared plans/receipts.
+The bridge never exposes execution authorization or run cancellation, even when a
+host uses a human token. Proposals retain their exact input/key for explicit retry;
+source/package/profile pin validation and all-repository authorization remain in
+the domain/service transaction. Run resources use the existing fixed scope.

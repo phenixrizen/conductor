@@ -124,6 +124,10 @@ packages to mirror the target diagram.
 
 ## Shared context and history
 
+- Plan imports reject duplicate/unknown command fields and require a structured
+  preview. Browser execution decisions use the displayed run digest without a
+  refresh. Uncertain decisions require renewed inspection. MCP may propose/read
+  runs but must not expose human execution authorization or run cancellation.
 - Coordinated plans bind exact package, graph and source revisions. Human execution
   permission is provisioned separately from design approval. Check it on every
   included repository in the admission transaction; agents cannot authorize runs.
