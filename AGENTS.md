@@ -37,6 +37,10 @@ Read these before changing behavior:
     `docs/architecture/durable-context.md`, `docs/operations/durable-context.md`, and ADR 0003 (still Proposed). The selected collection
     policy requires author permission plus an operator-enabled repository read
     integration; it does not grant coding or publication authority.
+13. For coordinated coding and verification, read features 009, 010 and 018,
+    `docs/architecture/coordinated-execution.md`, and
+    `docs/operations/verification-criteria.md`. For the complete deployment surface,
+    use the documentation map and `docs/operations/release.md`.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -130,6 +134,16 @@ packages to mirror the target diagram.
 
 ## Shared context and history
 
+- Optional `verificationCriteria` is author-supplied package content. Check links
+  bind exact package/revision/digest/criterion IDs and must match the selected
+  task's packages. Preserve omitted-field serialization and every legacy digest.
+  Validate links during admission, execution, receipt commit and publication.
+- Criterion support is derived outside the immutable artifact JSON. Validate the
+  selected task and exact linked check evidence before displaying `supported`;
+  missing, failed, truncated, unexecuted or unlinked evidence is `not_verified`.
+  Historical support names its original revision and never verifies all business
+  requirements or grants approval, execution, publication or production authority.
+
 - Plan imports reject duplicate/unknown command fields and require a structured
   preview. Browser execution decisions use the displayed run digest without a
   refresh. Uncertain decisions require renewed inspection. MCP may propose/read
@@ -222,6 +236,11 @@ packages to mirror the target diagram.
   never start a second producer. Load full bundles and maximal predecessor patches
   under the recorded human's current all-repository grants and inspected pins.
   A public profile ID alone is insufficient: bind its digest and immutable image.
+- Bound an original attempt from before admission I/O through final authorization,
+  credential reads and Docker execution. A delayed response cannot grant a new
+  execution window after recovery is eligible. Preserve incomplete provider streams
+  as transport failures and recover committed publication receipts before retrying
+  provider calls after unknown database acknowledgments.
 - Release write claims only after observed terminal Temporal execution, every
   task's non-unresolved receipt and confirmed cleanup of all admitted attempts.
   A receipt by itself does not prove an unknown workflow stopped. Source, prompts,

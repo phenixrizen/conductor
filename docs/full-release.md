@@ -35,7 +35,7 @@ source fixtures do not establish live service compatibility.
 | MCP | Actual SDK stdio clients discover/read/author scoped work, graph/run/artifact/delivery/tracker/runtime context; exact inputs and agent authority enforced | Host configuration documented separately |
 | Coordinated agents | Immutable DAG plans, source/profile/image pins, exact human execution authority, concurrency, write claims, cumulative patches, cancellation and restart reconciliation; actual compiled executor/Temporal/Docker gate passes | Paid model inference unverified |
 | Coding adapters | Pinned Codex/Claude producers, isolated source/check containers and restricted credential gateway; native CLI startup/protocol and offline command execution tested | Live paid inference unverified |
-| Verification | Retained exact producer/check output and patch byte digests; complete failed/read-only artifacts remain inspectable; source and unexecuted/missing/failed checks stay distinct | Evidence proves its declared checks only |
+| Verification | Exact approved criterion links survive admission, independent Docker checks, receipt retention, publication and MCP/browser/terminal review; derived supported/not_verified coverage preserves historical artifact digests; full release gate verifies linked and unlinked criteria | Evidence proves its declared checks only |
 | Delivery | Trusted GitHub/GitLab draft publication and check/merge/deployment observations; actual Git result trees and HTTP adapters reconcile lost writes without duplicate drafts | Live SaaS write accounts and application deployment unverified |
 | Work tracking | Linear/Jira adapters, one selected per workspace, exact package/publication-receipt links, field ownership, conflict resolution and lost-write recovery; both provider choices pass complete acceptance | Existing tickets only; live SaaS write qualification unverified |
 | Specifications and decisions | Spec Kit 1.0.6 and ADRKit CLI 0.13.0 native commands in an immutable isolated image; actual scaffold/template/prerequisite and Proposed ADR/lint/applicability/graph verification | Broad agentic prompt/extension compatibility is not claimed |
@@ -87,10 +87,14 @@ this keeps its own diff reviewable. Do not skip prerequisites.
 | 11 | [#25](https://github.com/phenixrizen/conductor/pull/25) | Native Spec Kit and ADRKit commands |
 | 12 | [#26](https://github.com/phenixrizen/conductor/pull/26) | Scoped runtime evidence across all clients |
 | 13 | [#27](https://github.com/phenixrizen/conductor/pull/27) | Shared verified Temporal TLS/mTLS |
+| 14 | [#28](https://github.com/phenixrizen/conductor/pull/28) | Reproducible releases, database recovery and private diagnostics |
+| 15 | [#29](https://github.com/phenixrizen/conductor/pull/29) | Actual Keycloak HTTPS sign-in qualification |
+| 16 | [#30](https://github.com/phenixrizen/conductor/pull/30) | Complete cross-repository acceptance and safe activity retries |
+| 17 | [#31](https://github.com/phenixrizen/conductor/pull/31) | Accessible browser workflow navigation and exact retry retention |
+| 18 | [#32](https://github.com/phenixrizen/conductor/pull/32) | Attempt deadlines, streaming failure and publication receipt recovery |
 
-Operations, real identity qualification, complete acceptance and final interface
-work are integrated locally and are being published after checks on their exact
-review branches. Their PR links will be appended here in dependency order.
+Criterion-linked verification and the final release guide are integrated locally.
+Final combined checks and hosted CI are running before those PRs are published.
 
 ## Completion evidence
 

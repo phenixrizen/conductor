@@ -18,6 +18,7 @@ not mistaken for working capabilities.
 | [Repository graph](architecture/repository-graph.md) | Immutable shared graphs, all-source permission checks, and explicit coverage |
 | [Graph setup](operations/repository-graph.md) | Build the pinned CodeGraph image and query shared repository relationships |
 | [CodeGraph research](architecture/codegraph-integration-research.md) | Selected upstream, tested Rust extraction, and version-specific adapter limits |
+| [Verification criteria](operations/verification-criteria.md) | Exact approved criterion links, independent check evidence and explicit unverified coverage |
 | [Coding workers](operations/coding-workers.md) | Isolated producers, cumulative patches, independent checks, and credential boundaries |
 | [Coordinated execution](architecture/coordinated-execution.md) | Shared plans, exact human authorization, path claims, and Temporal sequencing |
 | [Browser navigation](operations/browser-navigation.md) | Six focused workflows, keyboard/mobile controls and permission-free role guidance |

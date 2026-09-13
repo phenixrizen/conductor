@@ -28,7 +28,7 @@ each capability to its specification, setup and tested limits.
 | Repository context | Capture selected files or bounded whole-repository source at an exact Git commit; share receipts and expose missing, stale or unavailable source |
 | Cross-repository understanding | Build shared dependency and symbol graphs with the selected CodeGraph Rust extractor; read exact retained source from related authorized repositories |
 | Coordinated agents | Propose dependent tasks, inspect source/design/profile pins, obtain separate human execution authorization, run independent work concurrently, and recover interrupted work |
-| Implementation evidence | Inspect complete retained patches, producer reports and independent check output, including failed tasks and read-only design reports |
+| Implementation evidence | Inspect complete retained patches and reports; link independent checks to exact approved criteria and see supported, unlinked or unverified evidence, including failed tasks |
 | GitHub and GitLab delivery | Authorize an exact artifact for a new draft PR/MR; reconcile uncertain publication and retain provider check, merge and deployment observations |
 | Work tracking | Select one tracker per workspace, Linear or Jira; link existing tickets to package revisions and publication receipts, synchronize planning context and resolve conflicting Conductor-owned links |
 | Specifications and decisions | Run pinned Spec Kit scaffold/template/prerequisite commands and ADRKit Proposed-ADR, lint, applicability and graph commands inside isolated workers |
@@ -117,6 +117,7 @@ Enable the integrations you need using separate operator-owned configuration:
 - [Repository delivery](docs/operations/repository-delivery.md): configure trusted GitHub/GitLab publication and provider observations.
 - [Linear or Jira](docs/operations/work-tracking.md): select one tracker and define synchronization ownership and status mappings.
 - [Runtime evidence](docs/operations/runtime-evidence.md): bind Groundcover collection to allowed services, metrics and approved requirement criteria.
+- [Verification criteria](docs/operations/verification-criteria.md): link independent checks to the exact approved requirements they support.
 - [Release terminal](docs/operations/release-terminal.md): inspect and act through the CLI or authenticated interactive terminal.
 
 For shared operation, use the [release runbook](docs/operations/release.md) and
