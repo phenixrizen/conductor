@@ -173,11 +173,20 @@ def main():
 
     def refresh(terminal, identity, digest=None):
         since = len(proxy.snapshot())
-        start = len(terminal.output)
         terminal.send("r")
+        terminal.wait(lambda: len(proxy.snapshot()[since:]) >= 3
+                      and all(item["status"] is not None for item in proxy.snapshot()[since:]),
+                      "authenticated refresh did not complete its three reads")
+        # A fast refresh can finish between renderer ticks and leave the exact
+        # same view. Bubble Tea correctly suppresses that redundant frame. Force
+        # a complete render so the assertions inspect the current model without
+        # depending on a transient loading frame or matching old screen history.
+        start = len(terminal.output)
+        terminal.resize(121, 46)
         terminal.wait_text("Loaded latest revision" if digest else "Shared work loaded", start)
         if digest:
             terminal.wait_text(digest, start)
+        terminal.resize(120, 45)
         terminal.settle()
         requests = proxy.snapshot()[since:]
         assert [item["path"] for item in requests[:2]] == ["/api/v1/session", "/api/v1/repositories"], requests
