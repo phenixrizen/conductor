@@ -120,7 +120,7 @@ func TestToolsStrictSchemasAndExactMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 14 || list.CacheScope != "private" || list.TTLMs != 0 {
+	if len(list.Tools) != 18 || list.CacheScope != "private" || list.TTLMs != 0 {
 		t.Fatalf("tool catalog: %d %+v", len(list.Tools), list.Cacheable)
 	}
 	for _, tool := range list.Tools {
@@ -164,7 +164,7 @@ func TestResourcesAreScopedEscapedAndFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resources.Resources) != 3 || resources.CacheScope != "private" {
+	if len(resources.Resources) != 4 || resources.CacheScope != "private" {
 		t.Fatalf("resource catalog: %+v", resources)
 	}
 	result, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: bridge.baseURI + "/packages/package-1"})
@@ -240,5 +240,57 @@ func TestCollectionUsesCapturedIdempotencyKeyAndNormalizesPaths(t *testing.T) {
 	}
 	if len(writes) != 2 || !reflect.DeepEqual(writes[0], writes[1]) || writes[0].Key != "same-key" || !reflect.DeepEqual(writes[0].Body["paths"], []any{"a.md", "z.md"}) {
 		t.Fatalf("retry changed input: %+v", writes)
+	}
+}
+
+func TestGraphToolsPreserveSourceTuplesAndQueryBounds(t *testing.T) {
+	bridge, session, f := newTestBridge(t)
+	graphID := strings.Repeat("a", 32)
+	receiptID := strings.Repeat("b", 32)
+	digest := strings.Repeat("c", 64)
+	args := map[string]any{"idempotencyKey": "graph-retry-key", "sources": []any{
+		map[string]any{"repositoryId": "z-library", "collectionId": receiptID, "digest": digest},
+		map[string]any{"repositoryId": "application", "collectionId": receiptID, "digest": digest},
+	}}
+	f.mu.Lock()
+	before := len(f.requests)
+	f.mu.Unlock()
+	if result := call(t, session, "conductor_create_graph", args); result.IsError {
+		t.Fatalf("create graph: %+v", result)
+	}
+	f.mu.Lock()
+	requests := append([]observedRequest(nil), f.requests[before:]...)
+	f.mu.Unlock()
+	if len(requests) != 1 || requests[0].Method != "POST" || requests[0].Path != "/api/v1/repository-graphs" || requests[0].Key != "graph-retry-key" {
+		t.Fatalf("graph command refreshed or changed key: %+v", requests)
+	}
+	sources := requests[0].Body["sources"].([]any)
+	if sources[0].(map[string]any)["repositoryId"] != "application" || sources[1].(map[string]any)["digest"] != digest {
+		t.Fatalf("graph source tuple changed: %+v", sources)
+	}
+	if result := call(t, session, "conductor_query_graph", map[string]any{"id": graphID, "search": "call", "depth": 5, "limit": 3}); result.IsError {
+		t.Fatalf("query graph: %+v", result)
+	}
+	f.mu.Lock()
+	query := f.requests[len(f.requests)-1]
+	before = len(f.requests)
+	f.mu.Unlock()
+	if query.Method != "GET" || query.Path != "/api/v1/repository-graphs/"+graphID+"/query" || query.Query != "depth=5&limit=3&search=call" {
+		t.Fatalf("wrong graph query: %+v", query)
+	}
+	for _, args := range []map[string]any{
+		{"id": graphID, "search": "call", "nodeId": digest}, {"id": graphID, "depth": 6}, {"id": graphID, "limit": 101}, {"id": graphID, "workspaceId": "other"},
+	} {
+		if result := call(t, session, "conductor_query_graph", args); !result.IsError {
+			t.Fatal("invalid graph query accepted")
+		}
+	}
+	f.mu.Lock()
+	if len(f.requests) != before {
+		t.Error("invalid graph input reached API")
+	}
+	f.mu.Unlock()
+	if _, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: bridge.baseURI + "/graphs/" + graphID}); err != nil {
+		t.Fatal(err)
 	}
 }

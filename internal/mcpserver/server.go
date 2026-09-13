@@ -43,6 +43,10 @@ type API interface {
 	CreateCollection(context.Context, string, domain.CollectionInput) (domain.Collection, error)
 	CancelCollection(context.Context, string) (domain.Collection, error)
 	AttachCollection(context.Context, string, int64, string, string) (domain.Package, error)
+	CreateRepositoryGraph(context.Context, string, domain.GraphInput) (domain.RepositoryGraph, error)
+	GetRepositoryGraph(context.Context, string) (domain.RepositoryGraph, error)
+	ListRepositoryGraphs(context.Context, string, int) (domain.RepositoryGraphPage, error)
+	QueryRepositoryGraph(context.Context, string, domain.GraphQuery) (domain.GraphQueryResult, error)
 }
 
 type Bridge struct {
@@ -67,6 +71,7 @@ func New(api API) (*Bridge, error) {
 	})
 	b.registerTools()
 	b.registerResources()
+	b.registerGraphs()
 	b.server.AddReceivingMiddleware(b.middleware)
 	return b, nil
 }
@@ -202,7 +207,7 @@ func publicError(err error, mutation bool) error {
 		return errors.New("invalid_input: arguments do not match the bounded tool schema")
 	}
 	if mutation {
-		return errors.New("outcome_unknown: the command may have committed; do not automatically retry; inspect retained facts, or explicitly retry a collection request with exactly the same key and input")
+		return errors.New("outcome_unknown: the command may have committed; do not automatically retry; inspect retained facts, or explicitly retry a keyed collection or graph request with exactly the same key and input")
 	}
 	return errors.New("unavailable: Conductor could not provide the requested data; no passing evidence was established")
 }
