@@ -1,13 +1,16 @@
 # Durable repository context
 
-**Status: Proposed.** Conductor currently imports bounded text from local Git into
-immutable package revisions. This document defines the next shared background
-workflow. No Temporal or remote repository adapter is implemented by this design.
+**Status: Partial.** The API/CLI, shared immutable receipts, explicit attachment,
+bounded GitHub/GitLab reads and local Temporal workflow are implemented. Local Git
+snapshot behavior is retained. Browser/TUI collection controls, live provider
+compatibility and production deployment remain later work. ADR 0003 remains Proposed.
 The [feature specification](../../specs/006-durable-context/spec.md) records the
 selected permission: repository authors may collect after an operator enables
 the repository read integration.
 The [integration research](context-integration-research.md) records inspected
-Temporal and provider source versions and their untested limitations.
+Temporal and provider source versions, exercised protocol boundaries and live-service limits.
+The [operations guide](../operations/durable-context.md) gives runnable setup,
+finite limits and acceptance commands.
 
 ## Why collection comes first
 
@@ -35,15 +38,15 @@ sequenceDiagram
     Client->>API: Repository, full commit, paths, idempotency key
     API->>DB: Authorize and commit request, audit, start intent
     API-->>Client: Persisted request ID
-    Dispatch->>DB: Claim bounded dispatch lease
+    Dispatch->>DB: Claim lease and persist actual runtime identity
     Dispatch->>Temporal: Start deterministic workflow ID
     Dispatch->>DB: Record observed workflow/run identity
-    Temporal->>Activity: Collection ID only
+    Temporal->>Activity: Collection ID and opaque request binding
     Activity->>DB: Load immutable input and recheck access
     Activity->>Provider: Bounded read at exact commit
     Provider-->>Activity: Tree/blob evidence or explicit gap
     Activity->>DB: Recheck access; commit immutable receipt
-    Activity-->>Temporal: Receipt ID/digest and coverage summary
+    Activity-->>Temporal: Receipt ID and digest only
     Client->>API: Inspect shared collection
     API->>DB: Authorize and read receipt/progress observations
     API-->>Client: Text, gaps, and observed progress
@@ -98,13 +101,24 @@ its acknowledgment was lost before later cancellation or revocation. Public read
 permission protects historical source. A failed final permission check discards
 newly fetched text.
 
+The first dispatch records the actual Temporal cluster and namespace identity,
+address and queue as an immutable binding. Each execution RPC checks that target;
+a new server behind the same address cannot silently replace retained history.
+A known missing run becomes unresolved; an unknown start is reconciled for at most
+one hour against a namespace with at least 24 hours of retention. Manual deletion
+inside that window is indistinguishable from a start that never arrived. Retain
+history and investigate known deletion instead of resetting/recreating executions.
+Unresolved observations are sticky; administrative repair is not implemented.
+
 ## Provenance and coverage
 
-The existing `conductor-git/v1` snapshot remains unchanged. A new remote
-representation must identify its provider, canonical repository, exact commit,
+The existing `conductor-git/v1` snapshot remains unchanged. Version 2 uses
+`conductor-remote/v1` and identifies its provider, canonical repository, exact commit,
 collector/profile version, request/receipt identity, and content digest explicitly.
 Clients cannot authenticate provenance merely by writing a familiar receipt ID in
-JSON; the service must resolve a matching immutable record under current scope.
+JSON; the service resolves a matching immutable record under current scope and
+compares the entire snapshot JSON. Unverified version 2 extensions are rejected;
+unknown outer package fields and version 1 extensions remain intact.
 Attachment requires the same workspace and Conductor repository ID, even when
 another workspace has registered the same external repository.
 
@@ -121,8 +135,9 @@ requires its own review.
 
 ## Delivery limits
 
-The first interface is the API and CLI. Browser/terminal collection follows the
-same commands. Both GitHub and GitLab are required, with separately reported read
+The first interface is the API and CLI. Browser/terminal collection controls will
+follow the same commands. Current web inspection warns on version 2 and shows the
+complete JSON; terminal inspection shows escaped JSON. Both GitHub and GitLab are required, with separately reported read
 profiles and live test evidence. Their remote publication, checks, and webhook
 capabilities remain later work, as described in the [provider plan](repository-providers.md).
 See the [delivery plan](../../specs/006-durable-context/plan.md) for implementation

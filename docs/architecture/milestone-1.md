@@ -20,6 +20,15 @@ shared review. [Feature 005](../../specs/005-authenticated-terminal/spec.md) add
 authenticated terminal review with a fixed credential and scope, server-provided
 capabilities, and explicit recovery after access failure.
 
+[Feature 006](../../specs/006-durable-context/spec.md) adds an opt-in remote context
+collection workflow to the API and CLI. Its implementation includes scoped requests,
+PostgreSQL outbox delivery, a local Temporal worker, bounded GitHub/GitLab reads,
+immutable receipts, and explicit attachment as a new package revision. Targeted
+tests cover the permission and receipt boundaries; controlled provider fixtures
+do not establish live provider compatibility or production readiness. See the
+[context architecture](durable-context.md) and [runbook](../operations/durable-context.md)
+for deployment limits and separate runtime acceptance.
+
 ## Domain model
 
 ```mermaid
@@ -156,10 +165,11 @@ unrelated changes remain independent.
 | Revise | `conductor revise` | `POST /api/v1/changes/{id}/revisions` | Expected revision |
 | Submit | `conductor submit` | `POST /api/v1/changes/{id}/review-requests` | Inspected revision |
 | Approve | `conductor approve` | `POST /api/v1/changes/{id}/approvals` | Inspected revision and digest |
+| Attach collected context | `conductor context-attach` | `POST /api/v1/changes/{id}/context-attachments` | Inspected package revision, collection ID, and receipt digest |
 
 The exact payload contract is maintained in `api/openapi.yaml`.
-The [terminal workbench](../operations/terminal-review.md) invokes these same Go
-client commands with the revision displayed before confirmation. Conflicts and
+The [terminal workbench](../operations/terminal-review.md) invokes the shared Go
+review commands with the revision displayed before confirmation. Conflicts and
 uncertain mutation outcomes block further writes until explicit inspection.
 
 ## Invariants
@@ -177,6 +187,12 @@ uncertain mutation outcomes block further writes until explicit inspection.
 11. Authenticated ownership is immutable; content labels do not change access.
 12. Agent principals cannot approve, even with a configured approval grant.
 13. Permission checks and consequential review writes share one transaction.
+14. Remote context attachment resolves an immutable receipt under the same canonical
+    workspace/repository and creates a new draft revision. It never refreshes source
+    or carries an approval forward.
+15. Version 1 context snapshots keep their original content and digest, including
+    unknown extensions. Version 2 trusted linkage requires the complete stored
+    snapshot; a client-supplied receipt ID alone establishes no provenance.
 
 ## Known limitations
 
@@ -187,13 +203,20 @@ uncertain mutation outcomes block further writes until explicit inspection.
   Synthetic issuer tests do not establish compatibility with a real identity vendor;
   browser login uses separately validated ID tokens and protected server sessions.
   The CLI and terminal do not acquire or refresh API access tokens.
-- No Temporal workflow, assistant, GitHub/GitLab delivery, Linear/Jira, or runtime adapter
-  runs. Local Git context collection is available as described in Feature 002.
+- Remote context collection requires OIDC mode, explicit server enablement, an
+  operator-enabled repository integration, and author permission. The worker's
+  Temporal connection supports the documented local deployment profile only.
+  Assistant execution, GitHub/GitLab publication, and Linear/Jira synchronization
+  remain planned. Local Git collection remains available through Feature 002.
+- Collection controls are available through the API/CLI. The web inspector warns
+  that structured version 2 context is unsupported and shows the complete package
+  JSON; the TUI displays escaped JSON. Neither provides a collection workbench yet.
 - Shared discovery, historical revision inspection, and audit-query endpoints are
   available; see [Feature 002](../../specs/002-context-history/spec.md).
 - Process-restart acceptance proves persistence across completed commands and
   process restarts. It does not prove power-loss durability, high availability,
-  point-in-time recovery, or recovery of future external workflows.
+  point-in-time recovery, or remote workflow recovery. Feature 006 has separate
+  opt-in Temporal recovery checks with owned temporary resources.
 - The schema currently rejects duplicate content within a change; unchanged edits
   and exact content reverts need an explicit domain policy and error contract.
 - The terminal workbench supports current-package review. Historical inspection

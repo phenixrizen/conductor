@@ -20,7 +20,9 @@ the [repository provider plan](repository-providers.md) for scope and boundaries
 > **Status:** Durable review and authenticated workspace access through the API,
 > CLI, browser, and interactive terminal are implemented. The browser uses OIDC
 > sign-in; CLI and terminal credentials come from an explicitly selected token.
-> MCP, execution, delivery adapters, and components with dashed borders are planned.
+> API/CLI background context collection is partial, using bounded provider reads
+> and a trusted local Temporal worker. MCP, coding execution, delivery adapters,
+> and components with dashed borders are planned.
 > Identity-provider compatibility has not been established beyond synthetic tests.
 
 ```mermaid
@@ -85,25 +87,28 @@ flowchart TB
     Access[Verified identity and repository permissions]
     Domain[Domain service and approval policy]
     Store[(PostgreSQL review and authorization records)]
-    Temporal[Temporal workflows]
+    Dispatch[Durable context outbox]
+    Temporal[Temporal context workflow]
+    Reads[Bounded GitHub / GitLab reads]
     Artifacts[(S3-compatible artifact storage)]
     Integrations[GitHub / GitLab / Linear or Jira / context / assistants]
 
     UI --> Client --> HTTP --> Access --> Domain --> Store
-    Domain -. Milestone 2+ .-> Temporal
+    Store --> Dispatch --> Temporal --> Reads
+    Reads --> Store
     Domain -. Milestone 2+ .-> Artifacts
-    Temporal -. Milestone 2+ .-> Integrations
+    Temporal -. Later coding and tracking .-> Integrations
 
     classDef planned stroke-dasharray: 6 4,fill:#f7f7f7,color:#555;
-    class Temporal,Artifacts,Integrations planned;
+    class Artifacts,Integrations planned;
 ```
 
 All interfaces invoke the same domain command path. The authenticated service
 wraps those commands in a transaction that resolves the principal, checks workspace
 membership and repository capabilities, and holds permissions through command
-commit. PostgreSQL owns review state and authorization metadata. Temporal will
-eventually own execution sequencing; a database projection of run progress must not
-become a second workflow authority.
+commit. PostgreSQL owns review state, authorization metadata and immutable context
+receipts. Temporal owns background context sequencing; its timestamped database
+observations do not become a second workflow authority. Other execution remains planned.
 
 ## Trust boundaries
 
@@ -151,7 +156,8 @@ Interactive CLI token acquisition and compatibility validation against real iden
 providers remain pending.
 Configuration and transport requirements are in the
 [authenticated review guide](../operations/authenticated-review.md). Future workers
-do not receive publication credentials. No execution or delivery integration runs.
+do not receive publication credentials. The context worker only reads selected
+provider objects. Coding execution and delivery integrations remain unavailable.
 
 ## State ownership
 
@@ -159,7 +165,8 @@ do not receive publication credentials. No execution or delivery integration run
 |---|---|---|
 | Package revisions, submissions, approvals, audit events | PostgreSQL | Implemented for local and authenticated review |
 | Principals, workspace membership, canonical repository ownership, access grants | PostgreSQL | Implemented; operator-provisioned and audited |
-| Workflow sequencing, waits, retries, cancellation | Temporal | Planned |
+| Context requests, immutable receipts and dispatch bindings | PostgreSQL | Implemented for API/CLI collection |
+| Workflow sequencing, retries, cancellation | Temporal | Partial: bounded context collection, trusted local deployment |
 | Immutable large artifacts | S3-compatible storage | Planned |
 | Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |
 | Priority, assignment, and ticket planning workflow where configured | Selected Linear or Jira tracker | Planned |
@@ -181,16 +188,17 @@ flowchart LR
 
     classDef active fill:#e8f1ec,stroke:#244c3f,stroke-width:2px;
     classDef planned fill:#f7f7f7,stroke:#777,stroke-dasharray:6 4;
-    class M1,Access,Browser,Terminal active;
-    class M2,M3,M4,M5,M6 planned;
+    class M1,Access,Browser,Terminal,M2 active;
+    class M3,M4,M5,M6 planned;
 ```
 
-Authenticated review is implemented across these interfaces. The proposed next
-increment is [durable context collection](durable-context.md): selected files from
-an exact managed-repository commit, a shared immutable receipt, and explicit
-attachment to a package. It defines outbox, reconciliation, cancellation, and
-revocation boundaries before introducing Temporal or external adapters. Collection
-permission requires author access plus operator enablement. Agent execution remains disabled
+Authenticated review is implemented across these interfaces.
+[Durable context collection](durable-context.md) is partial: the API/CLI supports
+selected files from an exact managed-repository commit, a shared immutable receipt,
+and explicit attachment. The PostgreSQL outbox and local Temporal worker enforce
+reconciliation, cancellation and revocation boundaries. Live provider compatibility,
+production operations and browser/TUI collection controls remain later work.
+Collection permission requires author access plus operator enablement. Agent execution remains disabled
 pending its own verified identity, authorization, durable recovery, context, and
 execution boundaries. Review access alone does not authorize execution.
 

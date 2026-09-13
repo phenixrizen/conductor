@@ -24,8 +24,9 @@ avoids building three divergent state machines in the API, TUI, and web client.
 - Revision content is canonical JSON, not a server-generated Markdown rendering.
 - Submission is recorded per revision, keeping package review state independent
   from future execution runs.
-- The first slice has one Go module and one web package. Temporal and outbox delivery
-  begin only when an external workflow operation exists in Milestone 2.
+- The first slice has one Go module and one web package. Feature 006 introduces
+  Temporal and outbox delivery for the first bounded remote context operation;
+  review itself remains a PostgreSQL command workflow.
 - Shared access requires verified identity and repository authorization. Feature
   003 supplies these for API/CLI review; the local identity header confers no shared
   rights. Feature 004 adds browser login; Feature 005 adds authenticated terminal
@@ -52,11 +53,23 @@ terminal review with a fixed identity and scope, capability discovery, and expli
 recovery. The local revision-pinned context collector remains available independently
 of those login flows.
 
-Introduce the durable workflow outbox when the first external workflow operation
-exists. Execution remains disabled until identity, authorization, context evidence,
-and durable recovery meet their exit criteria.
+[Feature 006](../006-durable-context/spec.md) now has an implementation for that
+first remote operation: author-requested context collection from an operator-enabled
+GitHub or GitLab repository, immutable shared receipts, and explicit attachment to
+an inspected package revision. The API/CLI request boundary, PostgreSQL outbox, and
+local Temporal worker preserve review authority separately from execution progress.
+Collection controls are opt-in; the web's structured version 2 context display and
+interactive collection controls remain unimplemented. Targeted signed-issuer and
+PostgreSQL checks exercise scope, revocation, receipt integrity, and attachment.
+Controlled provider fixtures do not prove live provider compatibility. Full runtime
+acceptance and operational limits are tracked in the
+[durable context plan](../006-durable-context/plan.md) and
+[runbook](../../docs/operations/durable-context.md).
+
 Managed repository delivery must support both GitHub and GitLab through the same
-domain workflow; remote discovery and publication adapters remain planned. See the
+domain workflow. The current read adapters fetch explicit paths at a pinned commit;
+repository discovery, publication, draft PR/MR creation, and delivery reconciliation
+remain planned. See the
 [repository provider plan](../../docs/architecture/repository-providers.md).
 Each workspace will select either Linear or Jira as its single work tracker, with
 explicit field/status ownership when synchronizing Conductor and linked repository
@@ -67,8 +80,8 @@ work. See the [work-tracking plan](../../docs/architecture/work-tracking.md).
 The [AI-DLC inspiration and plan review](../../docs/architecture/aidlc-plan-review.md)
 proposes Milestone 1 closure, authenticated review with history and pinned
 context/evidence, then one durable execution workflow. Authenticated review is now
-implemented across the API, CLI, browser, and terminal; the external execution
-sequence remains a proposal.
+implemented across the API, CLI, browser, and terminal. The first bounded context
+workflow has an implementation; the wider execution sequence remains a proposal.
 It also reviews human perspectives, stage contracts, verification, recovery, and
 knowledge reuse alongside the planned Spec Kit and ADRKit integrations. These are
 proposals for architectural review; they do not grant approval or enable execution.

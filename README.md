@@ -24,6 +24,8 @@ for the new revision.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
 - Capture selected specification, ADR, and other text files from one Git commit,
   with their original content, source IDs, and explicit collection gaps.
+- Collect selected files from exact GitHub/GitLab commits in the background through
+  the API/CLI, share immutable results, and explicitly attach inspected context.
 - Check whether a local repository ref still matches the captured commit.
 - Review through architect, QC, developer, or product perspectives. These tailor
   questions and do not grant permissions.
@@ -33,8 +35,8 @@ for the new revision.
 Developers and agent clients using the **same API and database share the same saved
 context**, subject to their workspace and repository permissions. Work belongs to
 the service, not an individual browser or conversation. Agent identities can read
-and author permitted work; they cannot grant design approval. Live presence and
-execution tracking are not implemented yet.
+and author permitted work; they cannot grant design approval. Background context requests have shared execution observations. Live presence and
+coding-agent execution are not implemented yet.
 
 Authenticated review supports the browser, API, CLI, and terminal workbench. An operator
 configures the OpenID Connect issuer and provisions access. The browser signs people
@@ -55,7 +57,9 @@ not proof that tests passed or a decision was approved.
 **GitHub and GitLab** repositories can be registered for governed review. Their
 remote delivery adapters are planned: pull requests and merge requests will follow
 the same Conductor approval and evidence rules. The local Git collector works with a checkout from either
-provider; remote discovery, publication, and checks adapters are still pending.
+provider. Bounded remote reads are available for GitHub.com and GitLab.com;
+repository discovery, publication, and checks adapters are still pending. The read
+profiles have controlled provider tests; live provider compatibility remains unverified.
 
 Each workspace will choose **one work tracker: Linear or Jira**. Conductor will
 link tickets to related packages, changes across GitHub/GitLab repositories, and
@@ -130,13 +134,18 @@ configuration, troubleshooting, and database lifecycle.
 - **PostgreSQL:** shared package revisions, approvals, workspace membership,
   repository permissions, and audit history.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
+- **Temporal Go SDK 1.44.1:** background context sequencing, retries and cancellation;
+  the first worker uses a trusted local Temporal server.
 
 The current implementation focuses on durable review, shared context, and
-controlled team access. The proposed next workflow collects selected files from an
-exact GitHub or GitLab commit and keeps a shared result that survives restarts.
-Its permission and recovery contract is described in
-[durable repository context](docs/architecture/durable-context.md). This workflow,
-Temporal execution, and external adapters are not implemented yet. See the
+controlled team access. Background context collection requires an operator-enabled
+repository read integration and current author permission. A separate worker uses
+Temporal to collect an exact commit; PostgreSQL keeps the shared result. It never
+runs repository commands or edits a package automatically. See the
+[background context setup](docs/operations/durable-context.md) for credentials,
+commands, recovery and limits. The first deployment profile uses a local development
+Temporal server; browser/TUI collection controls and production operation remain
+later work. See the
 [system architecture](docs/architecture/system.md) and
 [shared-context model](docs/architecture/collaboration.md) for those boundaries.
 The [repository provider plan](docs/architecture/repository-providers.md) describes
@@ -156,6 +165,10 @@ npm --prefix apps/web run build
 Set `CONDUCTOR_TEST_DATABASE_URL` to a test database to run the real PostgreSQL and
 shared-client acceptance tests. Otherwise these tests explicitly skip. They create
 and remove isolated schemas; no existing application data is reset.
+
+Set `CONDUCTOR_TEST_TEMPORAL=1` alongside that database URL to run owned Temporal
+process recovery and durable collection acceptance. Install the pinned CLI first;
+see the [background context guide](docs/operations/durable-context.md).
 
 Set `CONDUCTOR_TEST_TERMINAL=1` alongside that database URL to exercise authenticated
 review in a real terminal, using a signed synthetic issuer and the compiled CLI.
@@ -178,6 +191,7 @@ invariants, and update documentation alongside behavior.
 - [Authenticated workspace specification](specs/003-workspace-access/spec.md)
 - [Browser sign-in specification](specs/004-browser-sign-in/spec.md)
 - [Authenticated terminal specification](specs/005-authenticated-terminal/spec.md)
+- [Durable context specification](specs/006-durable-context/spec.md)
 - [OpenAPI contract](api/openapi.yaml)
 - [AI-DLC inspiration and plan review](docs/architecture/aidlc-plan-review.md)
 - [Proposed architectural decisions](docs/adr/)

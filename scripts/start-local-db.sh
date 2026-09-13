@@ -30,4 +30,9 @@ if [[ "$browser_schema" != t ]]; then
   echo "Existing database needs migration 003 for browser sessions. Follow docs/operations/browser-sign-in.md; existing history is retained." >&2
   exit 1
 fi
+context_schema="$(docker exec "$container_id" psql -U conductor -d conductor -Atc "SELECT to_regclass('public.context_runtime_bindings') IS NOT NULL")"
+if [[ "$context_schema" != t ]]; then
+  echo "Existing database needs migration 004 for background context collection. Follow docs/operations/durable-context.md; existing history is retained." >&2
+  exit 1
+fi
 echo "PostgreSQL is ready on 127.0.0.1:5432. Existing local data is retained."

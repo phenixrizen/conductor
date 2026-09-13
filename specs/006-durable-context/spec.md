@@ -1,8 +1,12 @@
 # Feature 006: durable shared repository context
 
-**Status: Proposed workflow contract.** The collection permission model was selected
-on 2026-09-13: repository authors may collect after operator enablement. Temporal,
-remote collection, and the commands described here are unavailable today.
+**Status: Partial.** API/CLI requests, shared receipts, explicit attachment,
+PostgreSQL outbox, Temporal sequencing and both bounded provider read profiles are
+implemented. The collection permission model was selected on 2026-09-13: repository
+authors may collect after operator enablement. Initial Temporal deployment is local
+only; browser/TUI collection controls and live provider compatibility remain
+unverified or later work. ADR 0003 remains Proposed. See the
+[operations guide](../../docs/operations/durable-context.md) for supported bounds.
 
 ## Outcome
 
@@ -31,7 +35,7 @@ permission may request cancellation through the initial client workflow. Operato
 revocation provides the administrative stop boundary. Design approval is neither
 required to gather context nor inferred from a collected result.
 
-## Proposed acceptance criteria
+## Acceptance criteria
 
 1. An authenticated command selects an existing canonical workspace/repository,
    one full commit object ID, 1–32 unique explicit relative file paths, and a
@@ -125,7 +129,10 @@ required to gather context nor inferred from a collected result.
     existing `repositoryContext` version 1 documents or their package digests.
     Remote collection must not identify itself as `conductor-git/v1`. An embedded
     client-supplied receipt ID is not authenticated provenance; trusted linkage
-    requires a server lookup under the same scope and digest checks.
+    requires a server lookup under the same scope and digest checks. Compare the
+    full version 2 snapshot JSON, including any extensions, to the stored receipt;
+    unverified extra fields cannot inherit its provenance. Preserve unknown outer
+    package fields and historical version 1 extensions, including new-field aliases.
 16. Deliver one complete API/CLI request → inspect → cancel or result → explicit
     attachment workflow. Enforce configured finite admission and concurrency limits
     without evicting active work. Publish exact defaults, deadlines, and recovery
@@ -143,11 +150,21 @@ links through attachment and ordinary create/revise commands.
 SDK test environments and controlled provider fixtures are complementary tests, not
 proof of real provider compatibility or durable process recovery.
 
-Before implementation, each provider profile must distinguish transient failures
+Each provider profile must distinguish transient failures
 eligible for bounded Temporal activity retry from terminal path gaps. Do not commit
 a final `unavailable` receipt and then retry collection to improve it. A later
 collection is a new explicit request with its own identity; earlier observations
 remain recoverable.
+
+The current implementation requires workspace and canonical repository scope on
+all collection commands. It admits at most 20 active/unresolved requests per
+repository; pending cancellation retains its slot. Per-process activity concurrency
+is two. Namespace history retention must be at least 24 hours; an unknown start
+has a one-hour reconciliation horizon. Known missing history, changed runtime
+binding and receipt mismatch become explicit sticky unresolved observations.
+Manual workflow-history deletion inside the horizon cannot be distinguished from
+a lost start that never arrived. Do not delete/reset retained executions to recover
+dispatch. Administrative repair of unresolved records is not implemented.
 
 GitHub and GitLab read profiles may land separately. Report their verified
 capabilities separately and retain explicit unavailable behavior for the other

@@ -29,9 +29,9 @@ authenticated workspace access. Read these before changing behavior:
 11. `specs/005-authenticated-terminal/spec.md` and `plan.md` for authenticated
     terminal identity, scope, and recovery; `docs/operations/terminal-review.md`
     for controls and real PTY acceptance.
-12. Before introducing remote context or Temporal, read the proposed
+12. For remote context or Temporal, read
     `specs/006-durable-context/spec.md` and `plan.md`,
-    `docs/architecture/durable-context.md`, and ADR 0003. The selected collection
+    `docs/architecture/durable-context.md`, `docs/operations/durable-context.md`, and ADR 0003 (still Proposed). The selected collection
     policy requires author permission plus an operator-enabled repository read
     integration; it does not grant coding or publication authority.
 
@@ -63,10 +63,10 @@ Do not describe an incomplete integration or mocked path as implemented. Keep
   with provider-specific adapters and explicit capability limits. See
   `docs/architecture/repository-providers.md` before adding provider behavior.
 - PostgreSQL owns package revisions, approval records, authorization metadata, and
-  audit events. Temporal will own durable execution sequencing when introduced.
+  audit events. Temporal owns durable context execution sequencing; other assistant execution remains planned.
   Do not create two execution authorities.
-- External calls belong in workflow activities. Bridge database commits and future
-  Temporal operations using durable inbox/outbox processing and reconciliation.
+- External calls belong in workflow activities. Bridge database commits and Temporal
+  operations using durable inbox/outbox processing and reconciliation.
 - Coding workers will produce patches; a separate trusted integration service will
   publish them. Repository-controlled commands must not receive publication or
   production credentials.
@@ -92,13 +92,16 @@ packages to mirror the target diagram.
 |---|---|
 | `cmd/conductor/` | CLI and Bubble Tea entry point |
 | `cmd/conductord/` | HTTP control-plane server |
+| `cmd/conductor-worker/` | Trusted local Temporal worker and context dispatcher |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
 | `internal/authn/` | Bounded issuer discovery, API token verification, and browser code exchange |
 | `internal/store/` | PostgreSQL transaction implementation |
-| `internal/repositorycontext/` | Bounded local Git artifact collection and freshness checks |
+| `internal/repositorycontext/` | Bounded local Git collection, remote provider reads, and local freshness checks |
+| `internal/collectionworker/` | Credential binding, context activity, fenced dispatch, and reconciliation |
+| `internal/contextworkflow/` | Pinned Temporal workflow, runtime identity and history validation |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
 | `pkg/client/` | Reusable Go API client |
 | `apps/web/` | React/TypeScript review workbench |
@@ -146,10 +149,25 @@ packages to mirror the target diagram.
 - Native Spec Kit/ADRKit files are currently imported as text artifacts. Do not
   claim command/API compatibility, accepted decisions, or execution authority from
   their contents.
-- Proposed remote collection must preserve existing snapshot versions and digests.
+- Remote collection must preserve existing snapshot versions and digests.
   A receipt ID supplied in JSON is not authenticated provenance. Resolve trusted
-  receipt linkage under canonical scope; never refresh or attach a result as part
-  of approval. Keep provider credentials and source text outside workflow history.
+  receipt linkage under canonical scope and compare the entire version 2 snapshot JSON;
+  never refresh or attach a result as part of approval. Version 1 extensions, including
+  case aliases of new fields, retain their original meaning and immutable digest. Keep provider credentials and source text outside workflow history.
+
+- Remote collection requires OIDC, a selected workspace/repository, current author
+  permission and an operator-enabled read integration. Request, audit and outbox
+  commit together. Check access before every provider call and at receipt commit;
+  a committed receipt wins an activity retry even after later revocation.
+- Bind first dispatch to the actual Temporal cluster/namespace identity before RPC.
+  Keep lease fencing, exact run/binding reconciliation and conservative missing-history
+  handling. Never start a replacement for a known missing run or a committed receipt.
+  PostgreSQL stores observations, not a second execution state machine. Unknown
+  acknowledgment, stale progress and unresolved recovery must stay explicit.
+- Provider/source text and credentials never enter Temporal payloads, errors, logs
+  or heartbeat details. Keep the worker's initial Temporal mode explicitly local;
+  do not imply hosted/TLS or production compatibility. Fixture tests do not establish
+  live GitHub/GitLab compatibility. See the durable-context runbook for tested bounds.
 
 ## Go conventions
 
@@ -315,6 +333,14 @@ container and volume and starts the compiled API as a separate process. Never
 restart a database selected through `CONDUCTOR_TEST_DATABASE_URL` or delete an
 existing development volume to prove recovery. Missing opt-in is an explicit skip;
 missing dependencies after opt-in are a failure.
+
+For durable context changes, opt into the owned Temporal acceptance with
+`CONDUCTOR_TEST_TEMPORAL=1` and `CONDUCTOR_TEST_DATABASE_URL`, including
+`internal/contextworkflow` and `tests/acceptance`. Use the verified CLI 1.8.3 binary
+(`CONDUCTOR_TEMPORAL_CLI` can select it). Tests own persistent SQLite and temporary
+processes/schemas; do not restart user-configured services. Distinguish actual
+process recovery from SDK tests and controlled provider fixtures. An absent opt-in
+is a skip and unavailable dependencies after opt-in are a failure.
 
 For terminal workflow changes, run the real PTY acceptance in `tests/terminal/`
 against an explicitly configured local API and compiled CLI. Also opt into the
