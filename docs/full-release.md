@@ -26,23 +26,30 @@ capabilities are described as implemented.
 Every gate is required. Implementation and verification are recorded separately;
 source fixtures do not establish live service compatibility.
 
-| Gate | Required behavior | Current evidence |
+| Gate | Implemented behavior and verification | Remaining qualification |
 |---|---|---|
-| Shared review | Immutable revisions, independent exact approval, historical attribution, authenticated workspace/repository isolation | Implemented and tested through PR 14 |
-| Shared source | Bounded pinned local and provider collection, receipts, cancellation and explicit attachment across interfaces | Implemented; live provider compatibility remains to verify |
-| Repository relationships | Shared immutable graph spanning authorized repositories; dependency, symbol and impact queries; coverage and freshness limits visible | In progress |
-| CodeGraph | Pinned selected upstream indexes controlled source and contributes provenance-bound graph evidence; native and fallback capabilities reported accurately | In progress |
-| MCP | Real MCP protocol lets agents discover/read/author permitted Conductor work and query shared graph/run context; scope cannot be widened through tool arguments | In progress |
-| Coordinated agents | Versioned task dependencies, explicit human execution authorization, concurrent independent tasks, overlap protection, assignments, cancellation and restart recovery | In progress |
-| Coding adapters | Codex and Claude Code produce bounded patches in isolated workers without publication or production credentials | In progress |
-| Verification | Executed commands and outputs bind to exact source/artifacts and acceptance criteria; missing, failed and unexecuted checks remain distinct | In progress |
-| Delivery | Trusted publisher supports GitHub draft PRs and GitLab draft MRs, exact artifact authorization, checks/events and ambiguous-result reconciliation | Planned |
-| Work tracking | Linear and Jira adapters, one chosen per workspace, explicit field ownership, duplicate/out-of-order recovery and visible sync conflicts | Planned |
-| Specifications and decisions | Tested Spec Kit and ADRKit artifact/command capabilities; governing decisions and requirement/evidence links available to agents without inherited approval | Planned |
-| Runtime context | Groundcover integration and cross-repository runtime evidence remain scoped, source-bound and separate from deployment authorization | Planned |
-| Complete interfaces | Browser/CLI/TUI cover work authoring, graph inspection, coordination, verification, recovery and delivery/tracker state with useful role perspectives | Partial |
-| Operations | Supported authenticated deployment, real identity/provider validation, remote Temporal configuration, backups/restore, observability, bounded capacity, CI and security acceptance | Partial |
-| Complete acceptance | Multiple engineers and coordinated agents change related synthetic repositories, retain evidence, publish both provider review requests, synchronize the selected tracker and recover from failures | Planned |
+| Shared review | Immutable revisions, exact independent approval, historical attribution and server-owned workspace/repository isolation; signed API, Chromium, PTY and live PostgreSQL tests | Release changes awaiting merge |
+| Shared source | Local and GitHub/GitLab pinned collection, selected artifacts, whole-repository bundles, receipts, cancellation and exact attachment; real Git/HTTP/Temporal recovery; read-only live GitHub acquisition exercised | Live GitLab account qualification |
+| Repository relationships | Immutable shared graph spanning all authorized sources; dependency, symbol, impact and exact source reads through API/MCP/browser/terminal; grant-revocation tests | Extraction coverage remains explicit and bounded |
+| CodeGraph | Selected upstream 1.6.0, source `dfccdf62547fcd76d343344d823a0e1998d3a89f`, native Rust kernel 0.1.0/ABI 2; actual isolated extraction and cross-repository dependency gate pass | No claim of complete semantic understanding |
+| MCP | Actual SDK stdio clients discover/read/author scoped work, graph/run/artifact/delivery/tracker/runtime context; exact inputs and agent authority enforced | Host configuration documented separately |
+| Coordinated agents | Immutable DAG plans, source/profile/image pins, exact human execution authority, concurrency, write claims, cumulative patches, cancellation and restart reconciliation; actual compiled executor/Temporal/Docker gate passes | Paid model inference unverified |
+| Coding adapters | Pinned Codex/Claude producers, isolated source/check containers and restricted credential gateway; native CLI startup/protocol and offline command execution tested | Live paid inference unverified |
+| Verification | Retained exact producer/check output and patch byte digests; complete failed/read-only artifacts remain inspectable; source and unexecuted/missing/failed checks stay distinct | Evidence proves its declared checks only |
+| Delivery | Trusted GitHub/GitLab draft publication and check/merge/deployment observations; actual Git result trees and HTTP adapters reconcile lost writes without duplicate drafts | Live SaaS write accounts and application deployment unverified |
+| Work tracking | Linear/Jira adapters, one selected per workspace, exact package/publication-receipt links, field ownership, conflict resolution and lost-write recovery; both provider choices pass complete acceptance | Existing tickets only; live SaaS write qualification unverified |
+| Specifications and decisions | Spec Kit 1.0.6 and ADRKit CLI 0.13.0 native commands in an immutable isolated image; actual scaffold/template/prerequisite and Proposed ADR/lint/applicability/graph verification | Broad agentic prompt/extension compatibility is not claimed |
+| Runtime context | Groundcover REST profile pinned to official SDK schema 1.424.0; exact service/environment/commit/window correlation, approved criteria, complete-grid evaluation, shared retention and recovery | Live Groundcover account and overall production outcome unverified |
+| Complete interfaces | Browser/CLI/TUI/MCP review, graph/source, coordination, artifact, delivery and tracker paths tested; runtime browser/API/MCP tested | Runtime terminal and cohesive browser navigation completing |
+| Operations | Verified remote Temporal TLS/mTLS; actual Keycloak 26.7.3 HTTPS browser qualification; checked migration ledger, private diagnostics, actual PostgreSQL backup/restore, process recovery and identical release archives | Hosted CI run, hosted Temporal and Conductor deployment unverified |
+| Complete acceptance | Both Linear/Jira variants pass two-source native graph → signed MCP → three-task Docker DAG → retained Temporal restart → exact GitHub/GitLab drafts → tracker reconciliation → correlated runtime criteria; related-source revocation tested | Controlled provider fixtures establish protocol behavior, not live SaaS or paid inference |
+
+See [complete acceptance](operations/full-release-acceptance.md),
+[provider sign-in qualification](operations/keycloak-qualification.md),
+[release operations](operations/release.md), and each feature plan for reproducible
+commands and the exact distinction between implemented, verified and external
+qualification. New ADRs remain Proposed. Nothing in this matrix grants deployment
+or merges the review stack.
 
 ## Stacked review order
 
@@ -59,6 +66,28 @@ execution and workers → verification and delivery → workflow/tracker integra
 → complete interfaces and operational acceptance. Independent implementation may
 run in parallel in separate worktrees. Actual PR links and merge dependencies are
 recorded here as the tested changes become reviewable.
+
+### Published PR dependencies
+
+Review and merge in this order. Each PR targets the immediately preceding branch;
+this keeps its own diff reviewable. Do not skip prerequisites.
+
+| Order | PR | Capability |
+|---|---|---|
+| 1 | [#15](https://github.com/phenixrizen/conductor/pull/15) | Authenticated shared MCP |
+| 2 | [#16](https://github.com/phenixrizen/conductor/pull/16) | Shared repository graph and native CodeGraph |
+| 3 | [#17](https://github.com/phenixrizen/conductor/pull/17) | Isolated coding workers and independent checks |
+| 4 | [#18](https://github.com/phenixrizen/conductor/pull/18) | Whole-repository source and graph workbench |
+| 5 | [#19](https://github.com/phenixrizen/conductor/pull/19) | Durable coordinated agents and exact execution authority |
+| 6 | [#20](https://github.com/phenixrizen/conductor/pull/20) | Trusted GitHub/GitLab publication and browser review |
+| 7 | [#21](https://github.com/phenixrizen/conductor/pull/21) | Exact related-repository source inspection |
+| 8 | [#22](https://github.com/phenixrizen/conductor/pull/22) | Linear/Jira workspace synchronization and browser review |
+| 9 | [#23](https://github.com/phenixrizen/conductor/pull/23) | Complete authenticated release CLI/TUI |
+
+Task-artifact inspection, native design tools, runtime evidence, remote Temporal,
+operations, real identity qualification, complete acceptance and final interface
+work are integrated locally and are being published after checks on their exact
+review branches. Their PR links will be appended here in dependency order.
 
 ## Completion evidence
 

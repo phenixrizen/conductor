@@ -46,6 +46,7 @@ not mistaken for working capabilities.
 | [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, collection controls, imports, and recovery |
 | [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |
 | [Feature 005 plan](../specs/005-authenticated-terminal/plan.md) | Terminal implementation and signed-issuer real PTY validation |
+| [Keycloak qualification](operations/keycloak-qualification.md) | Actual native HTTPS identity-provider acceptance and supported protocol limits |
 | [Browser sign-in](operations/browser-sign-in.md) | Configure OIDC login, sessions, shared review, and collection controls |
 | [Feature 004 specification](../specs/004-browser-sign-in/spec.md) | Browser identity, session, and exact review contracts |
 | [Feature 004 plan](../specs/004-browser-sign-in/plan.md) | Browser implementation sequence and later workflow boundaries |
