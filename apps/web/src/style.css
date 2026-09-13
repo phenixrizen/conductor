@@ -185,3 +185,7 @@ aside .panel { margin-bottom: 1rem; padding: 1.2rem; }
 .repository-deliveries pre { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .repository-deliveries label { display: block; margin: .8rem 0; }
 .repository-deliveries input:not([type="checkbox"]), .repository-deliveries textarea { width: 100%; }
+
+.work-tracking pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.work-tracking label { display: block; margin: .8rem 0; }
+.work-tracking textarea { width: 100%; }

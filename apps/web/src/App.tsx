@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { APIError, errorMessage, request } from './api';
 import type { AuthConfig, BrowserAccess, BrowserSession, ManagedRepository, RepositoryPage } from './api';
 import { ReviewWorkbench, WorkbenchHeader } from './ReviewWorkbench';
+import { captureTrackerLinkHint } from './trackerLinkHint';
 
 type Authentication =
   | { kind: 'loading' }
@@ -13,6 +14,7 @@ type Authentication =
   | { kind: 'unavailable'; config?: AuthConfig; message: string };
 
 export function App() {
+  useEffect(captureTrackerLinkHint, []);
   const [authentication, setAuthentication] = useState<Authentication>({ kind: 'loading' });
   const [reload, setReload] = useState(0);
   const [workspaceID, setWorkspaceID] = useState('');

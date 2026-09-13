@@ -71,6 +71,12 @@ func routes(a *API) *http.ServeMux {
 	m.HandleFunc("GET /api/v1/coordination-runs/{id}", a.getCoordination)
 	m.HandleFunc("POST /api/v1/coordination-runs/{id}/authorization", a.authorizeCoordination)
 	m.HandleFunc("POST /api/v1/coordination-runs/{id}/cancellation", a.cancelCoordination)
+	m.HandleFunc("GET /api/v1/tracker", a.getTracker)
+	m.HandleFunc("POST /api/v1/tracker-links", a.createTrackerLink)
+	m.HandleFunc("GET /api/v1/tracker-links", a.listTrackerLinks)
+	m.HandleFunc("GET /api/v1/tracker-links/{id}", a.getTrackerLink)
+	m.HandleFunc("POST /api/v1/tracker-links/{id}/syncs", a.requestTrackerSync)
+	m.HandleFunc("GET /api/v1/tracker-syncs/{id}", a.getTrackerSync)
 	return m
 }
 

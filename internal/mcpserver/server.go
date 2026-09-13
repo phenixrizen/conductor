@@ -80,6 +80,7 @@ func New(api API) (*Bridge, error) {
 	b.registerGraphs()
 	b.registerCoordination()
 	b.registerDeliveries()
+	b.registerTracker()
 	b.server.AddReceivingMiddleware(b.middleware)
 	return b, nil
 }

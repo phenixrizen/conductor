@@ -7,6 +7,9 @@ import json
 import os
 from urllib.parse import urlparse
 from playwright.sync_api import expect, sync_playwright
+# This acceptance intentionally renders a multi-megabyte patch. Give assertions
+# the same bounded deadline as browser actions while concurrent suites use CPU.
+expect.set_options(timeout=15000)
 origin=os.environ["CONDUCTOR_BROWSER_WEB_URL"].rstrip("/")
 assert urlparse(origin).scheme=="https" and urlparse(origin).hostname in {"127.0.0.1","::1"}
 initial_id=os.environ["CONDUCTOR_BROWSER_DELIVERY_ID"]

@@ -1120,6 +1120,246 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /api/v1/tracker:
+    get:
+      summary: Inspect the selected workspace tracker and current capabilities
+      description: OIDC only. Current tracker permissions and every linked repository grant are checked
+        transactionally. Tracker-owned planning fields never authorize Conductor approval, verification,
+        merge or deployment. Missing, conflicting and uncertain evidence remains explicit. Existing-ticket
+        linkage only; no ticket creation or planning-field writes.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/Repository'
+      - $ref: '#/components/parameters/CSRF'
+      responses:
+        '200':
+          description: Inspect the selected workspace tracker and current capabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackerSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/tracker-links:
+    post:
+      summary: Link an existing tracker issue to exact inspected Conductor work
+      description: OIDC only. Current tracker permissions and every linked repository grant are checked
+        transactionally. Tracker-owned planning fields never authorize Conductor approval, verification,
+        merge or deployment. Missing, conflicting and uncertain evidence remains explicit. Existing-ticket
+        linkage only; no ticket creation or planning-field writes.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/CollectionRepository'
+      - $ref: '#/components/parameters/CSRF'
+      - $ref: '#/components/parameters/CollectionKey'
+      - $ref: '#/components/parameters/BrowserOrigin'
+      responses:
+        '201':
+          description: Link an existing tracker issue to exact inspected Conductor work
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackerLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackerLinkInput'
+    get:
+      summary: List authorized tracker relationships before bounded pagination
+      description: OIDC only. Current tracker permissions and every linked repository grant are checked
+        transactionally. Tracker-owned planning fields never authorize Conductor approval, verification,
+        merge or deployment. Missing, conflicting and uncertain evidence remains explicit. Existing-ticket
+        linkage only; no ticket creation or planning-field writes.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/Repository'
+      - $ref: '#/components/parameters/CSRF'
+      - name: before
+        in: query
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: List authorized tracker relationships before bounded pagination
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackerLinkPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/tracker-links/{id}:
+    get:
+      summary: Inspect immutable tracker relationships and the latest observation
+      description: OIDC only. Current tracker permissions and every linked repository grant are checked
+        transactionally. Tracker-owned planning fields never authorize Conductor approval, verification,
+        merge or deployment. Missing, conflicting and uncertain evidence remains explicit. Existing-ticket
+        linkage only; no ticket creation or planning-field writes.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/Repository'
+      - $ref: '#/components/parameters/CSRF'
+      - $ref: '#/components/parameters/CollectionID'
+      responses:
+        '200':
+          description: Inspect immutable tracker relationships and the latest observation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackerLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/tracker-links/{id}/syncs:
+    post:
+      summary: Request a durable refresh, projection publication or human conflict restoration
+      description: OIDC only. Current tracker permissions and every linked repository grant are checked
+        transactionally. Tracker-owned planning fields never authorize Conductor approval, verification,
+        merge or deployment. Missing, conflicting and uncertain evidence remains explicit. Existing-ticket
+        linkage only; no ticket creation or planning-field writes.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/Repository'
+      - $ref: '#/components/parameters/CSRF'
+      - $ref: '#/components/parameters/CollectionID'
+      - $ref: '#/components/parameters/CollectionKey'
+      - $ref: '#/components/parameters/BrowserOrigin'
+      responses:
+        '202':
+          description: Request a durable refresh, projection publication or human conflict restoration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackerSync'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackerSyncInput'
+  /api/v1/tracker-syncs/{id}:
+    get:
+      summary: Inspect a tracker synchronization request and immutable result
+      description: OIDC only. Current tracker permissions and every linked repository grant are checked
+        transactionally. Tracker-owned planning fields never authorize Conductor approval, verification,
+        merge or deployment. Missing, conflicting and uncertain evidence remains explicit. Existing-ticket
+        linkage only; no ticket creation or planning-field writes.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/Repository'
+      - $ref: '#/components/parameters/CSRF'
+      - $ref: '#/components/parameters/CollectionID'
+      responses:
+        '200':
+          description: Inspect a tracker synchronization request and immutable result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackerSync'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     BrowserCookie:
@@ -2657,3 +2897,417 @@ components:
           type: boolean
           description: Full-source retained text exceeded configured coverage limits; artifact states
             retain individual gaps
+    TrackerStatusMapping:
+      type: object
+      required:
+      - id
+      - display
+      - ignore
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        display:
+          type: string
+          maxLength: 128
+        ignore:
+          type: boolean
+    TrackerSettings:
+      type: object
+      required:
+      - workspaceId
+      - provider
+      - host
+      - scopeId
+      - profile
+      - version
+      - enabled
+      - statuses
+      - canSync
+      - canResolve
+      properties:
+        workspaceId:
+          type: string
+          maxLength: 128
+        provider:
+          type: string
+          enum:
+          - linear
+          - jira
+        host:
+          type: string
+          maxLength: 256
+        organizationId:
+          type: string
+          maxLength: 64
+        scopeId:
+          type: string
+          maxLength: 64
+        profile:
+          type: string
+          maxLength: 128
+        version:
+          type: integer
+          minimum: 1
+        enabled:
+          type: boolean
+        statuses:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TrackerStatusMapping'
+        canSync:
+          type: boolean
+        canResolve:
+          type: boolean
+    TrackerPackageRef:
+      type: object
+      required:
+      - repositoryId
+      - packageId
+      - revision
+      - digest
+      properties:
+        repositoryId:
+          type: string
+          maxLength: 128
+        packageId:
+          type: string
+          maxLength: 128
+        revision:
+          type: integer
+          minimum: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      additionalProperties: false
+    TrackerPublicationRef:
+      type: object
+      required:
+      - id
+      - digest
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      additionalProperties: false
+    TrackerLinkInput:
+      type: object
+      required:
+      - issueId
+      - packages
+      properties:
+        issueId:
+          type: string
+          maxLength: 64
+        packages:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/TrackerPackageRef'
+        publications:
+          type: array
+          minItems: 0
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/TrackerPublicationRef'
+      additionalProperties: false
+    TrackerProjection:
+      type: object
+      required:
+      - url
+      - title
+      - summary
+      properties:
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+          maxLength: 1024
+        summary:
+          type: string
+          maxLength: 32768
+    TrackerIssue:
+      type: object
+      required:
+      - id
+      - key
+      - url
+      - title
+      - description
+      - priority
+      - assigneeId
+      - statusId
+      - statusName
+      - mappedStatus
+      - mapping
+      - updatedAt
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        key:
+          type: string
+          maxLength: 128
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+          maxLength: 1024
+        description: {}
+        priority:
+          type: string
+          maxLength: 256
+        assigneeId:
+          type: string
+          maxLength: 256
+        statusId:
+          type: string
+          maxLength: 64
+        statusName:
+          type: string
+          maxLength: 256
+        mappedStatus:
+          type: string
+          maxLength: 128
+        mapping:
+          type: string
+          enum:
+          - mapped
+          - unmapped
+          - intentionally_unsynchronized
+        updatedAt:
+          type: string
+          format: date-time
+    TrackerObservation:
+      type: object
+      required:
+      - syncId
+      - state
+      - projectionDigest
+      - observedAt
+      - current
+      properties:
+        syncId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        state:
+          type: string
+          enum:
+          - refreshed
+          - synchronized
+          - conflict
+          - unknown
+          - unavailable
+        code:
+          type: string
+          maxLength: 64
+        issue:
+          $ref: '#/components/schemas/TrackerIssue'
+        projection:
+          $ref: '#/components/schemas/TrackerProjection'
+        projectionDigest:
+          type: string
+          pattern: ^([a-f0-9]{64})?$
+        observedAt:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+          description: This observation is less than five minutes old; it does not prove that no subsequent
+            provider update exists.
+    TrackerLink:
+      type: object
+      required:
+      - id
+      - workspaceId
+      - creatorId
+      - configVersion
+      - input
+      - digest
+      - projection
+      - createdAt
+      - publications
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        workspaceId:
+          type: string
+          maxLength: 128
+        creatorId:
+          type: string
+          maxLength: 128
+        configVersion:
+          type: integer
+          minimum: 1
+        input:
+          $ref: '#/components/schemas/TrackerLinkInput'
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        projection:
+          $ref: '#/components/schemas/TrackerProjection'
+        createdAt:
+          type: string
+          format: date-time
+        observation:
+          $ref: '#/components/schemas/TrackerObservation'
+        latestSyncId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        publications:
+          type: array
+          minItems: 0
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/TrackerPublication'
+    TrackerLinkPage:
+      type: object
+      required:
+      - links
+      - truncated
+      properties:
+        links:
+          type: array
+          minItems: 0
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TrackerLink'
+        next:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        truncated:
+          type: boolean
+    TrackerSyncInput:
+      type: object
+      required:
+      - linkDigest
+      - mode
+      properties:
+        linkDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        mode:
+          type: string
+          enum:
+          - refresh
+          - publish
+          - restore
+        expectedProjectionDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      additionalProperties: false
+    TrackerSync:
+      type: object
+      required:
+      - id
+      - linkId
+      - actorId
+      - input
+      - createdAt
+      - dispatch
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        linkId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        actorId:
+          type: string
+          maxLength: 128
+        input:
+          $ref: '#/components/schemas/TrackerSyncInput'
+        createdAt:
+          type: string
+          format: date-time
+        observation:
+          $ref: '#/components/schemas/TrackerObservation'
+        dispatch:
+          type: string
+          enum:
+          - pending
+          - dispatched
+          - unresolved
+    TrackerPublication:
+      type: object
+      required:
+      - id
+      - digest
+      - target
+      - receipt
+      - current
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        target:
+          type: object
+          required:
+          - workspaceId
+          - repositoryId
+          - provider
+          - host
+          - providerId
+          - locator
+          - profile
+          - integrationVersion
+          properties:
+            workspaceId:
+              type: string
+              maxLength: 128
+            repositoryId:
+              type: string
+              maxLength: 128
+            provider:
+              type: string
+              maxLength: 128
+            host:
+              type: string
+              maxLength: 256
+            providerId:
+              type: string
+              maxLength: 128
+            locator:
+              type: string
+              maxLength: 256
+            profile:
+              type: string
+              maxLength: 128
+            integrationVersion:
+              type: integer
+              minimum: 1
+        receipt:
+          type: object
+          required:
+          - digest
+          - observation
+          - createdAt
+          properties:
+            digest:
+              type: string
+              pattern: ^[a-f0-9]{64}$
+            observation:
+              type: object
+              description: Immutable first-publication provider evidence; never ticket completion or an
+                approval.
+            createdAt:
+              type: string
+              format: date-time
+        observation:
+          type: object
+          description: Latest separately retained provider observation, including exact commit/check/deployment
+            facts and explicit unavailable states.
+        current:
+          type: boolean
