@@ -28,6 +28,21 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 button.secondary { background: #f3f5f0; color: #263d35; }
 button.secondary:hover:not(:disabled) { background: #e3e9dd; }
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #a44727; outline-offset: 3px; }
+a:focus-visible { outline: 3px solid #a44727; outline-offset: 3px; }
+.authentication { max-width: 48rem; box-shadow: 5px 5px 0 #263d35; }
+.authentication h2, .access-panel h2 { margin: .4rem 0 1rem; }
+.authentication button, .authentication .button-link { margin: .5rem .7rem .3rem 0; }
+.button-link { display: inline-block; min-height: 44px; padding: .65rem .8rem; border: 1px solid #263d35; border-radius: 2px; background: #263d35; color: #fff; text-decoration: none; font-size: .9rem; font-weight: 700; }
+.button-link:hover { background: #385648; }
+.access-panel { margin-bottom: 1.5rem; }
+.access-panel .eyebrow { margin: 0; }
+.access-panel .control-row { align-items: stretch; }
+.access-panel .control-row label { flex: 1 1 280px; min-width: 0; }
+.signed-in-identity, .repository-access { overflow-wrap: anywhere; }
+.signed-in-identity .tag { margin-left: .4rem; }
+.session-actions { display: flex; gap: .6rem; flex-wrap: wrap; }
+.repository-access { margin-top: 1rem; padding-top: .7rem; border-top: 1px solid #d5ded0; }
+.repository-access .coverage { margin-bottom: 0; }
 .local-note { font-size: .78rem; color: #526454; flex-basis: 100%; margin: 0; }
 .perspective { display: flex; align-items: center; gap: 1.6rem; margin: 1.6rem 0 .8rem; }
 .perspective label { max-width: 200px; }

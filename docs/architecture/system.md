@@ -17,8 +17,9 @@ the [repository provider plan](repository-providers.md) for scope and boundaries
 
 ## Target system context
 
-> **Status:** Durable review and authenticated workspace access through the API
-> and noninteractive CLI are implemented. Browser/TUI review remains local-only.
+> **Status:** Durable review and authenticated workspace access through the API,
+> CLI, browser, and interactive terminal are implemented. The browser uses OIDC
+> sign-in; CLI and terminal credentials come from an explicitly selected token.
 > MCP, execution, delivery adapters, and components with dashed borders are planned.
 > Identity-provider compatibility has not been established beyond synthetic tests.
 
@@ -118,7 +119,7 @@ flowchart LR
     GitHubDelivery[GitHub]
     GitLab[GitLab]
 
-    User -->|verified access token and server grants| API
+    User -->|verified identity and server grants| API
     LocalHeader -->|explicit local mode / unscoped data only| API
     API --> DB
     Untrusted -->|evidence, never authority| API
@@ -140,8 +141,14 @@ header and verifies the configured HTTPS issuer, audience, and supported signed
 access-token profile. It maps issuer/subject to server-owned principal records;
 client role claims cannot alter human/agent kind or repository capabilities.
 
-The API and noninteractive CLI support authenticated review. The browser/TUI login
-flow and compatibility validation against real identity providers remain pending.
+The browser, API, CLI, and terminal support authenticated review. Browser
+login uses PKCE, one-use state, verified ID tokens, and protected PostgreSQL
+sessions. [Browser setup](../operations/browser-sign-in.md) describes the exact
+protocol and session limits. The terminal uses the existing API access-token
+credential and keeps one verified principal, workspace, and repository per session.
+It clears inspection after access failure and requires explicit access recovery.
+Interactive CLI token acquisition and compatibility validation against real identity
+providers remain pending.
 Configuration and transport requirements are in the
 [authenticated review guide](../operations/authenticated-review.md). Future workers
 do not receive publication credentials. No execution or delivery integration runs.
@@ -165,7 +172,8 @@ do not receive publication credentials. No execution or delivery integration run
 flowchart LR
     M1[1. Durable package review] --> Access[Authenticated API and CLI review]
     Access --> Browser[Browser sign-in]
-    Browser --> M2[2. Orchestration and context]
+    Browser --> Terminal[Authenticated terminal review]
+    Terminal --> M2[2. Orchestration and context]
     M2 --> M3[3. One assistant to draft GitHub PR or GitLab MR]
     M3 --> M4[4. Assistant choice and Linear or Jira synchronization]
     M4 --> M5[5. Cross-repository runtime intelligence]
@@ -173,14 +181,18 @@ flowchart LR
 
     classDef active fill:#e8f1ec,stroke:#244c3f,stroke-width:2px;
     classDef planned fill:#f7f7f7,stroke:#777,stroke-dasharray:6 4;
-    class M1,Access active;
-    class Browser,M2,M3,M4,M5,M6 planned;
+    class M1,Access,Browser,Terminal active;
+    class M2,M3,M4,M5,M6 planned;
 ```
 
-Authenticated API/CLI review is the current completed slice; browser sign-in is
-next. Agent execution remains disabled pending its own verified identity,
-authorization, durable recovery, context, and execution boundaries. Review access
-alone does not authorize execution.
+Authenticated review is implemented across these interfaces. The proposed next
+increment is [durable context collection](durable-context.md): selected files from
+an exact managed-repository commit, a shared immutable receipt, and explicit
+attachment to a package. It defines outbox, reconciliation, cancellation, and
+revocation boundaries before introducing Temporal or external adapters. Collection
+permission requires author access plus operator enablement. Agent execution remains disabled
+pending its own verified identity, authorization, durable recovery, context, and
+execution boundaries. Review access alone does not authorize execution.
 
 Each workspace selects one tracker, Linear or Jira. Work-tracking integrations
 link its tickets to packages and GitHub/GitLab delivery records across repositories.

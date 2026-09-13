@@ -2,7 +2,9 @@
 
 **Status:** Durable review is implemented. Authenticated API/CLI review and
 workspace/repository isolation are added by
-[Feature 003](../003-workspace-access/spec.md). Browser/TUI review remains local-only.
+[Feature 003](../003-workspace-access/spec.md).
+[Feature 004](../004-browser-sign-in/spec.md) adds browser OIDC sign-in, and
+[Feature 005](../005-authenticated-terminal/spec.md) adds authenticated TUI review.
 
 ## Goal
 

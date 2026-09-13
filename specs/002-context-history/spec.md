@@ -1,8 +1,11 @@
 # Feature 002: inspectable history and pinned repository context
 
 **Status:** Context and history are implemented. Authenticated API/CLI access is
-covered by [Feature 003](../003-workspace-access/spec.md); browser/TUI use remains
-local-development-only.
+covered by [Feature 003](../003-workspace-access/spec.md).
+[Feature 004](../004-browser-sign-in/spec.md) adds authenticated browser review;
+[Feature 005](../005-authenticated-terminal/spec.md) adds authenticated terminal
+review of current packages. History and comparison remain in the CLI/web as
+documented below.
 
 ## Outcome
 
@@ -74,8 +77,9 @@ and retain their original revision digests and review history.
 
 ## Deferred work
 
-Interactive browser/TUI authentication, policy-driven required evidence, automated
-context refresh, artifact storage, execution attempts, and workflow orchestration
+Policy-driven required evidence, automated context refresh, artifact storage,
+execution attempts, and workflow orchestration
 remain separate increments. API/CLI authentication and operator-managed access are
-implemented in Feature 003; compatibility with real identity providers remains
+implemented in Feature 003, with browser login in Feature 004 and authenticated
+terminal review in Feature 005. Compatibility with real identity providers remains
 unverified. This feature does not accept proposed ADRs or authorize execution.

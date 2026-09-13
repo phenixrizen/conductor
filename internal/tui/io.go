@@ -16,8 +16,8 @@ import (
 	"github.com/phenixrizen/conductor/pkg/client"
 )
 
-// Options fixes the local development identity and optional discovery filter for
-// the session. Neither identity labels nor repository labels confer permissions.
+// Options selects local review inputs. Authenticated identity and canonical scope
+// come from the configured client and server, never a local actor or content label.
 type Options struct {
 	Actor, Repository, File, ID string
 }
@@ -25,26 +25,56 @@ type Options struct {
 // Run keeps the program alive until quit or cancellation; each HTTP operation has
 // its own timeout so the CLI's usual single-command deadline does not end review.
 func Run(ctx context.Context, c *client.Client, options Options) error {
-	if err := domain.ValidateActor(options.Actor); err != nil {
-		return err
-	}
-	if options.Actor != c.Actor {
-		return errors.New("terminal identity must match the HTTP client's local identity")
-	}
-	if _, err := domain.ValidateChangeQuery(options.Repository, "", pageSize); err != nil {
-		return err
-	}
 	session, cancel := context.WithCancel(ctx)
 	defer cancel()
-	m := newModel(options, runner(session, c))
-	_, err := tea.NewProgram(m, tea.WithContext(session), tea.WithAltScreen()).Run()
+	m, err := sessionModel(session, c, options)
+	if err != nil {
+		return err
+	}
+	_, err = tea.NewProgram(m, tea.WithContext(session), tea.WithAltScreen()).Run()
 	return err
+}
+
+func sessionModel(ctx context.Context, c *client.Client, options Options) (model, error) {
+	if c == nil {
+		return model{}, errors.New("terminal review requires an API client")
+	}
+	// The client retains public fields for existing callers. Snapshot those and
+	// the HTTP configuration once so later caller edits cannot switch a session.
+	fixed := *c
+	if c.HTTP != nil {
+		httpClient := *c.HTTP
+		fixed.HTTP = &httpClient
+	}
+	workspace, repository, authenticated := fixed.AuthenticatedScope()
+	if authenticated {
+		if options.Actor != "" || fixed.Actor != "" {
+			return model{}, errors.New("authenticated terminal identity comes from the server; a local actor cannot be combined with a token")
+		}
+		if domain.ValidateAccessID(workspace) != nil || domain.ValidateAccessID(repository) != nil {
+			return model{}, errors.New("authenticated terminal review requires a workspace and canonical repository ID")
+		}
+	} else {
+		if err := domain.ValidateActor(options.Actor); err != nil {
+			return model{}, err
+		}
+		if options.Actor != fixed.Actor {
+			return model{}, errors.New("terminal identity must match the HTTP client's local identity")
+		}
+	}
+	if _, err := domain.ValidateChangeQuery(options.Repository, "", pageSize); err != nil {
+		return model{}, err
+	}
+	m := newModel(options, runner(ctx, &fixed))
+	m.access = accessState{authenticated: authenticated, workspaceID: workspace, repositoryID: repository}
+	return m, nil
 }
 
 const pageSize = 20
 
 type request struct {
 	serial               int
+	accessGeneration     int
 	op, id, path, cursor string
 	revision             int64
 	digest               string
@@ -54,10 +84,12 @@ type request struct {
 
 type result struct {
 	request
-	page    domain.ChangePage
-	pack    domain.Package
-	content domain.Content
-	err     error
+	page         domain.ChangePage
+	pack         domain.Package
+	content      domain.Content
+	session      domain.Session
+	repositories domain.RepositoryPage
+	err          error
 }
 
 type executor func(request) (tea.Cmd, context.CancelFunc)
@@ -71,6 +103,11 @@ func runner(ctx context.Context, c *client.Client) executor {
 			defer cancel()
 			res := result{request: req}
 			switch req.op {
+			case "access":
+				res.session, res.err = c.Session(operation)
+				if res.err == nil {
+					res.repositories, res.err = c.Repositories(operation)
+				}
 			case "list":
 				res.page, res.err = c.ListChanges(operation, req.repository, req.cursor, pageSize)
 			case "open":

@@ -1,0 +1,129 @@
+# Durable repository context
+
+**Status: Proposed.** Conductor currently imports bounded text from local Git into
+immutable package revisions. This document defines the next shared background
+workflow. No Temporal or remote repository adapter is implemented by this design.
+The [feature specification](../../specs/006-durable-context/spec.md) records the
+selected permission: repository authors may collect after an operator enables
+the repository read integration.
+The [integration research](context-integration-research.md) records inspected
+Temporal and provider source versions and their untested limitations.
+
+## Why collection comes first
+
+A team needs recoverable source context before approving a design or asking an
+agent to implement it. Reading selected files from one commit provides a useful
+first workflow without running repository code. It can prove recovery, credentials,
+scope, and evidence handling before adding coding and publication capabilities.
+
+The user supplies an existing repository selection, an exact commit, and explicit
+paths. The operator supplies the enabled integration and repository-scoped read
+credential. The result stays in the shared service, so another authorized engineer
+can inspect it even after the first client's process or conversation ends.
+
+## Ownership and flow
+
+```mermaid
+sequenceDiagram
+    participant Client as Engineer or agent
+    participant API as Authenticated domain commands
+    participant DB as PostgreSQL
+    participant Dispatch as Outbox dispatcher
+    participant Temporal as Temporal workflow
+    participant Activity as Trusted collection activity
+    participant Provider as Configured GitHub or GitLab
+    Client->>API: Repository, full commit, paths, idempotency key
+    API->>DB: Authorize and commit request, audit, start intent
+    API-->>Client: Persisted request ID
+    Dispatch->>DB: Claim bounded dispatch lease
+    Dispatch->>Temporal: Start deterministic workflow ID
+    Dispatch->>DB: Record observed workflow/run identity
+    Temporal->>Activity: Collection ID only
+    Activity->>DB: Load immutable input and recheck access
+    Activity->>Provider: Bounded read at exact commit
+    Provider-->>Activity: Tree/blob evidence or explicit gap
+    Activity->>DB: Recheck access; commit immutable receipt
+    Activity-->>Temporal: Receipt ID/digest and coverage summary
+    Client->>API: Inspect shared collection
+    API->>DB: Authorize and read receipt/progress observations
+    API-->>Client: Text, gaps, and observed progress
+    Client->>API: Explicit attachment with package revision and receipt digest
+    API->>DB: Version-checked revision plus audit
+```
+
+| Record or behavior | Authority | Meaning |
+|---|---|---|
+| Principal, membership, collection permission, enabled integration | PostgreSQL and trusted operator configuration | Who can request/read work and which remote identity may be used |
+| Immutable collection request and audit | PostgreSQL | Accepted intent and exact requested source |
+| Dispatch lease and delivery attempts | PostgreSQL outbox | Handoff delivery only; not execution sequencing |
+| Activity order, retries, timeouts, cancellation | Temporal | Durable execution coordination |
+| Immutable receipt and source text | PostgreSQL | What the activity collected, with bounds and provenance |
+| Progress observations | Derived read model | Last observed workflow fact with time; may be stale or unavailable |
+| Package revision and approval | Existing PostgreSQL domain model | Separately inspected engineering intent |
+
+Temporal receives IDs and bounded metadata. Activities keep tokens and source text
+outside workflow history and return only durable receipt references. Trusted worker
+credentials permit its narrow service operations; repository text cannot issue
+commands or obtain those credentials. No permission lock spans a provider request.
+
+## Recovery is observable
+
+A committed request survives a failed HTTP response. Retrying the same idempotency
+key returns that request; changing input conflicts. A dispatcher may die before or
+after a workflow starts, so it reconciles the deterministic workflow ID and records
+the actual run identity before acknowledging delivery. It never guesses that an
+unavailable workflow has not started or silently replaces lost history.
+Request, idempotency, and start identities outlive Temporal history retention. An
+existing receipt prevents redispatch after history expires. Credential rotation
+may repair access under the original binding; it cannot change the requested
+provider identity or collector profile.
+
+Activities may execute again after an uncertain result. A retry first retrieves
+any committed receipt for the immutable request and returns that reference without
+recollecting. Provider reads remain tied to the original commit. If concurrent
+attempts finish, receipt persistence returns the first committed result and never
+overwrites it with later timestamps or changed availability observations. A receipt
+cannot be rebound to different request inputs. Bounded attempt observations stay
+separate from immutable output identity.
+The workflow cannot revise a package to make its progress look complete. PostgreSQL
+retains durable facts; Temporal determines sequencing. Finite workflow-history
+retention cannot support a claim of globally exactly-once execution.
+
+Cancellation is requested and then observed. Each provider operation checks current
+access and cancellation first; no check can unsend a request already in flight.
+Cancellation and result transactions lock the same collection record. A committed
+cancel intent fences new receipt publication, while Temporal supplies confirmation
+that execution stopped. A receipt committed first remains authoritative even if
+its acknowledgment was lost before later cancellation or revocation. Public read
+permission protects historical source. A failed final permission check discards
+newly fetched text.
+
+## Provenance and coverage
+
+The existing `conductor-git/v1` snapshot remains unchanged. A new remote
+representation must identify its provider, canonical repository, exact commit,
+collector/profile version, request/receipt identity, and content digest explicitly.
+Clients cannot authenticate provenance merely by writing a familiar receipt ID in
+JSON; the service must resolve a matching immutable record under current scope.
+Attachment requires the same workspace and Conductor repository ID, even when
+another workspace has registered the same external repository.
+
+Complete text retains both its Git blob ID and SHA-256 digest. Missing paths,
+unsupported modes, binary text, provider failures, and collection limits remain
+visible. A paginated or truncated tree is not evidence that a file does not exist.
+No symlink, submodule, LFS target, download redirect, or embedded command is followed.
+
+A completed workflow means its defined collection procedure ended. Coverage may
+still be incomplete. Collected specifications and ADRs are source artifacts; their
+text cannot grant approval, establish passing verification, or authorize execution.
+An explicit version-checked attachment creates a new package revision and therefore
+requires its own review.
+
+## Delivery limits
+
+The first interface is the API and CLI. Browser/terminal collection follows the
+same commands. Both GitHub and GitLab are required, with separately reported read
+profiles and live test evidence. Their remote publication, checks, and webhook
+capabilities remain later work, as described in the [provider plan](repository-providers.md).
+See the [delivery plan](../../specs/006-durable-context/plan.md) for implementation
+and process-restart acceptance boundaries.

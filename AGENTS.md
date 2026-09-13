@@ -24,6 +24,16 @@ authenticated workspace access. Read these before changing behavior:
 9. `specs/003-workspace-access/spec.md` and `plan.md` for authenticated API/CLI
    review; `docs/operations/authenticated-review.md` for supported identity,
    provisioning, and deployment limits.
+10. `specs/004-browser-sign-in/spec.md` and `plan.md` for browser sessions and
+    `docs/operations/browser-sign-in.md` for provider and HTTPS setup.
+11. `specs/005-authenticated-terminal/spec.md` and `plan.md` for authenticated
+    terminal identity, scope, and recovery; `docs/operations/terminal-review.md`
+    for controls and real PTY acceptance.
+12. Before introducing remote context or Temporal, read the proposed
+    `specs/006-durable-context/spec.md` and `plan.md`,
+    `docs/architecture/durable-context.md`, and ADR 0003. The selected collection
+    policy requires author permission plus an operator-enabled repository read
+    integration; it does not grant coding or publication authority.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -86,7 +96,7 @@ packages to mirror the target diagram.
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
-| `internal/authn/` | Bounded issuer discovery and signed access-token verification |
+| `internal/authn/` | Bounded issuer discovery, API token verification, and browser code exchange |
 | `internal/store/` | PostgreSQL transaction implementation |
 | `internal/repositorycontext/` | Bounded local Git artifact collection and freshness checks |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
@@ -136,6 +146,10 @@ packages to mirror the target diagram.
 - Native Spec Kit/ADRKit files are currently imported as text artifacts. Do not
   claim command/API compatibility, accepted decisions, or execution authority from
   their contents.
+- Proposed remote collection must preserve existing snapshot versions and digests.
+  A receipt ID supplied in JSON is not authenticated provenance. Resolve trusted
+  receipt linkage under canonical scope; never refresh or attach a result as part
+  of approval. Keep provider credentials and source text outside workflow history.
 
 ## Go conventions
 
@@ -182,8 +196,22 @@ packages to mirror the target diagram.
   from a configured HTTPS issuer and audience. Do not claim arbitrary JWT, ID-token,
   opaque-token, or identity-provider compatibility from synthetic issuer tests.
 - Keep access tokens out of logs, actor fields, command-line arguments, and
-  repository commands. The noninteractive CLI reads an explicitly selected token
-  file; browser and TUI authentication remain a separate increment.
+  repository commands. CLI and TUI commands read an explicitly selected token
+  file; the browser uses an opaque server session. The terminal reads its token
+  once for the session. Do not claim interactive CLI login or token refresh.
+- Browser login uses a fixed HTTPS origin, authorization code flow, S256 PKCE,
+  browser-bound one-use state, and nonce validation. ID tokens authenticate login
+  only; never treat them as API bearer tokens or persist provider tokens.
+- Ignore bounded, unrecognized OAuth callback extensions as the protocol requires;
+  do not reinterpret them as scope or command inputs. Reject duplicate callback
+  parameters, and keep package commands strict about their own query/body fields.
+- Cookie commands require exact Origin and a session-bound CSRF header. Browser
+  reads send that header too, preventing old tabs from acting as a newly signed-in
+  account. Identity or scope changes clear inspection and cancel pending requests.
+- Preserve server-side session expiry, admission limits, revocation, and hashed
+  cookie credentials. Expired rows remain unusable even before later creation
+  prunes them. Sign-out does not claim provider logout or cancellation of commands
+  already authorized.
 - Access provisioning is a trusted database-operator command, not a public API.
   Its operator label is audit context, not proof of identity. Apply bounded config
   updates with an audit event atomically; omitted records stay unchanged and false
@@ -210,11 +238,20 @@ packages to mirror the target diagram.
   browser tooling is available. If unavailable, report that limitation.
 - Commit reviewed frontend lockfiles and use reproducible installs. Do not fabricate
   a lockfile or checksum when registries are unavailable.
-- The Bubble Tea session uses a fixed local actor and per-operation deadlines.
+- The Bubble Tea session keeps one identity and uses per-operation deadlines.
   Capture the displayed revision/digest before confirmation; never refresh inside
   a mutation. Conflicts and uncertain mutation outcomes require explicit inspection
   before another mutation. Cancel pending work when the session ends and ignore
   superseded asynchronous responses.
+- An authenticated terminal requires a selected workspace and canonical repository,
+  resolves its principal and capabilities through server discovery, and never uses
+  a local actor. Keep its credential and scope fixed until exit. Missing or truncated
+  discovery cannot invent access. Human/agent kind and capabilities govern controls;
+  the server still authorizes every command.
+- On terminal authentication or permission failure, clear inspection, capabilities,
+  imported drafts, and confirmation state. Explicit `r` recovery rechecks access with
+  the same credential before a fresh inspection. Never revalidate or load new content
+  inside an approval action, and never silently replace the session's token.
 - Import terminal package content only from an explicitly selected, bounded JSON
   file. Show a preview before replacing content and preserve unknown fields in the
   imported document. Escape terminal control characters in content and errors;
@@ -266,6 +303,11 @@ PostgreSQL acceptance paths covering human collaboration, agent approval denial,
 workspace/repository isolation across every endpoint, revocation, forged identity,
 legacy migration, and access-audit rollback. Synthetic issuer tests establish the
 implemented protocol boundary, not compatibility with a real identity vendor.
+For browser sign-in changes also run the signed code-exchange/CSRF/session tests
+and opt into the actual Chromium acceptance with `CONDUCTOR_TEST_BROWSER=1`.
+Set `CONDUCTOR_BROWSER_PYTHON` to the Python environment with the pinned Playwright
+dependency and build the web app first; see the browser sign-in runbook. Missing
+opt-in is a skip; missing dependencies after opt-in are a failure.
 
 For API/process lifecycle or durability changes, run the opt-in process-restart
 acceptance with `CONDUCTOR_TEST_PROCESS_RESTART=1`. It owns a temporary PostgreSQL
@@ -275,7 +317,11 @@ existing development volume to prove recovery. Missing opt-in is an explicit ski
 missing dependencies after opt-in are a failure.
 
 For terminal workflow changes, run the real PTY acceptance in `tests/terminal/`
-against an explicitly configured local API and compiled CLI. See
+against an explicitly configured local API and compiled CLI. Also opt into the
+signed-issuer authenticated PTY acceptance with `CONDUCTOR_TEST_TERMINAL=1` and
+`CONDUCTOR_TEST_DATABASE_URL`. It owns an isolated schema and temporary API/CLI
+resources; it must preserve existing development data. Missing opt-in is a skip;
+missing dependencies after opt-in are a failure. See
 `docs/operations/terminal-review.md` for controls, limits, and acceptance commands.
 
 Before finishing:

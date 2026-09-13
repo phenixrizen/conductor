@@ -33,6 +33,12 @@ func NewAuthenticated(base, token, workspace, repositoryID string) (*Client, err
 	return c, nil
 }
 
+// AuthenticatedScope returns fixed request scope without exposing the credential.
+// It describes client configuration; only the server can establish permissions.
+func (c *Client) AuthenticatedScope() (workspaceID, repositoryID string, authenticated bool) {
+	return c.workspaceID, c.repositoryID, c.bearerToken != ""
+}
+
 func (c *Client) Session(ctx context.Context) (domain.Session, error) {
 	var session domain.Session
 	err := c.doInto(ctx, "GET", "/api/v1/session", nil, &session)

@@ -356,7 +356,8 @@ func startRestartServer(t *testing.T, ctx context.Context, binary, databaseURL s
 	server := &restartServer{cmd: exec.CommandContext(ctx, binary), url: "http://" + address, done: make(chan struct{})}
 	for _, value := range os.Environ() {
 		if !strings.HasPrefix(value, "DATABASE_URL=") && !strings.HasPrefix(value, "CONDUCTOR_ADDR=") &&
-			!strings.HasPrefix(value, "CONDUCTOR_AUTH_MODE=") && !strings.HasPrefix(value, "CONDUCTOR_OIDC_") {
+			!strings.HasPrefix(value, "CONDUCTOR_AUTH_MODE=") && !strings.HasPrefix(value, "CONDUCTOR_OIDC_") &&
+			!strings.HasPrefix(value, "CONDUCTOR_PUBLIC_ORIGIN=") {
 			server.cmd.Env = append(server.cmd.Env, value)
 		}
 	}

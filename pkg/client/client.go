@@ -18,11 +18,14 @@ import (
 type APIError struct {
 	StatusCode                   int
 	Code, Message, CorrelationID string
+	cause                        error
 }
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("Conductor API %d %s: %s (correlation ID %s)", e.StatusCode, e.Code, e.Message, e.CorrelationID)
 }
+
+func (e *APIError) Unwrap() error { return e.cause }
 
 type Client struct {
 	BaseURL, Actor string
@@ -94,10 +97,22 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 			CorrelationID: res.Header.Get("X-Correlation-ID")}
 	}
 	data, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
+	// Even a proxy's HTML denial or an interrupted error body must retain 401/403
+	// so interactive clients discard inspection and re-establish server access.
+	invalidError := func(message string, cause error) error {
+		return &APIError{StatusCode: res.StatusCode, Code: "invalid_error_response",
+			Message: message, CorrelationID: res.Header.Get("X-Correlation-ID"), cause: cause}
+	}
 	if err != nil {
+		if res.StatusCode >= 300 {
+			return invalidError("could not read API error response", err)
+		}
 		return fmt.Errorf("read Conductor response: %w", err)
 	}
 	if len(data) > 2<<20 {
+		if res.StatusCode >= 300 {
+			return invalidError("API error response exceeds 2 MiB", nil)
+		}
 		return fmt.Errorf("Conductor response exceeds 2 MiB")
 	}
 	if res.StatusCode >= 300 {
@@ -109,7 +124,7 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 			} `json:"error"`
 		}
 		if err := json.Unmarshal(data, &envelope); err != nil {
-			return fmt.Errorf("Conductor API %s returned an invalid error: %w", res.Status, err)
+			return invalidError("API returned an invalid error response", nil)
 		}
 		return &APIError{StatusCode: res.StatusCode, Code: envelope.Error.Code, Message: envelope.Error.Message, CorrelationID: envelope.Error.CorrelationID}
 	}

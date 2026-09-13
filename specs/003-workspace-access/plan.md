@@ -14,12 +14,14 @@
 
 ## Following increment
 
-Add configurable browser OpenID Connect sign-in using authorization code flow,
-PKCE, nonce/state validation, and protected server-managed sessions. Keep browser
-ID-token validation separate from API JWT access-token validation. The browser
-must use the same stored permissions and exact-revision command path, expose
-workspace/repository choices, and clear inspected content when identity or scope
-changes. Then extend authenticated terminal access through that same boundary.
+[Feature 004](../004-browser-sign-in/spec.md) now adds configurable browser OIDC
+sign-in using authorization code flow, PKCE, nonce/state validation, and protected
+server-managed sessions. Browser ID-token validation remains separate from API
+access-token validation. The workbench uses the same stored permissions and exact
+review command path, and clears inspection when identity or scope changes.
+[Feature 005](../005-authenticated-terminal/spec.md) adds authenticated terminal
+access through that same boundary, with a fixed credential and scope, capability
+discovery, and explicit recovery. It does not add interactive CLI token acquisition.
 
 Durable external execution remains later work, after the authenticated review
 surfaces and recovery contracts are exercised. Each subsequent increment belongs

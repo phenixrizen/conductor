@@ -25,8 +25,8 @@ func clientForCommand(command, actor string, actorSet bool, workspace, repositor
 		if actorSet || actor != "" {
 			return nil, errors.New("--actor cannot be combined with an access token; authenticated identity comes from the server")
 		}
-		if command == "tui" {
-			return nil, errors.New("authenticated terminal sessions are not available yet; use the session, repositories, and review CLI commands")
+		if command == "tui" && (workspace == "" || repositoryID == "") {
+			return nil, errors.New("authenticated terminal review requires --workspace and --repository-id (or CONDUCTOR_WORKSPACE and CONDUCTOR_REPOSITORY_ID)")
 		}
 		return client.NewAuthenticated(base, token, workspace, repositoryID)
 	}

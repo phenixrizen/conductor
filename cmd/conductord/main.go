@@ -18,11 +18,15 @@ import (
 	"github.com/phenixrizen/conductor/internal/store"
 )
 
-type config struct{ databaseURL, address, mode, issuer, audience string }
+type config struct {
+	databaseURL, address, mode, issuer, audience string
+	publicOrigin, clientID, clientSecretFile     string
+}
 
 func loadConfig(getenv func(string) string) (config, error) {
 	c := config{databaseURL: getenv("DATABASE_URL"), address: getenv("CONDUCTOR_ADDR"),
-		mode: getenv("CONDUCTOR_AUTH_MODE"), issuer: getenv("CONDUCTOR_OIDC_ISSUER"), audience: getenv("CONDUCTOR_OIDC_AUDIENCE")}
+		mode: getenv("CONDUCTOR_AUTH_MODE"), issuer: getenv("CONDUCTOR_OIDC_ISSUER"), audience: getenv("CONDUCTOR_OIDC_AUDIENCE"),
+		publicOrigin: getenv("CONDUCTOR_PUBLIC_ORIGIN"), clientID: getenv("CONDUCTOR_OIDC_CLIENT_ID"), clientSecretFile: getenv("CONDUCTOR_OIDC_CLIENT_SECRET_FILE")}
 	if c.databaseURL == "" {
 		return c, errors.New("DATABASE_URL is required")
 	}
@@ -38,12 +42,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 			return c, errors.New("local authentication requires a literal loopback listen address")
 		}
-		if c.issuer != "" || c.audience != "" {
+		if c.issuer != "" || c.audience != "" || c.publicOrigin != "" || c.clientID != "" || c.clientSecretFile != "" {
 			return c, errors.New("OIDC settings cannot be combined with local authentication")
 		}
 	case "oidc":
 		if c.issuer == "" || c.audience == "" {
 			return c, errors.New("OIDC mode requires CONDUCTOR_OIDC_ISSUER and CONDUCTOR_OIDC_AUDIENCE")
+		}
+		if c.publicOrigin != "" || c.clientID != "" || c.clientSecretFile != "" {
+			if c.publicOrigin == "" || c.clientID == "" || c.clientSecretFile == "" {
+				return c, errors.New("browser sign-in requires CONDUCTOR_PUBLIC_ORIGIN, CONDUCTOR_OIDC_CLIENT_ID, and CONDUCTOR_OIDC_CLIENT_SECRET_FILE together")
+			}
+			var err error
+			c.publicOrigin, err = api.BrowserOrigin(c.publicOrigin)
+			if err != nil {
+				return c, err
+			}
 		}
 	default:
 		return c, errors.New("CONDUCTOR_AUTH_MODE must explicitly be local or oidc")
@@ -61,10 +75,24 @@ func run() error {
 	startup, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var verifier *authn.Verifier
+	var browser *authn.Browser
 	if c.mode == "oidc" {
+		var secret string
+		if c.clientSecretFile != "" {
+			secret, err = browserClientSecret(c.clientSecretFile)
+			if err != nil {
+				return err
+			}
+		}
 		verifier, err = authn.New(startup, authn.Config{Issuer: c.issuer, Audience: c.audience})
 		if err != nil {
 			return fmt.Errorf("initialize access-token verification: %w", err)
+		}
+		if c.publicOrigin != "" {
+			browser, err = authn.NewBrowser(startup, authn.BrowserConfig{Issuer: c.issuer, ClientID: c.clientID, ClientSecret: secret, RedirectURL: c.publicOrigin + "/api/v1/auth/callback"})
+			if err != nil {
+				return errors.New("initialize browser sign-in: identity configuration is unavailable or unsupported")
+			}
 		}
 	}
 	db, err := store.Open(startup, c.databaseURL)
@@ -74,7 +102,14 @@ func run() error {
 	defer db.Close()
 	var handler http.Handler
 	if c.mode == "oidc" {
-		handler = api.NewAuthenticated(service.NewAuthenticated(db), verifier)
+		if browser != nil {
+			handler, err = api.NewBrowserAuthenticated(service.NewAuthenticated(db), verifier, browser, db, api.BrowserConfig{Origin: c.publicOrigin, Issuer: c.issuer})
+			if err != nil {
+				return err
+			}
+		} else {
+			handler = api.NewAuthenticated(service.NewAuthenticated(db), verifier)
+		}
 	} else {
 		handler = api.New(service.New(db))
 	}

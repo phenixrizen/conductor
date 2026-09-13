@@ -14,9 +14,11 @@ An opt-in acceptance suite separately restarts the actual API and PostgreSQL
 processes and verifies preserved content, approvals, history, audit, and discovery.
 Real PTY acceptance exercises the terminal through that same API/store path.
 [Feature 003](../../specs/003-workspace-access/spec.md) adds authenticated workspace
-and repository review through the API and noninteractive CLI. Browser and terminal
-workbench review remain local-only; authenticated browser sign-in is the next
-interface increment.
+and repository review through the API and noninteractive CLI.
+[Feature 004](../../specs/004-browser-sign-in/spec.md) adds browser OIDC sign-in and
+shared review. [Feature 005](../../specs/005-authenticated-terminal/spec.md) adds
+authenticated terminal review with a fixed credential and scope, server-provided
+capabilities, and explicit recovery after access failure.
 
 ## Domain model
 
@@ -179,10 +181,12 @@ uncertain mutation outcomes block further writes until explicit inspection.
 ## Known limitations
 
 - Local actor headers are development identity only and cannot access workspace
-  packages. Browser and TUI review still use this explicit loopback mode.
+  packages. The terminal supports this explicit loopback mode as well as authenticated
+  workspace review.
 - Authenticated API/CLI access supports the documented signed access-token profile.
   Synthetic issuer tests do not establish compatibility with a real identity vendor;
-  interactive login and browser/TUI authentication remain pending.
+  browser login uses separately validated ID tokens and protected server sessions.
+  The CLI and terminal do not acquire or refresh API access tokens.
 - No Temporal workflow, assistant, GitHub/GitLab delivery, Linear/Jira, or runtime adapter
   runs. Local Git context collection is available as described in Feature 002.
 - Shared discovery, historical revision inspection, and audit-query endpoints are

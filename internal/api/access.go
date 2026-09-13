@@ -24,6 +24,10 @@ type tokenVerifier interface {
 // NewAuthenticated has no local-header fallback. Its service derives permissions
 // and the durable principal ID from PostgreSQL inside the command transaction.
 func NewAuthenticated(s authenticatedService, verifier tokenVerifier) http.Handler {
+	return sharedHandler(s, verifier, nil)
+}
+
+func sharedHandler(s authenticatedService, verifier tokenVerifier, browser *browserAuth) http.Handler {
 	a := &API{service: s, historyService: s}
 	mux := routes(a)
 	mux.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
@@ -50,27 +54,31 @@ func NewAuthenticated(s authenticatedService, verifier tokenVerifier) http.Handl
 		}
 		write(w, http.StatusOK, value)
 	})
-	return requestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-		defer cancel()
-		r = r.WithContext(ctx)
+	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reject mixed modes rather than letting a caller select a durable actor
 		// independently of the signed identity used for access control.
-		if len(r.Header.Values("X-Conductor-Actor")) != 0 || len(r.Header.Values("Authorization")) != 1 {
-			reject(w, r, http.StatusUnauthorized, "authentication_required", "a bearer access token is required; local actor headers are not accepted")
+		if len(r.Header.Values("X-Conductor-Actor")) != 0 {
+			reject(w, r, http.StatusUnauthorized, "authentication_required", "authenticated identity is required; local actor headers are not accepted")
 			return
 		}
-		parts := strings.Fields(r.Header.Get("Authorization"))
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 16<<10 || verifier == nil {
-			reject(w, r, http.StatusUnauthorized, "authentication_required", "a valid bearer access token is required")
-			return
-		}
-		identity, err := verifier.Verify(r.Context(), parts[1])
-		if err != nil {
-			// Verification details may contain issuer responses. Never return token
-			// contents or upstream diagnostics to a requesting client.
-			reject(w, r, http.StatusUnauthorized, "authentication_required", "the access token could not be verified")
-			return
+		var identity authn.Identity
+		if browser != nil && len(r.CookiesNamed(sessionCookie)) != 0 {
+			if len(r.Header.Values("Authorization")) != 0 {
+				fail(w, r, domain.ErrUnauthenticated)
+				return
+			}
+			session, err := browser.authenticate(r, r.Method != http.MethodGet && r.Method != http.MethodHead)
+			if err != nil {
+				fail(w, r, err)
+				return
+			}
+			identity = authn.Identity{Issuer: session.Identity.Issuer, Subject: session.Identity.Subject}
+		} else {
+			var ok bool
+			identity, ok = bearerIdentity(w, r, verifier)
+			if !ok {
+				return
+			}
 		}
 		workspace, okWorkspace := scopeHeader(r, "X-Conductor-Workspace")
 		repository, okRepository := scopeHeader(r, "X-Conductor-Repository")
@@ -81,7 +89,44 @@ func NewAuthenticated(s authenticatedService, verifier tokenVerifier) http.Handl
 		access := domain.AccessRequest{Identity: domain.AccessIdentity{Issuer: identity.Issuer, Subject: identity.Subject},
 			WorkspaceID: workspace, RepositoryID: repository}
 		mux.ServeHTTP(w, r.WithContext(domain.WithAccess(r.Context(), access)))
+	})
+	public := http.NewServeMux()
+	public.HandleFunc("GET /api/v1/auth/config", authenticationConfig("oidc", browser != nil))
+	if browser != nil {
+		public.HandleFunc("GET /api/v1/auth/login", browser.login)
+		public.HandleFunc("GET /api/v1/auth/callback", browser.callback)
+		public.HandleFunc("GET /api/v1/auth/session", browser.session)
+		public.HandleFunc("POST /api/v1/auth/logout", browser.logout)
+	}
+	public.Handle("/", protected)
+	return requestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		public.ServeHTTP(w, r.WithContext(ctx))
 	}))
+}
+
+func bearerIdentity(w http.ResponseWriter, r *http.Request, verifier tokenVerifier) (authn.Identity, bool) {
+	if len(r.Header.Values("Authorization")) != 1 {
+		fail(w, r, domain.ErrUnauthenticated)
+		return authn.Identity{}, false
+	}
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 16<<10 || verifier == nil {
+		reject(w, r, http.StatusUnauthorized, "authentication_required", "a valid bearer access token is required")
+		return authn.Identity{}, false
+	}
+	identity, err := verifier.Verify(r.Context(), parts[1])
+	if err != nil {
+		// Verification details may contain issuer responses. Never return token
+		// contents or upstream diagnostics to a requesting client.
+		reject(w, r, http.StatusUnauthorized, "authentication_required", "the access token could not be verified")
+		return authn.Identity{}, false
+	}
+	return identity, true
 }
 
 func scopeHeader(r *http.Request, name string) (string, bool) {

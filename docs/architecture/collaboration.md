@@ -1,8 +1,8 @@
 # Shared engineering context
 
 **Status:** Shared storage, authenticated workspace and repository access, and
-review through the API/noninteractive CLI are implemented. Browser and interactive
-terminal review remain local-development interfaces; browser sign-in is next.
+review through the browser, API, CLI, and interactive terminal are implemented.
+Explicit local development mode remains separate from workspace data.
 
 ## One shared record
 
@@ -20,7 +20,7 @@ or approval.
 
 ```mermaid
 flowchart LR
-    Human[Authenticated engineer CLI] --> Shared[Authenticated API]
+    Human[Authenticated engineer browser / CLI / terminal] --> Shared[Authenticated API]
     Agent[Authenticated agent client] --> Shared
     Local[Local browser / terminal / CLI] --> LocalAPI[Explicit loopback API]
     Shared --> Scoped[(Workspace packages and permissions)]
@@ -66,9 +66,20 @@ audited transactionally. Disabling access preserves the earlier attribution.
 OIDC mode supports the documented RFC 9068 RS256 access-token profile, not arbitrary
 provider JWTs, ID tokens, or opaque tokens. Tests exercise a synthetic issuer;
 compatibility with a particular identity vendor has not been established. The CLI
-reads a selected token file, and does not provide interactive identity-provider
-login. See the [authenticated review guide](../operations/authenticated-review.md)
-and [Feature 003](../../specs/003-workspace-access/spec.md).
+and terminal read a selected token file without interactive identity-provider login.
+The browser separately uses authorization code flow with PKCE and protected
+PostgreSQL sessions; its ID tokens never become API bearer credentials. Session and
+scope changes clear the workbench inspection. See the
+[browser guide](../operations/browser-sign-in.md),
+[authenticated review guide](../operations/authenticated-review.md), and
+[Feature 003](../../specs/003-workspace-access/spec.md).
+
+The [terminal workbench](../operations/terminal-review.md) fixes its credential,
+workspace, and repository for one session. It discovers the server principal and
+effective capabilities before showing shared work. Authentication or permission
+failure clears inspection, capabilities, and imported drafts. Explicit reload
+rechecks access before inspecting again; approval itself never reloads identity or
+content. Switching credentials or scope requires starting a new terminal session.
 
 ## Canonical repositories and context
 

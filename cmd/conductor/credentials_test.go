@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +25,8 @@ func cleanCredentialEnvironment(t *testing.T) {
 
 func TestCredentialModeSelection(t *testing.T) {
 	for _, tc := range []struct {
-		name, command, actor, token, tokenFile, workspace string
-		actorSet, configured, fileConfigured, valid       bool
+		name, command, actor, token, tokenFile, workspace, repositoryID string
+		actorSet, configured, fileConfigured, valid                     bool
 	}{
 		{name: "local review", command: "show", actor: "reviewer", actorSet: true, valid: true},
 		{name: "local terminal", command: "tui", actor: "reviewer", actorSet: true, valid: true},
@@ -32,7 +35,11 @@ func TestCredentialModeSelection(t *testing.T) {
 		{name: "repository discovery", command: "repositories", token: "synthetic.token", configured: true, workspace: "workspace-1", valid: true},
 		{name: "mixed actor", command: "show", actor: "forged", actorSet: true, token: "synthetic.token", configured: true},
 		{name: "empty actor flag still mixed", command: "show", actorSet: true, token: "synthetic.token", configured: true},
-		{name: "authenticated terminal unavailable", command: "tui", token: "synthetic.token", configured: true},
+		{name: "authenticated terminal requires scope", command: "tui", token: "synthetic.token", configured: true},
+		{name: "authenticated terminal requires repository", command: "tui", token: "synthetic.token", configured: true, workspace: "team"},
+		{name: "authenticated terminal requires workspace", command: "tui", token: "synthetic.token", configured: true, repositoryID: "repo"},
+		{name: "authenticated terminal", command: "tui", token: "synthetic.token", configured: true, workspace: "team", repositoryID: "repo", valid: true},
+		{name: "authenticated terminal rejects mixed actor", command: "tui", actor: "forged", actorSet: true, token: "synthetic.token", configured: true, workspace: "team", repositoryID: "repo"},
 		{name: "local session unavailable", command: "session", actor: "reviewer", actorSet: true},
 		{name: "local repositories unavailable", command: "repositories", actor: "reviewer", actorSet: true},
 		{name: "local scope cannot masquerade as authorization", command: "show", actor: "reviewer", actorSet: true, workspace: "workspace-1"},
@@ -49,7 +56,7 @@ func TestCredentialModeSelection(t *testing.T) {
 			if tc.fileConfigured {
 				t.Setenv("CONDUCTOR_TOKEN_FILE", tc.tokenFile)
 			}
-			c, err := clientForCommand(tc.command, tc.actor, tc.actorSet, tc.workspace, "")
+			c, err := clientForCommand(tc.command, tc.actor, tc.actorSet, tc.workspace, tc.repositoryID)
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v err=%v", tc.valid, err)
 			}
@@ -60,6 +67,37 @@ func TestCredentialModeSelection(t *testing.T) {
 				t.Fatal("credential appeared in an error")
 			}
 		})
+	}
+}
+
+func TestTerminalCredentialFileIsReadOnlyAtClientCreation(t *testing.T) {
+	cleanCredentialEnvironment(t)
+	path := filepath.Join(t.TempDir(), "access-token")
+	if err := os.WriteFile(path, []byte("initial.synthetic.token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer initial.synthetic.token" || len(r.Header.Values("X-Conductor-Actor")) != 0 ||
+			r.Header.Get("X-Conductor-Workspace") != "team" || r.Header.Get("X-Conductor-Repository") != "application" {
+			t.Error("terminal client reread credentials or changed scope")
+		}
+		_, _ = w.Write([]byte(`{"principal":{"id":"reviewer","kind":"human"},"workspaces":[]}`))
+	}))
+	defer server.Close()
+	t.Setenv("CONDUCTOR_URL", server.URL)
+	t.Setenv("CONDUCTOR_TOKEN_FILE", path)
+	c, err := clientForCommand("tui", "", false, "team", "application")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement.synthetic.token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONDUCTOR_TOKEN", "another.synthetic.token")
+	t.Setenv("CONDUCTOR_WORKSPACE", "another")
+	t.Setenv("CONDUCTOR_REPOSITORY_ID", "another")
+	if _, err := c.Session(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

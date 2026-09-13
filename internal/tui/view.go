@@ -14,7 +14,9 @@ func (m model) View() string {
 	header := m.header()
 	bodyHeight := m.bodyHeight()
 	var body []string
-	if m.pack != nil || m.draft != nil {
+	if m.access.authenticated && !m.access.ready {
+		body = []string{"Review requires confirmed server access.", "r checks access; q exits. Credentials and scope stay fixed until exit."}
+	} else if m.pack != nil || m.draft != nil {
 		end := min(len(m.lines), m.offset+bodyHeight)
 		body = m.lines[min(m.offset, end):end]
 	} else if len(m.page.Changes) == 0 {
@@ -63,6 +65,26 @@ func (m model) footer() []string {
 	}
 	if m.draft != nil {
 		help = "s save preview | Esc discard | r refresh | q quit"
+	}
+	if m.access.authenticated {
+		if !m.access.ready {
+			help = "r recheck access | q quit"
+		} else if m.draft == nil {
+			help = "enter open | o ID | r refresh access | n/p page | q quit"
+			if m.pack != nil {
+				help = "r refresh access | b browse | q quit"
+			}
+			if m.actionAllowed("create") == nil {
+				if m.pack != nil {
+					help = "e revise | s submit | " + help
+				} else {
+					help = "c create | " + help
+				}
+			}
+			if m.pack != nil && m.actionAllowed("approve") == nil {
+				help = "a approve | " + help
+			}
+		}
 	}
 	last := "Evidence is shown as recorded; missing is not passing."
 	if m.prompt != "" {
