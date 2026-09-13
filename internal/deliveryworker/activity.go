@@ -51,19 +51,19 @@ func (a *Activity) Publish(ctx context.Context, ref contextworkflow.Reference) (
 		return contextworkflow.Result{}, domain.ErrInvalidInput
 	}
 	if digest, err := a.db.DeliveryOperationReceipt(ctx, ref.ID, ref.Binding); err != nil || digest != "" {
-		return contextworkflow.Result{ReceiptID: ref.ID, Digest: digest}, err
+		return contextworkflow.Result{ReceiptID: ref.ID, Digest: digest}, publicationStoreError(err)
 	}
 	operation, err := a.db.LoadDeliveryOperation(ctx, ref.ID, ref.Binding)
 	if err != nil {
-		return contextworkflow.Result{}, err
+		return contextworkflow.Result{}, publicationStoreError(err)
 	}
 	work, err := a.db.CheckDeliveryWork(ctx, operation.Work.Delivery.ID, ref.Binding)
 	if err != nil {
-		return contextworkflow.Result{}, err
+		return contextworkflow.Result{}, publicationStoreError(err)
 	}
 	check := func(ctx context.Context) error {
 		_, err := a.db.CheckDeliveryWork(ctx, work.Delivery.ID, ref.Binding)
-		return err
+		return publicationStoreError(err)
 	}
 	var prepared delivery.Prepared
 	if operation.Operation == "publish" {
@@ -96,7 +96,7 @@ func (a *Activity) Publish(ctx context.Context, ref contextworkflow.Reference) (
 		return contextworkflow.Result{}, err
 	}
 	digest, err := a.db.CompleteDeliveryOperation(ctx, ref.ID, ref.Binding, observed)
-	return contextworkflow.Result{ReceiptID: ref.ID, Digest: digest}, err
+	return contextworkflow.Result{ReceiptID: ref.ID, Digest: digest}, publicationStoreError(err)
 }
 func safeError(err error) error {
 	if errors.Is(err, context.Canceled) {
@@ -108,4 +108,19 @@ func safeError(err error) error {
 		return retryableFailure()
 	}
 	return permanentFailure()
+}
+
+// Only persistence boundaries classify unknown I/O as recoverable. The next
+// bounded Temporal attempt looks for a committed receipt before touching source,
+// credentials or the provider. Domain authority/configuration failures stay final.
+func publicationStoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, permanent := range []error{context.Canceled, domain.ErrForbidden, domain.ErrUnauthenticated, domain.ErrInvalidInput, domain.ErrConflict, domain.ErrStaleApproval, domain.ErrNotFound, domain.ErrUnavailable, domain.ErrCollectionStopped} {
+		if errors.Is(err, permanent) {
+			return err
+		}
+	}
+	return delivery.ErrUnknown
 }

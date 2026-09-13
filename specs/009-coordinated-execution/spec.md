@@ -86,3 +86,8 @@ exact disposable containers/network. Recovery records uncertainty rather than
 inventing a patch or successful check. Release requires observed terminal Temporal
 execution, every task's non-unresolved receipt and confirmed cleanup of all admitted
 attempts. These rules also apply after cancellation and process failure.
+
+The original execution attempt must remain bounded by its admitted deadline, with
+cleanup time reserved. Admission or authorization latency cannot grant another
+execution window. Recheck cancellation after delayed I/O and before resource
+creation so an activity resumed after recovery cannot start new Docker work.

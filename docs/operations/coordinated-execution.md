@@ -147,3 +147,12 @@ and `artifactDigest` query pins. This returns failed checks and design reports
 as well as successful patches. It grants no approval or publication authority;
 current read permission for every repository in the run remains necessary.
 See [terminal controls](release-terminal.md) for CLI and TUI inspection.
+
+The original producer's budget starts before attempt admission and is bounded by
+the immutable database deadline, reserving its final 30 seconds for cleanup.
+Authorization queries and the runner share that context. If a delayed database
+response or credential read finishes after the window expires, no new sandbox or
+gateway may start. Recovery keeps the existing unresolved receipt; it does not
+restart the producer or release uncertain write claims. A controlled delayed-response
+regression exercises recovery before the original activity resumes, and real
+Docker/Temporal acceptance separately checks execution, cleanup and revocation.

@@ -25,6 +25,9 @@ type Runner struct {
 }
 
 func (r Runner) Run(ctx context.Context, request Request) (result Result, err error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	if err := ValidateRequest(request); err != nil {
 		return Result{}, err
 	}
@@ -46,6 +49,11 @@ func (r Runner) Run(ctx context.Context, request Request) (result Result, err er
 		}
 	} else if r.CredentialFile != "" || r.AllowProviderNetwork {
 		return Result{}, fmt.Errorf("%w: command profile must be credential-free and offline", ErrInvalid)
+	}
+	// Credential I/O can stall independently of cancellation. Never start Docker
+	// if the coordinator's immutable attempt window expired while it was read.
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
 	}
 	// One deadline covers production and every fresh verification container.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)

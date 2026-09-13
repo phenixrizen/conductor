@@ -120,6 +120,9 @@ func (a *Activity) Execute(ctx context.Context, ref coordinationworkflow.TaskRef
 	if err != nil {
 		return coordinationworkflow.TaskResult{}, failure(err)
 	}
+	// Anchor the original producer budget before admission I/O. A delayed database
+	// response must not grant a fresh timeout after recovery became eligible.
+	admissionStarted := time.Now()
 	attempt, created, err := a.store.BeginCoordinationAttempt(ctx, ref.Run.ID, ref.Run.Binding, ref.TaskID, execution.InputDigest(request))
 	if err != nil {
 		return coordinationworkflow.TaskResult{}, failure(err)
@@ -130,12 +133,22 @@ func (a *Activity) Execute(ctx context.Context, ref coordinationworkflow.TaskRef
 		}
 		return a.recoverAttempt(ctx, ref, *attempt)
 	}
+	// The persisted deadline includes 30 seconds for cleanup. Bound the original
+	// producer before that grace period, even if admission/authorization stalled.
+	// The local admission anchor is conservative when database clocks differ and
+	// retains Go's monotonic clock across this process's scheduling delays.
+	deadline := admissionStarted.Add(time.Duration(request.TimeoutSeconds) * time.Second)
+	if persisted := attempt.Deadline.Add(-30 * time.Second); persisted.Before(deadline) {
+		deadline = persisted
+	}
+	executionCtx, cancelExecution := context.WithDeadline(ctx, deadline)
+	defer cancelExecution()
 	// This is the final authorization boundary before the runner reads its private
-	// model credential and starts task-owned disposable resources.
-	if err = a.store.CheckCoordinationWork(ctx, ref.Run.ID, ref.Run.Binding); err != nil {
+	// model credential and starts task-owned disposable resources. A response
+	// resumed after its context expired cannot authorize a late Docker launch.
+	if err = a.store.CheckCoordinationWork(executionCtx, ref.Run.ID, ref.Run.Binding); err != nil || executionCtx.Err() != nil {
 		return a.stop(ref, "cancelled", attempt.InputDigest, true)
 	}
-	executionCtx, cancelExecution := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
