@@ -34,6 +34,8 @@ with sync_playwright() as p:
     expect(artifact.get_by_role("region", name="Producer evidence", exact=True)).to_contain_text("failed")
     expect(artifact).to_contain_text("Unknown; publication blocked")
     expect(artifact).to_contain_text("No independent check results retained")
+    expect(artifact.get_by_label("Criterion support", exact=True)).to_contain_text("unlinked · not_verified")
+    expect(artifact).to_contain_text("None linked")
     expect(artifact).to_contain_text("\\u001b[2J")
     expect(artifact).to_contain_text("\\u202e")
     assert page.evaluate("window.reportInjected === undefined")

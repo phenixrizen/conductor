@@ -39,6 +39,7 @@ with sync_playwright() as p:
     expect(inspected).to_contain_text("person-agent")
     expect(inspected).to_contain_text(os.environ["CONDUCTOR_BROWSER_RUN_DIGEST"])
     expect(inspected).to_contain_text("No receipt; verification unknown")
+    expect(inspected.get_by_label("Criterion links for check", exact=True)).to_contain_text("synthetic-output")
     panel.get_by_role("button",name="Authorize inspected plan",exact=True).click()
     dialog=panel.get_by_role("dialog",name="Confirm execution decision")
     expect(dialog).to_contain_text(os.environ["CONDUCTOR_BROWSER_RUN_DIGEST"])

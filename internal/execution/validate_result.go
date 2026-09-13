@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -24,6 +25,9 @@ func ValidateResult(request Request, profile Profile, image string, result Resul
 		return invalid()
 	}
 	producer := result.Producer
+	if len(producer.Requirements) != 0 {
+		return invalid()
+	}
 	if producer.ID != "producer" || producer.SourceDigest != result.InputDigest || len(producer.Output) > MaxLogBytes || !digest.MatchString(producer.OutputDigest) {
 		return invalid()
 	}
@@ -36,7 +40,7 @@ func ValidateResult(request Request, profile Profile, image string, result Resul
 		}
 		for i, c := range request.Checks {
 			e := result.Checks[i]
-			if e.ID != c.ID || e.RepositoryID != c.RepositoryID || !reflect.DeepEqual(e.Argv, c.Argv) || e.State != "unexecuted" || e.ExitCode != nil {
+			if e.ID != c.ID || e.RepositoryID != c.RepositoryID || !reflect.DeepEqual(e.Argv, c.Argv) || !slices.Equal(e.Requirements, c.Requirements) || e.State != "unexecuted" || e.ExitCode != nil {
 				return invalid()
 			}
 		}
@@ -104,7 +108,7 @@ func ValidateResult(request Request, profile Profile, image string, result Resul
 	}
 	for i, c := range request.Checks {
 		e := result.Checks[i]
-		if e.ID != c.ID || e.RepositoryID != c.RepositoryID || !reflect.DeepEqual(e.Argv, c.Argv) || len(e.Output) > MaxLogBytes || e.OutputDigest != Sum([]byte(e.Output)) {
+		if e.ID != c.ID || e.RepositoryID != c.RepositoryID || !reflect.DeepEqual(e.Argv, c.Argv) || !slices.Equal(e.Requirements, c.Requirements) || len(e.Output) > MaxLogBytes || e.OutputDigest != Sum([]byte(e.Output)) {
 			return invalid()
 		}
 		if e.State == "unexecuted" {

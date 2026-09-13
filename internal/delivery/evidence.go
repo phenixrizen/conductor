@@ -3,6 +3,7 @@ package delivery
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/phenixrizen/conductor/internal/domain"
@@ -46,7 +47,7 @@ func SelectedPatch(raw json.RawMessage, digest, repository string, task domain.C
 			if check.ID != expected.ID {
 				continue
 			}
-			if matched || seen[check.ID] || check.RepositoryID != expected.RepositoryID || !reflect.DeepEqual(check.Argv, expected.Argv) || check.State != "passed" || check.ExitCode == nil || *check.ExitCode != 0 || check.Truncated || check.SourceDigest != checkSource || check.OutputDigest != execution.Sum([]byte(check.Output)) {
+			if matched || seen[check.ID] || check.RepositoryID != expected.RepositoryID || !reflect.DeepEqual(check.Argv, expected.Argv) || !slices.Equal(check.Requirements, expected.Requirements) || check.State != "passed" || check.ExitCode == nil || *check.ExitCode != 0 || check.Truncated || check.SourceDigest != checkSource || check.OutputDigest != execution.Sum([]byte(check.Output)) {
 				return execution.Patch{}, ErrArtifact
 			}
 			matched = true

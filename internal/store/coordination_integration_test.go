@@ -16,7 +16,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/service"
 )
 
-func coordinationFixture(t *testing.T) (context.Context, *Postgres, *service.AuthenticatedService, domain.CoordinationPlan) {
+func coordinationFixture(t *testing.T, withCriteria ...bool) (context.Context, *Postgres, *service.AuthenticatedService, domain.CoordinationPlan) {
 	t.Helper()
 	ctx, p, s := collectionStore(t)
 	input := domain.GraphInput{}
@@ -47,7 +47,11 @@ func coordinationFixture(t *testing.T) (context.Context, *Postgres, *service.Aut
 	plan := domain.CoordinationPlan{SchemaVersion: 1, GraphID: g.ID, GraphDigest: g.Digest, MaxParallel: 2, Tasks: []domain.CoordinationTask{}}
 	for i, source := range g.Snapshot.Sources {
 		author := accessContext(ctx, "author", "workspace-one", source.RepositoryID)
-		pkg, err := s.Create(author, "ignored", domain.Content{"intent": "Synthetic coordinated change"})
+		content := domain.Content{"intent": "Synthetic coordinated change"}
+		if len(withCriteria) > 0 && withCriteria[0] {
+			content["verificationCriteria"] = domain.VerificationCriteria{SchemaVersion: 1, Criteria: []domain.VerificationCriterion{{ID: "synthetic-output", Description: "The synthetic command checks the related source contract."}, {ID: "unlinked", Description: "Another synthetic criterion without a declared check."}}}
+		}
+		pkg, err := s.Create(author, "ignored", content)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -10,11 +10,12 @@ type CoordinationArtifactQuery struct {
 	ArtifactDigest string `json:"artifactDigest"`
 }
 type CoordinationArtifact struct {
-	RunID          string          `json:"runId"`
-	RunDigest      string          `json:"runDigest"`
-	TaskID         string          `json:"taskId"`
-	ArtifactDigest string          `json:"artifactDigest"`
-	Artifact       json.RawMessage `json:"artifact"`
+	RunID          string              `json:"runId"`
+	RunDigest      string              `json:"runDigest"`
+	TaskID         string              `json:"taskId"`
+	ArtifactDigest string              `json:"artifactDigest"`
+	Artifact       json.RawMessage     `json:"artifact"`
+	Verification   *VerificationReview `json:"verification,omitempty"`
 }
 
 func ValidateCoordinationArtifactQuery(q CoordinationArtifactQuery) error {

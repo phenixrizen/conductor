@@ -93,7 +93,7 @@ func (r Runner) Run(ctx context.Context, request Request) (result Result, err er
 	result.Image = r.Image
 	if result.Producer.State != "passed" {
 		for _, check := range request.Checks {
-			result.Checks = append(result.Checks, Evidence{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, State: "unexecuted", OutputDigest: Sum(nil), SourceDigest: result.InputDigest})
+			result.Checks = append(result.Checks, Evidence{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, State: "unexecuted", OutputDigest: Sum(nil), SourceDigest: result.InputDigest, Requirements: check.Requirements})
 		}
 		return result, nil
 	}

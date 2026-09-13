@@ -1,6 +1,8 @@
 import type { BrowserAccess } from './api';
 import type { CollectionExecution } from './collections';
 import { isHex } from './graphs';
+import { validRequirements } from './coordination';
+import type { VerificationRequirement, VerificationReview } from './coordination';
 
 export interface DeliveryInput { runId: string; taskId: string; artifactDigest: string; baseBranch: string; title: string; description: string }
 export interface ProviderCheck { id: string; name: string; commit: string; state: string }
@@ -8,11 +10,11 @@ export interface ProviderDeployment { id: string; repositoryId: string; provider
 export interface DeliveryObservation { sequence: number; providerId: string; number: number; url: string; commit: string; tree: string; state: string; draft: boolean; mergeCommit?: string; checks: ProviderCheck[]; checksTruncated: boolean; checksState: string; deployment: string; deployments: ProviderDeployment[]; deploymentsTruncated: boolean; productionOutcome: string; observedAt: string; trigger?: {kind: string; key?: string; eventType?: string; payloadDigest?: string} }
 export interface Delivery { id: string; workspaceId: string; repositoryId: string; proposerId: string; input: DeliveryInput; digest: string; target: {workspaceId: string; repositoryId: string; provider: string; host: string; providerId: string; locator: string; profile: string; integrationVersion: number}; baseCommit: string; baseTree: string; resultTree: string; patchDigest: string; branch: string; createdAt: string; authorization?: {actor: string; digest: string; createdAt: string}; receipt?: {digest: string; observation: DeliveryObservation; createdAt: string}; observation?: DeliveryObservation; execution?: CollectionExecution }
 export interface DeliveryPage { deliveries: {id: string; workspaceId: string; repositoryId: string; digest: string; title: string; authorized: boolean; state: string; createdAt: string}[]; nextBefore?: string }
-export interface ExecutionEvidence { id: string; repositoryId: string; argv: string[]; state: string; exitCode?: number; output?: string; outputDigest: string; truncated: boolean; startedAt: string; finishedAt: string; sourceDigest: string }
+export interface ExecutionEvidence { id: string; repositoryId: string; argv: string[]; state: string; exitCode?: number; output?: string; outputDigest: string; truncated: boolean; startedAt: string; finishedAt: string; sourceDigest: string; requirements?: VerificationRequirement[] }
 export interface ExecutionPatch { repositoryId: string; baseCommit: string; baseTree: string; resultTree: string; patch: string; digest: string; paths: string[] }
 export interface ExecutionArtifact { cleanupConfirmed: boolean; inputDigest: string; profileDigest: string; image: string; adapter: string; adapterVersion: string; producer: ExecutionEvidence; patches: ExecutionPatch[]; checks: ExecutionEvidence[]; startedAt: string; finishedAt: string }
 export interface DeliveryArtifact { deliveryId: string; deliveryDigest: string; artifactDigest: string; artifact: ExecutionArtifact }
-export interface InspectedExecutionArtifact { artifact: ExecutionArtifact; decodedPatches: {metadata: ExecutionPatch; bytes: Uint8Array; text: string}[] }
+export interface InspectedExecutionArtifact { artifact: ExecutionArtifact; verification?: VerificationReview; decodedPatches: {metadata: ExecutionPatch; bytes: Uint8Array; text: string}[] }
 export interface InspectedArtifact extends DeliveryArtifact, InspectedExecutionArtifact {}
 export const deliveryPath = (id: string) => `/repository-deliveries/${encodeURIComponent(id)}`;
 const date = (v: unknown) => typeof v === 'string' && Number.isFinite(Date.parse(v));
@@ -52,7 +54,7 @@ export async function inspectExecutionArtifact(value: ExecutionArtifact): Promis
     const bytes=Uint8Array.from(atob(p.patch),c=>c.charCodeAt(0));if(bytes.length>8*1024*1024||await digestBytes(bytes)!==p.digest)throw new Error('A displayed patch does not match its retained byte digest.');
     decoded.push({metadata:p,bytes,text:new TextDecoder('utf-8',{fatal:true}).decode(bytes)});
   }
-  for(const c of [a.producer,...a.checks]){if(!c||typeof c.id!=='string'||typeof c.repositoryId!=='string'||!Array.isArray(c.argv??[])||(c.argv??[]).some(arg=>typeof arg!=='string')||typeof c.state!=='string'||typeof c.truncated!=='boolean'||!isHex(c.outputDigest,64)||!isHex(c.sourceDigest,64)||c.output!==undefined&&typeof c.output!=='string'||await digestBytes(new TextEncoder().encode(c.output??''))!==c.outputDigest)throw new Error('A check does not match its retained output digest.');}
+  for(const c of [a.producer,...a.checks]){if(!c||!validRequirements(c.requirements)||typeof c.id!=='string'||typeof c.repositoryId!=='string'||!Array.isArray(c.argv??[])||(c.argv??[]).some(arg=>typeof arg!=='string')||typeof c.state!=='string'||typeof c.truncated!=='boolean'||!isHex(c.outputDigest,64)||!isHex(c.sourceDigest,64)||c.output!==undefined&&typeof c.output!=='string'||await digestBytes(new TextEncoder().encode(c.output??''))!==c.outputDigest)throw new Error('A check does not match its retained output digest.');}
   return {artifact:a,decodedPatches:decoded};
 }
 

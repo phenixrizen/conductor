@@ -183,6 +183,9 @@ func (p *Postgres) validateCoordinationPins(ctx context.Context, plan domain.Coo
 		if r.Number != pin.Revision || r.Digest != pin.Digest {
 			return domain.ErrStaleApproval
 		}
+		if err = validatePinnedVerificationCriteria(plan, pin, r.Content); err != nil {
+			return err
+		}
 		if approved {
 			var exists bool
 			if err = p.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM approvals WHERE change_id=$1 AND revision=$2 AND digest=$3)`, pin.ChangeID, pin.Revision, pin.Digest).Scan(&exists); err != nil {

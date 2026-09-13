@@ -480,7 +480,7 @@ func verify(ctx context.Context, w wireRequest, result *Result) error {
 	result.Patches = w.Patches
 	for _, check := range w.Request.Checks {
 		if err := ctx.Err(); err != nil {
-			result.Checks = append(result.Checks, Evidence{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, State: "unexecuted", OutputDigest: Sum(nil), SourceDigest: result.InputDigest})
+			result.Checks = append(result.Checks, Evidence{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, State: "unexecuted", OutputDigest: Sum(nil), SourceDigest: result.InputDigest, Requirements: check.Requirements})
 			continue
 		}
 		root := "/work/repos"
@@ -509,6 +509,7 @@ func verify(ctx context.Context, w wireRequest, result *Result) error {
 		cancel()
 		e.ID = check.ID
 		e.RepositoryID = check.RepositoryID
+		e.Requirements = check.Requirements
 		// Bind all repository trees, since a check can read related repositories.
 		b, _ := json.Marshal(w.Patches)
 		e.SourceDigest = Sum(b)

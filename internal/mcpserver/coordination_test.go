@@ -14,6 +14,7 @@ func TestCoordinationProposalPreservesPinsAndCannotAuthorize(t *testing.T) {
 	_, session, f := newTestBridge(t)
 	digest := strings.Repeat("a", 64)
 	plan := domain.CoordinationPlan{SchemaVersion: 1, GraphID: strings.Repeat("b", 32), GraphDigest: digest, Packages: []domain.PackagePin{{ChangeID: "design", RepositoryID: "application", Revision: 2, Digest: digest}}, Repositories: []domain.CoordinationRepository{{RepositoryID: "application", Commit: strings.Repeat("c", 40), CollectionID: strings.Repeat("d", 32), ReceiptDigest: digest, FullSourceDigest: digest}}, Tasks: []domain.CoordinationTask{{ID: "inspect", Perspective: "architect", Profile: "reviewed-profile", ProfileDigest: digest, Image: "sha256:" + digest, Prompt: "Inspect retained synthetic source", Scopes: []domain.TaskScope{{RepositoryID: "application", WritablePaths: []string{}}}, Checks: []domain.VerificationCommand{{ID: "echo", RepositoryID: "application", Argv: []string{"/bin/echo", ""}, TimeoutSeconds: 30}}, TimeoutSeconds: 60}}, MaxParallel: 1}
+	plan.Tasks[0].Checks[0].Requirements = []domain.VerificationRequirement{{ChangeID: "design", Revision: 2, Digest: digest, CriterionID: "source-readable"}}
 	input := map[string]any{"idempotencyKey": "same-plan", "plan": plan}
 	f.mu.Lock()
 	before := len(f.requests)

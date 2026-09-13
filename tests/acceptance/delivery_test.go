@@ -76,7 +76,7 @@ func seedDeliveryInput(t *testing.T, f *accessFixture, patchBytes []byte) (domai
 	return seedDeliveryInputWithContent(t, f, patchBytes, domain.Content{"intent": "Synthetic publication acceptance"})
 }
 
-func seedDeliveryInputWithContent(t *testing.T, f *accessFixture, patchBytes []byte, content domain.Content) (domain.DeliveryInput, *client.Client) {
+func seedDeliveryInputWithContent(t *testing.T, f *accessFixture, patchBytes []byte, content domain.Content, linkCriteria ...bool) (domain.DeliveryInput, *client.Client) {
 	t.Helper()
 	profile := domain.ExecutionProfileConfig{WorkspaceID: "team", ID: "synthetic", Image: "sha256:" + strings.Repeat("a", 64), Enabled: true, Profile: domain.WorkerProfile{Adapter: "command/v1", Command: []string{"/bin/true"}}}
 	_, profileDigest, err := store.ValidatedExecutionProfile(profile.Profile)
@@ -129,6 +129,9 @@ func seedDeliveryInputWithContent(t *testing.T, f *accessFixture, patchBytes []b
 		t.Fatal(err)
 	}
 	check := domain.VerificationCommand{ID: "test", RepositoryID: "application", Argv: []string{"go", "test", "./..."}, TimeoutSeconds: 10}
+	if len(linkCriteria) > 0 && linkCriteria[0] {
+		check.Requirements = []domain.VerificationRequirement{{ChangeID: pkg.ID, Revision: 1, Digest: pkg.Revision.Digest, CriterionID: "synthetic-output"}}
+	}
 	plan := domain.CoordinationPlan{SchemaVersion: 1, GraphID: graph.ID, GraphDigest: graph.Digest, Packages: []domain.PackagePin{{ChangeID: pkg.ID, RepositoryID: "application", Revision: 1, Digest: pkg.Revision.Digest}}, Repositories: []domain.CoordinationRepository{{RepositoryID: "application", Commit: collection.Input.Commit, CollectionID: collection.ID, ReceiptDigest: receipt.Digest, FullSourceDigest: data.Digest}}, Tasks: []domain.CoordinationTask{{ID: "code", Perspective: "developer", Profile: profile.ID, ProfileDigest: profileDigest, Image: profile.Image, Prompt: "Fixture", Scopes: []domain.TaskScope{{RepositoryID: "application", WritablePaths: []string{"src"}}}, Checks: []domain.VerificationCommand{check}, TimeoutSeconds: 30}}, MaxParallel: 1}
 	run, err := c.CreateCoordination(f.ctx, "delivery-run", plan)
 	if err != nil {
@@ -144,7 +147,7 @@ func seedDeliveryInputWithContent(t *testing.T, f *accessFixture, patchBytes []b
 	patches := []execution.Patch{{RepositoryID: "application", BaseCommit: collection.Input.Commit, BaseTree: data.Tree, ResultTree: strings.Repeat("c", 40), Patch: patchBytes, Digest: execution.Sum(patchBytes), Paths: []string{"src/file.go"}}}
 	patchJSON, _ := json.Marshal(patches)
 	zero := 0
-	artifact := execution.Result{CleanupConfirmed: true, ProfileDigest: profileDigest, Image: profile.Image, Adapter: "command/v1", AdapterVersion: "1", InputDigest: strings.Repeat("d", 64), Patches: patches, Producer: execution.Evidence{State: "passed", ExitCode: &zero, SourceDigest: strings.Repeat("d", 64), OutputDigest: execution.Sum(nil)}, Checks: []execution.Evidence{{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, State: "passed", ExitCode: &zero, SourceDigest: execution.Sum(patchJSON), OutputDigest: execution.Sum(nil)}}}
+	artifact := execution.Result{CleanupConfirmed: true, ProfileDigest: profileDigest, Image: profile.Image, Adapter: "command/v1", AdapterVersion: "1", InputDigest: strings.Repeat("d", 64), Patches: patches, Producer: execution.Evidence{State: "passed", ExitCode: &zero, SourceDigest: strings.Repeat("d", 64), OutputDigest: execution.Sum(nil)}, Checks: []execution.Evidence{{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, State: "passed", ExitCode: &zero, SourceDigest: execution.Sum(patchJSON), OutputDigest: execution.Sum(nil), Requirements: check.Requirements}}}
 	digest, _ := domain.JSONDigest(artifact)
 	if _, err = f.sql.Exec(f.ctx, `INSERT INTO coordination_task_receipts(task_id,run_id,digest,outcome,artifact_digest,artifact) VALUES($1,$2,$3,'succeeded',$3,$4)`, task, run.ID, digest, artifact); err != nil {
 		t.Fatal(err)

@@ -156,6 +156,13 @@ func (m *releaseModel) rebuildRelease() {
 		artifact = a.Artifact
 	case domain.CoordinationArtifact:
 		artifact = a.Artifact
+		if a.Verification != nil {
+			add("Criterion support applies only to this exact artifact; it is not overall acceptance or approval.")
+			for _, c := range a.Verification.Criteria {
+				add(c.Requirement.ChangeID + " / " + c.Requirement.CriterionID + ": " + c.State + " (" + c.Reason + ")")
+				add(c.Description)
+			}
+		}
 	}
 	if artifact != nil {
 		var result execution.Result

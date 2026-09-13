@@ -19,7 +19,7 @@ func (b *Bridge) registerCoordination() {
 	}); ok {
 		digest := map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}
 		id := map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"}
-		addTool(b, "conductor_get_task_artifact", "Read the complete retained report, patch and check evidence for an exact inspected run/task/artifact digest. Failed checks and reports with no patch remain readable. This grants no publication or approval. MCP's 2 MiB bound rejects larger results explicitly; use the authenticated artifact API for those.", schema(map[string]any{"id": id, "runDigest": digest, "taskId": id, "artifactDigest": digest}, "id", "runDigest", "taskId", "artifactDigest"), false, true, func(ctx context.Context, a struct {
+		addTool(b, "conductor_get_task_artifact", "Read the complete retained report, patch and check evidence for an exact inspected run/task/artifact digest. Explicit criterion links and historical supported/not_verified summaries remain separate from overall acceptance. Failed checks and reports with no patch remain readable. This grants no publication or approval. MCP's 2 MiB bound rejects larger results explicitly; use the authenticated artifact API for those.", schema(map[string]any{"id": id, "runDigest": digest, "taskId": id, "artifactDigest": digest}, "id", "runDigest", "taskId", "artifactDigest"), false, true, func(ctx context.Context, a struct {
 			ID             string `json:"id"`
 			RunDigest      string `json:"runDigest"`
 			TaskID         string `json:"taskId"`
@@ -40,7 +40,7 @@ func (b *Bridge) registerCoordination() {
 		return b.api.ListCoordinations(ctx, a.Before, pageSize(a.Limit))
 	})
 	addTool(b, "conductor_get_run", "Inspect the exact immutable plan, dependencies, source/package/profile pins, separate human authorization, cancellation intent and retained task receipts. A completed workflow is not deployment or production outcome verification.", schema(map[string]any{"id": id}, "id"), false, true, func(ctx context.Context, a idArgs) (any, error) { return b.api.GetCoordination(ctx, a.ID) })
-	addTool(b, "conductor_propose_run", "Propose a bounded shared task DAG using exact inspected graph, package and whole-source digests. Keep the same key and complete plan for an explicit uncertain-result retry. This stores a proposal only; a human must separately inspect and authorize execution. Prompts and perspective labels cannot grant authority.", schema(map[string]any{"idempotencyKey": stringSchema(128), "plan": coordinationPlanSchema()}, "idempotencyKey", "plan"), true, true, func(ctx context.Context, a coordinationCreateArgs) (any, error) {
+	addTool(b, "conductor_propose_run", "Propose a bounded shared task DAG using exact inspected graph, package and whole-source digests. Checks may explicitly reference approved package criteria by exact changeId/revision/digest/criterionId. Keep the same key and complete plan for an explicit uncertain-result retry. This stores a proposal only; a human must separately inspect and authorize execution. Prompts and perspective labels cannot grant authority.", schema(map[string]any{"idempotencyKey": stringSchema(128), "plan": coordinationPlanSchema()}, "idempotencyKey", "plan"), true, true, func(ctx context.Context, a coordinationCreateArgs) (any, error) {
 		if domain.ValidateCollectionKey(a.IdempotencyKey) != nil {
 			return nil, domain.ErrInvalidInput
 		}
@@ -73,7 +73,8 @@ func coordinationPlanSchema() map[string]any {
 	pin := schema(map[string]any{"changeId": stringSchema(128), "repositoryId": stringSchema(128), "revision": positiveSchema(), "digest": digest}, "changeId", "repositoryId", "revision", "digest")
 	repo := schema(map[string]any{"repositoryId": stringSchema(128), "commit": commit, "collectionId": id, "receiptDigest": digest, "fullSourceDigest": digest}, "repositoryId", "commit", "collectionId", "receiptDigest")
 	scope := schema(map[string]any{"repositoryId": stringSchema(128), "writablePaths": nullableArray(stringSchema(1024), 128)}, "repositoryId")
-	check := schema(map[string]any{"id": key, "repositoryId": stringSchema(128), "argv": array(map[string]any{"type": "string", "maxLength": 4096}, 1, 64), "timeoutSeconds": bounded(1, 1800)}, "id", "repositoryId", "argv", "timeoutSeconds")
+	requirement := schema(map[string]any{"changeId": stringSchema(128), "revision": positiveSchema(), "digest": digest, "criterionId": key}, "changeId", "revision", "digest", "criterionId")
+	check := schema(map[string]any{"id": key, "repositoryId": stringSchema(128), "argv": array(map[string]any{"type": "string", "maxLength": 4096}, 1, 64), "timeoutSeconds": bounded(1, 1800), "requirements": nullableArray(requirement, 16)}, "id", "repositoryId", "argv", "timeoutSeconds")
 	task := schema(map[string]any{"id": key, "perspective": map[string]any{"type": "string", "enum": []string{"architect", "developer", "qc", "product", "operations"}}, "profile": key, "profileDigest": digest, "image": stringSchema(512), "prompt": stringSchema(32768), "dependsOn": nullableArray(key, 32), "scopes": array(scope, 1, 16), "checks": nullableArray(check, 16), "timeoutSeconds": bounded(1, 1800)}, "id", "perspective", "profile", "prompt", "scopes", "timeoutSeconds")
 	return schema(map[string]any{"schemaVersion": map[string]any{"type": "integer", "const": 1}, "graphId": id, "graphDigest": digest, "packages": array(pin, 1, 16), "repositories": array(repo, 1, 16), "tasks": array(task, 1, 32), "maxParallel": bounded(1, 4)}, "schemaVersion", "graphId", "graphDigest", "packages", "repositories", "tasks", "maxParallel")
 }

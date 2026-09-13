@@ -30,6 +30,7 @@ func (p *Postgres) InspectCoordinationArtifact(ctx context.Context, id string, q
 		return out, domain.ErrConflict
 	}
 	found := false
+	taskKey := ""
 	for _, receipt := range run.Receipts {
 		if receipt.TaskID == q.TaskID {
 			if receipt.ArtifactDigest == "" {
@@ -39,6 +40,7 @@ func (p *Postgres) InspectCoordinationArtifact(ctx context.Context, id string, q
 				return out, domain.ErrConflict
 			}
 			found = true
+			taskKey = receipt.TaskKey
 			break
 		}
 	}
@@ -69,5 +71,9 @@ func (p *Postgres) InspectCoordinationArtifact(ctx context.Context, id string, q
 		return domain.CoordinationArtifact{}, domain.ErrUnavailable
 	}
 	out.RunID, out.RunDigest, out.TaskID, out.ArtifactDigest = id, run.Digest, q.TaskID, digest
+	out.Verification, err = p.verificationReview(ctx, run, taskKey, result)
+	if err != nil {
+		return domain.CoordinationArtifact{}, err
+	}
 	return out, nil
 }

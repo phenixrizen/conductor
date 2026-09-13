@@ -48,10 +48,11 @@ type TaskScope struct {
 }
 
 type VerificationCommand struct {
-	ID             string   `json:"id"`
-	RepositoryID   string   `json:"repositoryId"`
-	Argv           []string `json:"argv"`
-	TimeoutSeconds int      `json:"timeoutSeconds"`
+	ID             string                    `json:"id"`
+	RepositoryID   string                    `json:"repositoryId"`
+	Argv           []string                  `json:"argv"`
+	TimeoutSeconds int                       `json:"timeoutSeconds"`
+	Requirements   []VerificationRequirement `json:"requirements,omitempty"`
 }
 
 type CoordinationTask struct {
@@ -183,6 +184,9 @@ func NormalizeCoordinationPlan(p CoordinationPlan) (CoordinationPlan, error) {
 		t := &p.Tasks[i]
 		t.DependsOn = append([]string{}, t.DependsOn...)
 		t.Checks = append([]VerificationCommand{}, t.Checks...)
+		for j := range t.Checks {
+			t.Checks[j].Requirements = append([]VerificationRequirement(nil), t.Checks[j].Requirements...)
+		}
 		t.Scopes = append([]TaskScope{}, t.Scopes...)
 		for j := range t.Scopes {
 			t.Scopes[j].WritablePaths = append([]string{}, t.Scopes[j].WritablePaths...)
@@ -254,6 +258,21 @@ func ValidateCoordinationPlan(p CoordinationPlan) error {
 		}
 		checks := map[string]bool{}
 		for _, check := range task.Checks {
+			if ValidateVerificationRequirements(check.Requirements) != nil {
+				return invalid("invalid verification requirement references")
+			}
+			for _, requirement := range check.Requirements {
+				matched := false
+				for _, pin := range p.Packages {
+					if pin.ChangeID == requirement.ChangeID && pin.Revision == requirement.Revision && pin.Digest == requirement.Digest && scopes[pin.RepositoryID] {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					return invalid("verification requirement must match an exact task-scoped package pin")
+				}
+			}
 			if !planKey(check.ID) || checks[check.ID] || !scopes[check.RepositoryID] || len(check.Argv) < 1 || len(check.Argv) > 64 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > task.TimeoutSeconds {
 				return invalid("invalid verification command")
 			}
