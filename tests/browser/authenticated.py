@@ -87,9 +87,11 @@ with sync_playwright() as playwright:
     expect(page.get_by_role("button", name="Approve inspected revision", exact=True)).to_have_count(0)
 
     screenshot = Path(os.environ.get("CONDUCTOR_BROWSER_SCREENSHOT", "/tmp/conductor-authenticated-workbench.png"))
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path=str(screenshot), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "mobile horizontal overflow"
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path=str(screenshot.with_name(screenshot.stem + "-mobile.png")), full_page=True)
     page.set_viewport_size({"width": 1440, "height": 1100})
 

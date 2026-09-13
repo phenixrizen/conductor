@@ -63,6 +63,9 @@ configuration to issue Conductor's API access-token profile.
 
 ## Use the workbench
 
+The [workflow navigation guide](browser-navigation.md) describes the six tabs,
+keyboard and mobile controls, Operations perspective and interruption recovery.
+
 Choose **Sign in**, complete provider authentication, then select a workspace and
 managed repository. The page shows your stored principal and effective repository
 capabilities. If a list is empty or truncated, ask an operator about the missing
@@ -96,7 +99,7 @@ does not need provider tokens. Remote collection is unavailable in local mode.
 Browser sign-in still requires a provisioned human principal; agents use the
 authenticated API, CLI, or terminal.
 
-In **Shared context collections**, choose **Refresh collections** to discover
+In **Source & graph → Shared context collections**, choose **Refresh collections** to discover
 requests in the selected repository. The page holds at most 20 requests and shows
 when more exist. **Load more collections** replaces it with the next bounded page;
 refresh returns to the first page. Inspect a request to see its canonical source,

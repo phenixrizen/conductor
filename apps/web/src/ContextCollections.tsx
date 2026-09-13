@@ -1,3 +1,4 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { useEffect, useRef, useState } from 'react';
 import { APIError, accessFailure, changePath, dateLabel, errorMessage, request } from './api';
 import type { BrowserAccess, WorkPackage } from './api';
@@ -9,9 +10,10 @@ type Creation = { input: CollectionInput; key: string; outcome: 'pending' | 'unc
 type Confirmation = { kind: 'cancel'; collection: Collection } | { kind: 'attach'; collection: Collection; target: AttachmentTarget };
 interface Job { sequence: number; signal: AbortSignal }
 
-export function ContextCollections({ access, disabled, target, requestedInspection, onAccessFailure, onBusyChange, onInspected, onAttached, onAttachmentUncertain }: {
+export function ContextCollections({ access, visible = true, disabled, target, requestedInspection, onAccessFailure, onBusyChange, onInspected, onAttached, onAttachmentUncertain }: {
   access: BrowserAccess;
   disabled: boolean;
+  visible?: boolean;
   target?: AttachmentTarget;
   requestedInspection?: { id: string; sequence: number };
   onAccessFailure?: (failure: APIError) => void;
@@ -36,8 +38,18 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
   const sequence = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
   const working = useRef(false);
+  const commandInFlight = useRef<Confirmation | undefined>(undefined);
   const busy = disabled || pending !== '';
   const lockedDraft = !!creation && creation.outcome !== 'rejected';
+
+  const workflowActive = useWorkflowActivity(visible, () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    setConfirmation(undefined); onBusyChange(false);
+    setCreation(value => value?.outcome === 'pending' ? { ...value, outcome: 'uncertain' } : value);
+    const captured = commandInFlight.current; commandInFlight.current = undefined;
+    if (captured) setNeedsInspection(true);
+    if (captured?.kind === 'attach') onAttachmentUncertain(captured.target.id, captured.collection.id);
+  });
 
   useEffect(() => {
     // Age observations without fetching or changing the inspected request/receipt.
@@ -53,7 +65,7 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
   useEffect(() => { setConfirmation(undefined); }, [target?.id, target?.revision, target?.digest]);
 
   function begin(label: string): Job | undefined {
-    if (disabled || working.current || !onBusyChange(true)) return;
+    if (!workflowActive.current || disabled || working.current || !onBusyChange(true)) return;
     working.current = true;
     controller.current?.abort();
     controller.current = new AbortController();
@@ -63,9 +75,9 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
     setConfirmation(undefined);
     return { sequence: ++sequence.current, signal: controller.current.signal };
   }
-  function current(job: Job): boolean { return sequence.current === job.sequence && !job.signal.aborted; }
+  function current(job: Job): boolean { return workflowActive.current && sequence.current === job.sequence && !job.signal.aborted; }
   function finish(job: Job) {
-    if (current(job)) { working.current = false; setPending(''); onBusyChange(false); }
+    if (current(job)) { working.current = false; commandInFlight.current = undefined; setPending(''); onBusyChange(false); }
   }
   function failed(job: Job, failure: unknown) {
     if (!current(job)) return;
@@ -155,6 +167,7 @@ export function ContextCollections({ access, disabled, target, requestedInspecti
     }
     const job = begin(captured.kind === 'cancel' ? 'Recording cancellation request…' : 'Attaching inspected receipt…');
     if (!job) return;
+    commandInFlight.current = captured;
     try {
       // These commands use only the facts captured by the visible confirmation.
       // No GET, collection refresh, or newer package lookup occurs here.

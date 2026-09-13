@@ -1,3 +1,4 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { ExecutionArtifact } from './ExecutionArtifact';
 import { inspectExecutionArtifact } from './delivery';
 import type { ExecutionArtifact as Artifact, InspectedExecutionArtifact } from './delivery';
@@ -15,7 +16,7 @@ type Job = { sequence: number; signal: AbortSignal };
 type Creation = { plan: RunPlan; key: string; outcome: 'uncertain' | 'recorded' | 'pending' };
 type Confirmation = { id: string; digest: string; plan: RunPlan; cancel: boolean };
 
-export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAccess; onAccessFailure?: (failure: APIError) => void }) {
+export function CoordinatedRuns({ access, visible = true, onAccessFailure }: { access: BrowserAccess; visible?: boolean; onAccessFailure?: (failure: APIError) => void }) {
   const [page, setPage] = useState<RunPage>();
   const [run, setRun] = useState<CoordinationRun>();
   const [artifact, setArtifact] = useState<(InspectedExecutionArtifact & { taskKey: string; artifactDigest: string })>();
@@ -37,9 +38,16 @@ export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAc
   const busy = !!pending;
   const locked = !!creation && creation.outcome !== 'recorded';
   const canExecute = access.principalKind === 'human' && access.canAuthor && capabilities?.canExecute;
+  const workflowActive = useWorkflowActivity(visible, () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    setConfirmation(undefined);
+    if (pending) setNeedsInspection(true);
+    setCreation(value => value?.outcome === 'pending' ? { ...value, outcome: 'uncertain' } : value);
+  });
+
   useEffect(() => { const timer=setInterval(()=>setNow(Date.now()),5000);return()=>{clearInterval(timer);sequence.current++;controller.current?.abort();}; },[]);
-  function begin(label: string): Job | undefined { if(working.current)return;working.current=true;controller.current?.abort();controller.current=new AbortController();setPending(label);setError('');setNotice('');return{sequence:++sequence.current,signal:controller.current.signal}; }
-  function current(job: Job) { return sequence.current===job.sequence&&!job.signal.aborted; }
+  function begin(label: string): Job | undefined { if(!workflowActive.current||working.current)return;working.current=true;controller.current?.abort();controller.current=new AbortController();setPending(label);setError('');setNotice('');return{sequence:++sequence.current,signal:controller.current.signal}; }
+  function current(job: Job) { return workflowActive.current&&sequence.current===job.sequence&&!job.signal.aborted; }
   function finish(job: Job) { if(current(job)){working.current=false;setPending('');} }
   function fail(job: Job, failure: unknown) {
     if(!current(job))return;

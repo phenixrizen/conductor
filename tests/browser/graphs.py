@@ -20,6 +20,7 @@ def sign_in(page, identity):
     expect(page.locator(".signed-in-identity")).to_contain_text("person-" + identity)
     page.get_by_label("Workspace", exact=True).select_option("team")
     page.get_by_label("Managed repository", exact=True).select_option("application")
+    page.get_by_role("tab", name="Source & graph", exact=True).click()
 
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=os.environ.get("CONDUCTOR_CHROME", "/usr/bin/google-chrome"), headless=True)
@@ -100,9 +101,11 @@ with sync_playwright() as p:
     panel.get_by_label("Retained source path",exact=True).fill("fixture.go")
     panel.get_by_role("button",name="Read graph source",exact=True).click()
     expect(source_view).to_contain_text("package fixture")
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-graph-workbench.png",full_page=True)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), page.evaluate("Array.from(document.querySelectorAll('*')).filter(e=>e.getBoundingClientRect().right>innerWidth).map(e=>({tag:e.tagName,cls:e.className,text:e.textContent.slice(0,80)})).slice(-15)")
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-graph-workbench-mobile.png",full_page=True)
     page.set_viewport_size({"width":1440,"height":1100})
     # Scope changes clear source inspection and every captured graph input.
@@ -110,6 +113,7 @@ with sync_playwright() as p:
     expect(panel.get_by_role("heading",name="Inspected repository graph",exact=True)).to_have_count(0)
     expect(panel.get_by_role("list",name="Graph sources to record").get_by_role("listitem")).to_have_count(0)
     page.get_by_label("Managed repository",exact=True).select_option("application")
+    page.get_by_role("tab", name="Source & graph", exact=True).click()
     # The collection control sends the complete explicitly chosen source intent.
     page.locator("summary").filter(has_text="Request repository context").click()
     page.get_by_label("Exact commit",exact=True).fill(os.environ["CONDUCTOR_BROWSER_COMMIT"])

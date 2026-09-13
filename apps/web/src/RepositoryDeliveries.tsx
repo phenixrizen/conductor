@@ -1,3 +1,4 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { ExecutionArtifact } from './ExecutionArtifact';
 import { useEffect, useRef, useState } from 'react';
 import { APIError, accessFailure, dateLabel, errorMessage, request } from './api';
@@ -13,7 +14,7 @@ type Proposal = { input: DeliveryInput; key: string; outcome: 'pending' | 'uncer
 type Reconciliation = { id: string; digest: string; key: string; uncertain: boolean };
 const emptyInput: DeliveryInput = {runId:'',taskId:'',artifactDigest:'',baseBranch:'main',title:'',description:''};
 
-export function RepositoryDeliveries({access,onAccessFailure}:{access:BrowserAccess;onAccessFailure?:(failure:APIError)=>void}) {
+export function RepositoryDeliveries({access,visible=true,onAccessFailure}:{access:BrowserAccess;visible?:boolean;onAccessFailure?:(failure:APIError)=>void}) {
   const [page,setPage]=useState<DeliveryPage>();
   const [delivery,setDelivery]=useState<Delivery>();
   const [artifact,setArtifact]=useState<InspectedArtifact>();
@@ -31,13 +32,23 @@ export function RepositoryDeliveries({access,onAccessFailure}:{access:BrowserAcc
   const [error,setError]=useState('');
   const [now,setNow]=useState(Date.now());
   const sequence=useRef(0),working=useRef(false),controller=useRef<AbortController|undefined>(undefined);
+  const authorizationPending = useRef(false);
   const busy=!!pending;
   const locked=!!proposal&&proposal.outcome!=='recorded';
   const canPublish=access.principalKind==='human'&&access.canAuthor&&capabilities?.canPublish;
+  const workflowActive = useWorkflowActivity(visible, () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    setConfirmation(undefined); setReviewed(false);
+    if (authorizationPending.current) { setNeedsInspection(true); setArtifact(undefined); }
+    authorizationPending.current = false;
+    setProposal(value => value?.outcome === 'pending' ? { ...value, outcome: 'uncertain' } : value);
+    setReconciliation(value => value ? { ...value, uncertain: true } : value);
+  });
+
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),5000);return()=>{clearInterval(timer);sequence.current++;controller.current?.abort();};},[]);
-  function begin(label:string):Job|undefined{if(working.current)return;working.current=true;controller.current?.abort();controller.current=new AbortController();setPending(label);setError('');setNotice('');return{sequence:++sequence.current,signal:controller.current.signal};}
-  function current(job:Job){return sequence.current===job.sequence&&!job.signal.aborted;}
-  function finish(job:Job){if(current(job)){working.current=false;setPending('');}}
+  function begin(label:string):Job|undefined{if(!workflowActive.current||working.current)return;working.current=true;controller.current?.abort();controller.current=new AbortController();setPending(label);setError('');setNotice('');return{sequence:++sequence.current,signal:controller.current.signal};}
+  function current(job:Job){return workflowActive.current&&sequence.current===job.sequence&&!job.signal.aborted;}
+  function finish(job:Job){if(current(job)){working.current=false;authorizationPending.current=false;setPending('');}}
   function clearInspection(){setDelivery(undefined);setArtifact(undefined);setReviewed(false);setConfirmation(undefined);setNeedsInspection(true);}
   function fail(job:Job,failure:unknown){
     if(!current(job))return;
@@ -81,7 +92,7 @@ export function RepositoryDeliveries({access,onAccessFailure}:{access:BrowserAcc
   }
   async function authorize(){
     const captured=confirmation;if(!captured||!delivery||!artifact||!reviewed||!canPublish||needsInspection||reconciliation||captured.id!==delivery.id||captured.digest!==delivery.digest||!publicationEvidenceReady(artifact,access.repositoryID))return;
-    const job=begin('Authorizing the inspected publication…');if(!job)return;
+    const job=begin('Authorizing the inspected publication…');if(!job)return;authorizationPending.current=true;
     try{
       // This sends only the displayed proposal digest. It never reloads a patch,
       // changes a target, or refreshes permission inside the confirmed decision.

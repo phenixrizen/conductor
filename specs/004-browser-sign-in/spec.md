@@ -107,3 +107,20 @@ automation are following work. Context execution uses the existing local Tempora
 deployment profile; browser controls add no workflow or provider authority. Live
 GitHub/GitLab compatibility, assistant execution, publication, and tracker
 synchronization remain separate work. No ADR is accepted by this implementation.
+
+## Current full-release workflow navigation
+
+The authenticated browser groups the implemented workbench into Review, Source &
+graph, Agent work, Delivery, Tracker and Runtime. Only the selected workflow is
+visible. All tabs use the same App-owned session and canonical scope, with no
+permission or model selection implied by navigation or human perspective.
+Architect, QC / QA, Developer, Product and Operations change guidance only.
+
+Leaving a workflow aborts pending browser work, fences late responses and clears
+unsubmitted confirmations. Interrupted writes retain their exact request/key for
+explicit recovery; interrupted approval, execution/publication authorization and
+source attachment require renewed inspection. Tab changes do not refresh or replay
+commands. Scope/session changes and access denial clear all private state, including
+hidden workflows. Keyboard navigation and phone layouts are covered by signed
+Chromium/PostgreSQL acceptance. See the
+[navigation runbook](../../docs/operations/browser-navigation.md).

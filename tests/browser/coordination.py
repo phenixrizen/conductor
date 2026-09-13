@@ -21,6 +21,7 @@ def sign_in(page,who):
     expect(page.locator(".signed-in-identity")).to_contain_text("person-"+who)
     page.get_by_label("Workspace",exact=True).select_option("team")
     page.get_by_label("Managed repository",exact=True).select_option("application")
+    page.get_by_role("tab", name="Agent work", exact=True).click()
 
 def author_revise():
     request=urllib.request.Request(origin+"/api/v1/changes/"+os.environ["CONDUCTOR_BROWSER_STALE_PACKAGE"]+"/revisions",data=json.dumps({"expectedRevision":1,"content":{"intent":"New design revision invalidates execution pins"}}).encode(),headers={"Content-Type":"application/json","Authorization":"Bearer "+os.environ["CONDUCTOR_BROWSER_AUTHOR_TOKEN"],"X-Conductor-Workspace":"team","X-Conductor-Repository":"application"})
@@ -41,6 +42,19 @@ with sync_playwright() as p:
     panel.get_by_role("button",name="Authorize inspected plan",exact=True).click()
     dialog=panel.get_by_role("dialog",name="Confirm execution decision")
     expect(dialog).to_contain_text(os.environ["CONDUCTOR_BROWSER_RUN_DIGEST"])
+    # Leaving a workflow dismisses an unsubmitted decision. Returning cannot
+    # resurrect it or perform a hidden access/plan refresh.
+    navigation_requests=[]
+    observe_navigation=lambda request:navigation_requests.append(request.url) if "/api/" in request.url else None
+    page.on("request",observe_navigation)
+    page.get_by_role("tab",name="Runtime",exact=True).click()
+    page.get_by_role("tab",name="Agent work",exact=True).click()
+    expect(dialog).to_have_count(0)
+    expect(inspected).to_contain_text(os.environ["CONDUCTOR_BROWSER_RUN_DIGEST"])
+    assert navigation_requests==[],navigation_requests
+    page.remove_listener("request",observe_navigation)
+    panel.get_by_role("button",name="Authorize inspected plan",exact=True).click()
+    expect(dialog).to_be_visible()
     author_revise()
     requests=[]
     def capture(request):
@@ -97,9 +111,11 @@ with sync_playwright() as p:
     assert requests==[("POST","/api/v1/coordination-runs/"+created["id"]+"/cancellation",{"digest":created["digest"]})],requests
     page.remove_listener("request",capture)
     expect(panel.get_by_role("region",name="Coordinated execution observation")).to_contain_text("Progress unknown")
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-coordination-workbench.png",full_page=True)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"),"mobile coordination overflow"
+    page.evaluate("window.scrollTo(0, 0)")
     page.screenshot(path="/tmp/conductor-coordination-workbench-mobile.png",full_page=True)
     page.get_by_label("Managed repository",exact=True).select_option("")
     expect(page.get_by_role("article",name="Inspected coordinated run")).to_have_count(0)

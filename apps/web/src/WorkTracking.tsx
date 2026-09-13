@@ -1,3 +1,4 @@
+import { useWorkflowActivity } from './workflowActivity';
 import { useEffect, useRef, useState } from 'react';
 import { APIError, accessFailure, dateLabel, errorMessage, request } from './api';
 import type { BrowserAccess } from './api';
@@ -13,7 +14,7 @@ import type { TrackerLink, TrackerLinkInput, TrackerObservation, TrackerPage, Tr
 type Job={sequence:number;signal:AbortSignal};
 type Creation={input:TrackerLinkInput;key:string;outcome:'pending'|'recorded'|'uncertain'};
 type Decision={linkID:string;input:TrackerSyncInput;key:string;uncertain:boolean};
-export function WorkTracking({access,onAccessFailure}:{access:BrowserAccess;onAccessFailure?:(failure:APIError)=>void}){
+export function WorkTracking({access,visible=true,onAccessFailure}:{access:BrowserAccess;visible?:boolean;onAccessFailure?:(failure:APIError)=>void}){
  const [settings,setSettings]=useState<TrackerSettings>();
  const [page,setPage]=useState<TrackerPage>();
  const [link,setLink]=useState<TrackerLink>();
@@ -28,15 +29,23 @@ export function WorkTracking({access,onAccessFailure}:{access:BrowserAccess;onAc
  const [pending,setPending]=useState(''),[notice,setNotice]=useState(''),[error,setError]=useState('');
  const [now,setNow]=useState(Date.now());
  const working=useRef(false),sequence=useRef(0),controller=useRef<AbortController|undefined>(undefined);
+ const decisionPending = useRef(false);
  const busy=!!pending,locked=creation?.outcome==='pending'||creation?.outcome==='uncertain';
  const canSync=access.canAuthor&&settings?.enabled&&settings.canSync;
  const canResolve=canSync&&access.principalKind==='human'&&settings?.canResolve;
  const completed=!!link?.observation&&link.latestSyncId===link.observation.syncId;
  const current=!!link&&currentTrackerObservation(link.observation,now)&&!!link.observation?.issue&&(link.observation.projectionDigest===''||isHex(link.observation.projectionDigest,64));
+  const workflowActive = useWorkflowActivity(visible, () => {
+    sequence.current++; controller.current?.abort(); working.current = false; setPending('');
+    setCreation(value => value?.outcome === 'pending' ? { ...value, outcome: 'uncertain' } : value);
+    const interrupted = decisionPending.current; decisionPending.current = false;
+    setDecision(value => value && (value.uncertain || interrupted) ? { ...value, uncertain: true } : undefined);
+  });
+
  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),5000);return()=>{clearInterval(timer);sequence.current++;controller.current?.abort();};},[]);
- function begin(label:string):Job|undefined{if(working.current)return;working.current=true;controller.current?.abort();controller.current=new AbortController();setPending(label);setError('');setNotice('');return{sequence:++sequence.current,signal:controller.current.signal};}
- function active(job:Job){return sequence.current===job.sequence&&!job.signal.aborted;}
- function finish(job:Job){if(active(job)){working.current=false;setPending('');}}
+ function begin(label:string):Job|undefined{if(!workflowActive.current||working.current)return;working.current=true;controller.current?.abort();controller.current=new AbortController();setPending(label);setError('');setNotice('');return{sequence:++sequence.current,signal:controller.current.signal};}
+ function active(job:Job){return workflowActive.current&&sequence.current===job.sequence&&!job.signal.aborted;}
+ function finish(job:Job){if(active(job)){working.current=false;decisionPending.current=false;setPending('');}}
  function fail(job:Job,failure:unknown){if(!active(job))return;if(failure instanceof APIError&&[401,403,404].includes(failure.status)){
   // Invalidate first so an uncertain result cannot restore private issue text,
   // old source pins, or a captured conflict resolution after access denial.
@@ -60,7 +69,7 @@ export function WorkTracking({access,onAccessFailure}:{access:BrowserAccess;onAc
   catch(failure){fail(job,failure);if(active(job))setCreation(uncertainMutation(failure)?{...captured,outcome:'uncertain'}:undefined);}finally{finish(job);}
  }
  function prepare(mode:TrackerSyncInput['mode']){if(!link||!canSync||needsInspection||!completed||decision?.uncertain||mode!=='refresh'&&!current||mode==='restore'&&!canResolve)return;setDecision({linkID:link.id,key:crypto.randomUUID(),uncertain:false,input:{linkDigest:link.digest,mode,...(mode!=='refresh'&&link.observation!.projectionDigest?{expectedProjectionDigest:link.observation!.projectionDigest}:{})}});}
- async function confirm(){const captured=decision,selected=link;if(!captured||!selected||!canSync||needsInspection||captured.linkID!==selected.id||captured.input.linkDigest!==selected.digest||captured.input.mode==='restore'&&!canResolve)return;const job=begin('Recording the inspected tracker synchronization…');if(!job)return;
+ async function confirm(){const captured=decision,selected=link;if(!captured||!selected||!canSync||needsInspection||captured.linkID!==selected.id||captured.input.linkDigest!==selected.digest||captured.input.mode==='restore'&&!canResolve)return;const job=begin('Recording the inspected tracker synchronization…');if(!job)return;decisionPending.current=true;
   try{
    // Preserve the displayed link and provider projection digests. No tracker,
    // package, permission or repository refresh occurs inside this decision.
@@ -90,7 +99,7 @@ export function WorkTracking({access,onAccessFailure}:{access:BrowserAccess;onAc
    {sync&&<section aria-label="Inspected tracker synchronization"><h4>Synchronization {sync.input.mode}</h4><p><code>{sync.id}</code> · dispatch {sync.dispatch} · {dateLabel(sync.createdAt)}</p>{sync.observation?<TrackerFacts observation={sync.observation} settings={settings} now={now}/>:<p className="warning">Outcome unknown. Dispatch does not prove synchronized tracker state.</p>}</section>}
    {canSync&&<div className="control-row"><button className="secondary" disabled={busy||needsInspection||!completed||!!decision} onClick={()=>prepare('refresh')}>Refresh tracker-owned fields</button><button disabled={busy||needsInspection||!completed||!current||!!decision||link.observation?.state==='conflict'} onClick={()=>prepare('publish')}>Publish Conductor link</button>{canResolve&&<button className="secondary" disabled={busy||needsInspection||!completed||!current||!!decision||link.observation?.state!=='conflict'} onClick={()=>prepare('restore')}>Resolve inspected link conflict</button>}</div>}
   </article>}
-  {decision&&<section role="dialog" aria-modal="false" aria-label="Confirm tracker synchronization" className="warning"><h3>{decision.input.mode==='restore'?'Restore the inspected Conductor-owned link':decision.input.mode==='publish'?'Publish the inspected Conductor link':'Refresh tracker-owned planning fields'}</h3><p>Link <code>{decision.linkID}</code> · digest <code>{decision.input.linkDigest}</code></p>{decision.input.mode!=='refresh'&&<p>Inspected provider projection: <code>{decision.input.expectedProjectionDigest??'Absent in the inspected provider snapshot'}</code></p>}<p>{decision.input.mode==='restore'?'This human decision replaces the conflicting attachment or remote link with the displayed Conductor-owned projection. It does not change tracker-owned planning fields.':'The worker will perform this scoped synchronization under current permissions. Ticket fields never grant approval or prove delivery.'}</p>{decision.uncertain&&<p>Request outcome unknown. Explicit retry preserves the same inspected input and key.</p>}<button disabled={busy} onClick={()=>void confirm()}>{decision.uncertain?'Retry exact tracker synchronization':'Confirm tracker synchronization'}</button>{!decision.uncertain&&<button className="secondary" disabled={busy} onClick={()=>setDecision(undefined)}>Dismiss tracker decision</button>}</section>}
+  {decision&&<section role={decision.uncertain ? "region" : "dialog"} aria-modal={decision.uncertain ? undefined : "false"} aria-label={decision.uncertain ? "Uncertain tracker synchronization" : "Confirm tracker synchronization"} className="warning"><h3>{decision.input.mode==='restore'?'Restore the inspected Conductor-owned link':decision.input.mode==='publish'?'Publish the inspected Conductor link':'Refresh tracker-owned planning fields'}</h3><p>Link <code>{decision.linkID}</code> · digest <code>{decision.input.linkDigest}</code></p>{decision.input.mode!=='refresh'&&<p>Inspected provider projection: <code>{decision.input.expectedProjectionDigest??'Absent in the inspected provider snapshot'}</code></p>}<p>{decision.input.mode==='restore'?'This human decision replaces the conflicting attachment or remote link with the displayed Conductor-owned projection. It does not change tracker-owned planning fields.':'The worker will perform this scoped synchronization under current permissions. Ticket fields never grant approval or prove delivery.'}</p>{decision.uncertain&&<p>Request outcome unknown. Explicit retry preserves the same inspected input and key.</p>}<button disabled={busy} onClick={()=>void confirm()}>{decision.uncertain?'Retry exact tracker synchronization':'Confirm tracker synchronization'}</button>{!decision.uncertain&&<button className="secondary" disabled={busy} onClick={()=>setDecision(undefined)}>Dismiss tracker decision</button>}</section>}
  </section>;
 }
 function LinkPins({input}:{input:TrackerLinkInput}){return <><p>Issue ID: {input.issueId}</p><ul className="record-list">{input.packages.map(p=><li key={p.packageId}><strong>{p.repositoryId}</strong> · {p.packageId} · revision {p.revision}<br/><code>{p.digest}</code></li>)}</ul>{input.publications?.length?<ul>{input.publications.map(p=><li key={p.id}>Publication {p.id} · receipt <code>{p.digest}</code></li>)}</ul>:<p>No publication receipts linked.</p>}</>;}
