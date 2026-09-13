@@ -112,10 +112,36 @@ func validatePlan(p Plan) error {
 	return nil
 }
 func fail(err error) error {
-	if errors.Is(err, context.Canceled) || temporal.IsCanceledError(err) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, domain.ErrCollectionStopped) || temporal.IsCanceledError(err) {
 		return temporal.NewCanceledError()
 	}
 	code := "execution_unresolved"
+	retryable := false
+	delay := time.Duration(0)
+	// Trusted activities classify transient I/O without retaining its private
+	// cause. Preserve that bounded retry instruction so a committed receipt can
+	// win a lost acknowledgment; raw errors and authority failures stay terminal.
+	var classified contextworkflow.Failure
+	var pointer *contextworkflow.Failure
+	known := errors.As(err, &classified)
+	if !known && errors.As(err, &pointer) && pointer != nil {
+		classified, known = *pointer, true
+	}
+	if known {
+		switch classified.Code {
+		case "cancelled":
+			return temporal.NewCanceledError()
+		case "unavailable", "database_unavailable", "rate_limited":
+			code = classified.Code
+			retryable = classified.Retryable && classified.RetryAfter >= 0 && classified.RetryAfter <= 30*time.Second
+			if retryable {
+				delay = classified.RetryAfter
+			}
+		case "invalid_request", "invalid_configuration", "binding_mismatch", "permission_revoked", "not_found":
+			code = classified.Code
+		}
+		return temporal.NewApplicationErrorWithOptions(code, "coordination."+code, temporal.ApplicationErrorOptions{NonRetryable: !retryable, NextRetryDelay: delay})
+	}
 	switch {
 	case errors.Is(err, domain.ErrInvalidInput):
 		code = "invalid_execution"

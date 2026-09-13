@@ -12,6 +12,11 @@
    **Verified in SDK tests:** parallel bound, prerequisite order, blocked descendants,
    invalid graph rejection and private-error/result sanitization. Actual retained history also passes an owned Temporal process restart with
    real Docker coding tasks.
+   **Retry regression verified:** the SDK distinguishes bounded transient failures
+   from permanent authority/binding errors and cancellation. The actual owned
+   Temporal/Docker/PostgreSQL path recovers a transient load and lost task/aggregate
+   receipt acknowledgments, retains exactly three original producer attempts and
+   the same aggregate receipt after Temporal process restart.
 4. Connect trusted activities, canonical full Git bundles, isolated producers,
    cumulative predecessor patches and separate verification. Persist attempt and
    artifact facts; reconcile ambiguous dispatch and producer outcomes before retry.
