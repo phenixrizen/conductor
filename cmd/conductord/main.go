@@ -24,6 +24,7 @@ type config struct {
 	contextCollections                           bool
 	coordination                                 bool
 	deliveries                                   bool
+	runtimeEvidence                              bool
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -54,6 +55,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 	default:
 		return c, errors.New("CONDUCTOR_DELIVERIES must be unset, 0, or 1")
 	}
+	switch getenv("CONDUCTOR_RUNTIME_EVIDENCE") {
+	case "", "0":
+	case "1":
+		c.runtimeEvidence = true
+	default:
+		return c, errors.New("CONDUCTOR_RUNTIME_EVIDENCE must be unset, 0, or 1")
+	}
 	if c.address == "" {
 		c.address = "127.0.0.1:8080"
 	}
@@ -63,6 +71,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	switch c.mode {
 	case "local":
+		if c.runtimeEvidence {
+			return c, errors.New("runtime evidence requires OIDC authentication")
+		}
 		if c.deliveries {
 			return c, errors.New("repository publication requires OIDC authentication")
 		}
@@ -133,6 +144,11 @@ func run() error {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
 	defer db.Close()
+	if c.runtimeEvidence {
+		if err := db.CheckRuntimeSchema(startup); err != nil {
+			return errors.New("runtime evidence migrations are required")
+		}
+	}
 	if c.contextCollections {
 		if err := db.CheckContextSchema(startup); err != nil {
 			return err
@@ -141,6 +157,9 @@ func run() error {
 	var handler http.Handler
 	if c.mode == "oidc" {
 		shared := service.NewAuthenticated(db)
+		if c.runtimeEvidence {
+			shared = shared.WithRuntimeEvidence()
+		}
 		if c.deliveries {
 			shared = shared.WithDeliveries()
 		}
