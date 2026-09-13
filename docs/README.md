@@ -12,11 +12,14 @@ not mistaken for working capabilities.
 | [System architecture](architecture/system.md) | Product boundaries, target components, trust boundaries, and delivery roadmap |
 | [Milestone 1 architecture](architecture/milestone-1.md) | Implemented work-package model, lifecycle, API flow, persistence, and invariants |
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
-| [Shared engineering context](architecture/collaboration.md) | Shared data across developers/agents and planned authorization boundaries |
-| [Repository providers](architecture/repository-providers.md) | Planned GitHub and GitLab support for managed repositories |
+| [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
+| [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
 | [Terminal review](operations/terminal-review.md) | Interactive shared review, JSON imports, exact approval, and conflict recovery |
+| [Authenticated review](operations/authenticated-review.md) | Configure identity, provision permissions, and review through the API/CLI |
+| [Feature 003 specification](../specs/003-workspace-access/spec.md) | Workspace isolation, canonical repositories, and human/agent access contracts |
+| [Feature 003 plan](../specs/003-workspace-access/plan.md) | Authentication implementation scope and next interface increment |
 | [Feature 002 specification](../specs/002-context-history/spec.md) | Shared discovery, historical review, and context evidence contracts |
 | [Local development](operations/local-development.md) | Run, configure, exercise, test, and troubleshoot the current slice |
 | [Feature 001 specification](../specs/001-work-package-review/spec.md) | Normative behavior and acceptance criteria |

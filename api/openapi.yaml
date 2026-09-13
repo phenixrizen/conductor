@@ -1,7 +1,41 @@
 openapi: 3.1.0
-info: {title: Conductor API, version: 0.1.0}
+info:
+  title: Conductor API
+  version: 0.2.0
+  description: >-
+    The server explicitly selects local or oidc authentication. Local mode requires
+    X-Conductor-Actor and exposes only unscoped legacy packages. OIDC mode requires
+    an RFC 9068 RS256 bearer access token and rejects local actor headers. Signed
+    identity is mapped to server-managed PostgreSQL permissions; token role claims
+    grant no rights. Workspace selection is required for package and repository
+    operations. Inaccessible package IDs return the same 404 as unknown IDs.
 servers: [{url: http://localhost:8080}]
+security:
+  - BearerAuth: []
+  - LocalActor: []
 paths:
+  /api/v1/session:
+    get:
+      summary: Inspect the authenticated principal and available workspaces
+      description: OIDC mode only. Accepts no query parameters. At most 100 workspaces; truncated reports omitted entries.
+      security: [{BearerAuth: []}]
+      responses:
+        '200': {description: Server-managed identity and membership, content: {application/json: {schema: {$ref: '#/components/schemas/Session'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/repositories:
+    get:
+      summary: Inspect readable canonical repositories and server capabilities
+      description: OIDC mode only. Requires workspace selection and accepts no query parameters. At most 100 repositories; truncated reports omitted entries.
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/Workspace'}]
+      responses:
+        '200': {description: Readable repositories in the selected workspace, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/changes:
     get:
       summary: Discover changes shared through the central store
@@ -13,9 +47,13 @@ paths:
         match the latest content.repositoryContext.repository string exactly;
         malformed or missing repository labels are omitted. Pagination uses immutable
         change creation coordinates; new entries appear when starting a new listing.
+        Workspace/repository authorization filters rows before pagination in OIDC
+        mode; author-supplied repository labels never establish permissions.
         Unknown, repeated, malformed, or out-of-range query parameters are rejected.
       parameters:
         - $ref: '#/components/parameters/Actor'
+        - $ref: '#/components/parameters/Workspace'
+        - $ref: '#/components/parameters/Repository'
         - name: repository
           in: query
           description: Exact repository identity; omitted or empty lists all changes; at most 2048 UTF-8 bytes
@@ -33,20 +71,23 @@ paths:
               schema: {$ref: '#/components/schemas/ChangePage'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
     post:
       summary: Create an initial immutable work-package revision
-      parameters: [{$ref: '#/components/parameters/Actor'}]
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      parameters: [{$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ContentCommand'}}}}
-      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}}
   /api/v1/changes/{id}:
-    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
     get:
       summary: Inspect the latest revision and its effective approval
-      responses: {'200': {description: Found, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      responses: {'400': {$ref: '#/components/responses/BadRequest'}, '200': {description: Found, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}}
   /api/v1/changes/{id}/history:
-    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
     get:
       summary: Inspect revision summaries and retained approval counts
       description: >-
@@ -64,6 +105,7 @@ paths:
               schema: {$ref: '#/components/schemas/HistoryPage'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -71,6 +113,8 @@ paths:
     parameters:
       - $ref: '#/components/parameters/ID'
       - $ref: '#/components/parameters/Actor'
+      - $ref: '#/components/parameters/Workspace'
+      - $ref: '#/components/parameters/Repository'
       - name: revision
         in: path
         required: true
@@ -90,11 +134,12 @@ paths:
               schema: {$ref: '#/components/schemas/RevisionRecord'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/events:
-    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
     get:
       summary: Inspect the change's audit events in sequence order
       description: >-
@@ -111,38 +156,64 @@ paths:
               schema: {$ref: '#/components/schemas/AuditPage'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/changes/{id}/revisions:
-    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
     post:
       summary: Append a revision using optimistic concurrency
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [expectedRevision, content], properties: {expectedRevision: {type: integer}, content: {type: object, additionalProperties: true}}}}}}
-      responses: {'201': {description: Revised}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [expectedRevision, content], properties: {expectedRevision: {type: integer}, content: {type: object, additionalProperties: true}}}}}}
+      responses: {'201': {description: Revised, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/review-requests:
-    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
     post:
       summary: Submit the exact current revision
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision], properties: {revision: {type: integer}}}}}}
-      responses: {'200': {description: Submitted}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [revision], properties: {revision: {type: integer}}}}}}
+      responses: {'200': {description: Submitted, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}}
   /api/v1/changes/{id}/approvals:
-    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}]
+    parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Actor'}, {$ref: '#/components/parameters/Workspace'}, {$ref: '#/components/parameters/Repository'}]
     post:
       summary: Approve the exact inspected revision and digest
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [revision, digest], properties: {revision: {type: integer}, digest: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}}
-      responses: {'201': {description: Approved}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
+      description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [revision, digest], properties: {revision: {type: integer}, digest: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}}
+      responses: {'201': {description: Approved, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: RFC 9068 RS256 JWT access token
+      description: OIDC mode only; exact configured issuer and audience, at+jwt type, and signed required claims. ID tokens are not accepted.
+    LocalActor:
+      type: apiKey
+      in: header
+      name: X-Conductor-Actor
+      description: Local development only. Not authentication and rejected in OIDC mode.
   responses:
     BadRequest: {description: Invalid command or query parameters, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-    Unauthorized: {description: Local identity missing or invalid, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-    NotFound: {description: Change or revision not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unauthorized: {description: Token or local identity missing or invalid, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Forbidden: {description: Workspace membership or repository capability denied, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: Change or revision missing or inaccessible, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Conflict: {description: Inspected revision is stale, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     InternalError: {description: Internal error with details withheld, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unavailable: {description: Requested service unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   parameters:
     ID: {name: id, in: path, required: true, schema: {type: string}}
-    Actor: {name: X-Conductor-Actor, in: header, required: true, description: Local development only, schema: {type: string}}
+    Actor: {name: X-Conductor-Actor, in: header, required: false, description: Required only in local mode; rejected in OIDC mode, schema: {type: string, maxLength: 128}}
+    Workspace:
+      name: X-Conductor-Workspace
+      in: header
+      description: Required for OIDC package and repository operations; selected scope is not proof of membership. At most 128 UTF-8 bytes.
+      schema: {type: string, maxLength: 128}
+    Repository:
+      name: X-Conductor-Repository
+      in: header
+      description: Canonical repository ID. Required for OIDC package creation; optionally narrows every other package operation. Immutable package ownership is separate from content labels.
+      schema: {type: string, maxLength: 128}
     BeforeRevision:
       name: beforeRevision
       in: query
@@ -159,12 +230,53 @@ components:
       description: Maximum number of entries in one page
       schema: {type: integer, minimum: 1, maximum: 100, default: 20}
   schemas:
+    Session:
+      type: object
+      required: [principal, workspaces, truncated]
+      properties:
+        principal:
+          type: object
+          required: [id, kind]
+          properties:
+            id: {type: string}
+            kind: {type: string, enum: [human, agent]}
+        workspaces:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: {type: string}
+              name: {type: string}
+        truncated: {type: boolean}
+    ManagedRepository:
+      type: object
+      required: [id, workspaceId, provider, host, providerId, name, canRead, canAuthor, canApprove]
+      properties:
+        id: {type: string}
+        workspaceId: {type: string}
+        provider: {type: string, enum: [github, gitlab]}
+        host: {type: string}
+        providerId: {type: string}
+        name: {type: string}
+        canRead: {type: boolean}
+        canAuthor: {type: boolean}
+        canApprove: {type: boolean, description: Always false for an agent principal}
+    RepositoryPage:
+      type: object
+      required: [repositories, truncated]
+      properties:
+        repositories: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ManagedRepository'}}
+        truncated: {type: boolean}
     ChangeSummary:
       type: object
       required: [id, revision, digest, author, createdAt, approved]
       additionalProperties: false
       properties:
         id: {type: string}
+        workspaceId: {type: string, description: Immutable ownership; omitted for local packages}
+        repositoryId: {type: string, description: Canonical repository ownership; omitted for local packages}
         revision: {type: integer, format: int64, minimum: 1}
         digest: {type: string, pattern: '^[a-f0-9]{64}$'}
         author: {type: string}
@@ -188,8 +300,8 @@ components:
           type: string
           maxLength: 1024
           description: Opaque cursor when further matching changes exist; otherwise omitted
-    ContentCommand: {type: object, required: [content], properties: {content: {type: object, additionalProperties: true}}}
-    Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, revision: {$ref: '#/components/schemas/Revision'}, approval: {$ref: '#/components/schemas/Approval'}, approved: {type: boolean}}}
+    ContentCommand: {type: object, additionalProperties: false, required: [content], properties: {content: {type: object, additionalProperties: true}}}
+    Package: {type: object, required: [id, revision, approved], properties: {id: {type: string}, workspaceId: {type: string}, repositoryId: {type: string}, revision: {$ref: '#/components/schemas/Revision'}, approval: {$ref: '#/components/schemas/Approval'}, approved: {type: boolean}}}
     Revision:
       type: object
       required: [changeId, number, schemaVersion, digest, content, author, createdAt]

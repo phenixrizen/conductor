@@ -10,7 +10,7 @@ Start PostgreSQL as described in [local development](local-development.md), then
 
 ```bash
 export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable'
-CONDUCTOR_ADDR=127.0.0.1:8080 go run ./cmd/conductord
+CONDUCTOR_AUTH_MODE=local CONDUCTOR_ADDR=127.0.0.1:8080 go run ./cmd/conductord
 ```
 
 In another terminal, start the browser workbench:

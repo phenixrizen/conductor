@@ -1,7 +1,8 @@
 # Managed repository providers
 
-**Status: Planned requirements.** Conductor must support both GitHub and GitLab
-for managed application repositories. Remote delivery adapters are not implemented.
+**Status: Partial.** Canonical repository identity and repository-aware review
+permissions are implemented for GitHub and GitLab registrations. Remote discovery,
+verification, and delivery adapters remain planned.
 The current local Git collector reads committed objects independently of either
 provider; it does not establish remote integration support.
 
@@ -12,16 +13,26 @@ See the [system architecture](system.md) and
 
 ## Repository identity
 
-A canonical managed repository identity must include the provider, host, and
-provider repository ID. An owner/name or namespace/path is a display and lookup
-attribute; it cannot establish identity alone. Host identity matters when different
-installations contain repositories with similar names or IDs. Renames must preserve
-links to existing package revisions, evidence, and delivery records.
+A canonical managed repository identity includes the provider, normalized host,
+and stable provider repository ID within a workspace. Operator registration assigns
+its Conductor repository ID. An owner/name or namespace/path is display metadata;
+renaming it preserves package links and permissions. Canonical identity and package
+workspace/repository ownership are immutable.
 
-The server must resolve and authorize canonical identities. The current snapshot's
-author-supplied `repository` string remains a grouping label, not proof of remote
-identity, access, or permissions. Existing local snapshots must not acquire remote
-authority through an implicit reinterpretation of that label.
+Hosts are DNS-style names with an optional numeric port. Registration normalizes
+case and numeric ports, omits HTTPS port 443, and rejects URLs, credentials, malformed
+labels, and IPv6 literals. Registrations with the same canonical identity cannot
+coexist in one workspace. Different workspaces remain isolated even if they register
+the same provider repository.
+
+The server checks workspace membership and repository grants for discovery,
+historical reads, and mutations. Registration is trusted operator configuration,
+not a remote access check or proof that Conductor can publish to the provider.
+The snapshot's author-supplied `repository` string remains a grouping label and
+optional exact filter, not authority. Existing local snapshots retain unscoped
+ownership and cannot acquire shared authority through reinterpretation of that label.
+See [Feature 003](../../specs/003-workspace-access/spec.md) for the implemented access
+contract.
 
 ## Shared commands and provider capabilities
 

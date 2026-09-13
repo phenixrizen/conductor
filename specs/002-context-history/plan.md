@@ -15,3 +15,13 @@
 
 Keep implementation commits focused on these boundaries. Run applicable repository
 checks with live PostgreSQL, and capture browser evidence for the interface changes.
+
+
+## Authentication follow-through
+
+[Feature 003](../003-workspace-access/spec.md) applies workspace and repository
+permissions to the existing discovery, history, revision, audit, and review command
+paths. Source snapshot labels remain evidence; canonical ownership lives outside
+immutable content. Existing local packages retain their history without acquiring
+shared authority. Browser sign-in is the next interface increment; the browser and
+interactive terminal currently remain in local mode.

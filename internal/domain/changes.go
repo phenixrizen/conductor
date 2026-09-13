@@ -11,13 +11,15 @@ import (
 )
 
 type ChangeSummary struct {
-	ID         string    `json:"id"`
-	Revision   int64     `json:"revision"`
-	Digest     string    `json:"digest"`
-	Author     string    `json:"author"`
-	CreatedAt  time.Time `json:"createdAt"`
-	Approved   bool      `json:"approved"`
-	Repository string    `json:"repository,omitempty"`
+	WorkspaceID  string    `json:"workspaceId,omitempty"`
+	RepositoryID string    `json:"repositoryId,omitempty"`
+	ID           string    `json:"id"`
+	Revision     int64     `json:"revision"`
+	Digest       string    `json:"digest"`
+	Author       string    `json:"author"`
+	CreatedAt    time.Time `json:"createdAt"`
+	Approved     bool      `json:"approved"`
+	Repository   string    `json:"repository,omitempty"`
 }
 
 type ChangePage struct {

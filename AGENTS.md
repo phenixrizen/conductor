@@ -9,8 +9,8 @@ Conductor is an architect-governed platform for software design and agentic
 programming: **Engineering intent, orchestrated.** Implement it incrementally as
 working, tested software. Favor a small complete workflow over broad scaffolding.
 
-The current focus is durable work-package review, shared discovery, and pinned
-repository context. Read these before changing behavior:
+The current focus is durable work-package review, shared repository context, and
+authenticated workspace access. Read these before changing behavior:
 
 1. `docs/README.md` — documentation map and status vocabulary.
 2. `specs/001-work-package-review/spec.md` — normative feature behavior.
@@ -21,6 +21,9 @@ repository context. Read these before changing behavior:
 7. `specs/002-context-history/spec.md` and `plan.md` for shared discovery, history,
    context provenance, evidence states, and client behavior.
 8. `docs/architecture/collaboration.md` for shared-data and authority boundaries.
+9. `specs/003-workspace-access/spec.md` and `plan.md` for authenticated API/CLI
+   review; `docs/operations/authenticated-review.md` for supported identity,
+   provisioning, and deployment limits.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -79,9 +82,11 @@ packages to mirror the target diagram.
 |---|---|
 | `cmd/conductor/` | CLI and Bubble Tea entry point |
 | `cmd/conductord/` | HTTP control-plane server |
+| `cmd/conductor-admin/` | Trusted database-operator access provisioning |
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
-| `internal/api/` | HTTP transport, local auth boundary, and error mapping |
+| `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
+| `internal/authn/` | Bounded issuer discovery and signed access-token verification |
 | `internal/store/` | PostgreSQL transaction implementation |
 | `internal/repositorycontext/` | Bounded local Git artifact collection and freshness checks |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
@@ -99,9 +104,22 @@ packages to mirror the target diagram.
 
 - Clients using the same API share the PostgreSQL dataset. Keep package context
   and review facts in the service, not private browser or agent-session memory.
-- Shared discovery filters author-supplied repository labels exactly. These labels
-  and human perspective selectors confer no authorization. Authenticate users and
-  enforce workspace/repository membership before shared deployment.
+- Shared discovery enforces server-owned workspace membership and repository
+  grants before pagination. Author-supplied repository labels remain optional
+  filters; these labels and human perspective selectors confer no authorization.
+- Authenticated package ownership is immutable and separate from revision content.
+  Provider, normalized host, and stable provider repository ID identify a managed
+  repository within its workspace. A selected repository narrows all package
+  operations, not only creation and listings.
+- Resolve verified issuer/subject pairs to active PostgreSQL principals. Human or
+  agent kind and access grants come from the server, never token role claims or
+  client actor fields. An agent cannot approve even if a grant says otherwise.
+- Hold principal, membership, and consequential repository-permission checks in
+  the transaction that commits the domain command and audit event. Do not move
+  authorization into a separate preflight query that can race with revocation.
+- Local mode may access only unscoped legacy/local packages. Authenticated mode
+  cannot access them, and local actor headers cannot access scoped packages even
+  when both modes use the same database. Never assign legacy ownership from labels.
 - Historical approvals describe the inspected historical revision. They must not
   be rendered as effective approval for the latest revision or enable an approval
   action from a historical view.
@@ -157,8 +175,19 @@ packages to mirror the target diagram.
 - Keep `api/openapi.yaml`, handlers, shared clients, examples, and tests aligned.
 - Consequential requests carry the inspected revision and, for approval, its digest.
 - Return bounded typed errors with stable codes and correlation IDs.
-- Treat `X-Conductor-Actor` as explicitly local-development-only. It is not a
-  security boundary and must be replaced before shared deployment.
+- Require an explicit authentication mode. `CONDUCTOR_AUTH_MODE=local` binds only
+  to loopback and uses `X-Conductor-Actor` for local development. OIDC mode rejects
+  that header and fails closed; never fall back to local identity after failure.
+- OIDC mode currently accepts the documented RFC 9068 RS256 access-token profile
+  from a configured HTTPS issuer and audience. Do not claim arbitrary JWT, ID-token,
+  opaque-token, or identity-provider compatibility from synthetic issuer tests.
+- Keep access tokens out of logs, actor fields, command-line arguments, and
+  repository commands. The noninteractive CLI reads an explicitly selected token
+  file; browser and TUI authentication remain a separate increment.
+- Access provisioning is a trusted database-operator command, not a public API.
+  Its operator label is audit context, not proof of identity. Apply bounded config
+  updates with an audit event atomically; omitted records stay unchanged and false
+  capability/active values revoke access without deleting historical attribution.
 - Escape resource IDs as path segments. Use idempotency keys for retryable external
   commands when those capabilities are introduced.
 - Do not expose fake success responses for unavailable integrations.
@@ -231,6 +260,12 @@ For persistence, history, shared-client, or context workflow changes, set
 schemas and must clean them up. Connection-pool reopen is not a database restart.
 Use `scripts/start-local-db.sh` for the persistent local database; it pipes inputs
 to Docker to support Snap installations with checkouts outside the home directory.
+
+For authentication and authorization changes, run the signed-token and live
+PostgreSQL acceptance paths covering human collaboration, agent approval denial,
+workspace/repository isolation across every endpoint, revocation, forged identity,
+legacy migration, and access-audit rollback. Synthetic issuer tests establish the
+implemented protocol boundary, not compatibility with a real identity vendor.
 
 For API/process lifecycle or durability changes, run the opt-in process-restart
 acceptance with `CONDUCTOR_TEST_PROCESS_RESTART=1`. It owns a temporary PostgreSQL

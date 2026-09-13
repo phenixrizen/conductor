@@ -14,21 +14,27 @@ treat the affected surface as incomplete; do not invent checksums.
 ```bash
 ./scripts/start-local-db.sh
 export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable'
-go run ./cmd/conductord
+CONDUCTOR_AUTH_MODE=local go run ./cmd/conductord
 ```
 
-The startup script pipes Compose configuration and the initial migration into
+The startup script pipes Compose configuration and the ordered migrations into
 Docker, so Docker Snap can work with a checkout under `/mnt`. PostgreSQL data lives
-in a named volume. The initial migration runs atomically only for an empty database;
+in a named volume. Migrations run atomically only for an empty database;
 existing review history is retained. Apply later migrations deliberately rather
 than assuming a restarted existing volume was upgraded.
+Existing databases at migration 001 need migration 002 once; see
+[authenticated review setup](authenticated-review.md). The script reports this
+requirement instead of claiming the old schema is ready for the current API.
 
 Configuration:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `DATABASE_URL` | Required | PostgreSQL connection URL |
-| `CONDUCTOR_ADDR` | `:8080` | API listen address |
+| `CONDUCTOR_ADDR` | `127.0.0.1:8080` | API listen address; local mode requires literal loopback |
+| `CONDUCTOR_AUTH_MODE` | Required | `local` development or `oidc` authenticated API |
+| `CONDUCTOR_OIDC_ISSUER` | Required in OIDC mode | Exact HTTPS identity issuer |
+| `CONDUCTOR_OIDC_AUDIENCE` | Required in OIDC mode | API access-token audience |
 | `CONDUCTOR_URL` | `http://localhost:8080` | CLI API base URL |
 
 ## Exercise the review flow
@@ -104,8 +110,9 @@ Errors contain stable machine-readable fields:
 ```
 
 Retain the correlation ID when reporting a failure. `400` means malformed or
-invalid input, `401` means the local identity is missing or invalid, `404` means the
-change was not found, `409` means inspected state is stale, and `422` means the
+invalid input, `401` means identity is missing or invalid, `403` means workspace or
+repository capability is denied, `404` means the change is missing or inaccessible,
+`409` means inspected state is stale, and `422` means the
 content is current but approval policy rejected the action.
 
 ## Checks
