@@ -107,8 +107,11 @@ source baseline, and disclose unresolved overlaps. Findings and generated summar
 remain evidence; they do not grant approval or replace a human decision.
 
 Spec Kit and ADRKit artifacts are shared through pinned package snapshots. Their
-text, file identity, commit, and digest remain recoverable. Native tool integrations
-must later define which artifacts they own and how updates create new revisions.
+text, file identity, commit, and digest remain recoverable. The implemented
+[native design tools](../operations/design-tools.md) create exclusive new core
+templates and Proposed ADRs, and retain native checks inside exact execution
+artifacts. Changed source enters a new package/context revision through existing
+commands.
 An imported decision's status cannot authorize Conductor execution implicitly.
 
 ## Shared remote collection
