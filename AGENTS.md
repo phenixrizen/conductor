@@ -249,6 +249,14 @@ packages to mirror the target diagram.
 
 ## PostgreSQL and migration conventions
 
+- Use the trusted `conductor-db` operator for release migrations and backup/restore;
+  see `docs/operations/release.md` and feature 016. Existing untracked databases
+  need an explicitly inspected baseline; never guess it. Preserve migration
+  checksums, origin labels and append-only history. Restore only to a quarantined
+  empty target. Temporal history/identity recovery remains separate from PostgreSQL.
+- Private diagnostics bind a separate literal loopback address. Never expose them
+  through the public API/reverse proxy or label metrics with source/identity data.
+
 - Package mutations and their audit events must commit in one transaction.
 - Serialize commands for the same package and enforce optimistic revision checks;
   allow unrelated packages to progress independently.

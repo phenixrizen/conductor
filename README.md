@@ -268,3 +268,12 @@ window. People and agents can request evidence; the browser shows its retained
 source, gaps and comparisons against explicitly approved criteria. Historical results
 and current freshness stay separate. Controlled protocol and browser tests pass;
 a live Groundcover account and overall production outcome remain unverified.
+
+### Release operations
+
+The [release runbook](docs/operations/release.md) covers reproducible Linux archives,
+separate API/worker service accounts, HTTPS, checked migrations, private diagnostics,
+and PostgreSQL backup/restore into an empty recovery database. Immutable package,
+approval, audit and dispatch records survive tested recovery. Temporal history needs
+its own supported retention and recovery procedure; a database backup does not
+replace it. Deployment templates are provided but have not been deployed for you.

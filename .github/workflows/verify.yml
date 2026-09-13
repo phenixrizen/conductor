@@ -49,6 +49,11 @@ jobs:
           "$RUNNER_TEMP/checks/bin/pip" install openapi-spec-validator==0.9.0 playwright==1.62.0
           "$RUNNER_TEMP/checks/bin/python" -m playwright install --with-deps chromium
           echo "CONDUCTOR_BROWSER_PYTHON=$RUNNER_TEMP/checks/bin/python" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/checks/bin/python" - <<'PYTHON' >> "$GITHUB_ENV"
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              print("CONDUCTOR_CHROME=" + p.chromium.executable_path)
+          PYTHON
       - name: Web, contracts and source hygiene
         run: |
           npm --prefix apps/web ci
