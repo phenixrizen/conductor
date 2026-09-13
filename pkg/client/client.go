@@ -66,6 +66,12 @@ func (c *Client) doIntoHeaders(ctx context.Context, method, path string, body, o
 	if err != nil {
 		return err
 	}
+	if method == http.MethodPost {
+		// Idempotency-Key permits an explicit retry of the inspected input. It
+		// must not make the standard transport silently replay a command after
+		// a lost response on a reused connection; surface that uncertainty.
+		req.GetBody = nil
+	}
 	req.Header.Set("Content-Type", "application/json")
 	for name, values := range headers {
 		req.Header[name] = append([]string(nil), values...)
