@@ -12,7 +12,8 @@ export interface ExecutionEvidence { id: string; repositoryId: string; argv: str
 export interface ExecutionPatch { repositoryId: string; baseCommit: string; baseTree: string; resultTree: string; patch: string; digest: string; paths: string[] }
 export interface ExecutionArtifact { cleanupConfirmed: boolean; inputDigest: string; profileDigest: string; image: string; adapter: string; adapterVersion: string; producer: ExecutionEvidence; patches: ExecutionPatch[]; checks: ExecutionEvidence[]; startedAt: string; finishedAt: string }
 export interface DeliveryArtifact { deliveryId: string; deliveryDigest: string; artifactDigest: string; artifact: ExecutionArtifact }
-export interface InspectedArtifact extends DeliveryArtifact { decodedPatches: {metadata: ExecutionPatch; bytes: Uint8Array; text: string}[] }
+export interface InspectedExecutionArtifact { artifact: ExecutionArtifact; decodedPatches: {metadata: ExecutionPatch; bytes: Uint8Array; text: string}[] }
+export interface InspectedArtifact extends DeliveryArtifact, InspectedExecutionArtifact {}
 export const deliveryPath = (id: string) => `/repository-deliveries/${encodeURIComponent(id)}`;
 const date = (v: unknown) => typeof v === 'string' && Number.isFinite(Date.parse(v));
 export function validateDelivery(value: Delivery, access: BrowserAccess, id?: string) {
@@ -32,7 +33,18 @@ export { visibleControls } from './sourceText';
 // publication. The larger artifact response is never silently sliced for review.
 export async function inspectArtifact(value: DeliveryArtifact, selected: Delivery): Promise<InspectedArtifact> {
   if(!value||value.deliveryId!==selected.id||value.deliveryDigest!==selected.digest||value.artifactDigest!==selected.input.artifactDigest||!value.artifact)throw new Error('The artifact does not match the inspected publication proposal.');
-  const a=value.artifact;
+  const inspected=await inspectExecutionArtifact(value.artifact);
+  const {artifact:a,decodedPatches:decoded}=inspected;
+  const p=decoded.find(p=>p.metadata.repositoryId===selected.repositoryId)?.metadata;
+  if(!p||p.digest!==selected.patchDigest||p.baseCommit!==selected.baseCommit||p.baseTree!==selected.baseTree||p.resultTree!==selected.resultTree||new Set(a.patches.map(p=>p.repositoryId)).size!==a.patches.length)throw new Error('The artifact lacks the exact target repository patch.');
+  return {...value,...inspected};
+}
+
+// Failed attempts and read-only design reports use the same complete byte
+// validation as delivery, without publication eligibility or a required patch.
+export async function inspectExecutionArtifact(value: ExecutionArtifact): Promise<InspectedExecutionArtifact> {
+  const a=value;
+  a.patches=a.patches??[];a.checks=a.checks??[];
   if(!isHex(a.inputDigest,64)||!isHex(a.profileDigest,64)||typeof a.image!=='string'||typeof a.adapter!=='string'||typeof a.adapterVersion!=='string'||typeof a.cleanupConfirmed!=='boolean'||!a.producer||typeof a.producer.state!=='string'||!Array.isArray(a.patches)||a.patches.length>16||!Array.isArray(a.checks)||a.checks.length>32||!date(a.startedAt)||!date(a.finishedAt))throw new Error('Implementation evidence is incomplete.');
   const decoded:InspectedArtifact['decodedPatches']=[];
   for(const p of a.patches){
@@ -40,10 +52,8 @@ export async function inspectArtifact(value: DeliveryArtifact, selected: Deliver
     const bytes=Uint8Array.from(atob(p.patch),c=>c.charCodeAt(0));if(bytes.length>8*1024*1024||await digestBytes(bytes)!==p.digest)throw new Error('A displayed patch does not match its retained byte digest.');
     decoded.push({metadata:p,bytes,text:new TextDecoder('utf-8',{fatal:true}).decode(bytes)});
   }
-  const p=decoded.find(p=>p.metadata.repositoryId===selected.repositoryId)?.metadata;
-  if(!p||p.digest!==selected.patchDigest||p.baseCommit!==selected.baseCommit||p.baseTree!==selected.baseTree||p.resultTree!==selected.resultTree||new Set(a.patches.map(p=>p.repositoryId)).size!==a.patches.length)throw new Error('The artifact lacks the exact target repository patch.');
   for(const c of [a.producer,...a.checks]){if(!c||typeof c.id!=='string'||typeof c.repositoryId!=='string'||!Array.isArray(c.argv??[])||(c.argv??[]).some(arg=>typeof arg!=='string')||typeof c.state!=='string'||typeof c.truncated!=='boolean'||!isHex(c.outputDigest,64)||!isHex(c.sourceDigest,64)||c.output!==undefined&&typeof c.output!=='string'||await digestBytes(new TextEncoder().encode(c.output??''))!==c.outputDigest)throw new Error('A check does not match its retained output digest.');}
-  return {...value,decodedPatches:decoded};
+  return {artifact:a,decodedPatches:decoded};
 }
 
 export function publicationEvidenceReady(a: InspectedArtifact, repositoryID: string) { return a.artifact.cleanupConfirmed && [a.artifact.producer,...a.artifact.checks].every(c=>c.state==='passed'&&c.exitCode===0&&!c.truncated) && a.artifact.checks.some(c=>c.repositoryId===repositoryID); }

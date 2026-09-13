@@ -40,7 +40,7 @@ func (c *Client) ReconcileDelivery(ctx context.Context, id, digest, key string) 
 }
 func deliveryPath(id string) string { return "/api/v1/repository-deliveries/" + url.PathEscape(id) }
 
-// GetDeliveryArtifact is the sole larger response profile: the persisted artifact
+// GetDeliveryArtifact uses the larger artifact response profile: the persisted artifact
 // is bounded to 16 MiB plus its envelope. All ordinary reads retain 2 MiB bounds.
 func (c *Client) GetDeliveryArtifact(ctx context.Context, id string) (domain.DeliveryArtifact, error) {
 	var out domain.DeliveryArtifact

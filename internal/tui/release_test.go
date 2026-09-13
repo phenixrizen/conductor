@@ -163,3 +163,42 @@ func TestGraphArtifactBindsEveryInspectedSourceField(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskArtifactCapturesReceiptAndRejectsSubstitution(t *testing.T) {
+	m, run, requests := releaseFixture(t)
+	result := execution.Result{Producer: execution.Evidence{State: "failed", Output: "Synthetic failed report\x1b]52;c;bad\a"}, Patches: []execution.Patch{}}
+	raw, _ := json.Marshal(result)
+	digest, _ := domain.JSONDigest(result)
+	receipt := domain.TaskReceipt{TaskID: strings.Repeat("a", 32), TaskKey: "one", Outcome: "failed", ArtifactDigest: digest}
+	run.Receipts = []domain.TaskReceipt{receipt}
+	m.record = run
+	m, _ = releaseKey(m, "v")
+	if m.prompt != "task-artifact" {
+		t.Fatal("artifact selection absent")
+	}
+	m.input = "one"
+	m, _ = releaseKey(m, "enter")
+	if len(*requests) != 1 {
+		t.Fatal("artifact selection fetched new run")
+	}
+	req := (*requests)[0]
+	if req.op != "task-artifact" || req.taskArtifact.RunDigest != run.Digest || req.taskArtifact.TaskID != receipt.TaskID || req.taskArtifact.ArtifactDigest != digest {
+		t.Fatal("artifact request lost inspected receipt")
+	}
+	value := domain.CoordinationArtifact{RunID: run.ID, RunDigest: run.Digest, TaskID: receipt.TaskID, ArtifactDigest: digest, Artifact: raw}
+	if err := m.validateRelease(releaseResult{releaseRequest: req, value: value}); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*domain.CoordinationArtifact){func(v *domain.CoordinationArtifact) { v.TaskID = strings.Repeat("f", 32) }, func(v *domain.CoordinationArtifact) { v.RunDigest = strings.Repeat("f", 64) }, func(v *domain.CoordinationArtifact) { v.ArtifactDigest = strings.Repeat("f", 64) }, func(v *domain.CoordinationArtifact) { v.Artifact = []byte(`{}`) }} {
+		bad := value
+		change(&bad)
+		if m.validateRelease(releaseResult{releaseRequest: req, value: bad}) == nil {
+			t.Fatal("substituted task output accepted")
+		}
+	}
+	m.presentation = value
+	m.rebuildRelease()
+	if strings.Contains(strings.Join(m.lines, "\n"), "\x1b") {
+		t.Fatal("report controls reached terminal")
+	}
+}

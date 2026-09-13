@@ -129,3 +129,10 @@ failures. The recovered completed workflow is tested across a real Temporal rest
 separate executor crash test requires `CONDUCTOR_TEST_PROCESS_RESTART=1`; it kills
 the actual worker process, restarts it with the same private catalog and database,
 and proves that the lost producer is reconciled without a replacement.
+
+Retained task output can be inspected before publication through
+`GET /api/v1/coordination-runs/{id}/artifact` with the exact `runDigest`, `taskId`,
+and `artifactDigest` query pins. This returns failed checks and design reports
+as well as successful patches. It grants no approval or publication authority;
+current read permission for every repository in the run remains necessary.
+See [terminal controls](release-terminal.md) for CLI and TUI inspection.

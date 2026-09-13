@@ -250,3 +250,8 @@ invariants, and update documentation alongside behavior.
 - [OpenAPI contract](api/openapi.yaml)
 - [AI-DLC inspiration and plan review](docs/architecture/aidlc-plan-review.md)
 - [Proposed architectural decisions](docs/adr/)
+
+Developers and agents can inspect retained task reports and failed check output
+before proposing publication. The API, MCP, CLI and terminal workbench share the
+same exact artifact digests and repository permissions; a readable report does
+not grant approval or prove implementation passed verification.

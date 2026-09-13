@@ -254,6 +254,28 @@ def main():
                 limited.settle()
                 assert len(proxy.snapshot()) == count
 
+            report = setup["reportRun"]
+            receipt = report["receipts"][0]
+            report_terminal = launch("agent", "runs", report["id"])
+            start = len(report_terminal.output)
+            report_terminal.send("v")
+            report_terminal.wait_text("Task key or opaque ID", start)
+            before = len(proxy.snapshot())
+            report_terminal.send(receipt["taskKey"] + "\r")
+            report_terminal.wait_text("Exact task artifact inspected", start)
+            report_terminal.send("\x1b[F")
+            report_terminal.wait_text("Synthetic failed design report", start)
+            report_terminal.settle()
+            reads = proxy.snapshot()[before:]
+            assert len(reads) == 1 and reads[0]["method"] == "GET"
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(reads[0]["path"]).query)
+            assert query == {"runDigest": [report["digest"]], "taskId": [receipt["taskId"]],
+                             "artifactDigest": [receipt["artifactDigest"]]}
+            artifact = cli("agent", "run-artifact", ["--digest", report["digest"], "--task-id", receipt["taskId"],
+                "--artifact-digest", receipt["artifactDigest"], report["id"]])
+            assert artifact["artifact"]["producer"]["state"] == "failed" and artifact["artifact"]["patches"] == []
+            assert artifact["artifactDigest"] == receipt["artifactDigest"]
+
             delivery = setup["delivery"]
             publication = launch("reviewer", "deliveries", delivery["id"])
             start = len(publication.output)

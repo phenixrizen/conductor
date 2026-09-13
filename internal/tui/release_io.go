@@ -18,6 +18,7 @@ type releaseRequest struct {
 	draft                                         reviewinput.Draft
 	query                                         domain.GraphQuery
 	graphArtifact                                 domain.GraphArtifactQuery
+	taskArtifact                                  domain.CoordinationArtifactQuery
 }
 type releaseResult struct {
 	releaseRequest
@@ -109,6 +110,8 @@ func releaseRunner(ctx context.Context, c *client.Client) releaseExecutor {
 				}
 			case "cancel":
 				r.value, r.err = c.CancelCoordination(operation, req.id, req.digest)
+			case "task-artifact":
+				r.value, r.err = c.GetCoordinationArtifact(operation, req.id, req.taskArtifact)
 			case "graph-artifact":
 				r.value, r.err = c.GetRepositoryGraphArtifact(operation, req.id, req.graphArtifact)
 			case "artifact":

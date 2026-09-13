@@ -300,6 +300,11 @@ packages to mirror the target diagram.
 
 ## Web and terminal interfaces
 
+- Task-artifact reads capture the inspected run/task/artifact tuple and validate
+  profile, image, source and displayed byte digests. Failed tasks and read-only
+  reports remain inspectable without publication eligibility. Clear the run and
+  artifact together on denied source access; never refresh inside a decision.
+
 - Tracker writes capture the inspected link and provider projection, including
   known absence. Do not infer an absent projection from missing/unavailable evidence.
   Confirmations perform no reads. An uncertain write keeps its exact input/key;
@@ -309,8 +314,8 @@ packages to mirror the target diagram.
 
 - Publication review loads the complete retained implementation artifact and checks
   displayed patch/output byte digests before enabling exact human authorization.
-  Its GET artifact endpoint alone permits a 17 MiB browser response; ordinary reads
-  remain bounded to 4 MiB. Never silently slice a patch for review. Denied source
+  Dedicated delivery and task-artifact GET endpoints permit a 17 MiB browser
+  response; ordinary reads remain bounded to 4 MiB. Never silently slice a patch for review. Denied source
   reads clear private patches and confirmations. Lost authorization requires renewed
   proposal and artifact inspection; provider refresh retries retain the same key.
 
@@ -457,3 +462,9 @@ Before finishing:
    limitations, and the next concrete increment.
 5. Do not merge, deploy, waive checks, force-push, or select a project license
    without explicit authority.
+
+- Retained coordination task artifacts have an independent read path. Bind the
+  inspected run digest, opaque task ID and artifact digest; hold every run source
+  read grant through the complete bounded typed-result read. Failed/checkless
+  reports remain reviewable without a publication proposal or current execute
+  grant. Reading output must never reclassify it as passing or publishable.

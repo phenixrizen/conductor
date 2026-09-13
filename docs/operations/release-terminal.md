@@ -62,6 +62,7 @@ start execution or publication.
 | Create a graph | `graph-preview --file FILE`, then `graph-create --file FILE --digest PREVIEW_DIGEST` |
 | Shared task plans | `runs`, `run ID`, `execution-profiles`, `execution-capabilities` |
 | Propose tasks | `run-preview --file FILE`, then `run-propose --file FILE --digest PREVIEW_DIGEST` |
+| Complete task evidence | `run-artifact --digest RUN_DIGEST --task-id TASK_ID --artifact-digest ARTIFACT_DIGEST RUN_ID` reads the exact retained report or check output, including failures and reports with no patch. |
 | Human execution decisions | `run-authorize --digest PLAN_DIGEST ID`, `run-cancel --digest PLAN_DIGEST ID` |
 | Publication proposals | `delivery-preview --file FILE`, then `delivery-propose --file FILE --digest PREVIEW_DIGEST` |
 | Inspect publication evidence | `deliveries`, `delivery ID`, `delivery-artifact ID` |
@@ -153,3 +154,14 @@ revocation and fixed-token recovery. Its immutable implementation receipts are
 explicit review fixtures; real Docker/Temporal execution and provider compatibility
 retain their separate acceptance evidence. Missing opt-in is a skip; missing tools
 or database after opting in fail the test. Existing development data is preserved.
+
+Task output is shared independently of publication. In the **runs** view, press
+`v` and enter a task key or opaque task ID from the inspected receipt list. The
+request captures the displayed run digest and that receipt's artifact digest;
+it never refreshes the run inside the read. Failed checks remain failed, and a
+report without a patch does not establish verified implementation. All repository
+read grants remain required, while execution and publication grants are not
+needed to inspect historical output. The complete JSON response is bounded to
+17 MiB, containing an artifact of at most 16 MiB. Missing artifacts and invalid
+digests produce explicit errors. MCP's `conductor_get_task_artifact` keeps its
+2 MiB response bound and directs larger complete inspections to the API or CLI.

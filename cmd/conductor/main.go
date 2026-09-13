@@ -33,6 +33,8 @@ func main() {
 	depth := f.Int("depth", 1, "graph traversal depth 0-5")
 	rev := f.Int64("revision", 0, "inspected revision")
 	digest := f.String("digest", "", "inspected digest")
+	taskID := f.String("task-id", "", "inspected opaque coordination task ID")
+	artifactDigest := f.String("artifact-digest", "", "inspected retained coordination artifact digest")
 	before := f.Int64("before", 0, "history cursor: revisions before this number")
 	page := f.String("page", "", "opaque continuation cursor for shared changes or context collections")
 	after := f.Int64("after", 0, "audit cursor: events after this sequence")
@@ -89,7 +91,7 @@ func main() {
 		if len(paths) == 1 {
 			artifactPath = paths[0]
 		}
-		p, err = runReleaseCommand(ctx, c, cmd, args, releaseOptions{file: *file, digest: *digest, key: *idempotencyKey, before: *page, limit: *limit, search: *search, node: *node, depth: *depth, artifact: domain.GraphArtifactQuery{GraphDigest: *digest, RepositoryID: *sourceRepository, CollectionID: *collectionID, ReceiptDigest: *receiptDigest, FullSourceDigest: *fullSourceDigest, Path: artifactPath}})
+		p, err = runReleaseCommand(ctx, c, cmd, args, releaseOptions{taskArtifact: domain.CoordinationArtifactQuery{RunDigest: *digest, TaskID: *taskID, ArtifactDigest: *artifactDigest}, file: *file, digest: *digest, key: *idempotencyKey, before: *page, limit: *limit, search: *search, node: *node, depth: *depth, artifact: domain.GraphArtifactQuery{GraphDigest: *digest, RepositoryID: *sourceRepository, CollectionID: *collectionID, ReceiptDigest: *receiptDigest, FullSourceDigest: *fullSourceDigest, Path: artifactPath}})
 	default:
 		switch cmd {
 		case "context-collect", "context-collections", "context-collection", "context-cancel", "context-attach":
@@ -197,7 +199,7 @@ func usage() {
 Review: tui, session, repositories, list, create, revise, show, history, events, submit, approve
 Context: context, context-check, context-collect, context-collections, context-collection, context-cancel, context-attach
 Graphs: graphs, graph, graph-query, graph-artifact, graph-preview, graph-create
-Agent work: runs, run, run-preview, run-propose, run-authorize, run-cancel, execution-profiles, execution-capabilities
+Agent work: runs, run, run-artifact, run-preview, run-propose, run-authorize, run-cancel, execution-profiles, execution-capabilities
 Delivery: deliveries, delivery, delivery-preview, delivery-propose, delivery-artifact, delivery-authorize, delivery-reconcile
 Tracker: tracker, tracker-links, tracker-link, tracker-link-preview, tracker-link-create, tracker-sync-preview, tracker-sync, tracker-sync-show
 Use --help after a command for flags. Release request files and controls: docs/operations/release-terminal.md`)
