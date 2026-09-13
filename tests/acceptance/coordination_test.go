@@ -29,6 +29,16 @@ import (
 
 func coordinationAcceptance(t *testing.T, modes ...string) (*accessFixture, *coordinationworker.Activity, store.CoordinationWork) {
 	t.Helper()
+	fixtureTimeout := time.Minute
+	if len(modes) > 0 && modes[0] == "crash" {
+		// Process recovery includes setup and the immutable attempt's cleanup grace.
+		fixtureTimeout = 150 * time.Second
+	}
+	return coordinationAcceptanceWithTimeout(t, fixtureTimeout, modes...)
+}
+
+func coordinationAcceptanceWithTimeout(t *testing.T, fixtureTimeout time.Duration, modes ...string) (*accessFixture, *coordinationworker.Activity, store.CoordinationWork) {
+	t.Helper()
 	if os.Getenv("CONDUCTOR_TEST_EXECUTION") != "1" || os.Getenv("CONDUCTOR_TEST_CODEGRAPH") != "1" {
 		t.Skip("set CONDUCTOR_TEST_EXECUTION=1 and CONDUCTOR_TEST_CODEGRAPH=1 for actual Docker coordinated execution")
 	}
@@ -36,12 +46,8 @@ func coordinationAcceptance(t *testing.T, modes ...string) (*accessFixture, *coo
 	if !domain.ExecutionImagePinned(image) {
 		t.Fatal("immutable CONDUCTOR_TEST_WORKER_IMAGE required")
 	}
-	fixtureTimeout := time.Minute
-	if len(modes) > 0 && modes[0] == "crash" {
-		// This process-recovery test includes setup and the immutable attempt's
-		// cleanup grace. A child timeout cannot extend the shared fixture budget.
-		fixtureTimeout = 150 * time.Second
-	}
+	// The fixture owns the whole-test budget, including source and Docker setup.
+	// A later child context cannot extend a shorter fixture deadline.
 	f := collectionFixtureWithTimeout(t, fixtureTimeout)
 	f.server.Close()
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db).WithCollections().WithCoordination(), f.verifier))
@@ -268,7 +274,7 @@ func TestCoordinatedTemporalDockerExecutionAndRetainedHistory(t *testing.T) {
 	if os.Getenv("CONDUCTOR_TEST_TEMPORAL") != "1" {
 		t.Skip("set CONDUCTOR_TEST_TEMPORAL=1 for owned coordinator workflow acceptance")
 	}
-	f, activity, w := coordinationAcceptance(t)
+	f, activity, w := coordinationAcceptanceWithTimeout(t, 120*time.Second)
 	retrying := &coordinationRetryActivities{Activity: activity, firstTask: w.TaskIDs["first"]}
 	address := durableAddress(t)
 	root := t.TempDir()
