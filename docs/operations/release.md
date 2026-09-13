@@ -110,7 +110,7 @@ upgrades. Select a connection using the protected `DATABASE_URL` environment.
 An empty database applies every migration in one transaction. The tool serializes
 other instances through an advisory lock and records the file name/checksum for
 each completed migration. A later run checks every recorded file before applying
-new ones. Migration 011 makes this ledger append-only; no automatic downgrade,
+new ones. Migration 012 makes this ledger append-only; no automatic downgrade,
 checksum replacement or partial acceptance of failed SQL is provided. A commit
 acknowledgment failure requires inspection of the ledger before another attempt.
 
