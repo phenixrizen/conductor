@@ -60,8 +60,9 @@ workspace packages. See the
 exercise the protocol; compatibility with a particular identity provider has not
 yet been certified.
 
-Coding-agent execution, GitHub/GitLab publication, and tracker integrations remain
-planned. Spec Kit and ADRKit files can be captured as native text; their command/API
+Isolated coding-worker and independent verification components are implemented;
+their coordinated runtime is being connected. GitHub/GitLab publication and tracker
+integrations remain planned. Spec Kit and ADRKit files can be captured as native text; their command/API
 integrations are not implemented. Collected context records what was captured,
 not proof that tests passed or a decision was approved.
 
@@ -153,6 +154,9 @@ configuration, troubleshooting, and database lifecycle.
   [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) Rust extraction
   kernel runs in a container without network access or credentials. Graphs currently
   cover explicitly collected paths; see [graph setup and limits](docs/operations/repository-graph.md).
+- **Codex 0.154.0 and Claude Code 2.1.270:** pinned producer adapters inside an
+  isolated Docker worker, followed by checks in a separate container. Predecessor
+  patches are preserved in cumulative results. See [worker setup and verification limits](docs/operations/coding-workers.md).
 
 The current implementation focuses on durable review, shared context, and
 controlled team access. Background context collection requires an operator-enabled
