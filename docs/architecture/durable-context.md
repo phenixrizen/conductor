@@ -1,8 +1,9 @@
 # Durable repository context
 
 **Status: Partial.** The API/CLI and browser/terminal controls, shared immutable
-receipts, explicit attachment, bounded GitHub/GitLab reads and local Temporal
-workflow are implemented. Local Git snapshot behavior is retained. Live provider compatibility and production
+receipts, explicit attachment, bounded GitHub/GitLab reads and Temporal
+workflow are implemented with local or [verified TLS transport](temporal-tls.md).
+Local Git snapshot behavior is retained. Live provider compatibility and production
 deployment remain unverified. ADR 0003 remains Proposed.
 The [feature specification](../../specs/006-durable-context/spec.md) records the
 selected permission: repository authors may collect after an operator enables

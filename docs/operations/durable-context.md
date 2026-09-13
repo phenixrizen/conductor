@@ -1,10 +1,11 @@
 # Background repository context
 
 **Status: Partial.** The API, CLI, browser/terminal controls, PostgreSQL outbox,
-Temporal worker, and bounded GitHub/GitLab read adapters are present. This profile uses a trusted local Temporal
-development server. Remote Temporal authentication and production deployment
-validation remain later work. Provider fixtures exercise the pinned protocols; live GitHub/GitLab compatibility has not
-been verified with repository-limited read credentials.
+Temporal worker and bounded GitHub/GitLab read adapters are present. Workers use
+explicit local loopback or the shared [remote TLS/mTLS profile](temporal-tls.md).
+Production deployment remains unverified. Provider fixtures exercise the pinned
+protocols; live GitHub/GitLab compatibility has not been verified with
+repository-limited read credentials.
 
 An authorized engineer or agent requests files from one exact commit. The service
 saves that request, collects in the background, and exposes the same result to
@@ -131,11 +132,11 @@ export CONDUCTOR_CONTEXT_CREDENTIALS_FILE=/home/example/.config/conductor/worker
 go run ./cmd/conductor-worker
 ```
 
-The worker requires a literal loopback Temporal address and an explicit namespace.
-It checks the actual cluster/namespace identity and at least 24 hours of history
-retention. Its task queue is fixed at `conductor-collection-v1`. Remote Temporal,
-TLS/mTLS, hosted-service credentials, and untrusted shared-host operation are outside
-this deployment profile. Do not expose the local Temporal port to untrusted clients.
+The local profile requires a literal loopback Temporal address and an explicit
+namespace. The shared [remote TLS/mTLS profile](temporal-tls.md) is also available.
+Both check the actual cluster/namespace identity and at least 24 hours of history
+retention. The queue is fixed at `conductor-collection-v1`. A hosted account or
+production deployment remains unverified. Keep local plaintext Temporal private.
 
 Start or restart the configured OIDC API with `CONDUCTOR_CONTEXT_COLLECTIONS=1`.
 Unset or `0` keeps collection commands unavailable; other values and enabled local

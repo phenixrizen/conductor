@@ -34,6 +34,7 @@ not mistaken for working capabilities.
 | [Context integration research](architecture/context-integration-research.md) | Pinned Temporal/GitHub/GitLab profiles and verified versus live-service limits |
 | [Feature 006 specification](../specs/006-durable-context/spec.md) | Remote collection contract with author and operator permission boundaries |
 | [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
+| [Temporal TLS setup](operations/temporal-tls.md) | Shared verified TLS/mTLS, protected credentials and persistent runtime identity across workers |
 | [Background context setup](operations/durable-context.md) | Enable bounded repository reads, run the worker, inspect and attach receipts, and recover safely |
 | [Work tracking](architecture/work-tracking.md) | Linear/Jira options, linked work, and synchronization ownership |
 | [Tracker setup and review](operations/work-tracking.md) | Configure one tracker per workspace, inspect linked work, synchronize and resolve conflicts |

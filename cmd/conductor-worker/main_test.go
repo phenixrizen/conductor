@@ -81,7 +81,7 @@ func TestWorkerConfigurationSupportsLiteralLoopbackAndNoProviderOverrides(t *tes
 			if got.address != wantAddress || got.namespace != "synthetic-context" || got.credentialsFile != env["CONDUCTOR_CONTEXT_CREDENTIALS_FILE"] {
 				t.Fatalf("worker configuration changed explicit binding: %+v", got)
 			}
-			wantKeys := map[string]bool{"DATABASE_URL": true, "CONDUCTOR_TEMPORAL_ADDRESS": true, "CONDUCTOR_TEMPORAL_NAMESPACE": true, "CONDUCTOR_CONTEXT_CREDENTIALS_FILE": true, "CONDUCTOR_TEMPORAL_MODE": true}
+			wantKeys := map[string]bool{"DATABASE_URL": true, "CONDUCTOR_TEMPORAL_ADDRESS": true, "CONDUCTOR_TEMPORAL_NAMESPACE": true, "CONDUCTOR_CONTEXT_CREDENTIALS_FILE": true, "CONDUCTOR_TEMPORAL_MODE": true, "CONDUCTOR_TEMPORAL_SERVER_NAME": true, "CONDUCTOR_TEMPORAL_CA_FILE": true, "CONDUCTOR_TEMPORAL_CLIENT_CERT_FILE": true, "CONDUCTOR_TEMPORAL_CLIENT_KEY_FILE": true}
 			if !reflect.DeepEqual(read, wantKeys) {
 				t.Fatalf("worker loaded an undocumented configuration override: %v", read)
 			}
@@ -112,5 +112,21 @@ func TestSDKLoggerDropsMessagesStructuredFieldsAndErrorCauses(t *testing.T) {
 	want := "Temporal worker warning; inspect collection observations\nTemporal worker error; inspect collection observations\n"
 	if output.String() != want {
 		t.Fatalf("unsafe SDK diagnostic output: %q", output.String())
+	}
+}
+
+func TestWorkerSharedRemoteTLSProfile(t *testing.T) {
+	env := map[string]string{"DATABASE_URL": "postgres://fixture", "CONDUCTOR_TEMPORAL_MODE": "remote-tls", "CONDUCTOR_TEMPORAL_ADDRESS": "temporal.example.invalid:7233", "CONDUCTOR_TEMPORAL_SERVER_NAME": "temporal.example.invalid", "CONDUCTOR_TEMPORAL_NAMESPACE": "explicit-namespace", "CONDUCTOR_CONTEXT_CREDENTIALS_FILE": "/operator/context.json", "CONDUCTOR_EXECUTION_PROFILES_FILE": "/operator/profiles.json", "CONDUCTOR_PUBLICATION_CREDENTIALS_FILE": "/operator/publication.json", "CONDUCTOR_RUNTIME_CREDENTIALS_FILE": "/operator/runtime.json"}
+	c, err := loadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := c.temporal.Options("test-worker", safeLogger{})
+	if options.HostPort != env["CONDUCTOR_TEMPORAL_ADDRESS"] || options.Namespace != env["CONDUCTOR_TEMPORAL_NAMESPACE"] || options.ConnectionOptions.TLS == nil || options.ConnectionOptions.TLS.ServerName != env["CONDUCTOR_TEMPORAL_SERVER_NAME"] || options.ConnectionOptions.MaxPayloadSize != 1<<20 {
+		t.Fatal("shared transport configuration was discarded")
+	}
+	env["CONDUCTOR_TEMPORAL_MODE"] = "local"
+	if _, err := loadConfig(func(key string) string { return env[key] }); err == nil {
+		t.Fatal("remote profile silently downgraded")
 	}
 }

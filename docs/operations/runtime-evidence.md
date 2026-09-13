@@ -13,8 +13,9 @@ export CONDUCTOR_AUTH_MODE=oidc
 export CONDUCTOR_RUNTIME_EVIDENCE=1
 ```
 
-The runtime worker initially supports a literal loopback Temporal address and an
-explicit namespace. Remote hosted/TLS Temporal is outside this profile.
+The runtime worker supports explicit local loopback or the shared
+[remote TLS/mTLS profile](temporal-tls.md), with a fixed namespace and retained
+cluster identity. Hosted-account compatibility remains unverified.
 
 ## Operator configuration
 
