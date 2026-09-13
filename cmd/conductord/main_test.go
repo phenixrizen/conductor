@@ -138,3 +138,17 @@ func TestCoordinationRequiresExplicitOIDCCapability(t *testing.T) {
 		}
 	}
 }
+
+func TestDeliveriesRequireOIDCAndExplicitCapability(t *testing.T) {
+	base := map[string]string{"DATABASE_URL": "postgres://fixture", "CONDUCTOR_AUTH_MODE": "oidc", "CONDUCTOR_OIDC_ISSUER": "https://issuer.example.invalid", "CONDUCTOR_OIDC_AUDIENCE": "conductor", "CONDUCTOR_DELIVERIES": "1"}
+	configured, err := loadConfig(func(k string) string { return base[k] })
+	if err != nil || !configured.deliveries {
+		t.Fatalf("delivery configuration: %v", err)
+	}
+	for _, mode := range []string{"local", "invalid"} {
+		base["CONDUCTOR_AUTH_MODE"] = mode
+		if _, err = loadConfig(func(k string) string { return base[k] }); err == nil {
+			t.Fatal("unsafe delivery auth")
+		}
+	}
+}

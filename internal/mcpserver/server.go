@@ -78,6 +78,7 @@ func New(api API) (*Bridge, error) {
 	b.registerResources()
 	b.registerGraphs()
 	b.registerCoordination()
+	b.registerDeliveries()
 	b.server.AddReceivingMiddleware(b.middleware)
 	return b, nil
 }

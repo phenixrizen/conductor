@@ -6,8 +6,9 @@ permissions are implemented for GitHub and GitLab registrations. The opt-in
 through authenticated API/CLI and workbench commands, a PostgreSQL outbox, and a
 local Temporal worker.
 Both provider profiles have controlled fixture coverage; live provider compatibility
-and production operation remain unverified. Repository discovery, publication,
-PR/MR management, checks, and webhook reconciliation remain planned.
+and production operation remain unverified. Trusted exact-artifact draft publication, check/merge/deployment observations and
+verified webhook reconciliation are implemented in [Feature 011](../../specs/011-repository-delivery/spec.md).
+Live provider writes and production outcomes remain unverified.
 The local Git collector remains available independently of either provider.
 
 GitHub also hosts Conductor's own source. That hosting choice does not determine
@@ -72,11 +73,11 @@ appends a package revision using an expected revision and inspected receipt dige
 Client-supplied metadata or a receipt ID alone cannot establish this linkage.
 Collection does not prove a passing check, accepted design, or provider publication.
 
-Both delivery adapters must later implement the same domain-level workflow:
+Both delivery adapters implement the following domain-level workflow:
 
 - Publish an approved patch to an authorized branch through a trusted publisher.
 - Create and inspect a draft pull request or merge request.
-- Retrieve checks, pipeline results, and review records with their source revision.
+- Retrieve checks, pipeline results and deployment observations with their source revision.
 - Record independently observed merged and closed facts.
 - Reconcile verified incoming events with the provider's authoritative records.
 
@@ -115,3 +116,13 @@ events, failures, and reconciliation. Report each adapter's verified capabilitie
 separately. Dual-provider delivery support is complete only after both GitHub and
 GitLab pass their applicable acceptance checks. The implemented bounded reads and
 controlled provider fixtures do not meet that delivery exit criterion.
+
+## Implemented publication boundary
+
+The [publication specification](../../specs/011-repository-delivery/spec.md) and
+[delivery runbook](../operations/repository-delivery.md) now implement the trusted
+GitHub/GitLab draft publication path described here. Browser review binds complete
+retained patches and check evidence to a separate human publication decision.
+Provider observations retain exact commits and explicit gaps. Controlled HTTP,
+PostgreSQL, Temporal and browser paths are verified; live publication and production
+outcomes are not established by those tests.

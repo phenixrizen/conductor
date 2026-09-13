@@ -21,11 +21,12 @@ not mistaken for working capabilities.
 | [Coordinated execution](architecture/coordinated-execution.md) | Shared plans, exact human authorization, path claims, and Temporal sequencing |
 | [Execution workbench](operations/coordinated-workbench.md) | Inspect MCP proposals and confirm exact human execution/cancellation in the browser |
 | [Execution setup](operations/coordinated-execution.md) | Enable plan admission, provision execution grants, inspect and cancel shared work |
+| [Repository delivery](operations/repository-delivery.md) | Propose, inspect and authorize exact patches; configure trusted GitHub/GitLab publication and observations |
 | [Assistant profiles](research/assistant-profiles.md) | Pinned Codex/Claude interfaces and actual versus unverified acceptance |
 | [Milestone 1 architecture](architecture/milestone-1.md) | Implemented work-package model, lifecycle, API flow, persistence, and invariants |
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
-| [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
+| [Repository providers](architecture/repository-providers.md) | Repository identity, provider boundaries and GitHub/GitLab delivery |
 | [Durable repository context](architecture/durable-context.md) | Partial background collection across clients, evidence, and recovery boundaries |
 | [Context integration research](architecture/context-integration-research.md) | Pinned Temporal/GitHub/GitLab profiles and verified versus live-service limits |
 | [Feature 006 specification](../specs/006-durable-context/spec.md) | Remote collection contract with author and operator permission boundaries |

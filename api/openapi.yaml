@@ -763,6 +763,282 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExecutionProfilePage'
+  /api/v1/repository-deliveries/{id}/artifact:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    get:
+      summary: Read exact stored implementation patches and checks for human inspection (maximum 17 MiB response)
+      description: Requires CONDUCTOR_DELIVERIES=1 and authenticated workspace/repository selection. All source
+        repository permissions are checked in the command transaction. Actor identity, provider credentials,
+        scopes and artifact bytes cannot be supplied by clients. No command refreshes approval or performs a
+        provider request inline.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters: []
+      responses:
+        '200':
+          description: Read exact stored implementation patches and checks for human inspection (maximum 17 MiB
+            response)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryArtifact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected source, approval, integration, artifact or proposal changed; or the idempotency
+            key identifies different input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/repository-deliveries:
+    parameters:
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Propose an exact verified artifact for later human publication authorization
+      description: Requires CONDUCTOR_DELIVERIES=1 and authenticated workspace/repository selection. All source
+        repository permissions are checked in the command transaction. Actor identity, provider credentials,
+        scopes and artifact bytes cannot be supplied by clients. No command refreshes approval or performs a
+        provider request inline.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/BrowserOrigin'
+      - $ref: '#/components/parameters/CollectionKey'
+      responses:
+        '201':
+          description: Propose an exact verified artifact for later human publication authorization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected source, approval, integration, artifact or proposal changed; or the idempotency
+            key identifies different input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryInput'
+    get:
+      summary: List bounded publication summaries after all-source access filtering
+      description: Requires CONDUCTOR_DELIVERIES=1 and authenticated workspace/repository selection. All source
+        repository permissions are checked in the command transaction. Actor identity, provider credentials,
+        scopes and artifact bytes cannot be supplied by clients. No command refreshes approval or performs a
+        provider request inline.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - name: before
+        in: query
+        schema:
+          type: string
+          maxLength: 1024
+      - $ref: '#/components/parameters/HistoryLimit'
+      responses:
+        '200':
+          description: List bounded publication summaries after all-source access filtering
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected source, approval, integration, artifact or proposal changed; or the idempotency
+            key identifies different input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/repository-deliveries/{id}:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    get:
+      summary: Inspect immutable publication proposal and receipt with separate latest observations
+      description: Requires CONDUCTOR_DELIVERIES=1 and authenticated workspace/repository selection. All source
+        repository permissions are checked in the command transaction. Actor identity, provider credentials,
+        scopes and artifact bytes cannot be supplied by clients. No command refreshes approval or performs a
+        provider request inline.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters: []
+      responses:
+        '200':
+          description: Inspect immutable publication proposal and receipt with separate latest observations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected source, approval, integration, artifact or proposal changed; or the idempotency
+            key identifies different input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/repository-deliveries/{id}/authorizations:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Authorize exact publication as a current human with a separate can_publish grant
+      description: Requires CONDUCTOR_DELIVERIES=1 and authenticated workspace/repository selection. All source
+        repository permissions are checked in the command transaction. Actor identity, provider credentials,
+        scopes and artifact bytes cannot be supplied by clients. No command refreshes approval or performs a
+        provider request inline.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/BrowserOrigin'
+      responses:
+        '202':
+          description: Authorize exact publication as a current human with a separate can_publish grant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected source, approval, integration, artifact or proposal changed; or the idempotency
+            key identifies different input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryDigest'
+  /api/v1/repository-deliveries/{id}/reconciliations:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Queue provider reconciliation under the original publication authority
+      description: Requires CONDUCTOR_DELIVERIES=1 and authenticated workspace/repository selection. All source
+        repository permissions are checked in the command transaction. Actor identity, provider credentials,
+        scopes and artifact bytes cannot be supplied by clients. No command refreshes approval or performs a
+        provider request inline.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/BrowserOrigin'
+      - $ref: '#/components/parameters/CollectionKey'
+      responses:
+        '202':
+          description: Queue provider reconciliation under the original publication authority
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected source, approval, integration, artifact or proposal changed; or the idempotency
+            key identifies different input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryDigest'
+
 components:
   securitySchemes:
     BrowserCookie:
@@ -1661,3 +1937,610 @@ components:
             $ref: '#/components/schemas/ExecutionProfile'
         truncated:
           type: boolean
+
+    DeliveryInput:
+      type: object
+      additionalProperties: false
+      required:
+      - runId
+      - taskId
+      - artifactDigest
+      - baseBranch
+      - title
+      - description
+      properties:
+        runId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        taskId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        artifactDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        baseBranch:
+          type: string
+          maxLength: 128
+        title:
+          type: string
+          maxLength: 240
+        description:
+          type: string
+          maxLength: 16384
+    DeliveryDigest:
+      type: object
+      additionalProperties: false
+      required:
+      - digest
+      properties:
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+    DeliveryTarget:
+      type: object
+      additionalProperties: false
+      required:
+      - workspaceId
+      - repositoryId
+      - provider
+      - host
+      - providerId
+      - locator
+      - profile
+      - integrationVersion
+      properties:
+        workspaceId:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        provider:
+          type: string
+          enum:
+          - github
+          - gitlab
+        host:
+          type: string
+          enum:
+          - github.com
+          - gitlab.com
+        providerId:
+          type: string
+          maxLength: 128
+        locator:
+          type: string
+          maxLength: 201
+        profile:
+          type: string
+          enum:
+          - github-delivery/2026-03-10
+          - gitlab-delivery/v4-19.3
+        integrationVersion:
+          type: integer
+          minimum: 1
+    ProviderCheck:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - name
+      - commit
+      - state
+      properties:
+        id:
+          type: string
+          maxLength: 256
+        name:
+          type: string
+          maxLength: 512
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        state:
+          type: string
+          enum:
+          - passed
+          - failed
+          - pending
+          - unexecuted
+          - unknown
+    DeliveryObservation:
+      type: object
+      additionalProperties: false
+      required:
+      - sequence
+      - providerId
+      - number
+      - url
+      - commit
+      - tree
+      - state
+      - draft
+      - checks
+      - checksTruncated
+      - checksState
+      - deployment
+      - deployments
+      - deploymentsTruncated
+      - productionOutcome
+      - observedAt
+      properties:
+        sequence:
+          type: integer
+          minimum: 0
+        providerId:
+          type: string
+          maxLength: 128
+        number:
+          type: integer
+          minimum: 1
+        url:
+          type: string
+          maxLength: 2048
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        tree:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        state:
+          type: string
+          enum:
+          - draft
+          - open
+          - closed
+          - merged
+        draft:
+          type: boolean
+        mergeCommit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        checks:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ProviderCheck'
+        checksTruncated:
+          type: boolean
+        checksState:
+          type: string
+          enum:
+          - unknown
+          - passed
+          - failed
+          - pending
+          - unavailable
+        deployment:
+          type: string
+          enum:
+          - not_observed
+          - observed
+          - truncated
+          - unavailable
+        deployments:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ProviderDeployment'
+        deploymentsTruncated:
+          type: boolean
+        trigger:
+          $ref: '#/components/schemas/DeliveryObservationTrigger'
+        productionOutcome:
+          type: string
+          enum:
+          - not_observed
+        observedAt:
+          type: string
+          format: date-time
+    DeliveryAuthorization:
+      type: object
+      additionalProperties: false
+      required:
+      - actor
+      - digest
+      - createdAt
+      properties:
+        actor:
+          type: string
+          maxLength: 128
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        createdAt:
+          type: string
+          format: date-time
+    DeliveryReceipt:
+      type: object
+      additionalProperties: false
+      required:
+      - digest
+      - observation
+      - createdAt
+      properties:
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        observation:
+          $ref: '#/components/schemas/DeliveryObservation'
+        createdAt:
+          type: string
+          format: date-time
+    Delivery:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - workspaceId
+      - repositoryId
+      - proposerId
+      - input
+      - digest
+      - target
+      - baseCommit
+      - baseTree
+      - resultTree
+      - patchDigest
+      - branch
+      - createdAt
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        workspaceId:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        proposerId:
+          type: string
+          maxLength: 128
+        input:
+          $ref: '#/components/schemas/DeliveryInput'
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        target:
+          $ref: '#/components/schemas/DeliveryTarget'
+        baseCommit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        baseTree:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        resultTree:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        patchDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        branch:
+          type: string
+          maxLength: 128
+        createdAt:
+          type: string
+          format: date-time
+        authorization:
+          $ref: '#/components/schemas/DeliveryAuthorization'
+        receipt:
+          $ref: '#/components/schemas/DeliveryReceipt'
+        observation:
+          $ref: '#/components/schemas/DeliveryObservation'
+        execution:
+          $ref: '#/components/schemas/CollectionExecution'
+    DeliverySummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - workspaceId
+      - repositoryId
+      - runId
+      - taskId
+      - artifactDigest
+      - digest
+      - title
+      - branch
+      - createdAt
+      - authorized
+      - state
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        workspaceId:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        runId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        taskId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        artifactDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        title:
+          type: string
+          maxLength: 240
+        branch:
+          type: string
+          maxLength: 128
+        createdAt:
+          type: string
+          format: date-time
+        authorized:
+          type: boolean
+        receiptDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        state:
+          type: string
+          enum:
+          - not_observed
+          - draft
+          - open
+          - closed
+          - merged
+    DeliveryPage:
+      type: object
+      additionalProperties: false
+      required:
+      - deliveries
+      properties:
+        deliveries:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/DeliverySummary'
+        nextBefore:
+          type: string
+          maxLength: 1024
+    ExecutionEvidence:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - repositoryId
+      - argv
+      - state
+      - outputDigest
+      - truncated
+      - startedAt
+      - finishedAt
+      - sourceDigest
+      properties:
+        id:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        argv:
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            maxLength: 1024
+        state:
+          type: string
+          maxLength: 32
+        exitCode:
+          type: integer
+        output:
+          type: string
+          maxLength: 1048576
+        outputDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        truncated:
+          type: boolean
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        sourceDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+    ExecutionPatch:
+      type: object
+      additionalProperties: false
+      required:
+      - repositoryId
+      - baseCommit
+      - baseTree
+      - resultTree
+      - patch
+      - digest
+      - paths
+      properties:
+        repositoryId:
+          type: string
+          maxLength: 128
+        baseCommit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        baseTree:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        resultTree:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        patch:
+          type: string
+          format: byte
+          maxLength: 11184812
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        paths:
+          type: array
+          maxItems: 10000
+          items:
+            type: string
+            maxLength: 1024
+    ExecutionResult:
+      type: object
+      additionalProperties: false
+      required:
+      - cleanupConfirmed
+      - inputDigest
+      - profileDigest
+      - image
+      - adapter
+      - adapterVersion
+      - producer
+      - patches
+      - checks
+      - startedAt
+      - finishedAt
+      properties:
+        cleanupConfirmed:
+          type: boolean
+        inputDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        profileDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        image:
+          type: string
+          maxLength: 71
+        adapter:
+          type: string
+          maxLength: 128
+        adapterVersion:
+          type: string
+          maxLength: 128
+        producer:
+          $ref: '#/components/schemas/ExecutionEvidence'
+        patches:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/ExecutionPatch'
+        checks:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/ExecutionEvidence'
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+    DeliveryArtifact:
+      type: object
+      additionalProperties: false
+      required:
+      - deliveryId
+      - deliveryDigest
+      - artifactDigest
+      - artifact
+      properties:
+        deliveryId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        deliveryDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        artifactDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        artifact:
+          $ref: '#/components/schemas/ExecutionResult'
+    ProviderDeployment:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - repositoryId
+      - providerProfile
+      - commit
+      - commitRelation
+      - environment
+      - state
+      - providerState
+      - statusTruncated
+      - providerUpdatedAt
+      - observedAt
+      properties:
+        id:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        providerProfile:
+          type: string
+          maxLength: 128
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        commitRelation:
+          type: string
+          enum:
+          - published_head
+          - provider_merge
+        environment:
+          type: string
+          maxLength: 256
+        environmentId:
+          type: string
+          maxLength: 128
+        productionEnvironment:
+          type: boolean
+        state:
+          type: string
+          enum:
+          - success
+          - failed
+          - pending
+          - inactive
+          - unknown
+        providerState:
+          type: string
+          maxLength: 64
+        statusId:
+          type: string
+          maxLength: 128
+        statusTruncated:
+          type: boolean
+        providerUpdatedAt:
+          type: string
+          format: date-time
+        observedAt:
+          type: string
+          format: date-time
+    DeliveryObservationTrigger:
+      type: object
+      additionalProperties: false
+      required:
+      - kind
+      properties:
+        kind:
+          type: string
+          enum:
+          - authorization
+          - manual
+          - webhook
+        key:
+          type: string
+          maxLength: 256
+        eventType:
+          type: string
+          maxLength: 64
+        payloadDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$

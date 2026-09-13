@@ -296,6 +296,13 @@ packages to mirror the target diagram.
 
 ## Web and terminal interfaces
 
+- Publication review loads the complete retained implementation artifact and checks
+  displayed patch/output byte digests before enabling exact human authorization.
+  Its GET artifact endpoint alone permits a 17 MiB browser response; ordinary reads
+  remain bounded to 4 MiB. Never silently slice a patch for review. Denied source
+  reads clear private patches and confirmations. Lost authorization requires renewed
+  proposal and artifact inspection; provider refresh retries retain the same key.
+
 - Build workflow interfaces, not generic chat surfaces. All interfaces use the same
   API commands and authorization rules.
 - Preserve unknown structured package fields during form round trips.

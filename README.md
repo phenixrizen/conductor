@@ -31,6 +31,9 @@ for the new revision.
   pinned CodeGraph Rust parser extracts symbols during background collection.
 - Propose shared dependent task plans through MCP or browser JSON import; inspect
   exact source, design and profile pins before separate human execution decisions.
+- Propose GitHub/GitLab publication from a retained task artifact, inspect complete
+  patches and check output in the browser, and separately authorize a new draft PR/MR.
+  Share timestamped provider check, merge and deployment observations.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
@@ -50,8 +53,8 @@ for the new revision.
 Developers and agent clients using the **same API and database share the same saved
 context**, subject to their workspace and repository permissions. Work belongs to
 the service, not an individual browser or conversation. Agent identities can read
-and author permitted work; they cannot grant design approval. Background context requests have shared execution observations. Live presence and
-coding-agent execution are not implemented yet.
+and author permitted work; they cannot grant design approval. Background context requests and coordinated coding runs have shared execution
+observations and retained receipts. Live presence is not implemented.
 
 Authenticated review supports the browser, API, CLI, and terminal workbench. An operator
 configures the OpenID Connect issuer and provisions access. The browser signs people
@@ -69,14 +72,17 @@ shared execution plans, separate human authorization and write reservations are
 available through the API. A trusted worker runs related tasks in isolated Docker
 containers, carries earlier changes into dependent tasks, and records independent
 checks through durable Temporal workflows; see
-[execution setup](docs/operations/coordinated-execution.md). GitHub/GitLab publication and tracker
-integrations remain planned. Spec Kit and ADRKit files can be captured as native text; their command/API
+[execution setup](docs/operations/coordinated-execution.md). A separate trusted publisher
+creates draft GitHub PRs and GitLab MRs after exact human authorization; see
+[delivery setup and review](docs/operations/repository-delivery.md). Tracker
+integrations are described in the release contract. Spec Kit and ADRKit files can be captured as native text; their command/API
 integrations are not implemented. Collected context records what was captured,
 not proof that tests passed or a decision was approved.
 
 **GitHub and GitLab** repositories can be registered for governed review. Their
-remote delivery adapters are planned: pull requests and merge requests will follow
-the same Conductor approval and evidence rules. The local Git collector works with a checkout from either
+delivery adapters implement draft pull/merge requests under the same Conductor
+approval and evidence rules. Controlled provider fixtures are verified; live provider
+writes and deployment have not been performed. The local Git collector works with a checkout from either
 provider. Bounded remote reads are available for GitHub.com and GitLab.com;
 repository discovery, publication, and checks adapters are still pending. The read
 profiles have controlled provider tests; live provider compatibility remains unverified.
