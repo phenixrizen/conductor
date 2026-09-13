@@ -98,6 +98,7 @@ packages to mirror the target diagram.
 | `cmd/conductor-worker/` | Trusted local Temporal worker and context dispatcher |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
 | `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
+| `cmd/conductor-sandbox/`, `internal/execution/` | Isolated patch producers, credential gateway, and separate verification |
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
