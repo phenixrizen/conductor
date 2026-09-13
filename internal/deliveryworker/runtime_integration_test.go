@@ -98,7 +98,12 @@ func TestPublicationRuntimeLive(t *testing.T) {
 	workerDone := make(chan error, 1)
 	go func() {
 		workerDone <- RunWorker(active, engine, func(context.Context, contextworkflow.Reference) (contextworkflow.Result, error) {
-			calls.Add(1)
+			// Model a database receipt committed before its response was lost.
+			// The actual workflow must redeliver the same opaque reference to
+			// recover that receipt, without retaining a private database cause.
+			if calls.Add(1) == 1 {
+				return contextworkflow.Result{}, publicationStoreError(io.ErrUnexpectedEOF)
+			}
 			return contextworkflow.Result{ReceiptID: ref.ID, Digest: strings.Repeat("c", 64)}, nil
 		})
 	}()
@@ -132,8 +137,8 @@ func TestPublicationRuntimeLive(t *testing.T) {
 	if _, err = runtime.Start(ctx, WorkflowName+"/"+ref.ID, ref); err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 1 {
-		t.Fatal("completed publication reran")
+	if calls.Load() != 2 {
+		t.Fatal("publication receipt recovery or completed-run deduplication failed")
 	}
 	wrong := ref
 	wrong.Binding = strings.Repeat("f", 32)

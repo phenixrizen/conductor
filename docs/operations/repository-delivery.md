@@ -232,3 +232,10 @@ This uses real browser/API/PostgreSQL paths and explicitly synthetic retained wo
 and provider evidence. It verifies larger complete patches, tampering rejection,
 escaped source, exact retries, authorization recovery, read-only controls and denied
 source clearing. Separate Docker and provider HTTP suites verify execution/adapters.
+
+A transient database error during publication is an uncertain result. The bounded
+Temporal retry rechecks the exact retained operation receipt before loading source,
+reading credentials or contacting GitHub/GitLab. This recovers a receipt whose
+commit acknowledgment was lost without republishing it. Typed permission, binding,
+configuration and artifact failures remain terminal; database error details never
+enter workflow history. SDK and owned Temporal tests exercise this recovery path.
