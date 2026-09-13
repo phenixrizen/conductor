@@ -182,9 +182,12 @@ packages to mirror the target diagram.
 - Collected source is not passed verification. Missing, unavailable, truncated, and
   stale evidence must stay visible. Client-supplied digests establish internal
   consistency, not authenticated provenance.
-- Native Spec Kit/ADRKit files are currently imported as text artifacts. Do not
-  claim command/API compatibility, accepted decisions, or execution authority from
-  their contents.
+- Native Spec Kit/ADRKit text remains source evidence. The separately pinned
+  design-tool image implements bounded scaffold/template, Proposed ADR creation,
+  prerequisite, lint, applicability and graph commands; see
+  `docs/operations/design-tools.md`. Reports bind tool and source digests to the
+  enclosing execution profile/image. Do not infer semantic workflow compatibility,
+  accepted decisions or execution authority from source-recorded ADR status.
 - Remote collection must preserve existing snapshot versions and digests.
   A receipt ID supplied in JSON is not authenticated provenance. Resolve trusted
   receipt linkage under canonical scope and compare the entire version 2 snapshot JSON;

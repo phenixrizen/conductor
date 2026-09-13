@@ -22,6 +22,8 @@ not mistaken for working capabilities.
 | [Execution workbench](operations/coordinated-workbench.md) | Inspect MCP proposals and confirm exact human execution/cancellation in the browser |
 | [Execution setup](operations/coordinated-execution.md) | Enable plan admission, provision execution grants, inspect and cancel shared work |
 | [Repository delivery](operations/repository-delivery.md) | Propose, inspect and authorize exact patches; configure trusted GitHub/GitLab publication and observations |
+| [Native design tools](operations/design-tools.md) | Run pinned Spec Kit/ADRKit artifact and decision commands in isolated workers |
+| [Design tool research](architecture/design-tool-research.md) | Verified upstream commands, exact versions and compatibility limits |
 | [Assistant profiles](research/assistant-profiles.md) | Pinned Codex/Claude interfaces and actual versus unverified acceptance |
 | [Milestone 1 architecture](architecture/milestone-1.md) | Implemented work-package model, lifecycle, API flow, persistence, and invariants |
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |

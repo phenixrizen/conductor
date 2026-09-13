@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Pinned native ADRKit command tools for Conductor's offline execution image",
+  "dependencies": {"@adrkit/cli": "0.13.0"}
+}

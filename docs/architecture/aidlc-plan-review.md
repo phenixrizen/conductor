@@ -33,9 +33,10 @@ The proposed division of responsibilities preserves the
 | Conductor | Identity, authorization, immutable package snapshots, gates, evidence, recovery, and integration coordination |
 | AI-DLC inspiration | Techniques for selecting work, structuring stages, collaborating, and checking outputs |
 
-These are intended boundaries, not claims that Spec Kit or ADRKit integration
-already works. Retain native artifact identities and revisions; avoid maintaining
-competing copies of their specifications or decisions.
+The [native design-tool profile](design-tool-research.md) now implements bounded
+core artifact and deterministic CLI commands within these boundaries. Broader
+agentic prompt workflows are separate from passing native prerequisites or schema
+checks. Retain native artifact identities and exact source revisions.
 
 ## Adopt in the next design increment
 
