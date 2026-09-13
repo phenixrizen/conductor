@@ -41,6 +41,13 @@ committed receipt after an acknowledgment is lost. It cannot make permission
 denials, changed bindings, cancellation or arbitrary errors retryable, and retries
 never bypass the immutable-attempt check or use another run/task reference.
 
+The original activity's production deadline starts before attempt admission I/O
+and cannot extend past the persisted deadline's 30-second cleanup grace period.
+The final authorization query and runner use that bounded context. A delayed
+authorization response or credential read cannot start new Docker resources after
+that window expires, even if a redelivery has already confirmed unresolved cleanup.
+The local admission clock keeps this bound conservative across delayed responses.
+
 A running activity rechecks all repository grants, approved revisions and public
 profiles each second, cancelling production if authority cannot be confirmed.
 A final transaction rechecks them before accepting source-bearing artifacts.
