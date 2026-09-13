@@ -122,11 +122,13 @@ with sync_playwright() as p:
     panel.get_by_role("button",name="Inspect complete implementation artifact",exact=True).click()
     expect(panel.get_by_role("region",name="Inspected implementation artifact")).to_be_visible()
     page.evaluate("window.scrollTo(0, 0)")
-    page.screenshot(path="/tmp/conductor-delivery-workbench.png",full_page=True)
+    # Full-page PNG capture of this multi-megabyte fixture needs its own bounded
+    # budget on hosted Chromium; UI actions and assertions retain their 15s limit.
+    page.screenshot(path="/tmp/conductor-delivery-workbench.png",full_page=True,timeout=30000)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"),"mobile delivery overflow"
     page.evaluate("window.scrollTo(0, 0)")
-    page.screenshot(path="/tmp/conductor-delivery-workbench-mobile.png",full_page=True)
+    page.screenshot(path="/tmp/conductor-delivery-workbench-mobile.png",full_page=True,timeout=30000)
     # A denied source read must clear prior private patches even if its error body
     # is empty. The same browser session may no longer display cached inspection.
     denied_url=proposal_url+"/"+created["id"]+"/artifact"
