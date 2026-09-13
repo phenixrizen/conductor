@@ -103,3 +103,13 @@ query and response digests, source coverage and correlation, linked approved
 policy, historical evaluations and separate execution observations. A local display
 clock ages the retained window without polling or changing its historical result.
 Access denial and identity/scope changes discard private source and pending inputs.
+
+## Exact retained receipt representation
+
+The receipt digest binds the stored typed receipt, including the exact compact JSON
+representation of bounded log and trace records. PostgreSQL must preserve object
+key order and numeric spelling inside those records. Reads and workflow receipt
+reconciliation verify this identity and the historical evaluation before returning
+usable evidence. Validate current source authorization before exposing a historical
+integrity failure. Existing unverifiable receipts remain retained with their original
+digests; migration and retries cannot reconstruct or silently replace lost source.

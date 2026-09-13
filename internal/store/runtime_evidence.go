@@ -11,11 +11,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/phenixrizen/conductor/internal/domain"
+	"github.com/phenixrizen/conductor/internal/runtimeevidence"
 )
 
 type RuntimeWork struct {
 	Evidence              domain.RuntimeEvidence
 	Binding, CredentialID string
+	receiptDigest         string
 }
 
 func readRuntime(ctx context.Context, q queryExecutor, id string) (RuntimeWork, error) {
@@ -29,7 +31,7 @@ func readRuntime(ctx context.Context, q queryExecutor, id string) (RuntimeWork, 
 		return w, err
 	}
 	var receipt domain.RuntimeReceipt
-	err = q.QueryRow(ctx, `SELECT receipt FROM runtime_receipts WHERE evidence_id=$1`, id).Scan(&receipt)
+	err = q.QueryRow(ctx, `SELECT digest,receipt FROM runtime_receipts WHERE evidence_id=$1`, id).Scan(&w.receiptDigest, &receipt)
 	if err == nil {
 		r.Receipt = &receipt
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -240,6 +242,9 @@ func (p *Postgres) RuntimeEvidence(ctx context.Context, id string) (domain.Runti
 	if err = p.authorizeDelivery(ctx, d, "read"); err != nil {
 		return domain.RuntimeEvidence{}, err
 	}
+	if err := validateRetainedRuntimeReceipt(w); err != nil {
+		return domain.RuntimeEvidence{}, err
+	}
 	return w.Evidence, nil
 }
 func (p *Postgres) RuntimeEvidencePage(ctx context.Context, before string, limit int) (domain.RuntimePage, error) {
@@ -322,6 +327,20 @@ func (p *Postgres) checkRuntimeWork(ctx context.Context, w RuntimeWork) error {
 	b, _ := json.Marshal(r.Criteria)
 	if string(a) != string(b) {
 		return domain.ErrConflict
+	}
+	return nil
+}
+
+// A legacy jsonb row may already have lost provider key order or numeric spelling.
+// Preserve its historical digest, but never present a mismatched receipt as usable.
+// Public callers invoke this only after current all-source authorization succeeds.
+func validateRetainedRuntimeReceipt(w RuntimeWork) error {
+	r := w.Evidence
+	if r.Receipt == nil {
+		return nil
+	}
+	if r.Receipt.Digest != w.receiptDigest || runtimeevidence.ValidateReceipt(r, *r.Receipt, r.Receipt.CollectedAt) != nil {
+		return domain.ErrUnavailable
 	}
 	return nil
 }

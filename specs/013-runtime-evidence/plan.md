@@ -2,6 +2,8 @@
 
 **Status: Implementation verified within the fixture and protocol bounds below.** Depends on shared coordination and publication
 facts. Migration 010 adds runtime bindings, requests, receipts, audit and dispatch.
+Migration 011 preserves exact receipt JSON and rejects unverifiable historical
+representations without rewriting their digests.
 
 | Work | Evidence |
 |---|---|
@@ -9,6 +11,7 @@ facts. Migration 010 adds runtime bindings, requests, receipts, audit and dispat
 | Exact scoped provider adapter | Real TLS/HTTP fixture tests pass scope, timestamp, correlation, bounds, redirect and revocation paths |
 | Approved criterion evaluation | Exact thresholds, series count, complete query grids, deployment window and staleness tested |
 | Shared transactions | Live PostgreSQL tests pass source isolation, revocation, idempotency, configuration changes and audit rollback |
+| Exact receipt retention | Live PostgreSQL and signed typed-client tests retain multiple nested source records, key order and large finite JSON numbers; legacy mismatches fail closed after authorization |
 | Real API and MCP | Signed identity, actual MCP SDK calls and shared-client acceptance pass |
 | Temporal | Owned CLI 1.8.3 / server 1.31.2 protocol, binding and immutable receipt recovery tests pass |
 | Operator and worker | Bounded operator configuration/credentials and runnable local Temporal worker implemented |

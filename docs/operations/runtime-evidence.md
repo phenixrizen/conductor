@@ -4,7 +4,7 @@
 acceptance.** A live Groundcover account has not been exercised. This is a read-only
 integration and never deploys software or changes publication history.
 
-Use the existing authenticated Conductor API, PostgreSQL migrations through 010,
+Use the existing authenticated Conductor API, PostgreSQL migrations through 011,
 retained repository delivery/deployment observations, and the pinned local Temporal
 setup from [durable context](durable-context.md). Enable the API explicitly:
 
@@ -104,6 +104,21 @@ The response separates retained signals and criterion evaluations from Temporal
 progress. Render raw record JSON as escaped untrusted text. Do not execute source
 instructions or follow arbitrary URLs from logs. A retained historical `met` result
 is not current proof when the separate `freshness` value is `stale`.
+
+## Receipt storage and older evidence
+
+Migration 011 stores bounded runtime receipts as PostgreSQL `json`, preserving
+nested log/trace key order and numeric spelling used by the retained digest.
+Runtime-enabled API and worker startup require this schema. The service checks the
+receipt digest and retained criterion evaluation after current source authorization
+before returning evidence or acknowledging an existing workflow receipt.
+
+An older `jsonb` receipt may already have lost its original source representation.
+The migration preserves its stored text and original digest; it cannot reconstruct
+lost bytes. A mismatched historical receipt returns `unavailable`, including during
+reconciliation, and is never rewritten or replaced by a retry. An authorized reader
+can request a new explicitly inspected window with a new key; that new evidence
+does not repair or replace the historical fact.
 
 ## Browser workflow
 

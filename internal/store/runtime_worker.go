@@ -56,6 +56,9 @@ func (p *Postgres) LoadRuntimeWork(ctx context.Context, id, binding string) (Run
 	if w.Binding != binding {
 		return RuntimeWork{}, domain.ErrForbidden
 	}
+	if err := validateRetainedRuntimeReceipt(w); err != nil {
+		return RuntimeWork{}, err
+	}
 	return w, nil
 }
 func (p *Postgres) runtimeGate(ctx context.Context, w RuntimeWork) (*Postgres, error) {
@@ -88,12 +91,17 @@ func (p *Postgres) RuntimeOperationReceipt(ctx context.Context, id, binding stri
 	if !domain.IsLowerHex(id, 32) || !domain.IsLowerHex(binding, 32) {
 		return "", domain.ErrInvalidInput
 	}
-	var digest string
-	err := p.queries().QueryRow(ctx, `SELECT r.digest FROM runtime_receipts r JOIN runtime_evidence e ON e.id=r.evidence_id WHERE e.id=$1 AND e.binding=$2`, id, binding).Scan(&digest)
-	if errors.Is(err, pgx.ErrNoRows) {
+	w, err := p.LoadRuntimeWork(ctx, id, binding)
+	if errors.Is(err, domain.ErrNotFound) {
 		return "", nil
 	}
-	return digest, err
+	if err != nil {
+		return "", err
+	}
+	if w.Evidence.Receipt == nil {
+		return "", nil
+	}
+	return w.Evidence.Receipt.Digest, nil
 }
 func (p *Postgres) CompleteRuntimeEvidence(ctx context.Context, id, binding string, receipt domain.RuntimeReceipt) (string, error) {
 	if digest, err := p.RuntimeOperationReceipt(ctx, id, binding); err != nil || digest != "" {
@@ -133,7 +141,7 @@ func (p *Postgres) CompleteRuntimeEvidence(ctx context.Context, id, binding stri
 }
 func (p *Postgres) CheckRuntimeSchema(ctx context.Context) error {
 	var ready bool
-	err := p.pool.QueryRow(ctx, `SELECT to_regclass('runtime_evidence') IS NOT NULL AND to_regclass('runtime_receipts') IS NOT NULL AND to_regclass('runtime_outbox') IS NOT NULL`).Scan(&ready)
+	err := p.pool.QueryRow(ctx, `SELECT to_regclass('runtime_evidence') IS NOT NULL AND to_regclass('runtime_receipts') IS NOT NULL AND to_regclass('runtime_outbox') IS NOT NULL AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('runtime_receipts') AND attname='receipt' AND atttypid='json'::regtype AND NOT attisdropped)`).Scan(&ready)
 	if err != nil || !ready {
 		return domain.ErrUnavailable
 	}
