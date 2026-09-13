@@ -1,8 +1,9 @@
 # Feature 003: authenticated workspace review
 
 **Status:** Implemented for the API and noninteractive CLI.
-[Feature 004](../004-browser-sign-in/spec.md) adds browser sign-in. Authenticated
-terminal sessions are the following increment. No external identity
+[Feature 004](../004-browser-sign-in/spec.md) adds browser sign-in, and
+[Feature 005](../005-authenticated-terminal/spec.md) adds authenticated terminal
+sessions. No external identity
 provider deployment has been certified by the synthetic acceptance tests.
 
 ## Outcome
@@ -71,8 +72,9 @@ An agent cannot approve even if an operator sets its approve capability.
 ## Boundaries
 
 Feature 004 implements interactive OpenID Connect login and browser sessions.
-CLI token acquisition and refresh, authenticated TUI review, enterprise
-identity-provider certification, and deployment operations remain separate work. The API supports the precise access-token profile
+Feature 005 implements terminal review using the existing API credential path.
+CLI token acquisition and refresh, enterprise identity-provider certification, and
+deployment operations remain separate work. The API supports the precise access-token profile
 in the [authenticated review guide](../../docs/operations/authenticated-review.md);
 arbitrary vendor JWTs, opaque tokens, and ID tokens are not interchangeable.
 

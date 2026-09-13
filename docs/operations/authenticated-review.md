@@ -1,9 +1,8 @@
 # Authenticated review setup
 
-The API and noninteractive CLI can share review data with authenticated workspace
-and repository permissions. [Browser sign-in](browser-sign-in.md) adds interactive
-OpenID Connect login through the same command service. Interactive terminal review
-still uses local mode.
+The API, CLI, and [terminal workbench](terminal-review.md) share review data with
+authenticated workspace and repository permissions. [Browser sign-in](browser-sign-in.md)
+adds interactive OpenID Connect login through the same command service.
 
 ## Prepare the database
 
@@ -132,7 +131,22 @@ Never use `--actor` with a token. `CONDUCTOR_TOKEN` is an alternative to the tok
 file; setting both is an error. Credentials are limited to 16 KiB. The client
 rejects redirects and plaintext remote URLs before sending credentials. HTTP is
 allowed only for local loopback testing. Context collection remains local and does
-not read the credential settings. Authenticated `tui` is not available yet.
+not read the credential settings.
+
+For interactive review, select both a workspace and a canonical repository:
+
+```bash
+go run ./cmd/conductor tui --workspace team --repository-id service
+go run ./cmd/conductor tui --workspace team --repository-id service CHG-...
+```
+
+The terminal discovers the principal and selected repository's capabilities before
+loading work. Its credential and scope remain fixed until exit. `r` explicitly
+rechecks access and loads current work; it does not acquire or refresh a token.
+An authentication or permission failure clears inspection and imported drafts.
+See the [terminal guide](terminal-review.md) for confirmation, recovery, and the
+signed-issuer real PTY acceptance command. This interface uses the existing API
+and permissions without adding a migration or requiring browser login settings.
 
 ## Supported token profile and limitations
 

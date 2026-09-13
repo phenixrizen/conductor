@@ -10,7 +10,8 @@ shared record and permissions. Review perspectives change prompts, not access.
 First provision identities and repository permissions using the
 [authenticated review guide](authenticated-review.md). People must already have an
 active human principal matching their provider's exact issuer and subject. Agents
-use the API credential path and cannot obtain browser review sessions or approvals.
+use API credentials, including in the [terminal workbench](terminal-review.md),
+and cannot obtain browser review sessions or approvals.
 
 Apply each missing migration in order. An existing database at migration 001 needs
 002 first; a database at 002 needs the following additive migration once:
@@ -68,7 +69,8 @@ access; changing a label or persona cannot add it.
 Discover a package or enter its change ID. Inspect the revision and digest before
 approval. Another engineer's edit produces a conflict and requires a new explicit
 inspection. History and comparison remain available; historical approval is not
-approval of the latest revision. The CLI/API supplies package authoring.
+approval of the latest revision. The CLI, terminal workbench, and API supply
+package authoring.
 
 Changing the selected workspace, repository, or session clears the old inspection
 and cancels pending requests. A denied or expired session also removes it. An old
