@@ -1,8 +1,10 @@
 # Shared coordinated execution
 
 **Current:** immutable plans, human authorization, durable dispatch, isolated
-producers, dependent artifacts and independent checks. Client workbenches and
-publication are tracked separately.
+producers, dependent artifacts and independent checks. The
+[shared workbenches](../operations/coordinated-workbench.md) and separately
+[authorized publication](../operations/repository-delivery.md) are implemented
+through the same API authority boundary.
 
 PostgreSQL owns plans, human authorizations, write claims, immutable task receipts
 and audit facts. Temporal owns task sequencing, activity delivery and cancellation.

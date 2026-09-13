@@ -2,7 +2,7 @@
 
 ## Scope and status
 
-The current vertical slice supports creating an immutable package revision,
+The original Milestone 1 review slice supports creating an immutable package revision,
 submitting the current revision, inspecting it, approving its exact revision and
 digest, and appending a revision that makes the prior approval ineffective.
 
@@ -22,8 +22,9 @@ capabilities, and explicit recovery after access failure.
 
 [Feature 006](../../specs/006-durable-context/spec.md) adds an opt-in remote context
 collection workflow to the API, CLI, browser and authenticated terminal. Its
-implementation includes scoped requests, PostgreSQL outbox delivery, a local Temporal worker, bounded GitHub/GitLab reads,
-immutable receipts, and explicit attachment as a new package revision. Targeted
+implementation includes scoped requests, PostgreSQL outbox delivery, a trusted
+Temporal worker, bounded GitHub/GitLab reads, immutable receipts, and explicit
+attachment as a new package revision. Targeted
 tests cover the permission and receipt boundaries; controlled provider fixtures
 do not establish live provider compatibility or production readiness. See the
 [context architecture](durable-context.md) and [runbook](../operations/durable-context.md)
@@ -194,7 +195,10 @@ uncertain mutation outcomes block further writes until explicit inspection.
     unknown extensions. Version 2 trusted linkage requires the complete stored
     snapshot; a client-supplied receipt ID alone establishes no provenance.
 
-## Known limitations
+## Review boundaries and later features
+
+This section retains Milestone 1's review scope. Later feature links describe the
+current release without making package approval an execution or delivery command.
 
 - Local actor headers are development identity only and cannot access workspace
   packages. The terminal supports this explicit loopback mode as well as authenticated
@@ -202,12 +206,17 @@ uncertain mutation outcomes block further writes until explicit inspection.
 - Authenticated API/CLI access supports the documented signed access-token profile.
   Synthetic issuer tests do not establish compatibility with a real identity vendor;
   browser login uses separately validated ID tokens and protected server sessions.
+  Later [Keycloak qualification](../operations/keycloak-qualification.md) tests one
+  native browser-login profile without broadening the strict API token contract.
   The CLI and terminal do not acquire or refresh API access tokens.
 - Remote context collection requires OIDC mode, explicit server enablement, an
-  operator-enabled repository integration, and author permission. The worker's
-  Temporal connection supports the documented local deployment profile only.
-  Assistant execution, GitHub/GitLab publication, and Linear/Jira synchronization
-  remain planned. Local Git collection remains available through Feature 002.
+  operator-enabled repository integration, and author permission. Temporal now
+  supports explicit local or [verified TLS/mTLS transport](temporal-tls.md).
+  [Coordinated coding](../../specs/009-coordinated-execution/plan.md),
+  [GitHub/GitLab publication](../../specs/011-repository-delivery/plan.md) and
+  [Linear/Jira synchronization](../../specs/012-work-tracking/plan.md) are implemented
+  as separate features with their own permissions and documented fixture limits.
+  Local Git collection remains available through Feature 002.
 - Collection controls use the same scoped commands in the browser, terminal,
   API and CLI. The web inspector renders version 2 coverage and checks full receipt
   linkage explicitly; the terminal shows escaped source and complete JSON.

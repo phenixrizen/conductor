@@ -7,7 +7,8 @@ shared record. Authenticated collaborators can also request repository context,
 inspect shared source receipts, and attach them to a package as a new revision.
 A local actor name is development identity, not authentication. The separate
 [release workbench](release-terminal.md) adds graphs, coordinated agent plans,
-publication artifacts and tracker synchronization using the same fixed identity.
+publication artifacts, tracker synchronization and runtime evidence using the
+same fixed identity.
 
 ## Authenticated workspace review
 
@@ -293,12 +294,13 @@ terminal-control escaping, historical approval retention, and clean terminal exi
 
 Bubble Tea is pinned to `v1.3.10`, whose
 [module definition](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/go.mod)
-supports the project's Go 1.24 toolchain. The adapter uses its
+is used with the current module's Go 1.25 minimum and pinned Go 1.26.8 toolchain.
+The adapter uses its
 [model/update/view interface](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/README.md)
 and [program options](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/options.go)
 for cancellation and the alternate screen. Authenticated terminal review and
 collection controls use the existing API credential and permission boundary; these
 controls add no server routes or migrations. Background collection uses the
-Feature 006 worker. The separate release workbench exposes coding and publication
-review through the existing authenticated API; repository commands run only in the
-trusted workers.
+Feature 006 worker. The separate release workbench exposes graphs, coding and
+publication review, tracker synchronization and runtime evidence through the same
+authenticated API. Repository commands run only in the trusted workers.

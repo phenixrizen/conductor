@@ -1,11 +1,13 @@
 # Background repository context
 
-**Status: Partial.** The API, CLI, browser/terminal controls, PostgreSQL outbox,
-Temporal worker and bounded GitHub/GitLab read adapters are present. Workers use
-explicit local loopback or the shared [remote TLS/mTLS profile](temporal-tls.md).
-Production deployment remains unverified. Provider fixtures exercise the pinned
-protocols; live GitHub/GitLab compatibility has not been verified with
-repository-limited read credentials.
+**Status: Implemented bounded workflow; provider/deployment qualification is partial.**
+The API, CLI, browser/terminal controls, PostgreSQL outbox, Temporal worker and
+bounded GitHub/GitLab read adapters are present. Workers use explicit local loopback
+or the shared [remote TLS/mTLS profile](temporal-tls.md). Production deployment
+remains unverified. Controlled providers exercise both protocols. The later
+[whole-source research](../architecture/codegraph-integration-research.md) records
+one actual GitHub read of this repository at an exact commit; live GitLab credentials
+and broader provider compatibility remain unverified.
 
 An authorized engineer or agent requests files from one exact commit. The service
 saves that request, collects in the background, and exposes the same result to
@@ -19,26 +21,13 @@ OIDC and both workspace and canonical repository selection on every command. Loc
 actor headers cannot use it. Existing repository author permission allows collection
 only after operator enablement; read permission allows inspecting retained text.
 
-Apply ordered migrations 001–004 to an empty database. For a database already on
-migration 003, apply **only** the new migration, once, through its trusted operator
-connection:
-
-```bash
-psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --single-transaction \
-  --file migrations/004_context_collections.sql
-```
-
-For the standard Docker development database, pipe the migration to support Snap
-checkouts outside the home directory:
-
-```bash
-docker exec -i conductor-local-postgres-1 psql -U conductor -d conductor \
-  --set ON_ERROR_STOP=1 --single-transaction < migrations/004_context_collections.sql
-```
-
-Retain existing data and apply missing earlier migrations first. The local database
-startup script initializes empty databases with all migrations and reports missing
-upgrades; it does not silently upgrade an existing schema.
+Apply every missing ordered migration using the
+[release migration procedure](release.md#apply-or-upgrade-the-database). Feature 006
+introduced migration 004; whole-source acquisition and the current release require
+later migrations as well. Preserve existing data and inspect manually applied
+history before declaring a legacy baseline. The development startup script
+initializes empty databases but does not upgrade existing schemas or certify all
+later release tables.
 
 Install the official [Temporal CLI 1.8.3 release](https://github.com/temporalio/cli/releases/tag/v1.8.3)
 and verify its published archive checksum before extracting it. The tested Linux
@@ -203,8 +192,8 @@ observed, but cannot undo a request already sent or a receipt already committed.
 
 ## Browser and terminal controls
 
-Sign in and select the canonical workspace/repository before using **Shared context
-collections** in the browser. **Refresh collections** loads one page of 20 shared
+Sign in and select the canonical workspace/repository, then open **Source & graph
+→ Shared context collections** in the browser. **Refresh collections** loads one page of 20 shared
 requests; **Load more collections** replaces it with the next page. Inspect a
 request to see source identity, receipt digest, per-path coverage and the last
 execution observation. Use **Request repository context** to enter the exact

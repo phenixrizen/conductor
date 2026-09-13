@@ -3,8 +3,8 @@
 **Current:** immutable receipt-backed graph commands and native Go/manifest indexing.
 Optional CodeGraph 1.6.0 extraction runs inside the existing trusted collection
 activity. Optional full-source collection also acquires an exact Git bundle and bounded
-whole-tree index. **Partial:** broader platform/language compatibility and deployment
-profiles remain unfinished. See [source bundles](source-bundles.md).
+whole-tree index. Broader platform/language compatibility and production deployment
+remain unverified. See [source bundles](source-bundles.md).
 
 ```mermaid
 flowchart LR

@@ -19,32 +19,34 @@
    Use trusted receipt fixtures for interface tests and retain separate provider
    and Temporal process acceptance.
 
-## Following increment
+## Implemented follow-through
 
 [Feature 006](../006-durable-context/spec.md) implements bounded repository-context
 collection before coding execution, with PostgreSQL request/receipt facts and
 Temporal sequencing. The terminal now exposes its existing commands. Production
 Temporal deployment and live provider compatibility retain their documented limits.
-Coding attempts will require their own immutable approved inputs and execution
-permission; collection cannot grant that authority. Managed repositories continue
-to require GitHub/GitLab support, and planned tracker integration selects one
-Linear/Jira tracker per workspace.
+Coding attempts now bind immutable approved inputs and separate human execution
+permission in [Feature 009](../009-coordinated-execution/spec.md); collection cannot
+grant that authority. [Feature 011](../011-repository-delivery/spec.md) adds separately
+authorized GitHub/GitLab draft publication, and
+[Feature 012](../012-work-tracking/spec.md) selects one Linear/Jira tracker per workspace.
 
 Implementation checks do not approve an ADR, grant a package approval, authorize a
-merge, or establish deployment. Publish focused commits and a PR targeting the
-current `main` for each complete increment. Integrate prerequisites before marking
-a dependent PR ready; do not require reviewers to manage stacked merge order.
+merge, or establish deployment.
 
 ## Current release delivery instruction
 
-The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
-the earlier main-only sequencing guidance above. Follow the required gates and
-explicit dependency order in the [full release contract](../../docs/full-release.md).
+The user authorized stacked PRs on 2026-09-13 for the full release. Follow its
+required gates and explicit dependency order in the
+[full release contract](../../docs/full-release.md).
 
 ## Full-release terminal delivery
 
 Shared CLI commands and the separate authenticated release workbench cover graph
 creation/query, task proposals and human execution decisions, exact artifact review
-and publication authorization, and workspace tracker linking/synchronization.
-Strict request-file previews retain keys across explicit retries. Actual signed
-API/PostgreSQL PTY coverage spans these controls alongside the original workbench.
+and publication authorization, workspace tracker linking/synchronization, and
+scoped runtime evidence requests and inspection. Failed and read-only task artifacts
+remain inspectable without a delivery proposal. Strict request-file previews retain
+keys across explicit retries. Actual signed API/PostgreSQL PTY coverage spans these
+controls alongside the original workbench. See the
+[release terminal guide](../../docs/operations/release-terminal.md).

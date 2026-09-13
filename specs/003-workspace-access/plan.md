@@ -12,7 +12,7 @@
    preservation, and restart compatibility against PostgreSQL. Document the exact
    profile and deployment limits rather than claiming vendor compatibility.
 
-## Following increment
+## Implemented follow-through
 
 [Feature 004](../004-browser-sign-in/spec.md) now adds configurable browser OIDC
 sign-in using authorization code flow, PKCE, nonce/state validation, and protected
@@ -24,13 +24,12 @@ access through that same boundary, with a fixed credential and scope, capability
 discovery, and explicit recovery. It does not add interactive CLI token acquisition.
 
 [Feature 006](../006-durable-context/spec.md) uses this access boundary for durable
-repository-context collection. Coding execution remains later work. Deliver each
-complete increment on a focused branch with a PR targeting the current `main`.
-Integrate prerequisite work before marking a dependent PR ready, so reviewers do
-not need to manage a chain of branches or choose a merge order.
+repository-context collection. [Feature 009](../009-coordinated-execution/spec.md)
+adds separate human execution grants and exact plan authorization; collection and
+design-review permissions do not imply coding or publication authority.
 
 ## Current release delivery instruction
 
-The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
-the earlier main-only sequencing guidance above. Follow the required gates and
-explicit dependency order in the [full release contract](../../docs/full-release.md).
+The user authorized stacked PRs on 2026-09-13 for the full release. Follow its
+required gates and explicit dependency order in the
+[full release contract](../../docs/full-release.md).

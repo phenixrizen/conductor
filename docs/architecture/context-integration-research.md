@@ -4,7 +4,9 @@
 source on 2026-09-12 and exercised the implementation on 2026-09-13. The pinned SDK
 and actual Temporal development server have process-recovery and replay coverage.
 GitHub/GitLab adapters have controlled HTTP/TLS fixtures, without live provider
-credential verification. These findings do not establish production compatibility
+credential verification in this original qualification. Later
+[whole-source research](codegraph-integration-research.md) records one actual GitHub
+read at an exact commit. These findings do not establish production compatibility
 or accept ADR 0003. See the [workflow](durable-context.md) and
 [operations guide](../operations/durable-context.md).
 
@@ -13,7 +15,7 @@ or accept ADR 0003. See the [workflow](durable-context.md) and
 | Component | Inspected pin | Implementation implication |
 |---|---|---|
 | Temporal Go SDK | `v1.44.1`, API module `v1.62.12`; declares Go 1.24.0 | Pinned in Conductor's module; SDK, replay and actual local-server tests |
-| Temporal development CLI | `v1.8.3`, embedding server `v1.31.2`; declares Go 1.26.4 | Verified Linux amd64 release binary for owned acceptance; not built with Conductor's Go 1.24 toolchain |
+| Temporal development CLI | `v1.8.3`, embedding server `v1.31.2`; declares Go 1.26.4 | Verified Linux amd64 release binary for owned acceptance; avoided the original Go 1.24 build constraint; Conductor now pins Go 1.26.8 |
 | GitHub | REST `2026-03-10`; OpenAPI source `cca5c0021436293e6ec6a689b9e2f6794080d003` | Explicit version header; initially test `github.com` through `api.github.com` |
 | GitLab | REST `/api/v4`; release source `v19.3.2-ee`, commit `601afd607baae60e14e83e16fb9dea03cf8c7032` | `/v4` is not a frozen server release; initially test GitLab.com and report the observed profile |
 

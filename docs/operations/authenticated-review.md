@@ -6,21 +6,17 @@ adds interactive OpenID Connect login through the same command service.
 
 ## Prepare the database
 
-New development databases receive all ordered migrations. For an existing database
-initialized at migration 001, apply migration 002 once before running this version.
-With the local Docker setup:
+Use the [release migration procedure](release.md#apply-or-upgrade-the-database)
+to apply every missing migration in order. Existing manually initialized databases
+need an inspected explicit baseline before adopting the checksum ledger; do not
+reapply already recorded SQL. Empty development databases receive all ordered SQL
+from the local setup script without recording their checksums in that ledger.
 
-```bash
-docker exec -i conductor-local-postgres-1 psql -U conductor -d conductor \
-  --set ON_ERROR_STOP=1 --single-transaction < migrations/002_access.sql
-```
-
-The migration adds access records and nullable package ownership. Existing package
-content, digests, authors, approvals, and audit records are preserved. Those packages
-remain available only in local mode; they are not silently assigned to a workspace.
-Migration 003 adds browser sessions; apply it once after 002 as described in the
-[browser guide](browser-sign-in.md). Do not run an older API binary against a
-database containing authenticated data.
+Feature 003 introduced migration 002 for access records and nullable package
+ownership. Existing content, digests, authors, approvals and audit history remain
+unchanged, and legacy packages stay local rather than acquiring a workspace.
+Migration 003 adds browser sessions; later release workflows require their own
+ordered migrations too. Do not run an older API against authenticated data.
 
 ## Configure identity and permissions
 
@@ -130,8 +126,10 @@ go run ./cmd/conductor approve --workspace team --revision 1 --digest '<inspecte
 Never use `--actor` with a token. `CONDUCTOR_TOKEN` is an alternative to the token
 file; setting both is an error. Credentials are limited to 16 KiB. The client
 rejects redirects and plaintext remote URLs before sending credentials. HTTP is
-allowed only for local loopback testing. Context collection remains local and does
-not read the credential settings.
+allowed only for local loopback testing. The `context` and `context-check` commands
+read local Git and ignore API credential settings. Authenticated remote
+`context-collect` uses the shared service and the separately configured
+[trusted collection worker](durable-context.md).
 
 For interactive review, select both a workspace and a canonical repository:
 
@@ -152,7 +150,8 @@ and permissions without adding a migration or requiring browser login settings.
 
 The verifier follows [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html) and
 [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html), using
-[go-jose v4.1.4](https://github.com/go-jose/go-jose/releases/tag/v4.1.4) on Go 1.24.
+[go-jose v4.1.4](https://github.com/go-jose/go-jose/releases/tag/v4.1.4). The current
+module requires Go 1.25 and pins the tested Go 1.26.8 toolchain.
 It requires RS256, an access-token type (`at+jwt`, case-insensitive, also accepting
 the `application/` prefix), a unique nonempty signing-key ID, and signed issuer,
 audience, subject, expiration, issued-at, client ID, and token ID claims. A present

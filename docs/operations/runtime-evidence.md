@@ -5,8 +5,11 @@ acceptance.** A live Groundcover account has not been exercised. This is a read-
 integration and never deploys software or changes publication history.
 
 Use the existing authenticated Conductor API, PostgreSQL migrations through 011,
-retained repository delivery/deployment observations, and the pinned local Temporal
-setup from [durable context](durable-context.md). Enable the API explicitly:
+retained repository delivery/deployment observations, and an explicitly configured
+Temporal service. The local setup is in [durable context](durable-context.md);
+shared transport uses [TLS/mTLS](temporal-tls.md). Use the
+[release migration procedure](release.md#apply-or-upgrade-the-database) for current
+installations. Enable the API explicitly:
 
 ```bash
 export CONDUCTOR_AUTH_MODE=oidc
@@ -77,7 +80,7 @@ Use a separate credential catalog with references to regular token files:
 ```bash
 export CONDUCTOR_TEMPORAL_MODE=local
 export CONDUCTOR_TEMPORAL_ADDRESS=127.0.0.1:7233
-export CONDUCTOR_TEMPORAL_NAMESPACE=default
+export CONDUCTOR_TEMPORAL_NAMESPACE=conductor
 export CONDUCTOR_RUNTIME_CREDENTIALS_FILE=/absolute/operator/runtime-credentials.json
 go run ./cmd/conductor-runtime-worker
 ```
@@ -145,8 +148,8 @@ use `r` for explicit refresh. See [terminal controls and acceptance](release-ter
 
 ## Browser workflow
 
-Select your workspace and repository, then open **Runtime evidence**. Refresh the
-shared list or enter a request ID. Its inspection shows exact deployment/commit
+Select your workspace and repository, then open **Runtime → Runtime evidence**.
+Refresh the shared list or enter a request ID. Its inspection shows exact deployment/commit
 pins, approved criterion definitions and historical results. Expand a metric series
 or log/trace section to inspect all retained bounded rows. Missing or truncated
 signals remain explicit; a historical met criterion is never an overall health badge.

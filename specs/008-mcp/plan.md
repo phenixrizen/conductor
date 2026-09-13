@@ -32,13 +32,13 @@ covered by Feature 007 and the combined MCP/database acceptance. The latter
 passes with race detection against a real compiled stdio process: two repository
 receipts produce one idempotent graph, bounded queries retain provenance, and
 revoking one source hides graph reads/query/listing while anchor package reads
-remain available. The graph API prerequisite must precede the MCP graph commit. The whole-source
+remain available. The whole-source
 follow-up preserves explicit collection intent and inspected bundle digests through
 the same strict tool schemas; SDK-client tests verify the exact forwarded inputs.
 
-This branch forms one ordered PR in the full-release review stack requested by the
-user. Implemented and tested behavior does not grant merge, deployment or ADR
-approval authority.
+MCP additions follow the full-release review stack requested by the user.
+Implemented and tested behavior does not grant merge, deployment or ADR approval
+authority.
 
 The coordinator follow-up adds strict plan/profile discovery and proposal tools,
 with no human execution-authority tools. SDK-client tests cover preserved pins,
@@ -48,3 +48,11 @@ acceptance proves an agent proposal is visible to a human and cannot self-author
 
 Exact related graph-source reads are verified through real MCP SDK/stdio, signed
 API and PostgreSQL, including revoked related-source access.
+
+Later shared tools also expose exact retained task/delivery artifacts, draft
+publication proposals and observations, one workspace tracker, and scoped runtime
+evidence. They do not expose human design, execution or publication authorization.
+The [MCP guide](../../docs/operations/mcp.md) lists implemented commands and output
+bounds. The [complete release acceptance](../../docs/operations/full-release-acceptance.md)
+uses compiled MCP processes to author the actual source-to-worker workflow; its
+provider/model data are explicitly synthetic.

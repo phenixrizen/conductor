@@ -22,9 +22,12 @@ Docker, so Docker Snap can work with a checkout under `/mnt`. PostgreSQL data li
 in a named volume. Migrations run atomically only for an empty database;
 existing review history is retained. Apply later migrations deliberately rather
 than assuming a restarted existing volume was upgraded.
-Existing databases at migration 001 need migration 002 once; see
-[authenticated review setup](authenticated-review.md). The script reports this
-requirement instead of claiming the old schema is ready for the current API.
+The startup script checks the original access/browser/context tables only; its
+ready message does not certify that an existing database has every release table.
+Use the [release migration procedure](release.md#apply-or-upgrade-the-database)
+for a current installation. The development initializer applies SQL without recording checksum history in the
+release ledger: inspect the actual applied migrations before supplying an explicit
+legacy baseline. Do not guess the count or bypass an existing checksum ledger.
 
 Configuration:
 
@@ -36,6 +39,20 @@ Configuration:
 | `CONDUCTOR_OIDC_ISSUER` | Required in OIDC mode | Exact HTTPS identity issuer |
 | `CONDUCTOR_OIDC_AUDIENCE` | Required in OIDC mode | API access-token audience |
 | `CONDUCTOR_URL` | `http://localhost:8080` | CLI API base URL |
+
+## Start the local browser
+
+With the local API running, start Vite in another terminal:
+
+```bash
+npm --prefix apps/web ci
+npm --prefix apps/web run dev
+```
+
+Open the loopback URL printed by Vite, normally `http://127.0.0.1:5173`. Its `/api`
+proxy targets `http://127.0.0.1:8080`; set `CONDUCTOR_API_URL` before starting Vite
+if the local API uses a different port. Local mode reviews unscoped development
+packages. Shared workflow tabs require the authenticated setup below.
 
 ## Exercise the review flow
 

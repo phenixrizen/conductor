@@ -14,12 +14,13 @@
 6. Integrate browser/terminal controls and full-release delivery acceptance on the
    root stack, preserving the same captured-input contracts.
 
-Items 1–5 have implementation and passing controlled-provider, real PostgreSQL,
-compiled MCP and owned Temporal acceptance. Full Go normal/race tests, vet, OpenAPI,
+Items 1–6 have implementation and passing controlled-provider, real PostgreSQL,
+compiled MCP, signed browser/terminal and owned Temporal acceptance. The complete
+release gate exercises both Linear and Jira fixtures with real worker/publication
+outputs and lost-write reconciliation. Full Go normal/race tests, vet, OpenAPI,
 local documentation validation, web typecheck and production build also pass.
-Final release verification includes the parent stack's interfaces and live service
-evidence. Ticket creation and assignment/priority/status mutations remain explicit
-unsupported capabilities under the accepted existing-ticket field-ownership model.
+Live tracker tenants remain unverified. Ticket creation and assignment/priority/status
+mutations remain unsupported under the existing-ticket field-ownership model.
 
 Browser workbench implemented and verified against signed login, live PostgreSQL
 and both actual HTTP adapters using controlled Linear/Jira data. Acceptance covers

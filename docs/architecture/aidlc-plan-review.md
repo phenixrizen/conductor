@@ -1,7 +1,11 @@
 # AI-DLC inspiration and Conductor plan review
 
 **Status: Proposed.** This review proposes product and delivery refinements; it
-does not accept an ADR or implement an integration.
+does not accept an ADR or implement an integration. The analysis below describes
+the 2026-09-12 plan. Later implementation is recorded in the
+[feature follow-through](../../specs/001-work-package-review/plan.md) and
+[browser perspective guide](../operations/browser-navigation.md); it does not
+retroactively accept this proposed review.
 
 Reviewed the official [AWS Labs AI-DLC repository at commit
 `9b8847b5ba34840407d3f551b4e9dd1c7da0982d`](https://github.com/awslabs/aidlc-workflows/tree/9b8847b5ba34840407d3f551b4e9dd1c7da0982d)
@@ -16,7 +20,7 @@ implementation, verification, and delivery. Its distinguishing responsibility is
 maintaining who authorized which exact work, what evidence supports it, what
 changed, and what can happen next across tools and sessions.
 
-The [current plan](../../specs/001-work-package-review/plan.md) starts in the right
+The [plan reviewed then](../../specs/001-work-package-review/plan.md) starts in the right
 place: immutable package revisions, independent approval, transactional history,
 and one command boundary. Keep that foundation. Make the next steps more explicit:
 the existing “Next increment” combines identity, context, and orchestration before
@@ -24,7 +28,7 @@ spelling out how the remaining Milestone 1 exit criteria close. Split those into
 separate acceptance increments.
 
 The proposed division of responsibilities preserves the
-[target architecture](system.md):
+system responsibilities below (the [system guide](system.md) now records implementation):
 
 | Component | Proposed responsibility |
 |---|---|

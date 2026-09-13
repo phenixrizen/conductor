@@ -7,7 +7,7 @@ These interfaces use the shared API and never execute repository commands locall
 
 ## Browser controls
 
-Sign in, select the workspace and repository, then open **Coordinated execution**.
+Sign in, select the workspace and repository, then open **Agent work → Coordinated execution**.
 Use **Refresh runs and access** to load one bounded page, current selected-repository
 execution capability and the operator's enabled profile catalog. A missing or
 truncated profile does not establish runnable capacity. The server checks every
@@ -37,8 +37,10 @@ package, profile or plan inside the confirmed command.
 The trusted worker must still confirm termination and cleanup; reservations remain
 held while either is unresolved. Run observations show their timestamp and age;
 missing or stale observations remain unknown, and display aging does not poll the
-API. Refresh explicitly to inspect newer facts. Exact patch/check inspection and
-publication authorization belong to the separate delivery review workflow.
+API. Refresh explicitly to inspect newer facts. **Inspect task artifact** shows
+retained patches, reports and checks here, including failed or read-only tasks.
+Publication eligibility and human authorization belong to the separate **Delivery**
+workflow.
 
 Changing workspace/repository clears private inspection and confirmations. Access
 denial also clears imported drafts and capability information. Read-only users see
@@ -57,6 +59,7 @@ With the API's coordination capability enabled, the existing fixed-scope
 | `conductor_propose_run` | Record a strict, bounded plan under one explicit idempotency key |
 | `conductor_list_runs` | Discover one bounded page of shared plans |
 | `conductor_get_run` | Inspect exact plan, human authorization and retained observations/receipts |
+| `conductor_get_task_artifact` | Read complete bounded output using the inspected run, task and artifact digests |
 
 The scope-bound resources `/runs` and `/runs/{id}` expose the corresponding shared
 records. No MCP tool authorizes execution or cancellation. A perspective such as

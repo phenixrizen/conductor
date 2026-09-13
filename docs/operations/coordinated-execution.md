@@ -84,14 +84,17 @@ go build -o /tmp/conductor-executor ./cmd/conductor-executor
 export DATABASE_URL='postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable'
 export CONDUCTOR_TEMPORAL_MODE=local
 export CONDUCTOR_TEMPORAL_ADDRESS=127.0.0.1:7233
-export CONDUCTOR_TEMPORAL_NAMESPACE=conductor-local
+export CONDUCTOR_TEMPORAL_NAMESPACE=conductor
 export CONDUCTOR_EXECUTION_PROFILES_FILE=/absolute/private/execution-profiles.json
 /tmp/conductor-executor
 ```
 
-The executor supports a literal loopback Temporal address, the documented retained
-namespace, and the local Docker daemon. `CONDUCTOR_DOCKER_BINARY` optionally selects
-its executable. It checks schema readiness without applying migrations. Public
+This local example uses the `conductor` namespace created by
+`start-local-temporal.sh`. The executor also supports the shared TLS/mTLS profile;
+keep each retained run's endpoint, namespace and cluster identity fixed. Coding
+uses the local Docker daemon, whose executable can be selected with
+`CONDUCTOR_DOCKER_BINARY`. The executor checks schema readiness without applying
+migrations. Public
 profile/image pins must equal the private operator catalog before work starts;
 changing either requires a newly reviewed plan. Source bundles, prompt text,
 commands, patch payloads and credentials never enter workflow history or worker logs.

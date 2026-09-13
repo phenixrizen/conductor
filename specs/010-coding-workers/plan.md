@@ -18,8 +18,8 @@
    canonical authorized full bundles and commits source-bound receipts under the
    current authority check. A separate publisher consumes exact patches.
 
-Steps 1–6 are implemented and verified by the worker tests. Control-plane and
-publication integration is developed in the ordered release PR stack. The worker
+Steps 1–6 are implemented and verified by the worker tests. Step 7 and trusted
+publication are implemented and exercised by the complete release gate below. The worker
 does not accept an ADR, enable a repository, or authorize itself.
 
 Retained task artifact inspection is implemented independently of publication:
