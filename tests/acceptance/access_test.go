@@ -405,12 +405,18 @@ type accessFixture struct {
 }
 
 func newAccessFixture(t *testing.T) *accessFixture {
+	return newAccessFixtureWithIssuer(t, nil, nil, 60*time.Second)
+}
+
+// Browser acceptance uses a TLS authorization-code issuer and an explicit longer
+// budget for its real browser process. Existing API acceptance keeps its limit.
+func newAccessFixtureWithIssuer(t *testing.T, issuer *accessIssuer, issuerClient *http.Client, timeout time.Duration) *accessFixture {
 	t.Helper()
 	databaseURL := os.Getenv("CONDUCTOR_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("set CONDUCTOR_TEST_DATABASE_URL to run authenticated PostgreSQL acceptance")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	admin, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -475,8 +481,11 @@ func newAccessFixture(t *testing.T) *accessFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { f.db.Close() })
-	f.issuer = newAccessIssuer(t)
-	f.verifier, err = authn.New(ctx, authn.Config{Issuer: f.issuer.url, Audience: "conductor-acceptance", AllowInsecureLoopback: true})
+	f.issuer = issuer
+	if f.issuer == nil {
+		f.issuer = newAccessIssuer(t)
+	}
+	f.verifier, err = authn.New(ctx, authn.Config{Issuer: f.issuer.url, Audience: "conductor-acceptance", HTTPClient: issuerClient, AllowInsecureLoopback: issuer == nil})
 	if err != nil {
 		t.Fatalf("initialize real access-token verifier: %v", err)
 	}
