@@ -13,9 +13,12 @@
 
 ## Following increment
 
-Define the first durable execution request, its authority, immutable approved input,
-outbox, retry/reconciliation behavior, and evidence states before introducing an
-external workflow runtime. Keep PostgreSQL as the authority for review facts and
+The proposed [Feature 006](../006-durable-context/spec.md) starts with bounded
+repository-context collection before coding execution. Define collection authority,
+immutable requested source, outbox, retry/reconciliation behavior, and evidence
+states before introducing an external workflow runtime. Coding attempts will later
+require their own immutable approved inputs and execution permission. Keep
+PostgreSQL as the authority for review facts and
 Temporal as the planned execution sequencer. Repository and tracker integrations
 continue to require GitHub/GitLab and one Linear/Jira tracker per workspace.
 

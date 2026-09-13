@@ -14,6 +14,10 @@ not mistaken for working capabilities.
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
 | [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
+| [Durable repository context](architecture/durable-context.md) | Proposed first background workflow, evidence, and recovery boundaries |
+| [Context integration research](architecture/context-integration-research.md) | Researched Temporal/GitHub/GitLab candidates, without compatibility claims |
+| [Feature 006 specification](../specs/006-durable-context/spec.md) | Proposed remote collection contract and unresolved permission choice |
+| [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
 | [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, JSON imports, exact approval, and access recovery |
@@ -31,6 +35,7 @@ not mistaken for working capabilities.
 | [Feature 001 plan](../specs/001-work-package-review/plan.md) | Refined implementation sequence and next increment |
 | [ADR 0001](adr/0001-immutable-work-package-revisions.md) | Proposed immutable-revision decision |
 | [ADR 0002](adr/0002-single-domain-command-path.md) | Proposed shared command-path decision |
+| [ADR 0003](adr/0003-durable-context-workflow.md) | Proposed pinned context workflow before assistant execution |
 | [OpenAPI contract](../api/openapi.yaml) | Current HTTP resources and payloads |
 | [Agent and contributor guidance](../AGENTS.md) | Canonical repository-wide engineering instructions |
 

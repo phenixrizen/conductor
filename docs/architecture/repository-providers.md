@@ -5,6 +5,9 @@ permissions are implemented for GitHub and GitLab registrations. Remote discover
 verification, and delivery adapters remain planned.
 The current local Git collector reads committed objects independently of either
 provider; it does not establish remote integration support.
+The proposed [durable context workflow](durable-context.md) is the first remote
+read increment. Its request authority and provider profiles must be resolved and
+tested before an adapter is described as implemented.
 
 GitHub also hosts Conductor's own source. That hosting choice does not determine
 where an application repository is managed or establish application delivery facts.

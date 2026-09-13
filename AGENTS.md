@@ -29,6 +29,10 @@ authenticated workspace access. Read these before changing behavior:
 11. `specs/005-authenticated-terminal/spec.md` and `plan.md` for authenticated
     terminal identity, scope, and recovery; `docs/operations/terminal-review.md`
     for controls and real PTY acceptance.
+12. Before introducing remote context or Temporal, read the proposed
+    `specs/006-durable-context/spec.md` and `plan.md`,
+    `docs/architecture/durable-context.md`, and ADR 0003. Collection permission is
+    unresolved; the proposal does not enable a remote operation or grant authority.
 
 Do not describe an incomplete integration or mocked path as implemented. Keep
 **design approved**, **implementation produced**, **implementation verified**,
@@ -141,6 +145,10 @@ packages to mirror the target diagram.
 - Native Spec Kit/ADRKit files are currently imported as text artifacts. Do not
   claim command/API compatibility, accepted decisions, or execution authority from
   their contents.
+- Proposed remote collection must preserve existing snapshot versions and digests.
+  A receipt ID supplied in JSON is not authenticated provenance. Resolve trusted
+  receipt linkage under canonical scope; never refresh or attach a result as part
+  of approval. Keep provider credentials and source text outside workflow history.
 
 ## Go conventions
 

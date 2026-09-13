@@ -185,9 +185,12 @@ flowchart LR
     class M2,M3,M4,M5,M6 planned;
 ```
 
-Authenticated review is implemented across these interfaces. The next increment
-defines one durable execution workflow with an outbox and reconciliation boundary
-before introducing Temporal or external adapters. Agent execution remains disabled
+Authenticated review is implemented across these interfaces. The proposed next
+increment is [durable context collection](durable-context.md): selected files from
+an exact managed-repository commit, a shared immutable receipt, and explicit
+attachment to a package. It defines outbox, reconciliation, cancellation, and
+revocation boundaries before introducing Temporal or external adapters. Collection
+permission remains an unresolved product decision. Agent execution remains disabled
 pending its own verified identity, authorization, durable recovery, context, and
 execution boundaries. Review access alone does not authorize execution.
 

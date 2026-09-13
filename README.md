@@ -132,9 +132,11 @@ configuration, troubleshooting, and database lifecycle.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
 
 The current implementation focuses on durable review, shared context, and
-controlled team access. The next increment is to define one durable execution
-workflow, including how database commits hand work off and how interrupted work
-recovers. Temporal execution and external adapters remain later work. See the
+controlled team access. The proposed next workflow collects selected files from an
+exact GitHub or GitLab commit and keeps a shared result that survives restarts.
+Its permission and recovery contract is described in
+[durable repository context](docs/architecture/durable-context.md). This workflow,
+Temporal execution, and external adapters are not implemented yet. See the
 [system architecture](docs/architecture/system.md) and
 [shared-context model](docs/architecture/collaboration.md) for those boundaries.
 The [repository provider plan](docs/architecture/repository-providers.md) describes
