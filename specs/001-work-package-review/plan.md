@@ -28,7 +28,7 @@ avoids building three divergent state machines in the API, TUI, and web client.
   begin only when an external workflow operation exists in Milestone 2.
 - Shared access requires verified identity and repository authorization. Feature
   003 supplies these for API/CLI review; the local identity header confers no shared
-  rights, and browser/TUI authentication remains pending.
+  rights. Feature 004 adds browser login; authenticated TUI access remains pending.
 - The UI is an inspector and command surface, not an alternate source of truth.
 
 ## Next increment
@@ -44,10 +44,9 @@ Real PostgreSQL acceptance covers collaboration, isolation, revocation, and reta
 legacy data. Identity tests use a synthetic issuer and establish no vendor-specific
 compatibility claim.
 
-The next interface increment is browser OIDC sign-in using those same service
-commands and repository capabilities. Define its login/session lifecycle and exact
-review behavior before extending the local-only workbench. Interactive terminal
-authentication is also pending. The local revision-pinned context collector remains
+Feature 004 adds browser OIDC sign-in using those same service commands and
+repository capabilities, with durable sessions and cleared inspection on access
+changes. Authenticated terminal review is the next interface increment. The local revision-pinned context collector remains
 available independently of those login flows.
 
 Introduce the durable workflow outbox when the first external workflow operation

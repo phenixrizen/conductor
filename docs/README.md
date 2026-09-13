@@ -17,6 +17,9 @@ not mistaken for working capabilities.
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
 | [Terminal review](operations/terminal-review.md) | Interactive shared review, JSON imports, exact approval, and conflict recovery |
+| [Browser sign-in](operations/browser-sign-in.md) | Configure OIDC login, sessions, and shared browser review |
+| [Feature 004 specification](../specs/004-browser-sign-in/spec.md) | Browser identity, session, and exact review contracts |
+| [Feature 004 plan](../specs/004-browser-sign-in/plan.md) | Browser implementation sequence and authenticated terminal follow-up |
 | [Authenticated review](operations/authenticated-review.md) | Configure identity, provision permissions, and review through the API/CLI |
 | [Feature 003 specification](../specs/003-workspace-access/spec.md) | Workspace isolation, canonical repositories, and human/agent access contracts |
 | [Feature 003 plan](../specs/003-workspace-access/plan.md) | Authentication implementation scope and next interface increment |

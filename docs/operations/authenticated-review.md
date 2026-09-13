@@ -1,8 +1,9 @@
 # Authenticated review setup
 
 The API and noninteractive CLI can share review data with authenticated workspace
-and repository permissions. The browser and interactive terminal currently use
-local mode. OpenID Connect browser sign-in is the next increment.
+and repository permissions. [Browser sign-in](browser-sign-in.md) adds interactive
+OpenID Connect login through the same command service. Interactive terminal review
+still uses local mode.
 
 ## Prepare the database
 
@@ -18,7 +19,9 @@ docker exec -i conductor-local-postgres-1 psql -U conductor -d conductor \
 The migration adds access records and nullable package ownership. Existing package
 content, digests, authors, approvals, and audit records are preserved. Those packages
 remain available only in local mode; they are not silently assigned to a workspace.
-Do not run an older API binary against a database containing authenticated data.
+Migration 003 adds browser sessions; apply it once after 002 as described in the
+[browser guide](browser-sign-in.md). Do not run an older API binary against a
+database containing authenticated data.
 
 ## Configure identity and permissions
 
@@ -148,9 +151,10 @@ failed attempts. Unknown keys may temporarily fail during rotation. Replacing ke
 material under the same key ID is recognized at cache expiry. An expired key cache
 with an unavailable refresh fails closed. RSA keys must be 2048–8192 bits.
 
-ID tokens, opaque/encrypted tokens, arbitrary vendor JWT profiles, interactive
-login, token refresh/introspection, and provider-side token revocation before expiry
-are not supported by this adapter. Stored principal/membership/capability revocation
+ID tokens, opaque/encrypted tokens, arbitrary vendor JWT profiles, token
+refresh/introspection, and provider-side token revocation before expiry are not
+supported by this API adapter. The separate browser adapter validates ID tokens
+for login and creates Conductor sessions. Stored principal/membership/capability revocation
 is enforced independently on subsequent requests. Tests use signed synthetic OIDC
 fixtures and PostgreSQL, including TLS and key rotation; they do not certify Entra
 ID, Okta, Keycloak, or any production issuer configuration.
