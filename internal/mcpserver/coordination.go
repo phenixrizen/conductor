@@ -24,9 +24,13 @@ func (b *Bridge) registerCoordination() {
 			RunDigest      string `json:"runDigest"`
 			TaskID         string `json:"taskId"`
 			ArtifactDigest string `json:"artifactDigest"`
-		}) (any, error) { q := domain.CoordinationArtifactQuery{RunDigest: a.RunDigest, TaskID: a.TaskID, ArtifactDigest: a.ArtifactDigest}; if domain.ValidateCoordinationArtifactQuery(q) != nil {
-			return nil, domain.ErrInvalidInput
-		}; return reader.GetCoordinationArtifact(ctx, a.ID, q) })
+		}) (any, error) {
+			q := domain.CoordinationArtifactQuery{RunDigest: a.RunDigest, TaskID: a.TaskID, ArtifactDigest: a.ArtifactDigest}
+			if domain.ValidateCoordinationArtifactQuery(q) != nil {
+				return nil, domain.ErrInvalidInput
+			}
+			return reader.GetCoordinationArtifact(ctx, a.ID, q)
+		})
 	}
 
 	id := map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"}
