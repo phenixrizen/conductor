@@ -50,7 +50,11 @@ func NewActivity(db WorkStore, credentials CredentialResolver, factory Collector
 // Older committed receipts remain recoverable without backfilling mutable data.
 func (a *Activity) WithCodeGraph(indexer interface {
 	Index(context.Context, []domain.ContextArtifact) (domain.CodeGraphIndex, error)
-}) *Activity { copy := *a; copy.indexer = indexer; return &copy }
+}) *Activity {
+	copy := *a
+	copy.indexer = indexer
+	return &copy
+}
 
 func (a *Activity) Collect(ctx context.Context, ref contextworkflow.Reference) (contextworkflow.Result, error) {
 	work, err := a.store.CollectionWork(ctx, ref.ID, ref.Binding)
@@ -87,7 +91,32 @@ func (a *Activity) Collect(ctx context.Context, ref contextworkflow.Reference) (
 		return contextworkflow.Result{}, providerFailure(ctx, err)
 	}
 	var receipt domain.CollectionReceipt
-	if a.indexer != nil {
+	if work.Collection.Input.FullSource {
+		fullCollector, ok := collector.(interface {
+			FullSource(context.Context, string, func(context.Context) error) (domain.SourceBundleData, error)
+		})
+		sink, sinkOK := a.store.(interface {
+			CompleteCollectionWithSource(context.Context, string, string, []domain.ContextArtifact, domain.SourceBundleData, domain.CodeGraphIndex) (domain.CollectionReceipt, error)
+		})
+		if !ok || !sinkOK || a.indexer == nil {
+			return contextworkflow.Result{}, contextworkflow.Failure{Code: "invalid_configuration"}
+		}
+		full, e := fullCollector.FullSource(ctx, work.Collection.Input.Commit, func(ctx context.Context) error { return a.store.CheckCollectionWork(ctx, ref.ID, ref.Binding) })
+		if e != nil {
+			return contextworkflow.Result{}, providerFailure(ctx, e)
+		}
+		if e = a.store.CheckCollectionWork(ctx, ref.ID, ref.Binding); e != nil {
+			return contextworkflow.Result{}, databaseFailure(e)
+		}
+		index, e := a.indexer.Index(ctx, full.Artifacts)
+		if e != nil {
+			if ctx.Err() != nil {
+				return contextworkflow.Result{}, ctx.Err()
+			}
+			return contextworkflow.Result{}, contextworkflow.Failure{Code: "unavailable", Retryable: true}
+		}
+		receipt, err = sink.CompleteCollectionWithSource(ctx, ref.ID, ref.Binding, artifacts, full, index)
+	} else if a.indexer != nil {
 		if err = a.store.CheckCollectionWork(ctx, ref.ID, ref.Binding); err != nil {
 			return contextworkflow.Result{}, databaseFailure(err)
 		}

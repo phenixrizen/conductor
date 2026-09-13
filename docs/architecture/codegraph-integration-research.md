@@ -34,3 +34,20 @@ Caller→Called edge. Signed identity/PostgreSQL activity acceptance stores that
 with its receipt and returns it through graph commands. These tests do not certify
 all upstream languages, repositories, native fallback behavior or cross-language
 heuristics. Unknown provenance and unresolved references remain explicit.
+
+## Whole-source transport evidence
+
+The full-source adapter was researched against official
+[Git smart HTTP](https://git-scm.com/docs/gitprotocol-http.html),
+[GitHub HTTPS authentication](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens), and
+[GitLab HTTPS token access](https://docs.gitlab.com/api/oauth2/) documentation.
+It runs tested Git 2.43.0 with the existing pinned REST provider profiles and a
+trusted, permission-checked proxy; provider tokens never enter the Git subprocess.
+
+On 2026-09-13, opt-in live GitHub source acceptance verified Conductor's own
+repository at commit `345f7e1074988b937a76d6e4986f05ce91cac4e3`: the complete
+bundle contained 583,841 bytes and the selected commit tree had 178 files, with no
+index source bounds hit. This is one actual read/bundle path, not a blanket provider
+compatibility or production claim. GitLab smart-HTTP behavior is covered by actual
+Git plus controlled provider metadata; a real GitLab credential/profile remains
+unverified.

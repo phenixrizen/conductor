@@ -21,8 +21,9 @@ var (
 const RemoteContextCollector = "conductor-remote/v1"
 
 type CollectionInput struct {
-	Commit string   `json:"commit"`
-	Paths  []string `json:"paths"`
+	Commit     string   `json:"commit"`
+	Paths      []string `json:"paths"`
+	FullSource bool     `json:"fullSource,omitempty"`
 }
 
 type ContextIntegrationConfig struct {
@@ -81,6 +82,7 @@ type Collection struct {
 	Source            ContextSource        `json:"source"`
 	CreatedAt         time.Time            `json:"createdAt"`
 	CancelRequestedAt *time.Time           `json:"cancelRequestedAt,omitempty"`
+	FullSource        *SourceBundleSummary `json:"fullSource,omitempty"`
 	Receipt           *CollectionReceipt   `json:"receipt,omitempty"`
 	Execution         *CollectionExecution `json:"execution,omitempty"`
 }

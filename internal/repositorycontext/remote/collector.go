@@ -45,6 +45,7 @@ type Config struct {
 	// APIOrigin and AllowInsecureLoopback permit owned loopback fixtures only.
 	// They do not enable arbitrary enterprise or self-managed provider origins.
 	APIOrigin             string
+	GitOrigin             string
 	AllowInsecureLoopback bool
 }
 
@@ -69,6 +70,7 @@ func failure(code string) *Error { return &Error{Code: code} }
 type Collector struct {
 	binding               Binding
 	token, origin, prefix string
+	gitOrigin             string
 	client                *http.Client
 }
 
@@ -98,6 +100,12 @@ func New(config Config) (*Collector, error) {
 			return nil, failure("invalid_config")
 		}
 		origin = config.APIOrigin
+	}
+	if config.GitOrigin != "" {
+		u, e := url.Parse(config.GitOrigin)
+		if e != nil || !config.AllowInsecureLoopback || !loopbackOrigin(u) {
+			return nil, failure("invalid_config")
+		}
 	}
 	client := http.Client{}
 	if config.HTTPClient != nil {
@@ -138,7 +146,7 @@ func New(config Config) (*Collector, error) {
 	}
 	client.Transport, client.Timeout = transport, requestTimeout
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Collector{binding: b, token: config.Token, origin: origin, prefix: prefix, client: &client}, nil
+	return &Collector{binding: b, token: config.Token, origin: origin, prefix: prefix, client: &client, gitOrigin: config.GitOrigin}, nil
 }
 
 func decimalID(value string) bool {

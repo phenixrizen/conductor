@@ -45,7 +45,7 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 // Index accepts bounded regular-file artifacts independently of the 32-path
-// collector limit; a future trusted full-repository acquisition can reuse it.
+// collector limit, including trusted full-repository acquisition output.
 // It never mounts a repository, host home, socket, or credential into the sandbox.
 func (a *Adapter) Index(parent context.Context, artifacts []domain.ContextArtifact) (domain.CodeGraphIndex, error) {
 	var index domain.CodeGraphIndex

@@ -156,6 +156,13 @@ func readCollection(ctx context.Context, q queryExecutor, id string, lock bool) 
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return work, err
 	}
+	if work.Collection.Input.FullSource && work.Collection.Receipt != nil {
+		summary, e := readSourceBundleSummary(ctx, q, work.Collection.ID, work.Collection.Receipt.Digest)
+		if e != nil {
+			return work, e
+		}
+		work.Collection.FullSource = &summary
+	}
 	return work, nil
 }
 
@@ -337,7 +344,7 @@ func (p *Postgres) CheckCollectionWork(ctx context.Context, id, binding string) 
 }
 
 func (p *Postgres) CompleteCollection(ctx context.Context, id, binding string, artifacts []domain.ContextArtifact) (domain.CollectionReceipt, error) {
-	return p.completeCollection(ctx, id, binding, artifacts, nil)
+	return p.completeCollection(ctx, id, binding, artifacts, nil, nil, nil)
 }
 
 // CompleteCollectionWithCodeGraph commits source and derived index together.
@@ -345,10 +352,10 @@ func (p *Postgres) CompleteCollectionWithCodeGraph(ctx context.Context, id, bind
 	if err := domain.ValidateCodeGraphIndex(index, artifacts); err != nil {
 		return domain.CollectionReceipt{}, err
 	}
-	return p.completeCollection(ctx, id, binding, artifacts, &index)
+	return p.completeCollection(ctx, id, binding, artifacts, &index, nil, nil)
 }
 
-func (p *Postgres) completeCollection(ctx context.Context, id, binding string, artifacts []domain.ContextArtifact, index *domain.CodeGraphIndex) (domain.CollectionReceipt, error) {
+func (p *Postgres) completeCollection(ctx context.Context, id, binding string, artifacts []domain.ContextArtifact, index *domain.CodeGraphIndex, full *domain.SourceBundleData, fullIndex *domain.CodeGraphIndex) (domain.CollectionReceipt, error) {
 	work, err := p.CollectionWork(ctx, id, binding)
 	if err != nil {
 		return domain.CollectionReceipt{}, err
@@ -405,6 +412,13 @@ func (p *Postgres) completeCollection(ctx context.Context, id, binding string, a
 		if _, e = gate.tx.Exec(ctx, `INSERT INTO context_codegraph_indexes(collection_id,receipt_digest,index_digest,index_data) VALUES($1,$2,$3,$4)`, id, digest, indexDigest, index); e != nil {
 			return receipt, e
 		}
+	}
+	if full != nil {
+		if e := gate.persistSourceBundle(ctx, work.Collection, receipt, *full, fullIndex); e != nil {
+			return receipt, e
+		}
+	} else if work.Collection.Input.FullSource {
+		return receipt, domain.ErrUnavailable
 	}
 	if err = contextAudit(ctx, gate.tx, id, "collection.receipt_recorded", work.Collection.RequesterID, map[string]any{"digest": digest}); err != nil {
 		return receipt, err

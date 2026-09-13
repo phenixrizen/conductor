@@ -1,7 +1,7 @@
 # Feature 007: Shared repository graphs
 
-**Status: Implemented bounded receipt-backed graph; full-repository acquisition and
-broader language/runtime compatibility remain partial.** Architectural approval,
+**Status: Implemented bounded receipt-backed and whole-repository graphs;
+broader language/runtime compatibility remains partial.** Architectural approval,
 implementation verification, merge and deployment are separate facts.
 
 ## Purpose
@@ -59,10 +59,13 @@ name/path matching (maximum 256 bytes), not a regular expression. A node selecto
 and search cannot be combined. Every returned edge has both endpoints in the result.
 Keyset discovery defaults to 20 and permits 1–100 rows.
 
-Current remote collection still reads at most 32 explicit paths per repository.
-The CodeGraph adapter can accept up to 512 bounded files/4 MiB source independently,
-but full trusted repository acquisition is not wired to the collection API. Neither
-a receipt nor a graph establishes complete repository coverage or passing checks.
+The optional `fullSource: true` collection mode acquires a complete bounded Git
+bundle while preserving the 1–32 explicit paths in the version 2 context receipt.
+The bundle and full-tree index commit as separate immutable facts. Graph selectors
+must explicitly include the inspected `fullSourceDigest` to use whole-tree source.
+The index accepts up to 512 paths and 4 MiB text. Complete Git objects do not establish
+complete semantic coverage: binary/LFS/submodule/symlink/unsupported and bounded-out
+paths remain visible gaps. See [source bundles](../../docs/architecture/source-bundles.md).
 
 ## Acceptance
 
