@@ -23,7 +23,7 @@ func SelectedPatch(raw json.RawMessage, digest, repository string, task domain.C
 	}
 	// The coordinator admitted this immutable result only after isolated cleanup
 	// and exact input/profile/image validation. Do not publish legacy loose output.
-	if !result.CleanupConfirmed || !domain.IsLowerHex(result.ProfileDigest, 64) ||
+	if !result.CleanupConfirmed || result.ProfileDigest != task.ProfileDigest || result.Image != task.Image || !domain.IsLowerHex(result.ProfileDigest, 64) ||
 		!strings.HasPrefix(result.Image, "sha256:") || !domain.IsLowerHex(strings.TrimPrefix(result.Image, "sha256:"), 64) ||
 		result.Adapter == "" || result.AdapterVersion == "" || !domain.IsLowerHex(result.InputDigest, 64) {
 		return execution.Patch{}, ErrArtifact

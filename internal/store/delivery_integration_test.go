@@ -39,9 +39,9 @@ func deliveryFixture(t *testing.T) (context.Context, *Postgres, *service.Authent
 	}
 	zero := 0
 	patchBytes := []byte("synthetic patch fixture; actual Git verification has separate acceptance")
-	patches := []execution.Patch{{RepositoryID: "repo-one", BaseCommit: collectionCommit, BaseTree: strings.Repeat("a", 40), ResultTree: strings.Repeat("b", 40), Patch: patchBytes, Digest: execution.Sum(patchBytes), Paths: []string{"src/source.go"}}}
+	patches := []execution.Patch{{RepositoryID: "repo-one", BaseCommit: run.Plan.Repositories[0].Commit, BaseTree: strings.Repeat("a", 40), ResultTree: strings.Repeat("b", 40), Patch: patchBytes, Digest: execution.Sum(patchBytes), Paths: []string{"src/source.go"}}}
 	source, _ := json.Marshal(patches)
-	artifact := execution.Result{CleanupConfirmed: true, ProfileDigest: strings.Repeat("a", 64), Image: "sha256:" + strings.Repeat("a", 64), Adapter: "command/v1", AdapterVersion: "1", InputDigest: strings.Repeat("c", 64), Patches: patches, Producer: execution.Evidence{State: "passed", ExitCode: &zero, SourceDigest: strings.Repeat("c", 64), OutputDigest: execution.Sum(nil)}, Checks: []execution.Evidence{{ID: "test", RepositoryID: "repo-one", Argv: plan.Tasks[0].Checks[0].Argv, State: "passed", ExitCode: &zero, SourceDigest: execution.Sum(source), OutputDigest: execution.Sum(nil)}}}
+	artifact := execution.Result{CleanupConfirmed: true, ProfileDigest: plan.Tasks[0].ProfileDigest, Image: plan.Tasks[0].Image, Adapter: "command/v1", AdapterVersion: "1", InputDigest: strings.Repeat("c", 64), Patches: patches, Producer: execution.Evidence{State: "passed", ExitCode: &zero, SourceDigest: strings.Repeat("c", 64), OutputDigest: execution.Sum(nil)}, Checks: []execution.Evidence{{ID: "test", RepositoryID: "repo-one", Argv: plan.Tasks[0].Checks[0].Argv, State: "passed", ExitCode: &zero, SourceDigest: execution.Sum(source), OutputDigest: execution.Sum(nil)}}}
 	digest, _ := domain.JSONDigest(artifact)
 	// This SQL fixture establishes permission/transaction behavior only. It is not
 	// evidence that a coding worker or live provider executed the synthetic patch.

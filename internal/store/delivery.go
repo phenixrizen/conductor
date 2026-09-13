@@ -227,7 +227,7 @@ func (p *Postgres) CreateDelivery(ctx context.Context, key string, input domain.
 	w.Delivery.Branch = "conductor/publication/" + w.Delivery.ID
 	// The proposal digest binds source, target, contents and generated branch. It
 	// deliberately excludes mutable observations and human authorization records.
-	w.Delivery.Digest, err = domain.JSONDigest(w.Delivery)
+	w.Delivery.Digest, err = domain.DeliveryProposalDigest(w.Delivery)
 	if err != nil {
 		return zero, err
 	}

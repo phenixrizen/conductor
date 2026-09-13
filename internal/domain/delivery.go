@@ -177,7 +177,9 @@ func ValidateDeliveryIntegration(config DeliveryIntegrationConfig) error {
 			return ErrInvalidInput
 		}
 		for _, part := range parts {
-			if part == "" || len(part) > 100 || strings.ContainsAny(part, " .?#%\\") || strings.ContainsFunc(part, unicode.IsControl) {
+			if part == "" || part == "." || part == ".." || len(part) > 100 || strings.ContainsFunc(part, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_')
+			}) {
 				return ErrInvalidInput
 			}
 		}
@@ -264,4 +266,23 @@ type DeliveryArtifact struct {
 	DeliveryDigest string          `json:"deliveryDigest"`
 	ArtifactDigest string          `json:"artifactDigest"`
 	Artifact       json.RawMessage `json:"artifact"`
+}
+
+// DeliveryProposalDigest excludes later authorization, receipts, observations and
+// database timestamps. Its explicit shape keeps future presentation fields from
+// silently changing the meaning of a person's exact publication authorization.
+func DeliveryProposalDigest(d Delivery) (string, error) {
+	return JSONDigest(struct {
+		ID           string         `json:"id"`
+		WorkspaceID  string         `json:"workspaceId"`
+		RepositoryID string         `json:"repositoryId"`
+		ProposerID   string         `json:"proposerId"`
+		Input        DeliveryInput  `json:"input"`
+		Target       DeliveryTarget `json:"target"`
+		BaseCommit   string         `json:"baseCommit"`
+		BaseTree     string         `json:"baseTree"`
+		ResultTree   string         `json:"resultTree"`
+		PatchDigest  string         `json:"patchDigest"`
+		Branch       string         `json:"branch"`
+	}{d.ID, d.WorkspaceID, d.RepositoryID, d.ProposerID, d.Input, d.Target, d.BaseCommit, d.BaseTree, d.ResultTree, d.PatchDigest, d.Branch})
 }
