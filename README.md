@@ -48,6 +48,8 @@ for the new revision.
   missing files, request cancellation, and attach context as a new package draft.
 - Retain bounded whole-repository Git source at an exact commit for graph and
   coding work, while keeping review artifacts and source coverage explicit.
+- Run native Spec Kit/ADRKit artifact and decision checks inside reviewed isolated
+  execution profiles, retaining tool identity and exact source/check evidence.
 - Check whether a local repository ref still matches the captured commit.
 - Review through architect, QC, developer, or product perspectives. These tailor
   questions and do not grant permissions.
@@ -84,8 +86,9 @@ checks through durable Temporal workflows; see
 [execution setup](docs/operations/coordinated-execution.md). A separate trusted publisher
 creates draft GitHub PRs and GitLab MRs after exact human authorization; see
 [delivery setup and review](docs/operations/repository-delivery.md). The selected Linear/Jira tracker synchronizes shared linked work through the browser,
-API, MCP, CLI and terminal; see [tracker setup](docs/operations/work-tracking.md). Spec Kit and ADRKit files can be captured as native text; their command/API
-integrations are not implemented. Collected context records what was captured,
+API, MCP, CLI and terminal; see [tracker setup](docs/operations/work-tracking.md). Pinned Spec Kit and ADRKit commands create new templates and Proposed ADRs,
+check artifact prerequisites, lint decisions and report applicable decisions inside
+isolated workers; see [native design tools](docs/operations/design-tools.md). Collected context records what was captured,
 not proof that tests passed or a decision was approved.
 
 **GitHub and GitLab** repositories can be registered for governed review. Their
