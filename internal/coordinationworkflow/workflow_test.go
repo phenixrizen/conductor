@@ -3,16 +3,79 @@ package coordinationworkflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/contextworkflow"
+	"github.com/phenixrizen/conductor/internal/domain"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
 
 var fixtureRef = Reference{ID: strings.Repeat("a", 32), Binding: strings.Repeat("b", 32)}
+
+func TestClassifiedActivityFailuresPreserveBoundedRetryAuthority(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		err   error
+		retry bool
+		delay time.Duration
+	}{
+		{"database", contextworkflow.Failure{Code: "database_unavailable", Retryable: true}, true, 0},
+		{"wrapped transient", fmt.Errorf("source-token-canary: %w", &contextworkflow.Failure{Code: "unavailable", Retryable: true}), true, 0},
+		{"bounded rate limit", contextworkflow.Failure{Code: "rate_limited", Retryable: true, RetryAfter: 5 * time.Second}, true, 5 * time.Second},
+		{"overlong delay", contextworkflow.Failure{Code: "rate_limited", Retryable: true, RetryAfter: time.Minute}, false, 0},
+		{"negative delay", contextworkflow.Failure{Code: "unavailable", Retryable: true, RetryAfter: -time.Second}, false, 0},
+		{"denied retry flag", contextworkflow.Failure{Code: "permission_revoked", Retryable: true}, false, 0},
+		{"changed binding", contextworkflow.Failure{Code: "binding_mismatch", Retryable: true}, false, 0},
+		{"unknown code", contextworkflow.Failure{Code: "source-token-canary", Retryable: true}, false, 0},
+		{"raw error", errors.New("source-token-canary"), false, 0},
+		{"domain forbidden", domain.ErrForbidden, false, 0},
+		{"domain stale approval", domain.ErrStaleApproval, false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := fail(tt.err)
+			var application *temporal.ApplicationError
+			if !errors.As(err, &application) || application.NonRetryable() == tt.retry || application.NextRetryDelay() != tt.delay || strings.Contains(err.Error(), "canary") {
+				t.Fatalf("unsafe failure classification: %v", err)
+			}
+		})
+	}
+	for _, err := range []error{context.Canceled, domain.ErrCollectionStopped, contextworkflow.Failure{Code: "cancelled", Retryable: true}, temporal.NewCanceledError()} {
+		if !temporal.IsCanceledError(fail(err)) {
+			t.Fatal("cancellation lost its non-retryable Temporal meaning")
+		}
+	}
+}
+
+func TestTransientActivityFailureRetriesSameReference(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	plan := Plan{MaxParallel: 1, Tasks: []Task{{ID: taskID("1"), TimeoutSeconds: 5}}}
+	env.RegisterActivityWithOptions(protect(func(context.Context, Reference) (Plan, error) { return plan, nil }, func(_ Reference, p Plan) bool { return validatePlan(p) == nil }), activity.RegisterOptions{Name: LoadActivity})
+	attempts := 0
+	env.RegisterActivityWithOptions(protect(func(_ context.Context, ref TaskReference) (TaskResult, error) {
+		attempts++
+		if ref.Run != fixtureRef || ref.TaskID != taskID("1") {
+			t.Fatal("retry changed the authorized task reference")
+		}
+		if attempts == 1 {
+			return TaskResult{}, contextworkflow.Failure{Code: "unavailable", Retryable: true}
+		}
+		return result(ref, "succeeded"), nil
+	}, validTaskResult), activity.RegisterOptions{Name: ExecuteActivity})
+	env.RegisterActivityWithOptions(protect(func(_ context.Context, ref Reference) (Result, error) {
+		return Result{ReceiptID: ref.ID, Digest: strings.Repeat("d", 64)}, nil
+	}, func(ref Reference, r Result) bool { return r.ReceiptID == ref.ID }), activity.RegisterOptions{Name: FinalizeActivity})
+	env.ExecuteWorkflow(Coordinate, fixtureRef)
+	if err := env.GetWorkflowError(); err != nil || attempts != 2 {
+		t.Fatalf("transient activity did not recover on the same task: attempts=%d err=%v", attempts, err)
+	}
+}
 
 func taskID(value string) string { return strings.Repeat(value, 32) }
 func result(ref TaskReference, outcome string) TaskResult {

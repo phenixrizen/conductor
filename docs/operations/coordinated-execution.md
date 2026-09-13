@@ -111,6 +111,13 @@ Inspect the shared run and its receipt facts rather than retrying with a new key
 hide uncertainty. A zero-check analysis task can finish successfully, but does not
 establish a verified implementation or satisfy publication verification requirements.
 
+Transient database/transport failures classified by the trusted activity can retry
+within the existing Temporal limits: at most three deliveries for plan load/finalize
+and two for a task activity. A committed receipt wins acknowledgment recovery.
+Unknown errors, revoked authority and changed bindings remain terminal; cancellation
+does not become a generic retry. Exhausted retries preserve uncertainty and the
+same attempt rather than starting a replacement producer.
+
 Run the actual local acceptance with existing immutable images:
 
 ```bash
@@ -127,6 +134,9 @@ The Temporal CLI profile is 1.8.3. Tests create their own process, SQLite histor
 PostgreSQL schema and disposable Docker resources; they do not restart development
 services. Absent opt-ins are explicit skips. Missing dependencies after opt-in are
 failures. The recovered completed workflow is tested across a real Temporal restart. The
+same test injects one transient load failure and loses acknowledgments after actual
+task and aggregate receipt commits, then checks identical receipts, three original
+producer attempts and no private error causes in history. The
 separate executor crash test requires `CONDUCTOR_TEST_PROCESS_RESTART=1`; it kills
 the actual worker process, restarts it with the same private catalog and database,
 and proves that the lost producer is reconciled without a replacement.

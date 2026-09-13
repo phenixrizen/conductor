@@ -45,6 +45,13 @@ a failed prerequisite records descendants as blocked and unexecuted. Producer
 results require separate verification against the exact source and patch trees.
 An unresolved attempt cannot silently start another producer or release its claims.
 
+Trusted activities may classify unavailable database/transport responses and bounded
+rate limits as retryable. The workflow preserves only those explicit classifications
+within its existing attempt/time limits. Unknown failures, changed bindings and
+authority denials remain terminal; cancellation remains Temporal cancellation.
+Retries retain the exact run/task reference and recover committed task or aggregate
+receipts before any new work. Private error causes never enter workflow history.
+
 Dependent tasks consume verified predecessor patches. Their output must retain
 the cumulative change against the approved original repository baseline; a later
 publisher must not omit predecessor work. Missing configured checks never count
@@ -79,4 +86,3 @@ exact disposable containers/network. Recovery records uncertainty rather than
 inventing a patch or successful check. Release requires observed terminal Temporal
 execution, every task's non-unresolved receipt and confirmed cleanup of all admitted
 attempts. These rules also apply after cancellation and process failure.
-

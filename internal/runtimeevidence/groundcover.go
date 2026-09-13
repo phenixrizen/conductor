@@ -14,6 +14,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,17 +30,36 @@ var ErrProvider = errors.New("runtime provider unavailable")
 
 type Collector struct {
 	client *http.Client
+	origin string
 	token  string
 	check  func(context.Context) error
 	now    func() time.Time
 }
 
-func New(token string, check func(context.Context) error) (*Collector, error) {
+// Options supports owned literal-loopback fixtures only. Operator executables
+// retain the official origin and cannot select arbitrary telemetry destinations.
+type Options struct {
+	Origin                string
+	AllowInsecureLoopback bool
+}
+
+func New(token string, check func(context.Context) error, options ...Options) (*Collector, error) {
+	origin := "https://" + Host
+	if len(options) > 1 {
+		return nil, ErrProvider
+	}
+	if len(options) == 1 && options[0].Origin != "" {
+		u, err := url.Parse(options[0].Origin)
+		if err != nil || !options[0].AllowInsecureLoopback || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback() {
+			return nil, ErrProvider
+		}
+		origin = options[0].Origin
+	}
 	if len(token) < 16 || len(token) > 8192 || strings.ContainsAny(token, "\r\n") || check == nil {
 		return nil, ErrProvider
 	}
 	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 15 * time.Second, DisableKeepAlives: true, ForceAttemptHTTP2: false}
-	return &Collector{client: &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, token: token, check: check, now: time.Now}, nil
+	return &Collector{client: &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, token: token, origin: origin, check: check, now: time.Now}, nil
 }
 func sum(raw []byte) string { s := sha256.Sum256(raw); return hex.EncodeToString(s[:]) }
 func (c *Collector) request(ctx context.Context, target domain.RuntimeTarget, path string, body any) ([]byte, string, error) {
@@ -51,7 +71,7 @@ func (c *Collector) request(ctx context.Context, target domain.RuntimeTarget, pa
 	if err = c.check(ctx); err != nil {
 		return nil, queryDigest, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+Host+path, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.origin+path, bytes.NewReader(raw))
 	if err != nil {
 		return nil, queryDigest, ErrProvider
 	}

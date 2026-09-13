@@ -32,3 +32,12 @@ Browser task-artifact acceptance is verified with signed sessions and PostgreSQL
 failed reports without patches, exact receipt queries, byte-digest substitution
 rejection and access-denial clearing pass. Delivery, coordination and runtime browser
 regressions also pass with the shared complete artifact viewer.
+
+The complete release gate now joins real whole-source acquisition and native
+cross-repository graph extraction with compiled MCP/executor processes, Docker
+DAG production/checks, exact trusted publication to both controlled provider HTTP
+fixtures, one Linear or Jira workspace tracker, and correlated Groundcover
+samples. Recovery preserves retained Temporal receipts and reconciles lost write
+responses without duplicate branches, reviews or tracker cards. Provider/model
+data remain explicitly synthetic; no live publication or inference is claimed.
+See [the release gate runbook](../../docs/operations/full-release-acceptance.md).

@@ -19,19 +19,28 @@ type CredentialResolver func(context.Context, domain.RuntimeTarget, string) (str
 type Collector interface {
 	Collect(context.Context, domain.RuntimeEvidence) (domain.RuntimeReceipt, error)
 }
+
+// Factory permits controlled HTTP acceptance fixtures; executables use the
+// fixed-origin constructor by default.
+type Factory func(string, func(context.Context) error) (Collector, error)
+
 type Activity struct {
 	db           Store
 	credentials  CredentialResolver
 	newCollector func(string, func(context.Context) error) (Collector, error)
 }
 
-func NewActivity(db Store, credentials CredentialResolver) (*Activity, error) {
-	if db == nil || credentials == nil {
+func NewActivity(db Store, credentials CredentialResolver, factories ...Factory) (*Activity, error) {
+	if db == nil || credentials == nil || len(factories) > 1 {
 		return nil, domain.ErrInvalidInput
 	}
-	return &Activity{db: db, credentials: credentials, newCollector: func(token string, check func(context.Context) error) (Collector, error) {
+	factory := Factory(func(token string, check func(context.Context) error) (Collector, error) {
 		return runtimeevidence.New(token, check)
-	}}, nil
+	})
+	if len(factories) == 1 && factories[0] != nil {
+		factory = factories[0]
+	}
+	return &Activity{db: db, credentials: credentials, newCollector: factory}, nil
 }
 func (a *Activity) Collect(ctx context.Context, ref contextworkflow.Reference) (contextworkflow.Result, error) {
 	if !domain.IsLowerHex(ref.ID, 32) || !domain.IsLowerHex(ref.Binding, 32) {

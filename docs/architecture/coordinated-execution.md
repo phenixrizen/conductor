@@ -35,6 +35,12 @@ first recovers a committed receipt. An existing attempt without a receipt cannot
 start again: after its database-measured deadline, recovery removes its exact
 Docker resources and records an unresolved outcome. That doubt remains visible.
 
+The workflow boundary retains trusted transient-failure classifications while
+discarding their underlying error text. Its bounded retry policy can recover a
+committed receipt after an acknowledgment is lost. It cannot make permission
+denials, changed bindings, cancellation or arbitrary errors retryable, and retries
+never bypass the immutable-attempt check or use another run/task reference.
+
 A running activity rechecks all repository grants, approved revisions and public
 profiles each second, cancelling production if authority cannot be confirmed.
 A final transaction rechecks them before accepting source-bearing artifacts.

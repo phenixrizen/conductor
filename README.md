@@ -277,3 +277,10 @@ and PostgreSQL backup/restore into an empty recovery database. Immutable package
 approval, audit and dispatch records survive tested recovery. Temporal history needs
 its own supported retention and recovery procedure; a database backup does not
 replace it. Deployment templates are provided but have not been deployed for you.
+
+The [complete release acceptance](docs/operations/full-release-acceptance.md)
+walkthrough exercises two repositories through the same shared design and worker
+flow, exact draft publication, one workspace tracker, and correlated runtime
+criteria. It uses real local processes and controlled provider fixtures, including
+lost write responses and a Temporal restart. It does not perform live external
+writes or paid model calls.

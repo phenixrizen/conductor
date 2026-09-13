@@ -250,6 +250,7 @@ func TestCoordinatedTemporalDockerExecutionAndRetainedHistory(t *testing.T) {
 		t.Skip("set CONDUCTOR_TEST_TEMPORAL=1 for owned coordinator workflow acceptance")
 	}
 	f, activity, w := coordinationAcceptanceWithTimeout(t, 120*time.Second)
+	retrying := &coordinationRetryActivities{Activity: activity, firstTask: w.TaskIDs["first"]}
 	address := durableAddress(t)
 	root := t.TempDir()
 	process := durableStartTemporal(t, root, address, "coordination-temporal")
@@ -282,7 +283,7 @@ func TestCoordinatedTemporalDockerExecutionAndRetainedHistory(t *testing.T) {
 	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- coordinationworkflow.RunWorker(workerCtx, engine, activity) }()
+	go func() { done <- coordinationworkflow.RunWorker(workerCtx, engine, retrying) }()
 	workerStopped := false
 	defer func() {
 		if !workerStopped {
@@ -302,6 +303,7 @@ func TestCoordinatedTemporalDockerExecutionAndRetainedHistory(t *testing.T) {
 	if result.ReceiptID != w.Run.ID || !domain.IsLowerHex(result.Digest, 64) {
 		t.Fatal("aggregate receipt mismatch")
 	}
+	retrying.assertRecovered(t)
 	if _, err = f.sql.Exec(ctx, `UPDATE coordination_execution_observations SET observed_at=clock_timestamp()-interval '10 seconds'`); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +350,7 @@ func TestCoordinatedTemporalDockerExecutionAndRetainedHistory(t *testing.T) {
 			}
 		}
 		inspect(decoded)
-		for _, secret := range []string{"Synthetic authorized task prompt", "first agent", "synthetic-must-not-cross", "fixture.go", "bundle"} {
+		for _, secret := range []string{"Synthetic authorized task prompt", "first agent", "synthetic-must-not-cross", "fixture.go", "bundle", "private-retry-cause"} {
 			if strings.Contains(all, secret) {
 				t.Fatalf("source or commands entered history: %s", secret)
 			}
