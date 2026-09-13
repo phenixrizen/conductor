@@ -1,10 +1,14 @@
+import { ExecutionArtifact } from './ExecutionArtifact';
+import { inspectExecutionArtifact } from './delivery';
+import type { ExecutionArtifact as Artifact, InspectedExecutionArtifact } from './delivery';
+import { visibleControls } from './sourceText';
 import { useEffect, useRef, useState } from 'react';
 import { APIError, accessFailure, dateLabel, errorMessage, request } from './api';
 import type { BrowserAccess } from './api';
 import { sameJSON, uncertainMutation } from './collections';
 import { isHex } from './graphs';
 import { normalizePlan, runPath, validatePlan, validateProfiles, validateRun, validateRunPage } from './coordination';
-import type { CoordinationRun, ExecutionCapabilities, ExecutionProfilePage, RunPage, RunPlan } from './coordination';
+import type { CoordinationRun, ExecutionCapabilities, ExecutionProfilePage, RunPage, RunPlan, TaskReceipt } from './coordination';
 import { parseStrictJSON } from './strictJSON';
 
 type Job = { sequence: number; signal: AbortSignal };
@@ -14,6 +18,7 @@ type Confirmation = { id: string; digest: string; plan: RunPlan; cancel: boolean
 export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAccess; onAccessFailure?: (failure: APIError) => void }) {
   const [page, setPage] = useState<RunPage>();
   const [run, setRun] = useState<CoordinationRun>();
+  const [artifact, setArtifact] = useState<(InspectedExecutionArtifact & { taskKey: string; artifactDigest: string })>();
   const [profiles, setProfiles] = useState<ExecutionProfilePage>();
   const [capabilities, setCapabilities] = useState<ExecutionCapabilities>();
   const [id, setID] = useState('');
@@ -41,10 +46,10 @@ export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAc
     if(failure instanceof APIError&&[401,403,404].includes(failure.status)){
       // Retained prompts, source pins and confirmations are private shared data.
       // A denial invalidates this operation before callers can restore its capture.
-      sequence.current++;controller.current?.abort();working.current=false;setPending('');setRun(undefined);setPage(undefined);setProfiles(undefined);setCapabilities(undefined);setID('');setDraft('');setPreview(undefined);setCreation(undefined);setConfirmation(undefined);setNeedsInspection(true);
+      sequence.current++;controller.current?.abort();working.current=false;setPending('');setRun(undefined);setArtifact(undefined);setPage(undefined);setProfiles(undefined);setCapabilities(undefined);setID('');setDraft('');setPreview(undefined);setCreation(undefined);setConfirmation(undefined);setNeedsInspection(true);
       if(accessFailure(failure,access)){onAccessFailure?.(failure);return;}
     }
-    setError(errorMessage(failure));
+    setError(visibleControls(errorMessage(failure)));
   }
   async function refresh(more=false) {
     const job=begin('Loading shared runs and execution access…');if(!job)return;
@@ -61,9 +66,29 @@ export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAc
   }
   async function inspect(selectedID: string) {
     if(!isHex(selectedID,32)){setError('Use the complete 32-character run ID.');return;}
-    const job=begin('Inspecting exact shared plan and receipts…');if(!job)return;setConfirmation(undefined);setRun(undefined);setNeedsInspection(true);
+    const job=begin('Inspecting exact shared plan and receipts…');if(!job)return;setConfirmation(undefined);setRun(undefined);setArtifact(undefined);setNeedsInspection(true);
     try {const value=await request<CoordinationRun>(runPath(selectedID),access,job.signal);if(!current(job))return;validateRun(value,access,selectedID);setRun(value);setID(value.id);setNeedsInspection(false);setNotice('Plan inspected. Execution authorization binds to this exact digest.');}
     catch(failure){fail(job,failure);}finally{finish(job);}
+  }
+  async function inspectTask(receipt: TaskReceipt) {
+    const selected = run;
+    if (!selected || !receipt.artifactDigest) return;
+    const job = begin('Loading the exact retained task artifact…'); if (!job) return;
+    setArtifact(undefined); setConfirmation(undefined);
+    const query = new URLSearchParams({ runDigest: selected.digest, taskId: receipt.taskId, artifactDigest: receipt.artifactDigest });
+    try {
+      // Read exactly the receipt currently displayed; this does not propose a
+      // delivery or require a successful producer, cleanup or independent check.
+      const value = await request<{ runId: string; runDigest: string; taskId: string; artifactDigest: string; artifact: Artifact }>(`${runPath(selected.id)}/artifact?${query}`, access, job.signal);
+      if (!current(job)) return;
+      if (!value || value.runId !== selected.id || value.runDigest !== selected.digest || value.taskId !== receipt.taskId || value.artifactDigest !== receipt.artifactDigest) throw new Error('Task artifact does not match the inspected run and receipt.');
+      const inspected = await inspectExecutionArtifact(value.artifact);
+      if (!current(job)) return;
+      const task = selected.plan.tasks.find(t => t.id === receipt.taskKey);
+      if (!task || inspected.artifact.profileDigest !== task.profileDigest || inspected.artifact.image !== task.image || inspected.decodedPatches.some(p => !selected.plan.repositories.some(r => r.repositoryId === p.metadata.repositoryId && r.commit === p.metadata.baseCommit)) || new Set(inspected.decodedPatches.map(p => p.metadata.repositoryId)).size !== inspected.decodedPatches.length) throw new Error('Task artifact does not match the inspected profile, image or source pins.');
+      setArtifact({ ...inspected, taskKey: receipt.taskKey, artifactDigest: receipt.artifactDigest });
+      setNotice('Complete retained task report and patch bytes inspected. Task outcome does not establish publication or production success.');
+    } catch (failure) { fail(job, failure); } finally { finish(job); }
   }
   function parseDraft(text: string) {const value=parseStrictJSON(text);validatePlan(value);if(!value.repositories.some(r=>r.repositoryId===access.repositoryID))throw new Error('Include the selected repository in this plan.');return normalizePlan(value);}
   async function importFile(file?: File) {
@@ -72,11 +97,11 @@ export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAc
     try {if(file.size>1048576)throw new Error('The selected JSON file exceeds 1 MiB.');const bytes=await file.arrayBuffer();if(!current(job))return;const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);const value=parseDraft(text);setDraft(text);setPreview(value);setCreation(undefined);setNotice('File imported for preview. No plan has been recorded or authorized.');}
     catch(failure){fail(job,failure);}finally{finish(job);}
   }
-  function previewDraft() {try{setPreview(parseDraft(draft));setError('');setCreation(undefined);}catch(failure){setPreview(undefined);setError(errorMessage(failure));}}
+  function previewDraft() {try{setPreview(parseDraft(draft));setError('');setCreation(undefined);}catch(failure){setPreview(undefined);setError(visibleControls(errorMessage(failure)));}}
   async function propose() {
     if(!access.canAuthor||!preview||creation?.outcome==='recorded')return;
     const captured:Creation=creation?.outcome==='uncertain'?creation:{plan:preview,key:crypto.randomUUID(),outcome:'pending'};
-    const job=begin('Recording the shared plan proposal…');if(!job)return;setCreation({...captured,outcome:'pending'});setConfirmation(undefined);
+    const job=begin('Recording the shared plan proposal…');if(!job)return;setCreation({...captured,outcome:'pending'});setConfirmation(undefined);setArtifact(undefined);
     try {const value=await request<CoordinationRun>('/coordination-runs',access,job.signal,captured.plan,{idempotencyKey:captured.key});if(!current(job))return;validateRun(value,access);if(value.proposerId!==access.principalID||!sameJSON(value.plan,captured.plan))throw new Error('The returned proposal does not match the preview. Its outcome is unknown.');setCreation({...captured,outcome:'recorded'});setRun(value);setID(value.id);setPage(undefined);setNeedsInspection(false);setNotice('Shared proposal recorded. Human execution authorization is a separate decision.');}
     catch(failure){fail(job,failure);if(current(job))setCreation(uncertainMutation(failure)?{...captured,outcome:'uncertain'}:undefined);}finally{finish(job);}
   }
@@ -115,7 +140,8 @@ export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAc
     {run&&<article className="run-inspection" aria-label="Inspected coordinated run"><div className="section-heading"><h3>Inspected coordinated run</h3><button className="secondary" disabled={busy} onClick={()=>void inspect(run.id)}>Refresh inspected run</button></div><dl><dt>Run</dt><dd><code>{run.id}</code></dd><dt>Plan digest</dt><dd><code>{run.digest}</code></dd><dt>Proposed by</dt><dd>{run.proposerId}</dd><dt>Created</dt><dd>{dateLabel(run.createdAt)}</dd><dt>Authorization</dt><dd>{run.authorization?`${run.authorization.actor} · ${dateLabel(run.authorization.createdAt)}`:'Not authorized'}</dd></dl>
       <PlanDetails plan={run.plan}/>
       <section aria-label="Coordinated execution observation"><h4>Observed execution</h4><p>{observed?`${currentObservation?'Observed execution':'Stale or uncertain observation'}: ${observed.state}`:'Progress unknown. No execution observation is available.'}</p>{observed&&<p className="muted">Observed at {dateLabel(observed.observedAt)}. Refresh explicitly for newer facts.</p>}{run.cancelRequestedAt&&<p className="warning">Cancellation requested at {dateLabel(run.cancelRequestedAt)}. This does not prove that work stopped or reservations were released.</p>}</section>
-      <h4>Retained task receipts ({run.receipts.length}/{run.plan.tasks.length})</h4><ul className="record-list task-receipts">{run.plan.tasks.map(task=>{const receipt=run.receipts.find(r=>r.taskKey===task.id);return<li key={task.id}><strong>{task.id}</strong> · {receipt?receipt.outcome:'No receipt; verification unknown'}{receipt&&<dl><dt>Retained task ID</dt><dd><code>{receipt.taskId}</code></dd><dt>Receipt digest</dt><dd><code>{receipt.digest}</code></dd><dt>Artifact digest</dt><dd><code>{receipt.artifactDigest??'No implementation artifact'}</code></dd><dt>Retained</dt><dd>{dateLabel(receipt.createdAt)}</dd></dl>}</li>;})}</ul><p className="muted">Inspect the exact patch and executed checks through delivery review before authorizing publication. Task outcome alone does not prove a merge, deployment or production outcome.</p>
+      <h4>Retained task receipts ({run.receipts.length}/{run.plan.tasks.length})</h4><ul className="record-list task-receipts">{run.plan.tasks.map(task=>{const receipt=run.receipts.find(r=>r.taskKey===task.id);return<li key={task.id}><strong>{task.id}</strong> · {receipt?receipt.outcome:'No receipt; verification unknown'}{receipt&&<dl><dt>Retained task ID</dt><dd><code>{receipt.taskId}</code></dd><dt>Receipt digest</dt><dd><code>{receipt.digest}</code></dd><dt>Artifact digest</dt><dd><code>{receipt.artifactDigest??'No implementation artifact'}</code></dd><dt>Retained</dt><dd>{dateLabel(receipt.createdAt)}</dd></dl>}{receipt?.artifactDigest&&<button className="secondary" disabled={busy} onClick={()=>void inspectTask(receipt)}>Inspect task artifact {task.id}</button>}</li>;})}</ul><p className="muted">Inspect retained reports, complete patches and executed checks here. Delivery review separately governs publication authorization. Task outcome alone does not prove a merge, deployment or production outcome.</p>
+      {artifact&&<section aria-label="Inspected task artifact"><h4>Retained task artifact · {artifact.taskKey}</h4><p>Artifact digest <code>{artifact.artifactDigest}</code></p><ExecutionArtifact value={artifact}/><p className="muted">This read grants no approval, execution or publication authority.</p></section>}
       {needsInspection&&<p role="alert" className="warning">Renewed run inspection required before another execution command.</p>}
       {canExecute&&<div className="control-row"><button disabled={busy||needsInspection||!!run.authorization||!!run.cancelRequestedAt} onClick={()=>prepare(false)}>Authorize inspected plan</button><button className="secondary" disabled={busy||needsInspection||!run.authorization||!!run.cancelRequestedAt} onClick={()=>prepare(true)}>Request run cancellation</button></div>}
     </article>}
@@ -124,5 +150,5 @@ export function CoordinatedRuns({ access, onAccessFailure }: { access: BrowserAc
 }
 
 export function PlanDetails({plan}:{plan:RunPlan}) {
-  return <div className="plan-details"><dl><dt>Graph</dt><dd><code>{plan.graphId}</code></dd><dt>Graph digest</dt><dd><code>{plan.graphDigest}</code></dd><dt>Parallel tasks</dt><dd>At most {plan.maxParallel}</dd></dl><h4>Exact source and design revisions</h4><ul className="record-list">{plan.repositories.map(repo=>{const pin=plan.packages.find(p=>p.repositoryId===repo.repositoryId);return<li key={repo.repositoryId}><strong>{repo.repositoryId}</strong><dl><dt>Commit</dt><dd><code>{repo.commit}</code></dd><dt>Collection</dt><dd><code>{repo.collectionId}</code></dd><dt>Receipt digest</dt><dd><code>{repo.receiptDigest}</code></dd><dt>Whole source</dt><dd><code>{repo.fullSourceDigest??'Unpinned; execution unavailable'}</code></dd><dt>Package</dt><dd>{pin?.changeId} · revision {pin?.revision}</dd><dt>Design digest</dt><dd><code>{pin?.digest}</code></dd></dl></li>;})}</ul><h4>Tasks and dependencies</h4><ol className="run-tasks">{plan.tasks.map(task=><li key={task.id}><h4>{task.id} · {task.perspective}</h4><p>After: {task.dependsOn?.length?task.dependsOn.join(', '):'No predecessor tasks'}. Deadline: {task.timeoutSeconds} seconds.</p><dl><dt>Profile</dt><dd>{task.profile}</dd><dt>Profile digest</dt><dd><code>{task.profileDigest??'Unpinned; execution unavailable'}</code></dd><dt>Image</dt><dd><code>{task.image??'Unpinned; execution unavailable'}</code></dd></dl><pre className="task-prompt">{task.prompt}</pre><ul>{task.scopes.map(scope=><li key={scope.repositoryId}><strong>{scope.repositoryId}</strong> · {scope.writablePaths?.length?`Writable paths: ${scope.writablePaths.join(', ')}`:'Read only'}</li>)}</ul>{task.checks?.length?<ul>{task.checks.map(check=><li key={check.id}><strong>{check.id}</strong> · {check.repositoryId} · {check.timeoutSeconds} seconds<pre>{JSON.stringify(check.argv)}</pre></li>)}</ul>:<p className="warning">No checks are declared. This task cannot establish passing implementation verification.</p>}</li>)}</ol></div>;
+  return <div className="plan-details"><dl><dt>Graph</dt><dd><code>{plan.graphId}</code></dd><dt>Graph digest</dt><dd><code>{plan.graphDigest}</code></dd><dt>Parallel tasks</dt><dd>At most {plan.maxParallel}</dd></dl><h4>Exact source and design revisions</h4><ul className="record-list">{plan.repositories.map(repo=>{const pin=plan.packages.find(p=>p.repositoryId===repo.repositoryId);return<li key={repo.repositoryId}><strong>{repo.repositoryId}</strong><dl><dt>Commit</dt><dd><code>{repo.commit}</code></dd><dt>Collection</dt><dd><code>{repo.collectionId}</code></dd><dt>Receipt digest</dt><dd><code>{repo.receiptDigest}</code></dd><dt>Whole source</dt><dd><code>{repo.fullSourceDigest??'Unpinned; execution unavailable'}</code></dd><dt>Package</dt><dd>{pin?.changeId} · revision {pin?.revision}</dd><dt>Design digest</dt><dd><code>{pin?.digest}</code></dd></dl></li>;})}</ul><h4>Tasks and dependencies</h4><ol className="run-tasks">{plan.tasks.map(task=><li key={task.id}><h4>{task.id} · {task.perspective}</h4><p>After: {task.dependsOn?.length?task.dependsOn.join(', '):'No predecessor tasks'}. Deadline: {task.timeoutSeconds} seconds.</p><dl><dt>Profile</dt><dd>{task.profile}</dd><dt>Profile digest</dt><dd><code>{task.profileDigest??'Unpinned; execution unavailable'}</code></dd><dt>Image</dt><dd><code>{task.image??'Unpinned; execution unavailable'}</code></dd></dl><pre className="task-prompt">{visibleControls(task.prompt)}</pre><ul>{task.scopes.map(scope=><li key={scope.repositoryId}><strong>{scope.repositoryId}</strong> · {scope.writablePaths?.length?`Writable paths: ${scope.writablePaths.join(', ')}`:'Read only'}</li>)}</ul>{task.checks?.length?<ul>{task.checks.map(check=><li key={check.id}><strong>{check.id}</strong> · {check.repositoryId} · {check.timeoutSeconds} seconds<pre>{JSON.stringify(check.argv)}</pre></li>)}</ul>:<p className="warning">No checks are declared. This task cannot establish passing implementation verification.</p>}</li>)}</ol></div>;
 }

@@ -80,3 +80,19 @@ file preview, exact lost-response retries, uncertain authorization recovery,
 cancellation, permission limits and desktop/mobile layout. It deliberately does
 not fabricate task execution; the [executor runbook](coordinated-execution.md)
 records the separate Docker/Temporal/process evidence.
+
+## Inspect task reports and patches
+
+After inspecting a run, choose **Inspect task artifact** beside a retained receipt.
+The browser requests exactly that run, task and artifact digest. It checks every
+displayed patch and producer/check output against its byte digest and shows the
+complete bounded retained data. Failed tasks and read-only design reports remain
+inspectable even with no patches, failed cleanup or no independent checks. Those
+states stay explicit and do not grant publication authority. Source denial clears
+both the run and cached artifact. Scope changes cancel pending reads.
+
+This uses the same artifact display as publication review, whose separate
+eligibility and exact human authorization rules remain unchanged. Only the dedicated
+artifact GET endpoints allow a 17 MiB response; ordinary browser reads remain at
+4 MiB. Controlled signed-session PostgreSQL/Chromium acceptance verifies failed
+reports, altered-output rejection, source denial and desktop/mobile layout.

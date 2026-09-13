@@ -140,3 +140,9 @@ exact run/task/artifact pins, all-repository read locks, complete bounded typed
 output, and shared API/client/MCP/CLI/TUI access. Failed checks and design-only
 reports retain their evidence states. Live authorization/integrity checks and
 actual PTY inspection cover this read path.
+
+The browser's inspected run exposes complete retained task artifacts independently
+of a delivery proposal. Artifact reads capture run/task/artifact digests, validate
+profile/image/source linkage and displayed patch/output bytes, and clear retained
+source after denied reads or scope changes. The same display supports failed or
+read-only reports; it confers no execution or publication authority.

@@ -27,3 +27,8 @@ exact run/task/artifact pins, all-repository read locks, complete bounded typed
 output, and shared API/client/MCP/CLI/TUI access. Failed checks and design-only
 reports retain their evidence states. Live authorization/integrity checks and
 actual PTY inspection cover this read path.
+
+Browser task-artifact acceptance is verified with signed sessions and PostgreSQL:
+failed reports without patches, exact receipt queries, byte-digest substitution
+rejection and access-denial clearing pass. Delivery, coordination and runtime browser
+regressions also pass with the shared complete artifact viewer.

@@ -180,7 +180,7 @@ async function requestWithSignal<T>(path: string, access: RequestAccess | undefi
   }
   // Bound response consumption before decoding, including chunked responses.
   // Only the complete retained implementation artifact has the larger envelope.
-  const maxBytes = body === undefined && /^\/repository-deliveries\/[a-f0-9]{32}\/artifact$/.test(path) ? 17 * 1024 * 1024 : 4 * 1024 * 1024;
+  const maxBytes = body === undefined && (/^\/repository-deliveries\/[a-f0-9]{32}\/artifact$/.test(path) || /^\/coordination-runs\/[a-f0-9]{32}\/artifact\?/.test(path)) ? 17 * 1024 * 1024 : 4 * 1024 * 1024;
   const reader = response.body?.getReader();
   if (!reader) throw new APIError('The server returned an empty response.', response.status);
   const chunks: Uint8Array[] = [];
