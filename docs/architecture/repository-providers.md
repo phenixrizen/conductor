@@ -116,3 +116,13 @@ events, failures, and reconciliation. Report each adapter's verified capabilitie
 separately. Dual-provider delivery support is complete only after both GitHub and
 GitLab pass their applicable acceptance checks. The implemented bounded reads and
 controlled provider fixtures do not meet that delivery exit criterion.
+
+## Implemented publication boundary
+
+The [publication specification](../../specs/011-repository-delivery/spec.md) and
+[delivery runbook](../operations/repository-delivery.md) now implement the trusted
+GitHub/GitLab draft publication path described here. Browser review binds complete
+retained patches and check evidence to a separate human publication decision.
+Provider observations retain exact commits and explicit gaps. Controlled HTTP,
+PostgreSQL, Temporal and browser paths are verified; live publication and production
+outcomes are not established by those tests.

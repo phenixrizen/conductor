@@ -90,7 +90,7 @@ go run ./cmd/conductor-publisher
 
 ## Review and publication
 
-Use the authenticated API/shared client or the delivery workbench when available.
+Use the authenticated API/shared client or the **Repository deliveries** browser workbench.
 All requests select a fixed workspace and canonical target repository. Authoring
 calls accept no actor, provider URL or credential.
 
@@ -200,3 +200,35 @@ Temporal processes, never restart the selected database, and clearly distinguish
 real Git/HTTP/Temporal protocol checks from controlled provider data and synthetic
 receipt fixtures. Run the repository's full Go/race/vet and OpenAPI/doc checks before
 merging changes. Live repository writes require an explicitly authorized test target.
+
+## Browser controls
+
+Sign in, select a workspace/repository and choose **Refresh deliveries and access**.
+Inspect a shared proposal, or open the proposal form and copy the exact run ID,
+retained task ID and artifact digest from coordinated execution. Preview the inputs
+before recording. A lost creation response offers an exact retry with the same key.
+
+Choose **Inspect complete implementation artifact**. Inspect the displayed patch
+for each repository, producer output and independent checks, then acknowledge the
+review. Only a human with publication permission can confirm the displayed proposal
+digest. No automatic read occurs inside confirmation. A lost decision response
+clears the artifact and requires renewed inspection; it never silently authorizes
+newer content. Large artifacts use their dedicated 17 MiB response envelope.
+
+After the trusted publisher retains a provider observation, request an explicit
+provider refresh and inspect again later. A lost refresh response offers the same
+captured key and digest for retry. Old timestamps, absent checks and incomplete
+deployment coverage remain visible. Provider facts cannot establish a production
+outcome. The workbench never merges or deploys.
+
+Build the web app and run actual signed browser acceptance with the database and
+Python environment documented in [browser setup](browser-sign-in.md):
+
+```bash
+CONDUCTOR_TEST_BROWSER=1 go test -race ./tests/acceptance -run TestBrowserRepositoryDeliveries -count=1
+```
+
+This uses real browser/API/PostgreSQL paths and explicitly synthetic retained worker
+and provider evidence. It verifies larger complete patches, tampering rejection,
+escaped source, exact retries, authorization recovery, read-only controls and denied
+source clearing. Separate Docker and provider HTTP suites verify execution/adapters.

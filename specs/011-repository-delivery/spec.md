@@ -97,3 +97,25 @@ before authorization, bounded to 16 MiB plus its envelope. MCP exposes
 proposal, inspection, discovery and reconciliation; it has no authorization tool.
 The publisher and webhook listener are separate trusted processes. Operator config
 is a database command, not an HTTP administration endpoint.
+
+## Browser review
+
+The browser lists bounded pages of 20 shared proposals and previews explicit
+run/task/artifact, base branch and presentation inputs before creation. An uncertain
+creation preserves the complete input and key for an explicit retry.
+
+Human publication controls require server-discovered publication access and a
+complete retained artifact matching the inspected proposal. The browser verifies
+all displayed patch and producer/check output byte digests, shows every retained
+patch and result as escaped text, and requires explicit review acknowledgment.
+Missing checks, failed/unexecuted/truncated results or unknown cleanup block the
+control. Server authorization still checks every source and exact approval.
+Confirmation sends only the displayed proposal digest, with no read inside it.
+An uncertain authorization clears artifact inspection and requires renewal.
+
+Provider observations retain timestamps, exact commits, gaps and deployment
+provenance separately from the first immutable receipt. Only a proposal with a
+retained provider observation offers an explicit provider refresh. An uncertain
+refresh retains the exact digest/key. Scope changes and access denial clear private
+patches, previews and confirmations. Provider publication, merge, deployment and
+production verification remain separate facts.

@@ -150,7 +150,7 @@ async function requestWithSignal<T>(path: string, access: RequestAccess | undefi
   // Only explicit idempotent creation commands accept this header. Callers cannot replace
   // identity, scope, CSRF, or transport controls through arbitrary headers.
   if (options) {
-    if (!['/context-collections', '/repository-graphs', '/coordination-runs'].includes(path) || body === undefined || !/^[\x21-\x2b\x2d-\x7e]{1,128}$/.test(options.idempotencyKey)) {
+    if (!(['/context-collections', '/repository-graphs', '/coordination-runs', '/repository-deliveries'].includes(path) || /^\/repository-deliveries\/[a-f0-9]{32}\/reconciliations$/.test(path)) || body === undefined || !/^[\x21-\x2b\x2d-\x7e]{1,128}$/.test(options.idempotencyKey)) {
       throw new Error('This creation request requires a valid idempotency key.');
     }
     headers['Idempotency-Key'] = options.idempotencyKey;
@@ -179,6 +179,8 @@ async function requestWithSignal<T>(path: string, access: RequestAccess | undefi
     throw new APIError(response.status === 401 ? 'Your session has ended.' : 'Your access could not be confirmed.', response.status);
   }
   // Bound response consumption before decoding, including chunked responses.
+  // Only the complete retained implementation artifact has the larger envelope.
+  const maxBytes = body === undefined && /^\/repository-deliveries\/[a-f0-9]{32}\/artifact$/.test(path) ? 17 * 1024 * 1024 : 4 * 1024 * 1024;
   const reader = response.body?.getReader();
   if (!reader) throw new APIError('The server returned an empty response.', response.status);
   const chunks: Uint8Array[] = [];
@@ -187,7 +189,7 @@ async function requestWithSignal<T>(path: string, access: RequestAccess | undefi
     const { done, value } = await reader.read();
     if (done) break;
     size += value.length;
-    if (size > 4 * 1024 * 1024) {
+    if (size > maxBytes) {
       await reader.cancel();
       throw new APIError('The response is too large to inspect safely.', response.status);
     }

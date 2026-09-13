@@ -19,6 +19,60 @@ func TestAuthenticatedDeliveryAPIAndSharedClient(t *testing.T) {
 	f := collectionFixture(t)
 	f.server.Close()
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db).WithCollections().WithCoordination().WithDeliveries(), f.verifier))
+	input, c := seedDeliveryInput(t, f, []byte("synthetic fixture: worker execution is tested separately"))
+
+	agent, err := client.NewAuthenticated(f.server.URL, f.tokens["agent"], "team", "application")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := agent.CreateDelivery(f.ctx, "publication", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ProposerID != "person-agent" || d.Authorization != nil || d.Receipt != nil {
+		t.Fatal("proposal fabricated authority or provider evidence")
+	}
+	got, err := c.GetDelivery(f.ctx, d.ID)
+	if err != nil || got.Digest != d.Digest {
+		t.Fatal("shared publication missing")
+	}
+	inspected, err := c.GetDeliveryArtifact(f.ctx, d.ID)
+	if err != nil || inspected.DeliveryDigest != d.Digest || inspected.ArtifactDigest != input.ArtifactDigest {
+		t.Fatalf("exact artifact inspection: %v", err)
+	}
+	var implementation execution.Result
+	if json.Unmarshal(inspected.Artifact, &implementation) != nil || string(implementation.Patches[0].Patch) != "synthetic fixture: worker execution is tested separately" || len(implementation.Checks) != 1 {
+		t.Fatal("artifact evidence omitted")
+	}
+	page, err := c.ListDeliveries(f.ctx, "", 1)
+	if err != nil || len(page.Deliveries) != 1 {
+		t.Fatal("publication discovery missing")
+	}
+	base := "/api/v1/repository-deliveries"
+	endpoints := []accessEndpoint{{"POST", base, input}, {"GET", base, nil}, {"GET", base + "/" + d.ID, nil}, {"GET", base + "/" + d.ID + "/artifact", nil}, {"POST", base + "/" + d.ID + "/authorizations", map[string]string{"digest": d.Digest}}, {"POST", base + "/" + d.ID + "/reconciliations", map[string]string{"digest": d.Digest}}}
+	for _, e := range endpoints {
+		headers := http.Header{"Idempotency-Key": {"isolation"}}
+		f.raw(f.server.URL, "forged.token", "team", "application", e.method, e.path, e.body, headers, 401, nil)
+		headers.Set("X-Conductor-Actor", "forged")
+		f.raw(f.server.URL, f.tokens["reviewer"], "team", "application", e.method, e.path, e.body, headers, 401, nil)
+		f.localRequest("reviewer", e.method, e.path, e.body, 503, nil)
+	}
+	f.request("agent", "team", "application", "POST", base+"/"+d.ID+"/authorizations", map[string]string{"digest": d.Digest}, 403, nil)
+	f.request("reviewer", "team", "private", "GET", base+"/"+d.ID, nil, 404, nil)
+	f.request("reviewer", "team", "application", "POST", base+"/"+d.ID+"/authorizations", map[string]string{"digest": d.Digest, "actor": "person-reviewer"}, 400, nil)
+	if _, err = c.AuthorizeDelivery(f.ctx, d.ID, d.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.ApplyAccessConfig(f.ctx, "synthetic-operator", domain.AccessConfig{Grants: []domain.GrantConfig{{RepositoryID: "application", PrincipalID: "person-reviewer", CanRead: false}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.request("reviewer", "team", "application", "GET", base+"/"+d.ID, nil, 404, nil)
+}
+
+// seedDeliveryInput retains synthetic execution facts for API/UI transport tests.
+// Actual worker and provider behavior is verified by separate Docker/HTTP suites.
+func seedDeliveryInput(t *testing.T, f *accessFixture, patchBytes []byte) (domain.DeliveryInput, *client.Client) {
+	t.Helper()
 	profile := domain.ExecutionProfileConfig{WorkspaceID: "team", ID: "synthetic", Image: "sha256:" + strings.Repeat("a", 64), Enabled: true, Profile: domain.WorkerProfile{Adapter: "command/v1", Command: []string{"/bin/true"}}}
 	_, profileDigest, err := store.ValidatedExecutionProfile(profile.Profile)
 	if err != nil {
@@ -82,7 +136,6 @@ func TestAuthenticatedDeliveryAPIAndSharedClient(t *testing.T) {
 	if err = f.sql.QueryRow(f.ctx, `SELECT id FROM coordination_tasks WHERE run_id=$1`, run.ID).Scan(&task); err != nil {
 		t.Fatal(err)
 	}
-	patchBytes := []byte("synthetic fixture: worker execution is tested separately")
 	patches := []execution.Patch{{RepositoryID: "application", BaseCommit: collection.Input.Commit, BaseTree: data.Tree, ResultTree: strings.Repeat("c", 40), Patch: patchBytes, Digest: execution.Sum(patchBytes), Paths: []string{"src/file.go"}}}
 	patchJSON, _ := json.Marshal(patches)
 	zero := 0
@@ -92,50 +145,5 @@ func TestAuthenticatedDeliveryAPIAndSharedClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := domain.DeliveryInput{RunID: run.ID, TaskID: task, ArtifactDigest: digest, BaseBranch: "main", Title: "Synthetic verified change", Description: "Fixture"}
-	agent, err := client.NewAuthenticated(f.server.URL, f.tokens["agent"], "team", "application")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := agent.CreateDelivery(f.ctx, "publication", input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.ProposerID != "person-agent" || d.Authorization != nil || d.Receipt != nil {
-		t.Fatal("proposal fabricated authority or provider evidence")
-	}
-	got, err := c.GetDelivery(f.ctx, d.ID)
-	if err != nil || got.Digest != d.Digest {
-		t.Fatal("shared publication missing")
-	}
-	inspected, err := c.GetDeliveryArtifact(f.ctx, d.ID)
-	if err != nil || inspected.DeliveryDigest != d.Digest || inspected.ArtifactDigest != digest {
-		t.Fatalf("exact artifact inspection: %v", err)
-	}
-	var implementation execution.Result
-	if json.Unmarshal(inspected.Artifact, &implementation) != nil || string(implementation.Patches[0].Patch) != string(patchBytes) || len(implementation.Checks) != 1 {
-		t.Fatal("artifact evidence omitted")
-	}
-	page, err := c.ListDeliveries(f.ctx, "", 1)
-	if err != nil || len(page.Deliveries) != 1 {
-		t.Fatal("publication discovery missing")
-	}
-	base := "/api/v1/repository-deliveries"
-	endpoints := []accessEndpoint{{"POST", base, input}, {"GET", base, nil}, {"GET", base + "/" + d.ID, nil}, {"GET", base + "/" + d.ID + "/artifact", nil}, {"POST", base + "/" + d.ID + "/authorizations", map[string]string{"digest": d.Digest}}, {"POST", base + "/" + d.ID + "/reconciliations", map[string]string{"digest": d.Digest}}}
-	for _, e := range endpoints {
-		headers := http.Header{"Idempotency-Key": {"isolation"}}
-		f.raw(f.server.URL, "forged.token", "team", "application", e.method, e.path, e.body, headers, 401, nil)
-		headers.Set("X-Conductor-Actor", "forged")
-		f.raw(f.server.URL, f.tokens["reviewer"], "team", "application", e.method, e.path, e.body, headers, 401, nil)
-		f.localRequest("reviewer", e.method, e.path, e.body, 503, nil)
-	}
-	f.request("agent", "team", "application", "POST", base+"/"+d.ID+"/authorizations", map[string]string{"digest": d.Digest}, 403, nil)
-	f.request("reviewer", "team", "private", "GET", base+"/"+d.ID, nil, 404, nil)
-	f.request("reviewer", "team", "application", "POST", base+"/"+d.ID+"/authorizations", map[string]string{"digest": d.Digest, "actor": "person-reviewer"}, 400, nil)
-	if _, err = c.AuthorizeDelivery(f.ctx, d.ID, d.Digest); err != nil {
-		t.Fatal(err)
-	}
-	if err = f.db.ApplyAccessConfig(f.ctx, "synthetic-operator", domain.AccessConfig{Grants: []domain.GrantConfig{{RepositoryID: "application", PrincipalID: "person-reviewer", CanRead: false}}}); err != nil {
-		t.Fatal(err)
-	}
-	f.request("reviewer", "team", "application", "GET", base+"/"+d.ID, nil, 404, nil)
+	return input, c
 }
