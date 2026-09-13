@@ -451,6 +451,11 @@ packages to mirror the target diagram.
 
 ## Testing and completion
 
+- For local development, use `make run` for PostgreSQL plus the foreground API,
+  then `make tui` in another terminal; `make serve` starts only the API against
+  existing configuration. `make db-stop` retains the database volume. These targets
+  do not upgrade existing databases or enable authenticated release workflows;
+  preserve the migration and identity rules in the local development runbook.
 - Give owned process-recovery fixtures their intended bounded timeout when they
   are constructed; a child context cannot extend a shorter parent. Preserve every
   producer-count, retained-receipt, cleanup and unresolved-claim assertion.

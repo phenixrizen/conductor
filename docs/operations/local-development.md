@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Go 1.25 or later, using the tested Go 1.26.8 toolchain declared in `go.mod`.
+- Git and Make.
 - Docker with Compose for the local PostgreSQL dependency.
 - Node.js and npm for the optional web workbench.
 
@@ -11,13 +12,31 @@ treat the affected surface as incomplete; do not invent checksums.
 
 ## Start PostgreSQL and the API
 
+From the checkout, run this in your first terminal:
+
 ```bash
-./scripts/start-local-db.sh
-export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable'
-CONDUCTOR_AUTH_MODE=local go run ./cmd/conductord
+make run
 ```
 
-The startup script pipes Compose configuration and the ordered migrations into
+This starts the persistent local PostgreSQL container and runs the API in the
+foreground on `127.0.0.1:8080` with explicit local authentication. `make dev` is an
+alias. Ctrl+C stops the API; PostgreSQL remains running. Use `make db-stop` when
+you also want to stop the database without removing its volume.
+
+In a second terminal, connect to the running instance:
+
+```bash
+make tui
+```
+
+The terminal uses local actor `developer`; use `make tui ACTOR=reviewer` for a
+separate review session. Press `q` to exit. The TUI target connects only: it does
+not start an API or database. Start local sessions without authenticated token or
+workspace settings. For shared identity and release views, follow the
+[authenticated terminal setup](terminal-review.md#authenticated-workspace-review).
+
+The `db-up` target reuses `scripts/start-local-db.sh`, which pipes Compose
+configuration and the ordered migrations into
 Docker, so Docker Snap can work with a checkout under `/mnt`. PostgreSQL data lives
 in a named volume. Migrations run atomically only for an empty database;
 existing review history is retained. Apply later migrations deliberately rather
@@ -29,29 +48,79 @@ for a current installation. The development initializer applies SQL without reco
 release ledger: inspect the actual applied migrations before supplying an explicit
 legacy baseline. Do not guess the count or bypass an existing checksum ledger.
 
-Configuration:
+If Docker group membership is not active in the current shell, start a new login
+session or use an absolute checkout path:
+
+```bash
+sg docker -c 'make -C /absolute/path/to/conductor run'
+```
+
+Replace the path with your checkout. This also avoids Docker Snap's working
+directory restriction for paths outside your home directory.
+
+## Make targets and configuration
+
+`make` and `make help` print the available commands. Long-running commands stay in
+the foreground so each terminal has a clear owner to stop with Ctrl+C.
+
+| Target | Behavior |
+|---|---|
+| `run`, `dev` | Start local PostgreSQL, then run the API |
+| `serve` | Run only the API using the selected database and authentication settings |
+| `tui` | Connect the terminal workbench to an already running API |
+| `db-up` | Start/check the persistent local PostgreSQL container |
+| `db-stop` | Stop PostgreSQL and retain its volume |
+| `db-logs` | Follow PostgreSQL logs |
+| `web-install` | Install frontend dependencies with `npm ci` |
+| `web-dev` | Install dependencies and start the Vite browser workbench |
+| `temporal` | Run the existing local Temporal profile with persistent history |
+| `test`, `check`, `web` | Run the existing Go or frontend checks |
+
+Environment variables and Make command-line settings can override defaults:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | Required | PostgreSQL connection URL |
+| `DATABASE_URL` | `postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable` | Make's local PostgreSQL connection; required when invoking the API directly |
 | `CONDUCTOR_ADDR` | `127.0.0.1:8080` | API listen address; local mode requires literal loopback |
-| `CONDUCTOR_AUTH_MODE` | Required | `local` development or `oidc` authenticated API |
+| `CONDUCTOR_AUTH_MODE` | `local` | Make's default authentication mode; use `oidc` with the required provider settings for shared work |
 | `CONDUCTOR_OIDC_ISSUER` | Required in OIDC mode | Exact HTTPS identity issuer |
 | `CONDUCTOR_OIDC_AUDIENCE` | Required in OIDC mode | API access-token audience |
-| `CONDUCTOR_URL` | `http://localhost:8080` | CLI API base URL |
+| `CONDUCTOR_URL` | `http://$(CONDUCTOR_ADDR)` | Make's terminal API URL |
+| `CONDUCTOR_API_URL` | `$(CONDUCTOR_URL)` | Vite's API proxy target |
+| `ACTOR` | `developer` | Local TUI identity; omitted when a token setting is present |
+| `VIEW`, `FILE`, `CHANGE` | Empty | Optional TUI starting view, JSON file, and change or record ID |
+
+For a different local API port, use the same setting in both terminals:
+
+```bash
+make run CONDUCTOR_ADDR=127.0.0.1:8081
+# In the second terminal:
+make tui CONDUCTOR_ADDR=127.0.0.1:8081
+```
+
+Use `make serve` for an existing database or an already configured OIDC environment;
+it performs no database startup or migration. Set `DATABASE_URL` and the applicable
+identity settings before invoking it. Inherited OIDC or integration settings are
+still validated by the API; local mode cannot enable authenticated features.
+`make run` starts the fixed local database even if you override `DATABASE_URL`, so
+prefer `serve` for a separately managed database.
+
+`make temporal` requires the verified CLI 1.8.3 / server 1.31.2 profile. It starts
+Temporal only, not collection or coding workers. See the
+[background context guide](durable-context.md) for worker configuration and
+`CONDUCTOR_TEMPORAL_CLI` / `CONDUCTOR_TEMPORAL_STATE_DIR` overrides.
 
 ## Start the local browser
 
 With the local API running, start Vite in another terminal:
 
 ```bash
-npm --prefix apps/web ci
-npm --prefix apps/web run dev
+make web-dev
 ```
 
 Open the loopback URL printed by Vite, normally `http://127.0.0.1:5173`. Its `/api`
-proxy targets `http://127.0.0.1:8080`; set `CONDUCTOR_API_URL` before starting Vite
-if the local API uses a different port. Local mode reviews unscoped development
+proxy defaults to the API selected by `CONDUCTOR_URL`; set `CONDUCTOR_API_URL` to
+override it explicitly. Local mode reviews unscoped development
 packages. Shared workflow tabs require the authenticated setup below.
 
 ## Exercise the review flow
@@ -187,12 +256,15 @@ check as unavailable and preserve the reason.
 
 ## Reset and troubleshooting
 
+Inspect or stop the existing local database without deleting its data:
+
 ```bash
-docker compose --project-name conductor-local --file - logs postgres < deploy/local/compose.yaml
-docker compose --project-name conductor-local --file - down < deploy/local/compose.yaml
+make db-logs
+make db-stop
 ```
 
-Adding `--volumes` destroys local review history and should be intentional:
+None of these Make targets removes the database volume. An explicit Compose reset
+with `--volumes` destroys local review history and should be intentional:
 
 ```bash
 docker compose --project-name conductor-local --file - down --volumes < deploy/local/compose.yaml
@@ -207,6 +279,8 @@ Common failures:
 | `approval_rejected` | Confirm the revision is submitted and the reviewer is independent. |
 | Missing `go.sum` or npm lock | Generate and review it in a dependency-enabled environment. |
 | Existing DB lacks a new table | Initialization SQL does not migrate existing volumes; apply the migration deliberately. |
+| Local TUI reports mixed actor/token or missing scope | Unset token and scope variables for local review, or use the authenticated setup; even an empty token variable counts as configured. |
+| API port is already in use | Reuse the running API with `make tui`, or select another `CONDUCTOR_ADDR` consistently. |
 
 Shared browser deployments use [configurable OIDC sign-in](browser-sign-in.md),
 protected server sessions, and a fixed HTTPS origin. The local Vite workflow above

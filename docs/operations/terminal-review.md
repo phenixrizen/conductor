@@ -22,14 +22,22 @@ export CONDUCTOR_URL='https://conductor.example.invalid'
 export CONDUCTOR_TOKEN_FILE='/private/path/conductor-access-token'
 go run ./cmd/conductor session
 go run ./cmd/conductor repositories --workspace team
-go run ./cmd/conductor tui --workspace team --repository-id service
+export CONDUCTOR_WORKSPACE=team
+export CONDUCTOR_REPOSITORY_ID=service
+make tui
 ```
 
 Use workspace and repository IDs from those discovery responses. An authenticated
 terminal requires both selections; `CONDUCTOR_WORKSPACE` and
-`CONDUCTOR_REPOSITORY_ID` can supply their defaults. Append a change ID to open it
-directly. `--repository` remains an optional exact content-label filter and cannot
+`CONDUCTOR_REPOSITORY_ID` can supply their defaults. Use `make tui CHANGE=CHG-...`
+to open a change directly; the direct CLI accepts the ID as its final positional
+argument. `--repository` remains an optional exact content-label filter and cannot
 change canonical ownership or grant access. Do not pass `--actor` with a token.
+`make tui` omits its local actor whenever `CONDUCTOR_TOKEN_FILE` or
+`CONDUCTOR_TOKEN` is present and lets the CLI validate that credential. An empty
+setting remains an invalid configured credential; it does not select local mode.
+To start a release view, use, for example, `make tui VIEW=graphs` with the same
+authenticated scope. `FILE` and `CHANGE` pass an optional request file and record ID.
 
 Before loading packages, the terminal retrieves its server principal and the
 selected repository's effective capabilities. It displays the human or agent kind
@@ -49,23 +57,43 @@ HTTPS; HTTP is permitted only for loopback testing, and redirects are rejected.
 
 ## Local development
 
-Use a shell without authenticated token or scope settings. Start the API using the
-[local development guide](local-development.md), then run:
+Use a shell without authenticated token or scope settings. In the first terminal,
+start the API and persistent local database:
 
 ```bash
-CONDUCTOR_URL=http://127.0.0.1:8080 go run ./cmd/conductor tui --actor developer
+make run
 ```
 
-Set `CONDUCTOR_URL` if the API is elsewhere. To open a particular change or filter
-the shared browser by an exact repository label:
+In a second terminal, connect the workbench:
 
 ```bash
-go run ./cmd/conductor tui --actor reviewer CHG-...
+make tui
+```
+
+`make tui` uses the local actor `developer` and defaults to the API at
+`http://127.0.0.1:8080`. It does not start or stop that API. Press `q` to close the
+workbench; Ctrl+C in the first terminal stops the API while retaining the database.
+See [local development](local-development.md) for Docker Snap, database and port
+configuration. Set `CONDUCTOR_URL` when connecting to a different running API.
+
+To open a particular change as a reviewer, or preview a content file:
+
+```bash
+make tui ACTOR=reviewer CHANGE=CHG-...
+make tui FILE=/tmp/package.json
+```
+
+The direct CLI remains available, including an exact repository-label filter:
+
+```bash
 go run ./cmd/conductor tui --actor reviewer --repository synthetic/service
 ```
 
 The actor is fixed for the session. Exit and start another session to review as
 another local actor. This does not prove a person's identity or grant permissions.
+Local mode provides unscoped package review. Graph, coordinated execution,
+delivery, tracker and runtime views require an authenticated workspace/repository;
+choosing `VIEW` cannot enable them on a local API.
 
 ## One review loop
 

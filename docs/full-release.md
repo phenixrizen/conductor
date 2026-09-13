@@ -29,7 +29,7 @@ source fixtures do not establish live service compatibility.
 
 | Gate | Implemented behavior and verification | Remaining qualification |
 |---|---|---|
-| Shared review | Immutable revisions, exact independent approval, historical attribution and server-owned workspace/repository isolation; signed API, Chromium, PTY and live PostgreSQL tests | Release changes awaiting merge |
+| Shared review | Immutable revisions, exact independent approval, historical attribution and server-owned workspace/repository isolation; signed API, Chromium, PTY and live PostgreSQL tests | Merged in `9631a45`; deployment remains separate |
 | Shared source | Local and GitHub/GitLab pinned collection, selected artifacts, whole-repository bundles, receipts, cancellation and exact attachment; real Git/HTTP/Temporal recovery; read-only live GitHub acquisition exercised | Live GitLab account qualification |
 | Repository relationships | Immutable shared graph spanning all authorized sources; dependency, symbol, impact and exact source reads through API/MCP/browser/terminal; grant-revocation tests | Extraction coverage remains explicit and bounded |
 | CodeGraph | Selected upstream 1.6.0, source `dfccdf62547fcd76d343344d823a0e1998d3a89f`, native Rust kernel 0.1.0/ABI 2; actual isolated extraction and cross-repository dependency gate pass | No claim of complete semantic understanding |
@@ -41,7 +41,7 @@ source fixtures do not establish live service compatibility.
 | Work tracking | Linear/Jira adapters, one selected per workspace, exact package/publication-receipt links, field ownership, conflict resolution and lost-write recovery; both provider choices pass complete acceptance | Existing tickets only; live SaaS write qualification unverified |
 | Specifications and decisions | Spec Kit 1.0.6 and ADRKit CLI 0.13.0 native commands in an immutable isolated image; actual scaffold/template/prerequisite and Proposed ADR/lint/applicability/graph verification | Broad agentic prompt/extension compatibility is not claimed |
 | Runtime context | Groundcover REST profile pinned to official SDK schema 1.424.0; exact service/environment/commit/window correlation, approved criteria, complete-grid evaluation, shared retention and recovery | Live Groundcover account and overall production outcome unverified |
-| Complete interfaces | Browser/CLI/TUI/MCP review, graph/source, coordination, artifact, delivery, tracker and runtime paths tested; accessible workflow navigation preserves uncertain inputs across tabs; signed Chromium, real Keycloak and authenticated PTY acceptance pass | Release changes awaiting merge |
+| Complete interfaces | Browser/CLI/TUI/MCP review, graph/source, coordination, artifact, delivery, tracker and runtime paths tested; accessible workflow navigation preserves uncertain inputs across tabs; signed Chromium, real Keycloak and authenticated PTY acceptance pass | Merged in `9631a45`; deployment remains separate |
 | Operations | Verified remote Temporal TLS/mTLS; actual Keycloak 26.7.3 HTTPS browser qualification; checked migration ledger, private diagnostics, actual PostgreSQL backup/restore, process recovery and identical release archives | [Current hosted CI](https://github.com/phenixrizen/conductor/actions/workflows/verify.yml); hosted Temporal and Conductor deployment unverified |
 | Complete acceptance | Both Linear/Jira variants pass two-source native graph → signed MCP → three-task Docker DAG → retained Temporal restart → exact GitHub/GitLab drafts → tracker reconciliation → correlated runtime criteria; related-source revocation tested | Controlled provider fixtures establish protocol behavior, not live SaaS or paid inference |
 
@@ -68,10 +68,11 @@ execution and workers → verification and delivery → workflow/tracker integra
 run in parallel in separate worktrees. Actual PR links and merge dependencies are
 recorded here as the tested changes become reviewable.
 
-### Published PR dependencies
+### Merged PR dependencies
 
-Review and merge in this order. Each PR targets the immediately preceding branch;
-this keeps its own diff reviewable. Do not skip prerequisites.
+PRs #15–#34 were merged into `main` in this order on 2026-09-13, ending at
+`9631a45`. Each merge preserved its reviewed tree. The table retains the original
+review dependencies; all listed PRs are now merged.
 
 | Order | PR | Capability |
 |---|---|---|
@@ -94,11 +95,11 @@ this keeps its own diff reviewable. Do not skip prerequisites.
 | 17 | [#31](https://github.com/phenixrizen/conductor/pull/31) | Accessible browser workflow navigation and exact retry retention |
 | 18 | [#32](https://github.com/phenixrizen/conductor/pull/32) | Attempt deadlines, streaming failure and publication receipt recovery |
 | 19 | [#33](https://github.com/phenixrizen/conductor/pull/33) | Exact approved coding criteria and retained verification coverage |
-| 20 | [Release guide branch](https://github.com/phenixrizen/conductor/tree/codex/full-release-guide-review-20260913) | Final README, architecture, setup and verification reconciliation |
+| 20 | [#34](https://github.com/phenixrizen/conductor/pull/34) | Final README, architecture, setup and verification reconciliation |
 
-The final documentation PR targets #33. Review the complete stack in this order,
-including the guide. CI status belongs to each current PR head and is visible on
-GitHub; earlier canceled or failed attempts are not substituted for current checks.
+All three jobs in the [final main CI run](https://github.com/phenixrizen/conductor/actions/runs/34784164485)
+passed at `9631a45`, including archive reproducibility. Earlier superseded runs
+remain recorded as canceled; merge and CI success do not establish deployment.
 
 ## Completion evidence
 
