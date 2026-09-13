@@ -120,6 +120,28 @@ reconciliation, and is never rewritten or replaced by a retry. An authorized rea
 can request a new explicitly inspected window with a new key; that new evidence
 does not repair or replace the historical fact.
 
+## CLI and interactive terminal
+
+Use the same fixed token-file identity, workspace and repository as other terminal
+commands. Prepare an explicit request file with `idempotencyKey` and a complete
+`RuntimeInput` in `input`; no query or policy is inferred:
+
+```bash
+conductor runtime-preview --file /private/runtime-request.json
+conductor runtime-collect --file /private/runtime-request.json --digest PREVIEW_DIGEST
+conductor runtime-evidence --limit 20
+conductor runtime REQUEST_ID
+conductor tui --view runtime REQUEST_ID
+```
+
+The terminal's `5` view browses runtime evidence; `c` imports and previews a regular
+JSON file of at most 1 MiB. `s` confirms `collect-runtime` with the captured key,
+deployment, commit, window and requirement pins. Author permission permits read
+collection for people and agents. An uncertain request retains the same preview for
+explicit retry. Historical criterion results, window age and execution observations
+remain separate. Scroll through all bounded escaped signals and provenance, and
+use `r` for explicit refresh. See [terminal controls and acceptance](release-terminal.md).
+
 ## Browser workflow
 
 Select your workspace and repository, then open **Runtime evidence**. Refresh the

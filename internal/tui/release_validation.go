@@ -51,6 +51,24 @@ func (m releaseModel) validateRelease(r releaseResult) error {
 		return e == nil && string(b) == string(r.draft.Input)
 	}
 	switch v := r.value.(type) {
+	case domain.RuntimePage:
+		if r.view != "runtime" || r.op != "list" || len(v.Evidence) > pageSize || !validCollectionCursor(v.NextBefore) {
+			return errResponseScope
+		}
+		seen := map[string]bool{}
+		for _, row := range v.Evidence {
+			if !idDigest(row.ID, row.Digest) || seen[row.ID] || row.RepositoryID != m.access.repositoryID || !domain.IsLowerHex(row.DeliveryID, 32) || !domain.IsLowerHex(row.Commit, 40) || row.ReceiptDigest != "" && !domain.IsLowerHex(row.ReceiptDigest, 64) {
+				return errResponseScope
+			}
+			seen[row.ID] = true
+		}
+	case domain.RuntimeEvidence:
+		if r.view != "runtime" || !isRecord || !wantID(v.ID) || m.validateRuntime(v) != nil {
+			return errResponseScope
+		}
+		if r.op == "create" && (!sameInput(v.Input) || v.RequesterID != m.access.principal.ID) {
+			return errResponseScope
+		}
 	case domain.CoordinationArtifact:
 		run, ok := m.record.(domain.CoordinationRun)
 		q := r.taskArtifact

@@ -40,7 +40,7 @@ type releaseRow struct{ ID, Digest, Label string }
 type releaseStart struct{}
 
 func validReleaseView(view string) bool {
-	return view == "graphs" || view == "runs" || view == "deliveries" || view == "tracker"
+	return view == "runtime" || view == "graphs" || view == "runs" || view == "deliveries" || view == "tracker"
 }
 func releaseSession(ctx context.Context, c *client.Client, options Options) (releaseModel, error) {
 	base, err := sessionModel(ctx, c, options)
@@ -48,7 +48,7 @@ func releaseSession(ctx context.Context, c *client.Client, options Options) (rel
 		return releaseModel{}, err
 	}
 	if !base.access.authenticated || !validReleaseView(options.View) || options.ID != "" && !domain.IsLowerHex(options.ID, 32) {
-		return releaseModel{}, errors.New("release workbench requires authenticated workspace/repository scope and --view graphs, runs, deliveries or tracker")
+		return releaseModel{}, errors.New("release workbench requires authenticated workspace/repository scope and --view graphs, runs, deliveries, tracker or runtime")
 	}
 	fixed := *c
 	if c.HTTP != nil {
@@ -261,6 +261,9 @@ func (m releaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if x.op == "create" && x.draft.Kind != "tracker-sync" {
 				m.status = "Proposal recorded. Inspect the returned facts; proposal acceptance is not execution or publication."
 			}
+			if x.op == "create" && x.draft.Kind == "runtime" {
+				m.status = "Runtime collection requested. Receipt, freshness and historical criteria remain separate; r explicitly refreshes."
+			}
 			if x.op == "create" && x.draft.Kind == "delivery-reconcile" {
 				m.status = "Reconciliation requested. Existing provider evidence remains a recorded observation."
 			}
@@ -303,12 +306,12 @@ func (m releaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.small() {
 			return m, nil
 		}
-		if key == "1" || key == "2" || key == "3" || key == "4" {
+		if key == "1" || key == "2" || key == "3" || key == "4" || key == "5" {
 			if m.draft != nil {
 				m.status = "Save or discard the preview before changing views."
 				return m, nil
 			}
-			m.view = map[string]string{"1": "graphs", "2": "runs", "3": "deliveries", "4": "tracker"}[key]
+			m.view = map[string]string{"1": "graphs", "2": "runs", "3": "deliveries", "4": "tracker", "5": "runtime"}[key]
 			m.inspectID = ""
 			return m.refresh()
 		}
@@ -328,7 +331,7 @@ func (m releaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Action blocked: author or tracker synchronization permission is required."
 				break
 			}
-			kind := map[string]string{"graphs": "graph", "runs": "run", "deliveries": "delivery", "tracker": "tracker-link"}[m.view]
+			kind := map[string]string{"graphs": "graph", "runs": "run", "deliveries": "delivery", "tracker": "tracker-link", "runtime": "runtime"}[m.view]
 			if key == "u" {
 				if m.record == nil {
 					m.status = "Inspect a record first."
@@ -569,7 +572,7 @@ func (m releaseModel) confirmRelease(op string) (tea.Model, tea.Cmd) {
 	m.input = ""
 	m.prompt = op
 	if op == "create" {
-		m.prompt = map[string]string{"graph": "create-graph", "run": "propose-run", "delivery": "propose-delivery", "tracker-link": "link-ticket", "tracker-sync": "sync-ticket", "delivery-reconcile": "reconcile-delivery"}[req.draft.Kind]
+		m.prompt = map[string]string{"graph": "create-graph", "run": "propose-run", "delivery": "propose-delivery", "tracker-link": "link-ticket", "tracker-sync": "sync-ticket", "delivery-reconcile": "reconcile-delivery", "runtime": "collect-runtime"}[req.draft.Kind]
 	} else if op == "authorize" {
 		m.prompt = "authorize-run"
 		if m.view == "deliveries" {
@@ -686,6 +689,8 @@ func (m releaseModel) recordIdentity() (string, string) {
 		return r.ID, r.Digest
 	case domain.Delivery:
 		return r.ID, r.Digest
+	case domain.RuntimeEvidence:
+		return r.ID, r.Digest
 	case domain.TrackerLink:
 		return r.ID, r.Digest
 	}
@@ -696,6 +701,11 @@ func (m *releaseModel) setRows(value any) {
 	m.next = ""
 	m.pageTruncated = false
 	switch p := value.(type) {
+	case domain.RuntimePage:
+		for _, r := range p.Evidence {
+			m.rows = append(m.rows, releaseRow{r.ID, r.Digest, "runtime " + r.Environment + " | commit " + r.Commit + " | receipt=" + fmt.Sprint(r.ReceiptDigest != "")})
+		}
+		m.next = p.NextBefore
 	case domain.RepositoryGraphPage:
 		for _, r := range p.Graphs {
 			m.rows = append(m.rows, releaseRow{r.ID, r.Digest, "immutable graph"})

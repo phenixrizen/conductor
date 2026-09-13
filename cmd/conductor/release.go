@@ -20,7 +20,7 @@ type releaseOptions struct {
 
 func releaseCommand(op string) bool {
 	switch op {
-	case "graph-preview", "graph-create", "graphs", "graph", "graph-query", "graph-artifact", "run-preview", "run-propose", "runs", "run", "run-artifact", "run-authorize", "run-cancel", "execution-profiles", "execution-capabilities", "delivery-preview", "delivery-propose", "deliveries", "delivery", "delivery-artifact", "delivery-authorize", "delivery-reconcile", "tracker", "tracker-links", "tracker-link", "tracker-link-preview", "tracker-link-create", "tracker-sync-preview", "tracker-sync", "tracker-sync-show":
+	case "runtime-preview", "runtime-collect", "runtime-evidence", "runtime", "graph-preview", "graph-create", "graphs", "graph", "graph-query", "graph-artifact", "run-preview", "run-propose", "runs", "run", "run-artifact", "run-authorize", "run-cancel", "execution-profiles", "execution-capabilities", "delivery-preview", "delivery-propose", "deliveries", "delivery", "delivery-artifact", "delivery-authorize", "delivery-reconcile", "tracker", "tracker-links", "tracker-link", "tracker-link-preview", "tracker-link-create", "tracker-sync-preview", "tracker-sync", "tracker-sync-show":
 		return true
 	}
 	return false
@@ -29,6 +29,8 @@ func releasePreview(op string) bool { return releaseCommand(op) && strings.HasSu
 func runReleaseCommand(ctx context.Context, c *client.Client, op string, args []string, o releaseOptions) (any, error) {
 	kind := ""
 	switch op {
+	case "runtime-preview", "runtime-collect":
+		kind = "runtime"
 	case "graph-preview", "graph-create":
 		kind = "graph"
 	case "run-preview", "run-propose":
@@ -61,6 +63,10 @@ func runReleaseCommand(ctx context.Context, c *client.Client, op string, args []
 			return nil, errors.New("--digest must equal the complete request digest displayed by the matching preview command")
 		}
 		switch kind {
+		case "runtime":
+			var in domain.RuntimeInput
+			_ = json.Unmarshal(draft.Input, &in)
+			return c.CreateRuntimeEvidence(ctx, draft.IdempotencyKey, in)
 		case "graph":
 			var in domain.GraphInput
 			_ = json.Unmarshal(draft.Input, &in)
@@ -83,7 +89,7 @@ func runReleaseCommand(ctx context.Context, c *client.Client, op string, args []
 			return c.RequestTrackerSync(ctx, args[0], draft.IdempotencyKey, in)
 		}
 	}
-	noID := op == "graphs" || op == "runs" || op == "deliveries" || op == "execution-profiles" || op == "execution-capabilities" || op == "tracker" || op == "tracker-links"
+	noID := op == "runtime-evidence" || op == "graphs" || op == "runs" || op == "deliveries" || op == "execution-profiles" || op == "execution-capabilities" || op == "tracker" || op == "tracker-links"
 	if noID && len(args) != 0 || !noID && (len(args) != 1 || !domain.IsLowerHex(args[0], 32)) {
 		return nil, errors.New("provide exactly one 32-character record ID after flags, or no ID for discovery")
 	}
@@ -100,6 +106,10 @@ func runReleaseCommand(ctx context.Context, c *client.Client, op string, args []
 		}
 	}
 	switch op {
+	case "runtime-evidence":
+		return c.ListRuntimeEvidence(ctx, o.before, o.limit)
+	case "runtime":
+		return c.GetRuntimeEvidence(ctx, id)
 	case "graphs":
 		return c.ListRepositoryGraphs(ctx, o.before, o.limit)
 	case "graph":

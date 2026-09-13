@@ -13,7 +13,7 @@ import (
 func (m releaseModel) releaseHeader() []string {
 	lines := wrap("Conductor | "+safe(m.view)+" | principal: "+safe(m.access.principal.ID)+" ("+safe(m.access.principal.Kind)+")", m.width)
 	lines = append(lines, wrap("Workspace: "+safe(m.access.workspaceID)+" | Repository ID: "+safe(m.access.repositoryID), m.width)...)
-	lines = append(lines, wrap("1 graphs | 2 runs | 3 deliveries | 4 tracker | q exit", m.width)...)
+	lines = append(lines, wrap("1 graphs | 2 runs | 3 deliveries | 4 tracker | 5 runtime | q exit", m.width)...)
 	if id, d := m.recordIdentity(); id != "" {
 		lines = append(lines, wrap("ID: "+safe(id), m.width)...)
 		lines = append(lines, wrap("Digest: "+safe(d), m.width)...)
@@ -31,9 +31,15 @@ func (m releaseModel) releaseHeader() []string {
 		observation = r.Execution
 	case domain.Delivery:
 		observation = r.Execution
+	case domain.RuntimeEvidence:
+		observation = r.Execution
+		lines = append(lines, wrap(safe(runtimeWindow(r, time.Now())), m.width)...)
 	}
-	if m.record != nil && (m.view == "runs" || m.view == "deliveries") {
+	if m.record != nil && (m.view == "runs" || m.view == "deliveries" || m.view == "runtime") {
 		label := "Execution observation: unavailable; stopping and cleanup unknown."
+		if m.view == "runtime" {
+			label = "Runtime execution observation: unavailable; retained receipt is a separate fact."
+		}
 		if observation != nil {
 			age := max(0, int(time.Since(observation.ObservedAt).Seconds()))
 			state := "aged"
@@ -140,6 +146,9 @@ func (m *releaseModel) rebuildRelease() {
 	}
 	if m.draft != nil {
 		value = m.draft
+	}
+	if runtime, ok := value.(domain.RuntimeEvidence); ok {
+		add(runtimeSummary(runtime))
 	}
 	var artifact json.RawMessage
 	switch a := value.(type) {

@@ -1,12 +1,14 @@
-# Graphs, agent work, publication and tickets from the terminal
+# Shared engineering work and runtime evidence from the terminal
 
 The CLI and interactive terminal use the same authenticated API as the browser and
 MCP bridge. They let a developer inspect repository relationships, propose related
-agent tasks, review implementation artifacts and synchronize linked tickets.
+agent tasks, review implementation artifacts, synchronize linked tickets and inspect
+retained runtime evidence.
 PostgreSQL keeps those facts shared with other authorized people and agents.
 
 Configure the API and worker integrations using [execution setup](coordinated-execution.md),
-[repository delivery](repository-delivery.md) and [work tracking](work-tracking.md).
+[repository delivery](repository-delivery.md), [work tracking](work-tracking.md) and
+[runtime evidence](runtime-evidence.md).
 Use the supported token-file setup in [terminal review](terminal-review.md). A human's
 execution and publication grants are separate from package design approval. The
 server checks current permissions on every included repository for each command.
@@ -31,7 +33,7 @@ Consequential file commands use one regular UTF-8 JSON file, at most 1 MiB:
 The example describes a graph request; replace its synthetic IDs and digest with
 inspected server receipts. Other request kinds use the same envelope with the
 corresponding [OpenAPI](../../api/openapi.yaml) input: `CoordinationPlan`,
-`DeliveryInput`, `TrackerLinkInput` or `TrackerSyncInput`. A whole-source graph and
+`DeliveryInput`, `TrackerLinkInput`, `TrackerSyncInput` or `RuntimeInput`. A whole-source graph and
 execution plan also pin each inspected `fullSourceDigest`. Native task profiles
 require exact operator configuration and image digests.
 
@@ -72,6 +74,8 @@ start execution or publication.
 | Link inspected work to a ticket | `tracker-link-preview --file FILE`, then `tracker-link-create --file FILE --digest PREVIEW_DIGEST` |
 | Request ticket synchronization | `tracker-sync-preview --file FILE`, then `tracker-sync --file FILE --digest PREVIEW_DIGEST LINK_ID` |
 | Inspect a synchronization request | `tracker-sync-show SYNC_ID` |
+| Shared runtime evidence | `runtime-evidence`, `runtime ID` |
+| Collect an inspected deployment window | `runtime-preview --file FILE`, then `runtime-collect --file FILE --digest PREVIEW_DIGEST` |
 
 Commands print bounded JSON. List commands accept `--limit 1-100` and the opaque
 `--page` cursor returned by the previous page. Graph queries support depth 0–5 and
@@ -88,6 +92,7 @@ conductor tui --view graphs
 conductor tui --view runs
 conductor tui --view deliveries
 conductor tui --view tracker
+conductor tui --view runtime
 ```
 
 An optional record ID opens it after access discovery. The default `conductor tui`
@@ -96,7 +101,7 @@ selected authenticated workspace and repository; local actors cannot open them.
 
 | Key | Action |
 |---|---|
-| `1` / `2` / `3` / `4` | Switch to graphs / runs / deliveries / tracker; clear inspection and recheck access |
+| `1` / `2` / `3` / `4` / `5` | Switch to graphs / runs / deliveries / tracker / runtime; clear inspection and recheck access |
 | Enter or `o` | Inspect the selected row or an exact record ID |
 | `n` / `p` | Browse bounded pages; at most 1,000 visited cursors |
 | `c` | Select and preview a request file for the current view |
@@ -136,6 +141,32 @@ failure clears every private record, artifact, draft, profile and confirmation.
 Recovery reads the same session credential; changing the token file cannot change
 a running terminal's identity. Display aging does not poll the API.
 
+## Runtime evidence
+
+A runtime request file contains the same `idempotencyKey` / `input` envelope.
+Its `RuntimeInput` pins the inspected delivery ID/digest, observation sequence,
+deployment ID, full commit, environment, and explicit start/end timestamps. The
+window must use whole seconds, last at most one hour, and fall within the previous
+seven days. Optional requirement links name exact approved package revisions,
+digests and criterion IDs. Files cannot supply ad hoc queries, thresholds, actor
+identity or credentials. Leaving requirements empty invents no criterion.
+
+In runtime view, press `c` to select the file, inspect the complete escaped preview,
+then `s` and type `collect-runtime`. Current authors, including agents, can request
+this read collection. It requires no human execution or publication approval.
+After an uncertain response, the retained preview sends the same key and pins on
+explicit retry; the terminal never changes the window to the current time.
+
+Inspection separates historical `met`, `not_met` and `not_verified` criteria from
+the window's current age and the last observed Temporal state. A display timer can
+mark a window stale without changing a historical result or polling the service.
+No selected criterion result establishes overall production verification. Scroll
+through the complete bounded request, approved policy, metric series, sample values,
+log/trace records and provenance. The receipt is bounded to 1.5 MiB; the complete
+response to 2 MiB. Missing, uncorrelated, truncated or invalid evidence stays explicit.
+The terminal validates the receipt digest and historical evaluation before showing
+it, and escapes terminal control sequences in every source record.
+
 ## Acceptance
 
 ```bash
@@ -143,14 +174,17 @@ go test -race ./internal/tui ./internal/reviewinput ./cmd/conductor
 go vet ./internal/tui ./internal/reviewinput ./cmd/conductor
 CONDUCTOR_TEST_TERMINAL=1 \
 CONDUCTOR_TEST_DATABASE_URL='postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable' \
-  go test -race ./tests/acceptance -run TestAuthenticatedTerminal -count=1
+  go test -race ./tests/acceptance -run 'TestAuthenticatedTerminal|TestAuthenticatedRuntimeTerminal|TestLocalTerminalReleaseRegression' -count=1
 ```
 
 The release acceptance drives the actual compiled CLI and Linux PTYs through a
-signed synthetic OIDC API and isolated PostgreSQL schema. It checks all four
+signed synthetic OIDC API and isolated PostgreSQL schema. It checks all five
 workflows, exact plan retries after a real lost response, stale design rejection,
 human decisions, reader/agent limits, artifact-gated publication, tracker refresh,
-revocation and fixed-token recovery. Its immutable implementation receipts are
+revocation and fixed-token recovery. The runtime path also checks offline preview,
+exact CLI and terminal retries, stale windows, all three historical criterion states,
+complete escaped retained source and read-only/agent collection permissions.
+Its immutable implementation receipts and runtime telemetry are
 explicit review fixtures; real Docker/Temporal execution and provider compatibility
 retain their separate acceptance evidence. Missing opt-in is a skip; missing tools
 or database after opting in fail the test. Existing development data is preserved.

@@ -113,3 +113,19 @@ reconciliation verify this identity and the historical evaluation before returni
 usable evidence. Validate current source authorization before exposing a historical
 integrity failure. Existing unverifiable receipts remain retained with their original
 digests; migration and retries cannot reconstruct or silently replace lost source.
+
+## Authenticated CLI and terminal
+
+The shared CLI lists/reads runtime evidence and previews/records explicit bounded
+request files. Preview is offline, strict about exact field names and timestamp
+strings, and binds the complete input and idempotency key. A changed window,
+deployment or package criterion requires a new preview. The terminal offers a
+runtime view with file preview and explicit collection confirmation, permits current
+authors including agents, and retains identical inputs after uncertain outcomes.
+Neither interface refreshes pins within the confirmed collection command.
+
+Runtime inspection shows the exact request and approved criteria, all bounded
+escaped metric/log/trace evidence, and retained historical evaluation. A local aging
+clock is separate from both historical outcomes and aged workflow observations.
+Scope or permission failure clears receipts, drafts and private source; explicit
+recovery keeps the same session credential and rechecks current access.

@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/domain"
@@ -66,6 +67,12 @@ func Decode(data []byte, kind string) (Draft, error) {
 	var value any
 	var err error
 	switch kind {
+	case "runtime":
+		var in domain.RuntimeInput
+		if err = Strict(envelope.Input, &in); err == nil {
+			err = domain.ValidateRuntimeInput(in, time.Now().UTC())
+		}
+		value = in
 	case "graph":
 		var in domain.GraphInput
 		if err = Strict(envelope.Input, &in); err == nil {
@@ -195,6 +202,12 @@ func walk(d *json.Decoder, depth int) error {
 func shape(raw []byte, t reflect.Type, depth int) error {
 	if depth > 32 {
 		return domain.ErrInvalidInput
+	}
+	// Runtime windows use the standard strict RFC3339 timestamp decoder. Treat
+	// time.Time as its wire string, not as an object of unexported Go fields.
+	if t == reflect.TypeOf(time.Time{}) {
+		var stamp time.Time
+		return json.Unmarshal(raw, &stamp)
 	}
 	if t == reflect.TypeOf(json.RawMessage{}) {
 		return nil
