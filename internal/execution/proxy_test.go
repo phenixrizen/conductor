@@ -28,7 +28,7 @@ func TestProviderProxyBoundedAuthority(t *testing.T) {
 		_, _ = io.WriteString(w, "data: synthetic\n\n")
 	}))
 	defer upstream.Close()
-	p := newProviderProxy(proxyConfig{Adapter: "codex/0.154.0", Token: strings.Repeat("a", 64), Key: "real-synthetic-key"})
+	p := newProviderProxy(proxyConfig{Adapter: "codex/0.154.0", Model: "synthetic", Token: strings.Repeat("a", 64), Key: "real-synthetic-key"})
 	p.upstream = upstream.URL
 	request := func(method, path, token, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -80,9 +80,9 @@ func TestProviderProxyRejectsRedirectsAndBoundsResponses(t *testing.T) {
 		http.Redirect(w, r, trap.URL, 307)
 	}))
 	defer upstream.Close()
-	p := newProviderProxy(proxyConfig{Adapter: "claude-code/2.1.270", Token: strings.Repeat("a", 64), Key: "real-key"})
+	p := newProviderProxy(proxyConfig{Adapter: "claude-code/2.1.270", Model: "synthetic", Token: strings.Repeat("a", 64), Key: "real-key"})
 	p.upstream = upstream.URL
-	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"max_tokens":10}`))
+	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"synthetic","max_tokens":10}`))
 	r.Header.Set("X-Api-Key", p.config.Token)
 	r.Header.Set("Anthropic-Version", "2023-06-01")
 	w := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestProviderProxyRejectsRedirectsAndBoundsResponses(t *testing.T) {
 	}))
 	defer oversize.Close()
 	p.upstream = oversize.URL
-	r = httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{}`))
+	r = httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"synthetic"}`))
 	r.Header.Set("X-Api-Key", p.config.Token)
 	w = httptest.NewRecorder()
 	p.ServeHTTP(w, r)
@@ -107,7 +107,7 @@ func TestProviderProxyRejectsRedirectsAndBoundsResponses(t *testing.T) {
 
 func TestDockerIsolatedProviderNetwork(t *testing.T) {
 	runner, r := dockerFixture(t)
-	runner.Profile = Profile{Adapter: "codex/0.154.0"}
+	runner.Profile = Profile{Adapter: "codex/0.154.0", Model: "synthetic"}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	network, endpoint, _, cleanup, err := runner.startProxy(ctx, "synthetic-never-sent-upstream", 30)
@@ -125,5 +125,78 @@ func TestDockerIsolatedProviderNetwork(t *testing.T) {
 	}
 	if result.Producer.State != "passed" {
 		t.Fatalf("network boundary: %+v", result.Producer)
+	}
+}
+
+func TestProviderGatewayRejectsDelegatedNetworkAndAccountAuthority(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body map[string]any
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			t.Error("body")
+		}
+		if body["model"] != "synthetic" {
+			t.Error("operator model changed")
+		}
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+	for _, adapter := range []string{"codex/0.154.0", "claude-code/2.1.270"} {
+		p := newProviderProxy(proxyConfig{Adapter: adapter, Model: "synthetic", Token: strings.Repeat("a", 64), Key: "synthetic-key"})
+		p.upstream = upstream.URL
+		cases := []string{
+			`{"model":"different"}`,
+			`{"model":"synthetic","tools":[{"type":"web_search"}]}`,
+			`{"model":"synthetic","tools":[{"type":"mcp","server_url":"https://example.invalid"}]}`,
+			`{"model":"synthetic","tools":[{"type":"namespace","tools":[{"type":"file_search","vector_store_ids":["private"]}]}]}`,
+			`{"model":"synthetic","previous_response_id":"private-response"}`,
+			`{"model":"synthetic","background":true}`,
+			`{"model":"synthetic","container":"private-container"}`,
+			`{"model":"synthetic","tool_choice":{"type":"web_search"}}`,
+		}
+		for _, input := range []string{
+			`[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://example.invalid/source"}]}]`,
+			`[{"type":"message","role":"user","content":[{"type":"input_file","file_id":"private-file"}]}]`,
+			`[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"https://example.invalid"}}]}]`,
+			`[{"type":"additional_tools","tools":[{"type":"web_search"}]}]`,
+			`[{"type":"item_reference","id":"private-item"}]`,
+			`[{"id":"private-item","status":"completed"}]`,
+		} {
+			field := "input"
+			if adapter == "claude-code/2.1.270" {
+				field = "messages"
+			}
+			cases = append(cases, `{"model":"synthetic","`+field+`":`+input+`}`)
+		}
+		for _, body := range cases {
+			path := "/v1/responses"
+			if adapter == "claude-code/2.1.270" {
+				path = "/v1/messages"
+			}
+			r := httptest.NewRequest("POST", path, strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+p.config.Token)
+			r.Header.Set("X-Api-Key", p.config.Token)
+			w := httptest.NewRecorder()
+			p.ServeHTTP(w, r)
+			if w.Code != 400 {
+				t.Fatalf("unsafe delegated request accepted for %s: %s (%d)", adapter, body, w.Code)
+			}
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatal("rejected model authority reached upstream")
+	}
+	for _, raw := range []string{
+		`{"model":"synthetic","input":[{"role":"user","content":"Source contains https://example.invalid as ordinary text."}],"tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{"file_id":{"type":"string"}}}}]}`,
+		`{"model":"synthetic","input":[{"type":"function_call_output","call_id":"local-call","output":"https://example.invalid is local tool text"}],"tools":[{"type":"namespace","tools":[{"type":"custom","name":"apply_patch"}]}]}`,
+	} {
+		var body map[string]json.RawMessage
+		if json.Unmarshal([]byte(raw), &body) != nil || !modelOnlyRequest("codex/0.154.0", "synthetic", body) {
+			t.Fatal("inline local tool request rejected")
+		}
+		if string(body["store"]) != "false" {
+			t.Fatal("provider storage not disabled")
+		}
 	}
 }

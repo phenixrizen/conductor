@@ -451,6 +451,318 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/execution-capabilities:
+    parameters:
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    get:
+      summary: Read effective human execution and publication capabilities for the selected repository
+      description: Requires explicitly enabled OIDC coordination. Every included repository is authorized
+        transactionally. No command refreshes source, grants approval, or claims completed execution from
+        accepted intent. Unknown or duplicate command fields and query parameters are rejected.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      responses:
+        '200':
+          description: Read effective human execution and publication capabilities for the selected repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionCapabilities'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected plan/package is stale, a write claim overlaps, or an idempotency key
+            identifies other input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/coordination-runs:
+    parameters:
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Propose an immutable shared execution plan
+      description: Requires explicitly enabled OIDC coordination. Every included repository is authorized
+        transactionally. No command refreshes source, grants approval, or claims completed execution from
+        accepted intent. Unknown or duplicate command fields and query parameters are rejected.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      responses:
+        '201':
+          description: Propose an immutable shared execution plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected plan/package is stale, a write claim overlaps, or an idempotency key
+            identifies other input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoordinationPlan'
+      parameters:
+      - $ref: '#/components/parameters/CollectionKey'
+      - $ref: '#/components/parameters/BrowserOrigin'
+    get:
+      summary: List bounded run summaries readable across every included repository
+      description: Requires explicitly enabled OIDC coordination. Every included repository is authorized
+        transactionally. No command refreshes source, grants approval, or claims completed execution from
+        accepted intent. Unknown or duplicate command fields and query parameters are rejected.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      responses:
+        '200':
+          description: List bounded run summaries readable across every included repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected plan/package is stale, a write claim overlaps, or an idempotency key
+            identifies other input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: before
+        in: query
+        schema:
+          type: string
+          maxLength: 1024
+      - $ref: '#/components/parameters/HistoryLimit'
+  /api/v1/coordination-runs/{id}:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    get:
+      summary: Inspect one shared immutable plan and separate execution facts
+      description: Requires explicitly enabled OIDC coordination. Every included repository is authorized
+        transactionally. No command refreshes source, grants approval, or claims completed execution from
+        accepted intent. Unknown or duplicate command fields and query parameters are rejected.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      responses:
+        '200':
+          description: Inspect one shared immutable plan and separate execution facts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected plan/package is stale, a write claim overlaps, or an idempotency key
+            identifies other input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/coordination-runs/{id}/authorization:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Authorize execution of the inspected plan digest using current human grants and package
+        approvals
+      description: Requires explicitly enabled OIDC coordination. Every included repository is authorized
+        transactionally. No command refreshes source, grants approval, or claims completed execution from
+        accepted intent. Unknown or duplicate command fields and query parameters are rejected.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      responses:
+        '202':
+          description: Authorize execution of the inspected plan digest using current human grants and
+            package approvals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected plan/package is stale, a write claim overlaps, or an idempotency key
+            identifies other input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - digest
+              properties:
+                digest:
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+      parameters:
+      - $ref: '#/components/parameters/BrowserOrigin'
+  /api/v1/coordination-runs/{id}/cancellation:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Request cancellation of the inspected plan without releasing active write claims
+      description: Requires explicitly enabled OIDC coordination. Every included repository is authorized
+        transactionally. No command refreshes source, grants approval, or claims completed execution from
+        accepted intent. Unknown or duplicate command fields and query parameters are rejected.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      responses:
+        '202':
+          description: Request cancellation of the inspected plan without releasing active write claims
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected plan/package is stale, a write claim overlaps, or an idempotency key
+            identifies other input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - digest
+              properties:
+                digest:
+                  type: string
+                  pattern: ^[a-f0-9]{64}$
+      parameters:
+      - $ref: '#/components/parameters/BrowserOrigin'
+  /api/v1/execution-profiles:
+    get:
+      summary: Discover enabled operator execution profiles for the selected workspace
+      description: Requires explicit OIDC coordination and repository read access. Public profile/image
+        digests are inspected before authorizing a plan. Secret paths and credentials are never returned.
+        Discovery is capped at 100 entries with explicit truncation.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/CollectionWorkspace'
+      - $ref: '#/components/parameters/CollectionRepository'
+      - $ref: '#/components/parameters/CSRF'
+      responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '200':
+          description: Bounded public execution profile catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionProfilePage'
 components:
   securitySchemes:
     BrowserCookie:
@@ -915,3 +1227,437 @@ components:
         indexedFiles: {type: integer, minimum: 0, maximum: 512}
         truncated: {type: boolean}
         createdAt: {type: string, format: date-time}
+    ExecutionCapabilities:
+      type: object
+      additionalProperties: false
+      required:
+      - repositoryId
+      - canExecute
+      - canPublish
+      properties:
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        canExecute:
+          type: boolean
+        canPublish:
+          type: boolean
+    CoordinationPackagePin:
+      type: object
+      additionalProperties: false
+      required:
+      - changeId
+      - repositoryId
+      - revision
+      - digest
+      properties:
+        changeId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+    CoordinationRepository:
+      type: object
+      additionalProperties: false
+      required:
+      - repositoryId
+      - commit
+      - collectionId
+      - receiptDigest
+      properties:
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        collectionId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        receiptDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        fullSourceDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+    CoordinationTaskScope:
+      type: object
+      additionalProperties: false
+      required:
+      - repositoryId
+      properties:
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        writablePaths:
+          type:
+          - array
+          - 'null'
+          minItems: 0
+          maxItems: 128
+          items:
+            type: string
+            minLength: 1
+            maxLength: 1024
+    CoordinationCheck:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - repositoryId
+      - argv
+      - timeoutSeconds
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9._-]{1,64}$
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        argv:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 4096
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          maximum: 1800
+    CoordinationTask:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - perspective
+      - profile
+      - prompt
+      - scopes
+      - timeoutSeconds
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9._-]{1,64}$
+        perspective:
+          type: string
+          enum:
+          - architect
+          - developer
+          - qc
+          - product
+          - operations
+        profile:
+          type: string
+          pattern: ^[A-Za-z0-9._-]{1,64}$
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        dependsOn:
+          type:
+          - array
+          - 'null'
+          minItems: 0
+          maxItems: 32
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9._-]{1,64}$
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/CoordinationTaskScope'
+        checks:
+          type:
+          - array
+          - 'null'
+          minItems: 0
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/CoordinationCheck'
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          maximum: 1800
+        profileDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        image:
+          type: string
+          maxLength: 512
+          description: Inspected immutable Docker image reference; required with profileDigest before
+            authorization.
+    CoordinationPlan:
+      type: object
+      additionalProperties: false
+      required:
+      - schemaVersion
+      - graphId
+      - graphDigest
+      - packages
+      - repositories
+      - tasks
+      - maxParallel
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        graphId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        graphDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        packages:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/CoordinationPackagePin'
+        repositories:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/CoordinationRepository'
+        tasks:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CoordinationTask'
+        maxParallel:
+          type: integer
+          minimum: 1
+          maximum: 4
+    CoordinationAuthorization:
+      type: object
+      additionalProperties: false
+      required:
+      - actor
+      - digest
+      - createdAt
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 128
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        createdAt:
+          type: string
+          format: date-time
+    CoordinationTaskReceipt:
+      type: object
+      additionalProperties: false
+      required:
+      - taskId
+      - taskKey
+      - digest
+      - outcome
+      - createdAt
+      properties:
+        taskId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        taskKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        outcome:
+          type: string
+          enum:
+          - succeeded
+          - failed
+          - blocked
+          - cancelled
+          - unresolved
+        artifactDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        createdAt:
+          type: string
+          format: date-time
+    CoordinationRun:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - workspaceId
+      - repositoryId
+      - proposerId
+      - digest
+      - createdAt
+      - plan
+      - receipts
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        workspaceId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        proposerId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        createdAt:
+          type: string
+          format: date-time
+        cancelRequestedAt:
+          type: string
+          format: date-time
+        execution:
+          $ref: '#/components/schemas/CollectionExecution'
+        plan:
+          $ref: '#/components/schemas/CoordinationPlan'
+        authorization:
+          $ref: '#/components/schemas/CoordinationAuthorization'
+        receipts:
+          type: array
+          minItems: 0
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/CoordinationTaskReceipt'
+    CoordinationSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - workspaceId
+      - repositoryId
+      - proposerId
+      - digest
+      - createdAt
+      - authorized
+      - tasks
+      - receipts
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        workspaceId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        repositoryId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        proposerId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        createdAt:
+          type: string
+          format: date-time
+        cancelRequestedAt:
+          type: string
+          format: date-time
+        execution:
+          $ref: '#/components/schemas/CollectionExecution'
+        authorized:
+          type: boolean
+        tasks:
+          type: integer
+          minimum: 1
+          maximum: 32
+        receipts:
+          type: integer
+          minimum: 0
+          maximum: 32
+    CoordinationPage:
+      type: object
+      additionalProperties: false
+      required:
+      - runs
+      properties:
+        runs:
+          type: array
+          minItems: 0
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CoordinationSummary'
+        nextBefore:
+          type: string
+          maxLength: 1024
+    ExecutionProfile:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - profileDigest
+      - image
+      - adapter
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9._-]{1,64}$
+        profileDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        image:
+          type: string
+          maxLength: 512
+        adapter:
+          type: string
+          enum:
+          - command/v1
+          - codex/0.154.0
+          - claude-code/2.1.270
+        model:
+          type: string
+          maxLength: 128
+        command:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 16384
+        maxBudgetUsd:
+          type: string
+          maxLength: 8
+    ExecutionProfilePage:
+      type: object
+      required:
+      - profiles
+      - truncated
+      properties:
+        profiles:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ExecutionProfile'
+        truncated:
+          type: boolean

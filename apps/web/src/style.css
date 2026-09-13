@@ -167,3 +167,16 @@ aside .panel { margin-bottom: 1rem; padding: 1.2rem; }
   .context-collections .control-row { align-items: stretch; }
   .context-collections .control-row > * { flex-basis: 100%; min-width: 0; }
 }
+
+.coordinated-runs { margin-block: 1.5rem; overflow-wrap: anywhere; }
+.coordinated-runs h2 { font-size: 1.6rem; }
+.coordinated-runs button { max-width: 100%; overflow-wrap: anywhere; }
+.run-proposal, .run-inspection { border-top: 1px solid #bfc9be; margin-top: 1rem; padding-top: 1rem; }
+.run-proposal label { margin-block: .8rem; }
+.run-proposal textarea { font-family: ui-monospace, monospace; font-weight: 400; }
+.run-tasks { padding-left: 1.3rem; }
+.run-tasks > li, .task-receipts > li { border-top: 1px solid #d5ded0; padding-block: 1rem; }
+.run-tasks pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-tasks ul { padding-left: 1.2rem; }
+.run-confirmation { margin-top: 1rem; }
+.run-confirmation button { margin: .4rem .7rem .4rem 0; }

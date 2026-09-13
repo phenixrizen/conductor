@@ -61,6 +61,8 @@ only for the existing development profile. Context requests additionally require
 | Discover or inspect collected context | `conductor_list_collections`, `conductor_get_collection` |
 | Request exact source | `conductor_request_collection` |
 | Derive and inspect cross-repository graphs | `conductor_create_graph`, `conductor_list_graphs`, `conductor_get_graph`, `conductor_query_graph` |
+| Propose and inspect coordinated work | `conductor_propose_run`, `conductor_list_runs`, `conductor_get_run` |
+| Inspect operator execution profiles/capabilities | `conductor_execution_profiles`, `conductor_execution_capabilities` |
 | Request cancellation | `conductor_cancel_collection` |
 | Attach an inspected receipt as a new draft revision | `conductor_attach_collection` |
 
@@ -80,7 +82,10 @@ The concrete configured prefix is published by `resources/list` and
 `resources/templates/list`. Available suffixes are `/access`, `/packages`,
 `/packages/{id}`, `/packages/{id}/history`,
 `/packages/{id}/revisions/{revision}`, `/collections`, `/collections/{id}`,
-`/graphs`, and `/graphs/{id}`.
+`/graphs`, `/graphs/{id}`, `/runs`, and `/runs/{id}`.
+See the [coordinated workbench](coordinated-workbench.md) for shared plan proposals
+and human execution decisions. The MCP bridge exposes no execution authorization
+or run-cancellation command.
 Set `fullSource: true` on `conductor_request_collection` to additionally retain
 bounded whole-repository source. Inspect the returned `fullSource` summary; add its
 exact digest as `fullSourceDigest` in a `conductor_create_graph` source selector to

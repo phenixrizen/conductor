@@ -121,3 +121,20 @@ func TestContextCollectionCapabilityRequiresExplicitOIDCConfiguration(t *testing
 		})
 	}
 }
+
+func TestCoordinationRequiresExplicitOIDCCapability(t *testing.T) {
+	for _, test := range []struct {
+		mode, setting  string
+		valid, enabled bool
+	}{{"local", "", true, false}, {"local", "1", false, false}, {"oidc", "", true, false}, {"oidc", "0", true, false}, {"oidc", "1", true, true}, {"oidc", "true", false, false}, {"oidc", " 1", false, false}} {
+		values := map[string]string{"DATABASE_URL": "synthetic", "CONDUCTOR_AUTH_MODE": test.mode, "CONDUCTOR_COORDINATION": test.setting}
+		if test.mode == "oidc" {
+			values["CONDUCTOR_OIDC_ISSUER"] = "https://issuer.example.test"
+			values["CONDUCTOR_OIDC_AUDIENCE"] = "api"
+		}
+		c, err := loadConfig(func(key string) string { return values[key] })
+		if (err == nil) != test.valid || err == nil && c.coordination != test.enabled {
+			t.Fatalf("mode=%s setting=%q config=%+v err=%v", test.mode, test.setting, c, err)
+		}
+	}
+}

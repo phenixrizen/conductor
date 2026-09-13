@@ -38,8 +38,8 @@ seccomp profiles remain enabled; there is no unconfined or privileged fallback.
 `internal/execution.Runner` accepts an operator-owned image digest and profile.
 `command/v1` runs its exact configured argument vector offline with no credential;
 use it for synthetic acceptance or a deliberately configured automation program.
-Codex and Claude profiles use their exact version strings. A model identifier can
-be pinned by the operator; the worker does not select or change it automatically.
+Codex and Claude profiles use their exact version strings and require an explicit
+operator model identifier; the worker does not select or change it automatically.
 Claude requires an explicit `MaxBudgetUSD`. Codex exposes no currency budget here.
 
 Native profiles require `AllowProviderNetwork` and an absolute credential-file
@@ -118,3 +118,18 @@ confirm their absence without starting another producer. The runner reports
 Do not invoke the same request concurrently outside this durable attempt boundary.
 Canonical repository IDs remain unchanged in receipts; a SHA-256 directory mapping
 in the prompt prevents IDs containing slashes or Unicode from becoming host paths.
+
+The trusted container supervisor disables core dumping and same-UID process
+inspection with `PR_SET_DUMPABLE=0`. Producer children cannot read its memory or
+open its result pipe through `/proc/1`; the control boundary does not depend on
+host Yama defaults. This complements the immutable helper image and separate
+credential-free verifier.
+
+Native profiles require an explicit operator `model`; the gateway rejects a
+different model even if repository code possesses the ephemeral task credential.
+It permits stateless model inference with inline source and local tool definitions;
+it rejects hosted tools, external source URLs, stored account references and
+background execution. Codex web search is disabled. Requests using unsupported
+fields fail closed. Claude's `maxBudgetUsd` controls the native CLI; independent
+request/token/time bounds apply at the gateway, but no hard currency ceiling or
+provider-account billing cap is claimed.

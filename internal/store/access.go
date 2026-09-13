@@ -252,6 +252,20 @@ func (p *Postgres) ApplyAccessConfig(ctx context.Context, operator string, confi
 			return fmt.Errorf("configure context integration: %w", err)
 		}
 	}
+	for _, v := range config.ExecutionGrants {
+		if _, err = tx.Exec(ctx, `INSERT INTO execution_grants(repository_id,principal_id,can_execute,can_publish) VALUES($1,$2,$3,$4) ON CONFLICT(repository_id,principal_id) DO UPDATE SET can_execute=excluded.can_execute,can_publish=excluded.can_publish`, v.RepositoryID, v.PrincipalID, v.CanExecute, v.CanPublish); err != nil {
+			return fmt.Errorf("provision execution grant: %w", err)
+		}
+	}
+	for _, v := range config.ExecutionProfiles {
+		profile, digest, err := ValidatedExecutionProfile(v.Profile)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO execution_profiles(workspace_id,id,profile_digest,image,configuration,enabled) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,id) DO UPDATE SET profile_digest=excluded.profile_digest,image=excluded.image,configuration=excluded.configuration,enabled=excluded.enabled`, v.WorkspaceID, v.ID, digest, v.Image, profile, v.Enabled); err != nil {
+			return fmt.Errorf("provision execution profile: %w", err)
+		}
+	}
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err

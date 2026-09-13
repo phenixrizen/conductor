@@ -120,3 +120,17 @@ They do not establish successful paid model execution, arbitrary build-tool imag
 compatibility, a VM boundary, or hosted production deployment. See the
 [worker runbook](../../docs/operations/coding-workers.md) and
 [pinned adapter research](../../docs/research/assistant-profiles.md).
+
+Native profiles require an explicit reviewed model ID. The gateway enforces that
+exact requested model and a stateless request profile before upstream I/O. Hosted
+tools, remote source URLs, saved provider file/response/conversation references,
+background requests and unknown capability fields are rejected. Local tools and
+inline content remain supported, Codex storage is false, and Codex web search is
+disabled. Claude's CLI budget is not an independent currency ceiling; hard gateway
+controls are requests, tokens, response bytes and time.
+
+The trusted supervisor disables dumping and same-UID process inspection before
+starting children. Repository-controlled code cannot access its memory or result
+file descriptors through `/proc`, independently of host Yama policy. Trusted
+receipt validation separately checks exact request/profile/image identity,
+complete check IDs/argv/source digests, bounded patch metadata and confirmed cleanup.

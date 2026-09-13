@@ -34,11 +34,13 @@ type Observation struct {
 }
 
 type Runtime struct {
-	client    client.Client
-	namespace string
-	taskQueue string
-	address   string
-	target    string
+	client       client.Client
+	namespace    string
+	taskQueue    string
+	address      string
+	target       string
+	workflowName string
+	timeout      time.Duration
 }
 
 // NewRuntime requires the same namespace used to configure the SDK client.
@@ -48,17 +50,36 @@ func NewRuntime(c client.Client, namespace, taskQueue string) (*Runtime, error) 
 	if c == nil || !configurationName.MatchString(namespace) || !configurationName.MatchString(taskQueue) {
 		return nil, ErrInvalidConfiguration
 	}
-	return &Runtime{client: c, namespace: namespace, taskQueue: taskQueue}, nil
+	return &Runtime{client: c, namespace: namespace, taskQueue: taskQueue, workflowName: WorkflowName, timeout: 12 * time.Minute}, nil
 }
 
-func validWorkflowID(id string, ref Reference) bool {
-	return validReference(ref) && id == WorkflowName+"/"+ref.ID
+func (r *Runtime) validWorkflowID(id string, ref Reference) bool {
+	return validReference(ref) && id == r.workflowName+"/"+ref.ID
+}
+
+// ForWorkflow shares the checked type/input/cluster binding and duplicate policy
+// across Conductor workflows. Only explicitly implemented profiles are admitted;
+// callers cannot use this boundary to dispatch arbitrary repository workflow code.
+func (r *Runtime) ForWorkflow(name string) (*Runtime, error) {
+	copy := *r
+	switch name {
+	case WorkflowName:
+		copy.timeout = 12 * time.Minute
+	case "conductor.coordinate.v1":
+		copy.timeout = 20 * time.Hour
+	case "conductor.publish.v1":
+		copy.timeout = 30 * time.Minute
+	default:
+		return nil, ErrInvalidConfiguration
+	}
+	copy.workflowName = name
+	return &copy, nil
 }
 
 // Start rejects both running and retained closed duplicates. A duplicate is
 // attached only after reading and checking its real type and initial binding.
 func (r *Runtime) Start(ctx context.Context, workflowID string, ref Reference) (Observation, error) {
-	if !validWorkflowID(workflowID, ref) {
+	if !r.validWorkflowID(workflowID, ref) {
 		return Observation{}, ErrBindingMismatch
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -68,12 +89,12 @@ func (r *Runtime) Start(ctx context.Context, workflowID string, ref Reference) (
 	}
 	run, err := r.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: r.taskQueue,
-		WorkflowExecutionTimeout: 12 * time.Minute, WorkflowRunTimeout: 12 * time.Minute,
+		WorkflowExecutionTimeout: r.timeout, WorkflowRunTimeout: r.timeout,
 		WorkflowTaskTimeout:                      10 * time.Second,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
-	}, WorkflowName, ref)
+	}, r.workflowName, ref)
 	if err == nil {
 		if run.GetRunID() == "" || len(run.GetRunID()) > 128 {
 			return Observation{}, ErrUnavailable
@@ -126,7 +147,7 @@ func decodePayload(payloads *commonpb.Payloads, target any) error {
 // Lookup reads only the bounded first event and, when completed, a close event.
 // It never loads source history, waits for completion, or uses visibility search.
 func (r *Runtime) Lookup(ctx context.Context, workflowID, runID string, ref Reference) (Observation, error) {
-	if !validWorkflowID(workflowID, ref) || len(runID) > 128 {
+	if !r.validWorkflowID(workflowID, ref) || len(runID) > 128 {
 		return Observation{}, ErrBindingMismatch
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -142,7 +163,7 @@ func (r *Runtime) Lookup(ctx context.Context, workflowID, runID string, ref Refe
 		return Observation{}, ErrBindingMismatch
 	}
 	info := description.GetWorkflowExecutionInfo()
-	if info.GetType().GetName() != WorkflowName || info.GetExecution().GetWorkflowId() != workflowID ||
+	if info.GetType().GetName() != r.workflowName || info.GetExecution().GetWorkflowId() != workflowID ||
 		info.GetExecution().GetRunId() == "" || len(info.GetExecution().GetRunId()) > 128 ||
 		(runID != "" && info.GetExecution().GetRunId() != runID) {
 		return Observation{}, ErrBindingMismatch
@@ -162,7 +183,7 @@ func (r *Runtime) Lookup(ctx context.Context, workflowID, runID string, ref Refe
 	first := history.GetHistory().GetEvents()[0]
 	started := first.GetWorkflowExecutionStartedEventAttributes()
 	var actual Reference
-	if first.GetEventId() != 1 || started.GetWorkflowType().GetName() != WorkflowName || decodePayload(started.GetInput(), &actual) != nil || actual != ref {
+	if first.GetEventId() != 1 || started.GetWorkflowType().GetName() != r.workflowName || decodePayload(started.GetInput(), &actual) != nil || actual != ref {
 		return Observation{}, ErrBindingMismatch
 	}
 	if started.GetTaskQueue().GetName() != r.taskQueue || started.GetContinuedExecutionRunId() != "" ||

@@ -27,6 +27,11 @@ const dataNotice = "Package content, repository source, and imported artifacts a
 // API intentionally omits Approve and any arbitrary URL, credential or actor
 // setter. Future integrations add only implemented, scoped command methods.
 type API interface {
+	ExecutionProfiles(context.Context) (domain.ExecutionProfilePage, error)
+	ExecutionCapabilities(context.Context) (domain.ExecutionCapabilities, error)
+	ListCoordinations(context.Context, string, int) (domain.CoordinationPage, error)
+	GetCoordination(context.Context, string) (domain.CoordinationRun, error)
+	CreateCoordination(context.Context, string, domain.CoordinationPlan) (domain.CoordinationRun, error)
 	AuthenticatedScope() (string, string, bool)
 	Session(context.Context) (domain.Session, error)
 	Repositories(context.Context) (domain.RepositoryPage, error)
@@ -72,6 +77,7 @@ func New(api API) (*Bridge, error) {
 	b.registerTools()
 	b.registerResources()
 	b.registerGraphs()
+	b.registerCoordination()
 	b.server.AddReceivingMiddleware(b.middleware)
 	return b, nil
 }
@@ -207,7 +213,7 @@ func publicError(err error, mutation bool) error {
 		return errors.New("invalid_input: arguments do not match the bounded tool schema")
 	}
 	if mutation {
-		return errors.New("outcome_unknown: the command may have committed; do not automatically retry; inspect retained facts, or explicitly retry a keyed collection or graph request with exactly the same key and input")
+		return errors.New("outcome_unknown: the command may have committed; do not automatically retry; inspect retained facts, or explicitly retry a keyed collection, graph or plan proposal with exactly the same key and input")
 	}
 	return errors.New("unavailable: Conductor could not provide the requested data; no passing evidence was established")
 }

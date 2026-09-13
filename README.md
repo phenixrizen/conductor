@@ -29,6 +29,8 @@ for the new revision.
 - Build and query shared graphs across repositories in the browser, API and MCP,
   with inspected source references, dependency relationships and visible coverage gaps. An optional
   pinned CodeGraph Rust parser extracts symbols during background collection.
+- Propose shared dependent task plans through MCP or browser JSON import; inspect
+  exact source, design and profile pins before separate human execution decisions.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
@@ -63,7 +65,11 @@ exercise the protocol; compatibility with a particular identity provider has not
 yet been certified.
 
 Isolated coding-worker and independent verification components are implemented;
-their coordinated runtime is being connected. GitHub/GitLab publication and tracker
+shared execution plans, separate human authorization and write reservations are
+available through the API. A trusted worker runs related tasks in isolated Docker
+containers, carries earlier changes into dependent tasks, and records independent
+checks through durable Temporal workflows; see
+[execution setup](docs/operations/coordinated-execution.md). GitHub/GitLab publication and tracker
 integrations remain planned. Spec Kit and ADRKit files can be captured as native text; their command/API
 integrations are not implemented. Collected context records what was captured,
 not proof that tests passed or a decision was approved.
