@@ -337,6 +337,18 @@ func (p *Postgres) CheckCollectionWork(ctx context.Context, id, binding string) 
 }
 
 func (p *Postgres) CompleteCollection(ctx context.Context, id, binding string, artifacts []domain.ContextArtifact) (domain.CollectionReceipt, error) {
+	return p.completeCollection(ctx, id, binding, artifacts, nil)
+}
+
+// CompleteCollectionWithCodeGraph commits source and derived index together.
+func (p *Postgres) CompleteCollectionWithCodeGraph(ctx context.Context, id, binding string, artifacts []domain.ContextArtifact, index domain.CodeGraphIndex) (domain.CollectionReceipt, error) {
+	if err := domain.ValidateCodeGraphIndex(index, artifacts); err != nil {
+		return domain.CollectionReceipt{}, err
+	}
+	return p.completeCollection(ctx, id, binding, artifacts, &index)
+}
+
+func (p *Postgres) completeCollection(ctx context.Context, id, binding string, artifacts []domain.ContextArtifact, index *domain.CodeGraphIndex) (domain.CollectionReceipt, error) {
 	work, err := p.CollectionWork(ctx, id, binding)
 	if err != nil {
 		return domain.CollectionReceipt{}, err
@@ -384,6 +396,15 @@ func (p *Postgres) CompleteCollection(ctx context.Context, id, binding string, a
 	}
 	if _, err = gate.tx.Exec(ctx, `INSERT INTO context_receipts(collection_id,digest,snapshot,created_at) VALUES($1,$2,$3,$4)`, id, digest, snapshot, now); err != nil {
 		return receipt, err
+	}
+	if index != nil {
+		indexDigest, e := domain.JSONDigest(index)
+		if e != nil {
+			return receipt, e
+		}
+		if _, e = gate.tx.Exec(ctx, `INSERT INTO context_codegraph_indexes(collection_id,receipt_digest,index_digest,index_data) VALUES($1,$2,$3,$4)`, id, digest, indexDigest, index); e != nil {
+			return receipt, e
+		}
 	}
 	if err = contextAudit(ctx, gate.tx, id, "collection.receipt_recorded", work.Collection.RequesterID, map[string]any{"digest": digest}); err != nil {
 		return receipt, err

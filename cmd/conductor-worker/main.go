@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/codegraph"
 	"github.com/phenixrizen/conductor/internal/collectionworker"
 	"github.com/phenixrizen/conductor/internal/contextworkflow"
 	"github.com/phenixrizen/conductor/internal/store"
@@ -102,6 +103,17 @@ func run() error {
 	activity, err := collectionworker.NewActivity(db, credentials.Resolve, nil)
 	if err != nil {
 		return err
+	}
+	if image := os.Getenv("CONDUCTOR_CODEGRAPH_IMAGE"); image != "" {
+		docker := os.Getenv("CONDUCTOR_DOCKER_BINARY")
+		if docker == "" {
+			docker = "/usr/bin/docker"
+		}
+		adapter, e := codegraph.New(docker, image)
+		if e != nil {
+			return errors.New("CodeGraph requires an immutable image ID and absolute Docker binary")
+		}
+		activity = activity.WithCodeGraph(adapter)
 	}
 	dispatcher, err := collectionworker.NewDispatcher(db, runtime, c.namespace, target, resolveTarget)
 	if err != nil {

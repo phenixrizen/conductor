@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Conductor API
-  version: 0.4.0
+  version: 0.5.0
   description: >-
     The server explicitly selects local or oidc authentication. Local mode requires
     X-Conductor-Actor and exposes only unscoped legacy packages. OIDC mode requires
@@ -386,6 +386,71 @@ paths:
         '409': {description: Stale package revision or inspected receipt digest (revision_conflict), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/repository-graphs:
+    parameters: [{$ref: '#/components/parameters/CollectionWorkspace'}, {$ref: '#/components/parameters/CollectionRepository'}, {$ref: '#/components/parameters/CSRF'}]
+    post:
+      summary: Build an immutable shared graph from inspected repository receipts
+      description: Author permission on every source repository is held through graph/audit commit. The selected anchor must be included. Receipt digests are resolved on the server; no source text or arbitrary graph is accepted. Same workspace/creator key and normalized input returns the existing graph. Graph evidence cannot grant approval or execution authority.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CollectionKey'}, {$ref: '#/components/parameters/BrowserOrigin'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GraphInput'}}}}
+      responses:
+        '201': {description: Immutable graph or its idempotent replay, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryGraph'}}}}
+        '409': {description: Idempotency key already identifies another graph input, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      summary: List graphs readable across every included repository
+      description: Hidden or revoked endpoints hide the entire snapshot before pagination. Selected canonical repository must be a graph source; no counts of hidden graphs are returned.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - {name: before, in: query, schema: {type: string, maxLength: 1024}}
+        - {$ref: '#/components/parameters/HistoryLimit'}
+      responses:
+        '200': {description: Bounded authorized graph page, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryGraphPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/repository-graphs/{id}:
+    parameters: [{$ref: '#/components/parameters/CollectionID'}, {$ref: '#/components/parameters/CollectionWorkspace'}, {$ref: '#/components/parameters/CollectionRepository'}, {$ref: '#/components/parameters/CSRF'}]
+    get:
+      summary: Inspect one immutable graph and explicit source gaps
+      description: Requires current read permission on every source repository. Accepts no query parameters. Source text is retained in context receipts, not graph nodes. Freshness stays unknown.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      responses:
+        '200': {description: Authorized graph snapshot, content: {application/json: {schema: {$ref: '#/components/schemas/RepositoryGraph'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/repository-graphs/{id}/query:
+    parameters: [{$ref: '#/components/parameters/CollectionID'}, {$ref: '#/components/parameters/CollectionWorkspace'}, {$ref: '#/components/parameters/CollectionRepository'}, {$ref: '#/components/parameters/CSRF'}]
+    get:
+      summary: Search or traverse an authorized immutable graph
+      description: Literal case-insensitive name/path search or an exact node ID, never both. Traverse both edge directions to depth 0-5. Unknown, repeated or invalid query fields are rejected. Every returned edge retains both endpoints; bounded results preserve gaps and explicit truncation.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - {name: search, in: query, schema: {type: string, maxLength: 256}}
+        - {name: nodeId, in: query, schema: {type: string, pattern: '^[a-f0-9]{64}$'}}
+        - {name: depth, in: query, schema: {type: integer, minimum: 0, maximum: 5, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200': {description: Bounded structural evidence, content: {application/json: {schema: {$ref: '#/components/schemas/GraphQueryResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 components:
   securitySchemes:
     BrowserCookie:
@@ -731,3 +796,105 @@ components:
           minimum: 1
           description: Last returned event sequence when more events exist; otherwise omitted
     Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, correlationId], properties: {code: {type: string}, message: {type: string}, correlationId: {type: string}}}}}
+
+    GraphInput:
+      type: object
+      additionalProperties: false
+      required: [sources]
+      properties:
+        sources: {type: array, minItems: 1, maxItems: 16, items: {$ref: '#/components/schemas/GraphSource'}}
+    GraphSource:
+      type: object
+      additionalProperties: false
+      required: [repositoryId, collectionId, digest]
+      properties:
+        repositoryId: {type: string, minLength: 1, maxLength: 128}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+    GraphSourceRecord:
+      type: object
+      required: [repositoryId, collectionId, digest, commit, collectedAt, freshness]
+      properties:
+        repositoryId: {type: string}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        commit: {type: string, pattern: '^[a-f0-9]{40}$'}
+        collectedAt: {type: string, format: date-time}
+        freshness: {type: string, const: unknown}
+    GraphNode:
+      type: object
+      required: [id, repositoryId, collectionId, kind, name]
+      properties:
+        id: {type: string, pattern: '^[a-f0-9]{64}$'}
+        repositoryId: {type: string}
+        collectionId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        kind: {type: string, maxLength: 128}
+        name: {type: string, maxLength: 1024}
+        path: {type: string, maxLength: 1024}
+        artifactDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        line: {type: integer, minimum: 0}
+    GraphEdge:
+      type: object
+      required: [from, to, kind, evidence]
+      properties:
+        from: {type: string, pattern: '^[a-f0-9]{64}$'}
+        to: {type: string, pattern: '^[a-f0-9]{64}$'}
+        kind: {type: string}
+        evidence: {type: string, pattern: '^[a-f0-9]{64}$'}
+        provenance: {type: string}
+    GraphGap:
+      type: object
+      required: [repositoryId, state, message]
+      properties:
+        repositoryId: {type: string}
+        path: {type: string}
+        state: {type: string}
+        message: {type: string}
+    GraphSnapshot:
+      type: object
+      required: [schemaVersion, indexer, sources, nodes, edges, gaps, truncated]
+      properties:
+        schemaVersion: {type: integer, const: 1}
+        indexer: {type: string}
+        sources: {type: array, minItems: 1, maxItems: 16, items: {$ref: '#/components/schemas/GraphSourceRecord'}}
+        nodes: {type: array, maxItems: 4096, items: {$ref: '#/components/schemas/GraphNode'}}
+        edges: {type: array, maxItems: 8192, items: {$ref: '#/components/schemas/GraphEdge'}}
+        gaps: {type: array, maxItems: 512, items: {$ref: '#/components/schemas/GraphGap'}}
+        truncated: {type: boolean}
+    RepositoryGraph:
+      type: object
+      required: [id, workspaceId, creatorId, digest, createdAt, snapshot]
+      properties:
+        id: {type: string, pattern: '^[a-f0-9]{32}$'}
+        workspaceId: {type: string}
+        creatorId: {type: string}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        createdAt: {type: string, format: date-time}
+        snapshot: {$ref: '#/components/schemas/GraphSnapshot'}
+    RepositoryGraphPage:
+      type: object
+      required: [graphs]
+      properties:
+        graphs:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [id, digest, createdAt]
+            properties:
+              id: {type: string, pattern: '^[a-f0-9]{32}$'}
+              digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+              createdAt: {type: string, format: date-time}
+        nextBefore: {type: string, maxLength: 1024}
+    GraphQueryResult:
+      type: object
+      required: [graphId, digest, indexer, sources, nodes, edges, gaps, truncated]
+      properties:
+        graphId: {type: string, pattern: '^[a-f0-9]{32}$'}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        indexer: {type: string}
+        sources: {type: array, maxItems: 16, items: {$ref: '#/components/schemas/GraphSourceRecord'}}
+        nodes: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/GraphNode'}}
+        edges: {type: array, maxItems: 8192, items: {$ref: '#/components/schemas/GraphEdge'}}
+        gaps: {type: array, maxItems: 512, items: {$ref: '#/components/schemas/GraphGap'}}
+        truncated: {type: boolean}
