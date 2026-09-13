@@ -83,7 +83,7 @@ func (r *dispatchRuntime) Start(context.Context, string, contextworkflow.Referen
 	return contextworkflow.Observation{RunID: "fixture-run", State: "running"}, nil
 }
 func TestDispatcherNeverReplacesMissingKnownExecution(t *testing.T) {
-	for _, mode := range []string{"new", "known", "expired", "binding", "receipt", "wrong-receipt"} {
+	for _, mode := range []string{"new", "known", "expired", "binding", "receipt", "receipt-running", "receipt-completed", "wrong-receipt"} {
 		t.Run(mode, func(t *testing.T) {
 			item := &store.DeliveryOperation{ID: strings.Repeat("a", 32), Work: store.DeliveryWork{Binding: strings.Repeat("b", 32)}}
 			db := &dispatchDB{item: item}
@@ -97,6 +97,10 @@ func TestDispatcherNeverReplacesMissingKnownExecution(t *testing.T) {
 				item.Mismatch = true
 			case "receipt":
 				db.receipt = strings.Repeat("c", 64)
+			case "receipt-running", "receipt-completed":
+				db.receipt = strings.Repeat("c", 64)
+				runtime.err = nil
+				runtime.lookup = contextworkflow.Observation{RunID: "known", State: strings.TrimPrefix(mode, "receipt-"), Result: &contextworkflow.Result{ReceiptID: item.ID, Digest: db.receipt}}
 			case "wrong-receipt":
 				runtime.err = nil
 				runtime.lookup = contextworkflow.Observation{RunID: "known", State: "completed", Result: &contextworkflow.Result{ReceiptID: item.ID, Digest: strings.Repeat("d", 64)}}
@@ -117,8 +121,12 @@ func TestDispatcherNeverReplacesMissingKnownExecution(t *testing.T) {
 				t.Fatal("replacement execution started")
 			}
 			if mode == "receipt" {
-				if !db.receiptFinished || runtime.lookups != 0 || db.state != "" {
+				if runtime.lookups != 1 || db.state != "unresolved" {
 					t.Fatal("receipt fabricated execution observation")
+				}
+			} else if mode == "receipt-running" || mode == "receipt-completed" {
+				if db.state != strings.TrimPrefix(mode, "receipt-") {
+					t.Fatal("stored receipt substituted for observed execution state")
 				}
 			} else if mode != "new" && db.state != "unresolved" {
 				t.Fatalf("uncertainty concealed: %s", db.state)

@@ -14,7 +14,6 @@ type DispatchStore interface {
 	ClaimDeliveryDispatch(context.Context, string, string) (*store.DeliveryOperation, error)
 	FinishDeliveryDispatch(context.Context, store.DeliveryOperation, string, string, string) error
 	DeliveryOperationReceipt(context.Context, string, string) (string, error)
-	FinishDeliveryReceiptDispatch(context.Context, store.DeliveryOperation) error
 }
 type Runtime interface {
 	Start(context.Context, string, contextworkflow.Reference) (contextworkflow.Observation, error)
@@ -55,15 +54,17 @@ func (d *Dispatcher) Step(ctx context.Context) (bool, error) {
 	}
 	ref := contextworkflow.Reference{ID: item.ID, Binding: item.Work.Binding}
 	id := WorkflowName + "/" + ref.ID
-	if receipt, err := d.db.DeliveryOperationReceipt(ctx, ref.ID, ref.Binding); err != nil {
+	// A receipt prevents replacement execution, but it is not itself a Temporal
+	// completion observation. Keep checking the bound run until its actual state
+	// is known, including after PostgreSQL committed before the workflow response.
+	receipt, err := d.db.DeliveryOperationReceipt(ctx, ref.ID, ref.Binding)
+	if err != nil {
 		return true, err
-	} else if receipt != "" {
-		return true, d.db.FinishDeliveryReceiptDispatch(ctx, *item)
 	}
 
 	observation, err := d.runtime.Lookup(ctx, id, item.RunID, ref)
 	if errors.Is(err, contextworkflow.ErrNotFound) {
-		if item.RunID != "" || item.UncertaintyExpired {
+		if receipt != "" || item.RunID != "" || item.UncertaintyExpired {
 			return finish("unresolved", item.RunID, "history_unavailable")
 		}
 		observation, err = d.runtime.Start(ctx, id, ref)
