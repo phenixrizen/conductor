@@ -133,3 +133,9 @@ background execution. Codex web search is disabled. Requests using unsupported
 fields fail closed. Claude's `maxBudgetUsd` controls the native CLI; independent
 request/token/time bounds apply at the gateway, but no hard currency ceiling or
 provider-account billing cap is claimed.
+
+A gateway response interrupted after partial model output remains a transport
+failure to the native client. The gateway aborts the downstream stream instead of
+manufacturing a clean end-of-response; it does not replay the upstream request.
+Controlled HTTP acceptance covers a provider connection closing before its stated
+response length. This establishes transport behavior, not model-provider completion.

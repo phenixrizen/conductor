@@ -223,6 +223,11 @@ func (p *providerProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if readErr != nil {
+			if readErr != io.EOF {
+				// Preserve upstream interruption after headers or partial SSE events.
+				// Returning normally would manufacture a clean downstream EOF.
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
 	}
