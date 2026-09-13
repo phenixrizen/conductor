@@ -15,9 +15,11 @@ for the new revision.
 
 ## What works today
 
-- Create, revise, submit, inspect, and approve packages through the HTTP API, Go CLI,
-  or interactive terminal workbench.
-- Browse shared changes and filter by repository so teammates can find related work.
+- Create, revise, submit, inspect, and approve packages through the HTTP API and Go CLI.
+- Share work within authenticated workspaces, with repository permissions for
+  reading, authoring, and independent human approval.
+- Browse related packages and history that your workspace and repository grants allow.
+- Use the browser and interactive terminal workbenches for local development.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
 - Capture selected specification, ADR, and other text files from one Git commit,
   with their original content, source IDs, and explicit collection gaps.
@@ -28,19 +30,27 @@ for the new revision.
   edit or approve content that another client has changed.
 
 Developers and agent clients using the **same API and database share the same saved
-context**. Work belongs to the service, not an individual browser or conversation.
-The shared list shows recorded work; live presence and execution tracking are not
-implemented yet.
+context**, subject to their workspace and repository permissions. Work belongs to
+the service, not an individual browser or conversation. Agent identities can read
+and author permitted work; they cannot grant design approval. Live presence and
+execution tracking are not implemented yet.
 
-The current identity header is for local development. Authenticated workspaces,
-repository permissions, coding-agent execution, GitHub/GitLab publication, and
-production integrations are planned. Spec Kit and ADRKit files can be captured as native text;
-their command/API integrations are not implemented. Collected context is evidence
-of what was captured, not proof that tests passed or a decision was approved.
+Authenticated review currently supports the API and noninteractive CLI. An
+operator configures the identity issuer and provisions access; the CLI reads an
+access token from a selected file. The browser and terminal workbenches still use
+an explicit local mode, which cannot access authenticated workspace packages.
+See the [authenticated review guide](docs/operations/authenticated-review.md) for
+setup and the supported token profile. Tests use a synthetic issuer; compatibility
+with a particular identity provider has not yet been established.
 
-Both **GitHub and GitLab** are planned providers for managed repositories: GitHub
-pull requests and GitLab merge requests will follow the same Conductor approval
-and evidence rules. The local Git collector works with a checkout from either
+Coding-agent execution, GitHub/GitLab publication, and tracker integrations remain
+planned. Spec Kit and ADRKit files can be captured as native text; their command/API
+integrations are not implemented. Collected context records what was captured,
+not proof that tests passed or a decision was approved.
+
+**GitHub and GitLab** repositories can be registered for governed review. Their
+remote delivery adapters are planned: pull requests and merge requests will follow
+the same Conductor approval and evidence rules. The local Git collector works with a checkout from either
 provider; remote discovery, publication, and checks adapters are still pending.
 
 Each workspace will choose **one work tracker: Linear or Jira**. Conductor will
@@ -58,11 +68,13 @@ and frontend dependencies have committed lockfiles.
 ```bash
 ./scripts/start-local-db.sh
 export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable'
-CONDUCTOR_ADDR=127.0.0.1:8080 go run ./cmd/conductord
+CONDUCTOR_AUTH_MODE=local CONDUCTOR_ADDR=127.0.0.1:8080 go run ./cmd/conductord
 ```
 
-The startup script creates a persistent local PostgreSQL volume and initializes an
-empty database. It also works with Docker Snap when the checkout is under `/mnt`.
+The startup script creates a persistent PostgreSQL volume and initializes empty
+databases with ordered migrations. Existing review data is retained; an older
+database stops setup with explicit upgrade instructions. It also works with Docker
+Snap when the checkout is under `/mnt`.
 If Docker access has just been enabled, start a new login session or use
 `sg docker -c './scripts/start-local-db.sh'` until your session has the new group.
 
@@ -111,10 +123,12 @@ configuration, troubleshooting, and database lifecycle.
 
 - **Go and Bubble Tea:** HTTP API, domain rules, PostgreSQL store, shared client,
   CLI, and interactive terminal workbench.
-- **PostgreSQL:** shared package revisions, approval records, and audit history.
+- **PostgreSQL:** shared package revisions, approvals, workspace membership,
+  repository permissions, and audit history.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
 
-The current implementation focuses on durable review and shared context. Temporal
+The current implementation focuses on durable review, shared context, and
+controlled team access. Browser sign-in is the next interface increment. Temporal
 workflow execution and external adapters are later increments. See the
 [system architecture](docs/architecture/system.md) and
 [shared-context model](docs/architecture/collaboration.md) for those boundaries.
@@ -149,6 +163,7 @@ invariants, and update documentation alongside behavior.
 - [Documentation index](docs/README.md)
 - [Package review specification](specs/001-work-package-review/spec.md)
 - [Context and history specification](specs/002-context-history/spec.md)
+- [Authenticated workspace specification](specs/003-workspace-access/spec.md)
 - [OpenAPI contract](api/openapi.yaml)
 - [AI-DLC inspiration and plan review](docs/architecture/aidlc-plan-review.md)
 - [Proposed architectural decisions](docs/adr/)

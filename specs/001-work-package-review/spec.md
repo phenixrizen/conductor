@@ -1,7 +1,8 @@
 # Feature 001: Durable work-package review
 
-**Status:** Implemented for local development; shared deployment remains blocked
-on authentication and authorization.
+**Status:** Durable review is implemented. Authenticated API/CLI review and
+workspace/repository isolation are added by
+[Feature 003](../003-workspace-access/spec.md). Browser/TUI review remains local-only.
 
 ## Goal
 
@@ -14,9 +15,11 @@ then edit it and observe that the earlier approval is no longer effective.
 - **Author:** creates and revises a package and requests review.
 - **Reviewer:** independently inspects and approves a submitted revision.
 
-Development authentication uses explicit local identities. The server derives the
-approval actor from the authenticated request; approval payloads never contain an
-actor.
+Local development uses explicit local identities. In authenticated mode, verified
+issuer/subject pairs resolve to server-owned principals and repository capabilities.
+Approval requires an independent human principal with permission; agent identities
+cannot approve. The server derives the actor, and approval payloads never contain
+one. Persona selectors and token role claims confer no rights.
 
 ## Rules and acceptance criteria
 
@@ -73,9 +76,10 @@ schema evolution without lossy UI round trips.
 
 ## Non-goals
 
-Agent execution, production authentication, Temporal, GitHub/GitLab delivery,
-Linear/Jira synchronization, CodeGraph, Groundcover, artifact storage, and automatic
-merge are not part of this slice.
+Agent execution, Temporal, GitHub/GitLab delivery, Linear/Jira synchronization,
+CodeGraph, Groundcover, artifact storage, and automatic merge are not part of this
+slice. Authentication and workspace/repository authorization are specified
+separately in Feature 003.
 
 ## Implementation status
 
@@ -92,5 +96,7 @@ without an implicit refresh, renewed inspection, independent approval, and revis
 invalidation through the API and PostgreSQL. See the
 [terminal guide](../../docs/operations/terminal-review.md) and
 [local development guide](../../docs/operations/local-development.md) to reproduce
-these checks. These complete the local Milestone 1 workflow; they do not establish
-production identity, workspace isolation, or external integration readiness.
+these checks. They complete the local Milestone 1 workflow. Feature 003 separately
+adds signed-token and real PostgreSQL acceptance for collaboration, workspace and
+repository isolation, revocation, and access-audit rollback. Synthetic identity
+tests do not establish vendor compatibility or external integration readiness.

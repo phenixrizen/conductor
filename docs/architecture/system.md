@@ -7,8 +7,8 @@ later milestones, coordinates context gathering, implementation, verification,
 and delivery. It governs coding assistants rather than replacing them.
 
 Conductor will manage application repositories on both GitHub and GitLab. Each
-repository's configured provider supplies its pull/merge requests, checks, and
-delivery facts through a provider-specific adapter. Both follow the same Conductor
+repository's future provider adapter will supply pull/merge requests, checks, and
+delivery facts. Both follow the same Conductor
 approval and evidence rules.
 
 GitHub also hosts Conductor's own source. Project hosting is a separate
@@ -17,9 +17,10 @@ the [repository provider plan](repository-providers.md) for scope and boundaries
 
 ## Target system context
 
-> **Status:** The local work-package review workflow is implemented. Production
-> authentication, MCP, and components with dashed borders are planned and are not
-> available in the current release.
+> **Status:** Durable review and authenticated workspace access through the API
+> and noninteractive CLI are implemented. Browser/TUI review remains local-only.
+> MCP, execution, delivery adapters, and components with dashed borders are planned.
+> Identity-provider compatibility has not been established beyond synthetic tests.
 
 ```mermaid
 flowchart LR
@@ -29,10 +30,11 @@ flowchart LR
 
     subgraph Conductor[Conductor control plane]
         Interfaces[Web / CLI / TUI]
-        API[Authenticated API and MCP]
+        API[Authenticated API]
+        MCP[Future MCP interface]
         Policy[Domain policy and context]
         Engine[Durable orchestration]
-        Gate[Authorization and verification gate]
+        Gate[Future execution verification gate]
     end
 
     subgraph Evidence[Context and evidence providers]
@@ -57,6 +59,7 @@ flowchart LR
     Developer --> Interfaces
     DomainOwner --> Interfaces
     Interfaces --> API
+    MCP -. planned commands .-> API
     API --> Policy
     Policy --> Engine
     Engine --> Gate
@@ -68,7 +71,7 @@ flowchart LR
     GitHub -->|hosts this project| Conductor
 
     classDef planned stroke-dasharray: 6 4,fill:#f7f7f7,color:#555;
-    class Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitHubDelivery,GitLab,Tracker planned;
+    class MCP,Engine,Gate,SpecKit,ADRKit,CodeGraph,Groundcover,Claude,Codex,Workers,GitHubDelivery,GitLab,Tracker planned;
 ```
 
 ## Architectural layers
@@ -78,13 +81,14 @@ flowchart TB
     UI[React workbench / Go CLI / Bubble Tea TUI]
     Client[Shared API clients]
     HTTP[HTTP command boundary]
+    Access[Verified identity and repository permissions]
     Domain[Domain service and approval policy]
-    Store[(PostgreSQL revisions, approvals, audit)]
+    Store[(PostgreSQL review and authorization records)]
     Temporal[Temporal workflows]
     Artifacts[(S3-compatible artifact storage)]
     Integrations[GitHub / GitLab / Linear or Jira / context / assistants]
 
-    UI --> Client --> HTTP --> Domain --> Store
+    UI --> Client --> HTTP --> Access --> Domain --> Store
     Domain -. Milestone 2+ .-> Temporal
     Domain -. Milestone 2+ .-> Artifacts
     Temporal -. Milestone 2+ .-> Integrations
@@ -93,15 +97,18 @@ flowchart TB
     class Temporal,Artifacts,Integrations planned;
 ```
 
-All interfaces must invoke the same domain command path. PostgreSQL owns review
-state. Temporal will eventually own execution sequencing; a database projection of
-run progress must not become a second workflow authority.
+All interfaces invoke the same domain command path. The authenticated service
+wraps those commands in a transaction that resolves the principal, checks workspace
+membership and repository capabilities, and holds permissions through command
+commit. PostgreSQL owns review state and authorization metadata. Temporal will
+eventually own execution sequencing; a database projection of run progress must not
+become a second workflow authority.
 
 ## Trust boundaries
 
 ```mermaid
 flowchart LR
-    User[Authenticated person]
+    User[Authenticated person or agent]
     LocalHeader[Local identity header]
     API[Conductor API]
     DB[(PostgreSQL)]
@@ -111,8 +118,8 @@ flowchart LR
     GitHubDelivery[GitHub]
     GitLab[GitLab]
 
-    User -->|production identity: planned| API
-    LocalHeader -->|development only| API
+    User -->|verified access token and server grants| API
+    LocalHeader -->|explicit local mode / unscoped data only| API
     API --> DB
     Untrusted -->|evidence, never authority| API
     API -. approved package .-> Worker
@@ -127,15 +134,24 @@ flowchart LR
     end
 ```
 
-The current `X-Conductor-Actor` header is intentionally local-only. Shared
-deployment is blocked until organizational identity and repository-aware
-authorization exist. Future workers do not receive publication credentials.
+`CONDUCTOR_AUTH_MODE=local` permits the `X-Conductor-Actor` header only on a
+loopback-bound server, with access to unscoped local data. OIDC mode rejects that
+header and verifies the configured HTTPS issuer, audience, and supported signed
+access-token profile. It maps issuer/subject to server-owned principal records;
+client role claims cannot alter human/agent kind or repository capabilities.
+
+The API and noninteractive CLI support authenticated review. The browser/TUI login
+flow and compatibility validation against real identity providers remain pending.
+Configuration and transport requirements are in the
+[authenticated review guide](../operations/authenticated-review.md). Future workers
+do not receive publication credentials. No execution or delivery integration runs.
 
 ## State ownership
 
 | State | Authority | Current status |
 |---|---|---|
-| Package revisions, submissions, approvals, audit events | PostgreSQL | Implemented for local review |
+| Package revisions, submissions, approvals, audit events | PostgreSQL | Implemented for local and authenticated review |
+| Principals, workspace membership, canonical repository ownership, access grants | PostgreSQL | Implemented; operator-provisioned and audited |
 | Workflow sequencing, waits, retries, cancellation | Temporal | Planned |
 | Immutable large artifacts | S3-compatible storage | Planned |
 | Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |
@@ -147,7 +163,9 @@ authorization exist. Future workers do not receive publication credentials.
 
 ```mermaid
 flowchart LR
-    M1[1. Durable package review] --> M2[2. Orchestration and context]
+    M1[1. Durable package review] --> Access[Authenticated API and CLI review]
+    Access --> Browser[Browser sign-in]
+    Browser --> M2[2. Orchestration and context]
     M2 --> M3[3. One assistant to draft GitHub PR or GitLab MR]
     M3 --> M4[4. Assistant choice and Linear or Jira synchronization]
     M4 --> M5[5. Cross-repository runtime intelligence]
@@ -155,12 +173,14 @@ flowchart LR
 
     classDef active fill:#e8f1ec,stroke:#244c3f,stroke-width:2px;
     classDef planned fill:#f7f7f7,stroke:#777,stroke-dasharray:6 4;
-    class M1 active;
-    class M2,M3,M4,M5,M6 planned;
+    class M1,Access active;
+    class Browser,M2,M3,M4,M5,M6 planned;
 ```
 
-Agent execution remains disabled until the review foundation, production identity,
-authorization, durable recovery, and context evidence meet their exit criteria.
+Authenticated API/CLI review is the current completed slice; browser sign-in is
+next. Agent execution remains disabled pending its own verified identity,
+authorization, durable recovery, context, and execution boundaries. Review access
+alone does not authorize execution.
 
 Each workspace selects one tracker, Linear or Jira. Work-tracking integrations
 link its tickets to packages and GitHub/GitLab delivery records across repositories.

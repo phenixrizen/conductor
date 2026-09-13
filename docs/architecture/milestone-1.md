@@ -13,7 +13,10 @@ transactional audit rollback, missing packages, and connection-pool reopen.
 An opt-in acceptance suite separately restarts the actual API and PostgreSQL
 processes and verifies preserved content, approvals, history, audit, and discovery.
 Real PTY acceptance exercises the terminal through that same API/store path.
-Authentication and authorization remain required before shared deployment.
+[Feature 003](../../specs/003-workspace-access/spec.md) adds authenticated workspace
+and repository review through the API and noninteractive CLI. Browser and terminal
+workbench review remain local-only; authenticated browser sign-in is the next
+interface increment.
 
 ## Domain model
 
@@ -25,6 +28,8 @@ erDiagram
 
     CHANGE {
         text id PK
+        text workspace_id FK
+        text repository_id FK
         timestamptz created_at
     }
     WORK_PACKAGE_REVISION {
@@ -58,6 +63,10 @@ erDiagram
 A work package is the latest immutable revision plus an **effective** approval, if
 one exists for the same `(change_id, revision, digest)`. Historical approval rows
 are retained; the application never flips a freely writable `approved` column.
+Feature 003 adds immutable workspace/repository ownership outside revision content.
+Legacy local packages retain null ownership; migrating them does not change content,
+digests, authors, or approval records. The [shared context model](collaboration.md)
+describes permissions and the separation between local and authenticated data.
 
 ## Review lifecycle
 
@@ -93,9 +102,9 @@ sequenceDiagram
 
     Reviewer->>Client: Inspect revision N and digest D
     Client->>API: POST approval {revision: N, digest: D}
-    API->>API: Derive actor from authenticated request
-    API->>Service: Approve(change, actor, N, D)
-    Service->>DB: Begin transaction and lock change
+    API->>API: Establish request identity and selected scope
+    API->>Service: Approve(change, identity, scope, N, D)
+    Service->>DB: Begin transaction, resolve principal and permissions, lock change
     DB-->>Service: Current immutable revision
     Service->>Service: Validate submitted, current, digest, independent reviewer
     alt exact content is still current
@@ -163,11 +172,17 @@ uncertain mutation outcomes block further writes until explicit inspection.
 8. An approval is effective only for its referenced current revision and digest.
 9. Unknown content fields survive because content is stored as structured JSON.
 10. Missing evidence or unavailable integrations cannot be represented as passing.
+11. Authenticated ownership is immutable; content labels do not change access.
+12. Agent principals cannot approve, even with a configured approval grant.
+13. Permission checks and consequential review writes share one transaction.
 
 ## Known limitations
 
-- Local actor headers are not a production authentication mechanism.
-- Package-level and repository-level authorization are not yet implemented.
+- Local actor headers are development identity only and cannot access workspace
+  packages. Browser and TUI review still use this explicit loopback mode.
+- Authenticated API/CLI access supports the documented signed access-token profile.
+  Synthetic issuer tests do not establish compatibility with a real identity vendor;
+  interactive login and browser/TUI authentication remain pending.
 - No Temporal workflow, assistant, GitHub/GitLab delivery, Linear/Jira, or runtime adapter
   runs. Local Git context collection is available as described in Feature 002.
 - Shared discovery, historical revision inspection, and audit-query endpoints are

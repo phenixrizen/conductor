@@ -1,7 +1,8 @@
 # Feature 002: inspectable history and pinned repository context
 
-**Status:** Implemented for local development; shared deployment requires production
-identity and repository permissions.
+**Status:** Context and history are implemented. Authenticated API/CLI access is
+covered by [Feature 003](../003-workspace-access/spec.md); browser/TUI use remains
+local-development-only.
 
 ## Outcome
 
@@ -41,8 +42,9 @@ and see missing context without confusing collection with successful verificatio
     They confer no permissions and do not represent an authenticated role model.
 11. Developers and agent clients pointed at the same Conductor API use one shared
     PostgreSQL dataset. Work is discoverable through a paginated change list and an
-    exact repository-identity filter; knowing another person's change ID is not
-    required to find their context.
+    exact repository-label filter; knowing another person's change ID is not
+    required to find their context. Authenticated mode additionally enforces
+    canonical workspace/repository permissions before pagination.
 12. Shared listings show the latest package revision and its author/approval view.
     Related work links to recoverable package content and audit history. It does
     not claim that a developer or agent is currently executing a task.
@@ -59,18 +61,21 @@ Spec Kit or ADRKit command/API adapter.
 
 The server never accepts a filesystem path to execute a context collection.
 Snapshots are author-supplied evidence; digest validation checks internal integrity,
-not independent provenance or repository authorization. The current local actor
-header remains local-development-only. Production identity and repository-aware
-permissions remain prerequisites for shared deployment. Execution is disabled.
+not independent provenance or remote repository access. The local actor header
+remains local-development-only and cannot inspect authenticated workspace packages.
+Execution is disabled.
 
-Repository identity is currently supplied by the author and matched exactly for
-discovery. It is a grouping label, not proof of repository access or a permission
-boundary. A future authenticated workspace will own canonical repository identity
-and membership rather than trusting a client-supplied role or grouping label.
+A snapshot's repository string is author-supplied and matched exactly for optional
+discovery filtering. It remains a grouping label. Feature 003 separately establishes
+immutable canonical repository ownership, workspace membership, and server-owned
+capabilities for every current/historical read and mutation. Changing a snapshot
+label cannot change ownership or grant permissions. Legacy packages remain unscoped
+and retain their original revision digests and review history.
 
 ## Deferred work
 
-Production identity, role assignments, policy-driven required evidence, automated
-context refresh, artifact storage, TUI expansion, execution attempts, and workflow
-orchestration remain separate increments. This feature does not waive the remaining
-Milestone 1 exit criteria or accept proposed ADRs.
+Interactive browser/TUI authentication, policy-driven required evidence, automated
+context refresh, artifact storage, execution attempts, and workflow orchestration
+remain separate increments. API/CLI authentication and operator-managed access are
+implemented in Feature 003; compatibility with real identity providers remains
+unverified. This feature does not accept proposed ADRs or authorize execution.
