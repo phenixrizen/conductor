@@ -19,7 +19,9 @@ sign-in using authorization code flow, PKCE, nonce/state validation, and protect
 server-managed sessions. Browser ID-token validation remains separate from API
 access-token validation. The workbench uses the same stored permissions and exact
 review command path, and clears inspection when identity or scope changes.
-Authenticated terminal access follows through that same boundary.
+[Feature 005](../005-authenticated-terminal/spec.md) adds authenticated terminal
+access through that same boundary, with a fixed credential and scope, capability
+discovery, and explicit recovery. It does not add interactive CLI token acquisition.
 
 Durable external execution remains later work, after the authenticated review
 surfaces and recovery contracts are exercised. Each subsequent increment belongs

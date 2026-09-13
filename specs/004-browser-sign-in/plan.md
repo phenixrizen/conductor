@@ -16,9 +16,10 @@
 
 ## Next increment
 
-Extend authenticated terminal review using the existing Go client, server-provided
-identity, and repository capabilities. Keep terminal file preview, cancellation,
-exact revision confirmation, and ambiguous-outcome recovery. Then define one
+[Feature 005](../005-authenticated-terminal/spec.md) now implements authenticated
+terminal review using the existing Go client, server-provided identity, and
+repository capabilities. It preserves file preview, cancellation, exact revision
+confirmation, and ambiguous-outcome recovery. The next increment defines one
 durable execution workflow with its outbox and reconciliation boundary before
 introducing Temporal or external repository/tracker adapters.
 

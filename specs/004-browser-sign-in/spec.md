@@ -62,7 +62,8 @@ An account label or review perspective never establishes authority.
 ## Boundaries
 
 The browser reviews saved packages and their history. Package authoring remains
-available through the CLI/API. Authenticated TUI access, CLI token acquisition,
+available through the CLI/API and the authenticated terminal in
+[Feature 005](../005-authenticated-terminal/spec.md). CLI token acquisition,
 provider-specific certification, session refresh, federated logout, and deployment
 automation are following work. Execution, publication, and tracker synchronization
 remain separate capabilities. No ADR is accepted by this implementation.
