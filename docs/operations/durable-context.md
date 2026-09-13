@@ -44,7 +44,7 @@ and verify its published archive checksum before extracting it. The tested Linux
 amd64 archive SHA-256 is
 `6f0afac1e9ddea71f480c43a49f5db5167a244c21db923707f069a79bcabdfea`.
 `temporal --version` must report CLI 1.8.3 and server 1.31.2. The release binary avoids
-requiring Go 1.26.4 to build the CLI; Conductor uses Go 1.24.
+requiring Go 1.26.4 to build the CLI; Conductor now pins Go 1.26.8.
 
 Run the persistent local workflow server in its own terminal:
 

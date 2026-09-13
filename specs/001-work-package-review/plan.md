@@ -58,8 +58,8 @@ first remote operation: author-requested context collection from an operator-ena
 GitHub or GitLab repository, immutable shared receipts, and explicit attachment to
 an inspected package revision. The API/CLI request boundary, PostgreSQL outbox, and
 local Temporal worker preserve review authority separately from execution progress.
-Collection controls are opt-in; the web's structured version 2 context display and
-interactive collection controls remain unimplemented. Targeted signed-issuer and
+Collection controls are opt-in; PR 14 adds structured version 2 browser inspection
+and browser/authenticated terminal collection controls. Targeted signed-issuer and
 PostgreSQL checks exercise scope, revocation, receipt integrity, and attachment.
 Controlled provider fixtures do not prove live provider compatibility. Full runtime
 acceptance and operational limits are tracked in the
@@ -85,3 +85,6 @@ workflow has an implementation; the wider execution sequence remains a proposal.
 It also reviews human perspectives, stage contracts, verification, recovery, and
 knowledge reuse alongside the planned Spec Kit and ADRKit integrations. These are
 proposals for architectural review; they do not grant approval or enable execution.
+
+The complete platform is the current release target; follow the
+[full release contract](../../docs/full-release.md) and its stacked review order.

@@ -44,3 +44,9 @@ Publish each increment on a focused branch with a ready PR targeting current
 `main`. The implementing agent integrates prerequisites and resolves dependencies
 before requesting review; reviewers must not need to infer a merge order across
 stacked PRs. Merge remains a human action; successful tests do not grant approval.
+
+## Current release delivery instruction
+
+The user authorized stacked PRs on 2026-09-13 for the full release. This supersedes
+the earlier main-only sequencing guidance above. Follow the required gates and
+explicit dependency order in the [full release contract](../../docs/full-release.md).

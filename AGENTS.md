@@ -9,8 +9,11 @@ Conductor is an architect-governed platform for software design and agentic
 programming: **Engineering intent, orchestrated.** Implement it incrementally as
 working, tested software. Favor a small complete workflow over broad scaffolding.
 
-The current focus is durable work-package review, shared repository context, and
-authenticated workspace access. Read these before changing behavior:
+The current target is the full coordinated platform, including cross-repository
+relationships, CodeGraph, MCP, coding agents, delivery and tracker integration.
+Read `docs/full-release.md` for required gates and the user-authorized stacked PR
+workflow. A partial pilot does not satisfy that release target.
+Read these before changing behavior:
 
 1. `docs/README.md` — documentation map and status vocabulary.
 2. `specs/001-work-package-review/spec.md` — normative feature behavior.
@@ -94,6 +97,7 @@ packages to mirror the target diagram.
 | `cmd/conductord/` | HTTP control-plane server |
 | `cmd/conductor-worker/` | Trusted local Temporal worker and context dispatcher |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
+| `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
 | `internal/domain/` | Domain types, invariants, and typed errors |
 | `internal/service/` | Version-checked use cases and command orchestration |
 | `internal/api/` | HTTP transport, explicit authentication modes, and error mapping |
@@ -170,6 +174,12 @@ packages to mirror the target diagram.
   live GitHub/GitLab compatibility. See the durable-context runbook for tested bounds.
 
 ## Go conventions
+
+- The module requires Go 1.25 and pins the tested Go 1.26.8 toolchain for MCP SDK
+  1.7.0. Run checks with that toolchain; keep its version documented with upgrades.
+- MCP stdio uses one token-file credential and fixed workspace/repository until
+  exit. Expose no approval tool or caller-selected identity. Preserve exact write
+  inputs without preflight refreshes and keep stdout exclusively for MCP frames.
 
 - Keep one Go module until a demonstrated isolation or release requirement justifies
   another. If modules are added, test every module independently.
@@ -291,6 +301,14 @@ packages to mirror the target diagram.
   version 1 extensions and show full escaped JSON for uninterpreted content.
 
 ## Documentation
+
+- The user explicitly requested stacked PRs on 2026-09-13. Target each PR at its
+  immediate prerequisite, record exact dependencies and review order, and reconcile
+  the stack as earlier PRs merge. This supersedes older main-only PR guidance.
+  Do not force-push or merge without explicit authority.
+- The selected CodeGraph upstream is `https://github.com/colbymchenry/codegraph`.
+  Inspect and pin its actual source/release; similarly named Rust projects are not
+  substitutes. Keep native/fallback indexing capabilities and evidence explicit.
 
 - Update the feature spec, plan, OpenAPI contract, architecture guide, runbook, and
   implementation status whenever the corresponding behavior changes.
