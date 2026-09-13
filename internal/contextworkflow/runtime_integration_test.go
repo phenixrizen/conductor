@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/temporaltest"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
@@ -89,24 +90,22 @@ func (s *temporalServer) start() {
 	}
 	s.done = make(chan error, 1)
 	go func(cmd *exec.Cmd, done chan error) { done <- cmd.Wait() }(s.cmd, s.done)
-	deadline := time.Now().Add(40 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-s.done:
-			s.cmd = nil
-			_ = s.log.Close()
-			s.t.Fatalf("owned Temporal process exited before readiness: %v", err)
-		default:
-		}
-		conn, err := net.DialTimeout("tcp", s.address, 250*time.Millisecond)
+	readyCtx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	ready := make(chan error, 1)
+	go func() { ready <- temporaltest.AwaitReady(readyCtx, s.address, "conductor-acceptance") }()
+	select {
+	case err := <-s.done:
+		s.cmd = nil
+		_ = s.log.Close()
+		s.t.Fatalf("owned Temporal process exited before readiness: %v", err)
+	case err := <-ready:
 		if err == nil {
-			_ = conn.Close()
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		s.stop()
+		s.t.Fatal(err)
 	}
-	s.stop()
-	s.t.Fatal("owned Temporal process did not become ready")
 }
 
 func (s *temporalServer) stop() {
