@@ -11,6 +11,11 @@ type graphCreateArgs struct {
 	IdempotencyKey string               `json:"idempotencyKey"`
 	Sources        []domain.GraphSource `json:"sources"`
 }
+type graphArtifactArgs struct {
+	ID     string                    `json:"id"`
+	Source domain.GraphArtifactQuery `json:"source"`
+}
+
 type graphQueryArgs struct {
 	ID     string `json:"id"`
 	Search string `json:"search,omitempty"`
@@ -43,6 +48,12 @@ func (b *Bridge) registerGraphs() {
 			return nil, domain.ErrInvalidInput
 		}
 		return b.api.QueryRepositoryGraph(ctx, a.ID, query)
+	})
+	addTool(b, "conductor_read_graph_source", "Read bounded retained text from any repository in the inspected graph without changing this session's fixed scope. Capture the exact graph digest, source tuple and literal path. Every included repository requires current read access. Missing/unavailable/truncated source and unknown freshness remain explicit; this never fetches newer source, executes code or exposes Git bundles.", schema(map[string]any{"id": id, "source": schema(map[string]any{"graphDigest": digest, "repositoryId": stringSchema(128), "collectionId": id, "receiptDigest": digest, "fullSourceDigest": digest, "path": stringSchema(1024)}, "graphDigest", "repositoryId", "collectionId", "receiptDigest", "path")}, "id", "source"), false, true, func(ctx context.Context, a graphArtifactArgs) (any, error) {
+		if domain.ValidateGraphArtifactQuery(a.Source) != nil {
+			return nil, domain.ErrInvalidInput
+		}
+		return b.api.GetRepositoryGraphArtifact(ctx, a.ID, a.Source)
 	})
 	b.server.AddResource(&mcp.Resource{Name: "repository-graphs", URI: b.baseURI + "/graphs", Description: "First bounded page of authorized cross-repository graph snapshots. Use conductor_list_graphs for continuation.", MIMEType: "application/json"}, b.readResource)
 	b.server.AddResourceTemplate(&mcp.ResourceTemplate{Name: "repository-graph", URITemplate: b.baseURI + "/graphs/{id}", Description: "Immutable graph and receipt provenance. Every source repository remains subject to current authorization.", MIMEType: "application/json"}, b.readResource)

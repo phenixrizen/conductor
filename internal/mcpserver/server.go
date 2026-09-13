@@ -52,6 +52,7 @@ type API interface {
 	GetRepositoryGraph(context.Context, string) (domain.RepositoryGraph, error)
 	ListRepositoryGraphs(context.Context, string, int) (domain.RepositoryGraphPage, error)
 	QueryRepositoryGraph(context.Context, string, domain.GraphQuery) (domain.GraphQueryResult, error)
+	GetRepositoryGraphArtifact(context.Context, string, domain.GraphArtifactQuery) (domain.GraphArtifactResult, error)
 }
 
 type Bridge struct {

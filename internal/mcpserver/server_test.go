@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -120,7 +121,7 @@ func TestToolsStrictSchemasAndExactMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 28 || list.CacheScope != "private" || list.TTLMs != 0 {
+	if len(list.Tools) != 29 || list.CacheScope != "private" || list.TTLMs != 0 {
 		t.Fatalf("tool catalog: %d %+v", len(list.Tools), list.Cacheable)
 	}
 	for _, tool := range list.Tools {
@@ -292,5 +293,42 @@ func TestGraphToolsPreserveSourceTuplesAndQueryBounds(t *testing.T) {
 	f.mu.Unlock()
 	if _, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: bridge.baseURI + "/graphs/" + graphID}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGraphSourceReadKeepsExactInspectedTupleAndFixedScope(t *testing.T) {
+	_, session, f := newTestBridge(t)
+	id := strings.Repeat("a", 32)
+	source := map[string]any{"graphDigest": strings.Repeat("b", 64), "repositoryId": "related-library", "collectionId": strings.Repeat("c", 32), "receiptDigest": strings.Repeat("d", 64), "fullSourceDigest": strings.Repeat("e", 64), "path": "src/a #?.go"}
+	f.mu.Lock()
+	before := len(f.requests)
+	f.mu.Unlock()
+	if result := call(t, session, "conductor_read_graph_source", map[string]any{"id": id, "source": source}); result.IsError {
+		t.Fatalf("read: %+v", result)
+	}
+	f.mu.Lock()
+	requests := append([]observedRequest(nil), f.requests[before:]...)
+	f.mu.Unlock()
+	if len(requests) != 1 || requests[0].Method != "GET" || requests[0].Path != "/api/v1/repository-graphs/"+id+"/artifact" {
+		t.Fatalf("unexpected source read: %+v", requests)
+	}
+	query, err := url.ParseQuery(requests[0].Query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range source {
+		if query.Get(key) != value {
+			t.Fatalf("source tuple changed: %s", key)
+		}
+	}
+	for _, bad := range []map[string]any{{"id": id, "source": source, "workspaceId": "other"}, {"id": id, "source": map[string]any{"graphDigest": source["graphDigest"], "repositoryId": "related-library", "collectionId": source["collectionId"], "receiptDigest": source["receiptDigest"], "path": "../secret"}}, {"id": id, "source": map[string]any{"path": "README.md"}}} {
+		if result := call(t, session, "conductor_read_graph_source", bad); !result.IsError {
+			t.Fatal("unsafe source read accepted")
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) != before+1 {
+		t.Fatal("invalid source query reached API")
 	}
 }

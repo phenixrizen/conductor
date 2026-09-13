@@ -32,3 +32,6 @@ authorization and explicit coverage gaps. Signed PostgreSQL acceptance covers
 cross-repository reads, revocation, malformed tuples and paths, and bounded text
 from selected receipts and full Git source bundles. Browser/MCP controls remain
 a separate parent release-stack increment.
+
+Browser and MCP artifact controls: signed PostgreSQL/Chromium/stdio tests pass exact
+related-source pins, fixed anchor, altered text rejection and revocation clearing.

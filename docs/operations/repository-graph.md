@@ -143,3 +143,16 @@ revocation of any graph endpoint, forged tuples and identity, path/query bounds,
 selected-path gaps and real Git bundle text outside the selected-path receipt.
 The latter uses an explicitly synthetic unsupported extraction fact; it proves
 retention and authorization, not CodeGraph execution.
+
+In the browser, choose **Retained source repository** and a literal path inside the
+inspected graph, or **Read source** on a query node. The workspace and graph anchor
+stay fixed while the server checks every repository grant. The view displays exact
+source digests, retained text, coverage and unknown freshness. Text digest mismatch,
+missing retained content and source access loss are explicit; changing scope or
+losing source access clears the graph and text.
+
+Agents use `conductor_read_graph_source` with the same inspected graph/source tuple
+and literal path. MCP output remains bounded and untrusted; the tool exposes no Git
+bundle or fresh provider read. Signed stdio/PostgreSQL acceptance verifies related
+source reads and revocation, and real browser acceptance verifies source selection,
+exact scope/pins, altered text rejection and cached source clearing.

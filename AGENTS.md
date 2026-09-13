@@ -138,6 +138,10 @@ packages to mirror the target diagram.
   digests. An uncertain response retains the exact input/key for explicit retry.
   Scope changes and source denial clear the captured graph and source selections.
 
+- Graph source reads capture the entire immutable graph/source tuple and literal
+  path while keeping the session anchor fixed. Hold every source grant through the
+  read, return bounded retained text with explicit gaps, and never expose bundles
+  or refresh source. Browser denial clears both graph and cached source text.
 - A repository graph is visible only while the principal can read every included
   repository. Apply this before pagination and retain explicit coverage gaps and
   unknown freshness. Graph creation projects stored receipts and indexes; it must

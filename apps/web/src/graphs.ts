@@ -31,3 +31,15 @@ export function validateGraph(value: RepositoryGraph, access: BrowserAccess, exp
     || typeof value.creatorId !== 'string' || !Number.isFinite(Date.parse(value.createdAt)) || value.snapshot?.schemaVersion !== 1) throw new Error('This graph does not match the inspected workspace.');
   validateGraphData(value.snapshot, access);
 }
+
+export interface GraphArtifact { graphId:string; digest:string; source:GraphSourceRecord; artifact:{path:string;state:'collected'|'missing'|'unavailable'|'truncated';blobOID?:string;digest?:string;text?:string;message?:string};coverage:'selected_paths'|'full_source';coverageTruncated:boolean }
+export async function validateGraphArtifact(value:GraphArtifact, graph:RepositoryGraph, source:GraphSourceRecord, path:string) {
+  if(!value||value.graphId!==graph.id||value.digest!==graph.digest||!value.source||Object.entries(source).some(([key,v])=>value.source[key as keyof GraphSourceRecord]!==v)||value.source.fullSourceDigest!==source.fullSourceDigest||value.coverage!==(source.fullSourceDigest?'full_source':'selected_paths')||typeof value.coverageTruncated!=='boolean'||!value.artifact||value.artifact.path!==path||!['collected','missing','unavailable','truncated'].includes(value.artifact.state))throw new Error('The source does not match the inspected graph and exact source tuple.');
+  const a=value.artifact;
+  if(a.message!==undefined&&typeof a.message!=='string'||a.blobOID!==undefined&&!isHex(a.blobOID,40))throw new Error('The source metadata is incomplete.');
+  if(a.state==='collected'){
+    if(typeof a.text!=='string'||!isHex(a.digest,64)||new TextEncoder().encode(a.text).length>65536)throw new Error('The retained source text is incomplete or oversized.');
+    const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(a.text))),b=>b.toString(16).padStart(2,'0')).join('');
+    if(digest!==a.digest)throw new Error('The displayed source does not match its retained text digest.');
+  }else if(a.text!==undefined||a.digest!==undefined)throw new Error('Unavailable source cannot claim complete retained text.');
+}

@@ -115,3 +115,7 @@ revocation of any graph endpoint, forged tuples and identity, path/query bounds,
 selected-path gaps and real Git bundle text outside the selected-path receipt.
 The latter uses an explicitly synthetic unsupported extraction fact; it proves
 retention and authorization, not CodeGraph execution.
+
+Browser and MCP source reads use the inspected graph/source tuple. Browser text
+digests are checked before display; scope changes and source denial clear both
+graph and text. Unretained content and unknown freshness stay explicit.

@@ -3,9 +3,10 @@ import { APIError, accessFailure, dateLabel, errorMessage, request } from './api
 import type { BrowserAccess, RepositoryPage } from './api';
 import { collectionPath, sameJSON, uncertainMutation, validateCollection, validateCollectionPage } from './collections';
 import type { Collection, CollectionPage } from './collections';
-import { graphPath, isHex, validateGraph, validateGraphData, validateGraphPage } from './graphs';
-import type { GraphPage, GraphQuery, GraphSource, RepositoryGraph } from './graphs';
+import { graphPath, isHex, validateGraph, validateGraphData, validateGraphPage, validateGraphArtifact } from './graphs';
+import type { GraphArtifact, GraphPage, GraphQuery, GraphSource, RepositoryGraph } from './graphs';
 import { RepositoryContext } from './RepositoryContext';
+import { visibleControls } from './sourceText';
 
 type Job = { sequence: number; signal: AbortSignal };
 type Creation = { input: { sources: GraphSource[] }; key: string; outcome: 'pending' | 'recorded' | 'uncertain' | 'rejected' };
@@ -16,6 +17,9 @@ export function RepositoryGraphs({ access, onAccessFailure, onInspected }: {
   const [page, setPage] = useState<GraphPage>();
   const [graph, setGraph] = useState<RepositoryGraph>();
   const [query, setQuery] = useState<GraphQuery>();
+  const [artifact, setArtifact] = useState<GraphArtifact>();
+  const [artifactRepositoryID, setArtifactRepositoryID] = useState(access.repositoryID);
+  const [artifactPath, setArtifactPath] = useState('');
   const [search, setSearch] = useState('');
   const [depth, setDepth] = useState(1);
   const [repositories, setRepositories] = useState<RepositoryPage>();
@@ -43,7 +47,7 @@ export function RepositoryGraphs({ access, onAccessFailure, onInspected }: {
   }
   function current(job: Job) { return sequence.current === job.sequence && !job.signal.aborted; }
   function finish(job: Job) { if (current(job)) { working.current = false; setPending(''); } }
-  function inspected(value?: RepositoryGraph) { setGraph(value); setQuery(undefined); onInspected?.(value); }
+  function inspected(value?: RepositoryGraph) { setArtifact(undefined); setArtifactPath(''); setArtifactRepositoryID(access.repositoryID); setGraph(value); setQuery(undefined); onInspected?.(value); }
   function fail(job: Job, failure: unknown) {
     if (!current(job)) return;
     if (failure instanceof APIError && [401, 403, 404].includes(failure.status)) {
@@ -81,6 +85,18 @@ export function RepositoryGraphs({ access, onAccessFailure, onInspected }: {
       if (value.graphId !== selected.id || value.digest !== selected.digest || !sameJSON(value.sources, selected.snapshot.sources)) throw new Error('The query does not match the inspected graph. Inspect it again.');
       setQuery(value);
     } catch (failure) { fail(job, failure); } finally { finish(job); }
+  }
+  async function readGraphSource(repositoryID=artifactRepositoryID,path=artifactPath) {
+    const selected=graph,source=graph?.snapshot.sources.find(s=>s.repositoryId===repositoryID);
+    if(!selected||!source||!path||new TextEncoder().encode(path).length>1024)return;
+    const job=begin('Reading exact retained source from the inspected graph…');if(!job)return;setArtifact(undefined);setArtifactRepositoryID(repositoryID);setArtifactPath(path);
+    try{
+      // The graph anchor and credential stay fixed. A related source is selected
+      // only inside the exact inspected graph; the API checks every source grant.
+      const q=new URLSearchParams({graphDigest:selected.digest,repositoryId:source.repositoryId,collectionId:source.collectionId,receiptDigest:source.digest,path});if(source.fullSourceDigest)q.set('fullSourceDigest',source.fullSourceDigest);
+      const value=await request<GraphArtifact>(`${graphPath(selected.id)}/artifact?${q}`,access,job.signal);if(!current(job))return;
+      await validateGraphArtifact(value,selected,source,path);if(!current(job))return;setArtifact(value);setNotice('Retained source inspected. Collection is not verification, and freshness remains unknown.');
+    }catch(failure){fail(job,failure);}finally{finish(job);}
   }
   async function discoverRepositories() {
     const job = begin('Loading available graph repositories…'); if (!job) return;
@@ -160,9 +176,12 @@ export function RepositoryGraphs({ access, onAccessFailure, onInspected }: {
       <ul className="record-list" aria-label="Inspected graph sources">{graph.snapshot.sources.map(s => <li key={s.repositoryId}><strong>{s.repositoryId}</strong><p>Commit <code>{s.commit}</code></p><p>Collection <code>{s.collectionId}</code> · source digest <code>{s.digest}</code></p><p>{s.fullSourceDigest ? <>Whole-source digest <code>{s.fullSourceDigest}</code></> : 'Selected review paths only'} · Freshness: {s.freshness}</p></li>)}</ul>
       {graph.snapshot.truncated && <p className="warning">The graph is truncated. Missing relationships cannot be assumed absent.</p>}
       <GraphGaps gaps={graph.snapshot.gaps} />
+      <form className="control-row" onSubmit={e=>{e.preventDefault();void readGraphSource();}}><label htmlFor="graph-artifact-repository">Retained source repository<select id="graph-artifact-repository" aria-label="Retained source repository" value={artifactRepositoryID} disabled={busy} onChange={e=>{setArtifactRepositoryID(e.target.value);setArtifact(undefined);}}>{graph.snapshot.sources.map(s=><option key={s.repositoryId} value={s.repositoryId}>{s.repositoryId}</option>)}</select></label><label htmlFor="graph-artifact-path">Retained source path<input id="graph-artifact-path" value={artifactPath} maxLength={1024} disabled={busy} onChange={e=>{setArtifactPath(e.target.value);setArtifact(undefined);}}/></label><button className="secondary" disabled={busy||!artifactPath} type="submit">Read graph source</button></form>
+      {artifact&&<section aria-label="Inspected graph source text"><h4>{visibleControls(artifact.source.repositoryId)} · {visibleControls(artifact.artifact.path)}</h4><dl><dt>Graph digest</dt><dd><code>{artifact.digest}</code></dd><dt>Collection</dt><dd><code>{artifact.source.collectionId}</code></dd><dt>Source commit</dt><dd><code>{artifact.source.commit}</code></dd><dt>Receipt digest</dt><dd><code>{artifact.source.digest}</code></dd><dt>Source coverage</dt><dd>{artifact.coverage} · {artifact.coverageTruncated?'Truncated':'Bounded'} · freshness {artifact.source.freshness}</dd><dt>Artifact state</dt><dd>{artifact.artifact.state}</dd><dt>Text digest</dt><dd><code>{artifact.artifact.digest??'Unavailable'}</code></dd></dl>{artifact.artifact.message&&<p className="warning">{visibleControls(artifact.artifact.message)}</p>}{artifact.artifact.text!==undefined?<pre className="source-text">{visibleControls(artifact.artifact.text)}</pre>:<p className="warning">No complete source text is retained for this path.</p>}<p className="muted">Retained source is not passing verification or proof of current repository state.</p></section>}
+
       <form className="control-row" onSubmit={event => { event.preventDefault(); void queryGraph(); }}><label htmlFor="graph-search">Find a symbol or path<input id="graph-search" maxLength={256} value={search} disabled={busy} onChange={event => { setSearch(event.target.value); setQuery(undefined); }} /></label><label htmlFor="graph-depth">Relationship depth<select id="graph-depth" aria-label="Relationship depth" value={depth} disabled={busy} onChange={event => { setDepth(Number(event.target.value)); setQuery(undefined); }}>{[0, 1, 2, 3, 4, 5].map(n => <option key={n}>{n}</option>)}</select></label><button disabled={busy}>Search relationships</button></form>
       {query && <section aria-label="Graph query results"><h4>Retained relationships</h4>{query.truncated && <p className="warning">Query results are truncated. At most 100 nodes are shown.</p>}{query.nodes.length === 0 && <p>No matching nodes were returned within this graph's coverage.</p>}
-        <div className="graph-table"><table><thead><tr><th>Symbol / file</th><th>Repository</th><th>Source</th><th>Explore</th></tr></thead><tbody>{query.nodes.map(n => <tr key={n.id}><td>{n.name}<br /><span className="muted">{n.kind}</span></td><td>{n.repositoryId}</td><td><code>{n.path ?? 'Path unavailable'}{n.line ? `:${n.line}` : ''}</code>{n.artifactDigest && <details><summary>Source digest</summary><code>{n.artifactDigest}</code></details>}</td><td><button className="secondary" disabled={busy || !isHex(n.id, 64)} onClick={() => void queryGraph(n.id)}>Inspect relations</button></td></tr>)}</tbody></table></div>
+        <div className="graph-table"><table><thead><tr><th>Symbol / file</th><th>Repository</th><th>Source</th><th>Explore</th></tr></thead><tbody>{query.nodes.map(n => <tr key={n.id}><td>{n.name}<br /><span className="muted">{n.kind}</span></td><td>{n.repositoryId}</td><td><code>{n.path ?? 'Path unavailable'}{n.line ? `:${n.line}` : ''}</code>{n.artifactDigest && <details><summary>Source digest</summary><code>{n.artifactDigest}</code></details>}</td><td><button className="secondary" disabled={busy || !isHex(n.id, 64)} onClick={() => void queryGraph(n.id)}>Inspect relations</button>{n.path&&<button className="secondary" disabled={busy} onClick={()=>void readGraphSource(n.repositoryId,n.path)}>Read source</button>}</td></tr>)}</tbody></table></div>
         <ul className="record-list" aria-label="Graph relationships">{query.edges.map((e, i) => <li key={`${e.from}-${e.to}-${i}`}><strong>{names.get(e.from)}</strong> → <strong>{names.get(e.to)}</strong> · {e.kind}<p>{e.evidence}</p><p className="muted">Provenance: {e.provenance ?? 'Unspecified; structural inference only'}</p></li>)}</ul></section>}
     </article>}
   </section>;

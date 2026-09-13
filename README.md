@@ -27,7 +27,8 @@ for the new revision.
 - Connect coding agents through an authenticated MCP stdio bridge to the same
   packages, history, context requests, and draft commands used by other clients.
 - Build and query shared graphs across repositories in the browser, API and MCP,
-  with inspected source references, dependency relationships and visible coverage gaps. An optional
+  with inspected source references, dependency relationships and visible coverage gaps.
+  Read retained source text from any authorized graph repository without changing scope. An optional
   pinned CodeGraph Rust parser extracts symbols during background collection.
 - Propose shared dependent task plans through MCP or browser JSON import; inspect
   exact source, design and profile pins before separate human execution decisions.

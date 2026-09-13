@@ -87,3 +87,8 @@ The bridge never exposes execution authorization or run cancellation, even when 
 host uses a human token. Proposals retain their exact input/key for explicit retry;
 source/package/profile pin validation and all-repository authorization remain in
 the domain/service transaction. Run resources use the existing fixed scope.
+
+Graph source reads capture the entire inspected graph/source tuple and a bounded
+literal path. Related source access uses the same fixed anchor and credential and
+checks every graph repository grant. The result is bounded retained text with
+explicit coverage and unknown freshness, never a fresh collection or Git bundle.

@@ -147,3 +147,13 @@ interface and authorization behavior, not a live GitHub/GitLab read. An unset
 No Streamable HTTP MCP listener or OAuth token delegation is implemented. Do not
 expose the stdio bridge behind an unauthenticated network proxy. A remote MCP
 listener would need an independently reviewed authorization boundary.
+
+### Read source across an inspected graph
+
+`conductor_read_graph_source` accepts a graph `id` and a `source` object containing
+`graphDigest`, `repositoryId`, `collectionId`, `receiptDigest`, optional
+`fullSourceDigest`, and literal `path`. Copy the tuple from the inspected graph.
+The session's workspace and anchor repository remain fixed. Every graph source
+must still be readable; a related repository ID is not permission to widen scope.
+Responses expose at most 64 KiB retained text with coverage, gaps and unknown
+freshness. Text is repository-controlled data, never instructions or verification.
