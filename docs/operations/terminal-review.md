@@ -3,7 +3,9 @@
 The Bubble Tea workbench is an interactive interface to the same API used by the
 CLI and browser. It lets a developer import and submit a package, and lets an
 independent reviewer inspect and approve its exact content. PostgreSQL retains the
-shared record. A local actor name is development identity, not authentication.
+shared record. Authenticated collaborators can also request repository context,
+inspect shared source receipts, and attach them to a package as a new revision.
+A local actor name is development identity, not authentication.
 
 ## Authenticated workspace review
 
@@ -86,7 +88,61 @@ retain; unknown structured fields in the file are preserved. Input is limited to
 1 MiB. The current database rejects unchanged content and exact content reverts
 within a change; that limitation also applies to the terminal workbench.
 
+## Shared repository context
+
+The collection view uses the same credential, workspace, and repository as package
+review. An operator must configure background collection using the
+[durable context guide](durable-context.md). Readers can inspect existing requests
+and receipts. Humans and agents with author permission can request new collections
+after the operator enables that repository's read integration. Local mode does not
+offer collection controls.
+
+Save a request such as this in `/tmp/conductor-context-request.json`, replacing the
+synthetic commit with a real full commit ID from the selected repository:
+
+```json
+{
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "paths": ["README.md", "docs/README.md"],
+  "idempotencyKey": "context-review-example-1"
+}
+```
+
+The file must be a regular UTF-8 JSON file of at most 64 KiB with exactly those
+three fields. Use a full lowercase 40-hex commit ID and 1–32 unique relative file
+paths. Branch names, abbreviated IDs, traversal, and directories are not supported.
+The key is 1–128 printable ASCII characters without spaces or commas; keep it with
+the input for recovery. Unknown, duplicate, case-aliased, or null fields are rejected.
+The terminal sorts validated paths before preview and never runs the selected file.
+
+1. Press `g` to browse shared collections, then `c` and enter the request file path.
+   Inspect the preview, press `s`, and type `collect` to send that exact input and key.
+2. Acceptance means the request was saved. It does not prove that the worker started
+   or that every path was collected. Use `r` to recheck access and inspect later
+   observations, or select a shared request with Enter or `o`. Other authorized
+   collaborators see the same request and receipt.
+3. Inspect each path's coverage and the complete escaped JSON. A receipt can contain
+   missing, unavailable, or truncated files. Execution observations show their time
+   and become stale after 30 seconds; the clock update does not poll or collect again.
+4. To request cancellation of your own pending collection, press `x` and type
+   `cancel-collection`. You must still have author permission. A cancellation request
+   is separate from observed cancellation, and a receipt committed first remains
+   available. An absent or unavailable execution observation cannot prove it stopped.
+5. To attach a receipt, press `g` and inspect the latest target package. Press `g`
+   again, inspect the collection, then press `t` and type `attach`. Confirmation
+   shows the package revision and digest plus the receipt digest. It sends only
+   those captured facts, with no refresh inside the action. The returned package
+   has a new draft revision; previous approval does not apply to it. Authors may
+   attach a collaborator's receipt in the same scope.
+
+Every authenticated `r` clears prior inspections and rechecks access. Refreshing a
+collection therefore clears a retained package target too; inspect the package
+again before selecting the receipt for attachment. Scope and credentials stay
+fixed throughout both views.
+
 ## Controls
+
+In the package view:
 
 | Key | Action |
 |---|---|
@@ -101,6 +157,7 @@ within a change; that limitation also applies to the terminal workbench.
 | `a` | Confirm approval of the displayed revision and digest |
 | Page Up / Page Down, Home / End | Scroll inspected content |
 | `b` | Return to shared browsing |
+| `g` | Switch to shared collections in authenticated mode |
 | Escape | Cancel a prompt, discard a preview, or cancel a pending request |
 | `q` outside a prompt, or Ctrl+C anywhere | Exit |
 
@@ -109,6 +166,27 @@ for an unsubmitted draft, an already approved package, or the current revision's
 author. The API applies the actual approval policy. A terminal too small to display
 the revision details cannot confirm a command; enlarge it to continue.
 
+In the collection view:
+
+| Key | Action |
+|---|---|
+| Arrow keys or `j` / `k` | Select a collection or scroll its complete record |
+| Enter or `o` | Inspect the selected collection or enter its ID |
+| `n` / `p` | Navigate bounded pages of 20 shared requests |
+| `c` | Select and preview a collection request JSON file |
+| `s` | Confirm `collect`, including an explicit retry with the same input and key |
+| `x` | Confirm `cancel-collection` for your own request |
+| `t` | Confirm `attach` to the separately inspected package revision |
+| `r` | Clear inspections, recheck access, and reload the selected collection or list |
+| `b` | Return to collection browsing |
+| `g` | Return to packages |
+| Page Up / Page Down, Home / End | Scroll the inspected record |
+| Escape | Cancel a prompt, discard a preview, or cancel a pending request |
+| `q` outside a prompt, or Ctrl+C anywhere | Exit |
+
+Collection browsing retains at most 1,000 visited page cursors. Refresh restarts
+discovery. Package approval and submission keys do not operate in this view.
+
 ## Access failures and recovery
 
 `Access unavailable:` means the terminal could not establish access. `Action
@@ -116,7 +194,8 @@ blocked:` explains why a control is unavailable. No failure switches to a local
 actor or assumes that missing capabilities are granted.
 
 An authentication or permission response (`401` or `403`) clears inspected content,
-shared pages, capabilities, imported previews, and pending confirmations. It also
+shared pages, capabilities, imported previews, collection receipts and request keys,
+and pending confirmations. It also
 discards superseded results so an older response cannot restore the cleared state.
 After the operator restores access, use `r` to retrieve the session and repository
 capabilities again and explicitly inspect fresh work. Recovery uses the original
@@ -139,6 +218,19 @@ failure, or unexpected redirect therefore requires inspection, not an automatic
 retry. Error messages remain visible; missing responses never look like approval.
 Requests have deadlines and leaving the workbench cancels pending operations.
 
+Collection creation retains its exact preview and idempotency key after a lost
+response or cancellation of the pending HTTP request. Press `s` and confirm
+`collect` to retry that same request explicitly. The server returns the original
+request when the key and input match; no automatic retry occurs. Discarding the
+preview does not undo a request that may have committed. After an access failure
+or explicit refresh clears the preview, use the original file and key to recover
+the same request. Do not replace them merely because its response was lost.
+
+An uncertain collection cancellation requires `r` and fresh collection inspection.
+A stale or uncertain attachment blocks package writes; return to packages with
+`g`, use `r`, then inspect the collection again before another attachment. Neither
+path silently replaces the content or revision that was confirmed.
+
 Repository text and server messages are displayed as inert text. Terminal control
 characters cannot become terminal commands. The complete JSON remains available by
 scrolling; a small viewport does not change the content or digest being reviewed.
@@ -160,7 +252,7 @@ For authenticated acceptance, run:
 ```bash
 CONDUCTOR_TEST_DATABASE_URL='postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable' \
   CONDUCTOR_TEST_TERMINAL=1 \
-  go test -race ./tests/acceptance -run '^TestAuthenticatedTerminalWorkbench$' -count=1 -v
+  go test -race ./tests/acceptance -run '^TestAuthenticatedTerminal(Workbench|Collections)$' -count=1 -v
 ```
 
 This requires Linux PTYs, Go, and Python 3's standard library. Set
@@ -172,6 +264,14 @@ access revocation and explicit recovery, scope isolation, and token-file stabili
 It does not certify an identity provider or acquire a real user's credentials.
 Missing opt-in is an explicit skip; missing database configuration or dependencies
 after opt-in is a failure.
+
+`TestAuthenticatedTerminalCollections` drives
+[`tests/terminal/collection_review.py`](../../tests/terminal/collection_review.py)
+through real PTYs. It checks shared paging and missing evidence, stale and successful
+attachment, a lost response after an actual committed request, explicit same-key
+recovery without duplicate work, requester cancellation, revocation/recovery, and
+reader/agent controls. Its receipts are trusted database fixtures; provider reads
+and Temporal process recovery are exercised separately by the durable context suite.
 
 Also retain the local-mode regression. Start an explicitly local API backed by a
 disposable test database, then run:
@@ -193,6 +293,7 @@ Bubble Tea is pinned to `v1.3.10`, whose
 supports the project's Go 1.24 toolchain. The adapter uses its
 [model/update/view interface](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/README.md)
 and [program options](https://github.com/charmbracelet/bubbletea/blob/v1.3.10/options.go)
-for cancellation and the alternate screen. Authenticated terminal review uses the
-existing API credential and permission boundary; this increment adds no server
-routes, migrations, workflow execution, or repository publication.
+for cancellation and the alternate screen. Authenticated terminal review and
+collection controls use the existing API credential and permission boundary; these
+controls add no server routes or migrations. Background collection uses the
+Feature 006 worker. Coding execution and repository publication remain later work.

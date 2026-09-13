@@ -16,6 +16,8 @@ func (m model) View() string {
 	var body []string
 	if m.access.authenticated && !m.access.ready {
 		body = []string{"Review requires confirmed server access.", "r checks access; q exits. Credentials and scope stay fixed until exit."}
+	} else if m.collectionMode {
+		body = m.collectionBody(bodyHeight)
 	} else if m.pack != nil || m.draft != nil {
 		end := min(len(m.lines), m.offset+bodyHeight)
 		body = m.lines[min(m.offset, end):end]
@@ -47,6 +49,9 @@ func (m model) tooSmall() bool {
 }
 
 func (m model) footer() []string {
+	if m.collectionMode && m.access.ready {
+		return m.collectionFooter()
+	}
 	position := fmt.Sprintf("Page %d | n next, p previous", m.pageIndex+1)
 	if m.page.NextBefore == "" {
 		position += " | end"
@@ -86,6 +91,9 @@ func (m model) footer() []string {
 			}
 		}
 	}
+	if m.access.authenticated && m.access.ready && m.prompt == "" {
+		help = "g collections | " + help
+	}
 	last := "Evidence is shown as recorded; missing is not passing."
 	if m.prompt != "" {
 		switch m.prompt {
@@ -104,6 +112,10 @@ func (m model) footer() []string {
 func (m *model) rebuild() {
 	m.lines = nil
 	var value any
+	if m.collectionMode {
+		m.rebuildCollection()
+		return
+	}
 	if m.draft != nil {
 		value = m.draft
 	} else if m.pack != nil {

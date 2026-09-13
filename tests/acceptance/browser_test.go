@@ -109,13 +109,13 @@ func (p *browserIssuer) authorize(w http.ResponseWriter, r *http.Request) {
 				_, _ = fmt.Fprintf(w, "<input type=\"hidden\" name=\"%s\" value=\"%s\">", template.HTMLEscapeString(key), template.HTMLEscapeString(value))
 			}
 		}
-		for _, name := range []string{"author", "reviewer", "agent", "other", "unregistered"} {
+		for _, name := range []string{"author", "reviewer", "reader", "agent", "other", "unregistered"} {
 			_, _ = fmt.Fprintf(w, "<button name=\"identity\" value=\"%s\">Sign in as %s</button>", name, name)
 		}
 		_, _ = io.WriteString(w, "</form></html>")
 		return
 	}
-	allowed := map[string]bool{"author": true, "reviewer": true, "agent": true, "other": true, "unregistered": true}
+	allowed := map[string]bool{"author": true, "reviewer": true, "reader": true, "agent": true, "other": true, "unregistered": true}
 	if !allowed[identity] {
 		http.Error(w, "unknown synthetic identity", 400)
 		return
@@ -172,13 +172,22 @@ type browserFixture struct {
 }
 
 func newBrowserFixture(t *testing.T, withUI bool) *browserFixture {
+	return newConfiguredBrowserFixture(t, browserFixtureOptions{withUI: withUI})
+}
+
+type browserFixtureOptions struct {
+	withUI, collections bool
+	wrap                func(http.Handler) http.Handler
+}
+
+func newConfiguredBrowserFixture(t *testing.T, options browserFixtureOptions) *browserFixture {
 	t.Helper()
 	app := httptest.NewUnstartedServer(nil)
 	t.Cleanup(app.Close)
 	origin := "https://" + app.Listener.Addr().String()
 	issuer := newBrowserIssuer(t, origin+"/api/v1/auth/callback")
 	timeout := 60 * time.Second
-	if withUI {
+	if options.withUI {
 		timeout = 2 * time.Minute
 	}
 	f := newAccessFixtureWithIssuer(t, issuer.accessIssuer, issuer.client, timeout)
@@ -186,13 +195,20 @@ func newBrowserFixture(t *testing.T, withUI bool) *browserFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := api.NewBrowserAuthenticated(service.NewAuthenticated(f.db), f.verifier, browser, f.db, api.BrowserConfig{Origin: origin, Issuer: issuer.url})
+	shared := service.NewAuthenticated(f.db)
+	if options.collections {
+		shared = shared.WithCollections()
+	}
+	handler, err := api.NewBrowserAuthenticated(shared, f.verifier, browser, f.db, api.BrowserConfig{Origin: origin, Issuer: issuer.url})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if options.wrap != nil {
+		handler = options.wrap(handler)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", handler)
-	if withUI {
+	if options.withUI {
 		dist, err := filepath.Abs("../../apps/web/dist")
 		if err != nil {
 			t.Fatal(err)

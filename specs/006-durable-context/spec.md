@@ -1,11 +1,11 @@
 # Feature 006: durable shared repository context
 
-**Status: Partial.** API/CLI requests, shared receipts, explicit attachment,
-PostgreSQL outbox, Temporal sequencing and both bounded provider read profiles are
-implemented. The collection permission model was selected on 2026-09-13: repository
+**Status: Partial.** API/CLI, browser and authenticated terminal requests, shared
+receipts, explicit attachment, PostgreSQL outbox, Temporal sequencing and both
+bounded provider read profiles are implemented. The collection permission model was selected on 2026-09-13: repository
 authors may collect after operator enablement. Initial Temporal deployment is local
-only; browser/TUI collection controls and live provider compatibility remain
-unverified or later work. ADR 0003 remains Proposed. See the
+only; live provider compatibility and production operations remain unverified.
+ADR 0003 remains Proposed. See the
 [operations guide](../../docs/operations/durable-context.md) for supported bounds.
 
 ## Outcome
@@ -138,6 +138,49 @@ required to gather context nor inferred from a collected result.
     without evicting active work. Publish exact defaults, deadlines, and recovery
     controls with the implementation and prove them in acceptance tests.
 
+## Browser and terminal acceptance
+
+The browser and authenticated terminal use the same scoped commands and persisted
+records as the API/CLI. Local mode cannot collect remotely. Browser sessions are
+human-only; terminal sessions retain their selected human or agent credential.
+
+1. Show one bounded page of shared requests and an explicit continuation when more
+   exist. Readers may inspect requests and receipts without author controls. A
+   repository grant governs controls; a review perspective grants no capability.
+2. Preview exact input before collection: a full commit, literal paths normalized
+   in UTF-8 byte order, and the retained idempotency key. The browser uses a form;
+   the terminal imports an explicitly selected regular JSON file bounded to 64 KiB.
+   After an uncertain create response, freeze input and offer an explicit retry
+   with that same key. Do not silently retry a POST in the shared Go transport.
+3. Inspect immutable request facts, source identity, receipt digest, coverage and
+   source text separately from execution observations. Age observations after 30
+   seconds using a display clock; fetch only on explicit refresh. Missing or
+   unsupported observations remain unknown. Source coverage never implies passing
+   verification, including when execution is completed.
+4. Confirm cancellation against the displayed request. Only its currently
+   authorized requester may cancel. A cancellation acknowledgment establishes
+   intent, not stopped execution; a receipt committed first remains available.
+5. Confirm attachment with the displayed package ID, revision and digest, plus
+   collection ID and receipt digest. Send the captured expected revision and
+   receipt identity without any GET inside the command. Historical package views
+   cannot attach. Preserve unknown outer content and show a new unapproved draft.
+6. An attachment conflict or uncertain response blocks another attachment until
+   the package and collection inspections are renewed. Browser recovery blocks
+   approval too until both captured records are read successfully. The terminal
+   clears the receipt on access recovery; fresh package inspection restores its
+   ordinary approval controls, and fresh receipt selection is also required for
+   attachment. A later mutation response or clearing a selection cannot substitute
+   for the required inspection.
+7. Browser identity or scope changes, and terminal authentication or permission
+   failure, clear package/receipt inspection, capabilities, drafts and confirmation.
+   Cancel pending requests and ignore superseded responses. Known 401/403 headers
+   invalidate browser inspection even if the response body stalls. Terminal
+   recovery retains the original credential and scope.
+8. Keep complete version 1 and 2 package JSON available. Escape untrusted source
+   text and terminal controls. Version 2 JSON metadata alone does not establish
+   trusted linkage: explicitly inspect the scoped collection and compare its
+   complete stored snapshot, including extensions, before displaying a match.
+
 ## Verification and limits
 
 Tests must exercise actual PostgreSQL and an owned Temporal server, including API,
@@ -149,6 +192,13 @@ followed by lost activity acknowledgment, and forged or cross-workspace receipt
 links through attachment and ordinary create/revise commands.
 SDK test environments and controlled provider fixtures are complementary tests, not
 proof of real provider compatibility or durable process recovery.
+
+Run actual Chromium and real authenticated PTY acceptance against signed login or
+access-token fixtures and isolated PostgreSQL schemas. Cover shared pagination,
+read-only and requester controls, stale attachment with no hidden refresh, lost
+create acknowledgment and same-key recovery, cancellation intent, source gaps,
+revocation and scope changes. Keep separate local-interface regressions. Seeded
+receipts prove client behavior against stored facts, not provider execution.
 
 Each provider profile must distinguish transient failures
 eligible for bounded Temporal activity retry from terminal path gaps. Do not commit

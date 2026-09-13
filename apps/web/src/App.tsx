@@ -193,7 +193,8 @@ export function App() {
 
 function accessFor(value: BrowserSession, workspaceID = '', repository?: ManagedRepository): BrowserAccess {
   return { mode: 'browser', principalID: value.session.principal.id, principalKind: value.session.principal.kind,
-    csrfToken: value.csrfToken, workspaceID, repositoryID: repository?.id ?? '', canApprove: repository?.canApprove === true };
+    csrfToken: value.csrfToken, workspaceID, repositoryID: repository?.id ?? '',
+    canAuthor: repository?.canAuthor === true, canApprove: repository?.canApprove === true };
 }
 
 function identifier(value: unknown): value is string {

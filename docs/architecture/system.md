@@ -20,8 +20,8 @@ the [repository provider plan](repository-providers.md) for scope and boundaries
 > **Status:** Durable review and authenticated workspace access through the API,
 > CLI, browser, and interactive terminal are implemented. The browser uses OIDC
 > sign-in; CLI and terminal credentials come from an explicitly selected token.
-> API/CLI background context collection is partial, using bounded provider reads
-> and a trusted local Temporal worker. MCP, coding execution, delivery adapters,
+> Background context collection across clients is partial, using bounded provider
+> reads and a trusted local Temporal worker. MCP, coding execution, delivery adapters,
 > and components with dashed borders are planned.
 > Identity-provider compatibility has not been established beyond synthetic tests.
 
@@ -165,7 +165,7 @@ provider objects. Coding execution and delivery integrations remain unavailable.
 |---|---|---|
 | Package revisions, submissions, approvals, audit events | PostgreSQL | Implemented for local and authenticated review |
 | Principals, workspace membership, canonical repository ownership, access grants | PostgreSQL | Implemented; operator-provisioned and audited |
-| Context requests, immutable receipts and dispatch bindings | PostgreSQL | Implemented for API/CLI collection |
+| Context requests, immutable receipts and dispatch bindings | PostgreSQL | Implemented for shared collection across clients |
 | Workflow sequencing, retries, cancellation | Temporal | Partial: bounded context collection, trusted local deployment |
 | Immutable large artifacts | S3-compatible storage | Planned |
 | Application pull/merge requests, checks, pipelines, delivery facts | Configured GitHub or GitLab provider | Planned |
@@ -193,11 +193,12 @@ flowchart LR
 ```
 
 Authenticated review is implemented across these interfaces.
-[Durable context collection](durable-context.md) is partial: the API/CLI supports
-selected files from an exact managed-repository commit, a shared immutable receipt,
+[Durable context collection](durable-context.md) is partial: the API, CLI, browser
+and authenticated terminal support selected files from an exact managed-repository
+commit, a shared immutable receipt,
 and explicit attachment. The PostgreSQL outbox and local Temporal worker enforce
-reconciliation, cancellation and revocation boundaries. Live provider compatibility,
-production operations and browser/TUI collection controls remain later work.
+reconciliation, cancellation and revocation boundaries. Live provider compatibility
+and production operations remain unverified.
 Collection permission requires author access plus operator enablement. Agent execution remains disabled
 pending its own verified identity, authorization, durable recovery, context, and
 execution boundaries. Review access alone does not authorize execution.

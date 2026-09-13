@@ -1,9 +1,9 @@
 # Durable repository context
 
-**Status: Partial.** The API/CLI, shared immutable receipts, explicit attachment,
-bounded GitHub/GitLab reads and local Temporal workflow are implemented. Local Git
-snapshot behavior is retained. Browser/TUI collection controls, live provider
-compatibility and production deployment remain later work. ADR 0003 remains Proposed.
+**Status: Partial.** The API/CLI and browser/terminal controls, shared immutable
+receipts, explicit attachment, bounded GitHub/GitLab reads and local Temporal
+workflow are implemented. Local Git snapshot behavior is retained. Live provider compatibility and production
+deployment remain unverified. ADR 0003 remains Proposed.
 The [feature specification](../../specs/006-durable-context/spec.md) records the
 selected permission: repository authors may collect after an operator enables
 the repository read integration.
@@ -135,9 +135,22 @@ requires its own review.
 
 ## Delivery limits
 
-The first interface is the API and CLI. Browser/terminal collection controls will
-follow the same commands. Current web inspection warns on version 2 and shows the
-complete JSON; terminal inspection shows escaped JSON. Both GitHub and GitLab are required, with separately reported read
+Browser and authenticated terminal collection controls follow the API/CLI commands.
+One bounded page of shared requests leads to explicit receipt inspection and
+confirmation of cancellation or attachment. Lost request acknowledgments retain
+the exact input and key for an explicit retry. An attachment conflict or unknown
+outcome blocks reattachment until inspection is renewed; confirmation never fetches.
+Manual refresh reads later observations, while a local display clock marks old
+progress stale without making HTTP requests.
+
+The browser renders version 2 source coverage and compares the complete snapshot
+against an explicitly inspected scoped receipt before displaying trusted linkage.
+The terminal shows escaped source and full JSON. Version 1 extensions retain their
+original meaning. Both interfaces clear collection state on access failure, and
+the browser discards it on account or scope changes. Real Chromium and PTY
+acceptance use stored receipt fixtures, separate from actual workflow recovery.
+
+Both GitHub and GitLab are required, with separately reported read
 profiles and live test evidence. Their remote publication, checks, and webhook
 capabilities remain later work, as described in the [provider plan](repository-providers.md).
 See the [delivery plan](../../specs/006-durable-context/plan.md) for implementation

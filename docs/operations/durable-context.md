@@ -1,10 +1,9 @@
 # Background repository context
 
-**Status: Partial.** The API, CLI, PostgreSQL outbox, Temporal worker, and bounded
-GitHub/GitLab read adapters are present. This profile uses a trusted local Temporal
-development server. Browser and terminal collection controls, remote Temporal
-authentication, and production deployment validation remain later work. Provider
-fixtures exercise the pinned protocols; live GitHub/GitLab compatibility has not
+**Status: Partial.** The API, CLI, browser/terminal controls, PostgreSQL outbox,
+Temporal worker, and bounded GitHub/GitLab read adapters are present. This profile uses a trusted local Temporal
+development server. Remote Temporal authentication and production deployment
+validation remain later work. Provider fixtures exercise the pinned protocols; live GitHub/GitLab compatibility has not
 been verified with repository-limited read credentials.
 
 An authorized engineer or agent requests files from one exact commit. The service
@@ -201,10 +200,44 @@ while execution progress is unavailable. Workflow completion can still contain g
 stopped. Revocation prevents later provider operations and final publication once
 observed, but cannot undo a request already sent or a receipt already committed.
 
-The browser currently warns that version 2 structured context is unsupported and
-shows the complete package JSON. The TUI shows escaped complete JSON. Both retain
-existing exact-revision review rules; collection controls are available through
-the API/CLI only.
+## Browser and terminal controls
+
+Sign in and select the canonical workspace/repository before using **Shared context
+collections** in the browser. **Refresh collections** loads one page of 20 shared
+requests; **Load more collections** replaces it with the next page. Inspect a
+request to see source identity, receipt digest, per-path coverage and the last
+execution observation. Use **Request repository context** to enter the exact
+commit, literal paths and retained idempotency key. After a lost acknowledgment,
+**Retry same request** sends that unchanged input and key; it does not start new work.
+
+Inspect the current package and receipt, then choose **Attach receipt to inspected
+revision**. Confirmation displays the package revision/digest and receipt identity.
+It sends no refresh. If the result is stale or uncertain, use the displayed recovery
+buttons to inspect both captured records before another attachment or approval.
+An attachment creates a new draft and retains earlier approval only in history.
+**Request cancellation** separately confirms intent from the current requester.
+
+In the authenticated terminal, **g** switches between packages and collections.
+**c** imports and previews a strict request JSON file (at most 64 KiB) containing
+`commit`, `paths` and `idempotencyKey`; **s** confirms or explicitly retries it.
+**Enter/o** inspects, **n/p** changes pages, **x** confirms cancellation, and **t**
+confirms attachment to the retained current package. **r** recovers access and
+refreshes with the same credential, clearing the package target. Before attaching
+after recovery, switch back to packages, inspect the current revision, then return
+to collections and inspect the receipt. Ordinary approval requires renewed package
+inspection. See the [terminal guide](terminal-review.md) for request examples.
+
+Both workbenches age observations locally without polling; refresh explicitly for
+later progress. Reader access allows inspection without author controls. Browser
+scope/account changes and either interface's access failure discard inspected
+source, drafts and confirmation. Local mode cannot collect remotely.
+
+The browser renders version 2 coverage while retaining complete JSON. A JSON
+receipt reference alone is not trusted linkage: **Inspect linked collection** reads
+the stored receipt in the selected scope and compares the complete snapshot.
+The terminal displays escaped source and JSON. Existing version 1 extension fields
+remain uninterpreted. Neither a linked receipt nor completed execution establishes
+passing verification. See the [browser guide](browser-sign-in.md) for session setup.
 
 ## Bounds and recovery
 
@@ -281,3 +314,20 @@ HTTP fixture. They do not certify deployed worker configuration or a live vendor
 the worker executable has separate configuration, file-boundary and log tests.
 The PostgreSQL process remained running in the combined Temporal test; its restart
 was proved separately with the owned Docker acceptance.
+
+Collection workbench acceptance additionally uses actual Chromium and a real PTY
+with signed identity and isolated PostgreSQL. It covers bounded shared pagination,
+receipt gaps, exact stale/successful attachment, lost create acknowledgment with
+one explicit same-key retry, cancellation intent and revoked/read-only access.
+Browser checks cover lost attachment acknowledgment, display aging without polling,
+late scope responses, receipt linkage, stalled denial bodies and mobile layout.
+These tests seed immutable receipts; provider reads and Temporal execution are
+verified by the separate suites above. Build the web app, then run:
+
+```bash
+CONDUCTOR_TEST_BROWSER=1 go test -race ./tests/acceptance -run Browser
+CONDUCTOR_TEST_TERMINAL=1 go test -race ./tests/acceptance -run AuthenticatedTerminal
+```
+
+Both commands require `CONDUCTOR_TEST_DATABASE_URL`; the browser command also needs
+`CONDUCTOR_BROWSER_PYTHON` with the pinned Playwright dependency and Chromium.

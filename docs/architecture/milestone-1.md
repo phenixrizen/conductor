@@ -21,8 +21,8 @@ authenticated terminal review with a fixed credential and scope, server-provided
 capabilities, and explicit recovery after access failure.
 
 [Feature 006](../../specs/006-durable-context/spec.md) adds an opt-in remote context
-collection workflow to the API and CLI. Its implementation includes scoped requests,
-PostgreSQL outbox delivery, a local Temporal worker, bounded GitHub/GitLab reads,
+collection workflow to the API, CLI, browser and authenticated terminal. Its
+implementation includes scoped requests, PostgreSQL outbox delivery, a local Temporal worker, bounded GitHub/GitLab reads,
 immutable receipts, and explicit attachment as a new package revision. Targeted
 tests cover the permission and receipt boundaries; controlled provider fixtures
 do not establish live provider compatibility or production readiness. See the
@@ -208,9 +208,10 @@ uncertain mutation outcomes block further writes until explicit inspection.
   Temporal connection supports the documented local deployment profile only.
   Assistant execution, GitHub/GitLab publication, and Linear/Jira synchronization
   remain planned. Local Git collection remains available through Feature 002.
-- Collection controls are available through the API/CLI. The web inspector warns
-  that structured version 2 context is unsupported and shows the complete package
-  JSON; the TUI displays escaped JSON. Neither provides a collection workbench yet.
+- Collection controls use the same scoped commands in the browser, terminal,
+  API and CLI. The web inspector renders version 2 coverage and checks full receipt
+  linkage explicitly; the terminal shows escaped source and complete JSON.
+  Confirmation captures the inspected package revision and receipt identity.
 - Shared discovery, historical revision inspection, and audit-query endpoints are
   available; see [Feature 002](../../specs/002-context-history/spec.md).
 - Process-restart acceptance proves persistence across completed commands and

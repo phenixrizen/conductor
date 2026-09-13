@@ -73,23 +73,29 @@ func sessionModel(ctx context.Context, c *client.Client, options Options) (model
 const pageSize = 20
 
 type request struct {
-	serial               int
-	accessGeneration     int
-	op, id, path, cursor string
-	revision             int64
-	digest               string
-	content              domain.Content
-	repository           string
+	serial                      int
+	accessGeneration            int
+	op, id, path, cursor        string
+	revision                    int64
+	digest                      string
+	content                     domain.Content
+	repository                  string
+	collectionID, receiptDigest string
+	collectionDraft             collectionDraft
+	collectionView              bool
 }
 
 type result struct {
 	request
-	page         domain.ChangePage
-	pack         domain.Package
-	content      domain.Content
-	session      domain.Session
-	repositories domain.RepositoryPage
-	err          error
+	page           domain.ChangePage
+	pack           domain.Package
+	content        domain.Content
+	session        domain.Session
+	repositories   domain.RepositoryPage
+	err            error
+	collection     domain.Collection
+	collectionPage domain.CollectionPage
+	requestDraft   collectionDraft
 }
 
 type executor func(request) (tea.Cmd, context.CancelFunc)
@@ -108,6 +114,18 @@ func runner(ctx context.Context, c *client.Client) executor {
 				if res.err == nil {
 					res.repositories, res.err = c.Repositories(operation)
 				}
+			case "collections":
+				res.collectionPage, res.err = c.ListCollections(operation, req.cursor, pageSize)
+			case "collection":
+				res.collection, res.err = c.GetCollection(operation, req.id)
+			case "collection-file":
+				res.requestDraft, res.err = readCollectionDraft(operation, req.path)
+			case "collect":
+				res.collection, res.err = c.CreateCollection(operation, req.collectionDraft.IdempotencyKey, req.collectionDraft.input())
+			case "cancel-collection":
+				res.collection, res.err = c.CancelCollection(operation, req.id)
+			case "attach":
+				res.pack, res.err = c.AttachCollection(operation, req.id, req.revision, req.collectionID, req.receiptDigest)
 			case "list":
 				res.page, res.err = c.ListChanges(operation, req.repository, req.cursor, pageSize)
 			case "open":
