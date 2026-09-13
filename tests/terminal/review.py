@@ -192,6 +192,11 @@ class Terminal:
             if predicate():
                 return
             if self.process.poll() is not None:
+                # Exit can become visible between the predicate and this poll.
+                # Recheck it before treating exit as a failed wait; callers also
+                # use this helper to wait for a successful process termination.
+                if predicate():
+                    return
                 break
         # Escape controls in the diagnostic so an unexpected server value cannot
         # turn a failed acceptance run into active terminal escape sequences.
