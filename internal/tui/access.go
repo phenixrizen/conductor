@@ -87,6 +87,8 @@ func accessDenied(err error) bool {
 
 func (m *model) clearInspection() {
 	m.pack, m.draft = nil, nil
+	id := m.collections.inspectID
+	m.collections = collectionState{cursors: []string{""}, inspectID: id}
 	m.page = domain.ChangePage{}
 	m.cursors, m.pageIndex = []string{""}, 0
 	m.selected, m.offset = 0, 0
@@ -149,6 +151,9 @@ func (m model) actionAllowed(op string) error {
 func (m model) validateScope(res result) error {
 	if !m.access.authenticated {
 		return nil
+	}
+	if isCollectionOperation(res.op) {
+		return m.validateCollectionScope(res)
 	}
 	if res.op == "list" {
 		if len(res.page.Changes) > pageSize || len(res.page.NextBefore) > 1024 ||

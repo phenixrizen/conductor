@@ -25,31 +25,35 @@ type model struct {
 	width, height, selected, offset int
 	page                            domain.ChangePage
 	// Cursors are bounded to visited pages; the server owns opaque cursor meaning.
-	cursors       []string
-	pageIndex     int
-	pack          *domain.Package
-	draft         domain.Content
-	draftOp       string
-	lines         []string
-	prompt, input string
-	pending       request
+	cursors        []string
+	pageIndex      int
+	pack           *domain.Package
+	draft          domain.Content
+	draftOp        string
+	lines          []string
+	prompt, input  string
+	pending        request
+	collectionMode bool
+	collections    collectionState
 }
 
 func newModel(options Options, execute executor) model {
 	return model{options: options, execute: execute, width: 80, height: 24,
-		cursors: []string{""}, status: "Loading shared work..."}
+		cursors: []string{""}, collections: collectionState{cursors: []string{""}}, status: "Loading shared work..."}
 }
 
 func (m model) Init() tea.Cmd {
 	// Starting via Update gives every operation a serial and cancel function,
 	// including the initial read, so a late response can never replace inspection.
-	return func() tea.Msg { return startMsg{} }
+	return tea.Batch(func() tea.Msg { return startMsg{} }, collectionClock())
 }
 
 type startMsg struct{}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case collectionClockMsg:
+		return m, collectionClock()
 	case startMsg:
 		if m.access.authenticated {
 			return m.recheckAccess(m.options.ID)
@@ -69,18 +73,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.err = m.validateScope(msg)
 		}
 		if msg.err == nil && isMutation(msg.op) {
-			msg.err = validateMutationResult(msg.request, msg.pack)
+			msg.err = validateMutationResult(msg.request, msg.pack, m.actor())
 		}
 		m.cancel = nil
 		m.busy = ""
 		if msg.err != nil {
 			if m.access.authenticated && (msg.op == "access" || accessDenied(msg.err) || errors.Is(msg.err, errResponseScope)) {
-				m.inspectID = msg.id
+				if isCollectionOperation(msg.op) || msg.collectionView {
+					m.collections.inspectID = msg.id
+				} else {
+					m.inspectID = msg.id
+				}
 				m.invalidateAccess()
 				m.status = "Access unavailable: press r to recheck access and inspect shared state. " + msg.err.Error()
 				return m, nil
 			}
 			m.status = "Unavailable: " + msg.err.Error()
+			if isCollectionOperation(msg.op) {
+				return m.collectionResult(msg)
+			}
 			if isMutation(msg.op) {
 				m.blocked = true
 				var apiErr *client.APIError
@@ -107,6 +118,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.access = access
+			if msg.collectionView {
+				if msg.id != "" {
+					return m.start(request{op: "collection", id: msg.id})
+				}
+				return m.listCollections(0)
+			}
 			if msg.id != "" {
 				return m.start(request{op: "open", id: msg.id})
 			}
@@ -117,6 +134,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.blocked = false
 			m.inspectID = ""
 			m.status = "Shared work loaded. Repository labels are discovery filters only."
+		case "collections", "collection", "collection-file", "collect", "cancel-collection":
+			return m.collectionResult(msg)
 		case "file":
 			m.draft = msg.content
 			if m.draftOp == "create" {
@@ -125,6 +144,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "File loaded for preview. This is the complete replacement content; s confirms saving."
 		default:
 			m.pack = &msg.pack
+			if msg.op == "attach" {
+				m.collectionMode = false
+			}
 			m.inspectID = msg.pack.ID
 			m.draft = nil
 			m.blocked = false
@@ -149,7 +171,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 				m.cancel = nil
 				m.serial++
-				if isMutation(m.busy) {
+				if isCollectionOperation(m.busy) {
+					m.collectionCancelled(m.busy)
+				} else if isMutation(m.busy) {
 					m.blocked = true
 					m.status = "Write cancelled; outcome unknown. Press r to inspect shared state before another write."
 				} else {
@@ -167,9 +191,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.access.authenticated && !m.access.ready {
 			if msg.String() == "r" {
+				if m.collectionMode {
+					return m.recheckCollectionAccess()
+				}
 				return m.recheckAccess(m.inspectID)
 			}
 			return m, nil
+		}
+		if msg.String() == "g" {
+			if !m.access.authenticated {
+				m.status = "Action blocked: context collection requires authenticated workspace and repository access."
+				return m, nil
+			}
+			if m.draft != nil {
+				m.status = "Save or discard the package preview before switching views."
+				return m, nil
+			}
+			m.collectionMode = !m.collectionMode
+			m.offset = 0
+			m.rebuild()
+			if m.collectionMode && m.collections.record == nil && m.collections.draft == nil {
+				return m.listCollections(0)
+			}
+			m.status = "View changed. Inspect the displayed facts before an action."
+			return m, nil
+		}
+		if m.collectionMode {
+			return m.collectionKey(msg)
 		}
 		switch msg.String() {
 		case "o":
@@ -283,15 +331,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func isMutation(op string) bool {
-	return op == "create" || op == "revise" || op == "submit" || op == "approve"
+	return op == "create" || op == "revise" || op == "submit" || op == "approve" || op == "attach"
 }
 
 // A command can commit and then read a concurrently edited package. Treat that
 // response as uncertain instead of claiming the newly returned revision received
 // the approval or submission the user sent for their inspected tuple.
-func validateMutationResult(req request, p domain.Package) error {
+func validateMutationResult(req request, p domain.Package, actor string) error {
 	wantRevision, wantDigest := req.revision, req.digest
-	if req.op == "create" || req.op == "revise" {
+	if req.op == "create" || req.op == "revise" || req.op == "attach" {
 		var err error
 		wantDigest, err = domain.Digest(req.content)
 		if err != nil {
@@ -304,6 +352,9 @@ func validateMutationResult(req request, p domain.Package) error {
 	}
 	if p.ID == "" || (req.op != "create" && p.ID != req.id) || p.Revision.Number != wantRevision || p.Revision.Digest != wantDigest {
 		return errors.New("command response does not match the confirmed revision and content")
+	}
+	if req.op == "attach" && (p.Approved || p.Approval != nil || p.Revision.SubmittedAt != nil || p.Revision.Author != actor) {
+		return errors.New("attachment response does not confirm a new unapproved draft by the authenticated author")
 	}
 	if req.op == "approve" && (!p.Approved || p.Approval == nil || p.Approval.Revision != req.revision || p.Approval.Digest != req.digest) {
 		return errors.New("command response does not confirm the inspected design approval")
@@ -319,8 +370,8 @@ func (m model) start(req request) (tea.Model, tea.Cmd) {
 		m.status = "Access unavailable: press r to recheck access."
 		return m, nil
 	}
-	if isMutation(req.op) {
-		if err := m.actionAllowed(req.op); err != nil {
+	if isMutation(req.op) || isCollectionWrite(req.op) {
+		if err := m.requestActionAllowed(req.op); err != nil {
 			m.prompt, m.input, m.pending = "", "", request{}
 			m.status = "Action blocked: " + err.Error()
 			return m, nil
@@ -371,7 +422,7 @@ func (m model) confirm(op string) (tea.Model, tea.Cmd) {
 func (m model) updatePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
-		m.prompt, m.input = "", ""
+		m.prompt, m.input, m.pending = "", "", request{}
 		m.status = "Cancelled; no write sent."
 	case "enter":
 		if m.tooSmall() {
@@ -381,6 +432,15 @@ func (m model) updatePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "open":
 			if strings.TrimSpace(m.input) != "" {
 				return m.start(request{op: "open", id: m.input})
+			}
+		case "collection-open":
+			if domain.IsLowerHex(m.input, 32) {
+				return m.start(request{op: "collection", id: m.input})
+			}
+			m.status = "Collection ID must be 32 lowercase hexadecimal characters."
+		case "collection-file":
+			if m.input != "" {
+				return m.start(request{op: "collection-file", path: m.input})
 			}
 		case "file":
 			if m.input != "" {
@@ -412,6 +472,14 @@ func (m model) updatePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) move(delta int) {
+	if m.collectionMode {
+		if m.collections.record == nil && m.collections.draft == nil {
+			m.collections.selected = max(0, min(len(m.collections.page.Collections)-1, m.collections.selected+delta))
+			return
+		}
+		m.offset = max(0, min(max(0, len(m.lines)-m.bodyHeight()), m.offset+delta))
+		return
+	}
 	if m.pack == nil && m.draft == nil {
 		m.selected = max(0, min(len(m.page.Changes)-1, m.selected+delta))
 		return
@@ -447,7 +515,7 @@ func (m model) header() []string {
 			lines = append(lines, wrap("Discovery truncated: selected scope verified; additional entries are not shown.", m.width)...)
 		}
 	}
-	if m.pack != nil {
+	if m.pack != nil && (!m.collectionMode || m.prompt == "attach" || m.busy == "attach") {
 		p := m.pack
 		revisionLabel, digestLabel, stateLabel, authorLabel := "revision", "Digest", "State", "author"
 		if m.draft != nil {
@@ -467,6 +535,9 @@ func (m model) header() []string {
 	}
 	if m.draft != nil {
 		lines = append(lines, wrap("PREVIEW: "+m.draftOp+" complete JSON replacement (not saved)", m.width)...)
+	}
+	if m.collectionMode {
+		lines = append(lines, m.collectionHeader()...)
 	}
 	return lines
 }
