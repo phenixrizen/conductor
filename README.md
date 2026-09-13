@@ -19,7 +19,8 @@ for the new revision.
 - Share work within authenticated workspaces, with repository permissions for
   reading, authoring, and independent human approval.
 - Browse related packages and history that your workspace and repository grants allow.
-- Use the browser and interactive terminal workbenches for local development.
+- Sign in to the browser through a configured OpenID Connect provider and select shared work.
+- Use the interactive terminal workbench for local development.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
 - Capture selected specification, ADR, and other text files from one Git commit,
   with their original content, source IDs, and explicit collection gaps.
@@ -35,13 +36,15 @@ the service, not an individual browser or conversation. Agent identities can rea
 and author permitted work; they cannot grant design approval. Live presence and
 execution tracking are not implemented yet.
 
-Authenticated review currently supports the API and noninteractive CLI. An
-operator configures the identity issuer and provisions access; the CLI reads an
-access token from a selected file. The browser and terminal workbenches still use
-an explicit local mode, which cannot access authenticated workspace packages.
-See the [authenticated review guide](docs/operations/authenticated-review.md) for
-setup and the supported token profile. Tests use a synthetic issuer; compatibility
-with a particular identity provider has not yet been established.
+Authenticated review supports the browser, API, and noninteractive CLI. An operator
+configures the OpenID Connect issuer and provisions access. The browser signs people
+in and keeps its session on the server; the CLI reads an API access token from a
+selected file. The terminal workbench still uses explicit local mode. Local mode
+cannot access authenticated workspace packages. See the
+[browser sign-in guide](docs/operations/browser-sign-in.md) and
+[API/CLI setup](docs/operations/authenticated-review.md). Signed synthetic tests
+exercise the protocol; compatibility with a particular identity provider has not
+yet been certified.
 
 Coding-agent execution, GitHub/GitLab publication, and tracker integrations remain
 planned. Spec Kit and ADRKit files can be captured as native text; their command/API
@@ -128,8 +131,8 @@ configuration, troubleshooting, and database lifecycle.
 - **React 19 and TypeScript:** browser review workbench, built with Vite and plain CSS.
 
 The current implementation focuses on durable review, shared context, and
-controlled team access. Browser sign-in is the next interface increment. Temporal
-workflow execution and external adapters are later increments. See the
+controlled team access. Authenticated terminal review is the next interface
+increment. Temporal workflow execution and external adapters are later increments. See the
 [system architecture](docs/architecture/system.md) and
 [shared-context model](docs/architecture/collaboration.md) for those boundaries.
 The [repository provider plan](docs/architecture/repository-providers.md) describes
@@ -164,6 +167,7 @@ invariants, and update documentation alongside behavior.
 - [Package review specification](specs/001-work-package-review/spec.md)
 - [Context and history specification](specs/002-context-history/spec.md)
 - [Authenticated workspace specification](specs/003-workspace-access/spec.md)
+- [Browser sign-in specification](specs/004-browser-sign-in/spec.md)
 - [OpenAPI contract](api/openapi.yaml)
 - [AI-DLC inspiration and plan review](docs/architecture/aidlc-plan-review.md)
 - [Proposed architectural decisions](docs/adr/)

@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { dateLabel, errorMessage, request } from './api';
-import type { SharedPage } from './api';
+import { accessFailure, dateLabel, errorMessage, request } from './api';
+import type { APIError, RequestAccess, SharedPage } from './api';
 
 export interface RelatedRequest { repository: string; sequence: number }
 
-export function SharedChanges({ actor, disabled, related, onInspect }: {
-  actor: string;
+export function SharedChanges({ access, disabled, related, onInspect, onAccessFailure }: {
+  access: RequestAccess;
   disabled: boolean;
   related?: RelatedRequest;
   onInspect: (id: string) => void;
+  onAccessFailure?: (failure: APIError) => void;
 }) {
   const [repository, setRepository] = useState('');
   const [page, setPage] = useState<SharedPage>();
@@ -32,12 +33,21 @@ export function SharedChanges({ actor, disabled, related, onInspect }: {
     if (filter) query.set('repository', filter);
     if (before) query.set('before', before);
     try {
-      const value = await request<SharedPage>(`/changes?${query}`, actor, abort.signal);
+      const value = await request<SharedPage>(`/changes?${query}`, access, abort.signal);
       if (generation.current !== token || abort.signal.aborted) return;
+      if (access.mode === 'browser' && value.changes.some(change => change.workspaceId !== access.workspaceID || change.repositoryId !== access.repositoryID)) {
+        throw new Error('The server returned work outside the selected repository. Reload access before reviewing.');
+      }
       setPage(previous => before ? { ...value, changes: [...(previous?.changes ?? []), ...value.changes] } : value);
       setLoadedAt(new Date().toLocaleTimeString());
     } catch (failure) {
-      if (generation.current === token && !abort.signal.aborted) setError(errorMessage(failure));
+      if (generation.current === token && !abort.signal.aborted) {
+        if (accessFailure(failure, access)) {
+          setPage(undefined);
+          setLoadedAt('');
+          onAccessFailure?.(failure);
+        } else setError(errorMessage(failure));
+      }
     } finally {
       if (generation.current === token && !abort.signal.aborted) setPending(false);
     }
@@ -61,12 +71,12 @@ export function SharedChanges({ actor, disabled, related, onInspect }: {
 
   return <section className="shared-work panel" aria-labelledby="shared-work-title" aria-busy={pending}>
     <div className="section-heading"><h2 id="shared-work-title">Shared work</h2><span className="tag">Same server · shared records</span></div>
-    <p className="muted">Find work from other developers and agents, or filter by the exact repository identity attached to a package.</p>
+    <p className="muted">{access.mode === 'browser' ? 'Find work from other developers and agents in the selected managed repository. An optional context label filter does not change repository permissions.' : 'Find work from other developers and agents, or filter by the exact repository identity attached to a package.'}</p>
     <form className="control-row" onSubmit={event => { event.preventDefault(); void browse(repository); }}>
-      <label>Repository filter<input value={repository} placeholder="All repositories" disabled={disabled || pending} maxLength={4096}
+      <label>{access.mode === 'browser' ? 'Context label filter' : 'Repository filter'}<input value={repository} placeholder={access.mode === 'browser' ? 'All context labels in this repository' : 'All repositories'} disabled={disabled || pending} maxLength={2048}
         onChange={event => changeFilter(event.target.value)} /></label>
-      <button type="submit" className="secondary" disabled={disabled || pending || !actor.trim()}>Browse shared work</button>
-      {repository && <button type="button" className="secondary" disabled={disabled || pending || !actor.trim()}
+      <button type="submit" className="secondary" disabled={disabled || pending || (access.mode === 'local' && !access.actor.trim())}>Browse shared work</button>
+      {repository && <button type="button" className="secondary" disabled={disabled || pending || (access.mode === 'local' && !access.actor.trim())}
         onClick={() => { setRepository(''); void browse(''); }}>Browse all</button>}
     </form>
     <p role="status" className="muted">{pending ? 'Loading shared work…' : loadedAt ? `List refreshed at ${loadedAt}.` : 'Browse to load shared work packages.'}</p>

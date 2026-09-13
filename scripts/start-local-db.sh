@@ -25,4 +25,9 @@ if [[ "$access_schema" != t ]]; then
   echo "Existing database needs migration 002 before this API can run. Follow docs/operations/authenticated-review.md; existing history is retained." >&2
   exit 1
 fi
+browser_schema="$(docker exec "$container_id" psql -U conductor -d conductor -Atc "SELECT to_regclass('public.browser_sessions') IS NOT NULL")"
+if [[ "$browser_schema" != t ]]; then
+  echo "Existing database needs migration 003 for browser sessions. Follow docs/operations/browser-sign-in.md; existing history is retained." >&2
+  exit 1
+fi
 echo "PostgreSQL is ready on 127.0.0.1:5432. Existing local data is retained."
