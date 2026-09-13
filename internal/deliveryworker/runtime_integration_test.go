@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/contextworkflow"
+	"github.com/phenixrizen/conductor/internal/temporaltest"
 	"go.temporal.io/sdk/client"
 )
 
@@ -63,17 +64,8 @@ func TestPublicationRuntimeLive(t *testing.T) {
 			<-done
 		}
 	}()
-	for {
-		conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("Temporal readiness timed out")
-		case <-time.After(100 * time.Millisecond):
-		}
+	if err = temporaltest.AwaitReady(ctx, address, "publication-acceptance"); err != nil {
+		t.Fatal(err)
 	}
 	engine, err := client.DialContext(ctx, client.Options{HostPort: address, Namespace: "publication-acceptance", Logger: quietLogger{}, ConnectionOptions: client.ConnectionOptions{MaxPayloadSize: 1 << 20}})
 	if err != nil {
