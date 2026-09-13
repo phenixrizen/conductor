@@ -1,10 +1,11 @@
 # Full release completion contract
 
-**Status: In progress.** The release target is the complete coordinated engineering
-platform. A review-only or single-agent pilot does not satisfy this target. This
-contract records the user's direction on 2026-09-13 and the work still requiring
-implementation and verification. It does not accept an ADR, merge a PR, deploy a
-service, or grant application execution permissions.
+**Status: Implementation produced; review and merge pending.** The release target
+is the complete coordinated engineering platform. This contract records the user's
+direction on 2026-09-13, the implemented capabilities and their qualification limits.
+A review-only or single-agent pilot does not satisfy the target. Local verification,
+hosted CI, merge, deployment and production outcomes are separate facts; this
+contract grants none of those permissions.
 
 ## Required outcome
 
@@ -41,7 +42,7 @@ source fixtures do not establish live service compatibility.
 | Specifications and decisions | Spec Kit 1.0.6 and ADRKit CLI 0.13.0 native commands in an immutable isolated image; actual scaffold/template/prerequisite and Proposed ADR/lint/applicability/graph verification | Broad agentic prompt/extension compatibility is not claimed |
 | Runtime context | Groundcover REST profile pinned to official SDK schema 1.424.0; exact service/environment/commit/window correlation, approved criteria, complete-grid evaluation, shared retention and recovery | Live Groundcover account and overall production outcome unverified |
 | Complete interfaces | Browser/CLI/TUI/MCP review, graph/source, coordination, artifact, delivery, tracker and runtime paths tested; accessible workflow navigation preserves uncertain inputs across tabs; signed Chromium, real Keycloak and authenticated PTY acceptance pass | Release changes awaiting merge |
-| Operations | Verified remote Temporal TLS/mTLS; actual Keycloak 26.7.3 HTTPS browser qualification; checked migration ledger, private diagnostics, actual PostgreSQL backup/restore, process recovery and identical release archives | Hosted CI run, hosted Temporal and Conductor deployment unverified |
+| Operations | Verified remote Temporal TLS/mTLS; actual Keycloak 26.7.3 HTTPS browser qualification; checked migration ledger, private diagnostics, actual PostgreSQL backup/restore, process recovery and identical release archives | [Current hosted CI](https://github.com/phenixrizen/conductor/actions/workflows/verify.yml); hosted Temporal and Conductor deployment unverified |
 | Complete acceptance | Both Linear/Jira variants pass two-source native graph → signed MCP → three-task Docker DAG → retained Temporal restart → exact GitHub/GitLab drafts → tracker reconciliation → correlated runtime criteria; related-source revocation tested | Controlled provider fixtures establish protocol behavior, not live SaaS or paid inference |
 
 See [complete acceptance](operations/full-release-acceptance.md),
@@ -92,9 +93,12 @@ this keeps its own diff reviewable. Do not skip prerequisites.
 | 16 | [#30](https://github.com/phenixrizen/conductor/pull/30) | Complete cross-repository acceptance and safe activity retries |
 | 17 | [#31](https://github.com/phenixrizen/conductor/pull/31) | Accessible browser workflow navigation and exact retry retention |
 | 18 | [#32](https://github.com/phenixrizen/conductor/pull/32) | Attempt deadlines, streaming failure and publication receipt recovery |
+| 19 | [#33](https://github.com/phenixrizen/conductor/pull/33) | Exact approved coding criteria and retained verification coverage |
+| 20 | [Release guide branch](https://github.com/phenixrizen/conductor/tree/codex/full-release-guide-review-20260913) | Final README, architecture, setup and verification reconciliation |
 
-Criterion-linked verification and the final release guide are integrated locally.
-Final combined checks and hosted CI are running before those PRs are published.
+The final documentation PR targets #33. Review the complete stack in this order,
+including the guide. CI status belongs to each current PR head and is visible on
+GitHub; earlier canceled or failed attempts are not substituted for current checks.
 
 ## Completion evidence
 
@@ -106,3 +110,34 @@ explicitly and continue independent work; never mark the complete release verifi
 while a required gate lacks its evidence. Design approval, produced implementation,
 verified implementation, merged code, deployment and production outcome stay
 separate throughout this contract.
+
+### Combined local verification
+
+The complete implementation at `1279584` passed both full Go runs with an explicit
+isolated PostgreSQL database: **1,348 tests passed in each normal/race run**, across
+37 tested packages. Fifty optional/helper tests were explicitly skipped in those
+general runs; separately enabled acceptance provides the live boundaries below.
+`go vet`, all three OpenAPI contracts, every tracked Go file's formatting, web
+`npm ci`/typecheck/build, documentation links and source hygiene passed.
+
+| Boundary | Observed qualification |
+|---|---|
+| Isolated workers and native tools | 390 tests/subtests across 11 protocol packages passed with actual Docker, native CodeGraph, Spec Kit/ADRKit and verified Temporal/TLS processes; live-account GitHub and the parent-only crash helper remain explicit skips |
+| Complete shared workflow | Both Linear/Jira variants passed with actual cross-repository Git, native graph, signed MCP, dependent Docker checks, retained Temporal restart, exact provider publication receipts and runtime observations |
+| Database and process recovery | Owned PostgreSQL backup/restore, API/database restart, durable source recovery and retained tracker/runtime receipts passed; existing development databases were preserved |
+| Browser | Actual signed Chromium workflows and native Keycloak HTTPS sign-in passed; exact criterion support rejects substituted revisions, invented checks and contradictory evidence; desktop/mobile screenshots inspected |
+| Terminal | All five authenticated/local PTY paths passed, including source collection, graph/agent/delivery/tracker workflows and runtime evidence; exact credential, scope, revision and request checks remain enforced |
+
+The final test portability corrections preserve the acceptance assertions: browser
+fixture names avoid Python standard-library shadowing, and terminal refresh checks
+wait for completed reads before inspecting a fresh frame. A recovery fixture now receives its intended 150-second budget at construction;
+a child timeout could not extend the previous 60-second parent. Its unchanged
+crash/cleanup/no-repeat assertions passed twice after the correction. Local
+concurrent Docker network creation interrupted one Jira browser startup before
+sign-in; both tracker browser variants then passed independently. Current GitHub
+Actions results provide the hosted evidence.
+
+These checks use synthetic source, identities and controlled provider responses.
+Actual paid model inference, live SaaS writes, a hosted Temporal service, Conductor
+deployment and production outcomes remain unverified. Those limits are not passing
+results and do not authorize external operations.

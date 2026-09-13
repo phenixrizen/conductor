@@ -450,6 +450,13 @@ packages to mirror the target diagram.
 
 ## Testing and completion
 
+- Give owned process-recovery fixtures their intended bounded timeout when they
+  are constructed; a child context cannot extend a shorter parent. Preserve every
+  producer-count, retained-receipt, cleanup and unresolved-claim assertion.
+- Browser fixture filenames must not shadow Python standard-library modules.
+  PTY recovery tests should await the recorded operations and inspect a fresh
+  terminal frame; unchanged UI content may correctly produce no new output bytes.
+
 Run the narrowest relevant checks while developing, then the full applicable set:
 
 ```bash
