@@ -250,10 +250,14 @@ with sync_playwright() as playwright:
 
     def hold_collection(route):
         held.append((route, route.fetch()))
+        page.evaluate("window.collectionReadCaptured = true")
 
     page.route(collection_url, hold_collection)
     page.get_by_role("button", name="Refresh inspected collection", exact=True).click()
     expect(page.get_by_role("button", name="Refresh collections", exact=True)).to_be_disabled()
+    # Exercise a completed server read arriving after scope loss. A disabled
+    # button alone does not establish that the intercepted read has finished.
+    page.wait_for_function("window.collectionReadCaptured === true")
     page.get_by_label("Managed repository", exact=True).select_option("private")
     expect(page.get_by_role("heading", name="Collection inspection", exact=True)).to_have_count(0)
     expect(page.get_by_role("heading", name="Revision 3", exact=True)).to_have_count(0)
