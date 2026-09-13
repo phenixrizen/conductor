@@ -4,7 +4,7 @@
 # ///
 """Actual browser/shared PostgreSQL graph workflow using retained source fixtures."""
 import os
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import expect, sync_playwright
 
 origin = os.environ["CONDUCTOR_BROWSER_WEB_URL"].rstrip("/")
@@ -76,6 +76,30 @@ with sync_playwright() as p:
     expect(panel.get_by_role("region",name="Graph query results")).to_contain_text("library")
     panel.get_by_role("button",name="Inspect relations",exact=True).first.click()
     expect(panel.get_by_role("button",name="Search relationships",exact=True)).to_be_enabled()
+    panel.get_by_label("Retained source repository",exact=True).select_option("library")
+    panel.get_by_label("Retained source path",exact=True).fill("fixture.go")
+    with page.expect_request(lambda r:"/artifact?" in r.url) as source_request:
+        panel.get_by_role("button",name="Read graph source",exact=True).click()
+    source_view=panel.get_by_role("region",name="Inspected graph source text")
+    expect(source_view).to_contain_text("package fixture")
+    expect(source_view).to_contain_text("full_source")
+    source=next(s for s in graph["snapshot"]["sources"] if s["repositoryId"]=="library")
+    assert parse_qs(urlparse(source_request.value.url).query)=={k:[v] for k,v in {"graphDigest":graph["digest"],"repositoryId":"library","collectionId":source["collectionId"],"receiptDigest":source["digest"],"fullSourceDigest":source["fullSourceDigest"],"path":"fixture.go"}.items()}
+    assert source_request.value.headers["x-conductor-repository"]=="application"
+    artifact_pattern=origin+"/api/v1/repository-graphs/"+graph["id"]+"/artifact?*"
+    def tamper_source(route):
+        response=route.fetch();value=response.json();value["artifact"]["text"]="forged source";route.fulfill(response=response,json=value)
+    page.route(artifact_pattern,tamper_source)
+    panel.get_by_role("button",name="Read graph source",exact=True).click()
+    expect(panel.get_by_role("alert")).to_contain_text("does not match its retained text digest")
+    expect(source_view).to_have_count(0)
+    page.unroute(artifact_pattern,tamper_source)
+    panel.get_by_label("Retained source path",exact=True).fill("not-retained.go")
+    panel.get_by_role("button",name="Read graph source",exact=True).click()
+    expect(source_view).to_contain_text("No complete source text is retained")
+    panel.get_by_label("Retained source path",exact=True).fill("fixture.go")
+    panel.get_by_role("button",name="Read graph source",exact=True).click()
+    expect(source_view).to_contain_text("package fixture")
     page.screenshot(path="/tmp/conductor-graph-workbench.png",full_page=True)
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), page.evaluate("Array.from(document.querySelectorAll('*')).filter(e=>e.getBoundingClientRect().right>innerWidth).map(e=>({tag:e.tagName,cls:e.className,text:e.textContent.slice(0,80)})).slice(-15)")
@@ -99,11 +123,16 @@ with sync_playwright() as p:
     panel.get_by_role("button",name="Refresh graphs",exact=True).click()
     panel.get_by_role("button",name="Inspect graph "+graph["id"],exact=True).click()
     expect(panel.get_by_role("heading",name="Inspected repository graph",exact=True)).to_be_visible()
-    # A hidden source is a decisive denial: discard the captured graph immediately.
+    panel.get_by_label("Retained source repository",exact=True).select_option("library")
+    panel.get_by_label("Retained source path",exact=True).fill("fixture.go")
+    panel.get_by_role("button",name="Read graph source",exact=True).click()
+    expect(panel.get_by_role("region",name="Inspected graph source text")).to_contain_text("package fixture")
+    # A hidden source is a decisive denial: discard graph and source text immediately.
     graph_url=origin+"/api/v1/repository-graphs/"+graph["id"]
-    page.route(graph_url, lambda route:route.fulfill(status=404,content_type="application/json",body='{"error":{"code":"not_found","message":"Resource unavailable","correlationId":"synthetic"}}'))
-    panel.get_by_role("button",name="Refresh inspected graph",exact=True).click()
+    page.route(graph_url+"/artifact?*", lambda route:route.fulfill(status=404,content_type="application/json",body='{"error":{"code":"not_found","message":"Resource unavailable","correlationId":"synthetic"}}'))
+    panel.get_by_role("button",name="Read graph source",exact=True).click()
     expect(panel.get_by_role("heading",name="Inspected repository graph",exact=True)).to_have_count(0)
+    expect(panel.get_by_role("region",name="Inspected graph source text")).to_have_count(0)
     expect(panel.get_by_role("button",name="Refresh graphs",exact=True)).to_be_enabled()
     context.close()
     reader_context=browser.new_context(ignore_https_errors=True)
@@ -117,4 +146,4 @@ with sync_playwright() as p:
     reader_context.close()
     assert not errors,errors
     browser.close()
-    print("PASS: two-repository source inspection, explicit whole-source request, exact graph creation/retry without refresh, graph query, coverage gaps, shared read-only access, scope clearing, denial clearing, desktop/mobile screenshots")
+    print("PASS: two-repository source inspection, explicit whole-source request, exact graph creation/retry without refresh, graph query, exact related source reads, tampered source denial, coverage gaps, shared read-only access, scope clearing, denial clearing, desktop/mobile screenshots")

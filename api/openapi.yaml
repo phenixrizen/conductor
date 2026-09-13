@@ -1039,6 +1039,87 @@ paths:
             schema:
               $ref: '#/components/schemas/DeliveryDigest'
 
+  /api/v1/repository-graphs/{id}/artifact:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    get:
+      summary: Read bounded retained source from an exact graph snapshot
+      description: Holds current read permission on every graph repository in one transaction. The selected
+        workspace and anchor stay fixed. Every source tuple field must equal the inspected graph; no implicit
+        source refresh, provider request, Git bundle or credential is returned. Unknown/repeated query
+        fields are rejected. A path outside retained coverage returns unavailable, not proof that the
+        provider path is missing.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - name: graphDigest
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      - name: repositoryId
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+      - name: collectionId
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+      - name: receiptDigest
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      - name: fullSourceDigest
+        in: query
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        description: Required exactly when the inspected graph source includes this full-source bundle
+          digest
+      - name: path
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        description: Literal clean relative path of at most 1024 UTF-8 bytes
+      responses:
+        '200':
+          description: Retained artifact or explicit coverage gap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphArtifactResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Inspected graph digest differs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     BrowserCookie:
@@ -2544,3 +2625,35 @@ components:
         payloadDigest:
           type: string
           pattern: ^[a-f0-9]{64}$
+    GraphArtifactResult:
+      type: object
+      additionalProperties: false
+      required:
+      - graphId
+      - digest
+      - source
+      - artifact
+      - coverage
+      - coverageTruncated
+      properties:
+        graphId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: Exact inspected graph digest
+        source:
+          $ref: '#/components/schemas/GraphSourceRecord'
+        artifact:
+          $ref: '#/components/schemas/ContextArtifact'
+        coverage:
+          type: string
+          enum:
+          - selected_paths
+          - full_source
+          description: Source retention policy; selected paths never imply a complete repository index
+        coverageTruncated:
+          type: boolean
+          description: Full-source retained text exceeded configured coverage limits; artifact states
+            retain individual gaps

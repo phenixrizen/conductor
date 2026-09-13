@@ -25,7 +25,7 @@ export function validateDeliveryPage(page: DeliveryPage, access: BrowserAccess) 
 }
 export function providerURL(url: string, host: string): string | undefined { try{const value=new URL(url);if(value.protocol==='https:'&&value.hostname===host&&!value.username&&!value.password&&!value.port)return value.href;}catch{/* Display an unavailable link for invalid provider data. */} }
 const digestBytes = async (bytes: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes as BufferSource)),b=>b.toString(16).padStart(2,'0')).join('');
-export function visibleControls(text: string) {return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,c=>`\\u${c.charCodeAt(0).toString(16).padStart(4,'0')}`);}
+export { visibleControls } from './sourceText';
 
 // The server verifies the typed immutable artifact digest under all run grants.
 // Also verify every displayed patch/check byte digest locally before enabling

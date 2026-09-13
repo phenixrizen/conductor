@@ -141,10 +141,17 @@ func TestAuthenticatedMCPStdio(t *testing.T) {
 	if _, err := session.ReadResource(f.ctx, &mcp.ReadResourceParams{URI: "conductor://workspace/team/repository/application/graphs/" + graph.ID}); err != nil {
 		t.Fatal(err)
 	}
+	artifactArgs := map[string]any{"id": graph.ID, "source": map[string]any{"graphDigest": graph.Digest, "repositoryId": "library", "collectionId": libraryCollection.ID, "receiptDigest": libraryReceipt.Digest, "path": "README.md"}}
+	var sourceText domain.GraphArtifactResult
+	data(call("conductor_read_graph_source", artifactArgs, false), &sourceText)
+	if sourceText.GraphID != graph.ID || sourceText.Source.RepositoryID != "library" || sourceText.Artifact.Path != "README.md" {
+		t.Fatal("related source lost canonical graph context")
+	}
 	if err := f.db.ApplyAccessConfig(f.ctx, "mcp-graph-operator", domain.AccessConfig{Grants: []domain.GrantConfig{{RepositoryID: "library", PrincipalID: "person-agent"}}}); err != nil {
 		t.Fatal(err)
 	}
 	call("conductor_get_graph", map[string]any{"id": graph.ID}, true)
+	call("conductor_read_graph_source", artifactArgs, true)
 	call("conductor_query_graph", map[string]any{"id": graph.ID}, true)
 	var graphPage domain.RepositoryGraphPage
 	data(call("conductor_list_graphs", map[string]any{}, false), &graphPage)

@@ -45,3 +45,6 @@ with no human execution-authority tools. SDK-client tests cover preserved pins,
 optional empty arrays, empty command arguments, unchanged retry keys, nested scope
 injection denial and absent authorization tools. Signed shared MCP-to-browser
 acceptance proves an agent proposal is visible to a human and cannot self-authorize.
+
+Exact related graph-source reads are verified through real MCP SDK/stdio, signed
+API and PostgreSQL, including revoked related-source access.

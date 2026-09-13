@@ -92,3 +92,30 @@ Read-only users can discover/query shared graphs without author controls.
 - Source/credential text never enters workflow payloads, diagnostic errors or logs.
   Cancellation removes the owned temporary container; missing native prerequisites
   after opting into acceptance fail explicitly.
+
+## Retained source inspection
+
+Implemented: an authenticated client can read one retained artifact from any source
+in its inspected graph through `GET /api/v1/repository-graphs/{id}/artifact` and
+`GetRepositoryGraphArtifact`. The request captures the graph digest, repository,
+collection, receipt digest, optional full-source digest and literal path. Every
+repository in the graph must remain readable in the same transaction, including
+sources other than the requested artifact. The workspace and anchor repository
+stay fixed; a mismatched source tuple cannot widen coverage.
+
+Selected-path receipts and retained full-source artifacts expose at most 64 KiB of
+text per clean relative path (at most 1024 UTF-8 bytes). Responses preserve source
+commit/digests, unknown freshness, individual missing/unavailable/truncated states,
+`selected_paths` versus `full_source` coverage, and whole-source truncation. A path
+not retained returns an explicit unavailable artifact. Reads never acquire newer
+source, run repository commands or expose Git bundle bytes or credentials.
+
+Signed-token/live-PostgreSQL acceptance covers related-repository source reads,
+revocation of any graph endpoint, forged tuples and identity, path/query bounds,
+selected-path gaps and real Git bundle text outside the selected-path receipt.
+The latter uses an explicitly synthetic unsupported extraction fact; it proves
+retention and authorization, not CodeGraph execution.
+
+Browser and MCP source reads use the inspected graph/source tuple. Browser text
+digests are checked before display; scope changes and source denial clear both
+graph and text. Unretained content and unknown freshness stay explicit.
