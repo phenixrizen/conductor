@@ -36,11 +36,12 @@ jobs:
       - name: Start isolated CI database
         run: |
           docker run -d --name conductor-ci -e POSTGRES_USER=conductor -e POSTGRES_PASSWORD=conductor -e POSTGRES_DB=conductor -p 127.0.0.1:55432:5432 postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 -c max_locks_per_transaction=1024
+          # Ignore the image's temporary socket-only initialization server.
           for attempt in $(seq 1 60); do
-            if docker exec conductor-ci pg_isready -U conductor; then break; fi
+            if docker exec conductor-ci pg_isready -h 127.0.0.1 -U conductor; then break; fi
             sleep 1
           done
-          docker exec conductor-ci pg_isready -U conductor
+          docker exec conductor-ci pg_isready -h 127.0.0.1 -U conductor
       - name: Install bounded protocol test dependencies
         run: |
           scripts/install-ci-temporal.sh "$RUNNER_TEMP/temporal"
@@ -105,11 +106,12 @@ jobs:
           scripts/install-ci-temporal.sh "$RUNNER_TEMP/temporal"
           echo "CONDUCTOR_TEMPORAL_CLI=$RUNNER_TEMP/temporal/temporal" >> "$GITHUB_ENV"
           docker run -d --name conductor-ci -e POSTGRES_USER=conductor -e POSTGRES_PASSWORD=conductor -e POSTGRES_DB=conductor -p 127.0.0.1:55432:5432 postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 -c max_locks_per_transaction=1024
+          # Ignore the image's temporary socket-only initialization server.
           for attempt in $(seq 1 60); do
-            if docker exec conductor-ci pg_isready -U conductor; then break; fi
+            if docker exec conductor-ci pg_isready -h 127.0.0.1 -U conductor; then break; fi
             sleep 1
           done
-          docker exec conductor-ci pg_isready -U conductor
+          docker exec conductor-ci pg_isready -h 127.0.0.1 -U conductor
       - name: Build reviewed immutable worker images
         run: |
           scripts/build-worker-image.sh
