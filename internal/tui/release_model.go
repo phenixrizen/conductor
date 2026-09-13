@@ -225,6 +225,9 @@ func (m releaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setRows(x.value)
 			m.blocked = false
 			m.status = "Shared " + m.view + " loaded. Missing evidence is not passing."
+		case "task-artifact":
+			m.presentation = x.value
+			m.status = "Exact task artifact inspected. Failed checks and design reports remain evidence, not publication authority."
 		case "graph-artifact":
 			m.presentation = x.value
 			m.status = "Graph source artifact inspected. Coverage and missing source remain explicit."
@@ -353,6 +356,11 @@ func (m releaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.confirmRelease("cancel")
 			}
 		case "v":
+			if m.view == "runs" && m.record != nil && m.draft == nil {
+				m.prompt = "task-artifact"
+				m.input = ""
+				m.status = "Select a task key from the inspected retained receipts."
+			}
 			if m.view == "deliveries" && m.record != nil && m.draft == nil {
 				id, d := m.recordIdentity()
 				return m.start(releaseRequest{op: "artifact", id: id, digest: d})
@@ -591,6 +599,21 @@ func (m releaseModel) releasePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.start(releaseRequest{op: "get", id: m.input})
 			}
 			m.status = "Record ID must be 32 lowercase hexadecimal characters."
+		case "task-artifact":
+			run, ok := m.record.(domain.CoordinationRun)
+			if !ok {
+				break
+			}
+			for _, receipt := range run.Receipts {
+				if receipt.TaskKey == m.input || receipt.TaskID == m.input {
+					if receipt.ArtifactDigest == "" {
+						m.status = "This receipt has no retained artifact."
+						return m, nil
+					}
+					return m.start(releaseRequest{op: "task-artifact", id: run.ID, taskArtifact: domain.CoordinationArtifactQuery{RunDigest: run.Digest, TaskID: receipt.TaskID, ArtifactDigest: receipt.ArtifactDigest}})
+				}
+			}
+			m.status = "Select an exact task key or opaque ID from the inspected receipts."
 		case "source-repository":
 			g, ok := m.record.(domain.RepositoryGraph)
 			if !ok {

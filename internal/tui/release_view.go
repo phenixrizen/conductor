@@ -89,6 +89,7 @@ func (m releaseModel) View() string {
 	case "graphs":
 		help += " | / search | t node | f source"
 	case "runs":
+		help += " | v task artifact"
 		help += " | e profiles | a authorize | x cancel"
 	case "deliveries":
 		help += " | v artifact | a authorize | u reconcile"
@@ -105,6 +106,8 @@ func (m releaseModel) View() string {
 			help = "Request JSON file path; Enter previews, Esc cancels"
 		case "open":
 			help = "Record ID; Enter inspects, Esc cancels"
+		case "task-artifact":
+			help = "Task key or opaque ID from inspected receipts; Enter reads exact artifact"
 		case "source-repository":
 			help = "Repository ID from inspected graph sources; Enter selects"
 		case "source-path":
@@ -138,9 +141,16 @@ func (m *releaseModel) rebuildRelease() {
 	if m.draft != nil {
 		value = m.draft
 	}
-	if a, ok := value.(domain.DeliveryArtifact); ok {
+	var artifact json.RawMessage
+	switch a := value.(type) {
+	case domain.DeliveryArtifact:
+		artifact = a.Artifact
+	case domain.CoordinationArtifact:
+		artifact = a.Artifact
+	}
+	if artifact != nil {
 		var result execution.Result
-		if json.Unmarshal(a.Artifact, &result) == nil {
+		if json.Unmarshal(artifact, &result) == nil {
 			add("Readable patch copies follow; the complete encoded artifact remains below.")
 			for _, p := range result.Patches {
 				add("Repository: " + p.RepositoryID + " | patch digest " + p.Digest)

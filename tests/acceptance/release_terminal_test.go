@@ -127,6 +127,24 @@ func releaseTerminalFixture(t *testing.T) (*accessFixture, map[string]any) {
 		t.Fatal(err)
 	}
 	goodPlan, _ := planFor("Exact terminal execution plan")
+	reportRun, err := agent.CreateCoordination(f.ctx, "terminal-failed-report", goodPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reportTask string
+	if err = f.sql.QueryRow(f.ctx, `SELECT id FROM coordination_tasks WHERE run_id=$1`, reportRun.ID).Scan(&reportTask); err != nil {
+		t.Fatal(err)
+	}
+	report := execution.Result{InputDigest: strings.Repeat("d", 64), ProfileDigest: profileDigest, Image: profile.Image, Adapter: "command/v1", AdapterVersion: "1", Producer: execution.Evidence{State: "failed", Output: "Synthetic failed design report: inspect before revising. \u001b]52;c;YQ==\u0007"}, Patches: []execution.Patch{}, Checks: []execution.Evidence{}}
+	reportDigest, _ := domain.JSONDigest(report)
+	if _, err = f.sql.Exec(f.ctx, `INSERT INTO coordination_task_receipts(task_id,run_id,digest,outcome,artifact_digest,artifact) VALUES($1,$2,$3,'failed',$3,$4)`, reportTask, reportRun.ID, reportDigest, report); err != nil {
+		t.Fatal(err)
+	}
+	reportRun, err = agent.GetCoordination(f.ctx, reportRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	config := trackerConfig("linear")
 	if err = f.db.ApplyTrackerConfig(f.ctx, "synthetic-operator", config); err != nil {
 		t.Fatal(err)
@@ -146,7 +164,7 @@ func releaseTerminalFixture(t *testing.T) (*accessFixture, map[string]any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return f, map[string]any{"graph": graph, "graphInput": domain.GraphInput{Sources: []domain.GraphSource{{RepositoryID: "application", CollectionID: collection.ID, Digest: receipt.Digest, FullSourceDigest: data.Digest}}}, "staleRun": staleRun, "stalePackage": stalePackage, "plan": goodPlan, "delivery": d, "deliveryInput": input, "trackerLink": link, "trackerInput": trackerInput}
+	return f, map[string]any{"reportRun": reportRun, "graph": graph, "graphInput": domain.GraphInput{Sources: []domain.GraphSource{{RepositoryID: "application", CollectionID: collection.ID, Digest: receipt.Digest, FullSourceDigest: data.Digest}}}, "staleRun": staleRun, "stalePackage": stalePackage, "plan": goodPlan, "delivery": d, "deliveryInput": input, "trackerLink": link, "trackerInput": trackerInput}
 }
 
 func TestAuthenticatedTerminalReleaseWorkflows(t *testing.T) {

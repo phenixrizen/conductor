@@ -51,6 +51,26 @@ func (m releaseModel) validateRelease(r releaseResult) error {
 		return e == nil && string(b) == string(r.draft.Input)
 	}
 	switch v := r.value.(type) {
+	case domain.CoordinationArtifact:
+		run, ok := m.record.(domain.CoordinationRun)
+		q := r.taskArtifact
+		if !ok || r.op != "task-artifact" || r.view != "runs" || v.RunID != run.ID || v.RunID != r.id || v.RunDigest != run.Digest || v.RunDigest != q.RunDigest || v.TaskID != q.TaskID || v.ArtifactDigest != q.ArtifactDigest || len(v.Artifact) > 16<<20 {
+			return errResponseScope
+		}
+		found := false
+		for _, receipt := range run.Receipts {
+			if receipt.TaskID == v.TaskID && receipt.ArtifactDigest == v.ArtifactDigest {
+				found = true
+			}
+		}
+		var result execution.Result
+		if !found || json.Unmarshal(v.Artifact, &result) != nil {
+			return errResponseScope
+		}
+		d, e := domain.JSONDigest(result)
+		if e != nil || d != v.ArtifactDigest {
+			return errResponseScope
+		}
 	case domain.RepositoryGraphPage:
 		if r.view != "graphs" || r.op != "list" || len(v.Graphs) > pageSize || !validCollectionCursor(v.NextBefore) {
 			return errResponseScope

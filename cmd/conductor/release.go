@@ -15,11 +15,12 @@ type releaseOptions struct {
 	file, digest, key, before, search, node string
 	limit, depth                            int
 	artifact                                domain.GraphArtifactQuery
+	taskArtifact                            domain.CoordinationArtifactQuery
 }
 
 func releaseCommand(op string) bool {
 	switch op {
-	case "graph-preview", "graph-create", "graphs", "graph", "graph-query", "graph-artifact", "run-preview", "run-propose", "runs", "run", "run-authorize", "run-cancel", "execution-profiles", "execution-capabilities", "delivery-preview", "delivery-propose", "deliveries", "delivery", "delivery-artifact", "delivery-authorize", "delivery-reconcile", "tracker", "tracker-links", "tracker-link", "tracker-link-preview", "tracker-link-create", "tracker-sync-preview", "tracker-sync", "tracker-sync-show":
+	case "graph-preview", "graph-create", "graphs", "graph", "graph-query", "graph-artifact", "run-preview", "run-propose", "runs", "run", "run-artifact", "run-authorize", "run-cancel", "execution-profiles", "execution-capabilities", "delivery-preview", "delivery-propose", "deliveries", "delivery", "delivery-artifact", "delivery-authorize", "delivery-reconcile", "tracker", "tracker-links", "tracker-link", "tracker-link-preview", "tracker-link-create", "tracker-sync-preview", "tracker-sync", "tracker-sync-show":
 		return true
 	}
 	return false
@@ -118,6 +119,11 @@ func runReleaseCommand(ctx context.Context, c *client.Client, op string, args []
 		return c.ListCoordinations(ctx, o.before, o.limit)
 	case "run":
 		return c.GetCoordination(ctx, id)
+	case "run-artifact":
+		if domain.ValidateCoordinationArtifactQuery(o.taskArtifact) != nil {
+			return nil, errors.New("run-artifact requires inspected --digest, --task-id, and --artifact-digest")
+		}
+		return c.GetCoordinationArtifact(ctx, id, o.taskArtifact)
 	case "run-authorize":
 		return c.AuthorizeCoordination(ctx, id, o.digest)
 	case "run-cancel":

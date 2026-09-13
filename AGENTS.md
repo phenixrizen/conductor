@@ -457,3 +457,9 @@ Before finishing:
    limitations, and the next concrete increment.
 5. Do not merge, deploy, waive checks, force-push, or select a project license
    without explicit authority.
+
+- Retained coordination task artifacts have an independent read path. Bind the
+  inspected run digest, opaque task ID and artifact digest; hold every run source
+  read grant through the complete bounded typed-result read. Failed/checkless
+  reports remain reviewable without a publication proposal or current execute
+  grant. Reading output must never reclassify it as passing or publishable.

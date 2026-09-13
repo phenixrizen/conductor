@@ -619,6 +619,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/coordination-runs/{id}/artifact:
+    parameters:
+      - {$ref: '#/components/parameters/CollectionWorkspace'}
+      - {$ref: '#/components/parameters/CollectionRepository'}
+      - {$ref: '#/components/parameters/CSRF'}
+    get:
+      security:
+        - BearerAuth: []
+        - BrowserCookie: []
+      summary: Read an exact retained task artifact, including failed checks and reports without patches
+      description: Requires current read access to every repository in the run, held through the artifact read. The inspected run digest, opaque task ID and retained artifact digest must all match. No publication proposal, passing outcome or current execution grant is required. Returns the complete typed execution result, bounded to 16 MiB, with a 17 MiB client response limit.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: runDigest, in: query, required: true, schema: {type: string, pattern: '^[0-9a-f]{64}$'}}
+        - {name: taskId, in: query, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: artifactDigest, in: query, required: true, schema: {type: string, pattern: '^[0-9a-f]{64}$'}}
+      responses:
+        '200':
+          description: Exact retained artifact; failed or missing checks remain explicit
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CoordinationArtifact'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: The inspected run or artifact digest no longer matches the requested retained receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/coordination-runs/{id}/authorization:
     parameters:
     - $ref: '#/components/parameters/CollectionID'
@@ -2095,6 +2127,19 @@ components:
         createdAt:
           type: string
           format: date-time
+    CoordinationArtifact:
+      type: object
+      additionalProperties: false
+      required: [runId, runDigest, taskId, artifactDigest, artifact]
+      properties:
+        runId: {type: string, pattern: '^[0-9a-f]{32}$'}
+        runDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        taskId: {type: string, pattern: '^[0-9a-f]{32}$'}
+        artifactDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        artifact:
+          type: object
+          description: Complete retained execution.Result JSON, including producer report, patches, independent check output and cleanup evidence. Its typed canonical digest must equal artifactDigest. Reports without patches and failed output are readable and confer no publication authority.
+          additionalProperties: true
     CoordinationRun:
       type: object
       additionalProperties: false

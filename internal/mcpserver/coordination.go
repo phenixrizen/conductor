@@ -14,6 +14,21 @@ type coordinationCreateArgs struct {
 // Agents may propose and inspect shared plans. Human execution authorization is
 // deliberately absent, even when an MCP host happens to use a human credential.
 func (b *Bridge) registerCoordination() {
+	if reader, ok := b.api.(interface {
+		GetCoordinationArtifact(context.Context, string, domain.CoordinationArtifactQuery) (domain.CoordinationArtifact, error)
+	}); ok {
+		digest := map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}
+		id := map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"}
+		addTool(b, "conductor_get_task_artifact", "Read the complete retained report, patch and check evidence for an exact inspected run/task/artifact digest. Failed checks and reports with no patch remain readable. This grants no publication or approval. MCP's 2 MiB bound rejects larger results explicitly; use the authenticated artifact API for those.", schema(map[string]any{"id": id, "runDigest": digest, "taskId": id, "artifactDigest": digest}, "id", "runDigest", "taskId", "artifactDigest"), false, true, func(ctx context.Context, a struct {
+			ID             string `json:"id"`
+			RunDigest      string `json:"runDigest"`
+			TaskID         string `json:"taskId"`
+			ArtifactDigest string `json:"artifactDigest"`
+		}) (any, error) { q := domain.CoordinationArtifactQuery{RunDigest: a.RunDigest, TaskID: a.TaskID, ArtifactDigest: a.ArtifactDigest}; if domain.ValidateCoordinationArtifactQuery(q) != nil {
+			return nil, domain.ErrInvalidInput
+		}; return reader.GetCoordinationArtifact(ctx, a.ID, q) })
+	}
+
 	id := map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"}
 	addTool(b, "conductor_execution_profiles", "Read the operator-configured workspace profiles and immutable profile/image digests. Missing or truncated profiles do not establish runnable capacity. No credential references are returned.", schema(map[string]any{}), false, true, func(ctx context.Context, _ emptyArgs) (any, error) { return b.api.ExecutionProfiles(ctx) })
 	addTool(b, "conductor_execution_capabilities", "Read current selected-repository execution capabilities. Human execution authority is separate from package approval; this bridge cannot authorize a run.", schema(map[string]any{}), false, true, func(ctx context.Context, _ emptyArgs) (any, error) { return b.api.ExecutionCapabilities(ctx) })

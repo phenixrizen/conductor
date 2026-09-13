@@ -134,3 +134,9 @@ starting children. Repository-controlled code cannot access its memory or result
 file descriptors through `/proc`, independently of host Yama policy. Trusted
 receipt validation separately checks exact request/profile/image identity,
 complete check IDs/argv/source digests, bounded patch metadata and confirmed cleanup.
+
+Retained task artifact inspection is implemented independently of publication:
+exact run/task/artifact pins, all-repository read locks, complete bounded typed
+output, and shared API/client/MCP/CLI/TUI access. Failed checks and design-only
+reports retain their evidence states. Live authorization/integrity checks and
+actual PTY inspection cover this read path.
