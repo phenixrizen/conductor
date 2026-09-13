@@ -25,7 +25,14 @@ The initial stdio bridge passes `go test ./...` and `go test -race ./...` with
 actual bridge and passes with signed tokens and isolated PostgreSQL. Browser,
 terminal, Temporal and process-restart opt-ins were not enabled in this bridge-only
 run; those skips establish no new acceptance evidence. Markdown links and fences
-validate. Graph operations are integrated separately when their API is available.
+validate. The graph follow-up exposes four working shared API commands and scoped graph
+resources. MCP tests verify exact receipt tuples, retained keys, normalized source
+order, query bounds and scope injection denial. Integrated graph authority is
+covered by Feature 007 and the combined MCP/database acceptance. The latter
+passes with race detection against a real compiled stdio process: two repository
+receipts produce one idempotent graph, bounded queries retain provenance, and
+revoking one source hides graph reads/query/listing while anchor package reads
+remain available. The graph API prerequisite must precede the MCP graph commit.
 
 This branch forms one ordered PR in the full-release review stack requested by the
 user. Implemented and tested behavior does not grant merge, deployment or ADR

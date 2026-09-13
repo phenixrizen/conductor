@@ -110,6 +110,48 @@ func TestAuthenticatedMCPStdio(t *testing.T) {
 	if !strings.Contains(resource.Contents[0].Text, receipt.Digest) || !strings.Contains(resource.Contents[0].Text, `"state":"missing"`) {
 		t.Fatal("shared scoped receipt lost digest or evidence gaps")
 	}
+
+	// Build one graph spanning two independently authorized repositories. Graph
+	// source IDs expand evidence only after the API checks every source grant.
+	library := domain.AccessConfig{
+		Repositories: []domain.RepositoryConfig{{ID: "library", WorkspaceID: "team", Provider: "github", Host: "github.com", ProviderID: "303", Name: "synthetic/library"}},
+		Grants:       []domain.GrantConfig{{RepositoryID: "library", PrincipalID: "person-author", CanRead: true, CanAuthor: true}, {RepositoryID: "library", PrincipalID: "person-agent", CanRead: true, CanAuthor: true}},
+	}
+	if err := f.db.ApplyAccessConfig(f.ctx, "mcp-graph-operator", library); err != nil {
+		t.Fatal(err)
+	}
+	configureCollectionIntegration(t, f, "team", "library", true)
+	libraryCollection := requestCollection(t, f, "author", "team", "library", "mcp-library-source")
+	libraryReceipt := completeCollectionFixture(t, f, libraryCollection)
+	graphArgs := map[string]any{"idempotencyKey": "mcp-graph-retry", "sources": []map[string]any{
+		{"repositoryId": "application", "collectionId": collection.ID, "digest": receipt.Digest},
+		{"repositoryId": "library", "collectionId": libraryCollection.ID, "digest": libraryReceipt.Digest},
+	}}
+	var graph, graphReplay domain.RepositoryGraph
+	data(call("conductor_create_graph", graphArgs, false), &graph)
+	data(call("conductor_create_graph", graphArgs, false), &graphReplay)
+	if graph.ID == "" || graphReplay.ID != graph.ID || len(graph.Snapshot.Sources) != 2 || graph.CreatorID != "person-agent" {
+		t.Fatal("graph lost shared source tuples, idempotency or attribution")
+	}
+	var graphQuery domain.GraphQueryResult
+	data(call("conductor_query_graph", map[string]any{"id": graph.ID, "limit": 1}, false), &graphQuery)
+	if graphQuery.GraphID != graph.ID || graphQuery.Digest != graph.Digest || !graphQuery.Truncated || len(graphQuery.Sources) != 2 {
+		t.Fatalf("graph query lost provenance or truncation: %+v", graphQuery)
+	}
+	if _, err := session.ReadResource(f.ctx, &mcp.ReadResourceParams{URI: "conductor://workspace/team/repository/application/graphs/" + graph.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.ApplyAccessConfig(f.ctx, "mcp-graph-operator", domain.AccessConfig{Grants: []domain.GrantConfig{{RepositoryID: "library", PrincipalID: "person-agent"}}}); err != nil {
+		t.Fatal(err)
+	}
+	call("conductor_get_graph", map[string]any{"id": graph.ID}, true)
+	call("conductor_query_graph", map[string]any{"id": graph.ID}, true)
+	var graphPage domain.RepositoryGraphPage
+	data(call("conductor_list_graphs", map[string]any{}, false), &graphPage)
+	if len(graphPage.Graphs) != 0 {
+		t.Fatal("graph listing retained revoked source data")
+	}
+	call("conductor_get_package", map[string]any{"id": humanPackage.ID}, false)
 	var attached domain.Package
 	data(call("conductor_attach_collection", map[string]any{"id": humanPackage.ID, "expectedRevision": 1, "collectionId": collection.ID, "digest": receipt.Digest}, false), &attached)
 	if attached.Revision.Number != 2 || attached.Approved || attached.Revision.Author != "person-agent" || attached.Revision.Content["futureField"] == nil {

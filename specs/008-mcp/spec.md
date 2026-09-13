@@ -29,6 +29,9 @@ A dedicated agent principal is recommended. No public MCP HTTP listener is enabl
 3. Expose implemented tools for access discovery, package discovery/current read,
    historical revision/history/audit read, draft creation/revision/submission,
    context discovery/read/request/cancellation and explicit receipt attachment.
+   Expose graph creation from 1–16 inspected receipts, graph listing/inspection,
+   and bounded search/traversal. The selected repository anchors the graph; source
+   IDs do not change session scope, and every source requires current API access.
    Do not expose approval, arbitrary HTTP, shell execution, credential management,
    merge, deployment, provider publication or unimplemented success tools.
 4. Consequential commands carry the caller's inspected revision and, for receipt

@@ -1,0 +1,22 @@
+# Repository graph delivery plan
+
+1. Persist immutable graph/source/audit facts in migration 005; derive actor and
+   authorize every source repository under the existing transaction boundary.
+2. Implement deterministic receipt-backed Go/manifest analysis with explicit gaps,
+   bounded cross-repository resolution, search and traversal.
+3. Pin the user-selected CodeGraph 1.6.0 source/release; run its actual Rust kernel
+   and library in a restricted container. Add an optional existing Temporal activity
+   hook and atomically persist source plus index without changing receipt digests.
+4. Expose the implemented HTTP and Go client contracts and cover signed identity,
+   shared persistence, revocation, idempotency, rollback and native execution.
+5. Expand trusted source acquisition to whole repository trees at exact commits,
+   while retaining explicit file/output bounds and incomplete-coverage evidence.
+   Add browser/terminal graph controls and coordinated-agent graph consumption.
+
+The user's current instruction explicitly requests stacked PRs. Publish focused
+commits with an explicit numbered base/dependency chain; never merge them or mark
+external deployment/compatibility as verified without corresponding evidence.
+
+The first four items have implementation and targeted acceptance. Item 5 remains
+required for the broader release. [Operations](../../docs/operations/repository-graph.md)
+records reproducible native runtime setup and remaining limits.

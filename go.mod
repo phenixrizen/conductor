@@ -13,6 +13,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	go.temporal.io/api v1.62.12
 	go.temporal.io/sdk v1.44.1
+	golang.org/x/mod v0.31.0
 	golang.org/x/oauth2 v0.35.0
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11

@@ -50,6 +50,10 @@ func (b *Bridge) readResource(ctx context.Context, request *mcp.ReadResourceRequ
 		data, err = b.access(ctx)
 	case len(parts) == 1 && parts[0] == "packages":
 		data, err = b.api.ListChanges(ctx, "", "", 20)
+	case len(parts) == 1 && parts[0] == "graphs":
+		data, err = b.api.ListRepositoryGraphs(ctx, "", 20)
+	case len(parts) == 2 && parts[0] == "graphs":
+		data, err = b.api.GetRepositoryGraph(ctx, parts[1])
 	case len(parts) == 1 && parts[0] == "collections":
 		data, err = b.api.ListCollections(ctx, "", 20)
 	case len(parts) == 2 && parts[0] == "packages":

@@ -26,6 +26,9 @@ for the new revision.
 - Browse related packages and history that your workspace and repository grants allow.
 - Connect coding agents through an authenticated MCP stdio bridge to the same
   packages, history, context requests, and draft commands used by other clients.
+- Build and query shared graphs across repository context receipts, with source
+  references, dependency relationships, and visible coverage gaps. An optional
+  pinned CodeGraph Rust parser extracts symbols during background collection.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
@@ -146,6 +149,10 @@ configuration, troubleshooting, and database lifecycle.
   the first worker uses a trusted local Temporal server.
 - **MCP Go SDK 1.7.0:** a bounded stdio bridge for agents with one fixed identity
   and workspace/repository selection. See the [MCP setup guide](docs/operations/mcp.md).
+- **CodeGraph 1.6.0:** the selected
+  [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) Rust extraction
+  kernel runs in a container without network access or credentials. Graphs currently
+  cover explicitly collected paths; see [graph setup and limits](docs/operations/repository-graph.md).
 
 The current implementation focuses on durable review, shared context, and
 controlled team access. Background context collection requires an operator-enabled

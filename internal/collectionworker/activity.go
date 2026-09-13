@@ -29,6 +29,9 @@ type Activity struct {
 	store       WorkStore
 	credentials CredentialResolver
 	collector   CollectorFactory
+	indexer     interface {
+		Index(context.Context, []domain.ContextArtifact) (domain.CodeGraphIndex, error)
+	}
 }
 
 // A custom factory exists for controlled provider acceptance fixtures. The
@@ -42,6 +45,12 @@ func NewActivity(db WorkStore, credentials CredentialResolver, factory Collector
 	}
 	return &Activity{store: db, credentials: credentials, collector: factory}, nil
 }
+
+// WithCodeGraph enables the operator-pinned, credential-free parser activity.
+// Older committed receipts remain recoverable without backfilling mutable data.
+func (a *Activity) WithCodeGraph(indexer interface {
+	Index(context.Context, []domain.ContextArtifact) (domain.CodeGraphIndex, error)
+}) *Activity { copy := *a; copy.indexer = indexer; return &copy }
 
 func (a *Activity) Collect(ctx context.Context, ref contextworkflow.Reference) (contextworkflow.Result, error) {
 	work, err := a.store.CollectionWork(ctx, ref.ID, ref.Binding)
@@ -77,7 +86,28 @@ func (a *Activity) Collect(ctx context.Context, ref contextworkflow.Reference) (
 	if err != nil {
 		return contextworkflow.Result{}, providerFailure(ctx, err)
 	}
-	receipt, err := a.store.CompleteCollection(ctx, ref.ID, ref.Binding, artifacts)
+	var receipt domain.CollectionReceipt
+	if a.indexer != nil {
+		if err = a.store.CheckCollectionWork(ctx, ref.ID, ref.Binding); err != nil {
+			return contextworkflow.Result{}, databaseFailure(err)
+		}
+		index, indexErr := a.indexer.Index(ctx, artifacts)
+		if indexErr != nil {
+			if ctx.Err() != nil {
+				return contextworkflow.Result{}, ctx.Err()
+			}
+			return contextworkflow.Result{}, contextworkflow.Failure{Code: "unavailable", Retryable: true}
+		}
+		sink, ok := a.store.(interface {
+			CompleteCollectionWithCodeGraph(context.Context, string, string, []domain.ContextArtifact, domain.CodeGraphIndex) (domain.CollectionReceipt, error)
+		})
+		if !ok {
+			return contextworkflow.Result{}, contextworkflow.Failure{Code: "invalid_configuration"}
+		}
+		receipt, err = sink.CompleteCollectionWithCodeGraph(ctx, ref.ID, ref.Binding, artifacts, index)
+	} else {
+		receipt, err = a.store.CompleteCollection(ctx, ref.ID, ref.Binding, artifacts)
+	}
 	if err != nil {
 		return contextworkflow.Result{}, databaseFailure(err)
 	}
