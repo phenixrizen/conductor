@@ -150,7 +150,7 @@ async function requestWithSignal<T>(path: string, access: RequestAccess | undefi
   // Only explicit idempotent creation commands accept this header. Callers cannot replace
   // identity, scope, CSRF, or transport controls through arbitrary headers.
   if (options) {
-    if (!(['/context-collections', '/repository-graphs', '/coordination-runs', '/repository-deliveries', '/tracker-links'].includes(path) || /^\/repository-deliveries\/[a-f0-9]{32}\/reconciliations$/.test(path) || /^\/tracker-links\/[a-f0-9]{32}\/syncs$/.test(path)) || body === undefined || !/^[\x21-\x2b\x2d-\x7e]{1,128}$/.test(options.idempotencyKey)) {
+    if (!(['/context-collections', '/repository-graphs', '/coordination-runs', '/repository-deliveries', '/tracker-links', '/runtime-evidence'].includes(path) || /^\/repository-deliveries\/[a-f0-9]{32}\/reconciliations$/.test(path) || /^\/tracker-links\/[a-f0-9]{32}\/syncs$/.test(path)) || body === undefined || !/^[\x21-\x2b\x2d-\x7e]{1,128}$/.test(options.idempotencyKey)) {
       throw new Error('This creation request requires a valid idempotency key.');
     }
     headers['Idempotency-Key'] = options.idempotencyKey;

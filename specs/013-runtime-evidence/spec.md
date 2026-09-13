@@ -4,7 +4,7 @@
 
 Conductor collects read-only Groundcover metrics, logs and traces for an inspected
 repository delivery and provider deployment. Engineers and agents share these
-retained observations through the authenticated API and MCP. Evidence does not
+retained observations through the authenticated API, MCP and browser workbench. Evidence does not
 create deployments, alter publication receipts, or establish broad production success.
 
 ## Request and authority
@@ -89,3 +89,17 @@ filters access before bounded keyset pagination. Reads expose the immutable rece
 separate observed Temporal progress, and current freshness. No client supplies
 identity, scope, backend, credentials, provider URL, query or evaluation conclusion.
 See the [OpenAPI contract](../../api/openapi.yaml).
+
+## Browser inspection
+
+The browser lists 20 shared requests per page and inspects an explicitly selected
+request. Authors import or paste bounded strict JSON, preview the exact deployment,
+commit, UTC window and approved criterion references, then record the request.
+Lost acknowledgments retain the same input and idempotency key for explicit retry;
+no source, deployment, time window or policy is refreshed inside that decision.
+
+The workbench exposes complete bounded metric points and escaped logs/traces,
+query and response digests, source coverage and correlation, linked approved
+policy, historical evaluations and separate execution observations. A local display
+clock ages the retained window without polling or changing its historical result.
+Access denial and identity/scope changes discard private source and pending inputs.

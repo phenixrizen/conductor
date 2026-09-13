@@ -15,7 +15,7 @@ facts. Migration 010 adds runtime bindings, requests, receipts, audit and dispat
 | Regression checks | Full Go tests and race-enabled tests against the owned PostgreSQL instance, plus `go vet ./...`, pass |
 | Process durability | Owned API process and PostgreSQL postmaster restart acceptance passes; this does not test a live Groundcover account |
 | Contract and documentation | OpenAPI validation, local Markdown links, balanced fences and `git diff --check` pass |
-| Browser | Root integration owns the shared runtime inspection controls |
+| Browser | Signed-session Chromium/API/PostgreSQL acceptance passes exact request previews and retry, met/not_met/not_verified policy displays, stale windows, escaped telemetry and scope denial; desktop/mobile screenshots inspected |
 | Live Groundcover account | Unverified: no live account or scoped API key supplied |
 | Broad production outcome | Not verified; selected telemetry criteria do not imply full requirement satisfaction |
 

@@ -258,3 +258,12 @@ Developers and agents can inspect retained task reports and failed check output
 before proposing publication. The API, MCP, CLI and terminal workbench share the
 same exact artifact digests and repository permissions; a readable report does
 not grant approval or prove implementation passed verification.
+
+### Runtime evidence
+
+The [runtime workbench](docs/operations/runtime-evidence.md) shares read-only
+Groundcover metrics, logs and traces for an exact repository deployment and time
+window. People and agents can request evidence; the browser shows its retained
+source, gaps and comparisons against explicitly approved criteria. Historical results
+and current freshness stay separate. Controlled protocol and browser tests pass;
+a live Groundcover account and overall production outcome remain unverified.

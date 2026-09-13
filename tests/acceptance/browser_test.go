@@ -176,8 +176,8 @@ func newBrowserFixture(t *testing.T, withUI bool) *browserFixture {
 }
 
 type browserFixtureOptions struct {
-	withUI, collections, coordination, deliveries bool
-	wrap                                          func(http.Handler) http.Handler
+	withUI, collections, coordination, deliveries, runtime bool
+	wrap                                                   func(http.Handler) http.Handler
 }
 
 func newConfiguredBrowserFixture(t *testing.T, options browserFixtureOptions) *browserFixture {
@@ -204,6 +204,9 @@ func newConfiguredBrowserFixture(t *testing.T, options browserFixtureOptions) *b
 	}
 	if options.deliveries {
 		shared = shared.WithDeliveries()
+	}
+	if options.runtime {
+		shared = shared.WithRuntimeEvidence()
 	}
 	handler, err := api.NewBrowserAuthenticated(shared, f.verifier, browser, f.db, api.BrowserConfig{Origin: origin, Issuer: issuer.url})
 	if err != nil {

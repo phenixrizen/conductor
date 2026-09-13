@@ -308,6 +308,12 @@ packages to mirror the target diagram.
   reports remain inspectable without publication eligibility. Clear the run and
   artifact together on denied source access; never refresh inside a decision.
 
+- Runtime evidence previews bind an exact delivery observation, deployment, commit,
+  UTC window and approved criterion references. Keep uncertain retries on the same
+  input/key. Historical criterion comparisons, window freshness and execution
+  observations are separate facts; no selection of telemetry proves overall health.
+  Show complete bounded escaped source and clear it on scope or source-access denial.
+
 - Tracker writes capture the inspected link and provider projection, including
   known absence. Do not infer an absent projection from missing/unavailable evidence.
   Confirmations perform no reads. An uncertain write keeps its exact input/key;

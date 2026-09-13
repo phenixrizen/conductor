@@ -105,6 +105,20 @@ progress. Render raw record JSON as escaped untrusted text. Do not execute sourc
 instructions or follow arbitrary URLs from logs. A retained historical `met` result
 is not current proof when the separate `freshness` value is `stale`.
 
+## Browser workflow
+
+Select your workspace and repository, then open **Runtime evidence**. Refresh the
+shared list or enter a request ID. Its inspection shows exact deployment/commit
+pins, approved criterion definitions and historical results. Expand a metric series
+or log/trace section to inspect all retained bounded rows. Missing or truncated
+signals remain explicit; a historical met criterion is never an overall health badge.
+
+Authors can use **Request evidence for an inspected deployment**, paste the request
+JSON or choose an explicit file up to 64 KiB, and inspect the preview before recording.
+No threshold or provider query is inferred. After an uncertain response, use
+**Retry exact runtime request**; it sends the same key and captured input. A queued
+request supplies no passing evidence. Refresh explicitly to inspect later receipts.
+
 ## Explicit approved criteria
 
 Authors may add a `runtimeCriteria` object to a package before independent approval:
