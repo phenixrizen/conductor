@@ -1,0 +1,137 @@
+package deliveryworker
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/phenixrizen/conductor/internal/contextworkflow"
+	"github.com/phenixrizen/conductor/internal/delivery"
+	"github.com/phenixrizen/conductor/internal/store"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/testsuite"
+)
+
+func TestPublicationWorkflowBoundsAndSafeFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		fail bool
+	}{{"receipt", false}, {"panic", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := suite.NewTestWorkflowEnvironment()
+			ref := contextworkflow.Reference{ID: strings.Repeat("a", 32), Binding: strings.Repeat("b", 32)}
+			env.RegisterActivityWithOptions(protect(func(context.Context, contextworkflow.Reference) (contextworkflow.Result, error) {
+				if test.fail {
+					panic("private-source-secret")
+				}
+				return contextworkflow.Result{ReceiptID: ref.ID, Digest: strings.Repeat("c", 64)}, nil
+			}), activity.RegisterOptions{Name: ActivityName})
+			env.ExecuteWorkflow(Publish, ref)
+			err := env.GetWorkflowError()
+			if test.fail {
+				if err == nil || strings.Contains(err.Error(), "private-source-secret") {
+					t.Fatalf("unsafe failure %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result contextworkflow.Result
+				if env.GetWorkflowResult(&result) != nil || result.ReceiptID != ref.ID {
+					t.Fatal("receipt mismatch")
+				}
+			}
+		})
+	}
+}
+
+type dispatchDB struct {
+	item                      *store.DeliveryOperation
+	state, run, code, receipt string
+	receiptFinished           bool
+}
+
+func (d *dispatchDB) ClaimDeliveryDispatch(context.Context, string, string) (*store.DeliveryOperation, error) {
+	return d.item, nil
+}
+func (d *dispatchDB) FinishDeliveryDispatch(_ context.Context, _ store.DeliveryOperation, state, run, code string) error {
+	d.state, d.run, d.code = state, run, code
+	return nil
+}
+func (d *dispatchDB) DeliveryOperationReceipt(context.Context, string, string) (string, error) {
+	return d.receipt, nil
+}
+func (d *dispatchDB) FinishDeliveryReceiptDispatch(context.Context, store.DeliveryOperation) error {
+	d.receiptFinished = true
+	return nil
+}
+
+type dispatchRuntime struct {
+	lookup          contextworkflow.Observation
+	err             error
+	starts, lookups int
+}
+
+func (r *dispatchRuntime) Lookup(context.Context, string, string, contextworkflow.Reference) (contextworkflow.Observation, error) {
+	r.lookups++
+	return r.lookup, r.err
+}
+func (r *dispatchRuntime) Start(context.Context, string, contextworkflow.Reference) (contextworkflow.Observation, error) {
+	r.starts++
+	return contextworkflow.Observation{RunID: "fixture-run", State: "running"}, nil
+}
+func TestDispatcherNeverReplacesMissingKnownExecution(t *testing.T) {
+	for _, mode := range []string{"new", "known", "expired", "binding", "receipt", "wrong-receipt"} {
+		t.Run(mode, func(t *testing.T) {
+			item := &store.DeliveryOperation{ID: strings.Repeat("a", 32), Work: store.DeliveryWork{Binding: strings.Repeat("b", 32)}}
+			db := &dispatchDB{item: item}
+			runtime := &dispatchRuntime{err: contextworkflow.ErrNotFound}
+			switch mode {
+			case "known":
+				item.RunID = "known"
+			case "expired":
+				item.UncertaintyExpired = true
+			case "binding":
+				item.Mismatch = true
+			case "receipt":
+				db.receipt = strings.Repeat("c", 64)
+			case "wrong-receipt":
+				runtime.err = nil
+				runtime.lookup = contextworkflow.Observation{RunID: "known", State: "completed", Result: &contextworkflow.Result{ReceiptID: item.ID, Digest: strings.Repeat("d", 64)}}
+			}
+			target := strings.Repeat("f", 64)
+			d, err := NewDispatcher(db, runtime, "default", target, func(context.Context) (string, error) { return target, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = d.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "new" {
+				if runtime.starts != 1 || db.state != "running" {
+					t.Fatal("new intent not dispatched")
+				}
+			} else if runtime.starts != 0 {
+				t.Fatal("replacement execution started")
+			}
+			if mode == "receipt" {
+				if !db.receiptFinished || runtime.lookups != 0 || db.state != "" {
+					t.Fatal("receipt fabricated execution observation")
+				}
+			} else if mode != "new" && db.state != "unresolved" {
+				t.Fatalf("uncertainty concealed: %s", db.state)
+			}
+		})
+	}
+	if !errors.Is(safeError(context.Canceled), context.Canceled) {
+		t.Fatal("lost cancellation")
+	}
+	if strings.Contains(safeError(errors.New("source-secret")).Error(), "source-secret") {
+		t.Fatal("raw failure leaked")
+	}
+	if safeError(delivery.ErrUnknown) == nil {
+		t.Fatal("lost ambiguous outcome")
+	}
+}
