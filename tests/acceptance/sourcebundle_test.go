@@ -95,7 +95,13 @@ func fullSourceAcceptance(t *testing.T, temporal bool) {
 	if os.Getenv("CONDUCTOR_TEST_CODEGRAPH") != "1" {
 		t.Skip("set CONDUCTOR_TEST_CODEGRAPH=1 for actual native full-source activity acceptance")
 	}
-	f := collectionFixture(t)
+	fixtureTimeout := time.Minute
+	if temporal {
+		// Include fixture and Temporal startup in the intended workflow budget;
+		// runFullSourceTemporal cannot extend an earlier parent deadline.
+		fixtureTimeout = 90 * time.Second
+	}
+	f := collectionFixtureWithTimeout(t, fixtureTimeout)
 	data := bundleFixture(t)
 	var collection domain.Collection
 	f.raw(f.server.URL, f.tokens["author"], "team", "application", "POST", "/api/v1/context-collections", domain.CollectionInput{Commit: data.Commit, Paths: []string{"README.md"}, FullSource: true}, http.Header{"Idempotency-Key": {"full-source"}}, 202, &collection)
