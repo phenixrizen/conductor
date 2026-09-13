@@ -121,7 +121,7 @@ func TestToolsStrictSchemasAndExactMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 29 || list.CacheScope != "private" || list.TTLMs != 0 {
+	if len(list.Tools) != 35 || list.CacheScope != "private" || list.TTLMs != 0 {
 		t.Fatalf("tool catalog: %d %+v", len(list.Tools), list.Cacheable)
 	}
 	for _, tool := range list.Tools {

@@ -1,7 +1,7 @@
 # Work tracking and synchronization
 
-**Status: Planned requirements.** Conductor must support Linear or Jira as the work
-tracking system. Neither integration is implemented. Each workspace selects exactly
+**Status: Implemented backend with controlled-provider and owned-runtime acceptance.**
+Conductor supports existing Linear or Jira tickets. Each workspace selects exactly
 one tracker, giving people one ticketing system synchronized with Conductor and
 linked repository work. Linear-to-Jira mirroring is outside this scope.
 
@@ -49,7 +49,7 @@ automatic completion.
 
 Database changes and outgoing synchronization intents must commit together in a
 durable outbox. Incoming events require authenticated ingestion, a durable inbox,
-deduplication, and reconciliation with authoritative records. Future Temporal
+deduplication, and reconciliation with authoritative records. Temporal
 workflows own retry and execution sequencing; PostgreSQL owns governance facts and
 durable synchronization records.
 
@@ -71,6 +71,8 @@ capabilities, and tested dependencies. The server must enforce workspace members
 and tracker/repository permissions for discovery, linking, and synchronization.
 Test relationship integrity, status mapping, conflicts, retries, loop prevention,
 and recovery against each supported tracker before declaring its synchronization
-verified. The [shared context model](collaboration.md) remains the current
-local-development foundation; tracker synchronization is a later integration
-increment.
+verified. The [implemented contract](../../specs/012-work-tracking/spec.md),
+[API research](tracker-integration-research.md) and
+[operator runbook](../operations/work-tracking.md) document the current bounded
+profile. Ticket creation and planning-field writes are unsupported. Live tenant
+compatibility and full interface coverage remain separately verified release gates.
