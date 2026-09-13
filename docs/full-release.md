@@ -132,7 +132,9 @@ The final test portability corrections preserve the acceptance assertions: brows
 fixture names avoid Python standard-library shadowing, and terminal refresh checks
 wait for completed reads before inspecting a fresh frame. A recovery fixture now receives its intended 150-second budget at construction;
 a child timeout could not extend the previous 60-second parent. Its unchanged
-crash/cleanup/no-repeat assertions passed twice after the correction. Local
+crash/cleanup/no-repeat assertions passed twice after the correction. Startup probes
+wait for PostgreSQL's final TCP server and Temporal's API and registered namespace,
+within the existing fixture budgets. Local
 concurrent Docker network creation interrupted one Jira browser startup before
 sign-in; both tracker browser variants then passed independently. Current GitHub
 Actions results provide the hosted evidence.

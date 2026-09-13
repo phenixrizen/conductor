@@ -121,6 +121,7 @@ packages to mirror the target diagram.
 | `internal/coordinationworker/` | Reviewed profile matching, immutable attempts, Docker activity and cleanup reconciliation |
 | `internal/collectionworker/` | Credential binding, context activity, fenced dispatch, and reconciliation |
 | `internal/contextworkflow/` | Pinned Temporal workflow, runtime identity and history validation |
+| `internal/temporaltest/` | Bounded readiness probes for test-owned Temporal processes |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
 | `pkg/client/` | Reusable Go API client |
 | `apps/web/` | React/TypeScript review workbench |
@@ -453,6 +454,10 @@ packages to mirror the target diagram.
 - Give owned process-recovery fixtures their intended bounded timeout when they
   are constructed; a child context cannot extend a shorter parent. Preserve every
   producer-count, retained-receipt, cleanup and unresolved-claim assertion.
+- Startup probes must verify the service needed by the test. PostgreSQL readiness
+  waits for the final TCP server; Temporal readiness requires its API and the
+  configured registered namespace. An open socket alone does not establish readiness.
+  Keep these waits bounded and separate from consequential workflow commands.
 - Browser fixture filenames must not shadow Python standard-library modules.
   PTY recovery tests should await the recorded operations and inspect a fresh
   terminal frame; unchanged UI content may correctly produce no new output bytes.
