@@ -27,8 +27,9 @@ type AccessRepository interface {
 // AuthenticatedService preserves the shared command contract while deriving every
 // mutation actor from PostgreSQL. The legacy actor argument has no authority.
 type AuthenticatedService struct {
-	repo        AccessRepository
-	collections bool
+	repo         AccessRepository
+	collections  bool
+	coordination bool
 }
 
 func NewAuthenticated(repo AccessRepository) *AuthenticatedService {

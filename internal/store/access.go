@@ -252,6 +252,11 @@ func (p *Postgres) ApplyAccessConfig(ctx context.Context, operator string, confi
 			return fmt.Errorf("configure context integration: %w", err)
 		}
 	}
+	for _, v := range config.ExecutionGrants {
+		if _, err = tx.Exec(ctx, `INSERT INTO execution_grants(repository_id,principal_id,can_execute,can_publish) VALUES($1,$2,$3,$4) ON CONFLICT(repository_id,principal_id) DO UPDATE SET can_execute=excluded.can_execute,can_publish=excluded.can_publish`, v.RepositoryID, v.PrincipalID, v.CanExecute, v.CanPublish); err != nil {
+			return fmt.Errorf("provision execution grant: %w", err)
+		}
+	}
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err

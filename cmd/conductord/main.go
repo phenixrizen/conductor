@@ -22,6 +22,7 @@ type config struct {
 	databaseURL, address, mode, issuer, audience string
 	publicOrigin, clientID, clientSecretFile     string
 	contextCollections                           bool
+	coordination                                 bool
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -38,6 +39,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 	default:
 		return c, errors.New("CONDUCTOR_CONTEXT_COLLECTIONS must be unset, 0, or 1")
 	}
+	switch getenv("CONDUCTOR_COORDINATION") {
+	case "", "0":
+	case "1":
+		c.coordination = true
+	default:
+		return c, errors.New("CONDUCTOR_COORDINATION must be unset, 0, or 1")
+	}
 	if c.address == "" {
 		c.address = "127.0.0.1:8080"
 	}
@@ -47,6 +55,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	switch c.mode {
 	case "local":
+		if c.coordination {
+			return c, errors.New("coordinated execution requires OIDC authentication")
+		}
 		if c.contextCollections {
 			return c, errors.New("remote context collection requires OIDC authentication; local mode cannot enable it")
 		}
@@ -119,6 +130,9 @@ func run() error {
 	var handler http.Handler
 	if c.mode == "oidc" {
 		shared := service.NewAuthenticated(db)
+		if c.coordination {
+			shared = shared.WithCoordination()
+		}
 		if c.contextCollections {
 			// This opens the API capability only. Each repository still requires
 			// operator enablement and transactional author/read permission checks.

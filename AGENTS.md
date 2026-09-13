@@ -106,6 +106,7 @@ packages to mirror the target diagram.
 | `internal/store/` | PostgreSQL transaction implementation |
 | `internal/repositorycontext/` | Bounded local Git collection, remote provider reads, and local freshness checks |
 | `internal/repositorygraph/`, `internal/codegraph/` | Shared graph projection and isolated pinned CodeGraph extraction |
+| `internal/coordinationworkflow/` | Temporal task DAG sequencing using opaque references and retained receipt digests |
 | `internal/collectionworker/` | Credential binding, context activity, fenced dispatch, and reconciliation |
 | `internal/contextworkflow/` | Pinned Temporal workflow, runtime identity and history validation |
 | `internal/tui/` | Interactive terminal review through the shared Go API client |
@@ -121,9 +122,16 @@ packages to mirror the target diagram.
 
 ## Shared context and history
 
+- Coordinated plans bind exact package, graph and source revisions. Human execution
+  permission is provisioned separately from design approval. Check it on every
+  included repository in the admission transaction; agents cannot authorize runs.
+  Cancellation intent does not release active path claims. Temporal owns sequencing;
+  database observations and missing checks cannot establish successful execution.
+
 - Browser graph creation captures inspected receipt and optional whole-source
   digests. An uncertain response retains the exact input/key for explicit retry.
   Scope changes and source denial clear the captured graph and source selections.
+
 - A repository graph is visible only while the principal can read every included
   repository. Apply this before pagination and retain explicit coverage gaps and
   unknown freshness. Graph creation projects stored receipts and indexes; it must

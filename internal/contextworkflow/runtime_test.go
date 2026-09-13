@@ -171,3 +171,32 @@ func TestCompletedResultRequiresMatchingReceipt(t *testing.T) {
 		t.Fatalf("accepted unrelated receipt: %v", err)
 	}
 }
+
+func TestNamedRuntimeProfilesKeepBindingAndDuplicatePolicies(t *testing.T) {
+	for _, name := range []string{"conductor.coordinate.v1", "conductor.publish.v1"} {
+		r, c := runtimeFixture(t)
+		profile, err := r.ForWorkflow(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.start = func(options client.StartWorkflowOptions, actual interface{}, args []interface{}) (client.WorkflowRun, error) {
+			if actual != name || options.ID != name+"/"+testReference.ID || options.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE || options.RetryPolicy != nil || len(args) != 1 || args[0] != testReference {
+				t.Fatal("named runtime weakened duplicate/input policy")
+			}
+			return fixtureRun{}, nil
+		}
+		if _, err = profile.Start(context.Background(), name+"/"+testReference.ID, testReference); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = profile.Lookup(context.Background(), name+"/"+testReference.ID, "", testReference); !errors.Is(err, ErrBindingMismatch) {
+			t.Fatalf("accepted collection as %s: %v", name, err)
+		}
+		if _, err = profile.Start(context.Background(), WorkflowName+"/"+testReference.ID, testReference); !errors.Is(err, ErrBindingMismatch) {
+			t.Fatal("named runtime accepted other workflow ID")
+		}
+	}
+	r, _ := runtimeFixture(t)
+	if _, err := r.ForWorkflow("repository-controlled-workflow"); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatal("arbitrary workflow admitted")
+	}
+}

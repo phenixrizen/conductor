@@ -21,12 +21,19 @@ import (
 
 // Each test owns a schema, so an explicitly configured test database can also
 // host other test runs. Closing and reopening a pool does not restart PostgreSQL.
+// Bound schema owners independently from Go's CPU-based test parallelism. Each
+// migration and schema cleanup locks many database objects; a large workstation
+// must not exhaust PostgreSQL's shared lock table merely by running more tests.
+var integrationSchemas = make(chan struct{}, 8)
+
 func integrationStore(t *testing.T) (context.Context, *Postgres, func() *Postgres) {
 	t.Helper()
 	url := os.Getenv("CONDUCTOR_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("set CONDUCTOR_TEST_DATABASE_URL to run live PostgreSQL integration tests")
 	}
+	integrationSchemas <- struct{}{}
+	t.Cleanup(func() { <-integrationSchemas })
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 	admin, err := pgxpool.New(ctx, url)
