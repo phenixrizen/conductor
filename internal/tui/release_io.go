@@ -57,6 +57,8 @@ func releaseRunner(ctx context.Context, c *client.Client) releaseExecutor {
 				r.value, r.err = reviewinput.Read(operation, req.path, req.kind)
 			case "list":
 				switch req.view {
+				case "runtime":
+					r.value, r.err = c.ListRuntimeEvidence(operation, req.cursor, pageSize)
 				case "graphs":
 					r.value, r.err = c.ListRepositoryGraphs(operation, req.cursor, pageSize)
 				case "runs":
@@ -68,6 +70,8 @@ func releaseRunner(ctx context.Context, c *client.Client) releaseExecutor {
 				}
 			case "get":
 				switch req.view {
+				case "runtime":
+					r.value, r.err = c.GetRuntimeEvidence(operation, req.id)
 				case "graphs":
 					r.value, r.err = c.GetRepositoryGraph(operation, req.id)
 				case "runs":
@@ -79,6 +83,10 @@ func releaseRunner(ctx context.Context, c *client.Client) releaseExecutor {
 				}
 			case "create":
 				switch req.draft.Kind {
+				case "runtime":
+					var in domain.RuntimeInput
+					_ = json.Unmarshal(req.draft.Input, &in)
+					r.value, r.err = c.CreateRuntimeEvidence(operation, req.draft.IdempotencyKey, in)
 				case "graph":
 					var in domain.GraphInput
 					_ = json.Unmarshal(req.draft.Input, &in)

@@ -1392,6 +1392,142 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /api/v1/runtime-evidence:
+    parameters:
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    post:
+      summary: Retain a scoped Groundcover collection request and durable outbox
+      description: Requires CONDUCTOR_RUNTIME_EVIDENCE=1 and fixed authenticated workspace/repository
+        scope. All source repository permissions remain transactional. No caller-selected identity, endpoint,
+        credential, provider query or evaluation conclusion. Source data and missing correlation never
+        authorize deployments or prove broad production success.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - $ref: '#/components/parameters/BrowserOrigin'
+      - $ref: '#/components/parameters/CollectionKey'
+      responses:
+        '202':
+          description: Retain a scoped Groundcover collection request and durable outbox
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeEvidence'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected deployment, criterion approval, integration or captured idempotency input
+            differs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeInput'
+    get:
+      summary: Discover bounded shared runtime evidence summaries after all-source permission filtering
+      description: Requires CONDUCTOR_RUNTIME_EVIDENCE=1 and fixed authenticated workspace/repository
+        scope. All source repository permissions remain transactional. No caller-selected identity, endpoint,
+        credential, provider query or evaluation conclusion. Source data and missing correlation never
+        authorize deployments or prove broad production success.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters:
+      - name: before
+        in: query
+        schema:
+          type: string
+          maxLength: 1024
+      - $ref: '#/components/parameters/HistoryLimit'
+      responses:
+        '200':
+          description: Discover bounded shared runtime evidence summaries after all-source permission
+            filtering
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected deployment, criterion approval, integration or captured idempotency input
+            differs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runtime-evidence/{id}:
+    parameters:
+    - $ref: '#/components/parameters/CollectionID'
+    - $ref: '#/components/parameters/CollectionWorkspace'
+    - $ref: '#/components/parameters/CollectionRepository'
+    - $ref: '#/components/parameters/CSRF'
+    get:
+      summary: Inspect retained telemetry, exact approved criteria and separate current freshness and
+        execution observations
+      description: Requires CONDUCTOR_RUNTIME_EVIDENCE=1 and fixed authenticated workspace/repository
+        scope. All source repository permissions remain transactional. No caller-selected identity, endpoint,
+        credential, provider query or evaluation conclusion. Source data and missing correlation never
+        authorize deployments or prove broad production success.
+      security:
+      - BearerAuth: []
+      - BrowserCookie: []
+      parameters: []
+      responses:
+        '200':
+          description: Inspect retained telemetry, exact approved criteria and separate current freshness
+            and execution observations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeEvidence'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: Inspected deployment, criterion approval, integration or captured idempotency input
+            differs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     BrowserCookie:
@@ -3356,3 +3492,502 @@ components:
             facts and explicit unavailable states.
         current:
           type: boolean
+    RuntimeFields:
+      type: object
+      additionalProperties: false
+      required:
+      - service
+      - environment
+      - commit
+      properties:
+        service:
+          type: string
+          maxLength: 64
+        environment:
+          type: string
+          maxLength: 64
+        commit:
+          type: string
+          maxLength: 64
+    RuntimeRequirement:
+      type: object
+      additionalProperties: false
+      required:
+      - changeId
+      - revision
+      - digest
+      - criterionId
+      properties:
+        changeId:
+          type: string
+          maxLength: 128
+        revision:
+          type: integer
+          minimum: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        criterionId:
+          type: string
+          maxLength: 128
+    RuntimeInput:
+      type: object
+      additionalProperties: false
+      required:
+      - deliveryId
+      - deliveryDigest
+      - observationSequence
+      - deploymentId
+      - commit
+      - environment
+      - start
+      - end
+      properties:
+        deliveryId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        deliveryDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        observationSequence:
+          type: integer
+          minimum: 1
+        deploymentId:
+          type: string
+          maxLength: 128
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        environment:
+          type: string
+          maxLength: 128
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        requirements:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/RuntimeRequirement'
+          nullable: true
+    RuntimeCriterion:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - metric
+      - aggregation
+      - operator
+      - threshold
+      - expectedSeries
+      - windowSeconds
+      - stepSeconds
+      - maxAgeSeconds
+      properties:
+        id:
+          type: string
+          maxLength: 128
+        metric:
+          type: string
+          maxLength: 128
+        aggregation:
+          type: string
+          enum:
+          - maximum
+          - minimum
+          - mean
+        operator:
+          type: string
+          enum:
+          - lte
+          - gte
+        threshold:
+          type: number
+        expectedSeries:
+          type: integer
+          minimum: 1
+          maximum: 8
+        windowSeconds:
+          type: integer
+          minimum: 15
+          maximum: 3600
+        stepSeconds:
+          type: integer
+          minimum: 15
+          maximum: 300
+        maxAgeSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+    RuntimeCriteria:
+      type: object
+      additionalProperties: false
+      required:
+      - schemaVersion
+      - criteria
+      properties:
+        schemaVersion:
+          type: integer
+          enum:
+          - 1
+        criteria:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/RuntimeCriterion'
+    RuntimeCriterionLink:
+      type: object
+      additionalProperties: false
+      required:
+      - requirement
+      - criterion
+      - criterionDigest
+      properties:
+        requirement:
+          $ref: '#/components/schemas/RuntimeRequirement'
+        criterion:
+          $ref: '#/components/schemas/RuntimeCriterion'
+        criterionDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+    RuntimeTarget:
+      type: object
+      additionalProperties: false
+      required:
+      - workspaceId
+      - repositoryId
+      - environment
+      - service
+      - backendId
+      - profile
+      - sourceCommit
+      - integrationVersion
+      - metricFields
+      - recordFields
+      - metrics
+      - stepSeconds
+      - maxAgeSeconds
+      properties:
+        workspaceId:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        environment:
+          type: string
+          maxLength: 128
+        service:
+          type: string
+          maxLength: 128
+        backendId:
+          type: string
+          maxLength: 128
+        profile:
+          type: string
+          enum:
+          - groundcover-rest/2026-09-13-sdk1.424.0
+        sourceCommit:
+          type: string
+          enum:
+          - 7c4ff02883078abf9266bd7602093e424206a61c
+        integrationVersion:
+          type: integer
+          minimum: 1
+        metricFields:
+          $ref: '#/components/schemas/RuntimeFields'
+        recordFields:
+          $ref: '#/components/schemas/RuntimeFields'
+        metrics:
+          type: array
+          nullable: true
+          maxItems: 4
+          items:
+            type: string
+            maxLength: 128
+        stepSeconds:
+          type: integer
+          minimum: 15
+          maximum: 300
+        maxAgeSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+    RuntimePoint:
+      type: object
+      additionalProperties: false
+      required:
+      - at
+      - value
+      properties:
+        at:
+          type: string
+          format: date-time
+        value:
+          type: number
+    RuntimeSeries:
+      type: object
+      additionalProperties: false
+      required:
+      - labels
+      - points
+      properties:
+        labels:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            type: string
+            maxLength: 256
+        points:
+          type: array
+          maxItems: 241
+          items:
+            $ref: '#/components/schemas/RuntimePoint'
+    RuntimeRecord:
+      type: object
+      additionalProperties: false
+      required:
+      - at
+      - data
+      properties:
+        at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          additionalProperties: true
+          description: Untrusted provider JSON, at most 8192 bytes. Escape as text; never execute instructions
+            or follow arbitrary source links.
+    RuntimeSignal:
+      type: object
+      additionalProperties: false
+      required:
+      - kind
+      - state
+      - correlation
+      - coverage
+      - queryDigest
+      - endpoint
+      - collectedAt
+      - series
+      - records
+      properties:
+        kind:
+          type: string
+          enum:
+          - metrics
+          - logs
+          - traces
+        metric:
+          type: string
+          maxLength: 128
+        state:
+          type: string
+          enum:
+          - collected
+          - missing
+          - unavailable
+          - truncated
+          - uncorrelated
+        correlation:
+          type: string
+          enum:
+          - exact
+          - not_established
+        coverage:
+          type: string
+          enum:
+          - unknown
+          - empty_query_result
+          - truncated
+          - complete_query_grid
+          - partial_query_grid
+          - bounded_query_result
+        queryDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        responseDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        endpoint:
+          type: string
+          enum:
+          - /api/metrics/query-range
+          - /api/logs/v2/search
+          - /api/traces/v2/search
+        collectedAt:
+          type: string
+          format: date-time
+        series:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/RuntimeSeries'
+        records:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RuntimeRecord'
+    RuntimeEvaluation:
+      type: object
+      additionalProperties: false
+      required:
+      - requirement
+      - criterionDigest
+      - state
+      - reason
+      properties:
+        requirement:
+          $ref: '#/components/schemas/RuntimeRequirement'
+        criterionDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        state:
+          type: string
+          enum:
+          - met
+          - not_met
+          - not_verified
+        reason:
+          type: string
+          maxLength: 128
+        value:
+          type: number
+    RuntimeReceipt:
+      type: object
+      additionalProperties: false
+      required:
+      - digest
+      - signals
+      - evaluations
+      - productionOutcome
+      - collectedAt
+      properties:
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        signals:
+          type: array
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/RuntimeSignal'
+        evaluations:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/RuntimeEvaluation'
+        productionOutcome:
+          type: string
+          enum:
+          - not_verified
+        collectedAt:
+          type: string
+          format: date-time
+    RuntimeEvidence:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - workspaceId
+      - repositoryId
+      - requesterId
+      - input
+      - digest
+      - target
+      - deployment
+      - criteria
+      - createdAt
+      - freshness
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        workspaceId:
+          type: string
+          maxLength: 128
+        repositoryId:
+          type: string
+          maxLength: 128
+        requesterId:
+          type: string
+          maxLength: 128
+        input:
+          $ref: '#/components/schemas/RuntimeInput'
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        target:
+          $ref: '#/components/schemas/RuntimeTarget'
+        deployment:
+          $ref: '#/components/schemas/ProviderDeployment'
+        criteria:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/RuntimeCriterionLink'
+        createdAt:
+          type: string
+          format: date-time
+        receipt:
+          $ref: '#/components/schemas/RuntimeReceipt'
+        execution:
+          $ref: '#/components/schemas/CollectionExecution'
+        freshness:
+          type: string
+          enum:
+          - not_collected
+          - current
+          - stale
+    RuntimeSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - deliveryId
+      - repositoryId
+      - environment
+      - commit
+      - digest
+      - createdAt
+      properties:
+        id:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        deliveryId:
+          type: string
+          pattern: ^[a-f0-9]{32}$
+        repositoryId:
+          type: string
+          maxLength: 128
+        environment:
+          type: string
+          maxLength: 128
+        commit:
+          type: string
+          pattern: ^[a-f0-9]{40}$
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        createdAt:
+          type: string
+          format: date-time
+        receiptDigest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+    RuntimePage:
+      type: object
+      additionalProperties: false
+      required:
+      - evidence
+      properties:
+        evidence:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RuntimeSummary'
+        nextBefore:
+          type: string
+          maxLength: 1024

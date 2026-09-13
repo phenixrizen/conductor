@@ -73,6 +73,11 @@ func TestAuthenticatedDeliveryAPIAndSharedClient(t *testing.T) {
 // Actual worker and provider behavior is verified by separate Docker/HTTP suites.
 func seedDeliveryInput(t *testing.T, f *accessFixture, patchBytes []byte) (domain.DeliveryInput, *client.Client) {
 	t.Helper()
+	return seedDeliveryInputWithContent(t, f, patchBytes, domain.Content{"intent": "Synthetic publication acceptance"})
+}
+
+func seedDeliveryInputWithContent(t *testing.T, f *accessFixture, patchBytes []byte, content domain.Content) (domain.DeliveryInput, *client.Client) {
+	t.Helper()
 	profile := domain.ExecutionProfileConfig{WorkspaceID: "team", ID: "synthetic", Image: "sha256:" + strings.Repeat("a", 64), Enabled: true, Profile: domain.WorkerProfile{Adapter: "command/v1", Command: []string{"/bin/true"}}}
 	_, profileDigest, err := store.ValidatedExecutionProfile(profile.Profile)
 	if err != nil {
@@ -113,7 +118,7 @@ func seedDeliveryInput(t *testing.T, f *accessFixture, patchBytes []byte) (domai
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg, err := author.Create(f.ctx, domain.Content{"intent": "Synthetic publication acceptance"})
+	pkg, err := author.Create(f.ctx, content)
 	if err != nil {
 		t.Fatal(err)
 	}

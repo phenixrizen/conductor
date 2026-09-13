@@ -67,6 +67,8 @@ func (r *Runtime) ForWorkflow(name string) (*Runtime, error) {
 		copy.timeout = 12 * time.Minute
 	case "conductor.coordinate.v1":
 		copy.timeout = 20 * time.Hour
+	case "conductor.runtime.v1":
+		copy.timeout = 10 * time.Minute
 	case "conductor.publish.v1":
 		copy.timeout = 30 * time.Minute
 	default:

@@ -27,7 +27,7 @@ func main() {
 	repositoryID := f.String("repository-id", env("CONDUCTOR_REPOSITORY_ID", ""), "canonical managed repository ID for authenticated requests")
 	title := f.String("title", "", "package title")
 	file := f.String("file", "", "JSON content or request file; request previews require a regular file")
-	view := f.String("view", "", "terminal view: graphs, runs, deliveries or tracker (default package review)")
+	view := f.String("view", "", "terminal view: graphs, runs, deliveries, tracker or runtime (default package review)")
 	search := f.String("search", "", "bounded graph text search")
 	node := f.String("node", "", "inspected graph node ID for traversal")
 	depth := f.Int("depth", 1, "graph traversal depth 0-5")
@@ -201,6 +201,7 @@ Context: context, context-check, context-collect, context-collections, context-c
 Graphs: graphs, graph, graph-query, graph-artifact, graph-preview, graph-create
 Agent work: runs, run, run-artifact, run-preview, run-propose, run-authorize, run-cancel, execution-profiles, execution-capabilities
 Delivery: deliveries, delivery, delivery-preview, delivery-propose, delivery-artifact, delivery-authorize, delivery-reconcile
+Runtime: runtime-evidence, runtime, runtime-preview, runtime-collect
 Tracker: tracker, tracker-links, tracker-link, tracker-link-preview, tracker-link-create, tracker-sync-preview, tracker-sync, tracker-sync-show
 Use --help after a command for flags. Release request files and controls: docs/operations/release-terminal.md`)
 	os.Exit(2)

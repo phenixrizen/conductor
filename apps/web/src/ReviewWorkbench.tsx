@@ -12,6 +12,7 @@ import { RepositoryGraphs } from './RepositoryGraphs';
 import { CoordinatedRuns } from './CoordinatedRuns';
 import { RepositoryDeliveries } from './RepositoryDeliveries';
 import { WorkTracking } from './WorkTracking';
+import { RuntimeEvidence } from './RuntimeEvidence';
 import type { Collection } from './collections';
 
 const perspectives = {
@@ -346,6 +347,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     {browserAccess && <CoordinatedRuns access={browserAccess} onAccessFailure={onAccessFailure} />}
     {browserAccess && <RepositoryDeliveries access={browserAccess} onAccessFailure={onAccessFailure} />}
     {browserAccess && <WorkTracking access={browserAccess} onAccessFailure={onAccessFailure} />}
+    {browserAccess && <RuntimeEvidence access={browserAccess} onAccessFailure={onAccessFailure} />}
     <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
     {error && <p role="alert" className="error banner">{error}</p>}
     {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}

@@ -81,6 +81,7 @@ func New(api API) (*Bridge, error) {
 	b.registerCoordination()
 	b.registerDeliveries()
 	b.registerTracker()
+	b.registerRuntimeEvidence()
 	b.server.AddReceivingMiddleware(b.middleware)
 	return b, nil
 }
