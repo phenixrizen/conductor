@@ -23,6 +23,8 @@ review command path, and clears inspection when identity or scope changes.
 access through that same boundary, with a fixed credential and scope, capability
 discovery, and explicit recovery. It does not add interactive CLI token acquisition.
 
-Durable external execution remains later work, after the authenticated review
-surfaces and recovery contracts are exercised. Each subsequent increment belongs
-on a focused branch/PR, stacked on an open prerequisite when necessary.
+[Feature 006](../006-durable-context/spec.md) uses this access boundary for durable
+repository-context collection. Coding execution remains later work. Deliver each
+complete increment on a focused branch with a PR targeting the current `main`.
+Integrate prerequisite work before marking a dependent PR ready, so reviewers do
+not need to manage a chain of branches or choose a merge order.

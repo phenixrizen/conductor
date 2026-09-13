@@ -1,10 +1,11 @@
 # Durable context delivery plan
 
-**Status: Partial implementation.** The API/CLI, receipt and authorization model,
-both bounded provider read adapters, and a trusted local Temporal worker are present.
+**Status: Partial implementation.** The API/CLI and browser/terminal workbenches,
+receipt and authorization model, both bounded provider read adapters, and a trusted
+local Temporal worker are present.
 Collection authorization was selected on 2026-09-13: author permission plus an
-operator-enabled repository read integration. Live provider compatibility,
-browser/TUI collection controls and production deployment remain later work;
+operator-enabled repository read integration. Live provider compatibility
+and production deployment remain later work;
 ADR 0003 remains Proposed.
 
 ## Independently reviewable increments
@@ -67,12 +68,20 @@ REST v4/19.3. Source and credentials stay out of workflow history.
 
 The [runbook](../../docs/operations/durable-context.md) records finite admission,
 HTTP/output/retry limits, startup configuration and unresolved-recovery boundaries.
-Controlled provider tests are not live provider certification. The browser safely
-falls back to raw JSON for version 2 snapshots; the TUI displays escaped JSON.
-Neither exposes collection controls yet. Remote Temporal authentication, production
-operations and administrative repair of unresolved handoffs remain open exit criteria.
+Controlled provider tests are not live provider certification. Both workbenches
+support shared collection discovery, exact-input requests, receipt inspection,
+requester cancellation and explicit revision-bound attachment. Browser version 2
+rendering checks complete snapshots against explicitly inspected scoped receipts;
+the terminal retains escaped source and complete JSON. Actual Chromium and signed
+PTY suites exercise these commands with isolated PostgreSQL and receipt fixtures.
+Remote Temporal authentication, production operations and administrative repair of unresolved handoffs remain open exit criteria.
 
 ## Following work
+
+Verify the pinned GitHub.com and GitLab.com read profiles against synthetic
+repositories with repository-limited read credentials, and define administrative
+recovery and a supported remote Temporal deployment before claiming those limits
+closed. Missing credentials or deployment evidence remain explicit limitations.
 
 Use the proven orchestration and context boundaries to specify an independently
 authorized coding attempt: immutable approved inputs, isolated patch-only worker,

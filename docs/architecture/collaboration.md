@@ -4,8 +4,9 @@
 review through the browser, API, CLI, and interactive terminal are implemented.
 Explicit local development mode remains separate from workspace data.
 The opt-in durable context increment adds shared requests and receipts through
-the API/CLI. Its bounded provider reads are tested with controlled fixtures;
-live provider compatibility and production operation remain unverified.
+the API, CLI, browser and authenticated terminal. Its bounded provider reads are
+tested with controlled fixtures; live provider compatibility and production
+operation remain unverified.
 
 ## One shared record
 
@@ -114,7 +115,7 @@ An imported decision's status cannot authorize Conductor execution implicitly.
 
 An authenticated human or agent with author permission may request explicit paths
 at a full commit ID only when the server and repository integration are enabled.
-Every collection API/CLI command requires a selected workspace and canonical
+Every collection command requires a selected workspace and canonical
 repository. Requests use requester-scoped idempotency keys. Readers with repository
 access can discover the shared requests and inspect receipts; they do not need the
 requester's session or provider credentials. Permission checks filter listings
@@ -137,9 +138,13 @@ observation separately reports whether the workflow stopped; stale, unavailable,
 and unresolved observations are not current runtime proof. An immutable receipt
 can remain available when runtime progress cannot be determined.
 
-The browser currently shows an unsupported structured-context warning for version 2
-and retains the complete package JSON. The terminal displays escaped complete JSON.
-Collection controls are API/CLI only. See the
+The browser, authenticated terminal, API and CLI expose the same stored collection
+records. Reader access permits inspection without author controls; cancellation
+also requires the current requester. Browser version 2 rendering compares the full
+snapshot with an explicitly inspected scoped receipt before reporting a match.
+Both interfaces retain complete JSON and render source as escaped text. Neither
+refreshes a package or receipt inside an attachment confirmation. They retain
+uncertainty after a lost response and clear inspection on access failure. See the
 [durable context guide](../operations/durable-context.md) for the local Temporal
 deployment profile, provider limits, and recovery procedures.
 

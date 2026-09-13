@@ -3,7 +3,8 @@
 **Status: Partial.** Canonical repository identity and repository-aware review
 permissions are implemented for GitHub and GitLab registrations. The opt-in
 [durable context workflow](durable-context.md) now implements bounded remote reads
-through an authenticated API/CLI, PostgreSQL outbox, and local Temporal worker.
+through authenticated API/CLI and workbench commands, a PostgreSQL outbox, and a
+local Temporal worker.
 Both provider profiles have controlled fixture coverage; live provider compatibility
 and production operation remain unverified. Repository discovery, publication,
 PR/MR management, checks, and webhook reconciliation remain planned.

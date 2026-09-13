@@ -25,7 +25,8 @@ for the new revision.
 - Capture selected specification, ADR, and other text files from one Git commit,
   with their original content, source IDs, and explicit collection gaps.
 - Collect selected files from exact GitHub/GitLab commits in the background through
-  the API/CLI, share immutable results, and explicitly attach inspected context.
+  the API, CLI, browser or authenticated terminal. Share the saved results, inspect
+  missing files, request cancellation, and attach context as a new package draft.
 - Check whether a local repository ref still matches the captured commit.
 - Review through architect, QC, developer, or product perspectives. These tailor
   questions and do not grant permissions.
@@ -143,9 +144,13 @@ repository read integration and current author permission. A separate worker use
 Temporal to collect an exact commit; PostgreSQL keeps the shared result. It never
 runs repository commands or edits a package automatically. See the
 [background context setup](docs/operations/durable-context.md) for credentials,
-commands, recovery and limits. The first deployment profile uses a local development
-Temporal server; browser/TUI collection controls and production operation remain
-later work. See the
+commands, recovery and limits. In the signed-in browser, open **Shared context
+collections**; in the authenticated terminal, press **g**. Requests and results are
+shared with other repository readers. Refresh explicitly for later progress;
+request cancellation and workflow cancellation are separate facts. Attaching
+context requires confirmation against the package revision you inspected.
+The first deployment profile uses a local development Temporal server; production
+operation and live provider compatibility remain unverified. See the
 [system architecture](docs/architecture/system.md) and
 [shared-context model](docs/architecture/collaboration.md) for those boundaries.
 The [repository provider plan](docs/architecture/repository-providers.md) describes
@@ -171,9 +176,16 @@ process recovery and durable collection acceptance. Install the pinned CLI first
 see the [background context guide](docs/operations/durable-context.md).
 
 Set `CONDUCTOR_TEST_TERMINAL=1` alongside that database URL to exercise authenticated
-review in a real terminal, using a signed synthetic issuer and the compiled CLI.
+review and collection controls in a real terminal, using a signed synthetic issuer
+and the compiled CLI.
 See the [terminal guide](docs/operations/terminal-review.md) for this acceptance
 command and the separate local-mode regression.
+
+Set `CONDUCTOR_TEST_BROWSER=1` with that database URL and
+`CONDUCTOR_BROWSER_PYTHON` pointing to the pinned Playwright environment to exercise
+browser login, shared review and collection controls in Chromium. Build the web
+app first; the [browser guide](docs/operations/browser-sign-in.md) gives setup and
+commands. These client tests use synthetic identity and receipt fixtures.
 
 Set `CONDUCTOR_TEST_PROCESS_RESTART=1` when running the acceptance tests to also
 verify persistence across real API and PostgreSQL process restarts. This separate

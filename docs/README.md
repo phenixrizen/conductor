@@ -14,17 +14,17 @@ not mistaken for working capabilities.
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
 | [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
-| [Durable repository context](architecture/durable-context.md) | Partial API/CLI background collection, evidence, and recovery boundaries |
+| [Durable repository context](architecture/durable-context.md) | Partial background collection across clients, evidence, and recovery boundaries |
 | [Context integration research](architecture/context-integration-research.md) | Pinned Temporal/GitHub/GitLab profiles and verified versus live-service limits |
 | [Feature 006 specification](../specs/006-durable-context/spec.md) | Remote collection contract with author and operator permission boundaries |
 | [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
 | [Background context setup](operations/durable-context.md) | Enable bounded repository reads, run the worker, inspect and attach receipts, and recover safely |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
-| [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, JSON imports, exact approval, and access recovery |
+| [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, collection controls, imports, and recovery |
 | [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |
 | [Feature 005 plan](../specs/005-authenticated-terminal/plan.md) | Terminal implementation and signed-issuer real PTY validation |
-| [Browser sign-in](operations/browser-sign-in.md) | Configure OIDC login, sessions, and shared browser review |
+| [Browser sign-in](operations/browser-sign-in.md) | Configure OIDC login, sessions, shared review, and collection controls |
 | [Feature 004 specification](../specs/004-browser-sign-in/spec.md) | Browser identity, session, and exact review contracts |
 | [Feature 004 plan](../specs/004-browser-sign-in/plan.md) | Browser implementation sequence and later workflow boundaries |
 | [Authenticated review](operations/authenticated-review.md) | Configure identity, provision permissions, and review through the API, CLI, and terminal |

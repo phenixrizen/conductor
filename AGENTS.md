@@ -240,6 +240,9 @@ packages to mirror the target diagram.
 - Go API commands must reject redirects, including with a caller-provided HTTP
   client. A redirected POST may be replayed or converted into a GET; neither is a
   valid substitute for the command the user confirmed.
+- Disable transport-level POST replay even when a command carries an idempotency
+  key. Retain uncertainty so the caller explicitly retries the same captured key
+  and input; a hidden retry must not mask a lost acknowledgment.
 
 ## Web and terminal interfaces
 
@@ -274,6 +277,18 @@ packages to mirror the target diagram.
   file. Show a preview before replacing content and preserve unknown fields in the
   imported document. Escape terminal control characters in content and errors;
   repository text must never control the terminal or launch an editor/script.
+- Collection workbenches keep request facts, immutable source coverage and aged
+  execution observations separate. Refresh explicitly; display timers do not poll.
+  Request forms/files preserve the same input and key after an uncertain result.
+- Confirm cancellation and attachment from inspected facts. Attachment captures
+  the package revision/digest and collection/receipt identity; never read newer
+  content inside confirmation. Conflicts and uncertain outcomes block reattachment
+  until the applicable package and collection inspections have been renewed;
+  preserve each workbench's documented approval recovery requirements.
+  Clear receipts and collection drafts along with package state on access failure.
+- A version 2 JSON reference alone is not inspected receipt linkage. Compare the
+  complete scoped server receipt before marking a snapshot as matching. Preserve
+  version 1 extensions and show full escaped JSON for uninterpreted content.
 
 ## Documentation
 
