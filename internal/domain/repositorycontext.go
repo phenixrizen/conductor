@@ -28,6 +28,8 @@ type RepositoryContext struct {
 	CollectedAt   time.Time         `json:"collectedAt"`
 	Collector     string            `json:"collector"`
 	Artifacts     []ContextArtifact `json:"artifacts"`
+	CollectionID  string            `json:"collectionId,omitempty"`
+	Source        *ContextSource    `json:"source,omitempty"`
 }
 
 type ContextArtifact struct {
@@ -37,6 +39,44 @@ type ContextArtifact struct {
 	Digest  string  `json:"digest,omitempty"`
 	Text    *string `json:"text,omitempty"`
 	Message string  `json:"message,omitempty"`
+}
+
+// These names were unrecognized extensions in version 1. Decode them only for
+// version 2, so introducing remote provenance cannot reject historical local
+// documents or reinterpret an old extension as authenticated receipt linkage.
+// Validation never replaces the original map used for immutable package digests.
+func (s *RepositoryContext) UnmarshalJSON(data []byte) error {
+	type snapshot RepositoryContext
+	var version struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if err := json.Unmarshal(data, &version); err != nil {
+		return err
+	}
+	if version.SchemaVersion == 1 {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		for name := range fields {
+			// encoding/json recognizes case-folded field names too. Every alias
+			// of a new v2 field must remain an ignored extension in old v1 data.
+			if strings.EqualFold(name, "collectionId") || strings.EqualFold(name, "source") {
+				delete(fields, name)
+			}
+		}
+		var err error
+		data, err = json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+	}
+	var decoded snapshot
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = RepositoryContext(decoded)
+	return nil
 }
 
 // ValidateRepositoryContext checks the reserved content field without rewriting
@@ -53,8 +93,12 @@ func ValidateRepositoryContext(value any) error {
 	invalid := func(message string) error {
 		return fmt.Errorf("%w: repository context %s", ErrInvalidInput, message)
 	}
-	if snapshot.SchemaVersion != 1 || snapshot.Collector != RepositoryContextCollector {
-		return invalid("requires schemaVersion 1 and collector conductor-git/v1")
+	if snapshot.SchemaVersion == 2 {
+		if snapshot.Collector != RemoteContextCollector || !IsLowerHex(snapshot.CollectionID, 32) || snapshot.Source == nil || ValidateContextSource(*snapshot.Source) != nil || snapshot.Commit != snapshot.RequestedRef || !IsLowerHex(snapshot.Commit, 40) {
+			return invalid("requires an exact remote collection source and commit")
+		}
+	} else if snapshot.SchemaVersion != 1 || snapshot.Collector != RepositoryContextCollector {
+		return invalid("requires a supported schemaVersion and collector")
 	}
 	if !validContextLabel(snapshot.Repository, 1024) || !validContextLabel(snapshot.RequestedRef, 1024) || strings.HasPrefix(snapshot.RequestedRef, "-") {
 		return invalid("requires a repository identity and requested ref")

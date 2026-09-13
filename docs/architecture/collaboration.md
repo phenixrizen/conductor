@@ -3,6 +3,9 @@
 **Status:** Shared storage, authenticated workspace and repository access, and
 review through the browser, API, CLI, and interactive terminal are implemented.
 Explicit local development mode remains separate from workspace data.
+The opt-in durable context increment adds shared requests and receipts through
+the API/CLI. Its bounded provider reads are tested with controlled fixtures;
+live provider compatibility and production operation remain unverified.
 
 ## One shared record
 
@@ -37,11 +40,11 @@ packages, and authenticated requests cannot inspect unscoped local packages.
 Migration preserves existing content, digests, approvals, and attribution without
 assigning those packages a workspace implicitly.
 
-This is shared saved work, not real-time presence or an execution scheduler. The
-revision author and audit events identify recorded contributions; they do not
+The revision author and audit events identify recorded contributions; they do not
 prove who is currently editing or running an agent. Changes become visible on an
-explicit reload. Live notifications, assignments, execution attempts, work claims,
-and overlapping-path detection remain future additions.
+explicit reload. Live notifications, assignments, coding-agent execution attempts,
+work claims, and overlapping-path detection remain future additions. The context
+workflow below records only its own bounded remote collection activity.
 
 ## Identity and authority
 
@@ -91,9 +94,11 @@ Registration is operator configuration; it does not prove remote provider access
 or implement publication. See the [provider plan](repository-providers.md).
 
 The snapshot's author-supplied repository string is still a grouping label and an
-optional exact filter. Editing it cannot change ownership or permissions. Pinned
-source remains evidence supplied by its author, not independently verified remote
-provenance or proof of passed checks.
+optional exact filter. Editing it cannot change ownership or permissions. Version 1
+local snapshots remain author-supplied evidence; their digests and unknown extension
+fields retain their original meaning. Version 2 snapshots link to a server-stored
+receipt only after the service resolves and compares the entire snapshot under its
+canonical scope. Neither version establishes a passing check or accepted decision.
 
 Before planning or executing work, a future agent adapter should retrieve related
 packages for the canonical repository, inspect the relevant approved revision and
@@ -105,9 +110,43 @@ text, file identity, commit, and digest remain recoverable. Native tool integrat
 must later define which artifacts they own and how updates create new revisions.
 An imported decision's status cannot authorize Conductor execution implicitly.
 
+## Shared remote collection
+
+An authenticated human or agent with author permission may request explicit paths
+at a full commit ID only when the server and repository integration are enabled.
+Every collection API/CLI command requires a selected workspace and canonical
+repository. Requests use requester-scoped idempotency keys. Readers with repository
+access can discover the shared requests and inspect receipts; they do not need the
+requester's session or provider credentials. Permission checks filter listings
+before pagination and also protect direct reads and mutations.
+
+PostgreSQL commits request intent and an outbox event together. Temporal sequences
+the bounded provider activity; the database owns the immutable receipt and audit
+facts. Workers recheck authority before provider operations and receipt publication.
+Provider credentials and source text stay outside workflow history. A missing path,
+an unavailable read, or truncated coverage remains visible in the receipt.
+
+Attachment is an explicit version-checked command using the inspected package
+revision, collection ID, and receipt digest. It appends the stored snapshot without
+fetching again, preserves unrelated content, and leaves earlier approval historical.
+Approval never collects or attaches source. A JSON receipt ID cannot bypass these
+scope and integrity checks, including through generic create or revise commands.
+
+Cancellation records intent from the authorized requester. A timestamped execution
+observation separately reports whether the workflow stopped; stale, unavailable,
+and unresolved observations are not current runtime proof. An immutable receipt
+can remain available when runtime progress cannot be determined.
+
+The browser currently shows an unsupported structured-context warning for version 2
+and retains the complete package JSON. The terminal displays escaped complete JSON.
+Collection controls are API/CLI only. See the
+[durable context guide](../operations/durable-context.md) for the local Temporal
+deployment profile, provider limits, and recovery procedures.
+
 ## Later integrations
 
-Execution and publication remain disabled. Future workers do not receive human
+Coding-agent execution and repository publication remain planned. The context
+worker has bounded read credentials; future coding workers do not receive human
 publication credentials merely because they can read the same package.
 
 Each workspace will select one work tracker, Linear or Jira. A ticket can then link

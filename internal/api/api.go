@@ -48,6 +48,11 @@ func routes(a *API) *http.ServeMux {
 	m.HandleFunc("POST /api/v1/changes/{id}/revisions", a.revise)
 	m.HandleFunc("POST /api/v1/changes/{id}/review-requests", a.submit)
 	m.HandleFunc("POST /api/v1/changes/{id}/approvals", a.approve)
+	m.HandleFunc("POST /api/v1/context-collections", a.createCollection)
+	m.HandleFunc("GET /api/v1/context-collections", a.listCollections)
+	m.HandleFunc("GET /api/v1/context-collections/{id}", a.getCollection)
+	m.HandleFunc("POST /api/v1/context-collections/{id}/cancellation", a.cancelCollection)
+	m.HandleFunc("POST /api/v1/changes/{id}/context-attachments", a.attachCollection)
 	return m
 }
 
@@ -106,6 +111,12 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusForbidden, "permission_denied"
 	case errors.Is(err, domain.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, domain.ErrIdempotencyConflict):
+		status, code = http.StatusConflict, "idempotency_conflict"
+	case errors.Is(err, domain.ErrCollectionStopped):
+		status, code = http.StatusConflict, "collection_stopped"
+	case errors.Is(err, domain.ErrCapacity):
+		status, code = http.StatusTooManyRequests, "capacity_exceeded"
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrStaleApproval):
 		status, code = http.StatusConflict, "revision_conflict"
 	case errors.Is(err, domain.ErrSelfApproval), errors.Is(err, domain.ErrNotSubmitted):

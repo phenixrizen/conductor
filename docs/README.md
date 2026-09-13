@@ -14,10 +14,11 @@ not mistaken for working capabilities.
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
 | [Repository providers](architecture/repository-providers.md) | Implemented repository identity and planned GitHub/GitLab delivery |
-| [Durable repository context](architecture/durable-context.md) | Proposed first background workflow, evidence, and recovery boundaries |
-| [Context integration research](architecture/context-integration-research.md) | Researched Temporal/GitHub/GitLab candidates, without compatibility claims |
-| [Feature 006 specification](../specs/006-durable-context/spec.md) | Proposed remote collection contract with author and operator permission boundaries |
+| [Durable repository context](architecture/durable-context.md) | Partial API/CLI background collection, evidence, and recovery boundaries |
+| [Context integration research](architecture/context-integration-research.md) | Pinned Temporal/GitHub/GitLab profiles and verified versus live-service limits |
+| [Feature 006 specification](../specs/006-durable-context/spec.md) | Remote collection contract with author and operator permission boundaries |
 | [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
+| [Background context setup](operations/durable-context.md) | Enable bounded repository reads, run the worker, inspect and attach receipts, and recover safely |
 | [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
 | [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, JSON imports, exact approval, and access recovery |

@@ -1,8 +1,11 @@
 # Durable context delivery plan
 
-**Status: Proposed delivery plan.** Collection authorization was selected on
-2026-09-13: author permission plus an operator-enabled repository read integration.
-The contract does not itself implement a command or external workflow.
+**Status: Partial implementation.** The API/CLI, receipt and authorization model,
+both bounded provider read adapters, and a trusted local Temporal worker are present.
+Collection authorization was selected on 2026-09-13: author permission plus an
+operator-enabled repository read integration. Live provider compatibility,
+browser/TUI collection controls and production deployment remain later work;
+ADR 0003 remains Proposed.
 
 ## Independently reviewable increments
 
@@ -14,7 +17,8 @@ The contract does not itself implement a command or external workflow.
    real capabilities. Choose finite output, tree, request, concurrency, and retry
    bounds. Test those choices before claiming compatibility.
    [Initial research](../../docs/architecture/context-integration-research.md)
-   records candidate versions and protocol limits; none is runtime-tested yet.
+   records pinned versions and protocol limits, with actual Temporal process tests
+   distinguished from provider fixtures and unverified live compatibility.
 3. **Request and persistence:** implement versioned domain commands, access checks,
    immutable request/receipt facts, ordered migrations, idempotency constraints,
    and transactional audit/outbox. Test concurrency, rollback, revocation, legacy
@@ -33,8 +37,9 @@ The contract does not itself implement a command or external workflow.
    contract for the other provider, then bring collection into the browser and
    terminal. Publish capability and deployment limits before adding assistant work.
 
-Each working increment gets focused commits and a new PR based on its current
-prerequisite branch. Proposed documentation must not be copied into OpenAPI as an
+Each working increment gets focused commits and one reviewable PR targeting current
+`main`. Integrate prerequisites before marking it ready; contributors must not need
+to infer a merge order across stacked PRs. Proposed documentation must not be copied into OpenAPI as an
 implemented route. No existing migration is rewritten and no runtime directory is
 added solely to mirror the target diagram.
 
@@ -50,6 +55,22 @@ Publish the exact tested dependency/API profiles, commands, result limits, and
 unavailable live checks in an operations runbook. An API acknowledgment proves
 only persisted intent. A fetched file proves only collected source. A workflow
 passing its test does not approve this ADR or authorize assistant execution.
+
+## Implemented scope and remaining exit criteria
+
+The API/CLI path covers request, bounded shared inspection, cancellation intent,
+immutable receipt and explicit revision-checked attachment. Migration 004 adds
+request/audit/outbox facts, immutable runtime bindings and execution observations.
+The worker runs the pinned Temporal workflow against an explicitly trusted local
+service; current provider profiles are GitHub.com REST 2026-03-10 and GitLab.com
+REST v4/19.3. Source and credentials stay out of workflow history.
+
+The [runbook](../../docs/operations/durable-context.md) records finite admission,
+HTTP/output/retry limits, startup configuration and unresolved-recovery boundaries.
+Controlled provider tests are not live provider certification. The browser safely
+falls back to raw JSON for version 2 snapshots; the TUI displays escaped JSON.
+Neither exposes collection controls yet. Remote Temporal authentication, production
+operations and administrative repair of unresolved handoffs remain open exit criteria.
 
 ## Following work
 

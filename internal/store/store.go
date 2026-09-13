@@ -48,6 +48,13 @@ func (p *Postgres) Create(ctx context.Context, id, actor string, content domain.
 		}
 		workspaceID, repositoryID = &p.access.request.WorkspaceID, &p.access.request.RepositoryID
 	}
+	var workspace, repository string
+	if workspaceID != nil {
+		workspace, repository = *workspaceID, *repositoryID
+	}
+	if err = p.validateReceiptLink(ctx, tx, content, workspace, repository); err != nil {
+		return domain.Package{}, err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO changes(id,created_at,workspace_id,repository_id) VALUES($1,$2,$3,$4)`, id, now, workspaceID, repositoryID); err != nil {
 		return domain.Package{}, err
 	}
@@ -73,6 +80,13 @@ func (p *Postgres) Revise(ctx context.Context, id, actor string, expected int64,
 		return domain.Package{}, err
 	}
 	if err = p.authorizeChange(ctx, tx, id, "author"); err != nil {
+		return domain.Package{}, err
+	}
+	var workspace, repository string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(workspace_id,''),COALESCE(repository_id,'') FROM changes WHERE id=$1`, id).Scan(&workspace, &repository); err != nil {
+		return domain.Package{}, err
+	}
+	if err = p.validateReceiptLink(ctx, tx, content, workspace, repository); err != nil {
 		return domain.Package{}, err
 	}
 	var current int64

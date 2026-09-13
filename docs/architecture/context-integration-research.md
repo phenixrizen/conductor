@@ -1,17 +1,19 @@
 # Context integration research
 
-**Status: Researched candidates, not implemented or runtime-tested.** Reviewed
-official documentation and pinned source on 2026-09-12 for the proposed
-[durable context workflow](durable-context.md). No provider credential, SDK
-dependency, or Temporal runtime was added. These findings guide implementation;
-they do not establish provider compatibility or accept ADR 0003.
+**Status: Implemented profiles with bounded verification.** Reviewed official
+source on 2026-09-12 and exercised the implementation on 2026-09-13. The pinned SDK
+and actual Temporal development server have process-recovery and replay coverage.
+GitHub/GitLab adapters have controlled HTTP/TLS fixtures, without live provider
+credential verification. These findings do not establish production compatibility
+or accept ADR 0003. See the [workflow](durable-context.md) and
+[operations guide](../operations/durable-context.md).
 
-## Candidate profiles
+## Pinned profiles
 
 | Component | Inspected pin | Implementation implication |
 |---|---|---|
-| Temporal Go SDK | `v1.44.1`, API module `v1.62.12`; declares Go 1.24.0 | Candidate for Conductor's Go module; integration tests remain required |
-| Temporal development CLI | `v1.8.3`, embedding server `v1.31.2`; declares Go 1.26.4 | Use a verified release binary for owned acceptance; do not assume it builds with the project's Go 1.24 toolchain |
+| Temporal Go SDK | `v1.44.1`, API module `v1.62.12`; declares Go 1.24.0 | Pinned in Conductor's module; SDK, replay and actual local-server tests |
+| Temporal development CLI | `v1.8.3`, embedding server `v1.31.2`; declares Go 1.26.4 | Verified Linux amd64 release binary for owned acceptance; not built with Conductor's Go 1.24 toolchain |
 | GitHub | REST `2026-03-10`; OpenAPI source `cca5c0021436293e6ec6a689b9e2f6794080d003` | Explicit version header; initially test `github.com` through `api.github.com` |
 | GitLab | REST `/api/v4`; release source `v19.3.2-ee`, commit `601afd607baae60e14e83e16fb9dea03cf8c7032` | `/v4` is not a frozen server release; initially test GitLab.com and report the observed profile |
 
@@ -23,7 +25,7 @@ Sources: [SDK module](https://github.com/temporalio/sdk-go/blob/v1.44.1/go.mod),
 
 ## Read adapters
 
-Use direct bounded HTTP/JSON reads for this slice. The proposed initial profiles
+Use direct bounded HTTP/JSON reads for this slice. The implemented initial profiles
 support full 40-hex commit IDs; SHA-256 repositories need separate support. Preserve
 Conductor's explicit-path and text bounds. Self-managed GitHub/GitLab needs an
 operator-configured HTTPS origin, egress policy, and separately tested release
@@ -88,7 +90,7 @@ execution is beyond the configured reconciliation horizon. Never infer permanent
 exactly-once behavior from a stable workflow ID.
 [Workflow identity and retention](https://docs.temporal.io/workflow-execution/workflowid-runid).
 
-The smallest proposed workflow calls one `CollectAndPersist` activity using an
+The implemented workflow calls one `conductor.collect-and-persist.v1` activity using an
 opaque request reference. It first returns any existing receipt, otherwise reads
 remote data, persists the bounded result, and returns only its reference. Explicit
 finite activity deadlines/retry limits and cooperative cancellation are required.
@@ -98,9 +100,9 @@ results; default failure conversion can retain readable diagnostics.
 [Go cancellation](https://docs.temporal.io/develop/go/workflows/cancellation),
 [failure conversion](https://docs.temporal.io/failure-converter).
 
-## Verification still required
+## Verification boundaries
 
-Own a real development-server subprocess with a persistent `--db-filename`,
+The opt-in tests own a real development-server subprocess with a persistent `--db-filename`,
 loopback listener, and temporary resources. Its default in-memory mode cannot prove
 server restart recovery. The development server does not establish production
 availability or security. Check the release binary and cleanup even when readiness
@@ -109,9 +111,23 @@ fails; use SDK unit/replay tests in addition to real process acceptance.
 [pinned development storage](https://github.com/temporalio/cli/blob/v1.8.3/internal/devserver/server.go),
 [SDK testing guide](https://docs.temporal.io/develop/go/best-practices/testing-suite).
 
-Provider fixtures must exercise identity mismatches, literal paths, pagination,
+Provider fixtures exercise identity mismatches, literal paths, pagination,
 symlinks/submodules, binary/LFS pointer text, output limits, redirects, rate limits,
 and cancellation. Live read checks on synthetic GitHub and GitLab repositories
-remain required for compatibility claims. Actual Temporal acceptance must decode
-history payloads and inspect logs to prove source/token canaries are absent, and
-exercise lost acknowledgments, duplicate delivery, revocation, and process restart.
+remain required for compatibility claims. Actual Temporal acceptance decodes
+history payloads and inspects logs to check source/token canaries are absent, and
+exercises lost acknowledgments, duplicate delivery and process restart.
+Signed API/live PostgreSQL paths additionally cover permission revocation and shared scope.
+
+The namespace binding uses the server's actual cluster ID, registered namespace ID,
+normalized address and queue, with at least 24 hours of retention. A development
+server rebuilt behind the same address changes that identity; the bound runtime
+refuses dispatch. This does not detect manual deletion of an individual execution
+inside the one-hour unknown-start horizon, and does not claim globally exactly-once
+provider calls.
+
+Ordinary 5xx/408 responses without Retry-After use bounded Temporal backoff. Explicit
+provider delays are preserved; delays above 30 seconds stop the retry sequence
+rather than violating the hint. Missing rate-limit metadata uses a conservative
+one-minute delay, which likewise ends this sequence. Provider collection uses fresh
+HTTP/1 connections to prevent hidden client transport retries outside authorization.

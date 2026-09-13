@@ -89,3 +89,35 @@ func TestBrowserClientSecretFilesAreBounded(t *testing.T) {
 		t.Fatal("directory accepted as secret")
 	}
 }
+
+func TestContextCollectionCapabilityRequiresExplicitOIDCConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, setting string
+		issuer, audience    string
+		valid, enabled      bool
+	}{
+		{name: "local default disabled", mode: "local", valid: true},
+		{name: "local explicit disabled", mode: "local", setting: "0", valid: true},
+		{name: "local cannot enable provider access", mode: "local", setting: "1"},
+		{name: "OIDC default disabled", mode: "oidc", issuer: "https://issuer.example.test", audience: "api", valid: true},
+		{name: "OIDC explicit disabled", mode: "oidc", setting: "0", issuer: "https://issuer.example.test", audience: "api", valid: true},
+		{name: "OIDC explicit enabled", mode: "oidc", setting: "1", issuer: "https://issuer.example.test", audience: "api", valid: true, enabled: true},
+		{name: "no automatic authentication", setting: "1"},
+		{name: "issuer still required", mode: "oidc", setting: "1", audience: "api"},
+		{name: "audience still required", mode: "oidc", setting: "1", issuer: "https://issuer.example.test"},
+		{name: "boolean spelling rejected", mode: "oidc", setting: "true", issuer: "https://issuer.example.test", audience: "api"},
+		{name: "false spelling rejected", mode: "local", setting: "false"},
+		{name: "leading whitespace rejected", mode: "oidc", setting: " 1", issuer: "https://issuer.example.test", audience: "api"},
+		{name: "trailing whitespace rejected", mode: "local", setting: "0 "},
+		{name: "unknown setting rejected", mode: "local", setting: "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := map[string]string{"DATABASE_URL": "synthetic", "CONDUCTOR_AUTH_MODE": tc.mode,
+				"CONDUCTOR_CONTEXT_COLLECTIONS": tc.setting, "CONDUCTOR_OIDC_ISSUER": tc.issuer, "CONDUCTOR_OIDC_AUDIENCE": tc.audience}
+			c, err := loadConfig(func(name string) string { return values[name] })
+			if (err == nil) != tc.valid || (err == nil && c.contextCollections != tc.enabled) {
+				t.Fatalf("enabled=%v want=%v valid=%v error=%v", c.contextCollections, tc.enabled, tc.valid, err)
+			}
+		})
+	}
+}
