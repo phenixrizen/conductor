@@ -49,6 +49,9 @@ func (c *Client) doInto(ctx context.Context, method, path string, body, output a
 }
 
 func (c *Client) doIntoHeaders(ctx context.Context, method, path string, body, output any, headers http.Header) error {
+	return c.doIntoHeadersLimit(ctx, method, path, body, output, headers, 2<<20)
+}
+func (c *Client) doIntoHeadersLimit(ctx context.Context, method, path string, body, output any, headers http.Header, limit int64) error {
 	// BaseURL is retained as a public field for existing local clients. Recheck
 	// it at the credential boundary so later mutation cannot downgrade TLS.
 	if c.bearerToken != "" {
@@ -109,7 +112,10 @@ func (c *Client) doIntoHeaders(ctx context.Context, method, path string, body, o
 			Message:       "API redirects are not followed; configure the final Conductor URL",
 			CorrelationID: res.Header.Get("X-Correlation-ID")}
 	}
-	data, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
+	if res.StatusCode >= 300 {
+		limit = 2 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	// Even a proxy's HTML denial or an interrupted error body must retain 401/403
 	// so interactive clients discard inspection and re-establish server access.
 	invalidError := func(message string, cause error) error {
@@ -122,11 +128,11 @@ func (c *Client) doIntoHeaders(ctx context.Context, method, path string, body, o
 		}
 		return fmt.Errorf("read Conductor response: %w", err)
 	}
-	if len(data) > 2<<20 {
+	if int64(len(data)) > limit {
 		if res.StatusCode >= 300 {
 			return invalidError("API error response exceeds 2 MiB", nil)
 		}
-		return fmt.Errorf("Conductor response exceeds 2 MiB")
+		return fmt.Errorf("Conductor response exceeds %d MiB", limit>>20)
 	}
 	if res.StatusCode >= 300 {
 		var envelope struct {

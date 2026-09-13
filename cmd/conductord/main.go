@@ -23,6 +23,7 @@ type config struct {
 	publicOrigin, clientID, clientSecretFile     string
 	contextCollections                           bool
 	coordination                                 bool
+	deliveries                                   bool
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -46,6 +47,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 	default:
 		return c, errors.New("CONDUCTOR_COORDINATION must be unset, 0, or 1")
 	}
+	switch getenv("CONDUCTOR_DELIVERIES") {
+	case "", "0":
+	case "1":
+		c.deliveries = true
+	default:
+		return c, errors.New("CONDUCTOR_DELIVERIES must be unset, 0, or 1")
+	}
 	if c.address == "" {
 		c.address = "127.0.0.1:8080"
 	}
@@ -55,6 +63,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	switch c.mode {
 	case "local":
+		if c.deliveries {
+			return c, errors.New("repository publication requires OIDC authentication")
+		}
 		if c.coordination {
 			return c, errors.New("coordinated execution requires OIDC authentication")
 		}
@@ -130,6 +141,9 @@ func run() error {
 	var handler http.Handler
 	if c.mode == "oidc" {
 		shared := service.NewAuthenticated(db)
+		if c.deliveries {
+			shared = shared.WithDeliveries()
+		}
 		if c.coordination {
 			shared = shared.WithCoordination()
 		}

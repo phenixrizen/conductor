@@ -1,0 +1,104 @@
+openapi: 3.0.3
+info:
+  title: Conductor provider webhook listener
+  version: 1.0.0
+  description: >-
+    Separate conductor-webhooks process on a literal loopback address behind an
+    operator-managed HTTPS reverse proxy. Bindings and secret files come from
+    operator configuration. Verified events are hints for durable provider reads;
+    webhook content cannot grant approval or establish passing evidence. No raw
+    event body is retained. Requests permit no query parameters and have a 1 MiB
+    body limit; the listener permits eight concurrent requests.
+servers:
+  - url: http://127.0.0.1:8091
+paths:
+  /webhooks/{provider}/{repository}:
+    post:
+      summary: Authenticate and retain a bounded provider reconciliation hint
+      description: >-
+        GitHub requires exactly one X-Hub-Signature-256 HMAC-SHA256 signature over
+        the raw body, X-GitHub-Delivery and X-GitHub-Event. GitLab requires exactly
+        one X-Gitlab-Token, Idempotency-Key and X-Gitlab-Event. Provider repository
+        identity must match the configured canonical binding. GitHub events are
+        ping, pull_request, check_run, status, push and deployment_status; GitLab
+        events are Merge Request Hook, Pipeline Hook, Push Hook and Deployment
+        Hook. Other events are rejected. Provider secrets are never API identities.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [github, gitlab]
+        - name: repository
+          in: path
+          required: true
+          description: Server-owned canonical Conductor repository ID from operator binding.
+          schema:
+            type: string
+            maxLength: 128
+        - name: X-Hub-Signature-256
+          in: header
+          schema:
+            type: string
+            pattern: '^sha256=[a-f0-9]{64}$'
+        - name: X-GitHub-Delivery
+          in: header
+          schema:
+            type: string
+            maxLength: 128
+        - name: X-GitHub-Event
+          in: header
+          schema:
+            type: string
+            enum: [ping, pull_request, check_run, status, push, deployment_status]
+        - name: X-Gitlab-Token
+          in: header
+          schema:
+            type: string
+            minLength: 32
+            maxLength: 256
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 128
+        - name: X-Gitlab-Event
+          in: header
+          schema:
+            type: string
+            enum: [Merge Request Hook, Pipeline Hook, Push Hook, Deployment Hook]
+      requestBody:
+        required: true
+        description: >-
+          Provider-owned JSON event format. Unknown fields are ignored; required
+          event identity and exact commit fields are validated for the event type.
+          Repeated authentication and event headers are rejected.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Verified hint and deduplicated reconciliation work retained atomically.
+        '204':
+          description: Authenticated GitHub ping; acknowledges transport only.
+        '400':
+          description: Unknown binding, query parameters, media type, malformed or oversized body.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Invalid signature, token, event identity, payload or unsupported event.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '503':
+          description: Admission bound, secret file, persistence or reconciliation fan-out unavailable; retry explicitly.
+          content:
+            text/plain:
+              schema:
+                type: string
