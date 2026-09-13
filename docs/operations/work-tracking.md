@@ -115,3 +115,50 @@ schemas and Temporal SQLite/processes; they never restart the development databa
 Provider fixtures are synthetic. Live tenant credentials, webhook HTTPS routing
 and hosted/TLS Temporal remain separate deployment verification prerequisites.
 See [API research](../architecture/tracker-integration-research.md) for exact sources.
+
+## Browser workflow
+
+Select a workspace and repository, then choose **Refresh tracker and links**. The
+workbench shows the workspace's one configured provider, its status mappings and
+your read/sync/conflict-resolution capabilities. Existing tickets are linked by
+stable issue ID; the browser does not create tickets or mirror Linear into Jira.
+
+Open **Link existing ticket to exact work**, import a bounded JSON request or paste
+its issue ID and package/publication references, then inspect the structured
+preview. Package references contain repository, package ID, revision and digest;
+publication references contain delivery ID and immutable receipt digest. Duplicate
+or unknown command fields are rejected. A lost creation response keeps the exact
+request and key for explicit retry.
+
+Inspect the initial retained refresh before choosing **Publish Conductor link**.
+Conductor owns its attachment or remote link; the tracker owns title, description,
+priority, assignee and status. Each synchronization confirms the displayed link
+digest and, for writes, the observed provider projection (including its known
+absence). Confirmation never refreshes tracker or package data. An uncertain
+request keeps its exact input/key; after a recorded result, inspect the result and
+refresh the link before another decision.
+
+External edits to Conductor's owned link appear as conflicts. Only a human with
+resolution permission can restore the displayed Conductor projection from the
+inspected conflict. Unmapped tracker statuses need operator mapping rather than
+being treated as passing work. Ticket status cannot approve a package, establish
+passing checks, complete a cross-repository delivery or prove deployment.
+
+The provider attachment URL includes a bounded opaque tracker-link ID. The browser
+preserves only that navigation hint across sign-in; users still select their
+workspace/repository and explicitly inspect the link under current permissions.
+Scope changes and denied reads discard issue text, imported previews and decisions.
+
+Actual Chromium acceptance uses signed login, PostgreSQL and both provider HTTP
+adapters with synthetic accounts and test-owned activity scheduling:
+
+```bash
+CONDUCTOR_TEST_BROWSER=1 go test -race ./tests/acceptance -run TestBrowserWorkspaceTrackers -count=1
+```
+
+Build the web app and configure the database/Python environment from
+[browser setup](browser-sign-in.md). Coverage includes both providers, shared agent
+links, OIDC navigation, exact retries, external conflicts, human restore, field
+ownership, denied reads, read-only access and desktop/mobile layouts. Actual Temporal
+recovery remains a separate acceptance path; these fixtures do not certify a live
+tenant or grant permission to write one.

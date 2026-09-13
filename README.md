@@ -35,6 +35,9 @@ for the new revision.
 - Propose GitHub/GitLab publication from a retained task artifact, inspect complete
   patches and check output in the browser, and separately authorize a new draft PR/MR.
   Share timestamped provider check, merge and deployment observations.
+- Link existing Linear or Jira tickets to exact package revisions and publication
+  receipts, inspect shared planning fields, and resolve synchronization conflicts.
+  Each workspace selects one tracker; ticket status cannot grant approval.
 - Sign in to the browser through a configured OpenID Connect provider and select shared work.
 - Import, submit, and review shared packages in the interactive terminal workbench.
 - Inspect historical revisions, approvals, and audit events; compare content in the web workbench.
@@ -75,8 +78,8 @@ containers, carries earlier changes into dependent tasks, and records independen
 checks through durable Temporal workflows; see
 [execution setup](docs/operations/coordinated-execution.md). A separate trusted publisher
 creates draft GitHub PRs and GitLab MRs after exact human authorization; see
-[delivery setup and review](docs/operations/repository-delivery.md). Tracker
-integrations are described in the release contract. Spec Kit and ADRKit files can be captured as native text; their command/API
+[delivery setup and review](docs/operations/repository-delivery.md). The selected Linear/Jira tracker synchronizes shared linked work through the browser,
+API, MCP, CLI and terminal; see [tracker setup](docs/operations/work-tracking.md). Spec Kit and ADRKit files can be captured as native text; their command/API
 integrations are not implemented. Collected context records what was captured,
 not proof that tests passed or a decision was approved.
 

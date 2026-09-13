@@ -56,3 +56,19 @@ Both external APIs lack an atomic compare-and-swap for these dedicated cards.
 Conductor reads before writing and verifies afterward; an edit in the intervening
 provider race window may not be detectable. This limit never permits overwriting
 tracker-owned planning fields or carrying approval onto changed source.
+
+## Browser synchronization decisions
+
+The browser exposes the workspace's configured tracker and server-owned capabilities,
+bounded shared link discovery, strict JSON/file previews of exact package and
+publication pins, and explicit link creation. It preserves uncertain input/key pairs.
+All sources remain subject to server authorization; a ticket permalink carries only
+an opaque navigation hint, never selected scope or permission.
+
+A link's current observed outcome must cover its latest synchronization before a
+new request. Publication/restoration captures the inspected provider projection
+including known absence. Human conflict resolution is separate from ordinary sync
+permission. Confirmed commands perform no read or refresh; lost responses retain
+exact keys for explicit retries. Recorded decisions require renewed link inspection.
+Provider text is escaped; denied access and scope changes clear retained private
+fields and decisions. Status mappings never change work-package authority or evidence.

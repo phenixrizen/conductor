@@ -20,3 +20,8 @@ local documentation validation, web typecheck and production build also pass.
 Final release verification includes the parent stack's interfaces and live service
 evidence. Ticket creation and assignment/priority/status mutations remain explicit
 unsupported capabilities under the accepted existing-ticket field-ownership model.
+
+Browser workbench implemented and verified against signed login, live PostgreSQL
+and both actual HTTP adapters using controlled Linear/Jira data. Acceptance covers
+exact creation/write retries, conflict restore, denied source clearing, read-only
+controls, status authority separation and desktop/mobile layout.

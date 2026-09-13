@@ -32,7 +32,8 @@ not mistaken for working capabilities.
 | [Feature 006 specification](../specs/006-durable-context/spec.md) | Remote collection contract with author and operator permission boundaries |
 | [Feature 006 plan](../specs/006-durable-context/plan.md) | Provider research, working delivery increments, and restart acceptance |
 | [Background context setup](operations/durable-context.md) | Enable bounded repository reads, run the worker, inspect and attach receipts, and recover safely |
-| [Work tracking](architecture/work-tracking.md) | Planned Linear/Jira options, linked work, and synchronization ownership |
+| [Work tracking](architecture/work-tracking.md) | Linear/Jira options, linked work, and synchronization ownership |
+| [Tracker setup and review](operations/work-tracking.md) | Configure one tracker per workspace, inspect linked work, synchronize and resolve conflicts |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
 | [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, collection controls, imports, and recovery |
 | [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |

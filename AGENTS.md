@@ -300,6 +300,13 @@ packages to mirror the target diagram.
 
 ## Web and terminal interfaces
 
+- Tracker writes capture the inspected link and provider projection, including
+  known absence. Do not infer an absent projection from missing/unavailable evidence.
+  Confirmations perform no reads. An uncertain write keeps its exact input/key;
+  recorded decisions require renewed link inspection. Only humans with resolution
+  permission may restore conflicting Conductor-owned links. Tracker status is
+  planning context and never changes package approval or verification authority.
+
 - Publication review loads the complete retained implementation artifact and checks
   displayed patch/output byte digests before enabling exact human authorization.
   Its GET artifact endpoint alone permits a 17 MiB browser response; ordinary reads
