@@ -49,6 +49,14 @@ Python/Playwright, browser or built assets after opt-in is a failure. The test c
 the exact image ID and architecture. It does not accept an arbitrary user-supplied
 provider endpoint, existing realm or cloud tenant.
 
+The `native-identity-provider` job in [release verification](../../.github/workflows/verify.yml)
+runs this same script on an isolated Ubuntu runner for pull requests and pushes to
+`main`. It uses the existing immutable action pins, PostgreSQL image and pinned
+Playwright Chromium installation. Synthetic realm/client credentials require no
+hosted secrets. A successful run retains only the synthetic workbench screenshot
+for seven days; provider tokens, signing keys and callback URLs are not uploaded.
+A configured job is distinct from an observed hosted CI pass.
+
 ## What the test establishes
 
 The browser creates and submits shared work as one actual Keycloak user, inspects it
