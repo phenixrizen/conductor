@@ -26,6 +26,7 @@ are compact and paginated; detailed plans retain prompts and exact source bindin
 Perspective labels are descriptive and never affect these permission checks.
 
 See the [specification](../../specs/009-coordinated-execution/spec.md),
+[explicit check criteria](verification-criteria.md),
 [runbook](../operations/coordinated-execution.md), and
 [worker boundary](../operations/coding-workers.md).
 

@@ -87,9 +87,10 @@ func TestSelectedPatchRequiresExactPassedChecks(t *testing.T) {
 	_, patch := fixturePatch(t)
 	zero := 0
 	task := domain.CoordinationTask{ProfileDigest: strings.Repeat("a", 64), Image: "sha256:" + strings.Repeat("a", 64), Checks: []domain.VerificationCommand{{ID: "test", RepositoryID: "repo", Argv: []string{"go", "test", "./..."}}}}
+	task.Checks[0].Requirements = []domain.VerificationRequirement{{ChangeID: "synthetic-design", Revision: 1, Digest: strings.Repeat("b", 64), CriterionID: "exact-output"}}
 	patches := []execution.Patch{patch}
 	data, _ := json.Marshal(patches)
-	result := execution.Result{CleanupConfirmed: true, ProfileDigest: strings.Repeat("a", 64), Image: "sha256:" + strings.Repeat("a", 64), Adapter: "command/v1", AdapterVersion: "1", InputDigest: strings.Repeat("a", 64), Patches: patches, Producer: execution.Evidence{State: "passed", ExitCode: &zero, SourceDigest: strings.Repeat("a", 64), OutputDigest: execution.Sum(nil)}, Checks: []execution.Evidence{{ID: "test", RepositoryID: "repo", Argv: task.Checks[0].Argv, State: "passed", ExitCode: &zero, SourceDigest: execution.Sum(data), OutputDigest: execution.Sum(nil)}}}
+	result := execution.Result{CleanupConfirmed: true, ProfileDigest: strings.Repeat("a", 64), Image: "sha256:" + strings.Repeat("a", 64), Adapter: "command/v1", AdapterVersion: "1", InputDigest: strings.Repeat("a", 64), Patches: patches, Producer: execution.Evidence{State: "passed", ExitCode: &zero, SourceDigest: strings.Repeat("a", 64), OutputDigest: execution.Sum(nil)}, Checks: []execution.Evidence{{ID: "test", RepositoryID: "repo", Argv: task.Checks[0].Argv, Requirements: task.Checks[0].Requirements, State: "passed", ExitCode: &zero, SourceDigest: execution.Sum(data), OutputDigest: execution.Sum(nil)}}}
 	selectResult := func(result execution.Result, task domain.CoordinationTask) error {
 		raw, _ := json.Marshal(result)
 		digest, _ := domain.JSONDigest(result)
@@ -99,12 +100,14 @@ func TestSelectedPatchRequiresExactPassedChecks(t *testing.T) {
 	if err := selectResult(result, task); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"missing", "source", "skipped", "truncated", "argv", "producer", "no-check", "profile", "image"} {
+	for _, mode := range []string{"missing", "source", "skipped", "truncated", "argv", "producer", "no-check", "profile", "image", "requirements"} {
 		t.Run(mode, func(t *testing.T) {
 			r := result
 			r.Checks = append([]execution.Evidence(nil), result.Checks...)
 			task := task
 			switch mode {
+			case "requirements":
+				r.Checks[0].Requirements = nil
 			case "profile":
 				r.ProfileDigest = strings.Repeat("b", 64)
 			case "image":

@@ -2104,6 +2104,11 @@ components:
           type: integer
           minimum: 1
           maximum: 1800
+        requirements:
+          type: [array, 'null']
+          maxItems: 16
+          description: Optional exact package criterion links; omission preserves historical digests and declares no criterion support.
+          items: {$ref: '#/components/schemas/VerificationRequirement'}
     CoordinationTask:
       type: object
       additionalProperties: false
@@ -2276,6 +2281,7 @@ components:
           type: object
           description: Complete retained execution.Result JSON, including producer report, patches, independent check output and cleanup evidence. Its typed canonical digest must equal artifactDigest. Reports without patches and failed output are readable and confer no publication authority.
           additionalProperties: true
+        verification: {$ref: '#/components/schemas/VerificationReview'}
     CoordinationRun:
       type: object
       additionalProperties: false
@@ -2854,6 +2860,11 @@ components:
         sourceDigest:
           type: string
           pattern: ^[a-f0-9]{64}$
+        requirements:
+          type: [array, 'null']
+          maxItems: 16
+          description: Optional exact package criterion links; omission preserves historical digests and declares no criterion support.
+          items: {$ref: '#/components/schemas/VerificationRequirement'}
     ExecutionPatch:
       type: object
       additionalProperties: false
@@ -3991,3 +4002,60 @@ components:
         nextBefore:
           type: string
           maxLength: 1024
+    VerificationCriteria:
+      type: object
+      additionalProperties: false
+      description: Optional package content under verificationCriteria. Interpreted for explicit links and historical inspection; other content/extensions retain their original digest and meaning. Bounded to 32 KiB encoded JSON.
+      required: [schemaVersion, criteria]
+      properties:
+        schemaVersion: {type: integer, const: 1}
+        criteria:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, description]
+            properties:
+              id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+              description: {type: string, minLength: 1, maxLength: 4096}
+    VerificationRequirement:
+      type: object
+      additionalProperties: false
+      required: [changeId, revision, digest, criterionId]
+      properties:
+        changeId: {type: string, minLength: 1, maxLength: 128}
+        revision: {type: integer, minimum: 1}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        criterionId: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+    VerificationReview:
+      type: object
+      additionalProperties: false
+      description: Derived support from this exact retained artifact and original package revisions. Never an overall acceptance, approval, merge or production outcome. No stored artifact/digest is rewritten.
+      required: [schemaVersion, criteria, gaps]
+      properties:
+        schemaVersion: {type: integer, const: 1}
+        criteria:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            additionalProperties: false
+            required: [requirement, description, state, reason, checkIds]
+            properties:
+              requirement: {$ref: '#/components/schemas/VerificationRequirement'}
+              description: {type: string, minLength: 1, maxLength: 4096}
+              state: {type: string, enum: [supported, not_verified]}
+              reason: {type: string, enum: [unlinked, linked_check_not_verified, exact_revision_not_approved, declared_checks_passed]}
+              checkIds: {type: array, maxItems: 16, items: {type: string, maxLength: 64}}
+        gaps:
+          type: array
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [package, state]
+            properties:
+              package: {$ref: '#/components/schemas/CoordinationPackagePin'}
+              state: {type: string, enum: [criteria_absent, criteria_unavailable]}

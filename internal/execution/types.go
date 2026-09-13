@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/phenixrizen/conductor/internal/domain"
 )
 
 const (
@@ -48,10 +50,11 @@ type Repository struct {
 }
 
 type Check struct {
-	ID             string   `json:"id"`
-	RepositoryID   string   `json:"repositoryId"`
-	Argv           []string `json:"argv"`
-	TimeoutSeconds int      `json:"timeoutSeconds"`
+	ID             string                           `json:"id"`
+	RepositoryID   string                           `json:"repositoryId"`
+	Argv           []string                         `json:"argv"`
+	TimeoutSeconds int                              `json:"timeoutSeconds"`
+	Requirements   []domain.VerificationRequirement `json:"requirements,omitempty"`
 }
 
 type Request struct {
@@ -79,17 +82,18 @@ type Profile struct {
 }
 
 type Evidence struct {
-	ID           string    `json:"id"`
-	RepositoryID string    `json:"repositoryId"`
-	Argv         []string  `json:"argv"`
-	State        string    `json:"state"`
-	ExitCode     *int      `json:"exitCode,omitempty"`
-	Output       string    `json:"output,omitempty"`
-	OutputDigest string    `json:"outputDigest"`
-	Truncated    bool      `json:"truncated"`
-	StartedAt    time.Time `json:"startedAt"`
-	FinishedAt   time.Time `json:"finishedAt"`
-	SourceDigest string    `json:"sourceDigest"`
+	ID           string                           `json:"id"`
+	RepositoryID string                           `json:"repositoryId"`
+	Argv         []string                         `json:"argv"`
+	State        string                           `json:"state"`
+	ExitCode     *int                             `json:"exitCode,omitempty"`
+	Output       string                           `json:"output,omitempty"`
+	OutputDigest string                           `json:"outputDigest"`
+	Truncated    bool                             `json:"truncated"`
+	StartedAt    time.Time                        `json:"startedAt"`
+	FinishedAt   time.Time                        `json:"finishedAt"`
+	SourceDigest string                           `json:"sourceDigest"`
+	Requirements []domain.VerificationRequirement `json:"requirements,omitempty"`
 }
 
 type Patch struct {
@@ -197,6 +201,9 @@ func ValidateRequest(r Request) error {
 	}
 	checks := map[string]bool{}
 	for _, c := range r.Checks {
+		if domain.ValidateVerificationRequirements(c.Requirements) != nil {
+			return fmt.Errorf("%w: verification requirements", ErrInvalid)
+		}
 		if !checkIdentifier.MatchString(c.ID) || checks[c.ID] || !repos[c.RepositoryID] || c.TimeoutSeconds < 1 || c.TimeoutSeconds > r.TimeoutSeconds || !validArgv(c.Argv) {
 			return fmt.Errorf("%w: check identity, command or deadline", ErrInvalid)
 		}

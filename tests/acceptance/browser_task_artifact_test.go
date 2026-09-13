@@ -25,7 +25,7 @@ func TestBrowserFailedTaskArtifact(t *testing.T) {
 	f.server.Close()
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db).WithCollections().WithCoordination().WithDeliveries(), f.verifier))
 	configureCollectionIntegration(t, f.accessFixture, "team", "application", true)
-	input, c := seedDeliveryInput(t, f.accessFixture, []byte("Unrelated synthetic patch fixture"))
+	input, c := seedDeliveryInputWithContent(t, f.accessFixture, []byte("Unrelated synthetic patch fixture"), domain.Content{"intent": "Synthetic criterion report", "verificationCriteria": domain.VerificationCriteria{SchemaVersion: 1, Criteria: []domain.VerificationCriterion{{ID: "unlinked", Description: "Synthetic author criterion <script>window.reportInjected=true</script>"}}}})
 	original, err := c.GetCoordination(f.ctx, input.RunID)
 	if err != nil {
 		t.Fatal(err)

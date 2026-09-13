@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/phenixrizen/conductor/internal/designtools"
+	"github.com/phenixrizen/conductor/internal/domain"
 )
 
 func TestDockerNativeDesignToolsProduceAndVerify(t *testing.T) {
@@ -32,6 +33,7 @@ func TestDockerNativeDesignToolsProduceAndVerify(t *testing.T) {
 				request.Repositories[0].WritablePaths = []string{"specs/001-synthetic"}
 				request.Checks = []Check{{ID: "spec-prerequisites", RepositoryID: "app", Argv: []string{"conductor-design-tools", "spec-check", "--feature", "specs/001-synthetic"}, TimeoutSeconds: 30}}
 			}
+			request.Checks[0].Requirements = []domain.VerificationRequirement{{ChangeID: "synthetic-design", Revision: 1, Digest: strings.Repeat("a", 64), CriterionID: "native-schema"}}
 			runner := Runner{Image: image, Profile: Profile{Adapter: "command/v1", Command: command}}
 			result, err := runner.Run(context.Background(), request)
 			if err != nil {
@@ -41,7 +43,7 @@ func TestDockerNativeDesignToolsProduceAndVerify(t *testing.T) {
 				t.Fatalf("native design artifacts not source bound: %+v", result)
 			}
 			check := result.Checks[0]
-			if check.State != "passed" || check.SourceDigest == "" || check.Truncated {
+			if check.State != "passed" || check.SourceDigest == "" || check.Truncated || len(check.Requirements) != 1 || check.Requirements[0] != request.Checks[0].Requirements[0] {
 				t.Fatalf("native check unavailable: %+v", check)
 			}
 			var report designtools.Report

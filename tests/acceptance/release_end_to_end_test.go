@@ -275,7 +275,7 @@ func fullReleaseWorkflow(t *testing.T, binaries map[string]string, trackerProvid
 		graphInput.Sources = append(graphInput.Sources, domain.GraphSource{RepositoryID: repo.repository, CollectionID: collection.ID, Digest: receipt.Digest, FullSourceDigest: collection.FullSource.Digest})
 		plan.Repositories = append(plan.Repositories, domain.CoordinationRepository{RepositoryID: repo.repository, Commit: repo.source.Commit, CollectionID: collection.ID, ReceiptDigest: receipt.Digest, FullSourceDigest: collection.FullSource.Digest})
 		var pkg domain.Package
-		agent.call("conductor_create_package", map[string]any{"content": domain.Content{"intent": "Synthetic cross-repository release requirement", "runtimeCriteria": domain.RuntimeCriteria{SchemaVersion: 1, Criteria: []domain.RuntimeCriterion{criterion}}}}, &pkg)
+		agent.call("conductor_create_package", map[string]any{"content": domain.Content{"intent": "Synthetic cross-repository release requirement", "runtimeCriteria": domain.RuntimeCriteria{SchemaVersion: 1, Criteria: []domain.RuntimeCriterion{criterion}}, "verificationCriteria": domain.VerificationCriteria{SchemaVersion: 1, Criteria: []domain.VerificationCriterion{{ID: "synthetic-agent-output", Description: "The synthetic repository retains its separately verified agent output."}, {ID: "unlinked", Description: "This separate synthetic criterion requires its own verification."}}}}}, &pkg)
 		human := releaseClient(t, f, "reviewer", repo.repository)
 		if _, err = human.Submit(f.ctx, pkg.ID, pkg.Revision.Number); err != nil {
 			t.Fatal(err)
@@ -337,6 +337,13 @@ func fullReleaseWorkflow(t *testing.T, binaries map[string]string, trackerProvid
 			task.Perspective = "qc"
 			task.Scopes = []domain.TaskScope{{RepositoryID: "application", WritablePaths: []string{"fixture.go"}}, {RepositoryID: "related", WritablePaths: []string{}}}
 			task.Checks = []domain.VerificationCommand{{ID: "joined", RepositoryID: "application", Argv: []string{"sh", "-c", "grep -q 'first agent' fixture.go && grep -q 'joined related work' fixture.go && test -z \"$GITHUB_TOKEN$CONDUCTOR_TOKEN$ANTHROPIC_API_KEY\""}, TimeoutSeconds: 10}, {ID: "related", RepositoryID: "related", Argv: []string{"sh", "-c", "grep -q 'second agent' README.md"}, TimeoutSeconds: 10}}
+		}
+		for i := range task.Checks {
+			for _, pin := range plan.Packages {
+				if pin.RepositoryID == task.Checks[i].RepositoryID {
+					task.Checks[i].Requirements = []domain.VerificationRequirement{{ChangeID: pin.ChangeID, Revision: pin.Revision, Digest: pin.Digest, CriterionID: "synthetic-agent-output"}}
+				}
+			}
 		}
 		plan.Tasks = append(plan.Tasks, task)
 	}
@@ -404,6 +411,18 @@ func fullReleaseWorkflow(t *testing.T, binaries map[string]string, trackerProvid
 	var result execution.Result
 	if json.Unmarshal(artifact.Artifact, &result) != nil || len(result.Patches) != 2 || len(result.Checks) != 2 || !result.CleanupConfirmed {
 		t.Fatal("actual complete source-bound worker evidence missing")
+	}
+	if artifact.Verification == nil || len(artifact.Verification.Criteria) != 4 || len(artifact.Verification.Gaps) != 0 {
+		t.Fatal("MCP lost exact cross-repository criterion coverage")
+	}
+	for _, support := range artifact.Verification.Criteria {
+		want := "not_verified"
+		if support.Requirement.CriterionID == "synthetic-agent-output" {
+			want = "supported"
+		}
+		if support.State != want {
+			t.Fatal("full release artifact widened criterion support", support)
+		}
 	}
 	for _, patch := range result.Patches {
 		if patch.RepositoryID == "application" && (!bytes.Contains(patch.Patch, []byte("first agent")) || !bytes.Contains(patch.Patch, []byte("joined related work"))) {

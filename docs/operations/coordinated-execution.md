@@ -156,3 +156,6 @@ gateway may start. Recovery keeps the existing unresolved receipt; it does not
 restart the producer or release uncertain write claims. A controlled delayed-response
 regression exercises recovery before the original activity resumes, and real
 Docker/Temporal acceptance separately checks execution, cleanup and revocation.
+
+Optional [verification criteria](verification-criteria.md) link each selected check
+to an exact approved package criterion and expose separate historical support.

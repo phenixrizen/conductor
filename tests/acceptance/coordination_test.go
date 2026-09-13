@@ -104,7 +104,7 @@ func coordinationAcceptanceWithTimeout(t *testing.T, fixtureTimeout time.Duratio
 		}
 		input.Sources = append(input.Sources, domain.GraphSource{RepositoryID: repo, CollectionID: collection.ID, Digest: receipt.Digest, FullSourceDigest: source.Digest})
 		plan.Repositories = append(plan.Repositories, domain.CoordinationRepository{RepositoryID: repo, Commit: source.Commit, CollectionID: collection.ID, ReceiptDigest: receipt.Digest, FullSourceDigest: source.Digest})
-		pkg, err := c.Create(f.ctx, domain.Content{"intent": "Synthetic governed cross repository change"})
+		pkg, err := c.Create(f.ctx, domain.Content{"intent": "Synthetic governed cross repository change", "verificationCriteria": domain.VerificationCriteria{SchemaVersion: 1, Criteria: []domain.VerificationCriterion{{ID: "synthetic-output", Description: "The synthetic command observes its declared source change."}, {ID: "unlinked", Description: "A separate synthetic criterion has no declared check."}}}})
 		if err != nil {
 			t.Fatalf("create work package: %v", err)
 		}
@@ -143,6 +143,13 @@ func coordinationAcceptanceWithTimeout(t *testing.T, fixtureTimeout time.Duratio
 			task.DependsOn = []string{"first", "second"}
 			task.Scopes = []domain.TaskScope{{RepositoryID: "application", WritablePaths: []string{"fixture.go"}}, {RepositoryID: "related", WritablePaths: []string{}}}
 			task.Checks = []domain.VerificationCommand{{ID: "join.application", RepositoryID: "application", Argv: []string{"sh", "-c", "grep -q 'joined related work' fixture.go && test -z \"$GITHUB_TOKEN$CONDUCTOR_TOKEN$ANTHROPIC_API_KEY\""}, TimeoutSeconds: 10}, {ID: "join.related", RepositoryID: "related", Argv: []string{"sh", "-c", "grep -q 'second agent' README.md"}, TimeoutSeconds: 10}}
+		}
+		for i := range task.Checks {
+			for _, pin := range plan.Packages {
+				if pin.RepositoryID == task.Checks[i].RepositoryID {
+					task.Checks[i].Requirements = []domain.VerificationRequirement{{ChangeID: pin.ChangeID, Revision: pin.Revision, Digest: pin.Digest, CriterionID: "synthetic-output"}}
+				}
+			}
 		}
 		plan.Tasks = append(plan.Tasks, task)
 	}
@@ -220,6 +227,24 @@ func TestCoordinatedDockerTasksShareCrossRepositoryArtifacts(t *testing.T) {
 	}
 	if len(artifact.Patches) != 2 || len(artifact.Checks) != 2 || !artifact.CleanupConfirmed {
 		t.Fatal("missing independent evidence or cumulative repository coverage")
+	}
+	artifactDigest, _ := domain.JSONDigest(artifact)
+	viewer, err := client.NewAuthenticated(f.server.URL, f.tokens["reviewer"], "team", "application")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := viewer.GetCoordinationArtifact(f.ctx, w.Run.ID, domain.CoordinationArtifactQuery{RunDigest: w.Run.Digest, TaskID: joinRef.TaskID, ArtifactDigest: artifactDigest})
+	if err != nil || inspected.Verification == nil || len(inspected.Verification.Criteria) != 4 {
+		t.Fatal("actual source-bound criterion review missing", err)
+	}
+	for _, criterion := range inspected.Verification.Criteria {
+		want := "not_verified"
+		if criterion.Requirement.CriterionID == "synthetic-output" {
+			want = "supported"
+		}
+		if criterion.State != want {
+			t.Fatal("actual check support crossed criterion boundary", criterion)
+		}
 	}
 	for _, patch := range artifact.Patches {
 		if patch.RepositoryID == "application" && (!bytes.Contains(patch.Patch, []byte("first agent")) || !bytes.Contains(patch.Patch, []byte("joined related work"))) {

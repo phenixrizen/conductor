@@ -59,11 +59,12 @@ func TestBrowserCoordinatedRuns(t *testing.T) {
 	var graph domain.RepositoryGraph
 	f.raw(f.server.URL, f.tokens["author"], "team", "application", "POST", "/api/v1/repository-graphs", domain.GraphInput{Sources: []domain.GraphSource{{RepositoryID: "application", CollectionID: c.ID, Digest: receipt.Digest, FullSourceDigest: data.Digest}}}, http.Header{"Idempotency-Key": {"coordination-browser-graph"}}, 201, &graph)
 	planFor := func(title string) (domain.CoordinationPlan, domain.Package) {
-		pkg := f.create("author", "team", "application", domain.Content{"intent": title})
+		pkg := f.create("author", "team", "application", domain.Content{"intent": title, "verificationCriteria": domain.VerificationCriteria{SchemaVersion: 1, Criteria: []domain.VerificationCriterion{{ID: "synthetic-output", Description: "The synthetic check inspects the selected source."}}}})
 		path := "/api/v1/changes/" + pkg.ID
 		f.request("author", "team", "application", "POST", path+"/review-requests", map[string]any{"revision": 1}, 200, nil)
 		f.request("reviewer", "team", "application", "POST", path+"/approvals", map[string]any{"revision": 1, "digest": pkg.Revision.Digest}, 201, nil)
 		plan := domain.CoordinationPlan{SchemaVersion: 1, GraphID: graph.ID, GraphDigest: graph.Digest, Packages: []domain.PackagePin{{RepositoryID: "application", ChangeID: pkg.ID, Revision: 1, Digest: pkg.Revision.Digest}}, Repositories: []domain.CoordinationRepository{{RepositoryID: "application", Commit: data.Commit, CollectionID: c.ID, ReceiptDigest: receipt.Digest, FullSourceDigest: data.Digest}}, Tasks: []domain.CoordinationTask{{ID: "inspect", Perspective: "architect", Profile: profile.ID, ProfileDigest: profileDigest, Image: profile.Image, Prompt: "Inspect synthetic source. <script>window.untrustedExecuted=true</script>", DependsOn: []string{}, Scopes: []domain.TaskScope{{RepositoryID: "application", WritablePaths: []string{"README.md"}}}, Checks: []domain.VerificationCommand{{ID: "check", RepositoryID: "application", Argv: []string{"/bin/true"}, TimeoutSeconds: 30}}, TimeoutSeconds: 60}}, MaxParallel: 1}
+		plan.Tasks[0].Checks[0].Requirements = []domain.VerificationRequirement{{ChangeID: pkg.ID, Revision: 1, Digest: pkg.Revision.Digest, CriterionID: "synthetic-output"}}
 		return plan, pkg
 	}
 	stalePlan, stalePackage := planFor("Shared MCP proposal inspected in browser")

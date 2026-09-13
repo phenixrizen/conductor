@@ -338,6 +338,10 @@ func (p *Postgres) CompleteCoordinationTask(ctx context.Context, id, binding, ta
 	if a == nil || a.InputDigest != result.InputDigest || a.ProfileDigest != result.ProfileDigest || a.Image != result.Image {
 		return domain.TaskReceipt{}, domain.ErrConflict
 	}
+	declaredTask, ok := taskFor(w, taskID)
+	if !ok || execution.ValidateVerificationBindings(declaredTask, result) != nil {
+		return domain.TaskReceipt{}, domain.ErrConflict
+	}
 	if err = recordCleanup(ctx, gate.tx, taskID, a.InputDigest); err != nil {
 		return domain.TaskReceipt{}, err
 	}
@@ -621,7 +625,7 @@ func (p *Postgres) CoordinationInput(ctx context.Context, id, binding, taskID st
 		}
 	}
 	for _, check := range task.Checks {
-		request.Checks = append(request.Checks, execution.Check{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, TimeoutSeconds: check.TimeoutSeconds})
+		request.Checks = append(request.Checks, execution.Check{ID: check.ID, RepositoryID: check.RepositoryID, Argv: check.Argv, TimeoutSeconds: check.TimeoutSeconds, Requirements: check.Requirements})
 	}
 	if execution.ValidateRequest(request) != nil {
 		return execution.Request{}, domain.ErrInvalidInput
