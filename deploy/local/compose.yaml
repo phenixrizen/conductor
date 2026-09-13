@@ -5,7 +5,7 @@ services:
       POSTGRES_DB: conductor
       POSTGRES_USER: conductor
       POSTGRES_PASSWORD: conductor
-    ports: ["127.0.0.1:5432:5432"]
+    ports: ["127.0.0.1:${CONDUCTOR_POSTGRES_PORT:-5432}:5432"]
     healthcheck:
       # --wait must observe the final server, after socket-only initialization.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U conductor"]

@@ -1,38 +1,40 @@
 #!/usr/bin/env bash
-# Pipe local inputs so Docker Snap can run even when this checkout is under /mnt.
+# Pipe Compose input so Docker Snap can run with a checkout under /mnt. Schema
+# changes use the same checked operator as release deployments, on the Go host.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="$repo_root/deploy/local/compose.yaml"
+project_name="${CONDUCTOR_LOCAL_PROJECT:-conductor-local}"
+export CONDUCTOR_POSTGRES_PORT="${CONDUCTOR_POSTGRES_PORT:-5432}"
+if [[ ! "$CONDUCTOR_POSTGRES_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( CONDUCTOR_POSTGRES_PORT > 65535 )); then
+  echo 'CONDUCTOR_POSTGRES_PORT must be an integer from 1 to 65535.' >&2
+  exit 1
+fi
 
 docker info >/dev/null
-docker compose --project-name conductor-local --file - up --detach --wait < "$compose_file"
-container_id="$(docker compose --project-name conductor-local --file - ps --quiet postgres < "$compose_file")"
-if [[ -z "$container_id" ]]; then
-  echo "The local PostgreSQL container was not found." >&2
-  exit 1
-fi
+docker compose --project-name "$project_name" --file - up --detach --wait < "$compose_file"
 
-# Bootstrap an empty local database with every ordered migration atomically.
-# Existing databases must be upgraded deliberately; never reset review history.
-initialized="$(docker exec "$container_id" psql -U conductor -d conductor -Atc "SELECT to_regclass('public.changes') IS NOT NULL")"
-if [[ "$initialized" == f ]]; then
-  cat "$repo_root"/migrations/*.sql | docker exec -i "$container_id" psql -U conductor -d conductor \
-    --set ON_ERROR_STOP=1 --single-transaction
-fi
-access_schema="$(docker exec "$container_id" psql -U conductor -d conductor -Atc "SELECT to_regclass('public.access_principals') IS NOT NULL")"
-if [[ "$access_schema" != t ]]; then
-  echo "Existing database needs migration 002 before this API can run. Follow docs/operations/authenticated-review.md; existing history is retained." >&2
+# Bind this helper to the Compose database it just started, even when the caller
+# has a different DATABASE_URL. Existing untracked schemas must fail closed;
+# only an explicitly inspected operator baseline may establish their history.
+cd -- "$repo_root"
+local_database_url="postgres://conductor:conductor@127.0.0.1:${CONDUCTOR_POSTGRES_PORT}/conductor?sslmode=disable"
+if ! DATABASE_URL="$local_database_url" \
+  go run ./cmd/conductor-db migrate --directory "$repo_root/migrations" --operator local-development; then
+  cat >&2 <<'MESSAGE'
+Local database migration success was not confirmed. No API was started.
+For an existing untracked database, back it up and inspect its complete schema
+against the original migrations before using make db-migrate with the verified
+already-applied BASELINE and an OPERATOR audit label. Explicitly select this
+helper's local database for that command, even if your shell has DATABASE_URL set:
+MESSAGE
+  printf '  DATABASE_URL=%q make db-migrate BASELINE=<verified-count> OPERATOR=<operator-label>\n' "$local_database_url" >&2
+  cat >&2 <<'MESSAGE'
+Then retry make run. Never guess a baseline, replace checksums, or reset the volume.
+For a custom local database port, pass the same CONDUCTOR_POSTGRES_PORT setting.
+See docs/operations/local-development.md and docs/operations/release.md.
+MESSAGE
   exit 1
 fi
-browser_schema="$(docker exec "$container_id" psql -U conductor -d conductor -Atc "SELECT to_regclass('public.browser_sessions') IS NOT NULL")"
-if [[ "$browser_schema" != t ]]; then
-  echo "Existing database needs migration 003 for browser sessions. Follow docs/operations/browser-sign-in.md; existing history is retained." >&2
-  exit 1
-fi
-context_schema="$(docker exec "$container_id" psql -U conductor -d conductor -Atc "SELECT to_regclass('public.context_runtime_bindings') IS NOT NULL")"
-if [[ "$context_schema" != t ]]; then
-  echo "Existing database needs migration 004 for background context collection. Follow docs/operations/durable-context.md; existing history is retained." >&2
-  exit 1
-fi
-echo "PostgreSQL is ready on 127.0.0.1:5432. Existing local data is retained."
+echo "PostgreSQL is ready on 127.0.0.1:${CONDUCTOR_POSTGRES_PORT}; migration checksums verified and existing data retained."

@@ -453,9 +453,14 @@ packages to mirror the target diagram.
 
 - For local development, use `make run` for PostgreSQL plus the foreground API,
   then `make tui` in another terminal; `make serve` starts only the API against
-  existing configuration. `make db-stop` retains the database volume. These targets
-  do not upgrade existing databases or enable authenticated release workflows;
-  preserve the migration and identity rules in the local development runbook.
+  existing configuration. `make db-stop` retains the database volume. Startup uses
+  `conductor-db` checked migrations and refuses untracked legacy schemas. Only
+  `make db-migrate BASELINE=...` accepts an explicitly inspected legacy baseline.
+  Back up before upgrades; never infer applied history from table names. Use unique
+  `CONDUCTOR_LOCAL_PROJECT` and `CONDUCTOR_POSTGRES_PORT` settings for owned startup
+  tests, and preserve the identity rules in the local development runbook. Run
+  `TestLocalMakeMigrationStartup` with `CONDUCTOR_TEST_PROCESS_RESTART=1` when
+  changing the Make/Compose startup or legacy recovery path.
 - Give owned process-recovery fixtures their intended bounded timeout when they
   are constructed; a child context cannot extend a shorter parent. Preserve every
   producer-count, retained-receipt, cleanup and unresolved-claim assertion.
@@ -488,8 +493,9 @@ For persistence, history, shared-client, or context workflow changes, set
 `CONDUCTOR_TEST_DATABASE_URL` and run the applicable live PostgreSQL tests, including
 `tests/acceptance`. An unset variable produces explicit skips. Tests create isolated
 schemas and must clean them up. Connection-pool reopen is not a database restart.
-Use `scripts/start-local-db.sh` for the persistent local database; it pipes inputs
-to Docker to support Snap installations with checkouts outside the home directory.
+Use `scripts/start-local-db.sh` for the persistent local database; it pipes Compose input
+to Docker to support Snap installations with checkouts outside the home directory,
+then runs the trusted migration operator on the Go host.
 
 For authentication and authorization changes, run the signed-token and live
 PostgreSQL acceptance paths covering human collaboration, agent approval denial,

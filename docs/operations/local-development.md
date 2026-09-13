@@ -36,17 +36,41 @@ workspace settings. For shared identity and release views, follow the
 [authenticated terminal setup](terminal-review.md#authenticated-workspace-review).
 
 The `db-up` target reuses `scripts/start-local-db.sh`, which pipes Compose
-configuration and the ordered migrations into
-Docker, so Docker Snap can work with a checkout under `/mnt`. PostgreSQL data lives
-in a named volume. Migrations run atomically only for an empty database;
-existing review history is retained. Apply later migrations deliberately rather
-than assuming a restarted existing volume was upgraded.
-The startup script checks the original access/browser/context tables only; its
-ready message does not certify that an existing database has every release table.
-Use the [release migration procedure](release.md#apply-or-upgrade-the-database)
-for a current installation. The development initializer applies SQL without recording checksum history in the
-release ledger: inspect the actual applied migrations before supplying an explicit
-legacy baseline. Do not guess the count or bypass an existing checksum ledger.
+configuration into Docker so Docker Snap can work with a checkout under `/mnt`.
+PostgreSQL data lives in a named volume. The script then runs the trusted
+`conductor-db migrate` operator on the Go host. It initializes an empty database
+with a checksum ledger, validates recorded checksums, and applies pending
+migrations in one transaction. The API starts only after migration succeeds.
+Before upgrading an existing installation, stop its API/workers and retain a
+verified backup as described in the [release migration procedure](release.md#apply-or-upgrade-the-database).
+
+### Recover an older local database
+
+Earlier versions applied SQL without recording migration history. Startup refuses
+to guess how far those databases were migrated; a table's presence alone cannot
+establish that a complete migration ran. If startup reports an **existing untracked
+database**, back it up and compare its complete schema with the original ordered
+migration files. Then record only the verified already-applied count:
+
+```bash
+# Select the local database just inspected; use its port if different from 5432.
+# Replace both placeholders after inspecting the schema and verifying a backup.
+DATABASE_URL='postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable' \
+  make db-migrate BASELINE='<verified-count>' OPERATOR='<operator-label>'
+make run
+```
+
+The explicit URL prevents an unrelated inherited `DATABASE_URL` from receiving
+the local database's baseline. Match the port printed by the failed startup and
+retain any custom project/port settings for `make run`.
+`db-migrate` always uses `DATABASE_URL`; without an override, Make defaults to the
+selected local PostgreSQL port.
+It records legacy entries as `operator_baseline` and applies all remaining
+migrations atomically. Subsequent `make run` calls validate that ledger; do not
+supply the baseline again. `OPERATOR` is an audit label, not authenticated identity.
+Never reset the volume or replace recorded checksums to get past a migration error.
+A failed or uncertain migration requires inspecting its error and ledger before
+retrying; the helper does not automatically replay the command.
 
 If Docker group membership is not active in the current shell, start a new login
 session or use an absolute checkout path:
@@ -68,7 +92,8 @@ the foreground so each terminal has a clear owner to stop with Ctrl+C.
 | `run`, `dev` | Start local PostgreSQL, then run the API |
 | `serve` | Run only the API using the selected database and authentication settings |
 | `tui` | Connect the terminal workbench to an already running API |
-| `db-up` | Start/check the persistent local PostgreSQL container |
+| `db-up` | Start local PostgreSQL and apply checked migrations |
+| `db-migrate` | Apply migrations to `DATABASE_URL`; accept an explicitly inspected legacy `BASELINE` |
 | `db-stop` | Stop PostgreSQL and retain its volume |
 | `db-logs` | Follow PostgreSQL logs |
 | `web-install` | Install frontend dependencies with `npm ci` |
@@ -80,7 +105,10 @@ Environment variables and Make command-line settings can override defaults:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | `postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable` | Make's local PostgreSQL connection; required when invoking the API directly |
+| `DATABASE_URL` | `postgres://conductor:conductor@127.0.0.1:$(CONDUCTOR_POSTGRES_PORT)/conductor?sslmode=disable` | Make's local PostgreSQL connection; required when invoking the API directly |
+| `CONDUCTOR_LOCAL_PROJECT` | `conductor-local` | Compose project and persistent volume namespace |
+| `CONDUCTOR_POSTGRES_PORT` | `5432` | Local PostgreSQL host port; integer 1–65535, always bound to `127.0.0.1` |
+| `BASELINE`, `OPERATOR` | `0`, `local-development` | Explicit migration count and operator audit label for `db-migrate` only |
 | `CONDUCTOR_ADDR` | `127.0.0.1:8080` | API listen address; local mode requires literal loopback |
 | `CONDUCTOR_AUTH_MODE` | `local` | Make's default authentication mode; use `oidc` with the required provider settings for shared work |
 | `CONDUCTOR_OIDC_ISSUER` | Required in OIDC mode | Exact HTTPS identity issuer |
@@ -102,8 +130,12 @@ Use `make serve` for an existing database or an already configured OIDC environm
 it performs no database startup or migration. Set `DATABASE_URL` and the applicable
 identity settings before invoking it. Inherited OIDC or integration settings are
 still validated by the API; local mode cannot enable authenticated features.
-`make run` starts the fixed local database even if you override `DATABASE_URL`, so
-prefer `serve` for a separately managed database.
+`make run` starts and migrates its Compose database even if you override
+`DATABASE_URL`; prefer `serve` for a separately managed database. To run an isolated
+local instance, set a distinct `CONDUCTOR_LOCAL_PROJECT`, `CONDUCTOR_POSTGRES_PORT`
+and `CONDUCTOR_ADDR`, and retain those settings for later startup, migration and
+shutdown. Startup always migrates its selected loopback Compose database; it does
+not use an unrelated inherited `DATABASE_URL`.
 
 `make temporal` requires the verified CLI 1.8.3 / server 1.31.2 profile. It starts
 Temporal only, not collection or coding workers. See the
@@ -241,6 +273,18 @@ in `CONDUCTOR_TEST_DATABASE_URL` or your persistent development database.
 
 The suite skips unless explicitly enabled. Once enabled, unavailable Docker,
 an unavailable pinned PostgreSQL image, or failed readiness is a test failure.
+For changes to local startup and migrations, also run the real Make/Compose gate:
+
+```bash
+CONDUCTOR_TEST_PROCESS_RESTART=1 \
+  go test -race ./tests/acceptance -run TestLocalMakeMigrationStartup -count=1 -v
+```
+
+It owns separate projects, ports and volumes for fresh startup, tracked upgrades,
+and migration-001 legacy recovery. It checks exact history and migration records,
+refusal without an inspected baseline, database targeting, and actual PostgreSQL
+stop/start with retained data. The existing development database is never selected.
+
 If the current shell lacks its newly assigned Docker group, use:
 
 ```bash
@@ -278,7 +322,8 @@ Common failures:
 | `revision_conflict` | Re-inspect the latest revision; do not retry approval blindly. |
 | `approval_rejected` | Confirm the revision is submitted and the reviewer is independent. |
 | Missing `go.sum` or npm lock | Generate and review it in a dependency-enabled environment. |
-| Existing DB lacks a new table | Initialization SQL does not migrate existing volumes; apply the migration deliberately. |
+| Existing untracked DB / old missing-table message | Back up and inspect the complete legacy schema, then use `make db-migrate BASELINE=...`; startup never guesses a baseline. |
+| Migration ledger differs from release | Restore the inspected migration files; never replace ledger checksums or bypass the error. |
 | Local TUI reports mixed actor/token or missing scope | Unset token and scope variables for local review, or use the authenticated setup; even an empty token variable counts as configured. |
 | API port is already in use | Reuse the running API with `make tui`, or select another `CONDUCTOR_ADDR` consistently. |
 

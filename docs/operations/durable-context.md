@@ -25,9 +25,10 @@ Apply every missing ordered migration using the
 [release migration procedure](release.md#apply-or-upgrade-the-database). Feature 006
 introduced migration 004; whole-source acquisition and the current release require
 later migrations as well. Preserve existing data and inspect manually applied
-history before declaring a legacy baseline. The development startup script
-initializes empty databases but does not upgrade existing schemas or certify all
-later release tables.
+history before declaring a legacy baseline. The development startup script uses
+the same checked operator for empty and tracked local databases; untracked legacy
+schemas require [explicit baseline recovery](local-development.md#recover-an-older-local-database).
+Successful migration does not enable authenticated collection or start workers.
 
 Install the official [Temporal CLI 1.8.3 release](https://github.com/temporalio/cli/releases/tag/v1.8.3)
 and verify its published archive checksum before extracting it. The tested Linux

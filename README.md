@@ -82,9 +82,10 @@ deleting its volume. `make help` lists the available targets.
 Docker Snap is supported with checkouts under `/mnt`. If your current shell has
 not picked up Docker group access, use a new login session or run
 `sg docker -c 'make -C /absolute/path/to/conductor run'` with your checkout's path.
-Existing databases are preserved, not automatically upgraded. Follow the
-[migration procedure](docs/operations/release.md#apply-or-upgrade-the-database)
-when an upgrade is needed; never guess a legacy baseline.
+Startup uses checked migrations and preserves existing data. Before upgrading an
+existing database, keep a verified backup. Older databases without a migration
+ledger need a one-time inspected baseline; see
+[local database recovery](docs/operations/local-development.md#recover-an-older-local-database).
 
 For the React/TypeScript browser, use an optional third terminal:
 

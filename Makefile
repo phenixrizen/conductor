@@ -2,7 +2,9 @@
 
 # Export settings instead of interpolating them into shell commands. In
 # particular, database credentials and token-file paths must not be echoed.
-DATABASE_URL ?= postgres://conductor:conductor@127.0.0.1:5432/conductor?sslmode=disable
+CONDUCTOR_LOCAL_PROJECT ?= conductor-local
+CONDUCTOR_POSTGRES_PORT ?= 5432
+DATABASE_URL ?= postgres://conductor:conductor@127.0.0.1:$(CONDUCTOR_POSTGRES_PORT)/conductor?sslmode=disable
 CONDUCTOR_ADDR ?= 127.0.0.1:8080
 CONDUCTOR_AUTH_MODE ?= local
 CONDUCTOR_URL ?= http://$(CONDUCTOR_ADDR)
@@ -11,10 +13,12 @@ ACTOR ?= developer
 VIEW ?=
 FILE ?=
 CHANGE ?=
+BASELINE ?= 0
+OPERATOR ?= local-development
 export DATABASE_URL CONDUCTOR_ADDR CONDUCTOR_AUTH_MODE CONDUCTOR_URL CONDUCTOR_API_URL
-export ACTOR VIEW FILE CHANGE
+export CONDUCTOR_LOCAL_PROJECT CONDUCTOR_POSTGRES_PORT ACTOR VIEW FILE CHANGE BASELINE OPERATOR
 
-.PHONY: help run dev serve tui db-up db-stop db-logs web-install web-dev temporal test check web
+.PHONY: help run dev serve tui db-up db-migrate db-stop db-logs web-install web-dev temporal test check web
 
 help:
 	@printf '%s\n' \
@@ -26,7 +30,8 @@ help:
 	  '' \
 	  'Services:' \
 	  '  make serve        Run only the API using the configured database/authentication' \
-	  '  make db-up        Start/initialize local PostgreSQL; retain existing data' \
+	  '  make db-up        Start local PostgreSQL and apply checked migrations' \
+	  '  make db-migrate   Migrate DATABASE_URL; BASELINE requires inspected legacy history' \
 	  '  make db-stop      Stop local PostgreSQL; retain its data volume' \
 	  '  make db-logs      Follow local PostgreSQL logs' \
 	  '  make temporal     Run the pinned local Temporal server (configured shared workflows)' \
@@ -65,13 +70,18 @@ tui:
 db-up:
 	@./scripts/start-local-db.sh
 
+# Only this explicit operator action accepts a legacy baseline. Startup never
+# guesses one from existing tables or skips recorded migration checksums.
+db-migrate:
+	@exec go run ./cmd/conductor-db migrate --directory migrations --operator "$$OPERATOR" --baseline "$$BASELINE"
+
 # Piping Compose configuration supports Docker Snap and /mnt checkouts. Stop
 # only the database service; never delete its volume as part of routine shutdown.
 db-stop:
-	@docker compose --project-name conductor-local --file - stop postgres < deploy/local/compose.yaml
+	@docker compose --project-name "$$CONDUCTOR_LOCAL_PROJECT" --file - stop postgres < deploy/local/compose.yaml
 
 db-logs:
-	@docker compose --project-name conductor-local --file - logs --follow --tail 100 postgres < deploy/local/compose.yaml
+	@docker compose --project-name "$$CONDUCTOR_LOCAL_PROJECT" --file - logs --follow --tail 100 postgres < deploy/local/compose.yaml
 
 web-install:
 	npm --prefix apps/web ci
