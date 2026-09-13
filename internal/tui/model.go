@@ -14,6 +14,8 @@ import (
 
 type model struct {
 	options                         Options
+	access                          accessState
+	inspectID                       string
 	execute                         executor
 	cancel                          context.CancelFunc
 	serial                          int
@@ -49,6 +51,9 @@ type startMsg struct{}
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startMsg:
+		if m.access.authenticated {
+			return m.recheckAccess(m.options.ID)
+		}
 		if m.options.ID != "" {
 			return m.start(request{op: "open", id: m.options.ID})
 		}
@@ -60,12 +65,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.serial != m.serial {
 			return m, nil
 		}
+		if msg.err == nil {
+			msg.err = m.validateScope(msg)
+		}
 		if msg.err == nil && isMutation(msg.op) {
 			msg.err = validateMutationResult(msg.request, msg.pack)
 		}
 		m.cancel = nil
 		m.busy = ""
 		if msg.err != nil {
+			if m.access.authenticated && (msg.op == "access" || accessDenied(msg.err) || errors.Is(msg.err, errResponseScope)) {
+				m.inspectID = msg.id
+				m.invalidateAccess()
+				m.status = "Access unavailable: press r to recheck access and inspect shared state. " + msg.err.Error()
+				return m, nil
+			}
 			m.status = "Unavailable: " + msg.err.Error()
 			if isMutation(msg.op) {
 				m.blocked = true
@@ -75,14 +89,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.status = "Write not confirmed. Inspect shared state with r before another write; do not assume it failed. " + msg.err.Error()
 				}
+			} else if m.access.authenticated && (msg.op == "open" || msg.op == "list") {
+				m.clearInspection()
 			}
 			return m, nil
 		}
 		switch msg.op {
+		case "access":
+			access, err := m.access.inspect(msg.session, msg.repositories)
+			if err != nil {
+				m.invalidateAccess()
+				m.access.restartRequired = errors.Is(err, errPrincipalChanged)
+				m.status = "Access unavailable: press r to recheck access. " + err.Error()
+				if m.access.restartRequired {
+					m.status = "Access unavailable: " + err.Error()
+				}
+				return m, nil
+			}
+			m.access = access
+			if msg.id != "" {
+				return m.start(request{op: "open", id: msg.id})
+			}
+			return m.list(0)
 		case "list":
 			m.page, m.selected = msg.page, 0
 			m.pack, m.draft = nil, nil
 			m.blocked = false
+			m.inspectID = ""
 			m.status = "Shared work loaded. Repository labels are discovery filters only."
 		case "file":
 			m.draft = msg.content
@@ -92,6 +125,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "File loaded for preview. This is the complete replacement content; s confirms saving."
 		default:
 			m.pack = &msg.pack
+			m.inspectID = msg.pack.ID
 			m.draft = nil
 			m.blocked = false
 			m.status = "Loaded latest revision. Inspect the complete content before an action."
@@ -131,10 +165,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tooSmall() {
 			return m, nil
 		}
+		if m.access.authenticated && !m.access.ready {
+			if msg.String() == "r" {
+				return m.recheckAccess(m.inspectID)
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "o":
 			m.prompt, m.input = "open", ""
 		case "c":
+			if err := m.actionAllowed("create"); err != nil {
+				m.status = "Action blocked: " + err.Error()
+				break
+			}
 			if m.draft != nil {
 				m.status = "Save or discard the current preview before loading another file."
 				break
@@ -145,6 +189,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.prompt, m.input, m.draftOp = "file", m.options.File, "create"
 		case "e":
+			if err := m.actionAllowed("revise"); err != nil {
+				m.status = "Action blocked: " + err.Error()
+				break
+			}
 			if m.pack == nil || m.draft != nil || m.blocked {
 				m.status = "Open and inspect a latest revision before revising."
 				break
@@ -153,6 +201,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "b":
 			return m.list(0)
 		case "r":
+			if m.access.authenticated {
+				return m.recheckAccess(m.inspectID)
+			}
 			if m.pack != nil {
 				return m.start(request{op: "open", id: m.pack.ID})
 			}
@@ -181,7 +232,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Blocked: refresh and inspect with r before approval."
 				break
 			}
-			if err := domain.ValidateApproval(m.pack.Revision, m.pack.Revision.Number, m.pack.Revision.Digest, m.options.Actor); err != nil {
+			if err := domain.ValidateApproval(m.pack.Revision, m.pack.Revision.Number, m.pack.Revision.Digest, m.actor()); err != nil {
 				m.status = "Approval blocked: " + err.Error()
 				break
 			}
@@ -264,6 +315,22 @@ func validateMutationResult(req request, p domain.Package) error {
 }
 
 func (m model) start(req request) (tea.Model, tea.Cmd) {
+	if m.access.authenticated && req.op != "access" && !m.access.ready {
+		m.status = "Access unavailable: press r to recheck access."
+		return m, nil
+	}
+	if isMutation(req.op) {
+		if err := m.actionAllowed(req.op); err != nil {
+			m.prompt, m.input, m.pending = "", "", request{}
+			m.status = "Action blocked: " + err.Error()
+			return m, nil
+		}
+		if m.access.authenticated && req.accessGeneration != m.access.generation {
+			m.prompt, m.input, m.pending = "", "", request{}
+			m.status = "Action blocked: access changed; inspect and confirm again."
+			return m, nil
+		}
+	}
 	if m.cancel != nil {
 		m.cancel()
 	}
@@ -271,6 +338,7 @@ func (m model) start(req request) (tea.Model, tea.Cmd) {
 	req.serial = m.serial
 	m.busy = req.op
 	m.prompt, m.input = "", ""
+	m.pending = request{}
 	cmd, cancel := m.execute(req)
 	m.cancel = cancel
 	return m, cmd
@@ -288,7 +356,11 @@ func (m model) list(index int) (tea.Model, tea.Cmd) {
 }
 
 func (m model) confirm(op string) (tea.Model, tea.Cmd) {
-	m.pending = request{op: op, content: m.draft}
+	if err := m.actionAllowed(op); err != nil {
+		m.status = "Action blocked: " + err.Error()
+		return m, nil
+	}
+	m.pending = request{op: op, content: m.draft, accessGeneration: m.access.generation}
 	if m.pack != nil {
 		m.pending.id, m.pending.revision, m.pending.digest = m.pack.ID, m.pack.Revision.Number, m.pack.Revision.Digest
 	}
@@ -351,6 +423,30 @@ func (m model) bodyHeight() int { return max(1, m.height-len(m.header())-5) }
 
 func (m model) header() []string {
 	lines := wrap("Conductor | local actor: "+safe(m.options.Actor)+" (not authentication)", m.width)
+	if m.access.authenticated {
+		identity := "checking server identity"
+		if m.access.principal.ID != "" {
+			identity = "principal: " + safe(m.access.principal.ID) + " (" + safe(m.access.principal.Kind) + ")"
+		}
+		lines = wrap("Conductor | "+identity, m.width)
+		lines = append(lines, wrap("Workspace: "+safe(m.access.workspaceID)+" | Repository ID: "+safe(m.access.repositoryID), m.width)...)
+		permissions := "Access not confirmed; r rechecks access, q quits."
+		if m.access.ready {
+			author, approve := "not granted", "not granted"
+			r := m.access.repository
+			if domain.ValidateRepositoryAction(m.access.principal, r.CanRead, r.CanAuthor, r.CanApprove, "author") == nil {
+				author = "allowed"
+			}
+			if domain.ValidateRepositoryAction(m.access.principal, r.CanRead, r.CanAuthor, r.CanApprove, "approve") == nil {
+				approve = "allowed after independent inspection"
+			}
+			permissions = "Read: allowed | Author: " + author + " | Approve: " + approve
+		}
+		lines = append(lines, wrap(permissions, m.width)...)
+		if m.access.truncated {
+			lines = append(lines, wrap("Discovery truncated: selected scope verified; additional entries are not shown.", m.width)...)
+		}
+	}
 	if m.pack != nil {
 		p := m.pack
 		revisionLabel, digestLabel, stateLabel, authorLabel := "revision", "Digest", "State", "author"
