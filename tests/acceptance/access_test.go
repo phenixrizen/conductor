@@ -493,8 +493,11 @@ func newAccessFixtureWithIssuer(t *testing.T, issuer *accessIssuer, issuerClient
 	if err := f.db.ApplyAccessConfig(ctx, "synthetic-operator", f.config); err != nil {
 		t.Fatalf("provision synthetic workspaces and grants: %v", err)
 	}
-	for _, name := range []string{"author", "reviewer", "reader", "agent", "other"} {
-		f.tokens[name] = f.issuer.token(t, "subject-"+name, nil)
+	// Real-provider qualifications do not possess or synthesize its signing key.
+	if f.issuer.key != nil {
+		for _, name := range []string{"author", "reviewer", "reader", "agent", "other"} {
+			f.tokens[name] = f.issuer.token(t, "subject-"+name, nil)
+		}
 	}
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db), f.verifier))
 	t.Cleanup(func() { f.server.Close() })

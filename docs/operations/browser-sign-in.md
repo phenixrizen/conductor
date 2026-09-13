@@ -211,3 +211,8 @@ at `/usr/bin/google-chrome`. The test owns isolated database schemas and tempora
 TLS servers. Its synthetic issuer exercises signed code exchange; it does not
 certify Entra ID, Okta, Keycloak, or production deployment. Missing opt-in is an
 explicit skip; missing browser dependencies after opt-in are a failure.
+
+Separate [Keycloak qualification](keycloak-qualification.md) runs a pinned actual
+Keycloak 26.7.3 service and native HTTPS code exchange through Chromium. Its browser
+sign-in result does not establish compatibility with Conductor's stricter RFC9068
+API bearer profile or any hosted deployment.

@@ -29,6 +29,16 @@ import (
 
 func coordinationAcceptance(t *testing.T, modes ...string) (*accessFixture, *coordinationworker.Activity, store.CoordinationWork) {
 	t.Helper()
+	fixtureTimeout := time.Minute
+	if len(modes) > 0 && modes[0] == "crash" {
+		// Process recovery includes setup and the immutable attempt's cleanup grace.
+		fixtureTimeout = 150 * time.Second
+	}
+	return coordinationAcceptanceWithTimeout(t, fixtureTimeout, modes...)
+}
+
+func coordinationAcceptanceWithTimeout(t *testing.T, fixtureTimeout time.Duration, modes ...string) (*accessFixture, *coordinationworker.Activity, store.CoordinationWork) {
+	t.Helper()
 	if os.Getenv("CONDUCTOR_TEST_EXECUTION") != "1" || os.Getenv("CONDUCTOR_TEST_CODEGRAPH") != "1" {
 		t.Skip("set CONDUCTOR_TEST_EXECUTION=1 and CONDUCTOR_TEST_CODEGRAPH=1 for actual Docker coordinated execution")
 	}
@@ -36,7 +46,9 @@ func coordinationAcceptance(t *testing.T, modes ...string) (*accessFixture, *coo
 	if !domain.ExecutionImagePinned(image) {
 		t.Fatal("immutable CONDUCTOR_TEST_WORKER_IMAGE required")
 	}
-	f := collectionFixture(t)
+	// The fixture owns the whole-test budget, including source and Docker setup.
+	// A later child context cannot extend a shorter fixture deadline.
+	f := collectionFixtureWithTimeout(t, fixtureTimeout)
 	f.server.Close()
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db).WithCollections().WithCoordination(), f.verifier))
 	config := domain.AccessConfig{Repositories: []domain.RepositoryConfig{{ID: "related", WorkspaceID: "team", Provider: "gitlab", Host: "gitlab.com", ProviderID: "101", Name: "synthetic/application"}}, Grants: []domain.GrantConfig{{RepositoryID: "related", PrincipalID: "person-author", CanRead: true, CanAuthor: true, CanApprove: true}, {RepositoryID: "related", PrincipalID: "person-reviewer", CanRead: true, CanAuthor: true, CanApprove: true}, {RepositoryID: "related", PrincipalID: "person-agent", CanRead: true, CanAuthor: true}}, ExecutionGrants: []domain.ExecutionGrantConfig{{RepositoryID: "application", PrincipalID: "person-reviewer", CanExecute: true}, {RepositoryID: "related", PrincipalID: "person-reviewer", CanExecute: true}}, ContextIntegrations: []domain.ContextIntegrationConfig{{WorkspaceID: "team", RepositoryID: "related", Profile: "gitlab-rest/v4-19.3", CredentialID: "synthetic-only", Enabled: true}}}
@@ -237,7 +249,7 @@ func TestCoordinatedTemporalDockerExecutionAndRetainedHistory(t *testing.T) {
 	if os.Getenv("CONDUCTOR_TEST_TEMPORAL") != "1" {
 		t.Skip("set CONDUCTOR_TEST_TEMPORAL=1 for owned coordinator workflow acceptance")
 	}
-	f, activity, w := coordinationAcceptance(t)
+	f, activity, w := coordinationAcceptanceWithTimeout(t, 120*time.Second)
 	address := durableAddress(t)
 	root := t.TempDir()
 	process := durableStartTemporal(t, root, address, "coordination-temporal")
@@ -575,7 +587,7 @@ func TestCoordinatedExecutorProcessCrashNeverRepeatsProducer(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("executor did not reconcile lost attempt: %v", err)
+			t.Fatalf("executor did not reconcile lost attempt: %v (context: %v)", err, ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

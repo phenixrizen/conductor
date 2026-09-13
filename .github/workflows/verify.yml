@@ -10,6 +10,55 @@ concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  native-identity-provider:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CONDUCTOR_TEST_DATABASE_URL: postgres://conductor:conductor@127.0.0.1:55432/conductor?sslmode=disable
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26.8'
+          cache: true
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '22.14.0'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Start isolated identity qualification database
+        run: |
+          docker run -d --name conductor-keycloak-ci -e POSTGRES_USER=conductor -e POSTGRES_PASSWORD=conductor -e POSTGRES_DB=conductor -p 127.0.0.1:55432:5432 postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 -c max_locks_per_transaction=1024
+          # Ignore the image's temporary socket-only initialization server.
+          for attempt in $(seq 1 60); do
+            if docker exec conductor-keycloak-ci pg_isready -h 127.0.0.1 -U conductor; then break; fi
+            sleep 1
+          done
+          docker exec conductor-keycloak-ci pg_isready -h 127.0.0.1 -U conductor
+      - name: Install pinned Chromium qualification dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/browser"
+          "$RUNNER_TEMP/browser/bin/pip" install playwright==1.62.0
+          "$RUNNER_TEMP/browser/bin/python" -m playwright install --with-deps chromium
+          echo "CONDUCTOR_BROWSER_PYTHON=$RUNNER_TEMP/browser/bin/python" >> "$GITHUB_ENV"
+          echo "CONDUCTOR_KEYCLOAK_SCREENSHOT=$RUNNER_TEMP/keycloak-workbench.png" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/browser/bin/python" - <<'PYTHON' >> "$GITHUB_ENV"
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              print("CONDUCTOR_CHROME=" + p.chromium.executable_path)
+          PYTHON
+      # Native Keycloak owns its realm, users, signing keys and HTTPS endpoint.
+      # Synthetic client credentials never require repository or environment secrets.
+      - name: Qualify real provider browser login and strict API token rejection
+        run: scripts/qualify-keycloak.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: keycloak-browser-qualification
+          path: ${{ runner.temp }}/keycloak-workbench.png
+          if-no-files-found: error
+          retention-days: 7
   shared-workflows:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
