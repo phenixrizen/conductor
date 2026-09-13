@@ -92,10 +92,11 @@ func (p *Postgres) validateCoordinationPins(ctx context.Context, plan domain.Coo
 	var graphDigest string
 	var snapshot struct {
 		Sources []struct {
-			RepositoryID string `json:"repositoryId"`
-			CollectionID string `json:"collectionId"`
-			Digest       string `json:"digest"`
-			Commit       string `json:"commit"`
+			RepositoryID     string `json:"repositoryId"`
+			CollectionID     string `json:"collectionId"`
+			Digest           string `json:"digest"`
+			Commit           string `json:"commit"`
+			FullSourceDigest string `json:"fullSourceDigest"`
 		} `json:"sources"`
 	}
 	err := p.tx.QueryRow(ctx, `SELECT digest,snapshot FROM repository_graphs WHERE id=$1 AND workspace_id=$2`, plan.GraphID, p.access.request.WorkspaceID).Scan(&graphDigest, &snapshot)
@@ -114,7 +115,7 @@ func (p *Postgres) validateCoordinationPins(ctx context.Context, plan domain.Coo
 	}
 	for _, source := range snapshot.Sources {
 		repo, ok := sources[source.RepositoryID]
-		if !ok || repo.Commit != source.Commit || repo.CollectionID != source.CollectionID || repo.ReceiptDigest != source.Digest {
+		if !ok || repo.Commit != source.Commit || repo.CollectionID != source.CollectionID || repo.ReceiptDigest != source.Digest || repo.FullSourceDigest != source.FullSourceDigest {
 			return domain.ErrConflict
 		}
 		delete(sources, source.RepositoryID)
@@ -128,6 +129,32 @@ func (p *Postgres) validateCoordinationPins(ctx context.Context, plan domain.Coo
 		}
 		if c.Receipt == nil || c.Receipt.Digest != repo.ReceiptDigest || domain.ValidateCollectionReceipt(*c.Receipt, c) != nil {
 			return domain.ErrConflict
+		}
+	}
+	if approved {
+		for _, repo := range plan.Repositories {
+			if !domain.IsLowerHex(repo.FullSourceDigest, 64) {
+				return domain.ErrConflict
+			}
+		}
+		profiles := append([]domain.CoordinationTask(nil), plan.Tasks...)
+		sort.Slice(profiles, func(i, j int) bool { return profiles[i].Profile < profiles[j].Profile })
+		for _, task := range profiles {
+			if !domain.IsLowerHex(task.ProfileDigest, 64) || !domain.ExecutionImagePinned(task.Image) {
+				return domain.ErrConflict
+			}
+			var digest, image string
+			var enabled bool
+			err := p.tx.QueryRow(ctx, `SELECT profile_digest,image,enabled FROM execution_profiles WHERE workspace_id=$1 AND id=$2 FOR SHARE`, p.access.request.WorkspaceID, task.Profile).Scan(&digest, &image, &enabled)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrUnavailable
+			}
+			if err != nil {
+				return err
+			}
+			if !enabled || digest != task.ProfileDigest || image != task.Image {
+				return domain.ErrConflict
+			}
 		}
 	}
 	// Package edits use the same advisory lock. Sorting all pins prevents opposite

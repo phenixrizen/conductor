@@ -59,3 +59,12 @@ func TestPathsOverlapUsesSegments(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutionImagePin(t *testing.T) {
+	if ExecutionImagePinned("worker:latest") || ExecutionImagePinned("sha256:bad") {
+		t.Fatal("mutable image accepted")
+	}
+	if !ExecutionImagePinned("sha256:"+strings.Repeat("a", 64)) || !ExecutionImagePinned("registry.invalid/worker@sha256:"+strings.Repeat("b", 64)) {
+		t.Fatal("immutable image rejected")
+	}
+}

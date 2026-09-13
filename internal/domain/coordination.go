@@ -35,10 +35,11 @@ type PackagePin struct {
 }
 
 type CoordinationRepository struct {
-	RepositoryID  string `json:"repositoryId"`
-	Commit        string `json:"commit"`
-	CollectionID  string `json:"collectionId"`
-	ReceiptDigest string `json:"receiptDigest"`
+	RepositoryID     string `json:"repositoryId"`
+	Commit           string `json:"commit"`
+	CollectionID     string `json:"collectionId"`
+	ReceiptDigest    string `json:"receiptDigest"`
+	FullSourceDigest string `json:"fullSourceDigest,omitempty"`
 }
 
 type TaskScope struct {
@@ -57,6 +58,8 @@ type CoordinationTask struct {
 	ID             string                `json:"id"`
 	Perspective    string                `json:"perspective"`
 	Profile        string                `json:"profile"`
+	ProfileDigest  string                `json:"profileDigest,omitempty"`
+	Image          string                `json:"image,omitempty"`
 	Prompt         string                `json:"prompt"`
 	DependsOn      []string              `json:"dependsOn"`
 	Scopes         []TaskScope           `json:"scopes"`
@@ -156,6 +159,15 @@ func scopedPath(path string) bool {
 	return true
 }
 
+// ExecutionImagePinned accepts only immutable image identities reviewed in a plan.
+func ExecutionImagePinned(image string) bool {
+	if strings.HasPrefix(image, "sha256:") {
+		return IsLowerHex(strings.TrimPrefix(image, "sha256:"), 64)
+	}
+	parts := strings.Split(image, "@sha256:")
+	return len(parts) == 2 && parts[0] != "" && !strings.ContainsAny(parts[0], " \t\r\n") && IsLowerHex(parts[1], 64)
+}
+
 func PathsOverlap(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
@@ -193,6 +205,9 @@ func ValidateCoordinationPlan(p CoordinationPlan) error {
 	}
 	repos := map[string]bool{}
 	for _, r := range p.Repositories {
+		if r.FullSourceDigest != "" && !IsLowerHex(r.FullSourceDigest, 64) {
+			return ErrInvalidInput
+		}
 		if ValidateAccessID(r.RepositoryID) != nil || repos[r.RepositoryID] || !IsLowerHex(r.Commit, 40) || !IsLowerHex(r.CollectionID, 32) || !IsLowerHex(r.ReceiptDigest, 64) {
 			return invalid("each repository needs one exact source receipt")
 		}
@@ -209,6 +224,9 @@ func ValidateCoordinationPlan(p CoordinationPlan) error {
 	}
 	tasks := map[string]CoordinationTask{}
 	for _, task := range p.Tasks {
+		if task.ProfileDigest != "" && !IsLowerHex(task.ProfileDigest, 64) || task.Image != "" && !ExecutionImagePinned(task.Image) {
+			return ErrInvalidInput
+		}
 		if !planKey(task.ID) || !planKey(task.Profile) || task.Prompt == "" || len(task.Prompt) > 32<<10 || !utf8.ValidString(task.Prompt) || len(task.Scopes) < 1 || len(task.Scopes) > len(repos) || len(task.Checks) > 16 || len(task.DependsOn) > MaxCoordinationTasks || task.TimeoutSeconds < 1 || task.TimeoutSeconds > 1800 {
 			return invalid("invalid task bounds or identity")
 		}

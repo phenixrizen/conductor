@@ -1,3 +1,15 @@
+-- Public operator profiles contain no credentials. Exact configuration and image
+-- are reviewed in each plan; mutable catalog rows are locked during admission.
+CREATE TABLE execution_profiles (
+ workspace_id text NOT NULL REFERENCES workspaces(id),
+ id text NOT NULL CHECK(length(id) BETWEEN 1 AND 64),
+ profile_digest text NOT NULL CHECK(profile_digest ~ '^[0-9a-f]{64}$'),
+ image text NOT NULL,
+ configuration jsonb NOT NULL CHECK(jsonb_typeof(configuration)='object'),
+ enabled boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(workspace_id,id)
+);
+
 -- Execution/publication authority is separate from design-review capability.
 CREATE TABLE execution_grants (
  repository_id text NOT NULL REFERENCES managed_repositories(id),
@@ -75,6 +87,9 @@ CREATE TABLE coordination_outbox (
  lease_token text,
  lease_until timestamptz,
  delivered_at timestamptz,
+ first_attempt_at timestamptz,
+ unresolved_at timestamptz,
+ error_code text NOT NULL DEFAULT '',
  next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  attempts integer NOT NULL DEFAULT 0 CHECK(attempts>=0),
  UNIQUE(run_id,operation)
@@ -114,3 +129,29 @@ CREATE TRIGGER coordination_tasks_immutable BEFORE UPDATE OR DELETE ON coordinat
 CREATE TRIGGER coordination_receipts_immutable BEFORE UPDATE OR DELETE ON coordination_task_receipts FOR EACH ROW EXECUTE FUNCTION coordination_immutable_fact();
 CREATE TRIGGER coordination_bindings_immutable BEFORE UPDATE OR DELETE ON coordination_dispatch_bindings FOR EACH ROW EXECUTE FUNCTION coordination_immutable_fact();
 CREATE TRIGGER coordination_audit_immutable BEFORE UPDATE OR DELETE ON coordination_audit_events FOR EACH ROW EXECUTE FUNCTION coordination_immutable_fact();
+
+-- An admitted attempt is append-only. A lost acknowledgement never creates a
+-- replacement producer; recovery reconciles the existing result or records doubt.
+CREATE TABLE coordination_task_attempts (
+ task_id text PRIMARY KEY,
+ run_id text NOT NULL,
+ input_digest text NOT NULL CHECK(input_digest ~ '^[0-9a-f]{64}$'),
+ profile_digest text NOT NULL CHECK(profile_digest ~ '^[0-9a-f]{64}$'),
+ image text NOT NULL,
+ deadline timestamptz NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ FOREIGN KEY(task_id,run_id) REFERENCES coordination_tasks(id,run_id)
+);
+CREATE TABLE coordination_task_cleanup (
+ task_id text PRIMARY KEY REFERENCES coordination_task_attempts(task_id),
+ input_digest text NOT NULL CHECK(input_digest ~ '^[0-9a-f]{64}$'),
+ confirmed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE coordination_run_receipts (
+ run_id text PRIMARY KEY REFERENCES coordination_runs(id),
+ digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TRIGGER coordination_attempts_immutable BEFORE UPDATE OR DELETE ON coordination_task_attempts FOR EACH ROW EXECUTE FUNCTION coordination_immutable_fact();
+CREATE TRIGGER coordination_cleanup_immutable BEFORE UPDATE OR DELETE ON coordination_task_cleanup FOR EACH ROW EXECUTE FUNCTION coordination_immutable_fact();
+CREATE TRIGGER coordination_run_receipts_immutable BEFORE UPDATE OR DELETE ON coordination_run_receipts FOR EACH ROW EXECUTE FUNCTION coordination_immutable_fact();
