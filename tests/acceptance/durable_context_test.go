@@ -31,6 +31,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/repositorycontext/remote"
 	"github.com/phenixrizen/conductor/internal/service"
 	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/phenixrizen/conductor/internal/temporaltest"
 	conductorclient "github.com/phenixrizen/conductor/pkg/client"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
@@ -160,17 +161,22 @@ func durableStartTemporal(t *testing.T, directory, address, name string) *durabl
 	}
 	command := exec.Command(binary, "server", "start-dev", "--ip", "127.0.0.1", "--port", port, "--headless", "--namespace", durableNamespace, "--db-filename", filepath.Join(directory, "temporal.sqlite"))
 	p := durableStartProcess(t, command, directory, name)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		connection, err := net.DialTimeout("tcp", address, 250*time.Millisecond)
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer readyCancel()
+	ready := make(chan error, 1)
+	go func() { ready <- temporaltest.AwaitReady(readyCtx, address, durableNamespace) }()
+	select {
+	case err := <-p.done:
+		_ = p.log.Close()
+		p.cmd = nil
+		t.Fatalf("owned Temporal process exited before readiness: %v", err)
+	case err := <-ready:
 		if err == nil {
-			_ = connection.Close()
 			return p
 		}
-		time.Sleep(100 * time.Millisecond)
+		p.stop()
+		t.Fatal(err)
 	}
-	p.stop()
-	t.Fatal("owned Temporal server did not become ready")
 	return nil
 }
 
