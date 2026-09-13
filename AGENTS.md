@@ -70,8 +70,8 @@ Do not describe an incomplete integration or mocked path as implemented. Keep
   Do not create two execution authorities.
 - External calls belong in workflow activities. Bridge database commits and Temporal
   operations using durable inbox/outbox processing and reconciliation.
-- Coding workers will produce patches; a separate trusted integration service will
-  publish them. Repository-controlled commands must not receive publication or
+- Coding workers produce patches; a separate trusted publication service
+  publishes human-authorized artifacts. Repository-controlled commands must not receive publication or
   production credentials.
 - Before adding Spec Kit, ADRKit, CodeGraph, Groundcover, Temporal, GitHub, GitLab,
   Linear, Jira, Claude Code, or Codex integration code, inspect current official
@@ -98,6 +98,12 @@ packages to mirror the target diagram.
 | `cmd/conductor-worker/` | Trusted Temporal worker and context dispatcher |
 | `cmd/conductor-executor/` | Trusted Temporal coding worker, dispatcher and orphan recovery |
 | `cmd/conductor-admin/` | Trusted database-operator access provisioning |
+| `cmd/conductor-publisher/`, `internal/deliveryworker/`, `internal/delivery/` | Trusted exact GitHub/GitLab publication, provider reconciliation and observations |
+| `cmd/conductor-webhooks/` | Signed repository webhook inbox |
+| `cmd/conductor-tracker-admin/`, `cmd/conductor-tracker-worker/`, `internal/tracker/` | Workspace tracker provisioning, synchronization and webhook processing |
+| `cmd/conductor-runtime-worker/`, `internal/runtimeworker/`, `internal/runtimeevidence/` | Scoped Groundcover collection and criterion evidence |
+| `cmd/conductor-db/`, `internal/databaseops/`, `internal/operational/` | Checked migrations, backup/restore and private diagnostics |
+| `cmd/conductor-design-tools/`, `internal/designtools/` | Bounded native Spec Kit and ADRKit commands |
 | `cmd/conductor-mcp/`, `internal/mcpserver/` | Authenticated fixed-scope MCP stdio bridge through the shared API |
 | `cmd/conductor-sandbox/`, `internal/execution/` | Isolated patch producers, credential gateway, and separate verification |
 | `internal/domain/` | Domain types, invariants, and typed errors |
@@ -257,6 +263,10 @@ packages to mirror the target diagram.
 - Private diagnostics bind a separate literal loopback address. Never expose them
   through the public API/reverse proxy or label metrics with source/identity data.
 
+- Runtime receipts use PostgreSQL `json` to preserve exact embedded JSON bytes.
+  Validate retained receipt digests after all source-access checks. Legacy `jsonb`
+  normalization cannot be repaired by recomputing or replacing historical digests;
+  unavailable integrity stays unavailable.
 - Package mutations and their audit events must commit in one transaction.
 - Serialize commands for the same package and enforce optimistic revision checks;
   allow unrelated packages to progress independently.
@@ -389,7 +399,7 @@ packages to mirror the target diagram.
   complete scoped server receipt before marking a snapshot as matching. Preserve
   version 1 extensions and show full escaped JSON for uninterpreted content.
 
-- Release terminal views use `conductor tui --view graphs|runs|deliveries|tracker`
+- Release terminal views use `conductor tui --view graphs|runs|deliveries|tracker|runtime`
   and the shared API client. Explicit request files contain `idempotencyKey` and
   `input`; preview rejects duplicate/case-aliased fields and retains the exact key
   after uncertain writes. Human execution authorization binds inspected profile,

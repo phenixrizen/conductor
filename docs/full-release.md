@@ -40,7 +40,7 @@ source fixtures do not establish live service compatibility.
 | Work tracking | Linear/Jira adapters, one selected per workspace, exact package/publication-receipt links, field ownership, conflict resolution and lost-write recovery; both provider choices pass complete acceptance | Existing tickets only; live SaaS write qualification unverified |
 | Specifications and decisions | Spec Kit 1.0.6 and ADRKit CLI 0.13.0 native commands in an immutable isolated image; actual scaffold/template/prerequisite and Proposed ADR/lint/applicability/graph verification | Broad agentic prompt/extension compatibility is not claimed |
 | Runtime context | Groundcover REST profile pinned to official SDK schema 1.424.0; exact service/environment/commit/window correlation, approved criteria, complete-grid evaluation, shared retention and recovery | Live Groundcover account and overall production outcome unverified |
-| Complete interfaces | Browser/CLI/TUI/MCP review, graph/source, coordination, artifact, delivery and tracker paths tested; runtime browser/API/MCP tested | Runtime terminal and cohesive browser navigation completing |
+| Complete interfaces | Browser/CLI/TUI/MCP review, graph/source, coordination, artifact, delivery, tracker and runtime paths tested; accessible workflow navigation preserves uncertain inputs across tabs; signed Chromium, real Keycloak and authenticated PTY acceptance pass | Release changes awaiting merge |
 | Operations | Verified remote Temporal TLS/mTLS; actual Keycloak 26.7.3 HTTPS browser qualification; checked migration ledger, private diagnostics, actual PostgreSQL backup/restore, process recovery and identical release archives | Hosted CI run, hosted Temporal and Conductor deployment unverified |
 | Complete acceptance | Both Linear/Jira variants pass two-source native graph → signed MCP → three-task Docker DAG → retained Temporal restart → exact GitHub/GitLab drafts → tracker reconciliation → correlated runtime criteria; related-source revocation tested | Controlled provider fixtures establish protocol behavior, not live SaaS or paid inference |
 
@@ -83,9 +83,12 @@ this keeps its own diff reviewable. Do not skip prerequisites.
 | 7 | [#21](https://github.com/phenixrizen/conductor/pull/21) | Exact related-repository source inspection |
 | 8 | [#22](https://github.com/phenixrizen/conductor/pull/22) | Linear/Jira workspace synchronization and browser review |
 | 9 | [#23](https://github.com/phenixrizen/conductor/pull/23) | Complete authenticated release CLI/TUI |
+| 10 | [#24](https://github.com/phenixrizen/conductor/pull/24) | Complete retained task reports and patch inspection |
+| 11 | [#25](https://github.com/phenixrizen/conductor/pull/25) | Native Spec Kit and ADRKit commands |
+| 12 | [#26](https://github.com/phenixrizen/conductor/pull/26) | Scoped runtime evidence across all clients |
+| 13 | [#27](https://github.com/phenixrizen/conductor/pull/27) | Shared verified Temporal TLS/mTLS |
 
-Task-artifact inspection, native design tools, runtime evidence, remote Temporal,
-operations, real identity qualification, complete acceptance and final interface
+Operations, real identity qualification, complete acceptance and final interface
 work are integrated locally and are being published after checks on their exact
 review branches. Their PR links will be appended here in dependency order.
 

@@ -35,8 +35,9 @@ each capability to its specification, setup and tested limits.
 | Runtime evidence | Collect scoped Groundcover metrics, logs and traces for an exact deployment/commit/window; compare complete evidence with explicitly approved criteria |
 | Team access | Use a configurable OpenID Connect provider for browser sign-in; provision server-owned human/agent identities and workspace/repository permissions |
 
-The browser, Go CLI, interactive terminal and MCP bridge use the same API and
-authorization rules. Human review perspectives help organize the questions to ask;
+The React/TypeScript browser workbench has six workflow tabs: Review, Source &
+graph, Agent work, Delivery, Tracker and Runtime. The browser, Go CLI, Bubble Tea
+terminal and MCP bridge use the same API and authorization rules. Human review perspectives help organize the questions to ask;
 they confer no permissions. Agents may author permitted work and produce evidence,
 but cannot grant design, execution or publication approval.
 
