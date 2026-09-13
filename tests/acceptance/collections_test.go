@@ -25,7 +25,12 @@ import (
 // that fixture does not claim provider or Temporal execution.
 func collectionFixture(t *testing.T) *accessFixture {
 	t.Helper()
-	f := newAccessFixture(t)
+	return collectionFixtureWithTimeout(t, time.Minute)
+}
+
+func collectionFixtureWithTimeout(t *testing.T, timeout time.Duration) *accessFixture {
+	t.Helper()
+	f := newAccessFixtureWithIssuer(t, nil, nil, timeout)
 	f.server.Close()
 	f.server = httptest.NewServer(api.NewAuthenticated(service.NewAuthenticated(f.db).WithCollections(), f.verifier))
 	configureCollectionIntegration(t, f, "team", "application", true)
