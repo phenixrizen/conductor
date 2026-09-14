@@ -214,11 +214,17 @@ with sync_playwright() as p:
     # A pending read is fenced on tab leave, including a late successful response.
     held_reads = []
     def hold_read(route):
-        held_reads.append((route, route.fetch()))
+        response = route.fetch(max_retries=0, max_redirects=0)
+        assert response.status == 200, response.text()
+        held_reads.append((route, response))
+        page.evaluate("window.assistanceReadCaptured = true")
     endpoint = origin + "/api/v1/design-assistance/" + unchanged["id"]
     page.route(endpoint, hold_read)
     commands.clear(); button(page, "Check for suggestion").click()
     expect(panel(page).get_by_role("status")).to_contain_text("Checking the saved request")
+    # Loading text precedes the intercepted server read. Retain that response
+    # before leaving the tab so the fixture actually exercises late delivery.
+    page.wait_for_function("window.assistanceReadCaptured === true")
     page.get_by_role("tab", name="Agent work", exact=True).click(); page.get_by_role("tab", name="Review", exact=True).click()
     assert len(held_reads) == 1
     held_reads[0][0].fulfill(response=held_reads[0][1])
@@ -230,11 +236,17 @@ with sync_playwright() as p:
     button(page, "Preview assistance request").click()
     held_writes = []
     def hold_write(route):
-        held_writes.append((route, route.fetch()))
+        response = route.fetch(max_retries=0, max_redirects=0)
+        assert response.status == 201, response.text()
+        held_writes.append((route, response))
+        page.evaluate("window.assistanceWriteCaptured = true")
     endpoint = origin + "/api/v1/design-assistance"
     page.route(endpoint, hold_write)
     commands.clear(); button(page, "Save assistance request").click()
     expect(panel(page).get_by_role("status")).to_contain_text("Saving assistance request")
+    # Interrupt only after the real server has committed and returned; the UI's
+    # pending state alone does not establish that the write reached the server.
+    page.wait_for_function("window.assistanceWriteCaptured === true")
     page.get_by_role("tab", name="Agent work", exact=True).click(); page.get_by_role("tab", name="Review", exact=True).click()
     expect(page.get_by_role("heading", name="Retained assistance command", exact=True)).to_be_visible()
     assert len(held_writes) == 1 and len(commands) == 1
