@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="logo-title logo-desc">
+  <title id="logo-title">Conductor</title>
+  <desc id="logo-desc">Small-size Switch: a single heavier C and a separate right-leaning terracotta parallelogram on forest.</desc>
+  <rect width="256" height="256" rx="48" fill="#263D35" />
+  <path id="routes" fill="#EEF1E9" d="M191 36H124A92 92 0 0 0 124 220H204A12 12 0 0 0 204 196H124A68 68 0 0 1 124 60H167Z" />
+  <path id="junction" fill="#D26B3F" d="M205 36H245L219 62H179Z" />
+</svg>

@@ -62,8 +62,11 @@ func pageSchema() map[string]any {
 func revisionProperties() map[string]any {
 	return map[string]any{"id": stringSchema(128), "revision": positiveSchema()}
 }
-func (b *Bridge) registerTools() {
+func (b *Bridge) registerAccess() {
 	addTool(b, "conductor_access", "Discover the current server-derived identity and selected repository capabilities. Missing or truncated discovery never grants access.", schema(map[string]any{}), false, true, func(ctx context.Context, _ emptyArgs) (any, error) { return b.access(ctx) })
+}
+
+func (b *Bridge) registerTools() {
 	addTool(b, "conductor_list_packages", "List a bounded page of shared work packages in the fixed repository. Pass nextBefore unchanged to inspect later pages.", schema(pageSchema()), false, true, func(ctx context.Context, a pageArgs) (any, error) {
 		return b.api.ListChanges(ctx, "", a.Before, pageSize(a.Limit))
 	})

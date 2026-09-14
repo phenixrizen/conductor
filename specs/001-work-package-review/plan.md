@@ -94,3 +94,10 @@ grant design approval or execution authority.
 
 The complete platform is the current release target; follow the
 [full release contract](../../docs/full-release.md) and its stacked review order.
+
+[Feature 020](../020-native-design-assistance/spec.md) extends guided authoring with
+shared native-assistant section suggestions, a restricted assistance MCP profile,
+and explicit requester application as an ordinary unapproved revision. It also
+adopts the Switch visual specification across the web and ASCII terminal header.
+Provider accounts remain native; hosted inference and broad source selection are
+not implemented by this increment.

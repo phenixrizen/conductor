@@ -41,6 +41,8 @@ type model struct {
 	pending         request
 	collectionMode  bool
 	collections     collectionState
+	assistanceMode  bool
+	assistance      assistanceState
 }
 
 func newModel(options Options, execute executor) model {
@@ -84,11 +86,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancel = nil
 		m.busy = ""
 		if msg.err != nil {
-			if m.access.authenticated && (msg.op == "access" || accessDenied(msg.err) || errors.Is(msg.err, errResponseScope)) {
+			if m.access.authenticated && (msg.op == "access" || accessDenied(msg.err) || (isAssistanceOperation(msg.op) && assistanceNotFound(msg.err)) || errors.Is(msg.err, errResponseScope)) {
 				retained := m.recovery
+				assistanceRecovery := m.assistance.uncertain
 				if isCollectionOperation(msg.op) || msg.collectionView {
 					m.collections.inspectID = msg.id
-				} else {
+				} else if !isAssistanceOperation(msg.op) {
 					m.inspectID = msg.id
 				}
 				m.invalidateAccess()
@@ -96,11 +99,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// A failed transport cannot establish a new identity. Keep the
 					// recovery input hidden until the same principal is verified.
 					m.recovery = retained
+					m.assistance.uncertain = assistanceRecovery
 				}
 				m.status = "Access unavailable: press r to recheck access and inspect shared state. " + msg.err.Error()
 				return m, nil
 			}
 			m.status = "Unavailable: " + msg.err.Error()
+			if isAssistanceOperation(msg.op) {
+				return m.assistanceResult(msg)
+			}
 			if isCollectionOperation(msg.op) {
 				return m.collectionResult(msg)
 			}
@@ -134,6 +141,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.access = access
+			if msg.assistanceView {
+				return m.start(request{op: "open", id: msg.id, assistanceView: true, assistanceID: msg.assistanceID})
+			}
 			if msg.collectionView {
 				if msg.id != "" {
 					return m.start(request{op: "collection", id: msg.id})
@@ -155,6 +165,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Shared work loaded. Repository labels are discovery filters only."
 		case "collections", "collection", "collection-file", "collect", "cancel-collection":
 			return m.collectionResult(msg)
+		case "assist-list", "assist-get", "assist-request", "assist-apply":
+			return m.assistanceResult(msg)
 		case "file":
 			m.editor, m.rawJSON = nil, false
 			m.draftGuided = false
@@ -179,6 +191,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.draft = nil
 			m.blocked = false
 			m.status = "Loaded latest revision. Inspect the complete content before an action."
+			if msg.op == "open" && msg.assistanceView {
+				m.assistanceMode = true
+				if msg.assistanceID != "" {
+					return m.start(request{op: "assist-get", id: msg.id, assistanceID: msg.assistanceID})
+				}
+				return m.listAssistance(0)
+			}
 			if msg.op == "approve" {
 				m.status = "Design approval recorded. Implementation verification, merge and deployment are separate."
 			} else if isMutation(msg.op) {
@@ -191,7 +210,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.offset = 0
 		m.rebuild()
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyCtrlC || (msg.String() == "q" && m.prompt == "" && m.editor == nil) {
+		if msg.Type == tea.KeyCtrlC || (msg.String() == "q" && m.prompt == "" && m.editor == nil && !m.assistanceTyping()) {
 			if m.cancel != nil {
 				m.cancel()
 			}
@@ -202,7 +221,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 				m.cancel = nil
 				m.serial++
-				if isCollectionOperation(m.busy) {
+				if isAssistanceOperation(m.busy) {
+					m.assistanceCancelled(m.busy)
+				} else if isCollectionOperation(m.busy) {
 					m.collectionCancelled(m.busy)
 				} else if isMutation(m.busy) {
 					if m.activeDraft != nil {
@@ -235,6 +256,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.editor != nil {
 			return m.designKey(msg)
+		}
+		if m.assistanceMode {
+			return m.assistanceKey(msg)
+		}
+		if msg.String() == "h" && !m.collectionMode {
+			return m.openAssistance()
 		}
 		if msg.String() == "g" {
 			if !m.access.authenticated {
@@ -424,7 +451,7 @@ func (m model) start(req request) (tea.Model, tea.Cmd) {
 		m.status = "Access unavailable: press r to recheck access."
 		return m, nil
 	}
-	if isMutation(req.op) || isCollectionWrite(req.op) {
+	if isMutation(req.op) || isCollectionWrite(req.op) || isAssistanceWrite(req.op) {
 		if err := m.requestActionAllowed(req.op); err != nil {
 			m.prompt, m.input, m.pending = "", "", request{}
 			m.status = "Action blocked: " + err.Error()
@@ -448,6 +475,9 @@ func (m model) start(req request) (tea.Model, tea.Cmd) {
 	}
 	m.prompt, m.input = "", ""
 	m.pending = request{}
+	if isAssistanceWrite(req.op) {
+		m.assistance.active = m.assistance.preview
+	}
 	cmd, cancel := m.execute(req)
 	m.cancel = cancel
 	return m, cmd
@@ -548,6 +578,14 @@ func (m model) updatePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) move(delta int) {
+	if m.assistanceMode {
+		if m.assistance.record == nil && m.assistance.form == nil && m.assistance.preview == nil {
+			m.assistance.selected = max(0, min(len(m.assistance.page.Requests)-1, m.assistance.selected+delta))
+		} else {
+			m.offset = max(0, min(max(0, len(m.lines)-m.bodyHeight()), m.offset+delta))
+		}
+		return
+	}
 	if m.collectionMode {
 		if m.collections.record == nil && m.collections.draft == nil {
 			m.collections.selected = max(0, min(len(m.collections.page.Collections)-1, m.collections.selected+delta))
@@ -632,5 +670,8 @@ func (m model) header() []string {
 	if m.collectionMode {
 		lines = append(lines, m.collectionHeader()...)
 	}
-	return lines
+	if m.assistanceMode {
+		lines = append(lines, "ASSISTANCE | Native assistant inbox; no model is started here.")
+	}
+	return append(switchHeader(m.width, m.height-len(lines)-5-6), lines...)
 }

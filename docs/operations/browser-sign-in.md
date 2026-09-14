@@ -212,8 +212,23 @@ CONDUCTOR_TEST_DATABASE_URL='postgres://conductor:conductor@127.0.0.1:5432/condu
 ```
 
 Install the pinned Playwright version declared by the Python acceptance script in
-that Python environment, and provide Chrome through `CONDUCTOR_CHROME` if it is not
-at `/usr/bin/google-chrome`. The test owns isolated database schemas and temporary
+that Python environment. To reproduce hosted CI, install its bundled Chromium with
+`/path/to/playwright/python -m playwright install chromium` and select that exact
+executable:
+
+```bash
+export CONDUCTOR_BROWSER_PYTHON='/path/to/playwright/python'
+export CONDUCTOR_CHROME="$("$CONDUCTOR_BROWSER_PYTHON" - <<'PYTHON'
+from playwright.sync_api import sync_playwright
+with sync_playwright() as playwright:
+    print(playwright.chromium.executable_path)
+PYTHON
+)"
+```
+
+Use those variables with the acceptance command above. Omitting `CONDUCTOR_CHROME`
+uses `/usr/bin/google-chrome`, whose version may differ from CI; a pass there does
+not reproduce the CI browser. The test owns isolated database schemas and temporary
 TLS servers. Its synthetic issuer exercises signed code exchange; it does not
 certify Entra ID, Okta, Keycloak, or production deployment. Missing opt-in is an
 explicit skip; missing browser dependencies after opt-in are a failure.

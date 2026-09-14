@@ -240,3 +240,11 @@ current release without making package approval an execution or delivery command
   and exact content reverts need an explicit domain policy and error contract.
 - The terminal workbench supports current-package review. Historical inspection
   remains available in the CLI and web; revision comparison is available in the web.
+
+## Native assistance follow-through
+
+[Native Design assistance](native-design-assistance.md) adds immutable help requests
+and agent section suggestions outside the saved Design. A requesting human applies
+selected strings through the shared service as a new revision, preserving unknown
+content and the existing independent review rule. PostgreSQL owns these facts; no
+model execution scheduler is introduced.

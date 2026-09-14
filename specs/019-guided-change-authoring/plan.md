@@ -36,3 +36,10 @@ The browser's native Keycloak qualification and the separate full platform
 Temporal/Docker/provider workflow gates were not rerun for this UI increment;
 their existing qualification limits remain. No provider-assisted authoring, new
 tracker hierarchy, merge, deployment or new execution authority is claimed here.
+
+[Feature 020](../020-native-design-assistance/spec.md) extends guided authoring with
+shared native-assistant section suggestions, a restricted assistance MCP profile,
+and explicit requester application as an ordinary unapproved revision. It also
+adopts the Switch visual specification across the web and ASCII terminal header.
+Provider accounts remain native; hosted inference and broad source selection are
+not implemented by this increment.

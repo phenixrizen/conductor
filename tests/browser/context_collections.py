@@ -54,11 +54,13 @@ def source(page):
     page.get_by_role("tab", name="Source & graph", exact=True).click()
 
 
-def inspect_package(page, revision):
+def inspect_package(page, revision, package_id=change_id):
     review(page)
-    page.get_by_label("Change ID", exact=True).fill(change_id)
+    page.get_by_label("Change ID", exact=True).fill(package_id)
     page.get_by_role("button", name="Inspect latest revision", exact=True).click()
     expect(page.get_by_role("heading", name=f"Revision {revision}", exact=True)).to_be_visible()
+    # The revision renders before history and audit reads finish. Navigating
+    # away while they are pending correctly invalidates the attachment target.
     expect(page.get_by_role("button", name="Inspect latest revision", exact=True)).to_be_enabled()
 
 
@@ -197,10 +199,7 @@ with sync_playwright() as playwright:
     recovery = author_command("/api/v1/changes", {"content": {
         "intent": {"title": "Uncertain browser attachment"}, "futureField": {"retained": True}}})
     recovery_id = recovery["id"]
-    review(page)
-    page.get_by_label("Change ID", exact=True).fill(recovery_id)
-    page.get_by_role("button", name="Inspect latest revision", exact=True).click()
-    expect(page.get_by_role("heading", name="Revision 1", exact=True)).to_be_visible()
+    inspect_package(page, 1, recovery_id)
     inspect_receipt(page)
     attach.click()
     attachment_url = origin + "/api/v1/changes/" + recovery_id + "/context-attachments"
@@ -235,6 +234,7 @@ with sync_playwright() as playwright:
     review(page)
     page.get_by_role("button", name="Inspect recovery package", exact=True).click()
     expect(page.get_by_role("heading", name="Revision 2", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="Inspect recovery package", exact=True)).to_be_enabled()
     source(page)
     expect(attach).to_be_disabled()
     review(page)

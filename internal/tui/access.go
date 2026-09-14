@@ -98,6 +98,8 @@ func (m *model) clearInspection() {
 	m.lines = nil
 	m.prompt, m.input, m.draftOp = "", "", ""
 	m.pending = request{}
+	m.assistanceMode = false
+	m.assistance = assistanceState{}
 	m.blocked = true
 }
 
@@ -116,11 +118,14 @@ func (m *model) invalidateAccess() {
 
 func (m model) recheckAccess(id string) (tea.Model, tea.Cmd) {
 	retained := m.recovery
+	assistanceRecovery := m.assistance.uncertain
 	m.invalidateAccess()
 	m.recovery = retained
+	m.assistance.uncertain = assistanceRecovery
 	m.inspectID = id
 	if m.access.restartRequired {
 		m.recovery = nil
+		m.assistance = assistanceState{}
 		m.status = "Access unavailable: " + errPrincipalChanged.Error()
 		return m, nil
 	}
@@ -161,6 +166,9 @@ func (m model) validateScope(res result) error {
 	}
 	if isCollectionOperation(res.op) {
 		return m.validateCollectionScope(res)
+	}
+	if isAssistanceOperation(res.op) {
+		return m.validateAssistanceScope(res)
 	}
 	if res.op == "list" {
 		if len(res.page.Changes) > pageSize || len(res.page.NextBefore) > 1024 ||

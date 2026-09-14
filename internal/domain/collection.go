@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrIdempotencyConflict = errors.New("idempotency key already identifies different collection input")
+	ErrIdempotencyConflict = errors.New("idempotency key already identifies different command input")
 	ErrCollectionStopped   = errors.New("collection no longer permits new work")
 	ErrCapacity            = errors.New("collection capacity is exhausted")
 )

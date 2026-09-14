@@ -86,6 +86,7 @@ func TestOwnedBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatchBefore := seedBackupDispatch(t, ctx, sourceURL)
+	assistanceBefore := seedBackupAssistance(t, ctx, sourceURL)
 	before := captureRestartState(t, ctx, reviewer, pkg.ID)
 	server.stop(t)
 	operator := filepath.Join(t.TempDir(), "conductor-db")
@@ -123,6 +124,9 @@ func TestOwnedBackupRestore(t *testing.T) {
 	if afterDispatch := captureBackupDispatch(t, ctx, restoredURL); afterDispatch != dispatchBefore {
 		t.Fatal("restore changed scoped request, audit, uncertain dispatch lease or Temporal target binding")
 	}
+	if afterAssistance := captureBackupAssistance(t, ctx, restoredURL); afterAssistance != assistanceBefore {
+		t.Fatal("restore changed design assistance requests, suggestions, applications, command keys, revisions or audit")
+	}
 	target, _ := pgx.Connect(ctx, restoredURL)
 	var count int
 	err = target.QueryRow(ctx, `SELECT count(*) FROM conductor_migrations WHERE origin='executed'`).Scan(&count)
@@ -134,7 +138,7 @@ func TestOwnedBackupRestore(t *testing.T) {
 	if _, e := run(strings.Replace(insideURL, "backup_source", "backup_failed", 1), "restore", "--input", "/tmp/owned.dump"); e == nil {
 		t.Fatal("modified archive accepted")
 	}
-	t.Log("Real PostgreSQL17 pg_dump/pg_restore retained exact approval/history/audit and migration ledger in a distinct empty database; failed migration, overwrites, nonempty restore and archive tampering rejected")
+	t.Log("Real PostgreSQL17 pg_dump/pg_restore retained exact approval/history/audit and migration ledger plus immutable Design assistance facts/keys in a distinct empty database; failed migration, overwrites, nonempty restore and archive tampering rejected")
 }
 
 func seedBackupDispatch(t *testing.T, ctx context.Context, url string) string {
@@ -167,6 +171,66 @@ func captureBackupDispatch(t *testing.T, ctx context.Context, url string) string
 	defer conn.Close(ctx)
 	var value string
 	err = conn.QueryRow(ctx, `SELECT jsonb_build_object('request',(SELECT to_jsonb(c) FROM context_collections c),'outbox',(SELECT to_jsonb(o) FROM context_outbox o),'binding',(SELECT to_jsonb(b) FROM context_runtime_bindings b),'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY sequence) FROM context_audit_events a))::text`).Scan(&value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func seedBackupAssistance(t *testing.T, ctx context.Context, url string) string {
+	t.Helper()
+	p, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	cfg := domain.AccessConfig{
+		Principals:  []domain.PrincipalConfig{{ID: "backup-human", Issuer: "https://backup.example.invalid", Subject: "human", Kind: "human", Active: true}},
+		Memberships: []domain.MembershipConfig{{WorkspaceID: "backup-workspace", PrincipalID: "backup-human", Active: true}},
+		Grants:      []domain.GrantConfig{{RepositoryID: "backup-repository", PrincipalID: "backup-human", CanRead: true, CanAuthor: true}},
+	}
+	if err = p.ApplyAccessConfig(ctx, "synthetic-operator", cfg); err != nil {
+		t.Fatal(err)
+	}
+	access := domain.AccessRequest{Identity: domain.AccessIdentity{Issuer: "https://backup.example.invalid", Subject: "human"}, WorkspaceID: "backup-workspace", RepositoryID: "backup-repository"}
+	human := domain.WithAccess(ctx, access)
+	access.Identity.Subject = "agent"
+	agent := domain.WithAccess(ctx, access)
+	s := service.NewAuthenticated(p)
+	pkg, err := s.Create(human, "ignored", domain.Content{"title": "Synthetic restored assistance", "intent": "Preserve exact facts", "design": "Before", "extension": map[string]any{"retained": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := domain.AssistanceInput{ChangeID: pkg.ID, ExpectedRevision: 1, ExpectedDigest: pkg.Revision.Digest, Instruction: "Improve the design", Sections: []string{"design"}}
+	request, err := s.RequestDesignAssistance(human, "backup-request", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err = s.ProposeDesignSections(agent, request.ID, "backup-suggestion", domain.SuggestionInput{RequestDigest: request.Digest, Sections: map[string]string{"design": "After"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.ApplyDesignSuggestion(human, request.ID, "backup-application", domain.ApplySuggestionInput{RequestDigest: request.Digest, SuggestionDigest: request.Suggestion.Digest, ExpectedRevision: 1, ExpectedDigest: pkg.Revision.Digest, Sections: []string{"design"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return captureBackupAssistance(t, ctx, url)
+}
+func captureBackupAssistance(t *testing.T, ctx context.Context, url string) string {
+	t.Helper()
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var value string
+	err = conn.QueryRow(ctx, `SELECT jsonb_build_object(
+ 'request',(SELECT to_jsonb(r) FROM design_assistance_requests r),
+ 'suggestion',(SELECT to_jsonb(s) FROM design_assistance_suggestions s),
+ 'application',(SELECT to_jsonb(a) FROM design_assistance_applications a),
+ 'commands',(SELECT jsonb_agg(to_jsonb(c) ORDER BY operation) FROM design_assistance_commands c),
+ 'revisions',(SELECT jsonb_agg(to_jsonb(r) ORDER BY r.revision) FROM work_package_revisions r JOIN design_assistance_requests d ON d.change_id=r.change_id),
+ 'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY sequence) FROM audit_events a JOIN design_assistance_requests d ON d.change_id=a.change_id))::text`).Scan(&value)
 	if err != nil {
 		t.Fatal(err)
 	}

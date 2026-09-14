@@ -244,6 +244,139 @@ paths:
       description: Accepts no query parameters; identity and scope use the documented headers, and command inputs use the JSON body.
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [revision, digest], properties: {revision: {type: integer}, digest: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}}
       responses: {'201': {description: Approved, content: {application/json: {schema: {$ref: '#/components/schemas/Package'}}}}, '400': {$ref: '#/components/responses/BadRequest'}, '401': {$ref: '#/components/responses/Unauthorized'}, '403': {$ref: '#/components/responses/Forbidden'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {description: Approval rejected}}
+  /api/v1/design-assistance:
+    post:
+      summary: Request native assistant help on exact saved Design sections
+      description: >-
+        Authenticated human authors only, with a selected workspace and canonical repository.
+        Creates an immutable inbox request; it does not call a provider, start execution,
+        or change the Design. Only absent or string-valued selected fields can be edited.
+        Commands reject unknown, duplicate, case-aliased and null fields. Every POST requires
+        one Idempotency-Key scoped to principal, repository and operation. Matching retained
+        input wins over later revision drift after current authorization is checked.
+        Accepts no query parameters. Local mode returns 503.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CollectionKey'
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AssistanceInput'}}}}
+      responses:
+        '201': {description: Retained shared assistance facts, content: {application/json: {schema: {$ref: '#/components/schemas/DesignAssistance'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '409': {description: 'Changed idempotency input or conflicting request, suggestion, revision or historical content (idempotency_conflict or revision_conflict)', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    get:
+      summary: Discover assistance requests in the selected repository
+      description: >-
+        Requires current repository read permission, held through the complete read.
+        Authorization filters before bounded keyset pagination by creation time then ID,
+        both descending. Optional suggestion/application facts are not execution states.
+        Unknown and repeated query parameters are rejected.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
+        - {name: changeId, in: query, description: Optional exact saved Change ID, schema: {type: string, minLength: 1, maxLength: 128}}
+        - {name: before, in: query, description: Opaque nextBefore cursor; omitted or empty starts a new listing, schema: {type: string, maxLength: 1024}}
+        - $ref: '#/components/parameters/HistoryLimit'
+      responses:
+        '200': {description: Retained shared assistance facts, content: {application/json: {schema: {$ref: '#/components/schemas/AssistancePage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/design-assistance/{id}:
+    get:
+      summary: Inspect the captured Design and immutable assistant suggestion
+      description: >-
+        Requires current read permission in the selected workspace and repository.
+        Returns the exact base Revision captured when the request was created and any
+        retained suggestion/application facts. Instructions and proposals are unverified
+        prose; source or provider claims in them establish no provenance or verification.
+        An application names its produced historical revision, not the current revision
+        or approval. Unknown and inaccessible IDs return 404. Accepts no query parameters.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/CollectionID'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
+      responses:
+        '200': {description: Retained shared assistance facts, content: {application/json: {schema: {$ref: '#/components/schemas/DesignAssistance'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/design-assistance/{id}/suggestion:
+    post:
+      summary: Propose selected text sections as an authenticated agent
+      description: >-
+        Requires current author permission and a server-owned agent principal. Humans
+        cannot submit this command. At most one immutable suggestion per request; proposals
+        may contain only requested section names. This records text separately without
+        changing the Change or granting review/execution authority. Requires the exact
+        request digest and explicit idempotency key. Accepts no query parameters.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/CollectionID'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CollectionKey'
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SuggestionInput'}}}}
+      responses:
+        '201': {description: Retained shared assistance facts, content: {application/json: {schema: {$ref: '#/components/schemas/DesignAssistance'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '409': {description: 'Changed idempotency input or conflicting request, suggestion, revision or historical content (idempotency_conflict or revision_conflict)', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/design-assistance/{id}/application:
+    post:
+      summary: Apply selected proposed sections as the original requesting human
+      description: >-
+        Requires current author permission and the original human requester. Agents and
+        other humans cannot apply. Captures exact request/suggestion digests and original
+        Change revision/digest. The current Change must still match that base; no rebasing.
+        At most one application creates an ordinary unapproved revision attributed to the
+        requester, preserving every unselected value and omission. Existing independent
+        approval rules still exclude this revision author. Unchanged or exact historical
+        content is a bounded conflict. The final merged revision command envelope, including
+        its newline, cannot exceed 1 MiB. Authorization, revision, facts, key and audit commit
+        atomically. Accepts no query parameters.
+      security: [{BearerAuth: []}, {BrowserCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/CollectionID'
+        - $ref: '#/components/parameters/CollectionWorkspace'
+        - $ref: '#/components/parameters/CollectionRepository'
+        - $ref: '#/components/parameters/CSRF'
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CollectionKey'
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ApplySuggestionInput'}}}}
+      responses:
+        '201': {description: Retained shared assistance facts, content: {application/json: {schema: {$ref: '#/components/schemas/DesignAssistance'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '409': {description: 'Changed idempotency input or conflicting request, suggestion, revision or historical content (idempotency_conflict or revision_conflict)', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /api/v1/context-collections:
     post:
       summary: Persist one explicit remote context collection request
@@ -1603,6 +1736,105 @@ components:
       description: Maximum number of entries in one page
       schema: {type: integer, minimum: 1, maximum: 100, default: 20}
   schemas:
+    DesignSection:
+      type: string
+      enum: [title, intent, scope, design, tasks, verification]
+    DesignSectionSelection:
+      type: array
+      minItems: 1
+      maxItems: 6
+      uniqueItems: true
+      items: {$ref: '#/components/schemas/DesignSection'}
+    AssistanceInput:
+      type: object
+      additionalProperties: false
+      required: [changeId, expectedRevision, expectedDigest, instruction, sections]
+      properties:
+        changeId: {type: string, minLength: 1, maxLength: 128, description: Existing saved Change ID; ownership is resolved on the server}
+        expectedRevision: {type: integer, format: int64, minimum: 1}
+        expectedDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        instruction: {type: string, minLength: 1, maxLength: 4096, description: Nonblank UTF-8 text; at most 4096 bytes; NUL is rejected}
+        sections: {$ref: '#/components/schemas/DesignSectionSelection'}
+    SuggestedSections:
+      type: object
+      minProperties: 1
+      maxProperties: 6
+      propertyNames: {$ref: '#/components/schemas/DesignSection'}
+      additionalProperties: {type: string, maxLength: 32768, description: At most 32768 UTF-8 bytes; NUL rejected; empty string explicitly sets an empty string}
+    SuggestionInput:
+      type: object
+      additionalProperties: false
+      required: [requestDigest, sections]
+      description: Only requested names may be proposed; canonical encoded input at most 128 KiB. No deletion or structured value coercion.
+      properties:
+        requestDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        sections: {$ref: '#/components/schemas/SuggestedSections'}
+        note: {type: string, maxLength: 4096, description: Optional unverified explanation; at most 4096 UTF-8 bytes; null and NUL rejected}
+    ApplySuggestionInput:
+      type: object
+      additionalProperties: false
+      required: [requestDigest, suggestionDigest, expectedRevision, expectedDigest, sections]
+      properties:
+        requestDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        suggestionDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        expectedRevision: {type: integer, format: int64, minimum: 1}
+        expectedDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        sections: {$ref: '#/components/schemas/DesignSectionSelection'}
+    DesignAssistance:
+      type: object
+      additionalProperties: false
+      required: [id, workspaceId, repositoryId, requesterId, createdAt, digest, input, base]
+      properties:
+        id: {type: string, pattern: '^[a-f0-9]{32}$'}
+        workspaceId: {type: string}
+        repositoryId: {type: string}
+        requesterId: {type: string}
+        createdAt: {type: string, format: date-time}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$', description: Deterministic digest of the immutable request with empty digest and absent optional suggestion/application facts}
+        input: {$ref: '#/components/schemas/AssistanceInput'}
+        base: {$ref: '#/components/schemas/Revision'}
+        suggestion: {$ref: '#/components/schemas/AssistanceSuggestion'}
+        application: {$ref: '#/components/schemas/AssistanceApplication'}
+    AssistanceSuggestion:
+      type: object
+      additionalProperties: false
+      required: [digest, agentId, createdAt, sections]
+      properties:
+        digest: {type: string, pattern: '^[a-f0-9]{64}$', description: Digest binds this fact to the immutable request digest}
+        agentId: {type: string, description: Server-owned proposing agent principal; no provider or model provenance claim}
+        createdAt: {type: string, format: date-time}
+        sections: {$ref: '#/components/schemas/SuggestedSections'}
+        note: {type: string, maxLength: 4096}
+    AssistanceApplication:
+      type: object
+      additionalProperties: false
+      required: [digest, appliedBy, createdAt, revision, revisionDigest, sections]
+      properties:
+        digest: {type: string, pattern: '^[a-f0-9]{64}$', description: Digest binds this fact to the immutable request and suggestion digests}
+        appliedBy: {type: string, description: Original requesting human; also the produced revision author}
+        createdAt: {type: string, format: date-time}
+        revision: {type: integer, format: int64, minimum: 1, description: Produced historical revision; not a claim about the current revision}
+        revisionDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        sections: {$ref: '#/components/schemas/DesignSectionSelection'}
+    AssistanceSummary:
+      type: object
+      additionalProperties: false
+      required: [id, requesterId, createdAt, digest, input, hasSuggestion]
+      properties:
+        id: {type: string, pattern: '^[a-f0-9]{32}$'}
+        requesterId: {type: string}
+        createdAt: {type: string, format: date-time}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        input: {$ref: '#/components/schemas/AssistanceInput'}
+        hasSuggestion: {type: boolean}
+        appliedRevision: {type: integer, format: int64, minimum: 1}
+    AssistancePage:
+      type: object
+      additionalProperties: false
+      required: [requests]
+      properties:
+        requests: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/AssistanceSummary'}}
+        nextBefore: {type: string, maxLength: 1024}
     CollectionInput:
       type: object
       additionalProperties: false

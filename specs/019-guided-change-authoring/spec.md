@@ -106,3 +106,10 @@ Existing coding adapters and MCP retain their independently documented limits.
 
 See the [delivery plan](plan.md) and
 [authoring walkthrough](../../docs/operations/change-authoring.md).
+
+[Feature 020](../020-native-design-assistance/spec.md) extends guided authoring with
+shared native-assistant section suggestions, a restricted assistance MCP profile,
+and explicit requester application as an ordinary unapproved revision. It also
+adopts the Switch visual specification across the web and ASCII terminal header.
+Provider accounts remain native; hosted inference and broad source selection are
+not implemented by this increment.

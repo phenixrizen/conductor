@@ -50,11 +50,24 @@ Remote API URLs require HTTPS; literal loopback or localhost HTTP is supported
 only for the existing development profile. Context requests additionally require
 [durable collection enablement](durable-context.md).
 
+## Focused native Design assistance
+
+`CONDUCTOR_MCP_PROFILE=design-assistance` exposes only access, assistance request
+listing/inspection and section proposal. It registers no resources or unrelated
+commands. Omit the variable for the full existing bridge plus the assistance tools;
+unknown profile names fail startup. The profile stays fixed until exit. Use
+`conductor assistant-config` to generate native Codex, Claude Code or Antigravity
+configuration and `--check` to verify actual Conductor MCP agent access. See the
+[native assistance runbook](native-design-assistance.md) for the complete human
+request, agent proposal and selected-section application workflow.
+
 ## Tools and resources
 
 | Intent | MCP tool |
 |---|---|
 | Check fixed scope and current capabilities | `conductor_access` |
+| Discover and inspect requests for Design help | `conductor_list_design_assistance`, `conductor_get_design_assistance` |
+| Propose requested text sections without editing the Change | `conductor_propose_design_sections` |
 | Discover packages | `conductor_list_packages` |
 | Inspect current package | `conductor_get_package` |
 | Inspect history, historical content, audit | `conductor_package_history`, `conductor_get_revision`, `conductor_package_events` |

@@ -62,7 +62,16 @@ type Bridge struct {
 	slots                          chan struct{}
 }
 
-func New(api API) (*Bridge, error) {
+const DesignAssistanceProfile = "design-assistance"
+
+func New(api API) (*Bridge, error) { return NewWithProfile(api, "") }
+
+// NewWithProfile selects a fixed tool surface for the lifetime of this bridge.
+// It cannot widen the API principal's repository grants.
+func NewWithProfile(api API, profile string) (*Bridge, error) {
+	if profile != "" && profile != DesignAssistanceProfile {
+		return nil, errors.New("unsupported CONDUCTOR_MCP_PROFILE")
+	}
 	if api == nil {
 		return nil, errors.New("authenticated scoped API client is required")
 	}
@@ -75,13 +84,19 @@ func New(api API) (*Bridge, error) {
 		Instructions: "Use the fixed authenticated workspace and repository. Inspect exact revisions and receipt digests before version-checked commands. No approval tool is exposed. Never automatically retry an uncertain command. " + dataNotice,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)), PageSize: 50, Capabilities: &mcp.ServerCapabilities{},
 	})
-	b.registerTools()
-	b.registerResources()
-	b.registerGraphs()
-	b.registerCoordination()
-	b.registerDeliveries()
-	b.registerTracker()
-	b.registerRuntimeEvidence()
+	b.registerAccess()
+	if profile == "" {
+		b.registerTools()
+		b.registerResources()
+		b.registerGraphs()
+		b.registerCoordination()
+		b.registerDeliveries()
+		b.registerTracker()
+		b.registerRuntimeEvidence()
+	} else if _, ok := api.(designAssistanceAPI); !ok {
+		return nil, errors.New("API client does not support Design assistance")
+	}
+	b.registerDesignAssistance()
 	b.server.AddReceivingMiddleware(b.middleware)
 	return b, nil
 }
@@ -205,7 +220,7 @@ func publicError(err error, mutation bool) error {
 		case http.StatusNotFound:
 			return errors.New("not_found: the requested record is unavailable in this scope")
 		case http.StatusConflict:
-			return errors.New("conflict: explicitly inspect the latest package and applicable receipt before another command; retain the original key and input for a collection retry")
+			return errors.New("conflict: explicitly inspect the latest package and applicable receipt before another command; retain the original key and input for a keyed request retry")
 		case http.StatusBadRequest, http.StatusUnprocessableEntity:
 			return errors.New("invalid_input: the API rejected these command inputs")
 		}
@@ -217,7 +232,7 @@ func publicError(err error, mutation bool) error {
 		return errors.New("invalid_input: arguments do not match the bounded tool schema")
 	}
 	if mutation {
-		return errors.New("outcome_unknown: the command may have committed; do not automatically retry; inspect retained facts, or explicitly retry a keyed collection, graph or plan proposal with exactly the same key and input")
+		return errors.New("outcome_unknown: the command may have committed; do not automatically retry; inspect retained facts, or explicitly retry a keyed collection, graph, plan or Design suggestion with exactly the same key and input")
 	}
 	return errors.New("unavailable: Conductor could not provide the requested data; no passing evidence was established")
 }

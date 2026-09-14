@@ -28,6 +28,7 @@ connects each capability to its specification, setup and tested limits.
 | Workflow | Implemented behavior |
 |---|---|
 | Shared design review | Create and edit a Change with readable browser or terminal forms, request review and independently approve an immutable revision; inspect history, comparisons and audit records |
+| Assisted Design drafting | Ask a native assistant for selected section suggestions, compare the proposal and apply it as a new revision; generate Codex, Claude Code or Antigravity MCP connection configuration |
 | Repository context | Capture selected files or bounded whole-repository source at an exact Git commit; share receipts and expose missing, stale or unavailable source |
 | Cross-repository understanding | Build shared dependency and symbol graphs with the selected CodeGraph Rust extractor; read exact retained source from related authorized repositories |
 | Coordinated agents | Propose dependent tasks, inspect source/design/profile pins, obtain separate human execution authorization, run independent work concurrently, and recover interrupted work |
@@ -43,6 +44,13 @@ graph, Agent work, Delivery, Tracker and Runtime. The browser, Go CLI, Bubble Te
 terminal and MCP bridge use the same API and authorization rules. Human review perspectives help organize the questions to ask;
 they confer no permissions. Agents may author permitted work and produce evidence,
 but cannot grant design, execution or publication approval.
+
+Use [native Design assistance](docs/operations/native-design-assistance.md) to ask
+for help on a saved Change without constructing a complete JSON document. Provider
+sign-in stays in the native assistant; Conductor retains the request and suggestion
+for explicit human application and independent review. This requires authenticated
+human and agent identities. The workbench follows the [Switch design language](docs/design/brand.md),
+with a compact ASCII identity in the terminal.
 
 Developers and agents using the **same API and database share the same saved
 context**. Work is not private to a browser or conversation. Cross-repository reads

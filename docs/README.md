@@ -11,6 +11,11 @@ not mistaken for working capabilities.
 |---|---|
 | [System architecture](architecture/system.md) | Implemented components, shared workflows, trust boundaries and tested limits |
 | [Create and review a Change](operations/change-authoring.md) | Readable browser and terminal authoring, separate save/review actions, and preserved legacy content |
+| [Native Design assistance](operations/native-design-assistance.md) | Configure a native assistant, request section suggestions and review/apply them in the shared workbench |
+| [Assistance architecture](architecture/native-design-assistance.md) | Immutable suggestions, requester-only application and native credential boundaries |
+| [Assistance specification](../specs/020-native-design-assistance/spec.md) | Exact section operations, idempotency and shared client behavior |
+| [Native host qualification](research/native-assistant-connections.md) | Current primary sources, version evidence and provider limits |
+| [Switch design language](design/brand.md) | Supplied logo, adopted web tokens and responsive ASCII terminal identity |
 | [Guided authoring specification](../specs/019-guided-change-authoring/spec.md) | First usability increment: Change/Design labels, exact commands and bounded discovery summaries |
 | [Release operations](operations/release.md) | Build reproducible archives, configure services, migrate, back up and restore shared data |
 | [Full release contract](full-release.md) | Required complete-platform capabilities, evidence gates, and stacked PR order |

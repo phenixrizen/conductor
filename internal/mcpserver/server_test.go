@@ -73,6 +73,9 @@ func (f *apiFixture) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func newTestBridge(t *testing.T) (*Bridge, *mcp.ClientSession, *apiFixture) {
+	return newTestBridgeProfile(t, "")
+}
+func newTestBridgeProfile(t *testing.T, profile string) (*Bridge, *mcp.ClientSession, *apiFixture) {
 	t.Helper()
 	f := &apiFixture{block: make(chan struct{}), cancelled: make(chan struct{})}
 	server := httptest.NewServer(http.HandlerFunc(f.handler))
@@ -81,7 +84,7 @@ func newTestBridge(t *testing.T) (*Bridge, *mcp.ClientSession, *apiFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bridge, err := New(api)
+	bridge, err := NewWithProfile(api, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +124,7 @@ func TestToolsStrictSchemasAndExactMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 39 || list.CacheScope != "private" || list.TTLMs != 0 {
+	if len(list.Tools) != 42 || list.CacheScope != "private" || list.TTLMs != 0 {
 		t.Fatalf("tool catalog: %d %+v", len(list.Tools), list.Cacheable)
 	}
 	for _, tool := range list.Tools {

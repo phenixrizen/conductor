@@ -18,6 +18,8 @@ func (m model) View() string {
 		body = []string{"Review requires confirmed server access.", "r checks access; q exits. Credentials and scope stay fixed until exit."}
 	} else if m.collectionMode {
 		body = m.collectionBody(bodyHeight)
+	} else if m.assistanceMode {
+		body = m.assistanceBody(bodyHeight)
 	} else if m.pack != nil || m.draft != nil || m.editor != nil {
 		end := min(len(m.lines), m.offset+bodyHeight)
 		body = m.lines[min(m.offset, end):end]
@@ -64,6 +66,9 @@ func (m model) tooSmall() bool {
 }
 
 func (m model) footer() []string {
+	if m.assistanceMode && m.access.ready {
+		return m.assistanceFooter()
+	}
 	if m.collectionMode && m.access.ready {
 		return m.collectionFooter()
 	}
@@ -110,6 +115,9 @@ func (m model) footer() []string {
 		help = "g collections | " + help
 	}
 	last := "i import JSON | J full JSON | Missing evidence is not passing."
+	if m.pack != nil && m.draft == nil {
+		last = "h assistance | " + last
+	}
 	if m.rawJSON {
 		last = "J readable design | Full recorded JSON; missing evidence is not passing."
 	}
@@ -140,6 +148,10 @@ func (m model) footer() []string {
 func (m *model) rebuild() {
 	m.lines = nil
 	var value any
+	if m.assistanceMode {
+		m.rebuildAssistance()
+		return
+	}
 	if m.collectionMode {
 		m.rebuildCollection()
 		return

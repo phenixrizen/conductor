@@ -91,3 +91,10 @@ signed issuer and an explicit local-mode API. See the
 The terminal tests use real Linux PTYs and Python 3. These checks exercise shared
 creation, review, independent approval, editing, retained fields and recovery;
 they do not call paid coding providers or grant deployment approval.
+
+## Native assistant help
+
+On a saved authenticated Change, the browser's Design assistance panel and terminal
+`h` control offer section-level help from a natively connected Codex, Claude Code
+or Antigravity. Review and apply selected proposals without writing complete JSON.
+See [native assistance setup and recovery](native-design-assistance.md).
