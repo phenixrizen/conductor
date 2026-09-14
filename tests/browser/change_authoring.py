@@ -39,6 +39,28 @@ with sync_playwright() as p:
         expect(page.get_by_role("button", name="Inspect latest revision", exact=True)).to_be_enabled()
     def button(page, name):
         return page.get_by_role("button", name=name, exact=True)
+    def create_change(page, base_url):
+        endpoint = base_url + "/api/v1/changes"
+        saved = []
+        def capture(route):
+            assert route.request.method == "POST"
+            # Read the actual server response before delivering it unchanged;
+            # Chromium's separate DevTools body copy can be unavailable in CI.
+            response = route.fetch(max_retries=0, max_redirects=0)
+            assert response.status == 201, response.text()
+            value = response.json()
+            assert route.request.post_data_json == {"content": value["revision"]["content"]}
+            saved.append(value)
+            route.fulfill(response=response)
+        page.route(endpoint, capture)
+        try:
+            button(page, "Create change").click()
+            expect(page.get_by_role("heading", name="Revision 1", exact=True)).to_be_visible()
+            assert len(saved) == 1, saved
+            expect(page.get_by_label("Change ID", exact=True)).to_have_value(saved[0]["id"])
+            return saved[0]
+        finally:
+            page.unroute(endpoint, capture)
     page = login("author")
     button(page, "New change").click()
     button(page, "Preview design").click()
@@ -61,10 +83,7 @@ with sync_playwright() as p:
     button(page, "Preview design").click()
     commands = []
     page.on("request", lambda req: commands.append((req.method, req.url, req.post_data)) if "/api/" in req.url else None)
-    with page.expect_response(lambda response: response.url == origin + "/api/v1/changes" and response.request.method == "POST") as saved:
-        button(page, "Create change").click()
-    created = saved.value.json(); change = created["id"]; path = "/changes/" + change
-    expect(page.get_by_role("heading", name="Revision 1", exact=True)).to_be_visible()
+    created = create_change(page, origin); change = created["id"]; path = "/changes/" + change
     assert created["revision"]["content"] == {"title": "Synthetic readable change", "intent": "Let an engineer start a reviewed change without writing JSON.", "design": "Keep shared immutable revisions and exact approval."}
     assert [entry[0] for entry in commands] == ["POST"], commands
     expect(page.locator(".content .package-prose").first).to_have_text("Synthetic readable change")
@@ -179,10 +198,16 @@ with sync_playwright() as p:
     # inspection enables deliberate abandonment, without pretending absence proves failure.
     held_discovery = []
     def hold_discovery(route):
-        held_discovery.append((route, route.fetch()))
+        response = route.fetch(max_retries=0, max_redirects=0)
+        assert response.status == 200, response.text()
+        held_discovery.append((route, response))
+        page.evaluate("window.authoringDiscoveryCaptured = true")
     page.route(origin + "/api/v1/changes?*", hold_discovery)
     button(page, "Browse shared work").click()
     expect(button(page, "Browse shared work")).to_be_disabled()
+    # Retain the earlier server read before starting the creation. A disabled
+    # button alone does not establish that the intercepted read has finished.
+    page.wait_for_function("window.authoringDiscoveryCaptured === true")
     button(page, "New change").click()
     page.get_by_label("Change title", exact=True).fill("First private change")
     page.get_by_label("Intended outcome", exact=True).fill("Recover a request that failed before reaching the server")
@@ -228,10 +253,7 @@ with sync_playwright() as p:
     local.get_by_label("Intended outcome", exact=True).fill("  Preserve author content whitespace  ")
     local.get_by_label("Design", exact=True).fill("<script>window.unsafeDesign = true</script> \u202e")
     button(local, "Preview design").click()
-    with local.expect_response(lambda response: response.url == local_origin + "/api/v1/changes" and response.request.method == "POST") as local_saved:
-        button(local, "Create change").click()
-    local_record = local_saved.value.json()
-    expect(local.get_by_role("heading", name="Revision 1", exact=True)).to_be_visible()
+    local_record = create_change(local, local_origin)
     assert local_record["revision"]["content"]["design"] == "<script>window.unsafeDesign = true</script> \u202e"
     expect(local.locator(".content")).to_contain_text("\\u202e")
     assert local.evaluate("window.unsafeDesign === undefined")
