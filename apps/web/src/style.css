@@ -230,3 +230,16 @@ aside .panel { margin-bottom: 1rem; padding: 1.2rem; }
   .workbench-shell .perspective { display: grid; gap: .5rem; }
   .workbench-shell .perspective label { max-width: none; }
 }
+
+.change-start { margin-bottom: 1rem; }
+.change-start h2, .package-editor h2 { margin: 0 0 .6rem; font-size: 1.7rem; }
+.change-start p { margin-bottom: 0; }
+.package-editor { margin-bottom: 1.5rem; }
+.package-fields { display: grid; gap: 1.1rem; margin: 1.3rem 0; }
+.package-editor button, .design-actions button { margin: .7rem .7rem 0 0; }
+.package-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+.package-content section { margin: 1rem 0; }
+.package-content h4 { margin: 0 0 .4rem; }
+.design-actions { margin-top: 1.6rem; padding-top: 1.5rem; border-top: 1px solid #d5ded0; }
+.change-title { margin: 1.3rem 0 .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.review .design-actions { margin: 1.2rem 0; padding: 1rem; background: #f3f5ef; border: 1px solid #d5ded0; }

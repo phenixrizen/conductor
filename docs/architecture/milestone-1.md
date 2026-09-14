@@ -20,6 +20,15 @@ shared review. [Feature 005](../../specs/005-authenticated-terminal/spec.md) add
 authenticated terminal review with a fixed credential and scope, server-provided
 capabilities, and explicit recovery after access failure.
 
+[Feature 019](../../specs/019-guided-change-authoring/spec.md) adds readable browser
+and terminal authoring on those same commands. The interface calls the existing
+work package a **Change** and its reviewable content a **Design**. Guided text fields
+preserve unknown or nonstring structured content and leave untouched missing keys
+absent. Saving a draft and requesting review are separate actions. Shared discovery
+projects optional title and intent strings from the latest authorized revision,
+bounded to 200 and 400 Unicode code points with explicit truncation flags. The
+projection does not alter revision serialization, digests or pagination authority.
+
 [Feature 006](../../specs/006-durable-context/spec.md) adds an opt-in remote context
 collection workflow to the API, CLI, browser and authenticated terminal. Its
 implementation includes scoped requests, PostgreSQL outbox delivery, a trusted

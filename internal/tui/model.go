@@ -25,16 +25,22 @@ type model struct {
 	width, height, selected, offset int
 	page                            domain.ChangePage
 	// Cursors are bounded to visited pages; the server owns opaque cursor meaning.
-	cursors        []string
-	pageIndex      int
-	pack           *domain.Package
-	draft          domain.Content
-	draftOp        string
-	lines          []string
-	prompt, input  string
-	pending        request
-	collectionMode bool
-	collections    collectionState
+	cursors         []string
+	pageIndex       int
+	pack            *domain.Package
+	draft           domain.Content
+	draftOp         string
+	draftGuided     bool
+	editor          *designEditor
+	rawJSON         bool
+	recovery        *designRecovery
+	activeDraft     *designRecovery
+	recoveryPreview bool
+	lines           []string
+	prompt, input   string
+	pending         request
+	collectionMode  bool
+	collections     collectionState
 }
 
 func newModel(options Options, execute executor) model {
@@ -79,12 +85,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = ""
 		if msg.err != nil {
 			if m.access.authenticated && (msg.op == "access" || accessDenied(msg.err) || errors.Is(msg.err, errResponseScope)) {
+				retained := m.recovery
 				if isCollectionOperation(msg.op) || msg.collectionView {
 					m.collections.inspectID = msg.id
 				} else {
 					m.inspectID = msg.id
 				}
 				m.invalidateAccess()
+				if msg.op == "access" && !accessDenied(msg.err) && !errors.Is(msg.err, errResponseScope) {
+					// A failed transport cannot establish a new identity. Keep the
+					// recovery input hidden until the same principal is verified.
+					m.recovery = retained
+				}
 				m.status = "Access unavailable: press r to recheck access and inspect shared state. " + msg.err.Error()
 				return m, nil
 			}
@@ -93,6 +105,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.collectionResult(msg)
 			}
 			if isMutation(msg.op) {
+				if m.activeDraft != nil {
+					m.recovery = m.activeDraft
+					m.activeDraft = nil
+				}
 				m.blocked = true
 				var apiErr *client.APIError
 				if errors.As(msg.err, &apiErr) && apiErr.StatusCode == 409 {
@@ -131,12 +147,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "list":
 			m.page, m.selected = msg.page, 0
 			m.pack, m.draft = nil, nil
+			m.editor, m.rawJSON = nil, false
+			m.draftGuided = false
+			m.recoveryPreview = false
 			m.blocked = false
 			m.inspectID = ""
 			m.status = "Shared work loaded. Repository labels are discovery filters only."
 		case "collections", "collection", "collection-file", "collect", "cancel-collection":
 			return m.collectionResult(msg)
 		case "file":
+			m.editor, m.rawJSON = nil, false
+			m.draftGuided = false
+			m.recoveryPreview = false
 			m.draft = msg.content
 			if m.draftOp == "create" {
 				m.pack = nil
@@ -144,6 +166,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "File loaded for preview. This is the complete replacement content; s confirms saving."
 		default:
 			m.pack = &msg.pack
+			m.editor, m.rawJSON = nil, false
+			m.draftGuided = false
+			m.recoveryPreview = false
+			if msg.op == "create" || msg.op == "revise" {
+				m.recovery, m.activeDraft = nil, nil
+			}
 			if msg.op == "attach" {
 				m.collectionMode = false
 			}
@@ -157,10 +185,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = msg.op + " recorded. Inspect the returned revision before another action."
 			}
 		}
+		if m.recovery != nil && (msg.op == "list" || msg.op == "open") {
+			m.status = "Saved work loaded. Inspect it, then v compares retained design input; no write was retried."
+		}
 		m.offset = 0
 		m.rebuild()
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || (msg.String() == "q" && m.prompt == "") {
+		if msg.Type == tea.KeyCtrlC || (msg.String() == "q" && m.prompt == "" && m.editor == nil) {
 			if m.cancel != nil {
 				m.cancel()
 			}
@@ -174,6 +205,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if isCollectionOperation(m.busy) {
 					m.collectionCancelled(m.busy)
 				} else if isMutation(m.busy) {
+					if m.activeDraft != nil {
+						m.recovery = m.activeDraft
+						m.activeDraft = nil
+					}
 					m.blocked = true
 					m.status = "Write cancelled; outcome unknown. Press r to inspect shared state before another write."
 				} else {
@@ -197,6 +232,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.recheckAccess(m.inspectID)
 			}
 			return m, nil
+		}
+		if m.editor != nil {
+			return m.designKey(msg)
 		}
 		if msg.String() == "g" {
 			if !m.access.authenticated {
@@ -223,7 +261,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			m.prompt, m.input = "open", ""
 		case "c":
-			if err := m.actionAllowed("create"); err != nil {
+			return m.beginDesign("create")
+		case "e":
+			return m.beginDesign("revise")
+		case "i":
+			op := "create"
+			if m.pack != nil {
+				op = "revise"
+			}
+			if err := m.actionAllowed(op); err != nil {
 				m.status = "Action blocked: " + err.Error()
 				break
 			}
@@ -235,17 +281,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Blocked: refresh shared state with r before another write."
 				break
 			}
-			m.prompt, m.input, m.draftOp = "file", m.options.File, "create"
-		case "e":
-			if err := m.actionAllowed("revise"); err != nil {
-				m.status = "Action blocked: " + err.Error()
-				break
-			}
-			if m.pack == nil || m.draft != nil || m.blocked {
-				m.status = "Open and inspect a latest revision before revising."
-				break
-			}
-			m.prompt, m.input, m.draftOp = "file", m.options.File, "revise"
+			m.prompt, m.input, m.draftOp = "file", m.options.File, op
+		case "J":
+			m.rawJSON = !m.rawJSON
+			m.offset = 0
+			m.rebuild()
+		case "v":
+			return m.recoverDesign()
 		case "b":
 			return m.list(0)
 		case "r":
@@ -263,6 +305,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.draft != nil {
 				return m.confirm(m.draftOp)
+			}
+			m.status = "No draft preview to save. e edits the design; u submits a saved revision."
+		case "u":
+			if m.blocked {
+				m.status = "Blocked: refresh and inspect with r before another write."
+				break
+			}
+			if m.draft != nil {
+				m.status = "Save or discard the preview before submitting a saved revision."
+				break
 			}
 			if m.pack == nil {
 				break
@@ -292,6 +344,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if m.draft != nil {
 				m.draft = nil
+				m.draftGuided = false
+				m.recoveryPreview = false
 				m.offset = 0
 				m.rebuild()
 				m.status = "Draft preview discarded; no write sent."
@@ -388,6 +442,10 @@ func (m model) start(req request) (tea.Model, tea.Cmd) {
 	m.serial++
 	req.serial = m.serial
 	m.busy = req.op
+	m.activeDraft = nil
+	if req.op == "create" || req.op == "revise" {
+		m.activeDraft = &designRecovery{content: req.content, op: req.op, id: req.id, revision: req.revision, digest: req.digest, guided: m.draftGuided}
+	}
 	m.prompt, m.input = "", ""
 	m.pending = request{}
 	cmd, cancel := m.execute(req)
@@ -410,6 +468,24 @@ func (m model) confirm(op string) (tea.Model, tea.Cmd) {
 	if err := m.actionAllowed(op); err != nil {
 		m.status = "Action blocked: " + err.Error()
 		return m, nil
+	}
+	if op == "create" || op == "revise" {
+		revision := int64(0)
+		if op == "revise" {
+			revision = m.pack.Revision.Number
+		}
+		if err := boundedDesign(m.draft, revision); err != nil {
+			m.status = "Cannot save: " + err.Error() + ". e edits the retained preview."
+			return m, nil
+		}
+		if op == "revise" {
+			digest, _ := domain.Digest(m.draft)
+			current, _ := domain.Digest(m.pack.Revision.Content)
+			if digest == current {
+				m.status = "This design is already saved; no changes to save. e edits the preview."
+				return m, nil
+			}
+		}
 	}
 	m.pending = request{op: op, content: m.draft, accessGeneration: m.access.generation}
 	if m.pack != nil {
@@ -518,7 +594,7 @@ func (m model) header() []string {
 	if m.pack != nil && (!m.collectionMode || m.prompt == "attach" || m.busy == "attach") {
 		p := m.pack
 		revisionLabel, digestLabel, stateLabel, authorLabel := "revision", "Digest", "State", "author"
-		if m.draft != nil {
+		if m.draft != nil || m.editor != nil {
 			revisionLabel, digestLabel = "base revision", "Base digest"
 			stateLabel, authorLabel = "Base state", "base author"
 		}
@@ -533,8 +609,25 @@ func (m model) header() []string {
 		}
 		lines = append(lines, wrap(stateLabel+": "+state+" | "+authorLabel+": "+safe(p.Revision.Author), m.width)...)
 	}
-	if m.draft != nil {
-		lines = append(lines, wrap("PREVIEW: "+m.draftOp+" complete JSON replacement (not saved)", m.width)...)
+	if m.draft != nil && m.editor == nil {
+		lines = append(lines, wrap("PREVIEW: "+m.draftOp+" design (not saved)", m.width)...)
+	}
+	if m.editor != nil {
+		label := "New Change"
+		if m.draftOp == "revise" {
+			label = "Edit Design"
+		}
+		lines = append(lines, wrap("FORM: "+label+" (not saved)", m.width)...)
+	}
+	if m.recoveryPreview && m.recovery != nil {
+		label := "RECOVERED INPUT: complete replacement; no automatic merge."
+		if m.recovery.op == "revise" {
+			label += fmt.Sprintf(" Previous attempt used revision %d.", m.recovery.revision)
+			lines = append(lines, wrap(label, m.width)...)
+			lines = append(lines, wrap("Previous digest: "+safe(m.recovery.digest), m.width)...)
+		} else {
+			lines = append(lines, wrap(label+" Previous create may have committed.", m.width)...)
+		}
 	}
 	if m.collectionMode {
 		lines = append(lines, m.collectionHeader()...)

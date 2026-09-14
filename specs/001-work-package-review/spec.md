@@ -42,13 +42,15 @@ one. Persona selectors and token role claims confer no rights.
 The Bubble Tea interface uses the shared Go API client and the same domain commands
 as the web and CLI. It must support one complete local-development review loop:
 
-1. Create a package from an explicitly selected JSON file, discover shared packages,
+1. Create a Change using readable fields or an explicitly selected advanced JSON
+   import, discover shared Changes,
    and inspect the current package's complete content, revision, and digest.
 2. Submit the displayed current revision. An independent reviewer can confirm an
    approval bound to the displayed revision and digest without a refresh request
    inside that action.
-3. Revise from an explicitly selected JSON file using the displayed expected
-   revision. Unknown structured fields in that file survive the command.
+3. Revise using readable fields or an explicitly selected advanced JSON import,
+   with the displayed expected revision. Guided edits preserve unknown/nonstring
+   fields and untouched absent keys. Imports preview a complete replacement.
 4. A conflict or uncertain mutation outcome disables further mutations until the
    user explicitly inspects the latest revision. Never retry an approval silently.
 5. Keep any historical inspection read-only. Historical approvals are records, not
@@ -75,6 +77,10 @@ opt-in reports a skip; missing dependencies after opt-in report a failure.
 The package captures intent, design, context, scope, tasks, verification, and
 authority as structured JSON. Unknown fields are retained exactly, allowing later
 schema evolution without lossy UI round trips.
+
+[Feature 019](../019-guided-change-authoring/spec.md) defines guided browser and
+terminal authoring, separate save and submission actions, and bounded title/intent
+discovery summaries. Its Change/Design labels retain this existing domain model.
 
 ## Non-goals
 

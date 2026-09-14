@@ -10,16 +10,27 @@ import (
 	"unicode/utf8"
 )
 
+// Discovery previews count Unicode code points, not bytes. Complete content and
+// its digest remain on the immutable revision; previews cannot replace inspection.
+const (
+	MaxChangeSummaryTitleRunes  = 200
+	MaxChangeSummaryIntentRunes = 400
+)
+
 type ChangeSummary struct {
-	WorkspaceID  string    `json:"workspaceId,omitempty"`
-	RepositoryID string    `json:"repositoryId,omitempty"`
-	ID           string    `json:"id"`
-	Revision     int64     `json:"revision"`
-	Digest       string    `json:"digest"`
-	Author       string    `json:"author"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Approved     bool      `json:"approved"`
-	Repository   string    `json:"repository,omitempty"`
+	WorkspaceID     string    `json:"workspaceId,omitempty"`
+	RepositoryID    string    `json:"repositoryId,omitempty"`
+	ID              string    `json:"id"`
+	Revision        int64     `json:"revision"`
+	Digest          string    `json:"digest"`
+	Author          string    `json:"author"`
+	CreatedAt       time.Time `json:"createdAt"`
+	Approved        bool      `json:"approved"`
+	Repository      string    `json:"repository,omitempty"`
+	Title           string    `json:"title,omitempty"`
+	TitleTruncated  bool      `json:"titleTruncated,omitempty"`
+	Intent          string    `json:"intent,omitempty"`
+	IntentTruncated bool      `json:"intentTruncated,omitempty"`
 }
 
 type ChangePage struct {

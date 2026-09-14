@@ -7,7 +7,7 @@ repository IDs and effective review permissions.
 
 | Workflow | Use it to |
 |---|---|
-| Review | Find shared packages, inspect exact revisions, compare changes and approve a design. |
+| Review | Create and edit Changes with readable fields, request review, inspect exact revisions, compare changes and approve a Design. |
 | Source & graph | Request repository context, inspect retained source and explore cross-repository relationships. |
 | Agent work | Inspect proposed task plans, authorize or cancel execution, and read complete task reports and patches. |
 | Delivery | Inspect implementation evidence and authorize a draft GitHub PR or GitLab MR. |
@@ -35,7 +35,9 @@ Changing workflows cancels browser requests and clears unsubmitted confirmations
 It does not cancel an already recorded server operation. An interrupted mutation
 remains uncertain: request inputs and idempotency keys stay available for an
 explicit identical retry, while interrupted approvals, authorizations and
-attachments require renewed inspection. Returning to a workflow does not refresh
+attachments require renewed inspection. Guided Change creation, revision and
+submission also require explicit inspection after an uncertain response; these
+commands have no idempotent retry contract. Returning to a workflow does not refresh
 or replay a command. A tracker synchronization whose response was lost is shown
 as an uncertain request with an explicit retry, rather than an open confirmation.
 

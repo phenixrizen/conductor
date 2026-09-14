@@ -87,6 +87,9 @@ func accessDenied(err error) bool {
 
 func (m *model) clearInspection() {
 	m.pack, m.draft = nil, nil
+	m.editor, m.rawJSON = nil, false
+	m.draftGuided = false
+	m.recoveryPreview = false
 	id := m.collections.inspectID
 	m.collections = collectionState{cursors: []string{""}, inspectID: id}
 	m.page = domain.ChangePage{}
@@ -107,13 +110,17 @@ func (m *model) invalidateAccess() {
 	m.access.generation++
 	m.access.ready, m.access.truncated = false, false
 	m.access.repository = domain.ManagedRepository{}
+	m.recovery, m.activeDraft = nil, nil
 	m.clearInspection()
 }
 
 func (m model) recheckAccess(id string) (tea.Model, tea.Cmd) {
+	retained := m.recovery
 	m.invalidateAccess()
+	m.recovery = retained
 	m.inspectID = id
 	if m.access.restartRequired {
+		m.recovery = nil
 		m.status = "Access unavailable: " + errPrincipalChanged.Error()
 		return m, nil
 	}

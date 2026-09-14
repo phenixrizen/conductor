@@ -1780,6 +1780,22 @@ components:
         repository:
           type: string
           description: Latest revision's repository identity when present as a nonempty string
+        title:
+          type: string
+          maxLength: 200
+          description: First 200 Unicode code points of the latest revision's top-level title string. Empty, absent and non-string fields are omitted; content is not trimmed or coerced. Inspect the revision for complete content.
+        titleTruncated:
+          type: boolean
+          const: true
+          description: Present only when the title preview omits further code points from the immutable revision
+        intent:
+          type: string
+          maxLength: 400
+          description: First 400 Unicode code points of the latest revision's top-level intent string. Empty, absent and non-string fields are omitted; content is not trimmed or coerced. Inspect the revision for complete content.
+        intentTruncated:
+          type: boolean
+          const: true
+          description: Present only when the intent preview omits further code points from the immutable revision
     ChangePage:
       type: object
       required: [changes]

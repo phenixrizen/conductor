@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/domain"
+	"github.com/phenixrizen/conductor/pkg/client"
 )
 
 type listStub struct {
@@ -17,12 +20,30 @@ type listStub struct {
 	repository, before string
 	limit, calls       int
 	err                error
+	page               domain.ChangePage
 }
 
 func (s *listStub) List(_ context.Context, repository, before string, limit int) (domain.ChangePage, error) {
 	s.repository, s.before, s.limit = repository, before, limit
 	s.calls++
+	if s.page.Changes != nil {
+		return s.page, s.err
+	}
 	return domain.ChangePage{Changes: []domain.ChangeSummary{{ID: "CHG-shared", Revision: 2, Repository: "example/repo"}}}, s.err
+}
+
+func TestSharedChangeSummaryThroughAPIClient(t *testing.T) {
+	want := domain.ChangePage{Changes: []domain.ChangeSummary{
+		{ID: "CHG-readable", Revision: 2, Digest: strings.Repeat("a", 64), Title: strings.Repeat("🧭", 200), TitleTruncated: true, Intent: strings.Repeat("界", 400), IntentTruncated: true},
+		{ID: "CHG-legacy", Revision: 1, Digest: strings.Repeat("b", 64)},
+	}}
+	s := &listStub{page: want}
+	server := httptest.NewServer(New(s))
+	defer server.Close()
+	page, err := client.New(server.URL, "developer").ListChanges(context.Background(), "", "", 20)
+	if err != nil || !reflect.DeepEqual(page, want) || s.calls != 1 {
+		t.Fatalf("summary transport lost previews or made extra reads: %+v calls=%d err=%v", page, s.calls, err)
+	}
 }
 
 func TestSharedChangeListRoutesAndQueries(t *testing.T) {

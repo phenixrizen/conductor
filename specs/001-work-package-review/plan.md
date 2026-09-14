@@ -39,6 +39,10 @@ The terminal review workflow and automated API/PostgreSQL process-restart
 acceptance now complete the local Milestone 1 scope described in the specification.
 The terminal, CLI, and browser all use the same version-checked command path.
 
+[Feature 019](../019-guided-change-authoring/spec.md) extends that path with readable
+Change/Design authoring in the browser and terminal, preserving legacy structured
+content and separating a saved draft from its review request.
+
 [Feature 003](../003-workspace-access/spec.md) now implements authenticated API/CLI
 review with verified identity, workspace membership, immutable canonical repository
 ownership, and permissions covering discovery, historical reads, and every mutation.

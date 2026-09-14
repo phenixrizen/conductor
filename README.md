@@ -8,8 +8,9 @@ bounded implementation work, inspect its evidence, and publish reviewed changes
 to GitHub or GitLab. PostgreSQL keeps the shared record; Temporal coordinates
 background work and recovery.
 
-A **work package** describes a change: its intent, design, scope, tasks, context
-and verification requirements. Every edit creates an immutable revision. An
+A **Change** (called a work package in the existing API and architecture) records
+engineering intent. Its **Design** contains the scope, approach, planned work,
+context and verification requirements. Every saved edit creates an immutable revision. An
 independent human approves the exact revision and digest they inspected. Editing
 it preserves that historical approval while requiring review of the new revision.
 Design approval, permission to execute, publication, merge, deployment and production
@@ -26,7 +27,7 @@ connects each capability to its specification, setup and tested limits.
 
 | Workflow | Implemented behavior |
 |---|---|
-| Shared design review | Create, edit, submit and independently approve immutable work packages; inspect history, comparisons and audit records |
+| Shared design review | Create and edit a Change with readable browser or terminal forms, request review and independently approve an immutable revision; inspect history, comparisons and audit records |
 | Repository context | Capture selected files or bounded whole-repository source at an exact Git commit; share receipts and expose missing, stale or unavailable source |
 | Cross-repository understanding | Build shared dependency and symbol graphs with the selected CodeGraph Rust extractor; read exact retained source from related authorized repositories |
 | Coordinated agents | Propose dependent tasks, inspect source/design/profile pins, obtain separate human execution authorization, run independent work concurrently, and recover interrupted work |
@@ -75,6 +76,8 @@ make tui
 
 The API defaults to `http://127.0.0.1:8080`; the terminal uses the local actor
 `developer`. Use `make tui ACTOR=reviewer` for an independent local review session.
+Press `c` to start a Change, fill in its title and intended outcome, and preview
+with Ctrl+S. Save with `s`; request review of the saved revision with `u`.
 Press `q` to exit the terminal and Ctrl+C in the first terminal to stop the API.
 PostgreSQL stays running with its data retained; `make db-stop` stops it without
 deleting its volume. `make help` lists the available targets.
@@ -94,7 +97,10 @@ make web-dev
 ```
 
 This installs the locked frontend dependencies and starts Vite. Open its printed
-URL. To use another API port, pass the same setting to each target, for example
+URL and choose **Review → New change** to draft and submit a Change through readable
+fields. See the [authoring walkthrough](docs/operations/change-authoring.md) for
+the browser and terminal review loop. Provider-assisted authoring is later work.
+To use another API port, pass the same setting to each target, for example
 `make run CONDUCTOR_ADDR=127.0.0.1:8081` and
 `make tui CONDUCTOR_ADDR=127.0.0.1:8081`. `CONDUCTOR_URL` selects an existing API;
 the browser proxy defaults to that URL. Use `make serve` to start only the API

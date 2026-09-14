@@ -9,7 +9,7 @@ import (
 
 func (m model) View() string {
 	if m.tooSmall() {
-		return strings.Join(fit(wrap("Conductor: enlarge terminal to at least 36 columns and enough rows for revision details. q quits; Ctrl+C always quits.", m.width), m.height, m.width), "\n")
+		return strings.Join(fit(wrap("Conductor: enlarge terminal to at least 36 columns and enough rows for revision details. Ctrl+C always quits.", m.width), m.height, m.width), "\n")
 	}
 	header := m.header()
 	bodyHeight := m.bodyHeight()
@@ -18,11 +18,11 @@ func (m model) View() string {
 		body = []string{"Review requires confirmed server access.", "r checks access; q exits. Credentials and scope stay fixed until exit."}
 	} else if m.collectionMode {
 		body = m.collectionBody(bodyHeight)
-	} else if m.pack != nil || m.draft != nil {
+	} else if m.pack != nil || m.draft != nil || m.editor != nil {
 		end := min(len(m.lines), m.offset+bodyHeight)
 		body = m.lines[min(m.offset, end):end]
 	} else if len(m.page.Changes) == 0 {
-		body = []string{"No shared packages on this page.", "c creates a package; o opens an ID."}
+		body = []string{"No shared changes on this page.", "c starts a New Change. Describe its title and intent here.", "i imports advanced JSON; o opens an ID."}
 	} else {
 		// Keep the selected row visible even when a page exceeds terminal height.
 		for i := m.selected; i < len(m.page.Changes) && len(body) < bodyHeight; i++ {
@@ -35,7 +35,22 @@ func (m model) View() string {
 			if p.Approved {
 				state = "design approved"
 			}
-			body = append(body, wrap(fmt.Sprintf("%s%s r%d | %s | %s", marker, safe(p.ID), p.Revision, state, safe(p.Repository)), m.width)...)
+			title := p.Title
+			if title == "" {
+				title = p.ID
+			}
+			if p.TitleTruncated {
+				title = "[shortened title] " + title
+			}
+			body = append(body, wrap(marker+safe(title), m.width)...)
+			body = append(body, wrap(fmt.Sprintf("  %s r%d | %s", safe(p.ID), p.Revision, state), m.width)...)
+			if p.Intent != "" {
+				label := "  "
+				if p.IntentTruncated {
+					label += "[shortened outcome] "
+				}
+				body = append(body, wrap(label+safe(p.Intent), m.width)...)
+			}
 		}
 	}
 	footer := m.footer()
@@ -56,7 +71,7 @@ func (m model) footer() []string {
 	if m.page.NextBefore == "" {
 		position += " | end"
 	}
-	if m.pack != nil || m.draft != nil {
+	if m.pack != nil || m.draft != nil || m.editor != nil {
 		position = fmt.Sprintf("Lines %d-%d/%d | arrows/PgUp/PgDn/Home/End", min(m.offset+1, len(m.lines)), min(len(m.lines), m.offset+m.bodyHeight()), len(m.lines))
 	}
 	status := m.status
@@ -64,12 +79,12 @@ func (m model) footer() []string {
 		status = "Loading " + m.busy + "... Esc cancels; a cancelled write may have committed."
 	}
 	statusLines := fit(wrap(safe(status), m.width), 2, m.width)
-	help := "enter open | o ID | c create | r refresh | n/p page | q quit"
+	help := "c New Change | Enter open | o ID | r refresh | b browse | q quit"
 	if m.pack != nil {
-		help = "e revise | s submit | a approve | r refresh | b browse | q quit"
+		help = "e Edit Design | u submit | a approve | r refresh | b browse | q quit"
 	}
 	if m.draft != nil {
-		help = "s save preview | Esc discard | r refresh | q quit"
+		help = "e edit preview | s save draft | Esc discard | r refresh | q quit"
 	}
 	if m.access.authenticated {
 		if !m.access.ready {
@@ -81,9 +96,9 @@ func (m model) footer() []string {
 			}
 			if m.actionAllowed("create") == nil {
 				if m.pack != nil {
-					help = "e revise | s submit | " + help
+					help = "e Edit Design | u submit | " + help
 				} else {
-					help = "c create | " + help
+					help = "c New Change | " + help
 				}
 			}
 			if m.pack != nil && m.actionAllowed("approve") == nil {
@@ -94,7 +109,20 @@ func (m model) footer() []string {
 	if m.access.authenticated && m.access.ready && m.prompt == "" {
 		help = "g collections | " + help
 	}
-	last := "Evidence is shown as recorded; missing is not passing."
+	last := "i import JSON | J full JSON | Missing evidence is not passing."
+	if m.rawJSON {
+		last = "J readable design | Full recorded JSON; missing evidence is not passing."
+	}
+	if m.recovery != nil {
+		last = "v recover retained design | i import JSON | J full JSON | Ctrl+C quit"
+	}
+	if m.editor != nil {
+		help = "Tab/Shift+Tab field | Enter edit | Ctrl+S preview | Esc back"
+		last = "Describe the change, outcome, scope, design, planned work and verification."
+		if m.editor.typing {
+			last = "Enter newline | arrows/Home/End cursor | Ctrl+U clear field | Ctrl+C quit"
+		}
+	}
 	if m.prompt != "" {
 		switch m.prompt {
 		case "file":
@@ -116,6 +144,10 @@ func (m *model) rebuild() {
 		m.rebuildCollection()
 		return
 	}
+	if m.editor != nil {
+		m.rebuildDesign()
+		return
+	}
 	if m.draft != nil {
 		value = m.draft
 	} else if m.pack != nil {
@@ -126,6 +158,17 @@ func (m *model) rebuild() {
 		if err != nil {
 			m.blocked = true
 			m.status = "Cannot render content; actions blocked: " + err.Error()
+		} else if !m.rawJSON {
+			content := m.draft
+			if content == nil {
+				content = m.pack.Revision.Content
+			}
+			if m.recoveryPreview && m.pack != nil {
+				m.lines = append(m.lines, "CURRENT SAVED DESIGN (inspect before replacing)")
+				m.readableContent(m.pack.Revision.Content)
+				m.lines = append(m.lines, "", "RECOVERED REPLACEMENT (s saves this complete content)")
+			}
+			m.readableContent(content)
 		} else {
 			for _, line := range strings.Split(prettyJSON(data), "\n") {
 				m.lines = append(m.lines, wrap(safe(line), m.width)...)

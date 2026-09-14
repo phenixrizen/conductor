@@ -55,6 +55,7 @@ class RecordingProxy:
 
     def __init__(self, api):
         self.requests = []
+        self.drop_next_path = None
         self.lock = threading.Lock()
         owner = self
 
@@ -100,6 +101,14 @@ class RecordingProxy:
                         data = response.read((2 << 20) + 1)
                         status = response.code
                         correlation = response.headers.get("X-Correlation-ID")
+                    with owner.lock:
+                        drop_ack = owner.drop_next_path == self.path
+                        if drop_ack:
+                            owner.drop_next_path = None
+                    if drop_ack:
+                        # The real API committed; lose only its acknowledgment.
+                        self.close_connection = True
+                        return
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(data)))
@@ -241,6 +250,120 @@ def observed_command(terminal, proxy, since, path, expected_body, status):
     }, request
 
 
+def fill_design(terminal, content):
+    """Use only visible form controls; no content file or API-assisted draft."""
+    terminal.send("c")
+    terminal.wait_text("FORM: New Change")
+    fields = ("title", "intent", "scope", "design", "tasks", "verification")
+    for index, field in enumerate(fields):
+        terminal.wait_text("Field " + str(index + 1) + "/6:")
+        terminal.send("\r" + content.get(field, "").replace("\n", "\r"))
+        terminal.settle()
+        if index < len(fields) - 1:
+            terminal.send("\t")
+    terminal.send("\x13")
+    terminal.wait_text("PREVIEW: create")
+
+
+def guided_review(binary, api, proxy, author, reviewer, terminals):
+    content = {"title": "Quick synthetic rate limit change", "intent": "Protect login\nKeep recovery available",
+               "scope": "Synthetic login only", "design": "Count bounded attempts",
+               "tasks": "Add the counter\nCheck the response", "verification": "Planned checks; unexecuted"}
+    writer = Terminal(binary, proxy.url, ["--actor", author])
+    terminals.append(writer)
+    writer.wait_text("Shared work loaded")
+    before = len(proxy.snapshot())
+    fill_design(writer, content)
+    assert len(proxy.snapshot()) == before, "form performed hidden API operations"
+    writer.send("s")
+    writer.wait_text("Type create")
+    before = len(proxy.snapshot())
+    writer.send("create\r")
+    observed_command(writer, proxy, before, "/changes", {"content": content}, 201)
+    writer.wait_text("create recorded")
+    change_id = re.search(r"ID: (CHG-[0-9a-f]+)", writer.text()).group(1)
+    path = "/changes/" + change_id
+    created = command(api, path, author)
+    assert created["revision"]["content"] == content and not created["revision"].get("submittedAt")
+    writer.send("s")
+    writer.settle()
+    assert len(proxy.snapshot()) == before + 1, "save key also submitted"
+    writer.send("u")
+    writer.wait_text("Type submit")
+    before = len(proxy.snapshot())
+    writer.send("submit\r")
+    observed_command(writer, proxy, before, path + "/review-requests", {"revision": 1}, 200)
+    reader = Terminal(binary, proxy.url, ["--actor", reviewer, change_id])
+    terminals.append(reader)
+    reader.wait_text(created["revision"]["digest"])
+    reader.wait_text(content["title"])
+    reader.send("a")
+    reader.wait_text("Type approve")
+    before = len(proxy.snapshot())
+    reader.send("approve\r")
+    observed_command(reader, proxy, before, path + "/approvals",
+                     {"revision": 1, "digest": created["revision"]["digest"]}, 201)
+    writer.send("e")
+    writer.wait_text("FORM: Edit Design")
+    writer.send("\t\r\x15Add per-account limits\x13")
+    writer.wait_text("PREVIEW: revise")
+    writer.send("s")
+    writer.wait_text("Type revise")
+    updated = {**content, "intent": "Add per-account limits"}
+    concurrent = {**content, "design": "Another engineer's design"}
+    changed = command(api, path + "/revisions", author,
+                      {"expectedRevision": 1, "content": concurrent})
+    before = len(proxy.snapshot())
+    writer.send("revise\r")
+    observed_command(writer, proxy, before, path + "/revisions",
+                     {"expectedRevision": 1, "content": updated}, 409)
+    writer.wait_text("Stale inspection")
+    writer.send("r")
+    writer.wait_text(changed["revision"]["digest"])
+    writer.settle()
+    before = len(proxy.snapshot())
+    writer.send("v")
+    writer.wait_text("RECOVERED INPUT")
+    writer.wait_text("CURRENT SAVED DESIGN")
+    assert len(proxy.snapshot()) == before, "recovering input performed a hidden request"
+    writer.send("s")
+    writer.wait_text("Type revise")
+    before = len(proxy.snapshot())
+    writer.send("revise\r")
+    observed_command(writer, proxy, before, path + "/revisions",
+                     {"expectedRevision": 2, "content": updated}, 201)
+    latest = command(api, path, author)
+    assert latest["revision"]["content"] == updated and not latest["approved"]
+    assert command(api, path + "/revisions/1", author)["approvals"], "guided edit lost historical approval"
+
+    # A real committed revision with a lost acknowledgment keeps the typed input.
+    # Explicit inspection recognizes matching saved content without replaying it.
+    writer.send("e")
+    writer.wait_text("FORM: Edit Design")
+    writer.send("\r\x15Recovered after lost acknowledgment\x13")
+    writer.wait_text("PREVIEW: revise")
+    writer.send("s")
+    writer.wait_text("Type revise")
+    committed = {**updated, "title": "Recovered after lost acknowledgment"}
+    before = len(proxy.snapshot())
+    proxy.drop_next_path = "/api/v1" + path + "/revisions"
+    writer.send("revise\r")
+    observed_command(writer, proxy, before, path + "/revisions",
+                     {"expectedRevision": 3, "content": committed}, 201)
+    writer.wait_text("Write not confirmed")
+    saved = command(api, path, author)
+    assert saved["revision"]["number"] == 4 and saved["revision"]["content"] == committed
+    writer.send("r")
+    writer.wait_text(saved["revision"]["digest"])
+    writer.settle()
+    before = len(proxy.snapshot())
+    writer.send("v")
+    writer.wait_text("Retained design matches")
+    writer.send("s")
+    writer.settle()
+    assert len(proxy.snapshot()) == before, "recovery replayed a committed revision"
+
+
 def main():
     api = os.environ.get("CONDUCTOR_API_URL", "").rstrip("/")
     binary = os.environ.get("CONDUCTOR_BIN", "")
@@ -263,13 +386,14 @@ def main():
     proxy = RecordingProxy(api)
     terminals = []
     try:
+        guided_review(binary, api, proxy, author, reviewer, terminals)
         with tempfile.TemporaryDirectory(prefix="conductor-terminal-") as directory:
             source = Path(directory) / "package.json"
             source.write_text(json.dumps(content))
             writer = Terminal(binary, proxy.url, ["--actor", author, "--file", str(source)])
             terminals.append(writer)
             writer.wait_text("Shared work loaded")
-            writer.send("c")
+            writer.send("i")
             writer.wait_text("JSON file path")
             writer.send("\r")
             writer.wait_text("PREVIEW: create")
@@ -287,7 +411,7 @@ def main():
             assert created["revision"]["content"] == content
             assert not created["approved"]
 
-            writer.send("s")
+            writer.send("u")
             writer.wait_text("Type submit")
             before = len(proxy.snapshot())
             writer.send("submit\r")
@@ -352,7 +476,7 @@ def main():
             writer.send("r")
             writer.wait_text(changed["revision"]["digest"])
             writer.settle()
-            writer.send("e")
+            writer.send("i")
             writer.settle()
             writer.send("\r")
             writer.wait_text("PREVIEW: revise")
@@ -374,7 +498,9 @@ def main():
                 terminal.send("q")
                 terminal.wait(lambda: terminal.process.poll() is not None, "terminal did not exit")
                 assert terminal.process.returncode == 0, terminal.process.returncode
-            print("PASS: terminal create, submit, exact stale approval without refresh, renewed inspection, "
+            print("PASS: guided form create/edit without JSON, separate save/submit, readable review, "
+                  "retained input after stale/lost-acknowledgment saves, "
+                  "advanced JSON import, exact stale approval without refresh, renewed inspection, "
                   "small-screen guard, independent approval, revision invalidation, and retained history")
             print("Synthetic package: " + change_id)
     finally:
