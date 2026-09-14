@@ -673,5 +673,5 @@ func (m model) header() []string {
 	if m.assistanceMode {
 		lines = append(lines, "ASSISTANCE | Native assistant inbox; no model is started here.")
 	}
-	return append(switchHeader(m.width, m.height), lines...)
+	return append(switchHeader(m.width, m.height-len(lines)-5-6), lines...)
 }

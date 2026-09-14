@@ -50,7 +50,7 @@ func (m releaseModel) releaseHeader() []string {
 		}
 		lines = append(lines, wrap(safe(label), m.width)...)
 	}
-	return append(switchHeader(m.width, m.height), lines...)
+	return append(switchHeader(m.width, m.height-len(lines)-6-6), lines...)
 }
 func (m releaseModel) small() bool   { return m.width < 50 || m.height < len(m.releaseHeader())+8 }
 func (m releaseModel) bodyRows() int { return max(1, m.height-len(m.releaseHeader())-6) }

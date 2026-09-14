@@ -259,37 +259,44 @@ func TestAssistanceResponseRejectsTamperedBaseSuggestionAndApplication(t *testin
 		})
 	}
 }
-func TestSwitchHeaderIsASCIIResponsiveAndIndependentOfWorkflowState(t *testing.T) {
+func TestSwitchHeaderPreservesInspectionSpace(t *testing.T) {
 	m := authenticatedModel(t, nil)
+	inspected := m.pack
+	m.pack = nil
+	m.width, m.height = 80, 24
 	header := strings.Join(m.header(), "\n")
-	if !strings.Contains(header, "_______ /") || !strings.Contains(header, "Engineering intent, orchestrated.") {
-		t.Fatal("Switch art missing")
+	if !strings.Contains(header, "############     ________") || !strings.Contains(header, "/_______/") || !strings.Contains(header, "Engineering intent, orchestrated.") {
+		t.Fatal("owner's block mark missing from normal browse screen")
 	}
 	for _, r := range header {
 		if r > 127 {
 			t.Fatal("brand requires non-ASCII terminal")
 		}
 	}
-	m.width, m.height = 80, 24
-	compact := strings.Join(m.header(), "\n")
-	if !strings.Contains(compact, "_______ /") || strings.Contains(compact, "/___/") || strings.Contains(compact, "//====") {
-		t.Fatal("normal terminal lost the readable C or oversized junction returned")
-	}
 	if m.bodyHeight() < 6 {
 		t.Fatal("branding left too little room for inspection")
+	}
+	m.pack = inspected
+	if strings.Contains(strings.Join(m.header(), "\n"), "/_______/") || m.bodyHeight() < 6 {
+		t.Fatal("large mark crowded out the inspected revision")
+	}
+	if !strings.Contains(strings.Join(m.header(), "\n"), inspected.Revision.Digest) {
+		t.Fatal("factual header lost its exact digest")
+	}
+	m.height = 45
+	if !strings.Contains(strings.Join(m.header(), "\n"), "/_______/") {
+		t.Fatal("large terminal lost the reference mark")
 	}
 	for _, line := range m.header() {
 		if len(line) > m.width {
 			t.Fatal("header exceeds terminal width")
 		}
 	}
-	m.width = 50
-	if switchHeader(m.width, m.height) != nil {
-		t.Fatal("art consumed narrow terminal inspection")
+	if switchHeader(80, 9) != nil || switchHeader(20, 20) != nil {
+		t.Fatal("art ignored its available row or width budget")
 	}
-	m.width, m.height = 80, 23
-	if switchHeader(m.width, m.height) != nil {
-		t.Fatal("art consumed very short terminal inspection")
+	if len(switchHeader(80, 10)) != 10 {
+		t.Fatal("complete reference does not fit its exact budget")
 	}
 }
 

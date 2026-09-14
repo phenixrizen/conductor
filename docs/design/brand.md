@@ -127,22 +127,29 @@ Smaller terminals retain a plain heading. Text statuses remain explicit. Inline
 images, truecolor, Unicode ornaments and a specific font are not prerequisites.
 This approximation does not replace the vector source of truth.
 
-At 80 columns by 24 rows, the terminal keeps the C readable and renders its
-junction as one slanted stroke. A closed ASCII parallelogram takes too many cells
-and overwhelms the routes. The name and tagline occupy separate lines:
+The TUI uses the owner's ten-line ASCII reference, preserving its block C and
+separate parallelogram:
 
 ```text
-   _______ /
-  /  ____
- |  /          Conductor
- |  \____      Engineering intent, orchestrated.
-  \______
+############     ________
+     ####         ##    /       /
+   ###    #########    /_______/
+  ##    ###
+ ##    ##
+ ##    ##
+  ##    ###
+   ###    ###########
+     ####
+        #############
 ```
 
-The same five-line mark applies from 60 columns by 24 rows. Smaller terminals use
-the plain heading. The ASCII junction is an optical approximation, not replacement
-vector artwork. Package review and release views share this static header;
-permission, approval and evidence labels retain their independent meanings.
+The name and tagline sit beside the mark when width permits. The complete mark
+appears only after space is reserved for the wrapped identity/revision facts,
+footer and at least six content rows. It fits an ordinary 80 by 24 browse screen;
+a detailed view at that height keeps the plain heading. Taller terminals show the
+full mark alongside inspected work. No squeezed replacement or cropped logo is used.
+Package review and release views share this layout rule. Branding never replaces
+permission, approval or evidence labels, and the SVG remains the vector source.
 
 ## Reproduction and validation
 
