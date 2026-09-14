@@ -95,6 +95,10 @@ export interface EventPage {
 }
 
 export interface SharedChange {
+  title?: string;
+  intent?: string;
+  titleTruncated?: boolean;
+  intentTruncated?: boolean;
   id: string;
   workspaceId?: string;
   repositoryId?: string;
@@ -233,4 +237,15 @@ export function dateLabel(value?: string): string {
   if (!value) return 'Not recorded';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Unavailable timestamp' : date.toLocaleString();
+}
+
+// Package commands use the exact inspected input; none performs a preflight read.
+export function createChange(content: Content, access: RequestAccess, signal: AbortSignal) {
+  return request<WorkPackage>('/changes', access, signal, { content });
+}
+export function reviseChange(id: string, expectedRevision: number, content: Content, access: RequestAccess, signal: AbortSignal) {
+  return request<WorkPackage>(`${changePath(id)}/revisions`, access, signal, { expectedRevision, content });
+}
+export function submitChange(id: string, revision: number, access: RequestAccess, signal: AbortSignal) {
+  return request<WorkPackage>(`${changePath(id)}/review-requests`, access, signal, { revision });
 }

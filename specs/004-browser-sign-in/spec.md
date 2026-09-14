@@ -1,6 +1,11 @@
 # Feature 004: browser sign-in and shared review
 
 **Status:** Implemented browser authentication, review, and shared context controls.
+
+[Feature 019](../019-guided-change-authoring/spec.md) adds guided Change creation,
+Design editing and separate review requests under the same session and exact
+command rules. Uncertain authoring writes require inspection, and denied access
+clears editor/preview state along with review state.
 Authentication verification uses a
 signed synthetic identity provider, PostgreSQL, and a real browser; it does not
 certify an enterprise identity-provider deployment.

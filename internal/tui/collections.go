@@ -103,9 +103,12 @@ func (m model) listCollections(index int) (tea.Model, tea.Cmd) {
 }
 func (m model) recheckCollectionAccess() (tea.Model, tea.Cmd) {
 	id := m.collections.inspectID
+	retained := m.recovery
 	m.invalidateAccess()
+	m.recovery = retained
 	m.collections.inspectID = id
 	if m.access.restartRequired {
+		m.recovery = nil
 		m.status = "Access unavailable: " + errPrincipalChanged.Error()
 		return m, nil
 	}

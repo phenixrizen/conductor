@@ -10,6 +10,8 @@ not mistaken for working capabilities.
 | Document | Purpose |
 |---|---|
 | [System architecture](architecture/system.md) | Implemented components, shared workflows, trust boundaries and tested limits |
+| [Create and review a Change](operations/change-authoring.md) | Readable browser and terminal authoring, separate save/review actions, and preserved legacy content |
+| [Guided authoring specification](../specs/019-guided-change-authoring/spec.md) | First usability increment: Change/Design labels, exact commands and bounded discovery summaries |
 | [Release operations](operations/release.md) | Build reproducible archives, configure services, migrate, back up and restore shared data |
 | [Full release contract](full-release.md) | Required complete-platform capabilities, evidence gates, and stacked PR order |
 | [MCP setup](operations/mcp.md) | Connect agents to shared source, plans, artifacts, delivery, tracker and runtime evidence through authenticated stdio |
@@ -44,7 +46,7 @@ not mistaken for working capabilities.
 | [Tracker setup and review](operations/work-tracking.md) | Configure one tracker per workspace, inspect linked work, synchronize and resolve conflicts |
 | [Context and history walkthrough](operations/context-review.md) | Capture pinned artifacts, find shared work, inspect history, and check freshness |
 | [Release terminal](operations/release-terminal.md) | CLI and interactive graph, agent work, artifact, delivery, tracker and runtime workflows |
-| [Terminal review](operations/terminal-review.md) | Authenticated and local terminal review, collection controls, imports, and recovery |
+| [Terminal review](operations/terminal-review.md) | Guided Change authoring, authenticated and local review, advanced imports, collection controls and recovery |
 | [Feature 005 specification](../specs/005-authenticated-terminal/spec.md) | Fixed terminal identity and scope, capabilities, and explicit recovery |
 | [Feature 005 plan](../specs/005-authenticated-terminal/plan.md) | Terminal implementation and signed-issuer real PTY validation |
 | [Keycloak qualification](operations/keycloak-qualification.md) | Actual native HTTPS identity-provider acceptance and supported protocol limits |

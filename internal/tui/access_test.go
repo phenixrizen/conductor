@@ -203,7 +203,7 @@ func TestAuthenticatedCapabilityGuardsAtConfirmationAndDispatch(t *testing.T) {
 			m := authenticatedModel(t, func(request) (tea.Cmd, context.CancelFunc) { return func() tea.Msg { return nil }, func() {} })
 			m.access.principal.Kind = tc.kind
 			m.access.repository.CanAuthor, m.access.repository.CanApprove = tc.author, tc.approve
-			for _, action := range []struct{ op, key string }{{"create", "c"}, {"revise", "e"}, {"submit", "s"}, {"approve", "a"}} {
+			for _, action := range []struct{ op, key string }{{"create", "c"}, {"revise", "e"}, {"submit", "u"}, {"approve", "a"}} {
 				copy := m
 				p := *m.pack
 				copy.pack = &p
@@ -215,7 +215,7 @@ func TestAuthenticatedCapabilityGuardsAtConfirmationAndDispatch(t *testing.T) {
 					allowed = tc.approve && tc.kind == "human"
 				}
 				copy, cmd := key(copy, action.key)
-				if cmd != nil || (copy.prompt != "") != allowed {
+				if cmd != nil || (copy.prompt != "" || copy.editor != nil) != allowed {
 					t.Fatalf("wrong %s confirmation availability: %q, %s", action.op, copy.prompt, copy.status)
 				}
 				// A retained confirmation cannot bypass a newly invalidated grant.

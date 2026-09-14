@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from review import OPENER, Terminal
+from review import OPENER, Terminal, fill_design
 
 
 class AuthenticatedProxy:
@@ -171,7 +171,7 @@ def main():
                               "status": status, "credential": identity, "workspace": "team",
                               "repository": "application", "localActor": False}, requests
 
-    def refresh(terminal, identity, digest=None):
+    def refresh(terminal, identity, digest=None, retained=False):
         since = len(proxy.snapshot())
         terminal.send("r")
         terminal.wait(lambda: len(proxy.snapshot()[since:]) >= 3
@@ -183,7 +183,7 @@ def main():
         # depending on a transient loading frame or matching old screen history.
         start = len(terminal.output)
         terminal.resize(121, 46)
-        terminal.wait_text("Loaded latest revision" if digest else "Shared work loaded", start)
+        terminal.wait_text("Saved work loaded" if retained else "Loaded latest revision" if digest else "Shared work loaded", start)
         if digest:
             terminal.wait_text(digest, start)
         terminal.resize(120, 45)
@@ -223,6 +223,58 @@ def main():
                "untrustedText": "\x1b]52;c;ZGF0YQ==\x07",
                "verification": {"state": "unexecuted", "required": ["synthetic check"]}}
     try:
+        guided = launch("author", [])
+        guided.wait_text("Shared work loaded")
+        guided_content = {"title": "Authenticated guided change", "intent": "Draft without a JSON file"}
+        before = len(proxy.snapshot())
+        fill_design(guided, guided_content)
+        assert len(proxy.snapshot()) == before, "guided draft contacted the API"
+        guided.send("s")
+        guided.wait_text("Type create")
+        before = len(proxy.snapshot())
+        guided.send("create\r")
+        observed(guided, before, "POST", "/changes", {"content": guided_content}, 201, "author")
+        guided.wait_text("create recorded")
+        guided_id = re.search(r"ID: (CHG-[0-9a-f]+)", guided.text()).group(1)
+        guided_path = "/changes/" + guided_id
+        assert command(guided_path)["revision"]["author"] == "person-author"
+        # An existing structured field must remain read-only in the form and
+        # survive a neighboring string edit without coercion or dropped data.
+        retained = {**guided_content, "scope": None, "tasks": ["keep structured task"],
+                    "futureExtension": {"retain": [True, None]}}
+        existing = command(guided_path + "/revisions", body={"expectedRevision": 1, "content": retained})
+        refresh(guided, "author", existing["revision"]["digest"])
+        before = len(proxy.snapshot())
+        guided.send("e")
+        guided.wait_text("FORM: Edit Design")
+        guided.send("\t\t\r")
+        guided.wait_text("Structured value: preserved")
+        guided.send("\x1b[Z\x1b[Z\r\x15Updated guided title\x13")
+        guided.wait_text("PREVIEW: revise")
+        assert len(proxy.snapshot()) == before, "editing refreshed its inspected revision"
+        guided.send("s")
+        guided.wait_text("Type revise")
+        updated_guided = {**retained, "title": "Updated guided title"}
+        concurrent_guided = {**retained, "verification": "A concurrently added verification plan"}
+        saved_concurrent = command(guided_path + "/revisions",
+            body={"expectedRevision": 2, "content": concurrent_guided})
+        before = len(proxy.snapshot())
+        guided.send("revise\r")
+        observed(guided, before, "POST", guided_path + "/revisions",
+                 {"expectedRevision": 2, "content": updated_guided}, 409, "author")
+        guided.wait_text("Stale inspection")
+        refresh(guided, "author", saved_concurrent["revision"]["digest"], retained=True)
+        before = len(proxy.snapshot())
+        guided.send("v")
+        guided.wait_text("RECOVERED INPUT")
+        assert len(proxy.snapshot()) == before, "recovery silently read or retried"
+        guided.send("s")
+        guided.wait_text("Type revise")
+        before = len(proxy.snapshot())
+        guided.send("revise\r")
+        observed(guided, before, "POST", guided_path + "/revisions",
+                 {"expectedRevision": 3, "content": updated_guided}, 201, "author")
+        assert command(guided_path)["revision"]["content"] == updated_guided
         with tempfile.TemporaryDirectory(prefix="conductor-authenticated-terminal-") as directory:
             source = Path(directory) / "package.json"
             source.write_text(json.dumps(content))
@@ -236,7 +288,7 @@ def main():
             startup = proxy.snapshot()[before:]
             assert [request["path"].split("?")[0] for request in startup] == [
                 "/api/v1/session", "/api/v1/repositories", "/api/v1/changes"], startup
-            writer.send("c")
+            writer.send("i")
             writer.wait_text("JSON file path")
             writer.send("\r")
             writer.wait_text("PREVIEW: create")
@@ -255,7 +307,7 @@ def main():
             assert created["revision"]["content"] == content
             assert created["revision"]["author"] == "person-author"
             assert (created["workspaceId"], created["repositoryId"]) == ("team", "application")
-            writer.send("s")
+            writer.send("u")
             writer.wait_text("Type submit")
             before = len(proxy.snapshot())
             writer.send("submit\r")
@@ -280,7 +332,7 @@ def main():
             read_only.wait_text("Loaded latest revision")
             read_only.wait_text("Read: allowed | Author: not granted | Approve: not granted")
             read_only.settle()
-            for key in "aces":
+            for key in "aceui":
                 blocked_without_request(read_only, key)
                 read_only.wait_text("Action blocked:")
 
@@ -316,7 +368,7 @@ def main():
             replacement["intent"]["request"] = "A later terminal file revision requires new approval"
             source.write_text(json.dumps(replacement))
             refresh(writer, "author", changed["revision"]["digest"])
-            writer.send("e")
+            writer.send("i")
             writer.settle()
             writer.send("\r")
             writer.wait_text("PREVIEW: revise")
@@ -332,7 +384,7 @@ def main():
             assert latest["revision"]["content"] == replacement
             historical = command(path + "/revisions/2")
             assert historical["approvals"] == [approved["approval"]]
-            writer.send("s")
+            writer.send("u")
             writer.settle()
             before = len(proxy.snapshot())
             writer.send("submit\r")
@@ -395,7 +447,8 @@ def main():
             assert all(not request["localActor"] and request["credential"] != "unrecognized"
                        and request["workspace"] == "team" and request["repository"] == "application"
                        for request in proxy.snapshot()), "authentication or scope was not forwarded"
-            print("PASS: authenticated PTY startup, file create/revise/submit, shared inspection, "
+            print("PASS: authenticated guided form create/edit, structured field preservation, retained-input recovery, "
+                  "advanced file create/revise, separate save/submit, shared inspection, "
                   "stale approval without GET, independent approval, agent denial, grant/membership/principal "
                   "revocation, explicit capability refresh, fixed token identity, no credential output, and clean exit")
     finally:

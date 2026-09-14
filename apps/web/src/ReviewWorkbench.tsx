@@ -1,3 +1,8 @@
+import { visibleControls } from './sourceText';
+import { PackageContent, PackageFields } from './PackageContent';
+import { sameJSON } from './collections';
+import { createChange, reviseChange, submitChange } from './api';
+import type { Content } from './api';
 import { WorkflowNavigation, workflows } from './WorkflowNavigation';
 import type { Workflow } from './WorkflowNavigation';
 import { useWorkflowActivity } from './workflowActivity';
@@ -27,6 +32,8 @@ const perspectives = {
   Product: 'Inspect the intended outcome, business rules, and measurable acceptance criteria.',
 };
 
+interface AuthorDraft { kind: 'create' | 'revise' | 'submit'; content: Content; original: Content; id?: string; revision?: number; digest?: string; stage: 'editing' | 'preview' | 'sending' | 'uncertain'; inspected?: boolean; reuse?: 'replace' | 'create' }
+
 interface Job { token: number; signal: AbortSignal; access: RequestAccess }
 interface AttachmentRecovery { packageID: string; collectionID: string; packageInspected: boolean; collectionInspected: boolean }
 
@@ -44,6 +51,8 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     // This changes scroll position only; focus stays on the selected tab.
     document.getElementById(`workflow-${workflow}`)?.scrollIntoView({ block: 'start' });
   }, [workflow]);
+  const [authorDraft, setAuthorDraft] = useState<AuthorDraft>();
+  const authorWrite = useRef<AuthorDraft | undefined>(undefined);
   const [id, setID] = useState('');
   const [actor, setActor] = useState('reviewer');
   const [perspective, setPerspective] = useState<keyof typeof perspectives>('Architect');
@@ -70,11 +79,16 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   const working = useRef(false);
   const collectionWorking = useRef(false);
   const busy = pending !== '' || collectionBusy;
-  const access: RequestAccess = browserAccess ?? { mode: 'local', actor };
+  const access: RequestAccess = browserAccess ?? { mode: 'local', actor: actor.trim() };
   const reviewer = access.mode === 'browser' ? access.principalID : access.actor;
+  const authorPermission = access.mode === 'local' || access.canAuthor;
   const approvalPermission = access.mode === 'local' || (access.principalKind === 'human' && access.canApprove);
 
   const reviewActive = useWorkflowActivity(workflow === 'review', () => {
+    if (authorWrite.current) {
+      setAuthorDraft({ ...authorWrite.current, stage: 'uncertain', inspected: false });
+      authorWrite.current = undefined;
+    } else setAuthorDraft(previous => previous?.stage === 'preview' ? (previous.kind === 'submit' ? undefined : { ...previous, stage: 'editing' }) : previous);
     sequence.current++; controller.current?.abort(); working.current = false; setPending('');
     if (pending) setInspectionRequired('Review was interrupted. Inspect the latest revision before another decision. An already sent command may have completed.');
   });
@@ -122,6 +136,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     if (!current(job)) return;
     if (accessFailure(failure, job.access)) {
       clearInspection();
+      setAuthorDraft(undefined); authorWrite.current = undefined;
       onAccessFailure?.(failure);
       return;
     }
@@ -170,6 +185,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     if (!packageID || !reviewer.trim()) return;
     const job = begin('Inspecting latest revision…');
     if (!job) return;
+    setAuthorDraft(previous => previous?.stage === 'uncertain' ? previous : undefined);
     setID(packageID);
     setPackage(undefined);
     setView(undefined);
@@ -188,6 +204,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         if (!previous || previous.packageID !== value.id) return previous;
         return previous.collectionInspected ? undefined : { ...previous, packageInspected: true };
       });
+      setAuthorDraft(previous => previous?.stage === 'uncertain' && (!previous.id || previous.id === value.id) ? { ...previous, inspected: true } : previous);
       setPackage(value);
       setView(latestView(value));
       setHistorical(false);
@@ -201,6 +218,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     if (!pkg) return;
     const job = begin(`Loading revision ${revision}…`);
     if (!job) return;
+    setAuthorDraft(previous => previous?.stage === 'uncertain' ? previous : undefined);
     try {
       const value = await request<RevisionView>(`${changePath(pkg.id)}/revisions/${revision}`, job.access, job.signal);
       if (!current(job)) return;
@@ -264,7 +282,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     } finally { finish(job); }
   }
 
-  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !attachmentRecovery && !busy
+  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !attachmentRecovery && !authorDraft && !busy
     && !!view.revision.submittedAt && !pkg.approved && reviewer !== view.revision.author && approvalPermission;
 
   async function approve() {
@@ -295,6 +313,82 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         }
       }
     } finally { finish(job); }
+  }
+
+  function startAuthoring(kind: 'create' | 'revise' | 'submit') {
+    if (!reviewActive.current || busy || authorDraft || !authorPermission || !reviewer.trim()) return;
+    if (kind === 'create') {
+      clearInspection(); setID('');
+      setAuthorDraft({ kind, content: {}, original: {}, stage: 'editing' });
+    } else if (pkg && view && !historical && !inspectionRequired && !attachmentRecovery) {
+      setAuthorDraft({ kind, id: pkg.id, revision: view.revision.number, digest: view.revision.digest,
+        content: view.revision.content, original: view.revision.content, stage: kind === 'submit' ? 'preview' : 'editing' });
+    }
+  }
+
+  function previewAuthoring() {
+    if (!authorDraft || busy || authorDraft.stage !== 'editing') return;
+    if (authorDraft.kind === 'create' && (!String(authorDraft.content.title ?? '').trim() || !String(authorDraft.content.intent ?? '').trim())) {
+      setError('Give the change a title and describe its intended outcome.'); return;
+    }
+    if (new TextEncoder().encode(JSON.stringify({ content: authorDraft.content, expectedRevision: authorDraft.revision })).length > 1024 * 1024) {
+      setError('This change exceeds the 1 MiB request limit. Shorten the editable text.'); return;
+    }
+    if (authorDraft.kind === 'revise' && view && sameJSON(authorDraft.content, view.revision.content)) {
+      setError('No content changed. Edit a field before saving a new revision.'); return;
+    }
+    setError(''); setAuthorDraft({ ...authorDraft, stage: 'preview' });
+  }
+
+  function reuseRetainedDraft() {
+    if (!authorDraft || authorDraft.stage !== 'uncertain' || !authorDraft.inspected || busy || !authorPermission) return;
+    if (authorDraft.kind === 'create') {
+      const content = authorDraft.content;
+      clearInspection(); setID('');
+      setAuthorDraft({ kind: 'create', content, original: authorDraft.original, stage: 'editing', reuse: 'create' });
+    } else if (authorDraft.kind === 'revise' && pkg && view && pkg.id === authorDraft.id && !historical && !inspectionRequired && !attachmentRecovery) {
+      // This explicit choice creates a replacement draft against the newly inspected
+      // version. It neither merges content nor replays the earlier command.
+      setAuthorDraft({ kind: 'revise', content: authorDraft.content, original: authorDraft.original, id: pkg.id, revision: view.revision.number,
+        digest: view.revision.digest, stage: 'editing', reuse: 'replace' });
+      setError('');
+    }
+  }
+
+  async function confirmAuthoring() {
+    if (!authorDraft || authorDraft.stage !== 'preview' || !authorPermission || inspectionRequired || attachmentRecovery) return;
+    const captured = authorDraft;
+    const job = begin(captured.kind === 'submit' ? 'Submitting the inspected design for review…' : 'Saving the displayed change…');
+    if (!job) return;
+    authorWrite.current = captured;
+    setAuthorDraft({ ...captured, stage: 'sending' });
+    try {
+      const value = captured.kind === 'create' ? await createChange(captured.content, job.access, job.signal)
+        : captured.kind === 'revise' ? await reviseChange(captured.id!, captured.revision!, captured.content, job.access, job.signal)
+          : await submitChange(captured.id!, captured.revision!, job.access, job.signal);
+      if (!current(job)) return;
+      checkPackage(value, job, captured.id ?? value.id);
+      const expected = captured.kind === 'create' ? 1 : captured.revision! + (captured.kind === 'revise' ? 1 : 0);
+      if (value.revision.number !== expected || !sameJSON(value.revision.content, captured.content)
+        || !/^[a-f0-9]{64}$/.test(value.revision.digest)
+        || (captured.kind === 'submit' ? value.revision.digest !== captured.digest || !value.revision.submittedAt
+          : value.revision.author !== reviewer || value.approved || !!value.revision.submittedAt)) {
+        throw new Error('The response does not confirm the exact command. Inspect shared work before continuing.');
+      }
+      setID(value.id); setPackage(value); setView(latestView(value)); setHistorical(false);
+      setHistory(undefined); setEvents(undefined); setComparison(undefined); setAuthorDraft(undefined);
+      setHistoryError('Refresh history to see this command.'); setEventsError('Refresh events to see this command.');
+      setNotice(captured.kind === 'submit' ? 'Design review requested. An independent reviewer can now inspect and approve this revision.'
+        : 'Draft saved. Review its content, then request design review when it is ready.');
+    } catch (failure) {
+      failed(job, failure);
+      if (current(job) && !accessFailure(failure, job.access)) {
+        if (!(failure instanceof APIError) || failure.status === 409 || failure.status >= 500 || failure.status < 400) {
+          setAuthorDraft({ ...captured, stage: 'uncertain', inspected: false });
+          setInspectionRequired('The command was stale or its outcome could not be confirmed. Inspect the latest saved change before another command.');
+        } else setAuthorDraft({ ...captured, stage: captured.kind === 'submit' ? 'preview' : 'editing' });
+      }
+    } finally { if (current(job)) authorWrite.current = undefined; finish(job); }
   }
 
   const targetNumber = view && (comparisonTarget === 'previous' ? view.revision.number - 1 : pkg?.revision.number);
@@ -346,15 +440,50 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     <WorkflowNavigation selected={workflow} onSelect={setWorkflow} />
     <div className="workflow-introduction"><p className="eyebrow">{selectedWorkflow.label}</p><p>{selectedWorkflow.description}</p></div>
     <section role="tabpanel" id="workflow-review" aria-labelledby="workflow-tab-review" tabIndex={0} hidden={workflow !== 'review'}>
+    <section className="change-start panel" aria-label="Start a change">
+      <div className="section-heading"><div><h2>What do you want to change?</h2><p>Describe the outcome, save a design, then ask an independent person to review it.</p></div>
+        {authorPermission && <button disabled={busy || !!authorDraft || !reviewer.trim()} onClick={() => startAuthoring('create')}>New change</button>}</div>
+      {!authorPermission && <p className="muted">You have read access. Select shared work below to inspect a design; author permission is needed to create or revise one.</p>}
+    </section>
+    {authorDraft && <section className="package-editor panel" aria-label="Change authoring">
+      <h2>{authorDraft.kind === 'create' ? 'New change' : authorDraft.kind === 'revise' ? 'Revise design' : 'Request design review'}</h2>
+      {authorDraft.id && <p>Change <code>{authorDraft.id}</code> · inspected revision {authorDraft.revision}<br/><code>{authorDraft.digest}</code></p>}
+      {authorDraft.reuse && <p className="warning">{authorDraft.reuse === 'replace'
+        ? 'This is a complete replacement using retained content. It may remove changes made by another author. Compare it with the latest saved design below, then preview before saving.'
+        : 'This is a separate new change using retained input. The earlier creation may still have committed; saving again can create a duplicate.'}</p>}
+      {authorDraft.stage === 'editing' ? <>
+        <p>Title and intended outcome start a new change. The remaining sections are optional. Saving a revision preserves all other saved fields.</p>
+        <PackageFields content={authorDraft.content} original={authorDraft.original} disabled={busy} onChange={content => { setAuthorDraft({ ...authorDraft, content }); setError(''); }} />
+        <button disabled={busy} onClick={previewAuthoring}>Preview design</button>
+      </> : <>
+        <h3>{authorDraft.stage === 'uncertain' ? 'Retained command input' : 'Review before confirming'}</h3>
+        <PackageContent content={authorDraft.content} />
+        {authorDraft.stage === 'uncertain' ? <div className="warning"><p>The exact input is retained. No retry has been sent. {authorDraft.id ? 'Inspect this change’s latest revision to check what was saved.' : 'Browse shared work without a filter and inspect any matching change. An empty or bounded list cannot prove creation failed; the previous command may still have committed. Dismissing this input allows a separate new creation, which could produce a duplicate.'}</p>
+          {authorDraft.id && <button className="secondary" disabled={busy} onClick={() => void inspectLatest(authorDraft.id)}>Inspect saved change</button>}
+          {authorDraft.kind === 'revise' && authorDraft.inspected && pkg?.id === authorDraft.id && view && !historical && <details><summary>Latest inspected saved design</summary><PackageContent content={view.revision.content} /></details>}
+          {authorDraft.kind !== 'submit' && <button className="secondary" disabled={busy || !authorDraft.inspected || (authorDraft.kind === 'revise' && (!pkg || pkg.id !== authorDraft.id || !view || historical || !!inspectionRequired || !!attachmentRecovery))} onClick={reuseRetainedDraft}>{authorDraft.kind === 'create' ? 'Edit retained input as a separate new change' : 'Use retained content as replacement draft'}</button>}
+          <button className="secondary" disabled={busy || !authorDraft.inspected} onClick={() => setAuthorDraft(undefined)}>{authorDraft.kind === 'create' ? 'Dismiss creation input after checking shared work' : 'Dismiss retained input after inspection'}</button></div>
+          : <><p>{authorDraft.kind === 'submit' ? 'Request an independent design review for exactly this saved revision.' : 'Save exactly this content as a new draft. Earlier approval will not apply to the new revision.'}</p>
+            <button disabled={busy} onClick={() => void confirmAuthoring()}>{authorDraft.kind === 'create' ? 'Create change' : authorDraft.kind === 'revise' ? 'Save new revision' : 'Confirm design review request'}</button>
+            {authorDraft.kind !== 'submit' && <button className="secondary" disabled={busy} onClick={() => setAuthorDraft({ ...authorDraft, stage: 'editing' })}>Back to editing</button>}</>}
+      </>}
+      {authorDraft.stage !== 'uncertain' && <button className="secondary" disabled={busy} onClick={() => setAuthorDraft(undefined)}>Discard unsent draft</button>}
+    </section>}
     <form className="lookup panel" onSubmit={event => { event.preventDefault(); void inspectLatest(); }}>
       <label>Change ID<input value={id} maxLength={256} placeholder="CHG-…" disabled={busy} required
         onChange={event => { clearInspection(); setID(event.target.value); }} /></label>
       {!browserAccess && <label>Local reviewer<input value={actor} maxLength={128} disabled={busy} required
-        onChange={event => { clearInspection(); setActor(event.target.value); }} /></label>}
+        onChange={event => { clearInspection(); setAuthorDraft(undefined); authorWrite.current = undefined; setActor(event.target.value); }} /></label>}
       <button type="submit" disabled={busy || !id.trim() || !reviewer.trim()}>Inspect latest revision</button>
       <p className="local-note">{browserAccess ? 'Inspection is limited to your selected workspace and managed repository.' : 'Local development identity only. These packages are separate from authenticated workspaces.'}</p>
     </form>
-    <SharedChanges key={reviewer} access={access} visible={workflow === 'review'} disabled={busy} related={related} onInspect={packageID => void inspectLatest(packageID)} onAccessFailure={onAccessFailure} />
+    <SharedChanges key={reviewer} access={access} visible={workflow === 'review'} disabled={busy} related={related} onInspect={packageID => void inspectLatest(packageID)} onBrowsed={() => {
+      // SharedChanges captures this callback when its read starts. A discovery
+      // started before this exact uncertain draft cannot satisfy its recovery.
+      if (authorDraft?.stage === 'uncertain' && authorDraft.kind === 'create') {
+        setAuthorDraft(previous => previous === authorDraft ? { ...previous, inspected: true } : previous);
+      }
+    }} onAccessFailure={onAccessFailure} />
     <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
     {error && <p role="alert" className="error banner">{error}</p>}
     {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}
@@ -363,11 +492,12 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
       <div className="control-row"><button className="secondary" disabled={busy} onClick={() => void inspectLatest(attachmentRecovery.packageID)}>Inspect recovery package</button>
         <button className="secondary" disabled={busy} onClick={() => requestCollectionInspection(attachmentRecovery.collectionID)}>Inspect recovery collection</button></div>
     </div>}
-    {!pkg && !busy && !error && <section className="empty"><h2>A clear record for every decision.</h2><p>Enter a change ID to inspect its revision, context, approvals, and audit history.</p></section>}
+    {!pkg && !authorDraft && !busy && !error && <section className="empty"><h2>Start with an outcome.</h2><p>Create a change above, or browse shared work to review an existing design.</p></section>}
     {pkg && view && <div className="workbench-grid" aria-busy={busy}>
       <article className="review panel" aria-labelledby="revision-title">
         <div className="status"><span>{pkg.id}</span><strong>{inspectionRequired ? 'INSPECTION STALE' : historical ? 'HISTORICAL VIEW' : pkg.approved ? 'DESIGN APPROVED' : view.revision.submittedAt ? 'REVIEW REQUIRED' : 'DRAFT'}</strong></div>
-        <div className="section-heading"><h2 id="revision-title">Revision {view.revision.number}</h2><span className="tag">{historical ? 'Preserved record' : 'Latest inspected'}</span></div>
+        {typeof view.revision.content.title === 'string' && view.revision.content.title.trim() && <h2 className="change-title">{visibleControls(view.revision.content.title)}</h2>}
+        <div className="section-heading"><h3 id="revision-title">Revision {view.revision.number}</h3><span className="tag">{historical ? 'Preserved record' : 'Latest inspected'}</span></div>
         <dl>
           <dt>Digest</dt><dd><code>{view.revision.digest}</code></dd>
           <dt>Author</dt><dd>{view.revision.author}</dd>
@@ -375,6 +505,12 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
           <dt>Created</dt><dd>{dateLabel(view.revision.createdAt)}</dd>
           <dt>Submitted</dt><dd>{view.revision.submittedAt ? dateLabel(view.revision.submittedAt) : 'Not submitted'}</dd>
         </dl>
+        {!historical && authorPermission && <section className="design-actions" aria-label="Design author actions">
+          <h3>Continue this change</h3>
+          <p>{view.revision.submittedAt ? 'This revision has been submitted. Editing creates a new draft for a fresh review.' : 'Review the saved draft, then request an independent design review.'}</p>
+          <button className="secondary" disabled={busy || !!authorDraft || !!inspectionRequired || !!attachmentRecovery} onClick={() => startAuthoring('revise')}>Revise design</button>
+          {!view.revision.submittedAt && <button disabled={busy || !!authorDraft || !!inspectionRequired || !!attachmentRecovery} onClick={() => startAuthoring('submit')}>Request design review</button>}
+        </section>}
         {historical && <div className="warning"><p>Historical inspection is read-only. Its approvals are retained records and are not authority for a later revision.</p><button className="secondary" disabled={busy} onClick={() => void inspectLatest()}>Inspect latest revision again</button></div>}
         <section className="approval-record" aria-labelledby="approvals-title">
           <h3 id="approvals-title">{historical ? 'Historical approval records' : 'Effective approval at inspection'}</h3>
@@ -390,7 +526,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
           setRelated(previous => ({ repository, sequence: (previous?.sequence ?? 0) + 1 }));
           document.getElementById('shared-work-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }}>{browserAccess ? 'Related work with this context label' : 'Related work in this repository'}</button>}
-        <section className="content" aria-labelledby="content-title"><h3 id="content-title">Inspected package content</h3><p className="muted">Complete structured content, including fields this workbench does not interpret.</p><pre>{JSON.stringify(view.revision.content, null, 2)}</pre></section>
+        <section className="content" aria-labelledby="content-title"><h3 id="content-title">Inspected package content</h3><PackageContent content={view.revision.content} /></section>
         <section className="compare-controls" aria-labelledby="compare-title">
           <h3 id="compare-title">Compare content</h3>
           <div className="control-row"><label>Compare inspected revision with<select value={comparisonTarget} disabled={busy}
@@ -426,7 +562,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         {attachmentRecovery && <p className="warning">Attachment recovery requires both inspections. Review the latest package and inspect this collection again before another decision.</p>}
       </section>
     {browserAccess ? <ContextCollections access={browserAccess} visible={workflow === 'source'} disabled={pending !== ''}
-      target={pkg && view && !historical && !inspectionRequired && !attachmentRecovery && pending === ''
+      target={pkg && view && !historical && !authorDraft && !inspectionRequired && !attachmentRecovery && pending === ''
         ? { id: pkg.id, revision: view.revision.number, digest: view.revision.digest, content: view.revision.content } : undefined}
       requestedInspection={requestedCollection} onAccessFailure={onAccessFailure} onBusyChange={collectionWork}
       onInspected={collectionInspected} onAttached={attached}

@@ -44,6 +44,16 @@ func key(m model, k string) (model, tea.Cmd) {
 		msg.Type = tea.KeyEnd
 	case "home":
 		msg.Type = tea.KeyHome
+	case "tab":
+		msg.Type = tea.KeyTab
+	case "shift+tab":
+		msg.Type = tea.KeyShiftTab
+	case "ctrl+s":
+		msg.Type = tea.KeyCtrlS
+	case "ctrl+u":
+		msg.Type = tea.KeyCtrlU
+	case " ":
+		msg.Type = tea.KeySpace
 	}
 	next, cmd := m.Update(msg)
 	return next.(model), cmd
@@ -154,7 +164,7 @@ func TestMutationErrorsAndRacingResponsesBlockFurtherWrites(t *testing.T) {
 			if cmd != nil || !m.blocked || m.pack.Revision.Number != 1 {
 				t.Fatal("uncertain result replaced inspection or allowed writes")
 			}
-			for _, action := range []string{"a", "s", "e", "c"} {
+			for _, action := range []string{"a", "s", "u", "e", "c", "i"} {
 				m, cmd = key(m, action)
 				if cmd != nil || m.prompt != "" {
 					t.Fatalf("uncertain write allowed %s", action)
@@ -241,7 +251,7 @@ func TestFilePreviewRequiresConfirmationAndPreservesExtensions(t *testing.T) {
 	}
 	m := newModel(Options{Actor: "author", File: "synthetic.json"}, execute)
 	m.pack = &p
-	m, cmd := key(m, "e")
+	m, cmd := key(m, "i")
 	if cmd != nil || m.prompt != "file" || m.input != "synthetic.json" {
 		t.Fatal("revise did not request an explicit file")
 	}

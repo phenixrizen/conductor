@@ -39,8 +39,10 @@ collection commands now exposed in the browser. The documented provider and
 deployment qualification limits still apply; shared TLS/mTLS transport is available
 through [Feature 015](../015-temporal-tls/spec.md). Browser workflows now include
 coordinated agents, delivery, tracker synchronization and runtime evidence under
-their separate authority contracts. General browser package editing and submission
-remain unsupported. Merge remains a human action; successful tests grant no approval.
+their separate authority contracts. [Feature 019](../019-guided-change-authoring/spec.md)
+adds general Change creation, Design editing and separate submission through readable
+forms, with legacy field preservation and explicit uncertain-write recovery.
+Merge remains a human action; successful tests grant no approval.
 
 ## Current release delivery instruction
 

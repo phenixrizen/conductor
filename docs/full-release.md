@@ -9,6 +9,13 @@ contract grants none of those permissions.
 
 ## Required outcome
 
+The [guided Change authoring increment](../specs/019-guided-change-authoring/spec.md)
+addresses usability after the original release stack: readable creation/editing
+in browser and terminal, separate review requests, and meaningful shared titles.
+It branches from `main` independently of the broader vocabulary proposal in PR #36.
+Its implementation and verification do not complete provider-assisted authoring
+or change the release qualification limits below.
+
 Multiple engineers and agents use the same authenticated workspace to discover
 relationships across repositories, retrieve source and governing decisions, plan
 dependent work, coordinate bounded coding attempts, inspect actual verification,

@@ -32,8 +32,9 @@ It also exposes the shared collection and receipt commands from
    agents. Approval additionally requires a human, the approve capability, an
    independent reviewer, and the current submitted revision. Client controls
    reflect stored capabilities; the service enforces the actual command policy.
-6. Preserve bounded explicit JSON-file selection, complete replacement preview,
-   unknown content fields, text escaping, cancellation, and small-screen safeguards.
+6. Support the [guided Change editor](../019-guided-change-authoring/spec.md) and
+   preserve bounded explicit JSON-file selection as an advanced import, complete
+   replacement preview, unknown content fields, text escaping, cancellation, and small-screen safeguards.
    The UI never runs repository text as a command, editor, or script.
 7. Confirmation captures the displayed revision and digest before dispatch. No
    identity, permission-discovery, or package read occurs inside a mutation. A

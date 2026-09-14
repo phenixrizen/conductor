@@ -2,8 +2,9 @@
 
 Conductor can use a configured OpenID Connect provider to sign people into the web
 workbench. Reviewers choose an available workspace and repository, inspect shared
-packages and history, and approve the exact content on screen. Repository authors
-can also request shared context and attach an inspected receipt as a new draft.
+Changes and history, and approve the exact content on screen. Repository authors
+can create and edit Designs, request review, request shared context and attach an
+inspected receipt as a new draft.
 PostgreSQL owns the shared record and permissions. Review perspectives change
 prompts, not access.
 
@@ -67,12 +68,17 @@ managed repository. The page shows your stored principal and effective repositor
 capabilities. If a list is empty or truncated, ask an operator about the missing
 access; changing a label or persona cannot add it.
 
-Discover a package or enter its change ID. Inspect the revision and digest before
+Choose **New change** in Review to draft a title, intended outcome and readable
+Design sections. Preview and save, then request review of the saved revision.
+The [authoring walkthrough](change-authoring.md) covers creating and editing,
+preserved structured fields and uncertain-write recovery.
+
+Discover a Change or enter its change ID. Inspect the revision and digest before
 approval. Another engineer's edit produces a conflict and requires a new explicit
 inspection. History and comparison remain available; historical approval is not
-approval of the latest revision. The browser can attach an existing source receipt;
-the CLI, terminal workbench, and API supply general package creation, editing, and
-submission.
+approval of the latest revision. The browser can also attach an existing source
+receipt. Creation, revision and submission use the same commands as the CLI,
+terminal and API; confirmation never fetches a newer revision.
 
 Changing the selected workspace, repository, or session clears the old inspection
 and cancels pending requests, including collection drafts, receipts, and

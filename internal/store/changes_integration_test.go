@@ -1,11 +1,13 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/domain"
 	"github.com/phenixrizen/conductor/internal/service"
@@ -30,12 +32,13 @@ func TestPostgresSharedChangeDiscovery(t *testing.T) {
 	// to the same central store, with no shared in-memory package cache.
 	first, second := service.New(firstStore), service.New(open())
 	content := sharedRepositoryContent("example/shared", "Shared review")
+	content["title"] = "Review a shared change"
 	created, err := first.Create(ctx, "developer-one", content)
 	if err != nil {
 		t.Fatal(err)
 	}
 	page, err := second.List(ctx, "example/shared", "", 20)
-	if err != nil || len(page.Changes) != 1 || page.Changes[0].ID != created.ID || page.Changes[0].Revision != 1 || page.Changes[0].Approved || page.Changes[0].Repository != "example/shared" {
+	if err != nil || len(page.Changes) != 1 || page.Changes[0].ID != created.ID || page.Changes[0].Revision != 1 || page.Changes[0].Approved || page.Changes[0].Repository != "example/shared" || page.Changes[0].Title != "Review a shared change" || page.Changes[0].Intent != "Shared review" {
 		t.Fatalf("second developer cannot discover package: %+v err=%v", page, err)
 	}
 	inspected, err := second.Revision(ctx, created.ID, page.Changes[0].Revision)
@@ -61,12 +64,120 @@ func TestPostgresSharedChangeDiscovery(t *testing.T) {
 		t.Fatalf("filter used historical repository metadata: %+v err=%v", oldRepository, err)
 	}
 	updated, err := second.List(ctx, "example/moved", "", 20)
-	if err != nil || len(updated.Changes) != 1 || updated.Changes[0].Revision != 2 || updated.Changes[0].Digest != revised.Revision.Digest || updated.Changes[0].Approved || !updated.Changes[0].CreatedAt.Equal(created.Revision.CreatedAt) {
+	if err != nil || len(updated.Changes) != 1 || updated.Changes[0].Revision != 2 || updated.Changes[0].Digest != revised.Revision.Digest || updated.Changes[0].Approved || !updated.Changes[0].CreatedAt.Equal(created.Revision.CreatedAt) || updated.Changes[0].Title != "" || updated.Changes[0].Intent != "Updated shared context" {
 		t.Fatalf("second developer saw stale revision/approval: %+v err=%v", updated, err)
 	}
 	history, err := second.Revision(ctx, created.ID, 1)
-	if err != nil || len(history.Approvals) != 1 || history.Approvals[0].Reviewer != "developer-two" {
+	if err != nil || len(history.Approvals) != 1 || history.Approvals[0].Reviewer != "developer-two" || history.Revision.Digest != created.Revision.Digest || !reflect.DeepEqual(history.Revision.Content, created.Revision.Content) {
 		t.Fatalf("shared discovery lost historical approval: %+v err=%v", history, err)
+	}
+}
+
+func TestPostgresChangeSummaryText(t *testing.T) {
+	t.Parallel()
+	ctx, p, _ := integrationStore(t)
+	s := service.New(p)
+	titleBoundary := strings.Repeat("界", 199) + "🧭"
+	intentBoundary := strings.Repeat("é", 399) + "🧪"
+	for _, tc := range []struct {
+		name                            string
+		content                         domain.Content
+		title, intent                   string
+		titleTruncated, intentTruncated bool
+	}{
+		{name: "absent", content: domain.Content{"future": true}},
+		{name: "empty", content: domain.Content{"title": "", "intent": ""}},
+		{name: "objects", content: domain.Content{"title": map[string]any{"text": "Keep structured title"}, "intent": []any{"Keep structured intent"}}},
+		{name: "scalars", content: domain.Content{"title": false, "intent": 42}},
+		{name: "null", content: domain.Content{"title": nil, "intent": nil}},
+		{name: "case aliases", content: domain.Content{"Title": "Keep extension", "Intent": "Keep extension"}},
+		{name: "exact text", content: domain.Content{"title": "  Synthetic <title>\n", "intent": "\tExplain\nthis change  "}, title: "  Synthetic <title>\n", intent: "\tExplain\nthis change  "},
+		{name: "unicode boundary", content: domain.Content{"title": titleBoundary, "intent": intentBoundary}, title: titleBoundary, intent: intentBoundary},
+		{name: "unicode truncated", content: domain.Content{"title": titleBoundary + "尾", "intent": intentBoundary + "end"}, title: titleBoundary, intent: intentBoundary, titleTruncated: true, intentTruncated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created, err := s.Create(ctx, "author", tc.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := integrationCounts(t, ctx, p)
+			page, err := s.List(ctx, "", "", 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var summary *domain.ChangeSummary
+			for i := range page.Changes {
+				if page.Changes[i].ID == created.ID {
+					summary = &page.Changes[i]
+					break
+				}
+			}
+			if summary == nil || summary.Title != tc.title || summary.Intent != tc.intent || summary.TitleTruncated != tc.titleTruncated || summary.IntentTruncated != tc.intentTruncated {
+				t.Fatalf("incorrect text projection: %+v", summary)
+			}
+			if !utf8.ValidString(summary.Title) || !utf8.ValidString(summary.Intent) || utf8.RuneCountInString(summary.Title) > domain.MaxChangeSummaryTitleRunes || utf8.RuneCountInString(summary.Intent) > domain.MaxChangeSummaryIntentRunes {
+				t.Fatalf("summary text exceeds Unicode bounds: %+v", summary)
+			}
+			encoded, err := json.Marshal(summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err = json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			for field, present := range map[string]bool{"title": tc.title != "", "intent": tc.intent != "", "titleTruncated": tc.titleTruncated, "intentTruncated": tc.intentTruncated} {
+				if _, ok := fields[field]; ok != present {
+					t.Fatalf("incorrect optional field %s in %s", field, encoded)
+				}
+			}
+			retained, err := s.Get(ctx, created.ID)
+			if err != nil || retained.Revision.Digest != created.Revision.Digest || summary.Digest != created.Revision.Digest || !reflect.DeepEqual(retained.Revision.Content, created.Revision.Content) || integrationCounts(t, ctx, p) != counts {
+				t.Fatalf("discovery modified stored revision or audit: %+v err=%v", retained, err)
+			}
+		})
+	}
+}
+
+func TestPostgresChangeSummaryAccessBeforePagination(t *testing.T) {
+	t.Parallel()
+	ctx, p, _ := integrationStore(t)
+	provisionAccess(t, ctx, p)
+	secure := service.NewAuthenticated(p)
+	older, err := secure.Create(accessContext(ctx, "author", "workspace-one", "repo-one"), "", domain.Content{"title": "Older visible change", "intent": "Older visible intent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = secure.Create(accessContext(ctx, "reviewer", "workspace-one", "repo-two"), "", domain.Content{"title": "Private change", "intent": "Private intent"}); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := secure.Create(accessContext(ctx, "author", "workspace-one", "repo-one"), "", domain.Content{"title": "Newer visible change", "intent": "Newer visible intent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = secure.Create(accessContext(ctx, "reviewer", "workspace-two", "repo-other-workspace"), "", domain.Content{"title": "Other workspace", "intent": "Other workspace intent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.New(p).Create(ctx, "local-author", domain.Content{"title": "Local change", "intent": "Local intent"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, principal := range []struct{ subject, repository string }{{"author", ""}, {"author", "repo-one"}, {"reviewer", "repo-one"}} {
+		reader := accessContext(ctx, principal.subject, "workspace-one", principal.repository)
+		first, err := secure.List(reader, "", "", 1)
+		if err != nil || len(first.Changes) != 1 || first.Changes[0].ID != newer.ID || first.Changes[0].Title != "Newer visible change" || first.Changes[0].Intent != "Newer visible intent" || first.NextBefore == "" {
+			t.Fatalf("newer authorized summary for %+v: %+v err=%v", principal, first, err)
+		}
+		last, err := secure.List(reader, "", first.NextBefore, 1)
+		if err != nil || len(last.Changes) != 1 || last.Changes[0].ID != older.ID || last.Changes[0].Title != "Older visible change" || last.Changes[0].Intent != "Older visible intent" || last.NextBefore != "" {
+			t.Fatalf("older authorized summary for %+v: %+v err=%v", principal, last, err)
+		}
+	}
+	if err = p.ApplyAccessConfig(ctx, "synthetic-operator", domain.AccessConfig{Grants: []domain.GrantConfig{{RepositoryID: "repo-one", PrincipalID: "human-author"}}}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := secure.List(accessContext(ctx, "author", "workspace-one", ""), "", "", 1)
+	if err != nil || len(page.Changes) != 0 || page.NextBefore != "" {
+		t.Fatalf("revoked summary visible: %+v err=%v", page, err)
 	}
 }
 

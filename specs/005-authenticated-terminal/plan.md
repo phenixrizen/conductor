@@ -34,6 +34,11 @@ authorized GitHub/GitLab draft publication, and
 Implementation checks do not approve an ADR, grant a package approval, authorize a
 merge, or establish deployment.
 
+[Feature 019](../019-guided-change-authoring/spec.md) adds an in-process guided
+Change editor, readable Design sections and explicit separate save/submission
+controls. Advanced imports remain available; fixed identity, exact confirmation,
+unknown-field preservation and access-recovery requirements still apply.
+
 ## Current release delivery instruction
 
 The user authorized stacked PRs on 2026-09-13 for the full release. Follow its

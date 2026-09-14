@@ -1,3 +1,4 @@
+import { visibleControls } from './sourceText';
 import { useWorkflowActivity } from './workflowActivity';
 import { useEffect, useRef, useState } from 'react';
 import { accessFailure, dateLabel, errorMessage, request } from './api';
@@ -5,12 +6,13 @@ import type { APIError, RequestAccess, SharedPage } from './api';
 
 export interface RelatedRequest { repository: string; sequence: number }
 
-export function SharedChanges({ access, visible = true, disabled, related, onInspect, onAccessFailure }: {
+export function SharedChanges({ access, visible = true, disabled, related, onInspect, onBrowsed, onAccessFailure }: {
   access: RequestAccess;
   disabled: boolean;
   visible?: boolean;
   related?: RelatedRequest;
   onInspect: (id: string) => void;
+  onBrowsed?: () => void;
   onAccessFailure?: (failure: APIError) => void;
 }) {
   const [repository, setRepository] = useState('');
@@ -47,6 +49,7 @@ export function SharedChanges({ access, visible = true, disabled, related, onIns
       }
       setPage(previous => before ? { ...value, changes: [...(previous?.changes ?? []), ...value.changes] } : value);
       setLoadedAt(new Date().toLocaleTimeString());
+      if (!filter && !before) onBrowsed?.();
     } catch (failure) {
       if (workflowActive.current && generation.current === token && !abort.signal.aborted) {
         if (accessFailure(failure, access)) {
@@ -94,7 +97,9 @@ export function SharedChanges({ access, visible = true, disabled, related, onIns
     <ul className="record-list shared-list">
       {page?.changes.map(change => <li key={change.id}>
         <button type="button" className="shared-card" disabled={disabled || pending} onClick={() => onInspect(change.id)} aria-label={`Inspect change ${change.id}`}>
-          <span className="history-top"><strong>{change.id}</strong><span className="tag">Revision {change.revision}</span></span>
+          <span className="history-top"><strong>{visibleControls(change.title || change.id)}{change.titleTruncated ? '… (shortened title)' : ''}</strong><span className="tag">Revision {change.revision}</span></span>
+          {change.intent && <span>{visibleControls(change.intent)}{change.intentTruncated ? '… (shortened preview)' : ''}</span>}
+          {change.title && <code>{change.id}</code>}
           <span>{change.author} · {dateLabel(change.createdAt)}</span>
           <span className="shared-state">{change.approved ? 'Design approved' : 'No effective approval'}</span>
           <span>{change.repository || 'No repository context attached'}</span>

@@ -1,7 +1,8 @@
 # Review from the terminal
 
 The Bubble Tea workbench is an interactive interface to the same API used by the
-CLI and browser. It lets a developer import and submit a package, and lets an
+CLI and browser. It lets a developer create, edit and submit a Change through
+readable fields, and lets an
 independent reviewer inspect and approve its exact content. PostgreSQL retains the
 shared record. Authenticated collaborators can also request repository context,
 inspect shared source receipts, and attach them to a package as a new revision.
@@ -97,23 +98,30 @@ choosing `VIEW` cannot enable them on a local API.
 
 ## One review loop
 
-1. Prepare a JSON package file using the CLI or a text editor. Use `c` to select and
-   preview that file, then `s` and type `create` to confirm creation.
-   `--file /tmp/package.json` supplies a default path. The interface does not run
-   repository scripts or an editor.
-2. Inspect the created package's content, revision, and digest. Use `s` to confirm
+1. Press `c` for a new Change. Fill in its title and intended outcome, plus the
+   scope, design, planned work and verification sections as needed. Tab / Shift+Tab
+   selects a field; Enter edits it. Ctrl+S stages a readable preview. Press `s` and
+   type `create` to confirm creation.
+2. Inspect the created Change's content, revision, and digest. Use `u` to confirm
    submission of that displayed revision.
 3. Start a second session with an independent reviewer's token and the same
    workspace/repository. For local development, use `--actor reviewer` instead.
    Select the shared package and inspect its complete content. Use `a` to confirm
    approval of the displayed revision and digest. The approval action does not
    fetch a newer revision or revalidate identity inside the confirmation.
-4. Back in the author session, inspect the latest revision, then use `e` to import
-   and preview a revised JSON file. Use `s` and type `revise` to confirm the
-   replacement. Confirmation sends the displayed expected
-   revision. Replacing content creates a new revision and invalidates the earlier
+4. Back in the author session, inspect the latest revision, then use `e` to edit
+   its Design. Ctrl+S previews the revision; use `s` and type `revise` to confirm
+   the save. Confirmation sends the displayed expected revision. Saving changed
+   content creates a new revision and invalidates the earlier
    approval for the current package.
 
+Guided edits preserve unknown fields, nonstring sections and untouched absent keys.
+Existing structured sections remain visible and read-only in the form. Press `J`
+to inspect complete JSON. See the [authoring walkthrough](change-authoring.md).
+
+For advanced import, use `i` from the shared list to create a Change, or from an
+inspected Change to replace its content. `--file /tmp/package.json` supplies a
+default path. The interface does not run repository scripts or an external editor.
 Imported files replace the complete package content. Keep all fields you intend to
 retain; unknown structured fields in the file are preserved. Input is limited to
 1 MiB. The current database rejects unchanged content and exact content reverts
@@ -183,15 +191,21 @@ In the package view:
 | `n` / `p` | Move between pages of shared changes |
 | `o` | Open a change by ID |
 | `r` | Recheck authenticated access, then reload shared work or inspect the latest revision; local mode reloads directly |
-| `c` | Import and preview a JSON file as a new package |
-| `e` | Import and preview a replacement revision |
-| `s` | Save a preview, or submit the displayed revision when no preview is open |
+| `c` | Open the guided new-Change form |
+| `e` | Edit the inspected Change's Design |
+| Tab / Shift+Tab, Enter | Select a form field and edit its text |
+| Ctrl+S | Stage the guided form as a readable preview |
+| `i` | Advanced JSON import: new Change from the list, replacement from inspection |
+| `J` | Toggle readable Design and complete JSON inspection |
+| `v` | After explicit saved-state inspection, compare retained input and prepare a replacement draft |
+| `s` | Save a staged preview |
+| `u` | Submit the displayed saved revision for review |
 | `a` | Confirm approval of the displayed revision and digest |
 | Page Up / Page Down, Home / End | Scroll inspected content |
 | `b` | Return to shared browsing |
 | `g` | Switch to shared collections in authenticated mode |
 | Escape | Cancel a prompt, discard a preview, or cancel a pending request |
-| `q` outside a prompt, or Ctrl+C anywhere | Exit |
+| `q` outside a prompt or form, or Ctrl+C anywhere | Exit |
 
 Confirmation prompts require the displayed action word. Approval is unavailable
 for an unsubmitted draft, an already approved package, or the current revision's
@@ -250,6 +264,16 @@ failure, or unexpected redirect therefore requires inspection, not an automatic
 retry. Error messages remain visible; missing responses never look like approval.
 Requests have deadlines and leaving the workbench cancels pending operations.
 
+Failed or cancelled create/revise commands retain their exact input. Use `r` to
+inspect saved work with the same identity and scope, then `v` to compare the saved
+Design and retained replacement. For revision recovery, open the original Change;
+the preview binds the newly inspected revision only after this explicit choice.
+Use `e` to edit the retained draft and `s` to confirm a separate save. This is a
+complete replacement, not a merge with another author's edits. Already-saved
+content cannot produce an unchanged revision. A new creation after an uncertain
+result may duplicate a Change that already exists, even if a bounded list is empty.
+An actual access failure clears retained input as well as inspection.
+
 Collection creation retains its exact preview and idempotency key after a lost
 response or cancellation of the pending HTTP request. Press `s` and confirm
 `collect` to retry that same request explicitly. The server returns the original
@@ -264,8 +288,8 @@ A stale or uncertain attachment blocks package writes; return to packages with
 path silently replaces the content or revision that was confirmed.
 
 Repository text and server messages are displayed as inert text. Terminal control
-characters cannot become terminal commands. The complete JSON remains available by
-scrolling; a small viewport does not change the content or digest being reviewed.
+characters cannot become terminal commands. The complete JSON remains available
+with `J` and scrolling; a small viewport does not change the content or digest being reviewed.
 
 Historical revisions and audit events remain available through the CLI and web
 workbench. See the [context and history walkthrough](context-review.md). The
