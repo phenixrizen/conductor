@@ -30,6 +30,8 @@ not mistaken for working capabilities.
 | [Native design tools](operations/design-tools.md) | Run pinned Spec Kit/ADRKit artifact and decision commands in isolated workers |
 | [Design tool research](architecture/design-tool-research.md) | Verified upstream commands, exact versions and compatibility limits |
 | [Assistant profiles](research/assistant-profiles.md) | Pinned Codex/Claude interfaces and actual versus unverified acceptance |
+| [Usable assisted workflows](architecture/assisted-workflows.md) | Proposed web/TUI authoring, native/API assistant connections, implementation sequence and usability acceptance |
+| [Product vocabulary](architecture/vocabulary.md) | Proposed Objective/Change/Plan/Step/Run terminology, confirmed name origin and Jira/Linear associations |
 | [Milestone 1 architecture](architecture/milestone-1.md) | Implemented work-package model, lifecycle, API flow, persistence, and invariants |
 | [AI-DLC inspiration and plan review](architecture/aidlc-plan-review.md) | Proposed workflow, evidence, role, recovery, and delivery refinements |
 | [Shared engineering context](architecture/collaboration.md) | Shared data, authenticated workspace access, and authority boundaries |
