@@ -92,3 +92,10 @@ Graph source reads capture the entire inspected graph/source tuple and a bounded
 literal path. Related source access uses the same fixed anchor and credential and
 checks every graph repository grant. The result is bounded retained text with
 explicit coverage and unknown freshness, never a fresh collection or Git bundle.
+
+[Feature 020](../020-native-design-assistance/spec.md) extends guided authoring with
+shared native-assistant section suggestions, a restricted assistance MCP profile,
+and explicit requester application as an ordinary unapproved revision. It also
+adopts the Switch visual specification across the web and ASCII terminal header.
+Provider accounts remain native; hosted inference and broad source selection are
+not implemented by this increment.

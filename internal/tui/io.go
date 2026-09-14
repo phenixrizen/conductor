@@ -91,6 +91,10 @@ type request struct {
 	collectionID, receiptDigest string
 	collectionDraft             collectionDraft
 	collectionView              bool
+	assistanceView              bool
+	assistanceID, assistanceKey string
+	assistanceInput             domain.AssistanceInput
+	assistanceApply             domain.ApplySuggestionInput
 }
 
 type result struct {
@@ -104,6 +108,8 @@ type result struct {
 	collection     domain.Collection
 	collectionPage domain.CollectionPage
 	requestDraft   collectionDraft
+	assistance     domain.DesignAssistance
+	assistancePage domain.AssistancePage
 }
 
 type executor func(request) (tea.Cmd, context.CancelFunc)
@@ -117,6 +123,14 @@ func runner(ctx context.Context, c *client.Client) executor {
 			defer cancel()
 			res := result{request: req}
 			switch req.op {
+			case "assist-list":
+				res.assistancePage, res.err = c.ListDesignAssistance(operation, domain.AssistanceListOptions{ChangeID: req.id, Before: req.cursor, Limit: pageSize})
+			case "assist-get":
+				res.assistance, res.err = c.GetDesignAssistance(operation, req.assistanceID)
+			case "assist-request":
+				res.assistance, res.err = c.RequestDesignAssistance(operation, req.assistanceKey, req.assistanceInput)
+			case "assist-apply":
+				res.assistance, res.err = c.ApplyDesignSuggestion(operation, req.assistanceID, req.assistanceKey, req.assistanceApply)
 			case "access":
 				res.session, res.err = c.Session(operation)
 				if res.err == nil {

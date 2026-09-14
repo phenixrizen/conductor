@@ -1,3 +1,4 @@
+import { DesignAssistance } from './DesignAssistance';
 import { visibleControls } from './sourceText';
 import { PackageContent, PackageFields } from './PackageContent';
 import { sameJSON } from './collections';
@@ -51,6 +52,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     // This changes scroll position only; focus stays on the selected tab.
     document.getElementById(`workflow-${workflow}`)?.scrollIntoView({ block: 'start' });
   }, [workflow]);
+  const [assistanceLocked, setAssistanceLocked] = useState(false);
   const [authorDraft, setAuthorDraft] = useState<AuthorDraft>();
   const authorWrite = useRef<AuthorDraft | undefined>(undefined);
   const [id, setID] = useState('');
@@ -282,7 +284,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     } finally { finish(job); }
   }
 
-  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !attachmentRecovery && !authorDraft && !busy
+  const canApprove = !!pkg && !!view && !historical && !inspectionRequired && !attachmentRecovery && !authorDraft && !assistanceLocked && !busy
     && !!view.revision.submittedAt && !pkg.approved && reviewer !== view.revision.author && approvalPermission;
 
   async function approve() {
@@ -316,7 +318,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
   }
 
   function startAuthoring(kind: 'create' | 'revise' | 'submit') {
-    if (!reviewActive.current || busy || authorDraft || !authorPermission || !reviewer.trim()) return;
+    if (!reviewActive.current || busy || authorDraft || assistanceLocked || !authorPermission || !reviewer.trim()) return;
     if (kind === 'create') {
       clearInspection(); setID('');
       setAuthorDraft({ kind, content: {}, original: {}, stage: 'editing' });
@@ -442,7 +444,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
     <section role="tabpanel" id="workflow-review" aria-labelledby="workflow-tab-review" tabIndex={0} hidden={workflow !== 'review'}>
     <section className="change-start panel" aria-label="Start a change">
       <div className="section-heading"><div><h2>What do you want to change?</h2><p>Describe the outcome, save a design, then ask an independent person to review it.</p></div>
-        {authorPermission && <button disabled={busy || !!authorDraft || !reviewer.trim()} onClick={() => startAuthoring('create')}>New change</button>}</div>
+        {authorPermission && <button disabled={busy || !!authorDraft || assistanceLocked || !reviewer.trim()} onClick={() => startAuthoring('create')}>New change</button>}</div>
       {!authorPermission && <p className="muted">You have read access. Select shared work below to inspect a design; author permission is needed to create or revise one.</p>}
     </section>
     {authorDraft && <section className="package-editor panel" aria-label="Change authoring">
@@ -484,6 +486,10 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         setAuthorDraft(previous => previous === authorDraft ? { ...previous, inspected: true } : previous);
       }
     }} onAccessFailure={onAccessFailure} />
+    {browserAccess ? <DesignAssistance access={browserAccess} visible={workflow === 'review'} disabled={pending !== '' || !!authorDraft}
+      changeId={pkg?.id} target={pkg && view && !historical && !inspectionRequired && !attachmentRecovery && !authorDraft ? view.revision : undefined}
+      onBusyChange={collectionWork} onCommandLock={setAssistanceLocked} onInspectionRequired={setInspectionRequired} onAccessFailure={onAccessFailure}/>
+      : <section className="panel"><h2>Native assistant help</h2><p>Assisted Design suggestions require authenticated workspace and repository access. They are unavailable in local mode.</p></section>}
     <div className="request-status" role="status" aria-live="polite">{pending || notice}</div>
     {error && <p role="alert" className="error banner">{error}</p>}
     {inspectionRequired && <div role="alert" className="warning banner"><strong>Renewed inspection required.</strong> {inspectionRequired}</div>}
@@ -508,8 +514,8 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         {!historical && authorPermission && <section className="design-actions" aria-label="Design author actions">
           <h3>Continue this change</h3>
           <p>{view.revision.submittedAt ? 'This revision has been submitted. Editing creates a new draft for a fresh review.' : 'Review the saved draft, then request an independent design review.'}</p>
-          <button className="secondary" disabled={busy || !!authorDraft || !!inspectionRequired || !!attachmentRecovery} onClick={() => startAuthoring('revise')}>Revise design</button>
-          {!view.revision.submittedAt && <button disabled={busy || !!authorDraft || !!inspectionRequired || !!attachmentRecovery} onClick={() => startAuthoring('submit')}>Request design review</button>}
+          <button className="secondary" disabled={busy || !!authorDraft || assistanceLocked || !!inspectionRequired || !!attachmentRecovery} onClick={() => startAuthoring('revise')}>Revise design</button>
+          {!view.revision.submittedAt && <button disabled={busy || !!authorDraft || assistanceLocked || !!inspectionRequired || !!attachmentRecovery} onClick={() => startAuthoring('submit')}>Request design review</button>}
         </section>}
         {historical && <div className="warning"><p>Historical inspection is read-only. Its approvals are retained records and are not authority for a later revision.</p><button className="secondary" disabled={busy} onClick={() => void inspectLatest()}>Inspect latest revision again</button></div>}
         <section className="approval-record" aria-labelledby="approvals-title">
@@ -562,7 +568,7 @@ export function ReviewWorkbench({ access: browserAccess, sessionControls, onAcce
         {attachmentRecovery && <p className="warning">Attachment recovery requires both inspections. Review the latest package and inspect this collection again before another decision.</p>}
       </section>
     {browserAccess ? <ContextCollections access={browserAccess} visible={workflow === 'source'} disabled={pending !== ''}
-      target={pkg && view && !historical && !authorDraft && !inspectionRequired && !attachmentRecovery && pending === ''
+      target={pkg && view && !historical && !authorDraft && !assistanceLocked && !inspectionRequired && !attachmentRecovery && pending === ''
         ? { id: pkg.id, revision: view.revision.number, digest: view.revision.digest, content: view.revision.content } : undefined}
       requestedInspection={requestedCollection} onAccessFailure={onAccessFailure} onBusyChange={collectionWork}
       onInspected={collectionInspected} onAttached={attached}
@@ -594,7 +600,7 @@ function SharedAccessRequired() {
 
 export function WorkbenchHeader({ compact = false }: { compact?: boolean }) {
   return <header className={compact ? 'compact-header' : undefined}>
-    <p className="eyebrow">CONDUCTOR / ENGINEERING WORKBENCH</p>
+    <img className="brand-logo" src="/brand/conductor-logo.svg" alt="Conductor"/>
     <h1>{compact ? "Engineering intent, orchestrated." : <>Engineering intent,<br />orchestrated.</>}</h1>
     <p className="intro">Shared design, coordinated agents, and evidence for every decision.</p>
   </header>;

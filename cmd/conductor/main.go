@@ -21,6 +21,15 @@ func main() {
 		usage()
 	}
 	cmd := os.Args[1]
+	if cmd == "assistant-config" {
+		if err := runAssistantConfig(context.Background(), os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			if !errors.Is(err, flag.ErrHelp) {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+		}
+		return
+	}
 	f := flag.NewFlagSet(cmd, flag.ExitOnError)
 	actor := f.String("actor", "", "local development identity")
 	workspace := f.String("workspace", env("CONDUCTOR_WORKSPACE", ""), "authenticated workspace ID")
@@ -196,6 +205,7 @@ func env(k, d string) string {
 }
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: conductor <command> [flags] [id]
+Native assistance: assistant-config
 Review: tui, session, repositories, list, create, revise, show, history, events, submit, approve
 Context: context, context-check, context-collect, context-collections, context-collection, context-cancel, context-attach
 Graphs: graphs, graph, graph-query, graph-artifact, graph-preview, graph-create

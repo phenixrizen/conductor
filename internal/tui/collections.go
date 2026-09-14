@@ -46,6 +46,9 @@ func isCollectionOperation(op string) bool {
 }
 func isCollectionWrite(op string) bool { return op == "collect" || op == "cancel-collection" }
 func (m model) requestActionAllowed(op string) error {
+	if isAssistanceWrite(op) {
+		return m.assistanceActionAllowed(op)
+	}
 	if isCollectionWrite(op) || op == "attach" {
 		return m.collectionActionAllowed(op)
 	}

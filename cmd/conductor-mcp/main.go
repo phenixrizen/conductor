@@ -39,7 +39,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	bridge, err := mcpserver.New(api)
+	bridge, err := mcpserver.NewWithProfile(api, os.Getenv("CONDUCTOR_MCP_PROFILE"))
 	if err != nil {
 		return err
 	}

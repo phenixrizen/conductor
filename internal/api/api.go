@@ -39,6 +39,11 @@ func New(s packageService) http.Handler {
 
 func routes(a *API) *http.ServeMux {
 	m := http.NewServeMux()
+	m.HandleFunc("POST /api/v1/design-assistance", a.requestDesignAssistance)
+	m.HandleFunc("GET /api/v1/design-assistance", a.listDesignAssistance)
+	m.HandleFunc("GET /api/v1/design-assistance/{id}", a.getDesignAssistance)
+	m.HandleFunc("POST /api/v1/design-assistance/{id}/suggestion", a.proposeDesignSections)
+	m.HandleFunc("POST /api/v1/design-assistance/{id}/application", a.applyDesignSuggestion)
 	m.HandleFunc("GET /api/v1/changes", a.list)
 	m.HandleFunc("POST /api/v1/changes", a.create)
 	m.HandleFunc("GET /api/v1/changes/{id}", a.get)

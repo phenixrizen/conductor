@@ -114,6 +114,7 @@ jobs:
           "$RUNNER_TEMP/checks/bin/openapi-spec-validator" api/webhooks.openapi.yaml
           "$RUNNER_TEMP/checks/bin/openapi-spec-validator" api/operations.openapi.yaml
           python3 scripts/check-docs.py
+          python3 scripts/brand_assets.py --check
           test -z "$(gofmt -l $(git ls-files '*.go'))"
           git diff --exit-code
       - name: Full normal, race, signed browser and durability suites

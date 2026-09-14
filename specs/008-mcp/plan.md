@@ -56,3 +56,10 @@ The [MCP guide](../../docs/operations/mcp.md) lists implemented commands and out
 bounds. The [complete release acceptance](../../docs/operations/full-release-acceptance.md)
 uses compiled MCP processes to author the actual source-to-worker workflow; its
 provider/model data are explicitly synthetic.
+
+[Feature 020](../020-native-design-assistance/spec.md) extends guided authoring with
+shared native-assistant section suggestions, a restricted assistance MCP profile,
+and explicit requester application as an ordinary unapproved revision. It also
+adopts the Switch visual specification across the web and ASCII terminal header.
+Provider accounts remain native; hosted inference and broad source selection are
+not implemented by this increment.

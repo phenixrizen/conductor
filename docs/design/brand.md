@@ -1,6 +1,6 @@
 # Conductor design language — The Switch
 
-**Status:** Implementation of the owner's selected visual direction for PR review.
+**Status:** Implemented visual direction in the combined native-assistance PR, pending review.
 The selected design replaces the earlier orange dot with a right-leaning
 terracotta parallelogram. This does not accept architectural ADRs or adopt the
 separate product-vocabulary proposal. It does not grant merge authority.
@@ -39,7 +39,7 @@ embedded raster images, scripts or external resources.
 | [conductor-mark-reversed.svg](../../apps/web/public/brand/conductor-mark-reversed.svg) | Standalone mark on dark surfaces |
 | [conductor-favicon.svg](../../apps/web/public/brand/conductor-favicon.svg) | Optical 16–24 px variant: heavier single C, separated junction, forest tile |
 | [conductor-app-icon.svg](../../apps/web/public/brand/conductor-app-icon.svg) | Square full-bleed icon; consumer/platform supplies the mask |
-| [tokens.css](../../apps/web/public/brand/tokens.css) | Opt-in reference tokens, not imported by the application |
+| [tokens.css](../../apps/web/public/brand/tokens.css) | Shared web palette, typography, spacing and semantic tokens |
 | [index.html](../../apps/web/public/brand/index.html) | Responsive static specimen, not a live application screen |
 
 The wordmark retains the outlined Inter Display lettering from the selected
@@ -84,7 +84,7 @@ controls, focus, disabled states and dark-mode combinations when adopting tokens
 
 Brand and operational status are separate. Never animate or recolor the junction
 to imply approval, execution, verification or health. Use dedicated status tokens,
-explicit text and supporting facts. Do not recolor existing statuses in this PR.
+explicit text and supporting facts. Keep dedicated operational statuses and their explicit labels when applying the palette.
 
 ## Typography and layout
 
@@ -97,9 +97,9 @@ corners, quiet borders and clear hierarchy. Keep panels flat instead of using he
 decorative shadows. Show one visually primary next action within each work area.
 Keep design prose readable and evidence compact but legible.
 
-These are future interface guidelines, not a claim that existing headings or
-workbench components have been restyled. The CSS tokens are opt-in. Dark-panel
-tokens are reference values, not a completed application dark mode.
+The browser workbench imports these tokens for its light canvas, flat panels,
+buttons, typography and focus treatment. Dark-panel tokens remain reference values,
+not a completed application dark mode.
 
 ## Placement and accessibility
 
@@ -121,9 +121,34 @@ have their own document and ordinarily default to black; they do not inherit a
 parent's text color. Use the explicit reversed asset on a dark surface.
 
 Keep the tagline as readable page text rather than baking it into compact logos.
-For the TUI, use a plain Conductor heading and text statuses. Inline images,
-truecolor, Unicode ornaments and a specific font are not prerequisites. Terminal
-theme application remains separate work with a monochrome fallback.
+The TUI uses a compact ASCII approximation of the parallel-route C and separated
+parallelogram beside its Conductor heading when terminal dimensions allow it.
+Smaller terminals retain a plain heading. Text statuses remain explicit. Inline
+images, truecolor, Unicode ornaments and a specific font are not prerequisites.
+This approximation does not replace the vector source of truth.
+
+At 80 columns by 24 rows, the terminal shows the compact monochrome Switch:
+
+```text
+  //====      ___   Conductor
+ ||          /__/   Engineering intent, orchestrated.
+  \\====
+```
+
+At least 72 columns by 36 rows enables the full five-line approximation:
+
+```text
+   _______       ____
+  /  ____       /___/   Conductor
+ |  /                   Engineering intent, orchestrated.
+ |  \____
+  \______
+```
+
+The compact mark applies from 60 columns by 24 rows when the full size does not
+fit. Below either compact threshold, only the plain heading remains. Both package
+review and release views use the same static artwork, regardless of workflow state;
+permission, approval and evidence labels keep their independent text meanings.
 
 ## Reproduction and validation
 
@@ -156,13 +181,16 @@ Inspect desktop and narrow widths, light/forest backgrounds, 16/24/32/48 px mark
 header scale, transparency, gap separation and monochrome reproduction. Do not
 use the textured generated concept boards as production artwork.
 
-## Change scope
+## Integration and review scope
 
-Assets, guide, generator/checker, specimen and the web favicon link only. No edits
-to workflow screens, application styles, API/schema, approvals, TUI behavior or
-immutable records. No new runtime dependencies.
+The original asset pack was based on `main` at `832d9df` and proposed in PR #38
+from `design/switch-parallelogram-brand` at `a94a895`. At the owner's request, that
+branch was pulled into the native Design assistance branch with its commits retained.
+The combined implementation adopts the web design tokens and logo in workflow
+screens and adds responsive ASCII terminal branding. The browser workflow and
+terminal acceptance checks cover the integrated presentation.
 
-Based on `main` at `832d9dfd5cfb1c688353357fae1fffdf75ed835d`, with no unmerged
-prerequisite. Independent of PR #36's vocabulary proposal and PR #37's guided
-Change authoring. Those changes retain their own review/adoption boundaries.
-This guide does not select a project license or establish trademark clearance.
+The combined PR is stacked on PR #37's guided Change authoring; #38 is superseded
+by the combined review. PR #36's broader vocabulary proposal remains separate and
+Proposed. This guide does not accept architectural ADRs, select a project license,
+establish trademark clearance or grant merge/deployment authority.

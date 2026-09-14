@@ -13,8 +13,15 @@ The [guided Change authoring increment](../specs/019-guided-change-authoring/spe
 addresses usability after the original release stack: readable creation/editing
 in browser and terminal, separate review requests, and meaningful shared titles.
 It branches from `main` independently of the broader vocabulary proposal in PR #36.
-Its implementation and verification do not complete provider-assisted authoring
-or change the release qualification limits below.
+The [native Design assistance increment](../specs/020-native-design-assistance/spec.md)
+is stacked on that authoring PR #37. It adds human-requested, agent-proposed section
+suggestions and exact human application, using native provider-host authentication
+and a separate Conductor agent token. It also includes the Switch assets from PR #38
+at `a94a895` and applies that design specification to the browser and ASCII terminal.
+The original branding commits are preserved; its standalone review is superseded by
+the combined branch. PR #36's wider vocabulary proposal remains separate and Proposed.
+Hosted inference, managed provider login and broader source selection remain later
+work. These increments do not change the release qualification limits below.
 
 Multiple engineers and agents use the same authenticated workspace to discover
 relationships across repositories, retrieve source and governing decisions, plan

@@ -1,4 +1,4 @@
-/* Conductor / The Switch. Opt-in tokens; not imported by the application yet.
+/* Conductor / The Switch. Shared light-workbench tokens; dark values remain references.
    Brand accent and operational status are deliberately different concepts. */
 :root {
   --conductor-forest: #263D35;
