@@ -1,7 +1,8 @@
 # Feature 020: Native assistant section suggestions
 
-**Status: Implemented; PR review pending.** This increment depends on Feature 019 and PR #37. It
-connects the existing native MCP boundary to reviewable Design suggestions;
+**Status: Implemented; PR review pending.** This increment depends on Feature 019,
+merged through PR #37. PR #39 now targets `main` and connects the existing native
+MCP boundary to reviewable Design suggestions;
 embedded inference, managed provider login, generalized shared drafts and broader
 source selection remain later increments.
 

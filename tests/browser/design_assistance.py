@@ -56,11 +56,28 @@ with sync_playwright() as p:
         page.get_by_label("Help wanted", exact=True).fill(instruction)
     def save_request(page):
         button(page, "Preview assistance request").click()
-        with page.expect_response(lambda r: r.url == origin + "/api/v1/design-assistance" and r.request.method == "POST") as response:
+        endpoint = origin + "/api/v1/design-assistance"
+        saved = []
+        def capture(route):
+            assert route.request.method == "POST"
+            # Retain the actual server body before delivering it to Chromium;
+            # DevTools may discard its separate response-body copy in CI.
+            response = route.fetch(max_retries=0, max_redirects=0)
+            assert response.status == 201, response.text()
+            value = response.json()
+            assert value["input"] == route.request.post_data_json
+            saved.append(value)
+            route.fulfill(response=response)
+        page.route(endpoint, capture)
+        try:
             button(page, "Save assistance request").click()
-        value = response.value.json()
-        expect(button(page, "Check for suggestion")).to_be_enabled()
-        return value
+            expect(page.get_by_role("heading", name="Continue in your native assistant", exact=True)).to_be_visible()
+            expect(button(page, "Check for suggestion")).to_be_enabled()
+            assert len(saved) == 1, saved
+            expect(page.locator(".native-handoff")).to_contain_text(saved[0]["id"])
+            return saved[0]
+        finally:
+            page.unroute(endpoint, capture)
     page = login("author"); inspect(page)
     original = api(path)
     commands = []

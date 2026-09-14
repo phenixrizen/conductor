@@ -14,8 +14,10 @@
    all existing authoring, source, execution and approval regressions. Run the
    applicable Go, frontend, schema, documentation and migration checks.
 
-This branch is stacked on `codex/change-authoring-20260914` / PR #37 at `5633cbb`.
-Review that prerequisite first. The separate broad proposal in PR #36 stays Proposed.
+This branch originally stacked on `codex/change-authoring-20260914` / PR #37 at
+`5633cbb`. That prerequisite merged into `main` at `806bb10`; PR #39 now targets
+`main` and includes the merged prerequisite history. PR #36's documentation also
+merged at `a2da5ab`; its broader vocabulary remains Proposed.
 The requester's exclusive apply permission keeps this restricted native path under
 the existing revision-author independence rule. General shared contribution policy,
 embedded API inference and managed provider OAuth are later work.
