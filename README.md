@@ -16,9 +16,11 @@ Design approval, permission to execute, publication, merge, deployment and produ
 outcome are separate facts.
 
 The [full release contract](docs/full-release.md) records implementation, verification
-and the ordered PR stack. This branch contains release work awaiting review and
-merge. It has not been deployed. The [documentation map](docs/README.md) connects
-each capability to its specification, setup and tested limits.
+and the ordered PR stack. PRs #15–#34 were merged into `main` at
+[`9631a45`](https://github.com/phenixrizen/conductor/commit/9631a45b32bf119be8a48c34ab5ebae942e9705b),
+and the [final main CI run](https://github.com/phenixrizen/conductor/actions/runs/34784164485)
+passed. Conductor has not been deployed. The [documentation map](docs/README.md)
+connects each capability to its specification, setup and tested limits.
 
 ## What you can do
 
@@ -55,29 +57,48 @@ status or a successful deployment cannot substitute for passing verification.
 
 ## Run locally
 
-Use Go 1.25+ with the tested Go 1.26.8 toolchain, Node.js 22.14.0, npm, Git and
-Docker with Compose. Dependencies and frontend lockfiles are committed.
+Use Go 1.25+ with the tested Go 1.26.8 toolchain, Git, Make and Docker with Compose.
+The optional browser also needs Node.js 22.14.0 and npm. Dependencies and frontend
+lockfiles are committed.
+
+Start PostgreSQL and keep the API running in your first terminal:
 
 ```bash
-./scripts/start-local-db.sh
-export DATABASE_URL='postgres://conductor:conductor@localhost:5432/conductor?sslmode=disable'
-CONDUCTOR_AUTH_MODE=local CONDUCTOR_ADDR=127.0.0.1:8080 go run ./cmd/conductord
+make run
 ```
 
-The script creates a persistent development database, preserves existing data and
-reports required upgrades. It supports Docker Snap with checkouts under `/mnt`.
-After enabling Docker group access, start a new login session or use
-`sg docker -c './scripts/start-local-db.sh'` until the current session has that group.
-
-Start the React/TypeScript workbench in another terminal:
+In a second terminal, connect the interactive workbench to that API:
 
 ```bash
-npm --prefix apps/web ci
-npm --prefix apps/web run dev -- --host 127.0.0.1
+make tui
 ```
 
-Open Vite's printed URL. The development proxy forwards API calls to port 8080;
-`CONDUCTOR_API_URL` selects another local API address.
+The API defaults to `http://127.0.0.1:8080`; the terminal uses the local actor
+`developer`. Use `make tui ACTOR=reviewer` for an independent local review session.
+Press `q` to exit the terminal and Ctrl+C in the first terminal to stop the API.
+PostgreSQL stays running with its data retained; `make db-stop` stops it without
+deleting its volume. `make help` lists the available targets.
+
+Docker Snap is supported with checkouts under `/mnt`. If your current shell has
+not picked up Docker group access, use a new login session or run
+`sg docker -c 'make -C /absolute/path/to/conductor run'` with your checkout's path.
+Startup uses checked migrations and preserves existing data. Before upgrading an
+existing database, keep a verified backup. Older databases without a migration
+ledger need a one-time inspected baseline; see
+[local database recovery](docs/operations/local-development.md#recover-an-older-local-database).
+
+For the React/TypeScript browser, use an optional third terminal:
+
+```bash
+make web-dev
+```
+
+This installs the locked frontend dependencies and starts Vite. Open its printed
+URL. To use another API port, pass the same setting to each target, for example
+`make run CONDUCTOR_ADDR=127.0.0.1:8081` and
+`make tui CONDUCTOR_ADDR=127.0.0.1:8081`. `CONDUCTOR_URL` selects an existing API;
+the browser proxy defaults to that URL. Use `make serve` to start only the API
+against a separately configured database.
 
 Create synthetic work and inspect it from another client:
 
@@ -85,7 +106,7 @@ Create synthetic work and inspect it from another client:
 go run ./cmd/conductor create --actor developer --title 'Review replay handling'
 go run ./cmd/conductor list --actor reviewer
 go run ./cmd/conductor show --actor reviewer CHG-...
-go run ./cmd/conductor tui --actor reviewer
+make tui ACTOR=reviewer
 ```
 
 Use the actual returned change ID in place of `CHG-...`. Explicit local mode
@@ -171,7 +192,7 @@ change their status/assignment, or mirror Linear and Jira.
 Run the applicable checks in [AGENTS.md](AGENTS.md), including explicit opt-ins for
 PostgreSQL, browser, terminal, Docker, Temporal and process recovery. Missing opt-ins
 produce reported skips, not passes. The [release contract](docs/full-release.md)
-tracks the remaining review and verification gates.
+records the required verification gates and their scope.
 
 ## Contributing
 

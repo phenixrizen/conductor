@@ -26,6 +26,12 @@ This feature grants no package approval, merge, publication or deployment author
   exact file checksums atomically, reject gaps and changed recorded files, and
   preserve an append-only ledger. An existing untracked schema requires a declared
   operator baseline; retain its provenance as `operator_baseline`, not `executed`.
+- Local development startup uses that same migration operator before starting the
+  API. Bind migration to its selected loopback Compose database, independently of
+  an inherited API database URL. Fresh databases record every applied checksum;
+  tracked databases receive pending migrations. Untracked legacy schemas require
+  explicit inspected baseline recovery, and failed or uncertain migration must
+  prevent API startup. Never infer history from the presence of a table.
 - Backup PostgreSQL through trusted PostgreSQL 17 `pg_dump`, custom archive format,
   without credentials in command arguments or provider/source environment leakage.
   Publish a new owner-only archive and checksum manifest. A failed dump must not
