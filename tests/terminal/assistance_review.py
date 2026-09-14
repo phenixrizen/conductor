@@ -121,7 +121,7 @@ def main():
             ["--workspace", "team", "--repository-id", "application", package["id"]], files[identity], tokens)
         terminals.append(terminal)
         terminal.wait_text("Loaded latest revision")
-        terminal.wait_text("/___/")
+        terminal.wait_text("_______ /")
         terminal.wait_text("Engineering intent, orchestrated.")
         terminal.settle()
         return terminal
@@ -281,23 +281,23 @@ def main():
         refresh(author)
         press(author, "c", "FORM: Request Design assistance")
         press(author, "\x1b", "Request form discarded")
-        # Normal 80x24 terminals get the compact ASCII Switch. Very small
+        # Normal 80x24 terminals keep a readable C and a tiny junction. Very small
         # terminals prioritize exact inspection using a plain heading.
         since = len(author.output)
         author.resize(80, 24)
-        author.wait_text("//====", since)
+        author.wait_text("_______ /", since)
         author.settle()
         assert "/___/" not in author.text(since)
         Path("/tmp/conductor-terminal-assistance-compact.txt").write_text(author.text(since))
         since = len(author.output)
         author.resize(50, 23)
         author.wait_text("Conductor | principal", since)
-        assert "//====" not in author.text(since)
+        assert "_______ /" not in author.text(since)
         author.resize(121, 46)
         author.settle()
         since = len(author.output)
         author.resize(120, 45)
-        author.wait_text("/___/", since)
+        author.wait_text("_______ /", since)
         author.settle()
         Path("/tmp/conductor-terminal-assistance-brand.txt").write_text(author.text(since))
         for terminal in terminals:

@@ -36,8 +36,8 @@ and retained facts after pool reopen. The backup/restore gate additionally compa
 the new assistance tables, idempotency records, produced revision and audit across
 actual PostgreSQL dump/restore. All 15 signed browser regression tests pass under
 race detection, including lost acknowledgements and interrupted requests. Real PTY
-acceptance covers the no-file assistance flow, uncertain recovery and both ASCII
-header sizes. Screenshots cover desktop/mobile workbench and brand specimen.
+acceptance covers the no-file assistance flow, uncertain recovery and standard and large
+terminal layouts. Screenshots cover desktop/mobile workbench and brand specimen.
 
 Native provider inference and login were not executed. Codex CLI 0.154.0 parsed a
 synthetic configuration; Claude Code and Antigravity configurations are checked

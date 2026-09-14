@@ -1,24 +1,17 @@
 package tui
 
-// The monochrome Switch keeps two C routes and a detached, right-leaning
-// parallelogram. Short terminals use a compact mark; very small terminals retain
-// the plain heading and inspected facts. The mark never represents status.
+// The Switch retains two readable C routes. A single slanted stroke stands in
+// for its small junction at character-cell resolution; drawing a closed box here
+// makes the accent dominate the mark. Small terminals keep a plain heading.
 func switchHeader(width, height int) []string {
 	if width < 60 || height < 24 {
 		return nil
 	}
-	if width < 72 || height < 36 {
-		return []string{
-			"  //====      ___   Conductor",
-			" ||          /__/   Engineering intent, orchestrated.",
-			"  \\\\====",
-		}
-	}
 	return []string{
-		"   _______       ____",
-		"  /  ____       /___/   Conductor",
-		" |  /                   Engineering intent, orchestrated.",
-		" |  \\____",
+		"   _______ /",
+		"  /  ____",
+		" |  /          Conductor",
+		" |  \\____      Engineering intent, orchestrated.",
 		"  \\______",
 	}
 }

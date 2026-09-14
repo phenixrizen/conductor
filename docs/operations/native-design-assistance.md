@@ -162,5 +162,5 @@ CONDUCTOR_TEST_DATABASE_URL='postgres://conductor:conductor@127.0.0.1:5432/condu
 
 This drives the request form, native handoff, selected application, lost-response
 recovery, stale revisions, independent approval and access denial through real PTYs.
-It also inspects both ASCII mark sizes and the plain-heading fallback. The fixture
+It also inspects the ASCII mark at standard and large terminal sizes and the plain-heading fallback. The fixture
 uses synthetic agent text; it does not start a provider or certify model quality.

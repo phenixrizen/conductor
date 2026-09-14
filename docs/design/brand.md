@@ -127,28 +127,22 @@ Smaller terminals retain a plain heading. Text statuses remain explicit. Inline
 images, truecolor, Unicode ornaments and a specific font are not prerequisites.
 This approximation does not replace the vector source of truth.
 
-At 80 columns by 24 rows, the terminal shows the compact monochrome Switch:
+At 80 columns by 24 rows, the terminal keeps the C readable and renders its
+junction as one slanted stroke. A closed ASCII parallelogram takes too many cells
+and overwhelms the routes. The name and tagline occupy separate lines:
 
 ```text
-  //====      ___   Conductor
- ||          /__/   Engineering intent, orchestrated.
-  \\====
-```
-
-At least 72 columns by 36 rows enables the full five-line approximation:
-
-```text
-   _______       ____
-  /  ____       /___/   Conductor
- |  /                   Engineering intent, orchestrated.
- |  \____
+   _______ /
+  /  ____
+ |  /          Conductor
+ |  \____      Engineering intent, orchestrated.
   \______
 ```
 
-The compact mark applies from 60 columns by 24 rows when the full size does not
-fit. Below either compact threshold, only the plain heading remains. Both package
-review and release views use the same static artwork, regardless of workflow state;
-permission, approval and evidence labels keep their independent text meanings.
+The same five-line mark applies from 60 columns by 24 rows. Smaller terminals use
+the plain heading. The ASCII junction is an optical approximation, not replacement
+vector artwork. Package review and release views share this static header;
+permission, approval and evidence labels retain their independent meanings.
 
 ## Reproduction and validation
 

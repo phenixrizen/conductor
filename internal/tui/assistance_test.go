@@ -262,7 +262,7 @@ func TestAssistanceResponseRejectsTamperedBaseSuggestionAndApplication(t *testin
 func TestSwitchHeaderIsASCIIResponsiveAndIndependentOfWorkflowState(t *testing.T) {
 	m := authenticatedModel(t, nil)
 	header := strings.Join(m.header(), "\n")
-	if !strings.Contains(header, "/___/") || !strings.Contains(header, "Engineering intent, orchestrated.") {
+	if !strings.Contains(header, "_______ /") || !strings.Contains(header, "Engineering intent, orchestrated.") {
 		t.Fatal("Switch art missing")
 	}
 	for _, r := range header {
@@ -270,16 +270,25 @@ func TestSwitchHeaderIsASCIIResponsiveAndIndependentOfWorkflowState(t *testing.T
 			t.Fatal("brand requires non-ASCII terminal")
 		}
 	}
-	m.height = 24
-	if !strings.Contains(strings.Join(m.header(), "\n"), "//====") || strings.Contains(strings.Join(m.header(), "\n"), "/___/") {
-		t.Fatal("normal terminal did not use compact ASCII Switch")
+	m.width, m.height = 80, 24
+	compact := strings.Join(m.header(), "\n")
+	if !strings.Contains(compact, "_______ /") || strings.Contains(compact, "/___/") || strings.Contains(compact, "//====") {
+		t.Fatal("normal terminal lost the readable C or oversized junction returned")
+	}
+	if m.bodyHeight() < 6 {
+		t.Fatal("branding left too little room for inspection")
+	}
+	for _, line := range m.header() {
+		if len(line) > m.width {
+			t.Fatal("header exceeds terminal width")
+		}
 	}
 	m.width = 50
-	if strings.Contains(strings.Join(m.header(), "\n"), "//====") {
+	if switchHeader(m.width, m.height) != nil {
 		t.Fatal("art consumed narrow terminal inspection")
 	}
 	m.width, m.height = 80, 23
-	if strings.Contains(strings.Join(m.header(), "\n"), "//====") {
+	if switchHeader(m.width, m.height) != nil {
 		t.Fatal("art consumed very short terminal inspection")
 	}
 }
