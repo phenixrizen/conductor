@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="logo-title logo-desc">
+  <title id="logo-title">Conductor</title>
+  <desc id="logo-desc">The Switch: parallel routes form a C with a separate right-leaning parallelogram. This is brand artwork, not status.</desc>
+  <g id="mark">
+    <g id="routes" fill="#263D35">
+      <path d="M198 39.5H124A88.5 88.5 0 0 0 124 216.5H204A8.5 8.5 0 0 0 204 199.5H124A71.5 71.5 0 0 1 124 56.5H181Z" />
+      <path d="M199 63.5L176 86.5Q170 92.5 167 92.5H124A35.5 35.5 0 0 0 124 163.5H204A8.5 8.5 0 0 1 204 180.5H124A52.5 52.5 0 0 1 124 75.5H164.5L176.5 63.5Z" />
+    </g>
+    <path id="junction" fill="#D26B3F" d="M204 39.5H236L216 59.5H184Z" />
+  </g>
+</svg>
