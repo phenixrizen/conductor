@@ -39,6 +39,27 @@ build them from the exact source using the existing
 [CodeGraph](repository-graph.md) instructions. Never substitute a moving tag for a
 reviewed execution profile's image digest.
 
+## CI verification
+
+The [verification workflow](../../.github/workflows/verify.yml) runs five checks
+in parallel: full normal tests, full race-enabled tests, native identity-provider
+qualification, isolated workers, and release-artifact reproducibility. Both full
+test jobs keep their own PostgreSQL instance and the same browser, terminal,
+Temporal, process-restart and backup opt-ins. A failing matrix job does not cancel
+the other. Static analysis and source/contract checks run with the normal suite.
+The archive job still builds twice, compares the complete bytes and checks the
+extracted release. All five results are needed for release verification.
+
+`scripts/test-with-timings.sh normal` and `scripts/test-with-timings.sh race` run
+the respective complete Go suite. Optional trailing Go test arguments can select a
+focused local check. Test output streams as it runs, preserving failed-test and
+compiler diagnostics and the Go command's failure status. Each CI job summary
+lists its slowest 20 top-level tests and packages; parent durations include their
+subtests and are not added together. Replayed test-cache timings are identified
+and excluded from the slow-test list. Outside CI, the summary prints to stdout.
+Use the existing integration environment settings when reproducing these jobs;
+the reporting wrapper does not enable or disable fixture opt-ins.
+
 ## Configure independent services
 
 The supplied [systemd template](../../deploy/release/systemd/conductor@.service)
