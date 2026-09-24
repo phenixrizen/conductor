@@ -1,0 +1,91 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+@import "@xterm/xterm/css/xterm.css";
+
+/* Conductor / The Switch palette (web/public/brand/tokens.css) as Tailwind scales. */
+@theme static {
+  --color-forest-50: #f1f5f2;
+  --color-forest-100: #e1e9e3;
+  --color-forest-200: #c3d2c7;
+  --color-forest-300: #9bb3a3;
+  --color-forest-400: #6e8e7b;
+  --color-forest-500: #4a6a5a;
+  --color-forest-600: #35514a;
+  --color-forest-700: #263d35;
+  --color-forest-800: #1e302a;
+  --color-forest-900: #18211c;
+  --color-forest-950: #0e1512;
+  --color-terracotta-50: #fcf3ef;
+  --color-terracotta-100: #f9e3da;
+  --color-terracotta-200: #f3c6b4;
+  --color-terracotta-300: #eba184;
+  --color-terracotta-400: #df8259;
+  --color-terracotta-500: #d26b3f;
+  --color-terracotta-600: #b8532c;
+  --color-terracotta-700: #a44727;
+  --color-terracotta-800: #843a22;
+  --color-terracotta-900: #6a301f;
+  --color-terracotta-950: #3a1810;
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  /* Forest is dark; use the brand tone itself for primary in light mode. */
+  --ui-primary: var(--color-forest-700);
+  --ui-secondary: var(--color-terracotta-700);
+}
+
+.dark {
+  --ui-primary: var(--color-forest-300);
+  --ui-secondary: var(--color-terracotta-400);
+}
+
+:root {
+  --ui-container: 100%;
+}
+
+html, body, #__nuxt {
+  height: 100%;
+}
+
+.terminal-host {
+  height: 100%;
+  min-height: 12rem;
+  background: #18211c; /* brand ink */
+}
+
+.terminal-host .xterm {
+  height: 100%;
+  padding: 0.5rem;
+}
+
+.terminal-host .xterm-viewport {
+  scrollbar-width: thin;
+}
+
+.file-view pre {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  tab-size: 4;
+}
+
+.file-view .line {
+  display: flex;
+}
+
+.file-view .line-no {
+  user-select: none;
+  width: 3.5rem;
+  flex: none;
+  text-align: right;
+  padding-right: 0.75rem;
+  opacity: 0.45;
+}
+
+.file-view .line.target {
+  background: color-mix(in oklab, var(--ui-primary) 18%, transparent);
+}
+
+.file-view .line-code {
+  white-space: pre;
+}

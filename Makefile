@@ -19,6 +19,7 @@ web-install: ## reproducible npm install
 
 web-build: ## generate the static SPA into internal/web/dist
 	cd web && npm run generate
+	touch internal/web/dist/.gitkeep
 
 web-typecheck: ## vue-tsc type check
 	cd web && npm run typecheck

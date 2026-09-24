@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conductor · The Switch identity</title>
+  <link rel="icon" type="image/svg+xml" href="conductor-favicon.svg" />
+  <link rel="stylesheet" href="tokens.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--conductor-surface); color: var(--conductor-text); font-family: var(--conductor-font-ui); line-height: 1.55; }
+    main { max-width: 1240px; padding: 40px; margin: auto; }
+    header, footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 12px; letter-spacing: .08em; }
+    header { padding-bottom: 20px; border-bottom: 1px solid var(--conductor-border); }
+    header strong { letter-spacing: .16em; }
+    .hero { padding: 54px 0 32px; }
+    .hero img { width: min(100%, 1000px); height: auto; display: block; }
+    h1 { font-size: clamp(21px, 3vw, 32px); font-weight: 450; margin: 0 0 32px; }
+    h2 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em; margin: 0 0 24px; }
+    h3 { font-size: 17px; margin: 0 0 4px; }
+    p { margin: 0 0 8px; }
+    .muted { color: var(--conductor-muted); }
+    .grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; }
+    .panel { min-width: 0; padding: 28px; border: 1px solid var(--conductor-border); border-radius: var(--conductor-radius); background: var(--conductor-panel); }
+    .dark { background: var(--conductor-forest); color: var(--conductor-sage); border-color: var(--conductor-forest); }
+    .lockup { width: 100%; height: auto; display: block; margin: 22px 0 26px; }
+    .icons { display: flex; align-items: center; flex-wrap: wrap; gap: 20px; }
+    .app-icon { width: 112px; height: 112px; border-radius: 24px; }
+    .sizes { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; }
+    figure { margin: 0; text-align: center; }
+    figcaption { font-size: 11px; margin-top: 8px; color: var(--conductor-muted); }
+    .colors { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 28px; font-size: 12px; }
+    .swatch { display: block; height: 12px; border-radius: 3px; margin-bottom: 8px; border: 1px solid var(--conductor-border); }
+    .forest { background: var(--conductor-forest); }
+    .orange { background: var(--conductor-terracotta); }
+    .sage { background: var(--conductor-sage); }
+    code { font-family: var(--conductor-font-code); font-size: .85em; }
+    .lower { margin-top: 24px; }
+    .mono { width: min(100%, 430px); height: auto; display: block; }
+    .note { font-size: 13px; max-width: 60ch; }
+    .language { margin: 32px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+    .signal { color: var(--conductor-accent-text); }
+    footer { padding-top: 20px; margin-top: 28px; border-top: 1px solid var(--conductor-border); letter-spacing: 0; }
+    @media (max-width: 720px) { main { padding: 24px; } .grid, .language { grid-template-columns: 1fr; } .hero { padding-top: 32px; } .panel { padding: 22px; } }
+    @media (forced-colors: active) { .panel { border-color: CanvasText; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><strong>CONDUCTOR</strong><span>THE SWITCH / VISUAL IDENTITY</span></header>
+  <section class="hero" aria-label="Primary identity">
+    <img src="conductor-logo.svg" alt="Conductor: a double-route C with a right-leaning terracotta junction" width="800" height="180" />
+    <h1>Engineering intent, orchestrated.</h1>
+    <p><strong>Parallel paths. Shared direction.</strong></p>
+    <p class="muted">The selected parallelogram, drawn as flat vector geometry. No dot, texture, gradient or glow.</p>
+  </section>
+  <div class="grid">
+    <section class="panel dark" aria-label="Reversed identity">
+      <h2>On forest</h2>
+      <img class="lockup" src="conductor-logo-reversed.svg" alt="Conductor reversed logo" width="800" height="180" />
+      <p class="note">One identity. Light routes. The same terracotta junction and deliberate gap.</p>
+    </section>
+    <section class="panel" aria-label="Small-size assets and palette">
+      <h2>App icon + optical small-size mark</h2>
+      <div class="icons">
+        <img class="app-icon" src="conductor-app-icon.svg" alt="Conductor app icon" width="112" height="112" />
+        <div class="sizes">
+          <figure><img src="conductor-favicon.svg" alt="" width="16" height="16" /><figcaption>16 px</figcaption></figure>
+          <figure><img src="conductor-favicon.svg" alt="" width="24" height="24" /><figcaption>24 px</figcaption></figure>
+          <figure><img src="conductor-mark.svg" alt="" width="32" height="32" /><figcaption>32 px</figcaption></figure>
+          <figure><img src="conductor-mark.svg" alt="" width="48" height="48" /><figcaption>48 px</figcaption></figure>
+        </div>
+      </div>
+      <div class="colors">
+        <div><span class="swatch forest"></span>Forest<br /><code>#263D35</code></div>
+        <div><span class="swatch orange"></span>Terracotta<br /><code>#D26B3F</code></div>
+        <div><span class="swatch sage"></span>Sage<br /><code>#EEF1E9</code></div>
+      </div>
+    </section>
+  </div>
+  <section class="panel lower" aria-label="Monochrome identity">
+    <h2>One-color reproduction</h2>
+    <img class="mono" src="conductor-logo-mono.svg" alt="Conductor monochrome logo" width="800" height="180" />
+    <p class="note muted">The gap defines the junction even without color. External images use the SVG's own color, not the parent's text color.</p>
+  </section>
+  <section class="language" aria-label="Design language">
+    <div><h3>Calm, precise, human-directed.</h3><p class="note muted">Readable headings, bounded panels, visible next actions, and monospace only where the content needs it.</p></div>
+    <div><h3 class="signal">Brand is not evidence.</h3><p class="note muted">The junction never indicates approval, execution or health. Status always needs its own explicit label and supporting facts.</p></div>
+  </section>
+  <footer><span>Human direction. Agent execution.</span><span>Static brand specimen · not a live application screen</span></footer>
+</main>
+</body>
+</html>

@@ -5,6 +5,6 @@ web/node_modules/
 web/.nuxt/
 web/.output/
 web/.data/
-web/dist/
+web/dist
 *.log
 .DS_Store
