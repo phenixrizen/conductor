@@ -21,7 +21,8 @@ export default defineNuxtConfig({
     },
   },
   nitro: {
-    output: { publicDir: '../internal/web/dist' },
+    // Output stays in web/.output/public; `make web-build` copies it into
+    // internal/web/dist so Nuxt's own cleanup never empties the embed directory.
     devProxy: {
       '/api': { target: 'http://127.0.0.1:8080/api', changeOrigin: true },
       '/ws': { target: 'ws://127.0.0.1:8080/ws', ws: true, changeOrigin: true },

@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-//go:generate npm --prefix ../../web run generate
+//go:generate make -C ../.. web-build
 
 //go:embed all:dist
 var dist embed.FS

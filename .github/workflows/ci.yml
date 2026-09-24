@@ -21,8 +21,7 @@ jobs:
         working-directory: web
       - run: npm test
         working-directory: web
-      - run: npm run generate
-        working-directory: web
+      - run: make web-build
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist

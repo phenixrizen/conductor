@@ -18,8 +18,10 @@ build-go: ## build the Go binary using whatever UI is in internal/web/dist
 web-install: ## reproducible npm install
 	cd web && npm ci
 
-web-build: ## generate the static SPA into internal/web/dist
+web-build: ## generate the static SPA and copy it into internal/web/dist
 	cd web && npm run generate
+	find internal/web/dist -mindepth 1 -not -name .gitkeep -delete
+	cp -r web/.output/public/. internal/web/dist/
 	touch internal/web/dist/.gitkeep
 
 web-typecheck: ## vue-tsc type check

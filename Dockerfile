@@ -4,7 +4,7 @@ WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web ./
-RUN npm run generate
+RUN npm run generate && mkdir -p /src/internal/web/dist && cp -r .output/public/. /src/internal/web/dist/
 
 # Stage 2: Go binary with the bundle embedded
 FROM golang:1.26 AS build

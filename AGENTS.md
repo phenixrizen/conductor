@@ -45,7 +45,7 @@ make lint                      # gofmt -l, go vet
 go test -race -count=1 ./...   # includes PTY, WebSocket and pion loopback tests
 npm --prefix web run typecheck
 npm --prefix web test          # vitest (link detection)
-npm --prefix web run generate  # writes internal/web/dist
+make web-build                 # nuxt generate + copy into internal/web/dist
 make build-go                  # embeds whatever is in internal/web/dist
 python3 scripts/brand_assets.py --check
 ```
