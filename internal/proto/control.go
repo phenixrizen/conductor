@@ -109,6 +109,7 @@ type Welcome struct {
 	FileView        bool        `json:"fileView"`
 	ICEServers      []ICEServer `json:"iceServers,omitempty"`
 	RelayTimeoutMs  int         `json:"relayTimeoutMs,omitempty"`
+	RelayOnly       bool        `json:"relayOnly,omitempty"`
 }
 
 // ICEServer is the WebRTC ICE server description sent to clients.

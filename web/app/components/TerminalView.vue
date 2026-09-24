@@ -7,12 +7,16 @@ import { findFileLocations } from '~/utils/links'
 import { closeReason, encodeText, type ControlMessage, type FileResponse, type TransportKind, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 
-const props = defineProps<{
-  /** Creates a fresh transport for each (re)connection. */
-  createTransport: () => TerminalTransport
-  readOnly?: boolean
-  autoConnect?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    /** Creates a fresh transport for each (re)connection. */
+    createTransport: () => TerminalTransport
+    readOnly?: boolean
+    /** Connect on mount. Vue casts absent booleans to false, hence the explicit default. */
+    autoConnect?: boolean
+  }>(),
+  { readOnly: false, autoConnect: true },
+)
 
 const emit = defineEmits<{
   welcome: [welcome: Welcome]
@@ -220,7 +224,7 @@ onMounted(() => {
   observer = new ResizeObserver(() => scheduleResize())
   observer.observe(host.value!)
   pingTimer = window.setInterval(() => transport?.ping(), 25000)
-  if (props.autoConnect !== false) connect()
+  if (props.autoConnect) connect()
 })
 
 onBeforeUnmount(() => {

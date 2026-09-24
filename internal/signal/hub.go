@@ -67,6 +67,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 			hs.info.Status = session.StatusRunning
 		}
 		hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
+		hs.relayOnly = reg.Session.RelayOnly
 		hs.mu.Unlock()
 		return hs, true, nil
 	}
@@ -80,6 +81,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		secret:     secret,
 		log:        hub.log,
 		conn:       conn,
+		relayOnly:  reg.Session.RelayOnly,
 		viewers:    map[string]*Viewer{},
 		maxViewers: hub.MaxViewers,
 		info: session.Info{

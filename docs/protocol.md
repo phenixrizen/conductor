@@ -67,7 +67,9 @@ resize. Attaching as a controller applies the client's size immediately.
 ## Hosted sessions: signaling and relay
 
 For a hosted session the viewer's WebSocket first receives
-`welcome{transport:"webrtc", viewerId, iceServers, relayTimeoutMs}`. The viewer
+`welcome{transport:"webrtc", viewerId, iceServers, relayTimeoutMs, relayOnly?}`.
+A host started with `--relay-only` sets `relayOnly`, and the viewer requests the
+relay immediately instead of attempting WebRTC. The viewer
 creates the data channel and the SDP offer; the host answers. Candidates trickle
 in both directions.
 
@@ -88,7 +90,7 @@ View-role INPUT and `resize` are dropped by the server before they reach the hos
 `GET /ws/host?token=…` (host token or admin token). Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version}, session{name,agentId,command,cwd,cols,rows}, resume?{sessionId,secret}}`,
+Host → server: `register{proto, host{name,version}, session{name,agentId,command,cwd,cols,rows,relayOnly?}, resume?{sessionId,secret}}`,
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`.

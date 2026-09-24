@@ -36,6 +36,8 @@ type HostSession struct {
 	Cwd     string   `json:"cwd"`
 	Cols    uint16   `json:"cols"`
 	Rows    uint16   `json:"rows"`
+	// RelayOnly tells viewers to skip WebRTC and use the server relay.
+	RelayOnly bool `json:"relayOnly,omitempty"`
 }
 
 // HostResume lets a reconnecting host reclaim its session.

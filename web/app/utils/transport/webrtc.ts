@@ -93,8 +93,8 @@ export class WebRTCTransport extends BaseTransport {
   }
 
   private startPeer(welcome: Welcome): void {
-    if (this.forceRelay || typeof RTCPeerConnection === 'undefined') {
-      this.requestRelay('forced')
+    if (this.forceRelay || welcome.relayOnly || typeof RTCPeerConnection === 'undefined') {
+      this.requestRelay(welcome.relayOnly ? 'host_relay_only' : 'forced')
       return
     }
     const timeout = welcome.relayTimeoutMs ?? 8000

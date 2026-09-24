@@ -30,6 +30,8 @@ type peer struct {
 	closed    bool
 }
 
+var errNoWebRTC = errors.New("webrtc disabled on this host")
+
 func newPeer(a *agent, id string, role session.Role, linkID string) *peer {
 	return &peer{a: a, id: id, role: role, linkID: linkID}
 }
@@ -91,7 +93,7 @@ func (p *peer) handleOffer(sdp string) error {
 	pc := p.pc
 	p.mu.Unlock()
 	if pc == nil {
-		return errors.New("webrtc disabled on this host")
+		return errNoWebRTC
 	}
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
 		return err

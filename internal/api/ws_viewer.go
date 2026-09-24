@@ -213,6 +213,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		Transport:      proto.TransportWebRTC,
 		ICEServers:     ice,
 		RelayTimeoutMs: s.cfg.RelayTimeoutMs,
+		RelayOnly:      hs.RelayOnly(),
 	})
 	if err := sink.WriteFrame(welcome); err != nil {
 		return

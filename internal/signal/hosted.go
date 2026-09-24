@@ -143,6 +143,7 @@ type HostedSession struct {
 
 	mu             sync.Mutex
 	info           session.Info
+	relayOnly      bool
 	conn           *HostConn
 	viewers        map[string]*Viewer
 	disconnectedAt time.Time
@@ -187,6 +188,13 @@ func (h *HostedSession) DisconnectLink(linkID string) {
 	for _, v := range hit {
 		v.close(session.ErrRevoked)
 	}
+}
+
+// RelayOnly reports whether the host asked viewers to skip WebRTC.
+func (h *HostedSession) RelayOnly() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.relayOnly
 }
 
 // Secret returns the resume secret handed to the host.

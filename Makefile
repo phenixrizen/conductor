@@ -12,6 +12,7 @@ help: ## list targets
 build: web-build build-go ## build the single binary with the embedded UI
 
 build-go: ## build the Go binary using whatever UI is in internal/web/dist
+	@touch internal/web/dist/.gitkeep
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/conductor ./cmd/conductor
 
 web-install: ## reproducible npm install

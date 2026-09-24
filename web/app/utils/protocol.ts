@@ -48,6 +48,7 @@ export interface Welcome {
   fileView: boolean
   iceServers?: ICEServer[]
   relayTimeoutMs?: number
+  relayOnly?: boolean
 }
 
 export type ControlMessage =

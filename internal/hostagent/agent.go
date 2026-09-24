@@ -248,6 +248,7 @@ func (a *agent) serveControl(ctx context.Context) error {
 		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version},
 		Session: proto.HostSession{
 			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: info.Cwd, Cols: info.Cols, Rows: info.Rows,
+			RelayOnly: a.opts.RelayOnly,
 		},
 	}
 	a.mu.Lock()
@@ -378,7 +379,12 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		if p := a.peer(m.ViewerID); p != nil {
 			if err := p.handleOffer(m.SDP); err != nil {
-				a.sendViewerError(m.ViewerID, "webrtc_failed", err.Error())
+				if errors.Is(err, errNoWebRTC) {
+					// The viewer falls back to the relay on its own timeout.
+					a.log.Debug("offer ignored; webrtc disabled", "viewer", m.ViewerID)
+				} else {
+					a.sendViewerError(m.ViewerID, "webrtc_failed", err.Error())
+				}
 			}
 		}
 	case proto.HostICE:
