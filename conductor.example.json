@@ -1,0 +1,29 @@
+{
+  "listen": ":8080",
+  "publicUrl": "http://localhost:8080",
+  "adminToken": "dev-admin-token-change-me",
+  "hostTokens": ["dev-host-token-change-me"],
+  "allowedRoots": ["."],
+  "defaultCwd": ".",
+  "scrollbackBytes": 262144,
+  "maxSessions": 32,
+  "maxViewersPerSession": 32,
+  "exitedRetention": "10m",
+  "iceServers": [{ "urls": ["stun:stun.l.google.com:19302"] }],
+  "relayTimeoutMs": 8000,
+  "envPassthrough": [],
+  "fileView": "view",
+  "catalog": {
+    "disableDefaults": false,
+    "agents": [
+      {
+        "id": "example-tool",
+        "name": "Example tool",
+        "description": "Any argv command can be catalogued; nothing goes through a shell.",
+        "command": ["/bin/sh", "-c", "echo hello from the catalog; exec /bin/bash -l"],
+        "allowArgs": false,
+        "icon": "i-lucide-wrench"
+      }
+    ]
+  }
+}

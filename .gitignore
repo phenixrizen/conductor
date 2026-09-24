@@ -1,0 +1,10 @@
+bin/
+internal/web/dist/*
+!internal/web/dist/.gitkeep
+web/node_modules/
+web/.nuxt/
+web/.output/
+web/.data/
+web/dist/
+*.log
+.DS_Store
