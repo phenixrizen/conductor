@@ -5,6 +5,8 @@ package signal
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"sync"
@@ -144,6 +146,8 @@ type HostedSession struct {
 	mu             sync.Mutex
 	info           session.Info
 	relayOnly      bool
+	agentTokenHash [32]byte
+	hasAgentToken  bool
 	conn           *HostConn
 	viewers        map[string]*Viewer
 	disconnectedAt time.Time
@@ -190,6 +194,50 @@ func (h *HostedSession) DisconnectLink(linkID string) {
 	}
 }
 
+// AgentTokenOK compares a presented agent token in constant time.
+func (h *HostedSession) AgentTokenOK(tok string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.hasAgentToken || tok == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(tok))
+	return subtle.ConstantTimeCompare(sum[:], h.agentTokenHash[:]) == 1
+}
+
+func (h *HostedSession) setAgentToken(tok string) {
+	h.agentTokenHash = sha256.Sum256([]byte(tok))
+	h.hasAgentToken = tok != ""
+}
+
+// SetAttention records an attention change. When forward is true (API
+// origin) the host is told so its viewers see the change too.
+func (h *HostedSession) SetAttention(state session.AttentionState, message, source string, forward bool) {
+	if !state.Valid() {
+		return
+	}
+	message = session.CleanMessage(message)
+	h.mu.Lock()
+	att := session.Attention{State: state, Message: message, Source: source}
+	if state != session.AttentionNone {
+		now := time.Now().UTC()
+		att.Since = &now
+	}
+	h.info.Attention = att
+	conn := h.conn
+	h.mu.Unlock()
+	if forward && conn != nil {
+		conn.sendJSON(proto.HostAttentionMsg{T: proto.HostAttention, State: string(state), Message: message, Source: source})
+	}
+	h.notifyChange()
+}
+
+func (h *HostedSession) notifyChange() {
+	if h.hub != nil && h.hub.OnChange != nil {
+		h.hub.OnChange(h.Info())
+	}
+}
+
 // RelayOnly reports whether the host asked viewers to skip WebRTC.
 func (h *HostedSession) RelayOnly() bool {
 	h.mu.Lock()
@@ -223,6 +271,7 @@ func (h *HostedSession) AddViewer(id string, role session.Role, linkID string) (
 	conn := h.conn
 	h.mu.Unlock()
 	conn.sendJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: id, Role: string(role), LinkID: linkID})
+	h.notifyChange()
 	return v, nil
 }
 
@@ -236,6 +285,9 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	v.close(nil)
 	if present && conn != nil {
 		conn.sendJSON(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: v.ID})
+	}
+	if present {
+		h.notifyChange()
 	}
 }
 
@@ -358,6 +410,7 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 		h.info.EndedAt = &now
 	}
 	h.mu.Unlock()
+	h.notifyChange()
 }
 
 // HostResize records the host's current PTY size.
@@ -390,6 +443,7 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 		v.close(ErrHostGone)
 	}
 	conn.Close()
+	h.notifyChange()
 }
 
 // CloseViewers disconnects every viewer with reason (server shutdown).

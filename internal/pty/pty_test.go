@@ -12,7 +12,7 @@ func TestStartEchoResizeStop(t *testing.T) {
 	if _, err := os.Stat("/bin/cat"); err != nil {
 		t.Skip("/bin/cat not available")
 	}
-	p, err := Start(Spec{Argv: []string{"/bin/cat"}, Env: BuildEnv(os.Environ(), nil, nil), Cols: 100, Rows: 30})
+	p, err := Start(Spec{Argv: []string{"/bin/cat"}, Env: BuildEnv(os.Environ(), nil, nil, nil), Cols: 100, Rows: 30})
 	if err != nil {
 		t.Fatal(err)
 	}

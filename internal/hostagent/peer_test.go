@@ -23,7 +23,7 @@ import (
 func TestPeerDataChannelLoopback(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "big.txt"), bytes.Repeat([]byte("k"), 200<<10), 0o600)
-	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv()})
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}

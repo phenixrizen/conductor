@@ -25,6 +25,14 @@ export const CloseCode = {
 } as const
 
 export type Role = 'view' | 'control'
+export type AttentionState = '' | 'working' | 'needs_input' | 'done'
+
+export interface Attention {
+  state: AttentionState
+  message?: string
+  source?: string
+  since?: string
+}
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
 export interface ICEServer {
@@ -56,6 +64,7 @@ export type ControlMessage =
   | { t: 'ready' }
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
+  | { t: 'attention'; state: AttentionState; message?: string; source?: string }
   | { t: 'viewers'; count: number }
   | { t: 'error'; code: string; message: string }
   | { t: 'pong'; ts: number }

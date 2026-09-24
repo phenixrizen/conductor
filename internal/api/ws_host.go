@@ -187,6 +187,12 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
 			return false
 		}
 		hs.HostViewerClosed(m.ViewerID)
+	case proto.HostAttention:
+		var m proto.HostAttentionMsg
+		if json.Unmarshal(data, &m) != nil || !session.AttentionState(m.State).Valid() {
+			return false
+		}
+		hs.SetAttention(session.AttentionState(m.State), m.Message, m.Source, false)
 	case proto.HostRegister:
 		return false
 	default:

@@ -15,8 +15,10 @@ var blocked = []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"}
 // BuildEnv returns the environment for a child process. It copies a fixed
 // allowlist plus LC_* from the parent, adds `extraAllow` names, applies the
 // catalog `set` values, and always sets terminal identification variables.
-// CONDUCTOR_* variables never reach the child so tokens cannot leak.
-func BuildEnv(parent []string, extraAllow []string, set map[string]string) []string {
+// CONDUCTOR_* variables from the parent or catalog never reach the child so
+// server tokens cannot leak; `inject` is applied last and unfiltered for the
+// per-session values Conductor itself provides (see Inject).
+func BuildEnv(parent []string, extraAllow []string, set map[string]string, inject map[string]string) []string {
 	allow := map[string]bool{}
 	for _, k := range baseAllow {
 		allow[k] = true
@@ -46,6 +48,11 @@ func BuildEnv(parent []string, extraAllow []string, set map[string]string) []str
 		}
 		out[k] = v
 	}
+	for k, v := range inject {
+		if k != "" && !strings.ContainsAny(k, "=\x00") {
+			out[k] = v
+		}
+	}
 	out["TERM"] = "xterm-256color"
 	out["COLORTERM"] = "truecolor"
 	keys := make([]string, 0, len(out))
@@ -58,6 +65,16 @@ func BuildEnv(parent []string, extraAllow []string, set map[string]string) []str
 		env = append(env, k+"="+out[k])
 	}
 	return env
+}
+
+// Inject returns the per-session variables agents use to talk back to
+// Conductor: the session ID, the attention endpoint and its token.
+func Inject(sessionID, notifyURL, token string) map[string]string {
+	return map[string]string{
+		"CONDUCTOR_SESSION_ID":   sessionID,
+		"CONDUCTOR_NOTIFY_URL":   notifyURL,
+		"CONDUCTOR_NOTIFY_TOKEN": token,
+	}
 }
 
 // ParentEnv returns the current process environment.

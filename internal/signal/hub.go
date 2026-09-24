@@ -23,6 +23,8 @@ type Hub struct {
 	log      *slog.Logger
 	// MaxViewers caps viewers per hosted session.
 	MaxViewers int
+	// OnChange is called after a hosted session's Info changes.
+	OnChange func(session.Info)
 }
 
 // NewHub creates a hub that registers hosted sessions in registry.
@@ -68,7 +70,11 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		}
 		hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
 		hs.relayOnly = reg.Session.RelayOnly
+		if reg.Session.AgentToken != "" {
+			hs.setAgentToken(reg.Session.AgentToken)
+		}
 		hs.mu.Unlock()
+		hs.notifyChange()
 		return hs, true, nil
 	}
 	secret, _ := share.NewToken()
@@ -98,12 +104,14 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 			CreatedAt: time.Now().UTC(),
 		},
 	}
+	hs.setAgentToken(reg.Session.AgentToken)
 	if err := hub.registry.Add(hs); err != nil {
 		return nil, false, err
 	}
 	hub.mu.Lock()
 	hub.sessions[hs.info.ID] = hs
 	hub.mu.Unlock()
+	hs.notifyChange()
 	return hs, false, nil
 }
 

@@ -62,6 +62,38 @@ highlighting, directory browsing and a copy-path button. Reads go through the
 terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`).
 
+## Let agents tell Conductor they need you
+
+Every session's process gets `CONDUCTOR_NOTIFY_URL` and `CONDUCTOR_NOTIFY_TOKEN`
+in its environment, and `conductor notify` posts a state with them. Outside a
+Conductor session the command exits silently, so it is safe to install
+globally. Sessions that need a human show a **needs input** badge, count in the
+sidebar and tab title, can raise a browser notification, and the wall jumps to
+them.
+
+Claude Code (`~/.claude/settings.json` or a project's `.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "Notification": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }]
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+notify = ["conductor", "notify", "--codex"]
+```
+
+Any tool that rings the terminal bell or emits an OSC 9 / OSC 777 notification is
+detected with no configuration at all (for Codex set
+`tui.notification_method = "bel"`). Run `conductor notify --state needs_input
+--message "approve?"` from a script for anything else; `--state clear` resets it.
+
 ## Configuration
 
 `conductor serve --config conductor.json` reads a JSON file; every field has a

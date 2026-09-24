@@ -169,6 +169,38 @@ func TestHostRelayEndToEnd(t *testing.T) {
 	v.send(proto.Encode(proto.TypeInput, []byte("through the relay\n")))
 	v.expectOutput("through the relay")
 
+	// A bell echoed by cat marks the hosted session as needing input on the
+	// server; typing clears it. An API-set state reaches the relay viewer.
+	v.send(proto.Encode(proto.TypeInput, []byte("\a\n")))
+	waitAttention := func(state string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if string(d.Info().Attention.State) == state {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("server attention %+v, want %q", d.Info().Attention, state)
+	}
+	waitAttention("needs_input")
+	v.send(proto.Encode(proto.TypeInput, []byte("z")))
+	waitAttention("")
+	req0, _ := http.NewRequest("POST", hs.URL+"/api/sessions/"+sessionID+"/attention", strings.NewReader(`{"state":"needs_input","message":"from api"}`))
+	req0.Header.Set("Authorization", "Bearer "+adminToken)
+	req0.Header.Set("Content-Type", "application/json")
+	if resp, err := hs.Client().Do(req0); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("api attention: %v %v", err, resp)
+	} else {
+		resp.Body.Close()
+	}
+	for {
+		m := v.expectJSON(proto.TypeControl, proto.CtlAttention)
+		if m["message"] == "from api" && m["source"] == "admin" {
+			break
+		}
+	}
+
 	// A view-role link cannot type through the relay.
 	link, tok, err := srv.Links().Create(sessionID, "view", "", 0)
 	if err != nil {

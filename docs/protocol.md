@@ -46,6 +46,7 @@ Owner → client:
 | `ready` | end of scrollback; live output follows |
 | `resize` | `cols, rows, by` (subscriber that resized) |
 | `status` | `status, exitCode?` |
+| `attention` | `state, message?, source?` (see Attention) |
 | `viewers` | `count` |
 | `error` | `code, message` |
 | `pong` | `ts` |
@@ -90,18 +91,48 @@ View-role INPUT and `resize` are dropped by the server before they reach the hos
 `GET /ws/host?token=…` (host token or admin token). Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version}, session{name,agentId,command,cwd,cols,rows,relayOnly?}, resume?{sessionId,secret}}`,
+Host → server: `register{proto, host{name,version}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?}, resume?{sessionId,secret}}`,
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`.
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source}`.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
 `viewer_join{viewerId, role, linkId?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
-`relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`, `error`.
+`relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
+`attention{state,message?,source}` (API-originated change to broadcast), `error`.
+
+The host registers before it starts the process so the session ID can be
+placed in the agent's environment.
 
 A host that loses its connection reconnects with `resume` and the secret from
 `registered`. The session shows `host_disconnected` in the meantime and is
 removed after 60 s without the host.
+
+## Attention
+
+Each session carries `attention{state, message, source, since}` in its `Info`.
+States: `""` (nothing), `working`, `needs_input`, `done`. Sources: `api` (the
+agent's own token), `admin`, `bell`, `osc`, `input` (cleared by a controller
+typing).
+
+Automatic detection runs on whichever process owns the PTY. A bare BEL
+(`0x07`) outside an escape sequence, `ESC ] 9 ; text ST` (iTerm2/ConEmu style)
+or `ESC ] 777 ; notify ; title ; body ST` (urxvt style) marks the session
+`needs_input`; the BEL that terminates an ordinary OSC (window title, hyperlink)
+does not. Bursts are limited to one change per 500 ms. Any successful input from
+a `control` client clears a `needs_input` state.
+
+Explicit updates: `POST /api/sessions/{id}/attention` with
+`{state: "needs_input"|"working"|"done"|"clear", message?}` and
+`Authorization: Bearer <agent token>` (or the admin token). Every session's
+process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
+`CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored
+hashed and only ever authorizes this one route for this one session.
+
+Changes are pushed to attached clients as the `attention` control message and
+to admins as `session` events on `GET /api/events` (Server-Sent Events over a
+header-authenticated `fetch`: `snapshot` with the full list first, then
+`session` per change and `removed{id}` when a session leaves the registry).
 
 ## File reads
 

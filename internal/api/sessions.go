@@ -13,6 +13,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/share"
 )
 
 var errShuttingDown = errors.New("server shutting down")
@@ -86,10 +87,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	argv := append(append([]string{}, agent.Command...), req.Args...)
+	id := session.NewID()
+	agentToken, _ := share.NewToken()
+	notifyURL := s.cfg.PublicURL + "/api/sessions/" + id + "/attention"
 	proc, err := pty.Start(pty.Spec{
 		Argv: argv,
 		Dir:  cwd,
-		Env:  pty.BuildEnv(pty.ParentEnv(), s.cfg.EnvPassthrough, agent.Env),
+		Env:  pty.BuildEnv(pty.ParentEnv(), s.cfg.EnvPassthrough, agent.Env, pty.Inject(id, notifyURL, agentToken)),
 		Cols: cols,
 		Rows: rows,
 	})
@@ -98,7 +102,6 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "start_failed", "could not start the agent process")
 		return
 	}
-	id := session.NewID()
 	info := session.Info{
 		ID:        id,
 		Name:      name,
@@ -117,7 +120,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		FileView:        string(s.cfg.FileView),
 		Transport:       proto.TransportWS,
 		Log:             s.log,
+		OnChange:        s.events.publish,
 	})
+	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
@@ -126,6 +131,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", proc.PID())
+	s.events.publish(local.Info())
 	writeJSON(w, http.StatusCreated, local.Info())
 }
 

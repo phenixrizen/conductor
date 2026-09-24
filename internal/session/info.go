@@ -53,6 +53,7 @@ type Info struct {
 	Rows      uint16     `json:"rows"`
 	Viewers   int        `json:"viewers"`
 	HostName  string     `json:"hostName,omitempty"`
+	Attention Attention  `json:"attention"`
 	CreatedAt time.Time  `json:"createdAt"`
 	EndedAt   *time.Time `json:"endedAt,omitempty"`
 }

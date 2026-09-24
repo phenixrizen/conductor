@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"log/slog"
@@ -33,6 +35,9 @@ type Options struct {
 	Log       *slog.Logger
 	// StopGrace is the SIGTERM grace period before SIGKILL.
 	StopGrace time.Duration
+	// OnChange is called (outside the session lock) after status, viewer
+	// count or attention changes so listings and event streams stay current.
+	OnChange func(Info)
 }
 
 // Local owns a PTY process and serves attached clients. It is used by the
@@ -48,6 +53,11 @@ type Local struct {
 	info Info
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
+
+	scanner        Scanner
+	lastBell       time.Time
+	agentTokenHash [32]byte
+	hasAgentToken  bool
 
 	ended chan struct{}
 }
@@ -102,6 +112,7 @@ func (s *Local) pump() {
 			s.ring.Write(chunk)
 			s.hub.Broadcast(proto.Encode(proto.TypeOutput, chunk))
 			s.mu.Unlock()
+			s.scanOutput(chunk)
 		}
 		if err != nil {
 			break
@@ -144,6 +155,76 @@ func (s *Local) markEnded(status Status) {
 	s.mu.Unlock()
 	close(s.ended)
 	s.log.Info("session ended", "status", status, "exitCode", exitCode)
+	s.notifyChange()
+}
+
+// notifyChange hands a fresh Info snapshot to the OnChange hook.
+func (s *Local) notifyChange() {
+	if s.opts.OnChange != nil {
+		s.opts.OnChange(s.Info())
+	}
+}
+
+// scanOutput looks for bell/OSC signals in a chunk of terminal output. A
+// burst of bells produces at most one change per 500 ms.
+func (s *Local) scanOutput(chunk []byte) {
+	for _, ev := range s.scanner.Scan(chunk) {
+		s.mu.Lock()
+		if time.Since(s.lastBell) < 500*time.Millisecond {
+			s.mu.Unlock()
+			continue
+		}
+		s.lastBell = time.Now()
+		s.mu.Unlock()
+		msg := ev.Message
+		if msg == "" {
+			msg = "terminal bell"
+		}
+		s.SetAttention(AttentionNeedsInput, msg, ev.Source)
+	}
+}
+
+// SetAttention records an attention change, broadcasts it to attached
+// clients and notifies OnChange. AttentionNone clears the signal.
+func (s *Local) SetAttention(state AttentionState, message, source string) {
+	if !state.Valid() {
+		return
+	}
+	message = CleanMessage(message)
+	s.mu.Lock()
+	cur := s.info.Attention
+	if cur.State == state && cur.Message == message && cur.Source == source {
+		s.mu.Unlock()
+		return
+	}
+	att := Attention{State: state, Message: message, Source: source}
+	if state != AttentionNone {
+		now := time.Now().UTC()
+		att.Since = &now
+	}
+	s.info.Attention = att
+	s.hub.Broadcast(proto.MustControl(proto.Attention{T: proto.CtlAttention, State: string(state), Message: message, Source: source}))
+	s.mu.Unlock()
+	s.notifyChange()
+}
+
+// SetAgentToken records the per-session token agents use to report attention.
+func (s *Local) SetAgentToken(tok string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentTokenHash = sha256.Sum256([]byte(tok))
+	s.hasAgentToken = tok != ""
+}
+
+// AgentTokenOK compares a presented agent token in constant time.
+func (s *Local) AgentTokenOK(tok string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasAgentToken || tok == "" {
+		return false
+	}
+	h := sha256.Sum256([]byte(tok))
+	return subtle.ConstantTimeCompare(h[:], s.agentTokenHash[:]) == 1
 }
 
 // SetID assigns the session ID once it is known (hosts learn it from the
@@ -219,11 +300,16 @@ func (s *Local) Attach(id string, role Role, linkID string, cols, rows uint16, s
 	s.hub.add(sub)
 	count := s.hub.Count()
 	s.hub.Broadcast(proto.MustControl(proto.Viewers{T: proto.CtlViewers, Count: count}))
+	if s.info.Attention.State != AttentionNone {
+		att := s.info.Attention
+		sub.send(proto.MustControl(proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source}))
+	}
 	s.mu.Unlock()
 	go func() {
 		<-sub.done
 		s.Detach(sub)
 	}()
+	s.notifyChange()
 	return sub, nil
 }
 
@@ -237,6 +323,9 @@ func (s *Local) Detach(sub *Subscription) {
 		s.hub.Broadcast(proto.MustControl(proto.Viewers{T: proto.CtlViewers, Count: s.hub.Count()}))
 	}
 	s.mu.Unlock()
+	if present {
+		s.notifyChange()
+	}
 }
 
 // Input forwards keystrokes from a controller.
@@ -251,6 +340,14 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		return ErrSessionEnded
 	}
 	_, err := s.proc.Write(data)
+	if err == nil {
+		s.mu.Lock()
+		waiting := s.info.Attention.State == AttentionNeedsInput
+		s.mu.Unlock()
+		if waiting {
+			s.SetAttention(AttentionNone, "", SourceInput)
+		}
+	}
 	return err
 }
 

@@ -24,6 +24,7 @@ type Server struct {
 	registry *session.Registry
 	links    *share.Store
 	hosts    *signal.Hub
+	events   *eventHub
 	limiter  *rateLimiter
 	log      *slog.Logger
 	web      http.Handler
@@ -46,8 +47,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		log:      log,
 		web:      web,
 	}
+	s.events = newEventHub()
 	s.hosts = signal.NewHub(s.registry, log)
-	s.registry.OnRemove = func(id string) { s.links.DeleteSession(id) }
+	s.hosts.OnChange = s.events.publish
+	s.registry.OnRemove = func(id string) {
+		s.links.DeleteSession(id)
+		s.events.removed(id)
+	}
 	s.links.OnRevoke = func(sessionID, linkID string) {
 		if d, ok := s.registry.Get(sessionID); ok {
 			d.DisconnectLink(linkID)
@@ -69,6 +75,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))
 	mux.HandleFunc("DELETE /api/sessions/{id}/links/{linkId}", s.requireAdmin(s.handleRevokeLink))
 	mux.HandleFunc("GET /api/sessions/{id}/files", s.handleGetFile)
+	mux.HandleFunc("POST /api/sessions/{id}/attention", s.handleAttention)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/join/{token}", s.handleJoin)
 	mux.HandleFunc("GET /ws/sessions/{id}", s.handleViewerWS)
 	mux.HandleFunc("GET /ws/host", s.handleHostWS)

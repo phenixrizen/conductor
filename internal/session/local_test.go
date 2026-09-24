@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -270,5 +271,87 @@ func TestFileGetPolicyAndResponse(t *testing.T) {
 	vs.waitFrames(t, 1)
 	if m := decodeControl(t, vs.frame(0)); m["fileView"] != false {
 		t.Fatalf("welcome should advertise fileView=false: %v", m)
+	}
+}
+
+func TestAttentionFromBellAndClearOnInput(t *testing.T) {
+	var changes []Attention
+	var cmu sync.Mutex
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "att", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, Options{OnChange: func(i Info) {
+		cmu.Lock()
+		changes = append(changes, i.Attention)
+		cmu.Unlock()
+	}})
+	t.Cleanup(p.exit)
+	viewer := newChanSink(false)
+	vsub, _ := s.Attach("", RoleView, "", 80, 24, viewer)
+	ctl := newChanSink(false)
+	csub, _ := s.Attach("", RoleControl, "", 80, 24, ctl)
+	viewer.waitFrames(t, 3)
+
+	p.outW.Write([]byte("prompt> \x1b]9;need approval\a"))
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && s.Info().Attention.State != AttentionNeedsInput {
+		time.Sleep(10 * time.Millisecond)
+	}
+	att := s.Info().Attention
+	if att.State != AttentionNeedsInput || att.Message != "need approval" || att.Source != SourceOSC || att.Since == nil {
+		t.Fatalf("attention %+v", att)
+	}
+	// broadcast reached the viewer
+	found := false
+	for i := 0; i < viewer.count(); i++ {
+		if f, _ := proto.Decode(viewer.frame(i)); f.Type == proto.TypeControl {
+			var m map[string]any
+			json.Unmarshal(f.Payload, &m)
+			if m["t"] == proto.CtlAttention && m["state"] == "needs_input" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("attention control frame not broadcast")
+	}
+	// view-role input is rejected and does not clear
+	if err := s.Input(vsub, []byte("x")); !errors.Is(err, ErrReadOnly) || s.Info().Attention.State != AttentionNeedsInput {
+		t.Fatalf("view input: %v %+v", err, s.Info().Attention)
+	}
+	if err := s.Input(csub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.input
+	if a := s.Info().Attention; a.State != AttentionNone || a.Since != nil {
+		t.Fatalf("not cleared: %+v", a)
+	}
+	// a late attach sees the current attention immediately
+	s.SetAttention(AttentionNeedsInput, "again", SourceAPI)
+	late := newChanSink(false)
+	s.Attach("", RoleView, "", 80, 24, late)
+	late.waitFrames(t, 4)
+	seen := false
+	for i := 0; i < late.count(); i++ {
+		if f, _ := proto.Decode(late.frame(i)); f.Type == proto.TypeControl {
+			var m map[string]any
+			json.Unmarshal(f.Payload, &m)
+			if m["t"] == proto.CtlAttention && m["message"] == "again" {
+				seen = true
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("late attach did not receive attention state")
+	}
+	cmu.Lock()
+	n := len(changes)
+	cmu.Unlock()
+	if n == 0 {
+		t.Fatal("OnChange never called")
+	}
+	if !s.AgentTokenOK("x") {
+		s.SetAgentToken("secret")
+		if !s.AgentTokenOK("secret") || s.AgentTokenOK("nope") || s.AgentTokenOK("") {
+			t.Fatal("agent token check")
+		}
 	}
 }

@@ -11,6 +11,8 @@ const (
 	HostICE         = "ice"
 	HostViewerError = "viewer_error"
 	HostViewerClose = "viewer_closed"
+	// both directions
+	HostAttention = "attention"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -38,6 +40,8 @@ type HostSession struct {
 	Rows    uint16   `json:"rows"`
 	// RelayOnly tells viewers to skip WebRTC and use the server relay.
 	RelayOnly bool `json:"relayOnly,omitempty"`
+	// AgentToken authorizes the hosted agent to report attention to the server.
+	AgentToken string `json:"agentToken,omitempty"`
 }
 
 // HostResume lets a reconnecting host reclaim its session.
@@ -115,6 +119,16 @@ type ViewerError struct {
 	ViewerID string `json:"viewerId"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+}
+
+// HostAttentionMsg carries an attention change between host and server.
+// SessionID and Source are set by the host; the server omits them.
+type HostAttentionMsg struct {
+	T         string `json:"t"`
+	SessionID string `json:"sessionId,omitempty"`
+	State     string `json:"state"`
+	Message   string `json:"message,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // HostStopMsg asks the host to stop its process.

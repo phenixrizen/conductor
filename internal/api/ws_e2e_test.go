@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
@@ -223,5 +225,127 @@ func (w *wsClient) expectFile(reqID string) (proto.FileHeader, []byte) {
 		if h.ReqID == reqID {
 			return h, body
 		}
+	}
+}
+
+func TestAttentionViaAgentTokenBellAndEvents(t *testing.T) {
+	e := newTestEnv(t, nil)
+	// A session that prints its own notify token, then behaves like cat.
+	cat, _ := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
+		{ID: "env", Name: "env", Command: []string{"/bin/sh", "-c", "echo TOKEN=$CONDUCTOR_NOTIFY_TOKEN URL=$CONDUCTOR_NOTIFY_URL; exec /bin/cat"}},
+	}})
+	e.srv.catalog = cat
+	id := e.createSession("env")
+
+	// Events stream: subscribe before the changes.
+	evReq, _ := http.NewRequest("GET", e.http.URL+"/api/events", nil)
+	evReq.Header.Set("Authorization", "Bearer "+adminToken)
+	evResp, err := e.client.Do(evReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evResp.Body.Close()
+	events := make(chan string, 64)
+	go func() {
+		sc := bufio.NewScanner(evResp.Body)
+		var name string
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.HasPrefix(line, "event: ") {
+				name = strings.TrimPrefix(line, "event: ")
+			} else if strings.HasPrefix(line, "data: ") {
+				events <- name + " " + strings.TrimPrefix(line, "data: ")
+			}
+		}
+	}()
+	waitEvent := func(pred func(string) bool) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case ev := <-events:
+				if pred(ev) {
+					return
+				}
+			case <-deadline:
+				t.Fatal("event not observed")
+			}
+		}
+	}
+	waitEvent(func(ev string) bool { return strings.HasPrefix(ev, "snapshot ") && strings.Contains(ev, id) })
+
+	c := dialViewer(t, e, id, adminToken)
+	c.hello(80, 24)
+	// The token line is usually already in the scrollback replay.
+	var acc []byte
+	for !bytes.Contains(acc, []byte("URL=")) || !bytes.Contains(acc, []byte("\n")) {
+		f, err := c.read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback {
+			acc = append(acc, f.Payload...)
+		}
+	}
+	line := string(acc[bytes.Index(acc, []byte("TOKEN=")):])
+	line = strings.TrimSpace(strings.SplitN(line, "\n", 2)[0])
+	fields := strings.Fields(line)
+	token := strings.TrimPrefix(fields[0], "TOKEN=")
+	url := strings.TrimPrefix(fields[1], "URL=")
+	if len(token) != 43 || !strings.HasSuffix(url, "/api/sessions/"+id+"/attention") {
+		t.Fatalf("env line %q", line)
+	}
+	url = e.http.URL + url[strings.Index(url, "/api/"):]
+
+	// Wrong token is rejected; the agent token works.
+	resp, out := e.do("POST", "/api/sessions/"+id+"/attention", "nope", map[string]any{"state": "needs_input"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong token: %d %v", resp.StatusCode, out)
+	}
+	resp, out = e.do("POST", "/api/sessions/"+id+"/attention", token, map[string]any{"state": "needs_input", "message": "approve the plan"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("agent token: %d %v", resp.StatusCode, out)
+	}
+	if m := c.expectControl(proto.CtlAttention); m["state"] != "needs_input" || m["message"] != "approve the plan" || m["source"] != "api" {
+		t.Fatalf("attention frame %v", m)
+	}
+	waitEvent(func(ev string) bool {
+		return strings.HasPrefix(ev, "session ") && strings.Contains(ev, `"state":"needs_input"`)
+	})
+	_, out = e.do("GET", "/api/sessions/"+id, adminToken, nil)
+	if att := out["session"].(map[string]any)["attention"].(map[string]any); att["state"] != "needs_input" {
+		t.Fatalf("listing attention %v", att)
+	}
+	resp, _ = e.do("POST", "/api/sessions/"+id+"/attention", token, map[string]any{"state": "bogus"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bogus state: %d", resp.StatusCode)
+	}
+
+	// Typing clears it.
+	c.send(proto.Encode(proto.TypeInput, []byte("k")))
+	if m := c.expectControl(proto.CtlAttention); m["state"] != "" || m["source"] != "input" {
+		t.Fatalf("clear frame %v", m)
+	}
+	// A bell in the output sets it again with source bell.
+	c.send(proto.Encode(proto.TypeInput, []byte("\a\n")))
+	if m := c.expectControl(proto.CtlAttention); m["state"] != "needs_input" || m["source"] != "bell" {
+		t.Fatalf("bell frame %v", m)
+	}
+	// Admin can clear.
+	resp, _ = e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "clear"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("admin clear: %d", resp.StatusCode)
+	}
+	if m := c.expectControl(proto.CtlAttention); m["state"] != "" || m["source"] != "admin" {
+		t.Fatalf("admin clear frame %v", m)
+	}
+	// Events without the admin token, or with it only in the query, are refused.
+	resp, _ = e.do("GET", "/api/events", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("events auth: %d", resp.StatusCode)
+	}
+	resp, _ = e.do("GET", "/api/events?token="+adminToken, "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("events query token must be refused: %d", resp.StatusCode)
 	}
 }

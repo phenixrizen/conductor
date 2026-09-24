@@ -15,12 +15,13 @@ const (
 	CtlFileGet = "file_get"
 
 	// owner -> client
-	CtlWelcome = "welcome"
-	CtlReady   = "ready"
-	CtlStatus  = "status"
-	CtlViewers = "viewers"
-	CtlError   = "error"
-	CtlPong    = "pong"
+	CtlAttention = "attention"
+	CtlWelcome   = "welcome"
+	CtlReady     = "ready"
+	CtlStatus    = "status"
+	CtlViewers   = "viewers"
+	CtlError     = "error"
+	CtlPong      = "pong"
 )
 
 // Error codes carried by CtlError.
@@ -143,6 +144,14 @@ type ErrorMsg struct {
 type ErrorInfo struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// Attention reports whether the agent is waiting for a human.
+type Attention struct {
+	T       string `json:"t"`
+	State   string `json:"state"`
+	Message string `json:"message,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 // Simple is a message with only a discriminator (ready).
