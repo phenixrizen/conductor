@@ -1,4 +1,4 @@
-import type { Role } from '~/utils/protocol'
+import type { Attention, Role } from '~/utils/protocol'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -16,6 +16,7 @@ export interface SessionInfo {
   rows: number
   viewers: number
   hostName?: string
+  attention?: Attention
   createdAt: string
   endedAt?: string
 }
@@ -62,6 +63,8 @@ export function useSessions() {
     revokeLink: (id: string, linkId: string) =>
       request<void>(`/api/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     join: (token: string) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token }),
+    setAttention: (id: string, state: 'needs_input' | 'working' | 'done' | 'clear', message?: string) =>
+      request<{ attention: Attention }>(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: 'POST', body: { state, message } }),
   }
 }
 

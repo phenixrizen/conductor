@@ -62,6 +62,16 @@ highlighting, directory browsing and a copy-path button. Reads go through the
 terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`).
 
+## The wall
+
+`/wall` shows every active session at once: a grid of small live tiles and a
+full-width spotlight that rotates through them (interval and auto-rotate are
+adjustable, hover pauses). It is read-only; click a tile to bring it into the
+spotlight, double-click or press **Open** to go to the session. With **Follow
+input requests** on, the spotlight jumps to any session that needs input and
+holds there until it is answered. The fullscreen button turns a spare monitor
+into a status wall.
+
 ## Let agents tell Conductor they need you
 
 Every session's process gets `CONDUCTOR_NOTIFY_URL` and `CONDUCTOR_NOTIFY_TOKEN`

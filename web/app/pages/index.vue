@@ -1,20 +1,19 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
 import type { SessionInfo } from '~/composables/useSessions'
-import { ApiError } from '~/composables/useApi'
 
 useHead({ title: 'Sessions' })
 
 const api = useSessions()
 const admin = useAdminToken()
 const toast = useToast()
-const sessions = ref<SessionInfo[]>([])
+const attention = useAttention()
+const sessions = attention.sessions
 const loading = ref(false)
-const error = ref('')
+const error = computed(() => attention.error.value)
 const launch = ref(false)
 const shareFor = ref<string | null>(null)
 const shareOpen = ref(false)
-let timer: number | undefined
 
 const columns: TableColumn<SessionInfo>[] = [
   { accessorKey: 'name', header: 'Session' },
@@ -33,11 +32,7 @@ async function refresh(silent = false) {
   }
   if (!silent) loading.value = true
   try {
-    sessions.value = await api.list()
-    error.value = ''
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 401) error.value = 'Admin token required.'
-    else error.value = (e as Error).message
+    await attention.refresh()
   } finally {
     loading.value = false
   }
@@ -66,22 +61,10 @@ function since(ts: string) {
   return `${Math.floor(s / 86400)}d ago`
 }
 
-function onVisibility() {
-  if (document.visibilityState === 'visible') refresh(true)
-}
-
 onMounted(() => {
+  attention.start()
   refresh()
-  timer = window.setInterval(() => {
-    if (document.visibilityState === 'visible') refresh(true)
-  }, 3000)
-  document.addEventListener('visibilitychange', onVisibility)
 })
-onBeforeUnmount(() => {
-  window.clearInterval(timer)
-  document.removeEventListener('visibilitychange', onVisibility)
-})
-watch(() => admin.token.value, () => refresh())
 </script>
 
 <template>
@@ -107,7 +90,10 @@ watch(() => admin.token.value, () => refresh())
           <UBadge :label="row.original.kind === 'hosted' ? `hosted · ${row.original.hostName || 'dev machine'}` : 'server'" :icon="row.original.kind === 'hosted' ? 'i-lucide-laptop' : 'i-lucide-server'" color="neutral" variant="subtle" size="sm" />
         </template>
         <template #status-cell="{ row }">
-          <SessionStatusBadge :status="row.original.status" :exit-code="row.original.exitCode" />
+          <div class="flex items-center gap-1.5">
+            <SessionStatusBadge :status="row.original.status" :exit-code="row.original.exitCode" />
+            <AttentionBadge :attention="row.original.attention" />
+          </div>
         </template>
         <template #viewers-cell="{ row }">
           <span class="inline-flex items-center gap-1"><UIcon name="i-lucide-users" class="size-4 text-muted" />{{ row.original.viewers }}</span>

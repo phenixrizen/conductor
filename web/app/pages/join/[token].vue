@@ -23,6 +23,10 @@ const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 const pathInput = ref('')
 const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const attention = ref<{ state: string; message?: string; source?: string; since?: string }>({ state: '' })
+function onAttention(msg: { state: string; message?: string; source?: string }) {
+  attention.value = { ...msg, since: new Date().toISOString() }
+}
 
 useHead({ title: computed(() => (info.value ? `${info.value.session.name} (shared)` : 'Join session')) })
 
@@ -78,6 +82,7 @@ function requestFile(path: string, stat?: boolean) {
       <span class="truncate">{{ info.session.name }}</span>
       <UBadge :label="info.role === 'control' ? 'control' : 'view only'" :icon="info.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info.role === 'control' ? 'warning' : 'neutral'" variant="subtle" size="sm" />
       <SessionStatusBadge v-if="status" :status="status as any" />
+      <AttentionBadge :attention="attention as any" />
       <TransportBadge :kind="transport.kind" :state="transport.state" />
       <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="info.session.kind === 'hosted'" :label="`hosted on ${info.session.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
@@ -88,20 +93,22 @@ function requestFile(path: string, stat?: boolean) {
     </form>
   </header>
 
-  <main class="flex-1 min-h-0 p-2 sm:p-3">
+  <main class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">
     <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-link-2-off" title="This link cannot be used" :description="error" />
+    <UAlert v-else-if="attention.state === 'needs_input'" color="secondary" variant="subtle" icon="i-lucide-hand" title="Agent is waiting for input" :description="attention.message || (info?.role === 'control' ? 'Type into the terminal to continue.' : 'Someone with control needs to answer.')" />
     <TerminalView
-      v-else-if="info"
+      v-if="info && !error"
       ref="terminal"
       :create-transport="createTransport"
       :read-only="info.role !== 'control'"
       @status="(s) => (status = s)"
+      @attention="onAttention"
       @viewers="viewers = $event"
       @transport="transport = $event"
       @open-file="openFile"
       @open-url="openUrl"
     />
-    <div v-else class="p-6 text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking link…</div>
+    <div v-else-if="!error" class="p-6 text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking link…</div>
   </main>
 
   <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />

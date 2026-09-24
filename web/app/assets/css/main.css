@@ -59,6 +59,10 @@ html, body, #__nuxt {
   padding: 0.5rem;
 }
 
+.terminal-compact .xterm {
+  padding: 0.25rem;
+}
+
 .terminal-host .xterm-viewport {
   scrollbar-width: thin;
 }

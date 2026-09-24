@@ -7,19 +7,24 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 
 | Path | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point (`serve`, `host`, `version`) |
+| `cmd/conductor` | entry point (`serve`, `host`, `notify`, `version`) |
 | `internal/cli` | flags only; no business logic |
 | `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog |
 | `internal/proto` | binary framing and JSON messages |
 | `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads |
 | `internal/share`, `internal/signal`, `internal/api` | share tokens; hosted-session brokering; HTTP + WebSocket surface |
 | `internal/hostagent` | `conductor host`: pion WebRTC peers, relay sink, local terminal |
+| `internal/notify` | `conductor notify`: attention reports from inside a session (Claude Code hook / Codex payload mapping) |
 | `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `docs/` | `protocol.md`, `architecture.md`, `design/brand.md` |
 
 `internal/session.Local` is shared by the server and the host. Anything that
-changes what a viewer sees belongs there, not in a transport.
+changes what a viewer sees belongs there, not in a transport. Attention
+(bell/OSC detection, agent reports, clearing on input) lives in
+`internal/session/attention.go` and `Local`; the browser keeps one live
+session store in `web/app/composables/useAttention.ts` (streaming fetch of
+`/api/events`), which every page reads instead of polling on its own.
 
 ## Rules
 

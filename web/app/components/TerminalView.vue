@@ -14,13 +14,18 @@ const props = withDefaults(
     readOnly?: boolean
     /** Connect on mount. Vue casts absent booleans to false, hence the explicit default. */
     autoConnect?: boolean
+    fontSize?: number
+    scrollback?: number
+    /** Tile mode: no overlays or notices, just the terminal. */
+    compact?: boolean
   }>(),
-  { readOnly: false, autoConnect: true },
+  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false },
 )
 
 const emit = defineEmits<{
   welcome: [welcome: Welcome]
   status: [status: string, exitCode?: number]
+  attention: [msg: { state: string; message?: string; source?: string }]
   viewers: [count: number]
   transport: [info: { kind: TransportKind; state: TransportState }]
   closed: [info: CloseInfo]
@@ -131,6 +136,9 @@ function handleControl(msg: ControlMessage) {
         notice.value = msg.status === 'exited' ? `Process exited${msg.exitCode !== undefined ? ` with code ${msg.exitCode}` : ''}` : 'Session stopped'
       }
       break
+    case 'attention':
+      emit('attention', { state: msg.state, message: msg.message, source: msg.source })
+      break
     case 'viewers':
       emit('viewers', msg.count)
       break
@@ -188,11 +196,11 @@ defineExpose({ connect, disconnect, requestFile, focus: () => term?.focus() })
 
 onMounted(() => {
   term = new Terminal({
-    cursorBlink: true,
-    scrollback: 5000,
+    cursorBlink: !props.compact,
+    scrollback: props.scrollback,
     allowProposedApi: true,
     disableStdin: !!props.readOnly,
-    fontSize: 13,
+    fontSize: props.fontSize,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
     theme,
     convertEol: false,
@@ -239,13 +247,14 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden rounded-lg border border-default">
-    <div ref="host" class="terminal-host" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact }" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
 
-    <div v-if="notice" class="absolute top-2 right-2 z-10">
+    <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />
     </div>
 
-    <div v-if="overlay || connecting" class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-[1px]">
+    <div v-if="compact && overlay" class="absolute inset-0 z-20 flex items-center justify-center bg-black/50 text-[10px] text-white/80">{{ overlay.title }}</div>
+    <div v-else-if="overlay || connecting" class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-[1px]">
       <div class="flex flex-col items-center gap-3 rounded-lg bg-default/95 px-6 py-5 text-center shadow-lg border border-default max-w-sm">
         <template v-if="connecting && !overlay">
           <UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-primary" />

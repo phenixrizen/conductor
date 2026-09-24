@@ -1,5 +1,17 @@
 <script setup lang="ts">
-useHead({ titleTemplate: (t) => (t ? `${t} · Conductor` : 'Conductor') })
+const attention = useAttention()
+const admin = useAdminToken()
+useAttentionHead()
+
+onMounted(() => {
+  if (admin.hasToken.value) attention.start()
+})
+watch(
+  () => admin.hasToken.value,
+  (has) => {
+    if (has) attention.start()
+  },
+)
 </script>
 
 <template>

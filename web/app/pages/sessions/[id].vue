@@ -23,7 +23,27 @@ const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 const pathInput = ref('')
 const ready = ref(false)
-const terminal = ref<{ connect: () => void; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const attention = ref<{ state: string; message?: string; source?: string; since?: string }>({ state: '' })
+const signalItems = computed(() => [
+  [
+    { label: 'Mark as needs input', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
+    { label: 'Mark as working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
+    { label: 'Clear', icon: 'i-lucide-x', onSelect: () => signal('clear') },
+  ],
+])
+
+async function signal(state: 'needs_input' | 'working' | 'clear') {
+  try {
+    await api.setAttention(id.value, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
+  } catch (e) {
+    toast.add({ title: 'Signal failed', description: (e as Error).message, color: 'error' })
+  }
+}
+
+function onAttention(msg: { state: string; message?: string; source?: string }) {
+  attention.value = { ...msg, since: new Date().toISOString() }
+}
+const terminal = ref<{ connect: () => void; focus: () => void; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 
 useHead({ title: computed(() => session.value?.name || 'Session') })
 
@@ -35,6 +55,7 @@ async function load() {
   try {
     const res = await api.get(id.value)
     session.value = res.session
+    attention.value = res.session.attention ?? { state: '' }
     error.value = ''
     ready.value = true
   } catch (e) {
@@ -117,6 +138,7 @@ watch(id, () => {
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
             <SessionStatusBadge v-if="session" :status="session.status" :exit-code="session.exitCode" />
+            <AttentionBadge :attention="attention as any" />
             <TransportBadge :kind="transport.kind" :state="transport.state" />
             <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
             <UBadge v-if="session?.kind === 'hosted'" :label="`hosted on ${session.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
@@ -126,6 +148,9 @@ watch(id, () => {
           <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
             <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
           </form>
+          <UDropdownMenu :items="signalItems">
+            <UButton icon="i-lucide-flag" color="neutral" variant="ghost" aria-label="Signal" />
+          </UDropdownMenu>
           <UButton label="Share" icon="i-lucide-share-2" color="neutral" variant="soft" @click="share = true" />
           <UButton
             v-if="session && (session.status === 'running' || session.status === 'starting')"
@@ -141,16 +166,28 @@ watch(id, () => {
 
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
-      <div v-else-if="ready && session" class="flex-1 min-h-0 p-2 sm:p-3">
+      <div v-else-if="ready && session" class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">
+        <UAlert
+          v-if="attention.state === 'needs_input'"
+          color="secondary"
+          variant="subtle"
+          icon="i-lucide-hand"
+          title="Agent is waiting for input"
+          :description="attention.message || 'Type into the terminal to continue.'"
+          :actions="[{ label: 'Focus terminal', icon: 'i-lucide-keyboard', onClick: () => terminal?.focus?.() }, { label: 'Dismiss', variant: 'ghost', onClick: () => signal('clear') }]"
+        />
+        <div class="flex-1 min-h-0">
         <TerminalView
           ref="terminal"
           :create-transport="createTransport"
           @status="onStatus"
+          @attention="onAttention"
           @viewers="viewers = $event"
           @transport="transport = $event"
           @open-file="openFile"
           @open-url="openUrl"
         />
+        </div>
       </div>
       <div v-else class="p-6 text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading session…</div>
     </template>

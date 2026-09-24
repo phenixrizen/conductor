@@ -10,7 +10,7 @@ export default defineNuxtConfig({
     head: {
       title: 'Conductor',
       meta: [{ name: 'referrer', content: 'no-referrer' }],
-      link: [{ rel: 'icon', type: 'image/svg+xml', href: '/brand/conductor-favicon.svg' }],
+      link: [{ key: 'icon', rel: 'icon', type: 'image/svg+xml', href: '/brand/conductor-favicon.svg' }],
     },
   },
   runtimeConfig: {
