@@ -15,7 +15,10 @@ const launch = ref(false)
 const shareFor = ref<string | null>(null)
 const shareOpen = ref(false)
 
+const { create } = useTerminalTransport()
+
 const columns: TableColumn<SessionInfo>[] = [
+  { id: 'preview', header: '', meta: { class: { th: 'w-52', td: 'w-52' } } },
   { accessorKey: 'name', header: 'Session' },
   { accessorKey: 'agentId', header: 'Agent' },
   { accessorKey: 'kind', header: 'Where' },
@@ -53,6 +56,10 @@ function share(s: SessionInfo) {
   shareOpen.value = true
 }
 
+function transportFor(s: SessionInfo) {
+  return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
+}
+
 function since(ts: string) {
   const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000)
   if (s < 60) return `${Math.floor(s)}s ago`
@@ -71,6 +78,9 @@ onMounted(() => {
   <UDashboardPanel id="sessions">
     <template #header>
       <UDashboardNavbar title="Sessions">
+        <template #leading>
+          <SidebarReveal />
+        </template>
         <template #right>
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" aria-label="Refresh" :loading="loading" @click="refresh()" />
           <UButton label="Launch agent" icon="i-lucide-play" @click="launch = true" />
@@ -81,10 +91,17 @@ onMounted(() => {
     <template #body>
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-4" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
 
-      <UTable :data="sessions" :columns="columns" :loading="loading && !sessions.length" empty="No sessions yet. Launch an agent here or run `conductor host` from your machine.">
+      <UTable :data="sessions" :columns="columns" :loading="loading && !sessions.length" :ui="{ td: 'py-1.5' }" empty="No sessions yet. Launch an agent here or run `conductor host` from your machine.">
+        <template #preview-cell="{ row }">
+          <NuxtLink :to="`/sessions/${row.original.id}`" class="block w-44 h-24 overflow-hidden rounded-md border border-default bg-default" :aria-label="`Open ${row.original.name}`" data-session-thumbnail>
+            <TerminalView :key="row.original.id" :create-transport="transportFor(row.original)" read-only fit="scale" compact :auto-focus="false" class="pointer-events-none" />
+          </NuxtLink>
+        </template>
         <template #name-cell="{ row }">
           <NuxtLink :to="`/sessions/${row.original.id}`" class="font-medium hover:underline">{{ row.original.name }}</NuxtLink>
-          <div class="text-xs text-muted font-mono truncate max-w-[28rem]">{{ row.original.command.join(' ') }}</div>
+        </template>
+        <template #agentId-cell="{ row }">
+          <span :title="row.original.command.join(' ')">{{ row.original.agentId }}</span>
         </template>
         <template #kind-cell="{ row }">
           <UBadge :label="row.original.kind === 'hosted' ? `hosted · ${row.original.hostName || 'dev machine'}` : 'server'" :icon="row.original.kind === 'hosted' ? 'i-lucide-laptop' : 'i-lucide-server'" color="neutral" variant="subtle" size="sm" />

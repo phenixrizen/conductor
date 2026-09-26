@@ -16,10 +16,18 @@ const props = withDefaults(
     autoConnect?: boolean
     fontSize?: number
     scrollback?: number
-    /** Tile mode: no overlays or notices, just the terminal. */
+    /** Tile mode: no frame, overlays or notices, just the terminal. */
     compact?: boolean
+    /**
+     * `fill` (default) fits the terminal to the pane and, for controllers,
+     * resizes the session. `scale` keeps the owner's cols × rows and scales
+     * the whole terminal down to fit: previews, thumbnails, wall tiles.
+     */
+    fit?: 'fill' | 'scale'
+    /** Focus the terminal once connected (controllers only). */
+    autoFocus?: boolean
   }>(),
-  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false },
+  { readOnly: false, autoConnect: true, fontSize: 13, scrollback: 5000, compact: false, fit: 'fill', autoFocus: true },
 )
 
 const emit = defineEmits<{
@@ -46,26 +54,11 @@ let observer: ResizeObserver | undefined
 let resizeTimer: number | undefined
 let pingTimer: number | undefined
 let stopWatch: (() => void) | undefined
+let stopTheme: (() => void) | undefined
 const existsCache = new Map<string, Promise<boolean>>()
 
-// Brand ink/sage canvas with the terracotta accent as cursor; ANSI colors stay conventional.
-const theme = {
-  background: '#18211c',
-  foreground: '#eef1e9',
-  cursor: '#d26b3f',
-  cursorAccent: '#18211c',
-  selectionBackground: '#f3ac8955',
-  black: '#18211c',
-  brightBlack: '#526454',
-  red: '#f28b82',
-  green: '#8fd3a5',
-  yellow: '#f6c76b',
-  blue: '#8ab4f8',
-  magenta: '#d7aefb',
-  cyan: '#78d9ec',
-  white: '#eef1e9',
-  brightWhite: '#ffffff',
-}
+// Colours follow the workbench palette in both colour modes (see useTerminalTheme).
+const theme = useTerminalTheme()
 
 function pathExists(path: string): Promise<boolean> {
   if (!transport || transport.state.value !== 'open' || !fileView.value) return Promise.resolve(false)
@@ -119,6 +112,44 @@ function scheduleResize() {
   }, 100)
 }
 
+// Scale mode: pick a font size that roughly fills the pane, then apply the
+// exact remaining factor as a CSS transform so the whole screen stays visible.
+const MIN_FONT = 5
+const MAX_FONT = 28
+let scaleFrame: number | undefined
+let fontAdjustments = 0
+
+function applyScale() {
+  const el = term?.element
+  const h = host.value
+  if (!term || !el || !h || props.fit !== 'scale') return
+  const natW = el.offsetWidth
+  const natH = el.offsetHeight
+  const hw = h.clientWidth
+  const hh = h.clientHeight
+  if (!natW || !natH || !hw || !hh) return
+  const k = Math.min(hw / natW, hh / natH)
+  const font = term.options.fontSize ?? props.fontSize
+  const want = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.round(font * k)))
+  if (want !== font && fontAdjustments < 6) {
+    fontAdjustments++
+    term.options.fontSize = want // the element resizes; the observer calls applyScale again
+    return
+  }
+  const s = Math.min(k, 1)
+  const tx = Math.round((hw - natW * s) / 2)
+  const ty = Math.round((hh - natH * s) / 2)
+  el.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`
+}
+
+function scheduleScale() {
+  if (scaleFrame !== undefined) return
+  scaleFrame = window.requestAnimationFrame(() => {
+    scaleFrame = undefined
+    applyScale()
+  })
+}
+
 function handleControl(msg: ControlMessage) {
   switch (msg.t) {
     case 'welcome':
@@ -170,7 +201,7 @@ async function connect() {
   try {
     await t.connect(measure())
     if (!props.readOnly) t.resize(term.cols, term.rows)
-    term.focus()
+    if (props.autoFocus && !props.readOnly) term.focus()
   } catch (e) {
     if (!overlay.value) overlay.value = { title: (e as Error).message }
   } finally {
@@ -192,7 +223,7 @@ function requestFile(path: string, stat = false): Promise<FileResponse> {
   return transport.requestFile(path, stat)
 }
 
-defineExpose({ connect, disconnect, requestFile, focus: () => term?.focus() })
+defineExpose({ connect, disconnect, requestFile, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({
@@ -202,8 +233,11 @@ onMounted(() => {
     disableStdin: !!props.readOnly,
     fontSize: props.fontSize,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-    theme,
+    theme: theme.value,
     convertEol: false,
+  })
+  stopTheme = watch(theme, (t) => {
+    if (term) term.options.theme = t
   })
   fit = new FitAddon()
   term.loadAddon(fit)
@@ -229,14 +263,24 @@ onMounted(() => {
     transport?.sendInput(bytes)
   })
   if (!props.readOnly) fit.fit()
-  observer = new ResizeObserver(() => scheduleResize())
+  observer = new ResizeObserver((entries) => {
+    if (props.fit === 'scale') {
+      if (entries.some((e) => e.target === host.value)) fontAdjustments = 0
+      scheduleScale()
+    } else {
+      scheduleResize()
+    }
+  })
   observer.observe(host.value!)
+  if (props.fit === 'scale' && term.element) observer.observe(term.element)
   pingTimer = window.setInterval(() => transport?.ping(), 25000)
   if (props.autoConnect) connect()
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
+  stopTheme?.()
+  if (scaleFrame !== undefined) window.cancelAnimationFrame(scaleFrame)
   window.clearTimeout(resizeTimer)
   window.clearInterval(pingTimer)
   disconnect(false)
@@ -246,8 +290,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="relative h-full w-full overflow-hidden rounded-lg border border-default">
-    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact }" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+  <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
+    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale' }" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />

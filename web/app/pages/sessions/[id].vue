@@ -133,6 +133,7 @@ watch(id, () => {
     <template #header>
       <UDashboardNavbar :title="session?.name || 'Session'">
         <template #leading>
+          <SidebarReveal />
           <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" to="/" aria-label="Back to sessions" />
         </template>
         <template #trailing>

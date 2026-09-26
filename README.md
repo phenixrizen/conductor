@@ -64,13 +64,32 @@ machine. Limit reads with the `fileView` setting (`view`, `control` or `off`).
 
 ## The wall
 
-`/wall` shows every active session at once: a grid of small live tiles and a
-full-width spotlight that rotates through them (interval and auto-rotate are
-adjustable, hover pauses). It is read-only; click a tile to bring it into the
-spotlight, double-click or press **Open** to go to the session. With **Follow
-input requests** on, the spotlight jumps to any session that needs input and
-holds there until it is answered. The fullscreen button turns a spare monitor
-into a status wall.
+`/wall` is a grid of live tiles, one per active session, sized so that every
+session fits on screen without scrolling; tiles shrink as sessions are added.
+Each tile shows the session's whole screen scaled down. Click a tile and it
+expands in place to a full-size, typeable terminal (`/wall?focus=<id>`, so the
+view is linkable); **Esc**, the back arrow or the browser's Back button return
+to the grid, and **Open page** goes to the full session page with sharing and
+file preview. The fullscreen button turns a spare monitor into a status wall.
+
+## The carousel
+
+`/carousel` rotates through the active sessions one at a time, full size and
+interactive: click into the terminal and type. Rotation pauses while the mouse
+is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
+and pause controls are in the navbar. With **Follow input requests** on, the
+carousel jumps to any session that needs input and holds there until it is
+answered (it never jumps away while you are typing). Sessions also show a live
+thumbnail in the Sessions list.
+
+## Sidebar and keyboard shortcuts
+
+The sidebar hides completely with the panel button in its header or
+**Ctrl+B** (**⌘B** on a Mac); the choice is remembered per browser, and a
+button in every page's navbar brings it back. Press **?** (or use
+**Shortcuts** in the sidebar) for the list of shortcuts on the current screen.
+Shortcuts never fire while a terminal or a text field has focus, so keys reach
+the agent; the same actions are always available as buttons.
 
 ## Let agents tell Conductor they need you
 

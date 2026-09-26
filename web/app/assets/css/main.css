@@ -48,10 +48,13 @@ html, body, #__nuxt {
   height: 100%;
 }
 
+/* The terminal canvas is the UI background so panes blend with the page. */
 .terminal-host {
+  position: relative;
   height: 100%;
   min-height: 12rem;
-  background: #18211c; /* brand ink */
+  overflow: hidden;
+  background: var(--ui-bg);
 }
 
 .terminal-host .xterm {
@@ -63,8 +66,33 @@ html, body, #__nuxt {
   padding: 0.25rem;
 }
 
+/* Scale mode: the terminal renders at its owner's size and is scaled down
+   with a transform to fit the pane (wall tiles, session thumbnails). */
+.terminal-scale {
+  min-height: 0;
+}
+
+.terminal-scale .xterm {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: auto;
+  display: inline-block;
+  transform-origin: 0 0;
+}
+
+/* Scrollbars are hidden in every pane; the mouse wheel still scrolls. */
 .terminal-host .xterm-viewport {
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  background-color: var(--ui-bg); /* xterm.css paints it black before the theme lands */
+}
+
+.terminal-host .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-host .xterm-scrollable-element > .scrollbar {
+  display: none !important;
 }
 
 .file-view pre {

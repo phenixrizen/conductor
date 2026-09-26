@@ -34,6 +34,9 @@ watch(() => admin.token.value, refresh)
   <UDashboardPanel id="agents">
     <template #header>
       <UDashboardNavbar title="Agents">
+        <template #leading>
+          <SidebarReveal />
+        </template>
         <template #right>
           <UButton label="Launch agent" icon="i-lucide-play" @click="launch = true" />
         </template>
