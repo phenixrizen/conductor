@@ -44,12 +44,29 @@ Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
 headless, or `--stun stun:host:3478` to override the ICE servers.
 
+## The workbench
+
+The sidebar is the session list, grouped into **Needs you**, **Running** and
+**Exited**, with a filter box (**/**) and a **Launch agent** button (**N**).
+Launch offers **Server** or **My machine**: the latter shows the exact
+`conductor host` command to paste into a terminal (it carries your admin
+token; keep it private) and the dialog closes by itself when that session
+connects. The session page shows the terminal, a reply bar whenever the agent
+is waiting (type an answer, or press the numbered buttons a Claude Code
+permission prompt offers), and an inspector with **People** (who is attached,
+their role and link, who is typing), **Files** (the file browser) and
+**Activity** (joins, answers, signals and link changes). The header names the
+agent, where it runs, the working directory and the git branch.
+
 ## Sharing
 
-On a session page press **Share** and create a link with the `view` (read-only)
-or `control` (can type) role, optionally with an expiry and a label. The link
-URL is `<publicUrl>/join/<token>` and the token is shown once. Revoking a link
-disconnects everyone using it. Set `publicUrl` to the address your teammates use.
+On a session page press **Share** and create a link with the **View** (watch
+and open files) or **Control** (types into the agent, answers prompts) role,
+with a label and an expiry. The link URL is `<publicUrl>/join/<token>` and the
+token is shown once. Guests type a display name before joining; nothing
+connects until they press **Join**, so a fetched link never exposes terminal
+content. Revoking a link disconnects everyone using it. Set `publicUrl` to the
+address your teammates use.
 
 ## Clickable links and file viewer
 
@@ -66,11 +83,15 @@ machine. Limit reads with the `fileView` setting (`view`, `control` or `off`).
 
 `/wall` is a grid of live tiles, one per active session, sized so that every
 session fits on screen without scrolling; tiles shrink as sessions are added.
-Each tile shows the session's whole screen scaled down. Click a tile and it
-expands in place to a full-size, typeable terminal (`/wall?focus=<id>`, so the
-view is linkable); **Esc**, the back arrow or the browser's Back button return
-to the grid, and **Open page** goes to the full session page with sharing and
-file preview. The fullscreen button turns a spare monitor into a status wall.
+Each tile shows the session's whole screen scaled down. The chips in the
+header filter tiles (**All**, **Needs you**, **Running**). A queue on the left
+lists every session waiting for input with its prompt: answer from there
+(**J**/**K** select, **Enter** types a reply) without opening the session,
+and see who answered what under **Answered**. Click a tile and it expands in
+place to a full-size, typeable terminal (`/wall?focus=<id>`, so the view is
+linkable); **Esc**, the back arrow or the browser's Back button return to the
+grid, and **Open page** goes to the full session page. The fullscreen button
+turns a spare monitor into a status wall.
 
 ## The carousel
 
@@ -79,8 +100,9 @@ interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow input requests** on, the
 carousel jumps to any session that needs input and holds there until it is
-answered (it never jumps away while you are typing). Sessions also show a live
-thumbnail in the Sessions list.
+answered (it never jumps away while you are typing). A film strip under the
+terminal shows every session with the rotation progress, and the footer says
+which session is next.
 
 ## Sidebar and keyboard shortcuts
 
@@ -96,9 +118,11 @@ the agent; the same actions are always available as buttons.
 Every session's process gets `CONDUCTOR_NOTIFY_URL` and `CONDUCTOR_NOTIFY_TOKEN`
 in its environment, and `conductor notify` posts a state with them. Outside a
 Conductor session the command exits silently, so it is safe to install
-globally. Sessions that need a human show a **needs input** badge, count in the
-sidebar and tab title, can raise a browser notification, and the wall jumps to
-them.
+globally. Sessions that need a human show an amber **needs input** badge, move
+to the top of the sidebar, count in the tab title, can raise a browser
+notification, and appear in the wall queue. Claude Code permission requests
+arrive with their options, so **Yes / Always / No** buttons appear wherever
+the prompt is shown.
 
 Claude Code (`~/.claude/settings.json` or a project's `.claude/settings.json`):
 

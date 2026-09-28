@@ -6,6 +6,12 @@ claude.ai/design project "Conductor Mockups" (screens 1a workbench, 1b wall,
 being built, the decisions taken along the way, and what is deliberately
 deferred. Update it when scope changes.
 
+## Delivered (2026-09-28)
+
+Everything under Planned below shipped on the `workbench-redesign` branch.
+The list is kept as the description of what exists; see `docs/protocol.md`
+for the wire details.
+
 ## Planned
 
 ### Client only (no protocol change)
