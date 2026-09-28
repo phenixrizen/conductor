@@ -447,7 +447,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if !role.Valid() || len(m.ViewerID) != proto.ViewerIDLen {
 			return errors.New("invalid viewer_join")
 		}
-		a.addPeer(m.ViewerID, role, m.LinkID)
+		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel)
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -550,9 +550,9 @@ func (a *agent) sendViewerError(viewerID, code, msg string) {
 	a.send(proto.ViewerError{T: proto.HostViewerError, ViewerID: viewerID, Code: code, Message: msg})
 }
 
-func (a *agent) addPeer(id string, role session.Role, linkID string) {
+func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
-	p := newPeer(a, id, role, linkID)
+	p := newPeer(a, id, role, linkID, linkLabel)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice

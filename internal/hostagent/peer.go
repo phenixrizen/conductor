@@ -15,10 +15,11 @@ import (
 // server. Terminal frames from the viewer are dispatched to the local session
 // identically for both transports.
 type peer struct {
-	a      *agent
-	id     string
-	role   session.Role
-	linkID string
+	a         *agent
+	id        string
+	role      session.Role
+	linkID    string
+	linkLabel string
 
 	mu        sync.Mutex
 	pc        *webrtc.PeerConnection
@@ -32,8 +33,8 @@ type peer struct {
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
 
-func newPeer(a *agent, id string, role session.Role, linkID string) *peer {
-	return &peer{a: a, id: id, role: role, linkID: linkID}
+func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string) *peer {
+	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel}
 }
 
 // startWebRTC prepares a peer connection that answers the viewer's offer.
@@ -238,7 +239,9 @@ func (p *peer) attach(hello proto.Hello) {
 	if sink == nil {
 		return
 	}
-	sub, err := p.a.local.Attach(p.id, p.role, p.linkID, hello.Cols, hello.Rows, sink)
+	sub, err := p.a.local.AttachWith(session.AttachOptions{
+		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
+	}, sink)
 	if err != nil {
 		p.a.sendViewerError(p.id, "attach_failed", err.Error())
 		return

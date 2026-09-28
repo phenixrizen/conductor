@@ -16,10 +16,13 @@ export interface TransportSpec {
 export function useTerminalTransport() {
   const { wsBase } = useApiBase()
 
+  const identity = useIdentity()
+
   function create(spec: TransportSpec): TerminalTransport {
     const url = `${wsBase.value}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(spec.token)}`
-    if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay })
-    return new WebSocketTransport(url)
+    const name = spec.name ?? identity.name.value
+    if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay, name })
+    return new WebSocketTransport(url, { name })
   }
 
   return { create }

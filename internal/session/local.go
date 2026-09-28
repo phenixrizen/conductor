@@ -250,9 +250,33 @@ func (s *Local) Info() Info {
 	return info
 }
 
-// Attach registers a client. The welcome, scrollback replay and ready marker
-// are queued before any live output so the client sees a consistent stream.
+// AttachOptions describe a client joining a session.
+type AttachOptions struct {
+	ID        string // empty: generated
+	Role      Role
+	LinkID    string
+	LinkLabel string
+	Name      string // cleaned with CleanName
+	Cols      uint16
+	Rows      uint16
+}
+
+// Attach registers a client without a display name. See AttachWith.
 func (s *Local) Attach(id string, role Role, linkID string, cols, rows uint16, sink Sink) (*Subscription, error) {
+	return s.AttachWith(AttachOptions{ID: id, Role: role, LinkID: linkID, Cols: cols, Rows: rows}, sink)
+}
+
+// viewersFrame encodes the current roster. Callers hold s.mu.
+func (s *Local) viewersFrame() []byte {
+	roster := s.hub.Roster()
+	return proto.MustControl(proto.Viewers{T: proto.CtlViewers, Count: len(roster), List: roster})
+}
+
+// AttachWith registers a client. The welcome, scrollback replay and ready
+// marker are queued before any live output so the client sees a consistent
+// stream; the roster is then broadcast to everyone.
+func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
+	role, id, cols, rows := o.Role, o.ID, o.Cols, o.Rows
 	if !role.Valid() {
 		return nil, errors.New("session: invalid role")
 	}
@@ -276,7 +300,9 @@ func (s *Local) Attach(id string, role Role, linkID string, cols, rows uint16, s
 	if named, ok := sink.(interface{ Transport() string }); ok {
 		transport = named.Transport()
 	}
-	sub := newSubscription(id, role, linkID, sink)
+	sub := newSubscription(id, role, o.LinkID, sink)
+	sub.Name = CleanName(o.Name)
+	sub.LinkLabel = o.LinkLabel
 	sub.send(proto.MustControl(proto.Welcome{
 		T:               proto.CtlWelcome,
 		Proto:           proto.ProtoVersion,
@@ -298,8 +324,7 @@ func (s *Local) Attach(id string, role Role, linkID string, cols, rows uint16, s
 	}
 	sub.send(proto.MustControl(proto.Simple{T: proto.CtlReady}))
 	s.hub.add(sub)
-	count := s.hub.Count()
-	s.hub.Broadcast(proto.MustControl(proto.Viewers{T: proto.CtlViewers, Count: count}))
+	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
 		att := s.info.Attention
 		sub.send(proto.MustControl(proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source}))
@@ -320,7 +345,7 @@ func (s *Local) Detach(sub *Subscription) {
 	s.hub.remove(sub.ID)
 	sub.closeWith(nil)
 	if present {
-		s.hub.Broadcast(proto.MustControl(proto.Viewers{T: proto.CtlViewers, Count: s.hub.Count()}))
+		s.hub.Broadcast(s.viewersFrame())
 	}
 	s.mu.Unlock()
 	if present {
@@ -341,6 +366,13 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	}
 	_, err := s.proc.Write(data)
 	if err == nil {
+		// Presence: stamp the typist and refresh the roster at most every 2 s.
+		now := time.Now().UnixMilli()
+		if prev := sub.lastInput.Swap(now); now-prev > 2000 {
+			s.mu.Lock()
+			s.hub.Broadcast(s.viewersFrame())
+			s.mu.Unlock()
+		}
 		s.mu.Lock()
 		waiting := s.info.Attention.State == AttentionNeedsInput
 		s.mu.Unlock()
@@ -408,3 +440,6 @@ func (s *Local) Send(sub *Subscription, frame []byte) { sub.send(frame) }
 
 // Viewers returns the number of attached clients.
 func (s *Local) Viewers() int { return s.hub.Count() }
+
+// LinkViewers counts attached clients per share link id.
+func (s *Local) LinkViewers() map[string]int { return s.hub.CountByLink() }

@@ -91,6 +91,8 @@ type ViewerJoin struct {
 	ViewerID string `json:"viewerId"`
 	Role     string `json:"role"`
 	LinkID   string `json:"linkId,omitempty"`
+	// LinkLabel is shown in the viewers roster; the host never sees the token.
+	LinkLabel string `json:"linkLabel,omitempty"`
 }
 
 // ViewerRef addresses one viewer (viewer_leave, relay_start, viewer_closed).

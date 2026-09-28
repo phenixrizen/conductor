@@ -3,6 +3,8 @@ package session
 import (
 	"strings"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // AttentionState says whether the agent in a session is waiting for a human.
@@ -39,6 +41,27 @@ type Attention struct {
 	Message string         `json:"message,omitempty"`
 	Source  string         `json:"source,omitempty"`
 	Since   *time.Time     `json:"since,omitempty"`
+}
+
+// CleanName normalises a display name from a client: control characters are
+// dropped, surrounding space trimmed, length capped at proto.MaxNameLen runes.
+// An empty result becomes "guest".
+func CleanName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimSpace(b.String())
+	if n := []rune(out); len(n) > proto.MaxNameLen {
+		out = strings.TrimSpace(string(n[:proto.MaxNameLen]))
+	}
+	if out == "" {
+		return "guest"
+	}
+	return out
 }
 
 // MaxAttentionMessage bounds messages from any source.

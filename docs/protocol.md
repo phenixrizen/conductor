@@ -33,7 +33,7 @@ Client → owner:
 
 | `t` | Fields | Notes |
 |---|---|---|
-| `hello` | `proto:1, cols, rows, client` | Must be the first frame, within 5 s |
+| `hello` | `proto:1, cols, rows, client, name?` | Must be the first frame, within 5 s. `name` is the display name other viewers see (≤ 160 bytes on the wire; cleaned to ≤ 40 runes, control characters stripped, empty → `guest`) |
 | `resize` | `cols, rows` | Controllers only; 1–500 |
 | `ping` | `ts` | Answered with `pong` |
 | `file_get` | `reqId, path, stat?` | Answered with a FILE frame |
@@ -47,7 +47,7 @@ Owner → client:
 | `resize` | `cols, rows, by` (subscriber that resized) |
 | `status` | `status, exitCode?` |
 | `attention` | `state, message?, source?` (see Attention) |
-| `viewers` | `count` |
+| `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type. `link` is the share link's label. |
 | `error` | `code, message` |
 | `pong` | `ts` |
 
@@ -97,7 +97,7 @@ Host → server: `register{proto, host{name,version}, session{name,agentId,comma
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source}`.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
-`viewer_join{viewerId, role, linkId?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
+`viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
 `attention{state,message?,source}` (API-originated change to broadcast), `error`.
 

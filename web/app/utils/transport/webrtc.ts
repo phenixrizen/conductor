@@ -27,8 +27,11 @@ export class WebRTCTransport extends BaseTransport {
   private relayTimer?: number
   private forceRelay: boolean
 
-  constructor(private readonly url: string, opts: { forceRelay?: boolean } = {}) {
-    super('webrtc')
+  constructor(
+    private readonly url: string,
+    opts: { forceRelay?: boolean; name?: string } = {},
+  ) {
+    super('webrtc', { name: opts.name })
     this.forceRelay = !!opts.forceRelay
   }
 

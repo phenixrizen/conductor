@@ -63,7 +63,9 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 		return
 	}
 	sink := newWSSink(c)
-	sub, err := local.Attach("", role, linkID, hello.Cols, hello.Rows, sink)
+	sub, err := local.AttachWith(session.AttachOptions{
+		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
+	}, sink)
 	if err != nil {
 		if errors.Is(err, session.ErrTooManyViewers) {
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
@@ -175,14 +177,29 @@ func (s *Server) readHello(ctx context.Context, c *websocket.Conn) (proto.Hello,
 		c.Close(proto.CloseProtocolError, "unsupported protocol version")
 		return proto.Hello{}, errors.New("unsupported protocol version")
 	}
+	if len(hello.Name) > 4*proto.MaxNameLen {
+		c.Close(proto.CloseProtocolError, "name too long")
+		return proto.Hello{}, errors.New("name too long")
+	}
 	return hello, nil
+}
+
+// linkLabel returns the label of a share link for the viewers roster.
+func (s *Server) linkLabel(linkID string) string {
+	if linkID == "" {
+		return ""
+	}
+	if l, ok := s.links.Get(linkID); ok {
+		return l.Label
+	}
+	return ""
 }
 
 // serveHostedViewer brokers WebRTC signaling for a hosted session and relays
 // frames through the host connection when the viewer asks for it.
 func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string) {
 	viewerID := session.NewID()
-	v, err := hs.AddViewer(viewerID, role, linkID)
+	v, err := hs.AddViewer(viewerID, role, linkID, s.linkLabel(linkID))
 	if err != nil {
 		switch {
 		case errors.Is(err, signal.ErrTooManyViewer):

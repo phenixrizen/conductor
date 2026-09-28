@@ -51,3 +51,19 @@ func TestCleanMessage(t *testing.T) {
 		t.Fatalf("len %d", len(got))
 	}
 }
+
+func TestCleanName(t *testing.T) {
+	cases := map[string]string{
+		"  Priya Shah ":          "Priya Shah",
+		"":                       "guest",
+		"   ":                    "guest",
+		"a\x00b\x1bc":            "abc",
+		strings.Repeat("x", 100): strings.Repeat("x", 40),
+		"é🙂":                     "é🙂",
+	}
+	for in, want := range cases {
+		if got := CleanName(in); got != want {
+			t.Errorf("CleanName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

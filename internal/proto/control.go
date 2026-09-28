@@ -62,6 +62,9 @@ type Header struct {
 	T string `json:"t"`
 }
 
+// MaxNameLen bounds a viewer display name in runes (see session.CleanName).
+const MaxNameLen = 40
+
 // Hello is the first message a client sends.
 type Hello struct {
 	T      string `json:"t"`
@@ -69,6 +72,8 @@ type Hello struct {
 	Cols   uint16 `json:"cols"`
 	Rows   uint16 `json:"rows"`
 	Client string `json:"client,omitempty"`
+	// Name is the display name other viewers see; a label, not authentication.
+	Name string `json:"name,omitempty"`
 }
 
 // Resize is sent by controllers to change the PTY size and broadcast by the
@@ -127,10 +132,23 @@ type Status struct {
 	ExitCode *int   `json:"exitCode,omitempty"`
 }
 
-// Viewers reports the attached client count.
+// ViewerInfo describes one attached client in the viewers roster.
+type ViewerInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+	// Link is the label of the share link the viewer joined through, if any.
+	Link  string `json:"link,omitempty"`
+	Since string `json:"since"`
+	// LastInputAt is refreshed at most every 2 s while the viewer types.
+	LastInputAt string `json:"lastInputAt,omitempty"`
+}
+
+// Viewers reports the attached clients: the count and the full roster.
 type Viewers struct {
-	T     string `json:"t"`
-	Count int    `json:"count"`
+	T     string       `json:"t"`
+	Count int          `json:"count"`
+	List  []ViewerInfo `json:"list,omitempty"`
 }
 
 // ErrorMsg is a non-fatal or fatal error notification.

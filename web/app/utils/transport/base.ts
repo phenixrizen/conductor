@@ -39,8 +39,12 @@ export abstract class BaseTransport implements TerminalTransport {
   protected closed = false
   private reqCounter = 0
 
-  constructor(kind: TransportKind) {
+  /** Display name sent in the hello; a label other viewers see, not authentication. */
+  protected name = ''
+
+  constructor(kind: TransportKind, opts: { name?: string } = {}) {
     this.kind = ref(kind)
+    this.name = (opts.name ?? '').trim().slice(0, 40)
   }
 
   abstract connect(hello: { cols: number; rows: number }): Promise<Welcome>
@@ -88,7 +92,7 @@ export abstract class BaseTransport implements TerminalTransport {
   }
 
   protected helloFrame(hello: { cols: number; rows: number }): Uint8Array<ArrayBuffer> {
-    return encodeControl({ t: 'hello', proto: ProtoVersion, cols: hello.cols, rows: hello.rows, client: 'web/1' })
+    return encodeControl({ t: 'hello', proto: ProtoVersion, cols: hello.cols, rows: hello.rows, client: 'web/1', ...(this.name ? { name: this.name } : {}) })
   }
 
   /** Dispatches a terminal-stream frame. Returns false for unknown types. */

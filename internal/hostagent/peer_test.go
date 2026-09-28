@@ -34,7 +34,7 @@ func TestPeerDataChannelLoopback(t *testing.T) {
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}

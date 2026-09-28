@@ -46,7 +46,7 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 		t.Fatalf("bad register: %v", err)
 	}
 
-	v, err := hs.AddViewer("0123456789abcdef", session.RoleView, "l1")
+	v, err := hs.AddViewer("0123456789abcdef", session.RoleView, "l1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 	}
 
 	// Host drop closes viewers and marks the session; resume with the secret works once.
-	v2, _ := hs.AddViewer("fedcba9876543210", session.RoleControl, "")
+	v2, _ := hs.AddViewer("fedcba9876543210", session.RoleControl, "", "")
 	hs.HostDisconnected(conn)
 	if !errors.Is(v2.Reason(), ErrHostGone) || hs.Info().Status != session.StatusHostDisconnected {
 		t.Fatalf("after disconnect: %v %s", v2.Reason(), hs.Info().Status)

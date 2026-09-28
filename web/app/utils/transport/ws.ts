@@ -7,8 +7,11 @@ const HELLO_TIMEOUT_MS = 10000
 export class WebSocketTransport extends BaseTransport {
   private ws?: WebSocket
 
-  constructor(private readonly url: string) {
-    super('ws')
+  constructor(
+    private readonly url: string,
+    opts: { name?: string } = {},
+  ) {
+    super('ws', opts)
   }
 
   connect(hello: { cols: number; rows: number }): Promise<Welcome> {

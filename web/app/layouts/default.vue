@@ -9,6 +9,8 @@ const alerts = useAttentionSettings()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
 const launch = useLaunchModal()
+const identity = useIdentity()
+const nameDraft = ref('')
 const router = useRouter()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
@@ -73,6 +75,18 @@ defineShortcuts({
                 <USwitch :model-value="alerts.settings.value.chime" label="Chime" @update:model-value="alerts.setChime" />
                 <p class="text-xs text-muted">The tab title and favicon always show the count.</p>
               </div>
+            </template>
+          </UPopover>
+          <UPopover @update:open="(o: boolean) => o && (nameDraft = identity.name.value)">
+            <UTooltip :text="identity.name.value ? `You are ${identity.name.value}` : 'Set your name'">
+              <UButton :icon="identity.name.value ? 'i-lucide-user-round-check' : 'i-lucide-user-round'" color="neutral" variant="ghost" size="sm" aria-label="Your name" />
+            </UTooltip>
+            <template #content>
+              <form class="p-3 flex flex-col gap-2 w-64" @submit.prevent="identity.set(nameDraft)">
+                <p class="text-xs text-muted">Shown to others on a session. A label, not a login.</p>
+                <UInput v-model="nameDraft" placeholder="Your name" size="sm" maxlength="40" />
+                <UButton type="submit" label="Save" size="sm" class="self-end" />
+              </form>
             </template>
           </UPopover>
           <UTooltip text="Keyboard shortcuts" :kbds="['?']">

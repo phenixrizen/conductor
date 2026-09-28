@@ -85,10 +85,11 @@ func (c *HostConn) sendJSON(v any) bool {
 // Viewer is one browser attached to a hosted session. Frames queued to Out
 // are written to the viewer's WebSocket by the API layer.
 type Viewer struct {
-	ID     string
-	Role   session.Role
-	LinkID string
-	Out    chan []byte
+	ID        string
+	Role      session.Role
+	LinkID    string
+	LinkLabel string
+	Out       chan []byte
 
 	relay  atomic.Bool
 	done   chan struct{}
@@ -96,8 +97,8 @@ type Viewer struct {
 	reason error
 }
 
-func newViewer(id string, role session.Role, linkID string) *Viewer {
-	return &Viewer{ID: id, Role: role, LinkID: linkID, Out: make(chan []byte, viewerQueue), done: make(chan struct{})}
+func newViewer(id string, role session.Role, linkID, linkLabel string) *Viewer {
+	return &Viewer{ID: id, Role: role, LinkID: linkID, LinkLabel: linkLabel, Out: make(chan []byte, viewerQueue), done: make(chan struct{})}
 }
 
 // Done is closed when the viewer must be disconnected.
@@ -245,6 +246,19 @@ func (h *HostedSession) RelayOnly() bool {
 	return h.relayOnly
 }
 
+// LinkViewers counts server-side viewers per share link id.
+func (h *HostedSession) LinkViewers() map[string]int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]int{}
+	for _, v := range h.viewers {
+		if v.LinkID != "" && v.Reason() == nil {
+			out[v.LinkID]++
+		}
+	}
+	return out
+}
+
 // Secret returns the resume secret handed to the host.
 func (h *HostedSession) Secret() string { return h.secret }
 
@@ -255,8 +269,9 @@ func (h *HostedSession) Connected() bool {
 	return h.conn != nil
 }
 
-// AddViewer registers a browser and notifies the host.
-func (h *HostedSession) AddViewer(id string, role session.Role, linkID string) (*Viewer, error) {
+// AddViewer registers a browser and notifies the host. linkLabel travels to
+// the host for its roster; the link token never does.
+func (h *HostedSession) AddViewer(id string, role session.Role, linkID, linkLabel string) (*Viewer, error) {
 	h.mu.Lock()
 	if h.conn == nil {
 		h.mu.Unlock()
@@ -266,11 +281,11 @@ func (h *HostedSession) AddViewer(id string, role session.Role, linkID string) (
 		h.mu.Unlock()
 		return nil, ErrTooManyViewer
 	}
-	v := newViewer(id, role, linkID)
+	v := newViewer(id, role, linkID, linkLabel)
 	h.viewers[id] = v
 	conn := h.conn
 	h.mu.Unlock()
-	conn.sendJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: id, Role: string(role), LinkID: linkID})
+	conn.sendJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: id, Role: string(role), LinkID: linkID, LinkLabel: linkLabel})
 	h.notifyChange()
 	return v, nil
 }

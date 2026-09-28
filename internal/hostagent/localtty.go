@@ -59,7 +59,9 @@ func (a *agent) attachLocal(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	cols, rows, _ := terminalSize(a.opts.Stdin)
-	sub, err := a.local.Attach("local-"+session.NewID()[:10], session.RoleControl, "", cols, rows, &stdoutSink{out: a.opts.Stdout})
+	sub, err := a.local.AttachWith(session.AttachOptions{
+		ID: "local-" + session.NewID()[:10], Role: session.RoleControl, Name: "host terminal", Cols: cols, Rows: rows,
+	}, &stdoutSink{out: a.opts.Stdout})
 	if err != nil {
 		term.Restore(fd, state)
 		return nil, err

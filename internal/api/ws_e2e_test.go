@@ -349,3 +349,53 @@ func TestAttentionViaAgentTokenBellAndEvents(t *testing.T) {
 		t.Fatalf("events query token must be refused: %d", resp.StatusCode)
 	}
 }
+
+func (w *wsClient) helloNamed(cols, rows uint16, name string) {
+	w.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: cols, Rows: rows, Client: "test", Name: name}))
+}
+
+func TestViewerRosterCarriesNamesAndLinkLabels(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+
+	owner := dialViewer(t, e, id, adminToken)
+	owner.helloNamed(80, 24, "  Jordan\x07 ")
+	owner.expectControl(proto.CtlReady)
+
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control", "label": "pairing"})
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.helloNamed(80, 24, "Priya Shah")
+	guest.expectControl(proto.CtlReady)
+
+	// The owner receives the roster broadcast when the guest joins.
+	var roster map[string]any
+	for i := 0; i < 5; i++ {
+		roster = owner.expectControl(proto.CtlViewers)
+		if roster["count"] == float64(2) {
+			break
+		}
+	}
+	list, _ := roster["list"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("roster %v", roster)
+	}
+	names := map[string]map[string]any{}
+	for _, v := range list {
+		m := v.(map[string]any)
+		names[m["name"].(string)] = m
+	}
+	if names["Jordan"] == nil || names["Priya Shah"] == nil {
+		t.Fatalf("names %v", names)
+	}
+	if names["Priya Shah"]["link"] != "pairing" || names["Priya Shah"]["role"] != "control" {
+		t.Fatalf("guest entry %v", names["Priya Shah"])
+	}
+	if names["Jordan"]["link"] != nil {
+		t.Fatalf("owner should carry no link label %v", names["Jordan"])
+	}
+
+	// An absurdly long name is a protocol error, not a crash.
+	long := dialViewer(t, e, id, adminToken)
+	long.helloNamed(80, 24, strings.Repeat("n", 1000))
+	long.expectClose(proto.CloseProtocolError)
+}

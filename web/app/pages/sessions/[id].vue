@@ -81,6 +81,23 @@ const menu = computed(() => [
 
 const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 
+// "Priya is typing…": anyone else whose last input is under four seconds old.
+const now = ref(Date.now())
+let tick: number | undefined
+onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 1000)))
+onBeforeUnmount(() => window.clearInterval(tick))
+const selfId = ref('')
+const typingNames = computed(() =>
+  viewers.value.filter((v) => v.id !== selfId.value && v.lastInputAt && now.value - Date.parse(v.lastInputAt) < 4000).map((v) => v.name),
+)
+const typingLine = computed(() => {
+  const n = typingNames.value
+  if (!n.length) return ''
+  if (n.length === 1) return `${n[0]} is typing…`
+  if (n.length === 2) return `${n[0]} and ${n[1]} are typing…`
+  return `${n[0]}, ${n[1]} and ${n.length - 2} more are typing…`
+})
+
 useHead({ title: computed(() => session.value?.name || 'Session') })
 
 async function load() {
@@ -261,10 +278,11 @@ watch(id, () => {
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
         <div class="flex flex-1 min-w-0 flex-col gap-3 p-3">
-          <div class="flex-1 min-h-0">
+          <div class="relative flex-1 min-h-0">
             <TerminalView
               ref="terminal"
               :create-transport="createTransport"
+              @welcome="(w) => (selfId = w.subscriberId ?? w.viewerId ?? '')"
               @status="onStatus"
               @attention="onAttention"
               @viewers="onViewers"
@@ -273,6 +291,7 @@ watch(id, () => {
               @open-file="openFile"
               @open-url="openUrl"
             />
+            <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           </div>
           <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" />
         </div>

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -353,5 +354,89 @@ func TestAttentionFromBellAndClearOnInput(t *testing.T) {
 		if !s.AgentTokenOK("secret") || s.AgentTokenOK("nope") || s.AgentTokenOK("") {
 			t.Fatal("agent token check")
 		}
+	}
+}
+
+// rosterOf returns the list from the last viewers message a sink received.
+func rosterOf(t *testing.T, sink *chanSink) (map[string]any, []map[string]any) {
+	t.Helper()
+	var last map[string]any
+	for i := 0; i < sink.count(); i++ {
+		f, err := proto.Decode(sink.frame(i))
+		if err != nil || f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(f.Payload, &m) == nil && m["t"] == proto.CtlViewers {
+			last = m
+		}
+	}
+	if last == nil {
+		t.Fatal("no viewers message received")
+	}
+	raw, _ := last["list"].([]any)
+	list := make([]map[string]any, 0, len(raw))
+	for _, v := range raw {
+		list = append(list, v.(map[string]any))
+	}
+	return last, list
+}
+
+func TestViewersRosterCarriesNamesAndTyping(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	a, b := newChanSink(false), newChanSink(false)
+	subA, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Priya", LinkLabel: "pairing", Cols: 80, Rows: 24}, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Cols: 80, Rows: 24}, b); err != nil {
+		t.Fatal(err)
+	}
+	b.waitFrames(t, 3) // welcome, ready, viewers
+	msg, list := rosterOf(t, b)
+	if msg["count"].(float64) != 2 || len(list) != 2 {
+		t.Fatalf("roster: %v", msg)
+	}
+	byName := map[string]map[string]any{}
+	for _, v := range list {
+		byName[v["name"].(string)] = v
+	}
+	if byName["Priya"] == nil || byName["guest"] == nil {
+		t.Fatalf("names: %v", list)
+	}
+	if byName["Priya"]["role"] != "control" || byName["Priya"]["link"] != "pairing" || byName["Priya"]["since"] == nil {
+		t.Fatalf("Priya entry: %v", byName["Priya"])
+	}
+	if byName["guest"]["link"] != nil {
+		t.Fatalf("guest should have no link label: %v", byName["guest"])
+	}
+	// Typing: input from A stamps lastInputAt and rebroadcasts the roster.
+	before := b.count()
+	if err := s.Input(subA, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	b.waitFrames(t, before+1)
+	_, list = rosterOf(t, b)
+	var typed bool
+	for _, v := range list {
+		if v["name"] == "Priya" && v["lastInputAt"] != nil {
+			typed = true
+		}
+	}
+	if !typed {
+		t.Fatalf("expected lastInputAt on Priya after input: %v", list)
+	}
+}
+
+func TestAttachRejectsOverlongName(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	sink := newChanSink(false)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: strings.Repeat("n", 500), Cols: 80, Rows: 24}, sink); err != nil {
+		t.Fatalf("attach should clean rather than reject: %v", err)
+	}
+	sink.waitFrames(t, 3)
+	_, list := rosterOf(t, sink)
+	if got := list[0]["name"].(string); len([]rune(got)) != 40 {
+		t.Fatalf("name not capped: %d runes", len([]rune(got)))
 	}
 }

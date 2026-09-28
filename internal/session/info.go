@@ -64,6 +64,8 @@ type Driver interface {
 	Info() Info
 	Stop(ctx context.Context) error
 	DisconnectLink(linkID string)
+	// LinkViewers counts attached clients per share link id.
+	LinkViewers() map[string]int
 }
 
 // Typed errors surfaced to transports, which map them to close codes.

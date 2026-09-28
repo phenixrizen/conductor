@@ -9,9 +9,10 @@ import (
 
 type stubDriver struct{ info Info }
 
-func (d *stubDriver) Info() Info                 { return d.info }
-func (d *stubDriver) Stop(context.Context) error { return nil }
-func (d *stubDriver) DisconnectLink(string)      {}
+func (d *stubDriver) Info() Info                  { return d.info }
+func (d *stubDriver) Stop(context.Context) error  { return nil }
+func (d *stubDriver) DisconnectLink(string)       {}
+func (d *stubDriver) LinkViewers() map[string]int { return nil }
 func stub(id string, created time.Time) *stubDriver {
 	return &stubDriver{Info{ID: id, CreatedAt: created, Status: StatusRunning}}
 }
