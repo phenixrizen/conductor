@@ -41,6 +41,7 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
     { keys: ['arrowright'], label: 'Next session' },
     { keys: ['enter'], label: 'Type into the current session' },
     { keys: ['space'], label: 'Pause or resume rotation' },
+    { keys: ['escape'], label: 'Leave the terminal' },
     { keys: ['F'], label: 'Toggle fullscreen' },
   ],
 }
