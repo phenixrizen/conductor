@@ -2,7 +2,7 @@
 import type { ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
 
-const props = defineProps<{ sessionId: string }>()
+const props = defineProps<{ sessionId: string; sessionName?: string }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const api = useSessions()
@@ -13,17 +13,18 @@ const creating = ref(false)
 const error = ref('')
 const created = ref<{ url: string; role: Role; label?: string } | null>(null)
 
-const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '0' })
-const roleItems = [
-  { label: 'View only', value: 'view', icon: 'i-lucide-eye' },
-  { label: 'Control (can type)', value: 'control', icon: 'i-lucide-keyboard' },
+const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '7200' })
+const roles: Array<{ value: Role; label: string; description: string }> = [
+  { value: 'view', label: 'View', description: "Watch output, open files. Can't type." },
+  { value: 'control', label: 'Control', description: 'Types into the agent, answers prompts.' },
 ]
 const ttlItems = [
-  { label: 'Never expires', value: '0' },
-  { label: '1 hour', value: '3600' },
-  { label: '8 hours', value: '28800' },
-  { label: '24 hours', value: '86400' },
-  { label: '7 days', value: '604800' },
+  { label: 'Never', value: '0' },
+  { label: 'In 1 hour', value: '3600' },
+  { label: 'In 2 hours', value: '7200' },
+  { label: 'In 8 hours', value: '28800' },
+  { label: 'In 24 hours', value: '86400' },
+  { label: 'In 7 days', value: '604800' },
 ]
 
 async function refresh() {
@@ -84,57 +85,75 @@ async function revoke(link: ShareLink) {
 function fmt(ts?: string) {
   return ts ? new Date(ts).toLocaleString() : ''
 }
+
+/** Shortens a long join URL for display: host/join/k7Qx…9fRm */
+function shortUrl(url: string) {
+  const m = /^(https?:\/\/)?([^/]+)\/join\/(.+)$/.exec(url)
+  if (!m) return url
+  const tok = m[3]!
+  return `${m[2]}/join/${tok.length > 12 ? `${tok.slice(0, 4)}…${tok.slice(-4)}` : tok}`
+}
+
+const live = computed(() => links.value.filter((l) => !l.revoked))
 </script>
 
 <template>
-  <UModal v-model:open="open" title="Share this session" description="Links carry their own token. Anyone with a link can join with the role you choose.">
+  <UModal v-model:open="open" :title="sessionName ? `Share ${sessionName}` : 'Share this session'" description="Anyone with the link joins with the role you pick. Revoking disconnects them." :ui="{ content: 'max-w-lg' }">
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
 
-        <form class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 items-end" @submit.prevent="create">
-          <UFormField label="Role" name="role">
-            <USelect v-model="form.role" :items="roleItems" class="w-full" />
-          </UFormField>
-          <UFormField label="Expires" name="ttl">
-            <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
-          </UFormField>
-          <UButton label="Create link" type="submit" icon="i-lucide-link" :loading="creating" />
-          <UFormField label="Label" name="label" class="sm:col-span-3">
-            <UInput v-model="form.label" placeholder="who is this for? (optional)" class="w-full" />
-          </UFormField>
+        <form class="flex flex-col gap-4" @submit.prevent="create">
+          <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Role">
+            <button
+              v-for="r in roles"
+              :key="r.value"
+              type="button"
+              role="radio"
+              :aria-checked="form.role === r.value"
+              class="flex flex-col gap-1 rounded-md border p-3 text-left transition-colors"
+              :class="form.role === r.value ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default hover:border-accented'"
+              @click="form.role = r.value"
+            >
+              <span class="text-sm font-semibold">{{ r.label }}</span>
+              <span class="text-xs leading-snug text-muted">{{ r.description }}</span>
+            </button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <UFormField label="Label" name="label">
+              <UInput v-model="form.label" placeholder="pairing" class="w-full" />
+            </UFormField>
+            <UFormField label="Expires" name="ttl">
+              <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
+            </UFormField>
+          </div>
+          <UButton label="Create link" type="submit" icon="i-lucide-link" :loading="creating" class="self-end" />
         </form>
 
-        <UAlert
-          v-if="created"
-          color="primary"
-          variant="subtle"
-          icon="i-lucide-key-round"
-          title="New link (shown once)"
-          :actions="[{ label: 'Copy', icon: 'i-lucide-copy', onClick: () => copy(created!.url) }]"
-        >
-          <template #description>
-            <code class="text-xs break-all select-all">{{ created.url }}</code>
-          </template>
-        </UAlert>
+        <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3">
+          <div class="flex items-center gap-2.5">
+            <span class="flex-1 truncate font-mono text-xs" :title="created.url">{{ shortUrl(created.url) }}</span>
+            <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
+          </div>
+          <span class="text-xs text-secondary">Shown once. Copy it now; you can always make a new one.</span>
+        </div>
 
         <div>
           <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-medium">Existing links</h3>
+            <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Links</h3>
             <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" aria-label="Refresh" @click="refresh" />
           </div>
-          <p v-if="!links.length && !loading" class="text-sm text-muted">No links yet.</p>
-          <ul v-else class="divide-y divide-default border border-default rounded-lg">
-            <li v-for="link in links" :key="link.id" class="flex items-center gap-3 px-3 py-2 text-sm">
-              <UBadge :label="link.role" :color="link.role === 'control' ? 'warning' : 'neutral'" variant="subtle" size="sm" />
-              <div class="flex-1 min-w-0">
-                <div class="truncate">{{ link.label || 'unlabelled' }}</div>
-                <div class="text-xs text-muted">
-                  created {{ fmt(link.createdAt) }}<span v-if="link.expiresAt"> · expires {{ fmt(link.expiresAt) }}</span>
-                </div>
+          <p v-if="!live.length && !loading" class="text-sm text-muted">No links yet.</p>
+          <ul v-else class="flex flex-col gap-2">
+            <li v-for="link in live" :key="link.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-medium truncate">{{ link.label || 'unlabelled' }}</span>
+                <UBadge :label="link.role === 'control' ? 'Control' : 'View'" :color="link.role === 'control' ? 'primary' : 'neutral'" :variant="link.role === 'control' ? 'subtle' : 'outline'" size="sm" />
+                <UButton label="Revoke" size="xs" variant="link" color="secondary" class="ml-auto" @click="revoke(link)" />
               </div>
-              <UBadge v-if="link.revoked" label="revoked" color="error" variant="subtle" size="sm" />
-              <UButton v-else label="Revoke" size="xs" color="error" variant="soft" icon="i-lucide-ban" @click="revoke(link)" />
+              <span class="font-mono text-[11px] text-muted">
+                created {{ fmt(link.createdAt) }}<template v-if="link.expiresAt"> · expires {{ fmt(link.expiresAt) }}</template><template v-if="link.active !== undefined"> · {{ link.active }} using</template>
+              </span>
             </li>
           </ul>
         </div>

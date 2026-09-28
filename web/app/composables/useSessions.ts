@@ -50,7 +50,7 @@ export interface ShareLink {
 }
 
 export interface JoinInfo {
-  session: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName'>
+  session: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'>
   role: Role
   label?: string
 }

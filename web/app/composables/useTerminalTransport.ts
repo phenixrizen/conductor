@@ -8,6 +8,8 @@ export interface TransportSpec {
   token: string
   kind: SessionKind
   forceRelay?: boolean
+  /** Display name sent in the hello; defaults to the stored identity. */
+  name?: string
 }
 
 /** Builds the right transport for a session kind. Each call creates a fresh connection object. */

@@ -297,5 +297,5 @@ watch(id, () => {
     </template>
   </UDashboardPanel>
 
-  <ShareLinksModal v-model:open="share" :session-id="id" />
+  <ShareLinksModal v-model:open="share" :session-id="id" :session-name="session?.name" />
 </template>
