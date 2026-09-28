@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+@import "@fontsource-variable/jetbrains-mono";
 @import "@xterm/xterm/css/xterm.css";
 
 /* Conductor / The Switch palette (web/public/brand/tokens.css) as Tailwind scales. */
@@ -27,6 +28,30 @@
   --color-terracotta-900: #6a301f;
   --color-terracotta-950: #3a1810;
   --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Operational status: amber needs-input, green running. Never terracotta. */
+  --color-signal-50: #fdf8ec;
+  --color-signal-100: #f7e9c9;
+  --color-signal-200: #f3dda6;
+  --color-signal-300: #e8c475;
+  --color-signal-400: #dba63e;
+  --color-signal-500: #c98a1b;
+  --color-signal-600: #a56f14;
+  --color-signal-700: #805000;
+  --color-signal-800: #6b4400;
+  --color-signal-900: #5e3c00;
+  --color-signal-950: #3a2500;
+  --color-active-50: #eef7f1;
+  --color-active-100: #e6efe7;
+  --color-active-200: #c4dfcc;
+  --color-active-300: #9bcaa9;
+  --color-active-400: #6fae83;
+  --color-active-500: #3f8f5f;
+  --color-active-600: #31764d;
+  --color-active-700: #245a3a;
+  --color-active-800: #1e4a30;
+  --color-active-900: #183b27;
+  --color-active-950: #0e2418;
 }
 
 :root {

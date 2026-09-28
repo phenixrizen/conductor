@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { isActive, needingInput, newlyNeedingInput, titleWithCount } from './attention'
+import { ATTENTION_DOT_COLOR, isActive, needingInput, newlyNeedingInput, titleWithCount } from './attention'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
   return {
@@ -41,5 +41,12 @@ describe('attention helpers', () => {
     expect(titleWithCount('Conductor', 3)).toBe('(3) Conductor')
     expect(isActive(s('a'))).toBe(true)
     expect(isActive(s('a', '', '', 'stopped'))).toBe(false)
+  })
+})
+
+describe('attention dot colour', () => {
+  it('is the amber status colour, never the brand terracotta', () => {
+    expect(ATTENTION_DOT_COLOR).toBe('#c98a1b')
+    expect(ATTENTION_DOT_COLOR).not.toBe('#d26b3f')
   })
 })

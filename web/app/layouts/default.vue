@@ -13,7 +13,7 @@ const router = useRouter()
 const items = computed<NavigationMenuItem[][]>(() => [
   [
     { label: 'Sessions', icon: 'i-lucide-terminal', to: '/' },
-    { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'secondary', variant: 'solid' } : undefined },
+    { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
     { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
     { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
   ],

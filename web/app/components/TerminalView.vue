@@ -232,7 +232,7 @@ onMounted(() => {
     allowProposedApi: true,
     disableStdin: !!props.readOnly,
     fontSize: props.fontSize,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: '"JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
     theme: theme.value,
     convertEol: false,
   })
@@ -249,6 +249,12 @@ onMounted(() => {
   )
   term.registerLinkProvider(fileLinkProvider)
   term.open(host.value!)
+  // Re-measure once the bundled font has loaded so cell metrics are exact.
+  document.fonts?.ready.then(() => {
+    if (!term) return
+    if (props.fit === 'scale') scheduleScale()
+    else scheduleResize()
+  })
   try {
     const webgl = new WebglAddon()
     webgl.onContextLoss(() => webgl.dispose())

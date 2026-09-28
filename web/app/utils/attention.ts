@@ -38,11 +38,14 @@ export function titleWithCount(base: string, count: number): string {
   return count > 0 ? `(${count}) ${base}` : base
 }
 
+/** Amber status dot; the brand terracotta is never used as a status colour. */
+export const ATTENTION_DOT_COLOR = '#c98a1b'
+
 let faviconCache: { plain?: string; alert?: string } = {}
 
 /**
- * Draws the brand favicon with a terracotta dot in the corner. The dot is a
- * separate status marker; the junction in the mark is never recoloured.
+ * Draws the brand favicon with an amber status dot in the corner. The dot is
+ * a separate status marker; the junction in the mark is never recoloured.
  */
 export async function attentionFavicon(alert: boolean, src = '/brand/conductor-favicon.svg'): Promise<string> {
   if (!alert) return src
@@ -63,7 +66,7 @@ export async function attentionFavicon(alert: boolean, src = '/brand/conductor-f
     ctx.fill()
     ctx.beginPath()
     ctx.arc(size - 13, 13, 9, 0, Math.PI * 2)
-    ctx.fillStyle = '#d26b3f'
+    ctx.fillStyle = ATTENTION_DOT_COLOR
     ctx.fill()
     faviconCache.alert = canvas.toDataURL('image/png')
     return faviconCache.alert

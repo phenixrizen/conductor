@@ -15,7 +15,7 @@ const needsInput = computed(() => props.session.attention?.state === 'needs_inpu
 <template>
   <div
     class="group flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary"
-    :class="needsInput ? 'border-secondary ring-2 ring-secondary/60' : 'border-default hover:border-accented'"
+    :class="needsInput ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented'"
     role="button"
     tabindex="0"
     data-session-tile

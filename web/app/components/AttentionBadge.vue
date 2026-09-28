@@ -15,7 +15,7 @@ const label = computed(() => {
   return ''
 })
 
-const color = computed(() => (props.attention?.state === 'needs_input' ? 'secondary' : props.attention?.state === 'done' ? 'success' : 'neutral'))
+const color = computed(() => (props.attention?.state === 'needs_input' ? 'warning' : props.attention?.state === 'done' ? 'success' : 'neutral'))
 const icon = computed(() => (props.attention?.state === 'needs_input' ? 'i-lucide-hand' : props.attention?.state === 'done' ? 'i-lucide-check' : 'i-lucide-loader-circle'))
 
 const tooltip = computed(() => {
@@ -30,7 +30,7 @@ const tooltip = computed(() => {
 
 <template>
   <UTooltip v-if="label" :text="tooltip">
-    <UChip :show="attention?.state === 'needs_input'" color="secondary" inset>
+    <UChip :show="attention?.state === 'needs_input'" color="warning" inset>
       <UBadge :label="label" :icon="icon" :color="color" :variant="attention?.state === 'needs_input' ? 'solid' : 'subtle'" :size="size || 'sm'" :class="{ 'animate-pulse': attention?.state === 'needs_input' }" />
     </UChip>
   </UTooltip>

@@ -8,3 +8,4 @@ web/.data/
 web/dist
 *.log
 .DS_Store
+.superpowers/
