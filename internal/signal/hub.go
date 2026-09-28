@@ -52,6 +52,9 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if len(reg.Session.Name) > 120 || len(reg.Host.Name) > 120 || len(reg.Session.Cwd) > 4096 {
 		return nil, false, ErrBadRegister
 	}
+	if len(reg.Host.User) > proto.MaxHostUser || len(reg.Session.Branch) > session.MaxBranchLen {
+		return nil, false, ErrBadRegister
+	}
 	if reg.Resume != nil {
 		hub.mu.Lock()
 		hs, ok := hub.sessions[reg.Resume.SessionID]
@@ -69,6 +72,8 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 			hs.info.Status = session.StatusRunning
 		}
 		hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
+		hs.info.Branch = reg.Session.Branch
+		hs.info.HostUser = reg.Host.User
 		hs.relayOnly = reg.Session.RelayOnly
 		if reg.Session.AgentToken != "" {
 			hs.setAgentToken(reg.Session.AgentToken)
@@ -101,6 +106,8 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 			Cols:      reg.Session.Cols,
 			Rows:      reg.Session.Rows,
 			HostName:  reg.Host.Name,
+			HostUser:  reg.Host.User,
+			Branch:    reg.Session.Branch,
 			CreatedAt: time.Now().UTC(),
 		},
 	}

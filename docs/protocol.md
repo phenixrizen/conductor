@@ -92,7 +92,8 @@ View-role INPUT and `resize` are dropped by the server before they reach the hos
 `GET /ws/host?token=…` (host token or admin token). Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?}, resume?{sessionId,secret}}`,
+Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
+(`user` ≤ 64 bytes is the OS user for "hosted by"; `branch` ≤ 200 bytes is read from `.git/HEAD`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source}`.
@@ -140,6 +141,11 @@ Explicit updates: `POST /api/sessions/{id}/attention` with
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored
 hashed and only ever authorizes this one route for this one session.
+
+Session `Info` also carries `branch` (the git branch of the working
+directory, read from `.git/HEAD` at launch; server and host alike) and, for
+hosted sessions, `hostUser`. `GET /api/sessions/{id}/links` adds `active`
+to every link: the number of viewers currently attached through it.
 
 When a controller's input clears `needs_input`, the session records
 `lastAnswer{by, byName, at, message}` in its `Info` (the prompt that was

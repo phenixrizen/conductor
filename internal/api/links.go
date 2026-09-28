@@ -16,13 +16,26 @@ type createLinkRequest struct {
 	TTLSeconds int64        `json:"ttlSeconds"`
 }
 
+// linkView is a share link plus the number of viewers attached through it.
+type linkView struct {
+	*share.Link
+	Active int `json:"active"`
+}
+
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.registry.Get(id); !ok {
+	d, ok := s.registry.Get(id)
+	if !ok {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": s.links.ListBySession(id)})
+	active := d.LinkViewers()
+	links := s.links.ListBySession(id)
+	out := make([]linkView, 0, len(links))
+	for _, l := range links {
+		out = append(out, linkView{Link: l, Active: active[l.ID]})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
 
 func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +139,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 			"cols":     info.Cols,
 			"rows":     info.Rows,
 			"hostName": info.HostName,
+			"hostUser": info.HostUser,
 		},
 		"role":  link.Role,
 		"label": link.Label,

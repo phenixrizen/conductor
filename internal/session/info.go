@@ -41,18 +41,22 @@ func (r Role) Valid() bool { return r == RoleView || r == RoleControl }
 
 // Info is the public description of a session.
 type Info struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Kind      Kind      `json:"kind"`
-	AgentID   string    `json:"agentId"`
-	Command   []string  `json:"command"`
-	Cwd       string    `json:"cwd"`
-	Status    Status    `json:"status"`
-	ExitCode  *int      `json:"exitCode,omitempty"`
-	Cols      uint16    `json:"cols"`
-	Rows      uint16    `json:"rows"`
-	Viewers   int       `json:"viewers"`
-	HostName  string    `json:"hostName,omitempty"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Kind     Kind     `json:"kind"`
+	AgentID  string   `json:"agentId"`
+	Command  []string `json:"command"`
+	Cwd      string   `json:"cwd"`
+	Status   Status   `json:"status"`
+	ExitCode *int     `json:"exitCode,omitempty"`
+	Cols     uint16   `json:"cols"`
+	Rows     uint16   `json:"rows"`
+	Viewers  int      `json:"viewers"`
+	HostName string   `json:"hostName,omitempty"`
+	// HostUser is the OS user running `conductor host` (hosted sessions).
+	HostUser string `json:"hostUser,omitempty"`
+	// Branch is the git branch of Cwd when it is inside a repository.
+	Branch    string    `json:"branch,omitempty"`
 	Attention Attention `json:"attention"`
 	// LastAnswer is who most recently cleared a needs-input prompt by typing.
 	LastAnswer *Answer    `json:"lastAnswer,omitempty"`

@@ -112,6 +112,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Status:    session.StatusRunning,
 		Cols:      cols,
 		Rows:      rows,
+		Branch:    session.GitBranch(cwd),
 		CreatedAt: time.Now().UTC(),
 	}
 	local := session.NewLocal(info, proc, session.Options{

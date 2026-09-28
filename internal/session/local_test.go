@@ -456,16 +456,25 @@ func TestSetAttentionFullBroadcastsOptionsAndInputClears(t *testing.T) {
 	sink.waitFrames(t, 3)
 	n := sink.count()
 	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, "permission", []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}})
-	sink.waitFrames(t, n+1)
-	m := decodeControl(t, sink.frame(n))
-	if m["t"] != proto.CtlAttention || m["kind"] != "permission" || len(m["options"].([]any)) != 2 {
+	var m map[string]any
+	deadline := time.Now().Add(2 * time.Second)
+	for m == nil && time.Now().Before(deadline) {
+		sink.waitFrames(t, n+1)
+		for i := n; i < sink.count(); i++ {
+			if c := decodeControl(t, sink.frame(i)); c["t"] == proto.CtlAttention {
+				m = c
+			}
+		}
+		n = sink.count()
+	}
+	if m == nil || m["kind"] != "permission" || len(m["options"].([]any)) != 2 {
 		t.Fatalf("attention: %v", m)
 	}
 	if got := s.Info().Attention; got.Kind != "permission" || len(got.Options) != 2 || got.Options[1].Input != "3" {
 		t.Fatalf("info: %+v", got)
 	}
 	_ = s.Input(sub, []byte("1"))
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for s.Info().Attention.State != AttentionNone && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -548,5 +557,21 @@ func TestActivityBroadcastAndReplay(t *testing.T) {
 	sink.waitFrames(t, before+1)
 	if m := decodeControl(t, sink.frame(before)); m["t"] != proto.CtlActivity || m["message"] != "live" {
 		t.Fatalf("live entry: %v", m)
+	}
+}
+
+func TestLinkViewersCountsPerLink(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	a, b, c := newChanSink(false), newChanSink(false), newChanSink(false)
+	s.Attach("", RoleView, "L1", 80, 24, a)
+	s.Attach("", RoleView, "L1", 80, 24, b)
+	sub, _ := s.Attach("", RoleControl, "", 80, 24, c)
+	got := s.LinkViewers()
+	if got["L1"] != 2 || len(got) != 1 {
+		t.Fatalf("LinkViewers: %v", got)
+	}
+	s.Detach(sub)
+	if got := s.LinkViewers(); got["L1"] != 2 {
+		t.Fatalf("after detaching the owner: %v", got)
 	}
 }

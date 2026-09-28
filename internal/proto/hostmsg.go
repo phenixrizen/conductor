@@ -28,7 +28,12 @@ const (
 type HostInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// User is the OS user running the host (≤ 64 bytes), for "hosted by".
+	User string `json:"user,omitempty"`
 }
+
+// MaxHostUser bounds HostInfo.User.
+const MaxHostUser = 64
 
 // HostSession describes the session a host offers.
 type HostSession struct {
@@ -42,6 +47,8 @@ type HostSession struct {
 	RelayOnly bool `json:"relayOnly,omitempty"`
 	// AgentToken authorizes the hosted agent to report attention to the server.
 	AgentToken string `json:"agentToken,omitempty"`
+	// Branch is the git branch of Cwd when known (≤ 200 bytes).
+	Branch string `json:"branch,omitempty"`
 }
 
 // HostResume lets a reconnecting host reclaim its session.

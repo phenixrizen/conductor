@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -120,6 +121,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Cols:      cols,
 		Rows:      rows,
 		HostName:  opts.HostName,
+		HostUser:  currentUser(),
+		Branch:    session.GitBranch(dir),
 		CreatedAt: time.Now().UTC(),
 	}
 	local := session.NewLocal(info, proc, session.Options{
@@ -212,6 +215,25 @@ func controlURL(server string) (string, error) {
 	return u.String(), nil
 }
 
+// currentUser returns the OS user name for "hosted by", bounded and never
+// empty-on-error: an unknown user is simply omitted.
+func currentUser() string {
+	name := ""
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+	}
+	if name == "" {
+		name = os.Getenv("USER")
+	}
+	if i := strings.LastIndexAny(name, `\/`); i >= 0 { // DOMAIN\user on Windows
+		name = name[i+1:]
+	}
+	if len(name) > proto.MaxHostUser {
+		name = name[:proto.MaxHostUser]
+	}
+	return name
+}
+
 // hostEnv forwards the developer's full environment (agents need their own
 // credentials) minus conductor tokens and loader overrides, then adds the
 // per-session variables.
@@ -297,10 +319,10 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	reg := proto.Register{
 		T:     proto.HostRegister,
 		Proto: proto.ProtoVersion,
-		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version},
+		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser()},
 		Session: proto.HostSession{
 			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
-			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken,
+			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir),
 		},
 	}
 	if a.sessID != "" {

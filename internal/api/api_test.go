@@ -15,6 +15,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -333,5 +334,51 @@ func TestAttentionKindAndOptions(t *testing.T) {
 	resp, out = e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "kind": "bogus"})
 	if resp.StatusCode != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "invalid_kind" {
 		t.Fatalf("bogus kind: %d %v", resp.StatusCode, out)
+	}
+}
+
+func TestLinksListReportsActiveViewers(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "standup"})
+	linkID := lo["link"].(map[string]any)["id"].(string)
+
+	_, before := e.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
+	if l := before["links"].([]any)[0].(map[string]any); l["active"] != float64(0) {
+		t.Fatalf("active before join: %v", l)
+	}
+
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.hello(80, 24)
+	guest.expectControl(proto.CtlReady)
+
+	_, after := e.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
+	var found bool
+	for _, raw := range after["links"].([]any) {
+		l := raw.(map[string]any)
+		if l["id"] == linkID {
+			found = true
+			if l["active"] != float64(1) || l["label"] != "standup" {
+				t.Fatalf("active after join: %v", l)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("link missing: %v", after)
+	}
+}
+
+func TestCreateSessionRecordsGitBranch(t *testing.T) {
+	e := newTestEnv(t, nil)
+	if err := os.MkdirAll(filepath.Join(e.root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.root, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := e.createSession("cat")
+	_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+	if got["session"].(map[string]any)["branch"] != "main" {
+		t.Fatalf("branch: %v", got["session"])
 	}
 }
