@@ -16,6 +16,7 @@ const (
 
 	// owner -> client
 	CtlAttention = "attention"
+	CtlActivity  = "activity"
 	CtlWelcome   = "welcome"
 	CtlReady     = "ready"
 	CtlStatus    = "status"
@@ -179,6 +180,17 @@ type Attention struct {
 	Source  string            `json:"source,omitempty"`
 	Kind    string            `json:"kind,omitempty"`
 	Options []AttentionOption `json:"options,omitempty"`
+}
+
+// Activity is one entry of the session activity log (owner -> client). The
+// last 50 entries are replayed after ready; new ones follow live.
+type Activity struct {
+	T       string `json:"t"`
+	At      string `json:"at"`
+	Type    string `json:"type"`
+	By      string `json:"by,omitempty"`
+	ByName  string `json:"byName,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // Simple is a message with only a discriminator (ready).

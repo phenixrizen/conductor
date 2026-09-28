@@ -95,12 +95,20 @@ func TestLateAttachReceivesScrollbackThenLive(t *testing.T) {
 	if m := decodeControl(t, sink.frame(2)); m["t"] != proto.CtlReady {
 		t.Fatalf("ready: %v", m)
 	}
-	// viewers broadcast reaches the subscriber too
-	sink.waitFrames(t, 4)
-	p.outW.Write([]byte("live"))
+	// viewers broadcast and the join activity entry reach the subscriber too;
+	// live output must follow them, never precede the ready marker.
 	sink.waitFrames(t, 5)
-	if f, _ := proto.Decode(sink.frame(4)); f.Type != proto.TypeOutput || string(f.Payload) != "live" {
-		t.Fatalf("live: %+v", f)
+	n := sink.count()
+	p.outW.Write([]byte("live"))
+	sink.waitFrames(t, n+1)
+	var live bool
+	for i := 3; i < sink.count(); i++ {
+		if f, _ := proto.Decode(sink.frame(i)); f.Type == proto.TypeOutput && string(f.Payload) == "live" {
+			live = true
+		}
+	}
+	if !live {
+		t.Fatalf("live output not received after ready (%d frames)", sink.count())
 	}
 	if s.Info().Viewers != 1 {
 		t.Fatal("viewer count")
@@ -480,5 +488,65 @@ func TestCleanOptionsBounds(t *testing.T) {
 	}
 	if CleanOptions(nil) != nil {
 		t.Fatal("nil stays nil")
+	}
+}
+
+func activityTypes(s *Local) map[string]int {
+	out := map[string]int{}
+	for _, e := range s.Activity() {
+		out[e.Type]++
+	}
+	return out
+}
+
+func TestInputDuringNeedsInputRecordsOneAnswer(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	sink := newChanSink(false)
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Priya", Cols: 80, Rows: 24}, sink)
+	s.SetAttention(AttentionNeedsInput, "Apply edit?", SourceAPI)
+	_ = s.Input(sub, []byte("1"))
+	_ = s.Input(sub, []byte("\r"))
+	info := s.Info()
+	if info.LastAnswer == nil || info.LastAnswer.ByName != "Priya" || info.LastAnswer.Message != "Apply edit?" || info.LastAnswer.At.IsZero() {
+		t.Fatalf("lastAnswer: %+v", info.LastAnswer)
+	}
+	if got := activityTypes(s); got["input"] != 1 || got["join"] != 1 || got["attention"] < 1 {
+		t.Fatalf("activity types: %v", got)
+	}
+}
+
+func TestActivityBroadcastAndReplay(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	for i := 0; i < 60; i++ {
+		s.Record(ActivityEntry{Type: "link", Message: "x"})
+	}
+	sink := newChanSink(false)
+	s.Attach("", RoleView, "", 80, 24, sink)
+	sink.waitFrames(t, 3+ActivityReplay)
+	replayed := 0
+	for i := 0; i < sink.count(); i++ {
+		f, err := proto.Decode(sink.frame(i))
+		if err != nil || f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(f.Payload, &m)
+		if m["t"] == proto.CtlActivity {
+			replayed++
+			if m["at"] == nil || m["type"] == nil {
+				t.Fatalf("activity frame missing fields: %v", m)
+			}
+		}
+	}
+	// ActivityReplay history entries plus this viewer's own join entry.
+	if replayed != ActivityReplay+1 {
+		t.Fatalf("replayed %d, want %d", replayed, ActivityReplay+1)
+	}
+	// A live entry is broadcast to attached viewers.
+	before := sink.count()
+	s.Record(ActivityEntry{Type: "link", Message: "live"})
+	sink.waitFrames(t, before+1)
+	if m := decodeControl(t, sink.frame(before)); m["t"] != proto.CtlActivity || m["message"] != "live" {
+		t.Fatalf("live entry: %v", m)
 	}
 }

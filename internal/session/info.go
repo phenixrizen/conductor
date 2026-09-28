@@ -41,21 +41,23 @@ func (r Role) Valid() bool { return r == RoleView || r == RoleControl }
 
 // Info is the public description of a session.
 type Info struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Kind      Kind       `json:"kind"`
-	AgentID   string     `json:"agentId"`
-	Command   []string   `json:"command"`
-	Cwd       string     `json:"cwd"`
-	Status    Status     `json:"status"`
-	ExitCode  *int       `json:"exitCode,omitempty"`
-	Cols      uint16     `json:"cols"`
-	Rows      uint16     `json:"rows"`
-	Viewers   int        `json:"viewers"`
-	HostName  string     `json:"hostName,omitempty"`
-	Attention Attention  `json:"attention"`
-	CreatedAt time.Time  `json:"createdAt"`
-	EndedAt   *time.Time `json:"endedAt,omitempty"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Kind      Kind      `json:"kind"`
+	AgentID   string    `json:"agentId"`
+	Command   []string  `json:"command"`
+	Cwd       string    `json:"cwd"`
+	Status    Status    `json:"status"`
+	ExitCode  *int      `json:"exitCode,omitempty"`
+	Cols      uint16    `json:"cols"`
+	Rows      uint16    `json:"rows"`
+	Viewers   int       `json:"viewers"`
+	HostName  string    `json:"hostName,omitempty"`
+	Attention Attention `json:"attention"`
+	// LastAnswer is who most recently cleared a needs-input prompt by typing.
+	LastAnswer *Answer    `json:"lastAnswer,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	EndedAt    *time.Time `json:"endedAt,omitempty"`
 }
 
 // Driver is the minimal interface the registry and API need from any session

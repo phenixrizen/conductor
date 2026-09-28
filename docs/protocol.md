@@ -47,6 +47,7 @@ Owner → client:
 | `resize` | `cols, rows, by` (subscriber that resized) |
 | `status` | `status, exitCode?` |
 | `attention` | `state, message?, source?, kind?, options?[{label, input}]` (see Attention) |
+| `activity` | `at, type, by?, byName?, message?` — one activity-log entry (`attention`, `input`, `join`, `leave`, `link`, `status`). The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type. `link` is the share link's label. |
 | `error` | `code, message` |
 | `pong` | `ts` |
@@ -139,6 +140,10 @@ Explicit updates: `POST /api/sessions/{id}/attention` with
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored
 hashed and only ever authorizes this one route for this one session.
+
+When a controller's input clears `needs_input`, the session records
+`lastAnswer{by, byName, at, message}` in its `Info` (the prompt that was
+answered and who answered it) and an `input` activity entry.
 
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a

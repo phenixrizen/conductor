@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -54,6 +55,7 @@ type Local struct {
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
 
+	activity       activityRing
 	scanner        Scanner
 	lastBell       time.Time
 	agentTokenHash [32]byte
@@ -155,7 +157,27 @@ func (s *Local) markEnded(status Status) {
 	s.mu.Unlock()
 	close(s.ended)
 	s.log.Info("session ended", "status", status, "exitCode", exitCode)
+	msg := string(status)
+	if exitCode != nil {
+		msg = fmt.Sprintf("%s (exit %d)", status, *exitCode)
+	}
+	s.Record(ActivityEntry{Type: ActivityStatus, Message: msg})
 	s.notifyChange()
+}
+
+// Record appends an activity entry and broadcasts it to attached clients.
+func (s *Local) Record(e ActivityEntry) {
+	e = s.activity.Add(e)
+	s.mu.Lock()
+	s.hub.Broadcast(proto.MustControl(activityMessage(e)))
+	s.mu.Unlock()
+}
+
+// Activity returns the activity log, oldest first.
+func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
+
+func activityMessage(e ActivityEntry) proto.Activity {
+	return proto.Activity{T: proto.CtlActivity, At: e.At.UTC().Format(time.RFC3339Nano), Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message}
 }
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
@@ -219,6 +241,13 @@ func (s *Local) SetAttentionFull(state AttentionState, message, source, kind str
 	s.info.Attention = att
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
 	s.mu.Unlock()
+	if state != AttentionNone {
+		label := message
+		if label == "" {
+			label = string(state)
+		}
+		s.Record(ActivityEntry{Type: ActivityAttention, Message: label})
+	}
 	s.notifyChange()
 }
 
@@ -358,6 +387,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		snap = snap[n:]
 	}
 	sub.send(proto.MustControl(proto.Simple{T: proto.CtlReady}))
+	for _, e := range s.activity.Tail(ActivityReplay) {
+		sub.send(proto.MustControl(activityMessage(e)))
+	}
 	s.hub.add(sub)
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
@@ -368,6 +400,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		<-sub.done
 		s.Detach(sub)
 	}()
+	s.Record(ActivityEntry{Type: ActivityJoin, By: sub.ID, ByName: sub.Name})
 	s.notifyChange()
 	return sub, nil
 }
@@ -383,6 +416,7 @@ func (s *Local) Detach(sub *Subscription) {
 	}
 	s.mu.Unlock()
 	if present {
+		s.Record(ActivityEntry{Type: ActivityLeave, By: sub.ID, ByName: sub.Name})
 		s.notifyChange()
 	}
 }
@@ -409,8 +443,15 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		}
 		s.mu.Lock()
 		waiting := s.info.Attention.State == AttentionNeedsInput
+		prompt := s.info.Attention.Message
+		if waiting {
+			// Claim the answer under the lock so two typists record one entry.
+			now := time.Now().UTC()
+			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: now, Message: prompt}
+		}
 		s.mu.Unlock()
 		if waiting {
+			s.Record(ActivityEntry{Type: ActivityInput, By: sub.ID, ByName: sub.Name, Message: prompt})
 			s.SetAttention(AttentionNone, "", SourceInput)
 		}
 	}

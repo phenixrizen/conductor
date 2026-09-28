@@ -53,6 +53,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not create link")
 		return
 	}
+	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"link":  link,
 		"token": token,
@@ -62,11 +63,33 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 	id, linkID := r.PathValue("id"), r.PathValue("linkId")
+	label := ""
+	if l, ok := s.links.Get(linkID); ok {
+		label = l.Label
+	}
 	if !s.links.Revoke(id, linkID) {
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}
+	s.recordLink(id, "link revoked: "+linkLabelOr(label))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// recordLink adds a link event to a server session's activity log. Hosted
+// sessions keep their log on the host, which never learns about links.
+func (s *Server) recordLink(sessionID, message string) {
+	if d, ok := s.registry.Get(sessionID); ok {
+		if l, ok := d.(*session.Local); ok {
+			l.Record(session.ActivityEntry{Type: session.ActivityLink, Message: message})
+		}
+	}
+}
+
+func linkLabelOr(label string) string {
+	if label == "" {
+		return "unlabelled"
+	}
+	return label
 }
 
 // handleJoin resolves a share token for the join page.
