@@ -43,6 +43,8 @@ export interface ShareLink {
   createdAt: string
   expiresAt?: string
   revoked: boolean
+  /** Viewers currently attached through this link (server-reported). */
+  active?: number
 }
 
 export interface JoinInfo {

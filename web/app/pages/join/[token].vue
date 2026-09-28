@@ -103,7 +103,7 @@ function requestFile(path: string, stat?: boolean) {
       :read-only="info.role !== 'control'"
       @status="(s) => (status = s)"
       @attention="onAttention"
-      @viewers="viewers = $event"
+      @viewers="viewers = $event.count"
       @transport="transport = $event"
       @open-file="openFile"
       @open-url="openUrl"

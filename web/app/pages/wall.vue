@@ -185,7 +185,7 @@ onMounted(() => {
             :key="focused.id"
             ref="focusTerminal"
             :create-transport="transportFor(focused)"
-            @viewers="viewers = $event"
+            @viewers="viewers = $event.count"
             @transport="transport = $event"
             @open-file="openFile"
             @open-url="openUrl"

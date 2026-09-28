@@ -35,6 +35,26 @@ export interface Attention {
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
+/** One attached client, as listed in the `viewers` roster. */
+export interface ViewerInfo {
+  id: string
+  name: string
+  role: Role
+  /** Label of the share link the viewer joined through, if any. */
+  link?: string
+  since: string
+  lastInputAt?: string
+}
+
+/** One line of a session's activity log (`activity` control message). */
+export interface ActivityEntry {
+  at: string
+  type: 'attention' | 'input' | 'join' | 'leave' | 'link' | 'status'
+  by?: string
+  byName?: string
+  message?: string
+}
+
 export interface ICEServer {
   urls: string[]
   username?: string
@@ -65,7 +85,8 @@ export type ControlMessage =
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
   | { t: 'attention'; state: AttentionState; message?: string; source?: string }
-  | { t: 'viewers'; count: number }
+  | { t: 'viewers'; count: number; list?: ViewerInfo[] }
+  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string }
   | { t: 'error'; code: string; message: string }
   | { t: 'pong'; ts: number }
 

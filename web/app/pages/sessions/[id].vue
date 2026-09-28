@@ -1,49 +1,85 @@
 <script setup lang="ts">
-import type { SessionInfo } from '~/composables/useSessions'
-import type { TransportKind } from '~/utils/protocol'
+import type { SessionInfo, ShareLink } from '~/composables/useSessions'
+import type { ActivityEntry, Attention, TransportKind, ViewerInfo } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
-import type { FileTarget } from '~/components/FileViewer.vue'
-import { parseLocation } from '~/utils/links'
+import type { FileTarget } from '~/components/FileBrowser.vue'
+import type { InspectorTab } from '~/components/SessionInspector.vue'
+import { shortCwd } from '~/utils/sessions'
 
 const route = useRoute()
 const api = useSessions()
 const admin = useAdminToken()
 const toast = useToast()
+const live = useAttention()
 const { httpBase } = useApiBase()
 const { create } = useTerminalTransport()
 
 const id = computed(() => String(route.params.id))
 const session = ref<SessionInfo | null>(null)
 const error = ref('')
-const viewers = ref(0)
+const ready = ref(false)
+const viewers = ref<ViewerInfo[]>([])
+const viewerCount = ref(0)
+const activity = ref<ActivityEntry[]>([])
+const links = ref<ShareLink[]>([])
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 const share = ref(false)
-const fileOpen = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
-const pathInput = ref('')
-const ready = ref(false)
-const attention = ref<{ state: string; message?: string; source?: string; since?: string }>({ state: '' })
-const signalItems = computed(() => [
+const tab = ref<InspectorTab>('people')
+const attention = ref<Attention>({ state: '' })
+
+const INSPECTOR_KEY = 'conductor.inspector'
+const inspector = ref(true)
+try {
+  inspector.value = localStorage.getItem(INSPECTOR_KEY) !== '0'
+} catch {
+  /* ignore */
+}
+watch(inspector, (v) => {
+  try {
+    localStorage.setItem(INSPECTOR_KEY, v ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+})
+
+// The live store is the source of truth for attention (it is what the sidebar
+// shows); the terminal's own attention message arrives a moment earlier.
+const stored = computed(() => live.sessions.value.find((s) => s.id === id.value))
+watch(
+  () => stored.value?.attention,
+  (a) => {
+    if (a) attention.value = a
+  },
+  { deep: true },
+)
+
+const agentLabel = computed(() => {
+  const a = session.value?.agentId ?? ''
+  const names: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity' }
+  return names[a] ?? a
+})
+const meta = computed(() => {
+  const s = session.value
+  if (!s) return ''
+  const parts = [agentLabel.value]
+  parts.push(s.kind === 'hosted' ? `hosted by ${s.hostUser || '?'} on ${s.hostName || 'dev machine'}` : 'server')
+  parts.push(shortCwd(s.cwd))
+  if (s.branch) parts.push(s.branch)
+  return parts.join(' · ')
+})
+
+const menu = computed(() => [
   [
     { label: 'Mark as needs input', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
     { label: 'Mark as working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
-    { label: 'Clear', icon: 'i-lucide-x', onSelect: () => signal('clear') },
+    { label: 'Clear signal', icon: 'i-lucide-x', onSelect: () => signal('clear') },
   ],
+  [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-async function signal(state: 'needs_input' | 'working' | 'clear') {
-  try {
-    await api.setAttention(id.value, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
-  } catch (e) {
-    toast.add({ title: 'Signal failed', description: (e as Error).message, color: 'error' })
-  }
-}
-
-function onAttention(msg: { state: string; message?: string; source?: string }) {
-  attention.value = { ...msg, since: new Date().toISOString() }
-}
-const terminal = ref<{ connect: () => void; focus: () => void; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 
 useHead({ title: computed(() => session.value?.name || 'Session') })
 
@@ -56,11 +92,41 @@ async function load() {
     const res = await api.get(id.value)
     session.value = res.session
     attention.value = res.session.attention ?? { state: '' }
+    links.value = res.links ?? []
     error.value = ''
     ready.value = true
   } catch (e) {
     error.value = (e as Error).message
   }
+}
+
+async function refreshLinks() {
+  try {
+    links.value = await api.links(id.value)
+  } catch {
+    /* keep the last list */
+  }
+}
+
+async function signal(state: 'needs_input' | 'working' | 'clear') {
+  try {
+    await api.setAttention(id.value, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
+  } catch (e) {
+    toast.add({ title: 'Signal failed', description: (e as Error).message, color: 'error' })
+  }
+}
+
+function onAttention(msg: { state: string; message?: string; source?: string }) {
+  attention.value = { ...(msg as Attention), since: new Date().toISOString() }
+}
+
+function onViewers(info: { count: number; list?: ViewerInfo[] }) {
+  viewerCount.value = info.count
+  viewers.value = info.list ?? []
+}
+
+function onActivity(e: ActivityEntry) {
+  activity.value = [...activity.value.slice(-199), e]
 }
 
 function createTransport() {
@@ -85,9 +151,15 @@ async function stop() {
   }
 }
 
+function reply(text: string) {
+  if (!terminal.value?.sendInput(text + '\r')) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+}
+
 function openFile(loc: { path: string; line?: number }) {
   previewUrl.value = null
   fileTarget.value = { ...loc }
+  tab.value = 'files'
+  inspector.value = true
 }
 
 function openUrl(url: string) {
@@ -97,16 +169,25 @@ function openUrl(url: string) {
     color: 'neutral',
     actions: [
       { label: 'Open in new tab', icon: 'i-lucide-external-link', onClick: () => window.open(url, '_blank', 'noopener,noreferrer') },
-      { label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => (previewUrl.value = url) },
+      {
+        label: 'Preview in pane',
+        icon: 'i-lucide-panel-right',
+        onClick: () => {
+          previewUrl.value = url
+          tab.value = 'files'
+          inspector.value = true
+        },
+      },
     ],
   })
 }
 
-function openPath() {
-  const loc = parseLocation(pathInput.value)
-  if (!loc.path) return
-  openFile(loc)
-  pathInput.value = ''
+function showFiles() {
+  if (inspector.value && tab.value === 'files') inspector.value = false
+  else {
+    tab.value = 'files'
+    inspector.value = true
+  }
 }
 
 function requestFile(path: string, stat?: boolean) {
@@ -119,11 +200,29 @@ function rawUrl(path: string) {
   return `${httpBase.value}/api/sessions/${encodeURIComponent(id.value)}/files?path=${encodeURIComponent(path)}&raw=1&token=${encodeURIComponent(admin.token.value)}`
 }
 
+async function revoke(link: ShareLink) {
+  try {
+    await api.revokeLink(id.value, link.id)
+    toast.add({ title: 'Link revoked', description: 'Viewers using it were disconnected.', icon: 'i-lucide-ban', color: 'neutral' })
+  } catch (e) {
+    toast.add({ title: 'Revoke failed', description: (e as Error).message, color: 'error' })
+  }
+  await refreshLinks()
+}
+
+watch(share, (open) => {
+  if (!open) refreshLinks()
+})
+
 onMounted(load)
 watch(() => admin.token.value, load)
 watch(id, () => {
   ready.value = false
   session.value = null
+  viewers.value = []
+  activity.value = []
+  fileTarget.value = null
+  previewUrl.value = null
   load()
 })
 </script>
@@ -131,63 +230,67 @@ watch(id, () => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
-      <UDashboardNavbar :title="session?.name || 'Session'">
+      <UDashboardNavbar :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
         <template #leading>
           <SidebarReveal />
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" to="/" aria-label="Back to sessions" />
         </template>
-        <template #trailing>
-          <div class="flex items-center gap-2 ml-2">
-            <SessionStatusBadge v-if="session" :status="session.status" :exit-code="session.exitCode" />
-            <AttentionBadge :attention="attention as any" />
-            <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
-            <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
-            <UBadge v-if="session?.kind === 'hosted'" :label="`hosted on ${session.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
+        <template #title>
+          <div class="flex min-w-0 flex-col">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="truncate text-[15px] font-semibold">{{ session?.name || 'Session' }}</span>
+              <AttentionBadge :attention="attention" />
+              <SessionStatusBadge v-if="session && session.status !== 'running'" :status="session.status" :exit-code="session.exitCode" />
+            </div>
+            <span class="truncate font-mono text-[11.5px] text-muted">{{ meta }}</span>
           </div>
         </template>
         <template #right>
-          <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
-            <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
-          </form>
-          <UDropdownMenu :items="signalItems">
-            <UButton icon="i-lucide-flag" color="neutral" variant="ghost" aria-label="Signal" />
+          <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
+          <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
+          <UButton label="Files" icon="i-lucide-folder-open" color="neutral" variant="outline" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles" />
+          <UButton label="Share" icon="i-lucide-share-2" @click="share = true" />
+          <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
+          <UDropdownMenu :items="menu">
+            <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
           </UDropdownMenu>
-          <UButton label="Share" icon="i-lucide-share-2" color="neutral" variant="soft" @click="share = true" />
-          <UButton
-            v-if="session && (session.status === 'running' || session.status === 'starting')"
-            label="Stop"
-            icon="i-lucide-square"
-            color="error"
-            variant="soft"
-            @click="stop"
-          />
         </template>
       </UDashboardNavbar>
     </template>
 
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
-      <div v-else-if="ready && session" class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">
-        <UAlert
-          v-if="attention.state === 'needs_input'"
-          color="secondary"
-          variant="subtle"
-          icon="i-lucide-hand"
-          title="Agent is waiting for input"
-          :description="attention.message || 'Type into the terminal to continue.'"
-          :actions="[{ label: 'Focus terminal', icon: 'i-lucide-keyboard', onClick: () => terminal?.focus?.() }, { label: 'Dismiss', variant: 'ghost', onClick: () => signal('clear') }]"
-        />
-        <div class="flex-1 min-h-0">
-        <TerminalView
-          ref="terminal"
-          :create-transport="createTransport"
-          @status="onStatus"
-          @attention="onAttention"
-          @viewers="viewers = $event"
-          @transport="transport = $event"
-          @open-file="openFile"
-          @open-url="openUrl"
-        />
+      <div v-else-if="ready && session" class="flex flex-1 min-h-0">
+        <div class="flex flex-1 min-w-0 flex-col gap-3 p-3">
+          <div class="flex-1 min-h-0">
+            <TerminalView
+              ref="terminal"
+              :create-transport="createTransport"
+              @status="onStatus"
+              @attention="onAttention"
+              @viewers="onViewers"
+              @activity="onActivity"
+              @transport="transport = $event"
+              @open-file="openFile"
+              @open-url="openUrl"
+            />
+          </div>
+          <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" />
+        </div>
+        <div v-if="inspector" class="hidden xl:flex w-[332px] flex-none">
+          <SessionInspector
+            v-model:tab="tab"
+            v-model:target="fileTarget"
+            v-model:url="previewUrl"
+            :session="session"
+            role="control"
+            :viewers="viewers"
+            :activity="activity"
+            :links="links"
+            :request="requestFile"
+            :raw-url="rawUrl"
+            @new-link="share = true"
+            @revoke="revoke"
+          />
         </div>
       </div>
       <div v-else class="p-6 text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading session…</div>
@@ -195,5 +298,4 @@ watch(id, () => {
   </UDashboardPanel>
 
   <ShareLinksModal v-model:open="share" :session-id="id" />
-  <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" :cwd="session?.cwd" :raw-url="rawUrl" />
 </template>

@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
-import { closeReason, encodeText, type ControlMessage, type FileResponse, type TransportKind, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, type ActivityEntry, type ControlMessage, type FileResponse, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 
 const props = withDefaults(
@@ -34,7 +34,8 @@ const emit = defineEmits<{
   welcome: [welcome: Welcome]
   status: [status: string, exitCode?: number]
   attention: [msg: { state: string; message?: string; source?: string }]
-  viewers: [count: number]
+  viewers: [info: { count: number; list?: ViewerInfo[] }]
+  activity: [entry: ActivityEntry]
   transport: [info: { kind: TransportKind; state: TransportState; rtt: number | null }]
   closed: [info: CloseInfo]
   openFile: [loc: { path: string; line?: number }]
@@ -171,7 +172,10 @@ function handleControl(msg: ControlMessage) {
       emit('attention', { state: msg.state, message: msg.message, source: msg.source })
       break
     case 'viewers':
-      emit('viewers', msg.count)
+      emit('viewers', { count: msg.count, list: msg.list })
+      break
+    case 'activity':
+      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message })
       break
     case 'error':
       if (msg.code === 'read_only') notice.value = 'This link is view-only'
