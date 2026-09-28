@@ -15,7 +15,8 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   rows: [
     { keys: ['meta', 'B'], label: 'Show or hide the sidebar' },
     { keys: ['?'], label: 'Keyboard shortcuts' },
-    { keys: ['G', 'S'], label: 'Go to Sessions' },
+    { keys: ['N'], label: 'Launch an agent' },
+    { keys: ['/'], label: 'Filter sessions' },
     { keys: ['G', 'W'], label: 'Go to the Wall' },
     { keys: ['G', 'C'], label: 'Go to the Carousel' },
     { keys: ['G', 'A'], label: 'Go to Agents' },

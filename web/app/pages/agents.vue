@@ -8,7 +8,7 @@ const admin = useAdminToken()
 const agents = ref<AgentInfo[]>([])
 const loading = ref(false)
 const error = ref('')
-const launch = ref(false)
+const launch = useLaunchModal()
 
 async function refresh() {
   if (!admin.hasToken.value) {
@@ -38,7 +38,7 @@ watch(() => admin.token.value, refresh)
           <SidebarReveal />
         </template>
         <template #right>
-          <UButton label="Launch agent" icon="i-lucide-play" @click="launch = true" />
+          <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />
         </template>
       </UDashboardNavbar>
     </template>
@@ -66,5 +66,4 @@ watch(() => admin.token.value, refresh)
       <p v-if="!agents.length && !loading && !error" class="text-sm text-muted">No agents in the catalog.</p>
     </template>
   </UDashboardPanel>
-  <LaunchSessionModal v-model:open="launch" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
 </template>

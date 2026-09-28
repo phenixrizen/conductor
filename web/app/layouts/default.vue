@@ -8,15 +8,14 @@ const attention = useAttention()
 const alerts = useAttentionSettings()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
+const launch = useLaunchModal()
 const router = useRouter()
+const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
-const items = computed<NavigationMenuItem[][]>(() => [
-  [
-    { label: 'Sessions', icon: 'i-lucide-terminal', to: '/' },
-    { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
-    { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
-    { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
-  ],
+const nav = computed<NavigationMenuItem[]>(() => [
+  { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
+  { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
+  { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
 ])
 
 function toggleTheme() {
@@ -27,7 +26,8 @@ function toggleTheme() {
 defineShortcuts({
   meta_b: () => sidebar.toggle(),
   '?': () => shortcuts.show(),
-  'g-s': () => router.push('/'),
+  n: () => launch.show(),
+  '/': () => list.value?.focusFilter(),
   'g-w': () => router.push('/wall'),
   'g-c': () => router.push('/carousel'),
   'g-a': () => router.push('/agents'),
@@ -37,39 +37,35 @@ defineShortcuts({
 <template>
   <UDashboardGroup>
     <UDashboardSidebar
-      collapsible
       :resizable="!sidebar.hidden.value"
-      :min-size="12"
-      :default-size="16"
-      :max-size="24"
-      :ui="{ root: sidebar.hidden.value ? 'lg:hidden' : undefined, footer: 'border-t border-default' }"
+      :min-size="14"
+      :default-size="18"
+      :max-size="26"
+      :ui="{ root: sidebar.hidden.value ? 'lg:hidden' : undefined, body: 'gap-0 py-2', footer: 'border-t border-default flex-col items-stretch gap-1' }"
     >
-      <template #header="{ collapsed }">
+      <template #header>
         <div class="flex items-center gap-2 px-1 w-full min-w-0">
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
-          <span v-if="!collapsed" class="font-semibold truncate">Conductor</span>
-          <div v-if="!collapsed" class="flex-1" />
-          <UTooltip v-if="!collapsed" text="Hide sidebar" :kbds="['meta', 'B']">
+          <span class="font-semibold truncate">Conductor</span>
+          <div class="flex-1" />
+          <UTooltip text="Hide sidebar" :kbds="['meta', 'B']">
             <UButton icon="i-lucide-panel-left-close" color="neutral" variant="ghost" size="sm" aria-label="Hide sidebar" class="hidden lg:inline-flex" @click="sidebar.hide()" />
           </UTooltip>
         </div>
       </template>
 
-      <template #default="{ collapsed }">
-        <UNavigationMenu :collapsed="collapsed" :items="items" orientation="vertical" />
+      <template #default>
+        <SessionSidebar ref="list" />
       </template>
 
-      <template #footer="{ collapsed }">
-        <div class="flex flex-col gap-1 w-full">
+      <template #footer>
+        <UNavigationMenu :items="nav" orientation="vertical" class="w-full" />
+        <div class="flex items-center justify-between px-1 pt-1">
           <UPopover>
-            <UButton
-              :label="collapsed ? undefined : 'Alerts'"
-              :icon="alerts.settings.value.notifications ? 'i-lucide-bell-ring' : 'i-lucide-bell'"
-              color="neutral"
-              variant="ghost"
-              class="w-full justify-start"
-            />
+            <UTooltip text="Alerts">
+              <UButton :icon="alerts.settings.value.notifications ? 'i-lucide-bell-ring' : 'i-lucide-bell'" color="neutral" variant="ghost" size="sm" aria-label="Alerts" />
+            </UTooltip>
             <template #content>
               <div class="p-3 flex flex-col gap-3 w-64">
                 <p class="text-xs text-muted">When a session needs input:</p>
@@ -79,39 +75,18 @@ defineShortcuts({
               </div>
             </template>
           </UPopover>
-          <UButton
-            :label="collapsed ? undefined : 'Shortcuts'"
-            icon="i-lucide-keyboard"
-            color="neutral"
-            variant="ghost"
-            class="w-full justify-start"
-            @click="shortcuts.show()"
-          />
-          <UButton
-            :label="collapsed ? undefined : (hasToken ? 'Admin token set' : 'Set admin token')"
-            :icon="hasToken ? 'i-lucide-key-round' : 'i-lucide-lock'"
-            :color="hasToken ? 'neutral' : 'warning'"
-            variant="ghost"
-            class="w-full justify-start"
-            @click="showToken = true"
-          />
-          <UButton
-            :label="collapsed ? undefined : 'Theme'"
-            icon="i-lucide-sun-moon"
-            color="neutral"
-            variant="ghost"
-            class="w-full justify-start"
-            @click="toggleTheme"
-          />
-          <UButton
-            v-if="hasToken"
-            :label="collapsed ? undefined : 'Forget token'"
-            icon="i-lucide-log-out"
-            color="neutral"
-            variant="ghost"
-            class="w-full justify-start"
-            @click="clear()"
-          />
+          <UTooltip text="Keyboard shortcuts" :kbds="['?']">
+            <UButton icon="i-lucide-keyboard" color="neutral" variant="ghost" size="sm" aria-label="Keyboard shortcuts" @click="shortcuts.show()" />
+          </UTooltip>
+          <UTooltip :text="hasToken ? 'Admin token set' : 'Set admin token'">
+            <UButton :icon="hasToken ? 'i-lucide-key-round' : 'i-lucide-lock'" :color="hasToken ? 'neutral' : 'warning'" variant="ghost" size="sm" :aria-label="hasToken ? 'Admin token set' : 'Set admin token'" @click="showToken = true" />
+          </UTooltip>
+          <UTooltip text="Toggle theme">
+            <UButton icon="i-lucide-sun-moon" color="neutral" variant="ghost" size="sm" aria-label="Toggle theme" @click="toggleTheme" />
+          </UTooltip>
+          <UTooltip v-if="hasToken" text="Forget token">
+            <UButton icon="i-lucide-log-out" color="neutral" variant="ghost" size="sm" aria-label="Forget token" @click="clear()" />
+          </UTooltip>
         </div>
       </template>
     </UDashboardSidebar>
@@ -120,5 +95,6 @@ defineShortcuts({
 
     <AdminTokenGate v-model:open="showToken" />
     <ShortcutsModal />
+    <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
   </UDashboardGroup>
 </template>

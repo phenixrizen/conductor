@@ -241,7 +241,7 @@ onBeforeUnmount(() => window.clearInterval(cycleTimer))
       <div v-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
         <UIcon name="i-lucide-gallery-horizontal" class="size-10" />
         <p class="text-sm">No active sessions. Launch an agent or start one with <code>conductor host</code>.</p>
-        <UButton label="Launch agent" icon="i-lucide-play" to="/" />
+        <UButton label="Launch agent" icon="i-lucide-play" @click="useLaunchModal().show()" />
       </div>
 
       <div v-else class="flex-1 min-h-0 p-3 pb-5" @focusin="onFocusIn" @focusout="onFocusOut">

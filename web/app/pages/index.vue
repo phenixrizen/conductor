@@ -1,141 +1,50 @@
 <script setup lang="ts">
-import type { TableColumn } from '@nuxt/ui'
-import type { SessionInfo } from '~/composables/useSessions'
+import { groupSessions } from '~/utils/sessions'
 
 useHead({ title: 'Sessions' })
 
-const api = useSessions()
-const admin = useAdminToken()
-const toast = useToast()
 const attention = useAttention()
-const sessions = attention.sessions
-const loading = ref(false)
-const error = computed(() => attention.error.value)
-const launch = ref(false)
-const shareFor = ref<string | null>(null)
-const shareOpen = ref(false)
+const admin = useAdminToken()
+const launch = useLaunchModal()
 
-const { create } = useTerminalTransport()
+// The sidebar is the session list; this route only picks the first session
+// worth looking at (someone waiting, else the newest running one).
+const target = computed(() => {
+  const g = groupSessions(attention.sessions.value)
+  return g.needs[0] ?? g.running[0] ?? null
+})
 
-const columns: TableColumn<SessionInfo>[] = [
-  { id: 'preview', header: '', meta: { class: { th: 'w-52', td: 'w-52' } } },
-  { accessorKey: 'name', header: 'Session' },
-  { accessorKey: 'agentId', header: 'Agent' },
-  { accessorKey: 'kind', header: 'Where' },
-  { accessorKey: 'status', header: 'Status' },
-  { accessorKey: 'viewers', header: 'Viewers' },
-  { accessorKey: 'createdAt', header: 'Started' },
-  { id: 'actions', header: '' },
-]
-
-async function refresh(silent = false) {
-  if (!admin.hasToken.value) {
-    admin.needsToken.value = true
-    return
-  }
-  if (!silent) loading.value = true
-  try {
-    await attention.refresh()
-  } finally {
-    loading.value = false
-  }
-}
-
-async function stop(s: SessionInfo) {
-  try {
-    await api.stop(s.id)
-    toast.add({ title: s.status === 'running' ? 'Session stopped' : 'Session removed', description: s.name, color: 'neutral' })
-    await refresh(true)
-  } catch (e) {
-    toast.add({ title: 'Failed', description: (e as Error).message, color: 'error' })
-  }
-}
-
-function share(s: SessionInfo) {
-  shareFor.value = s.id
-  shareOpen.value = true
-}
-
-function transportFor(s: SessionInfo) {
-  return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
-}
-
-function since(ts: string) {
-  const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000)
-  if (s < 60) return `${Math.floor(s)}s ago`
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
-}
+watch(
+  target,
+  (t) => {
+    if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
+  if (!admin.hasToken.value) admin.needsToken.value = true
   attention.start()
-  refresh()
 })
 </script>
 
 <template>
-  <UDashboardPanel id="sessions">
+  <UDashboardPanel id="home">
     <template #header>
       <UDashboardNavbar title="Sessions">
         <template #leading>
           <SidebarReveal />
         </template>
-        <template #right>
-          <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" aria-label="Refresh" :loading="loading" @click="refresh()" />
-          <UButton label="Launch agent" icon="i-lucide-play" @click="launch = true" />
-        </template>
       </UDashboardNavbar>
     </template>
 
     <template #body>
-      <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-4" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
-
-      <UTable :data="sessions" :columns="columns" :loading="loading && !sessions.length" :ui="{ td: 'py-1.5' }" empty="No sessions yet. Launch an agent here or run `conductor host` from your machine.">
-        <template #preview-cell="{ row }">
-          <NuxtLink :to="`/sessions/${row.original.id}`" class="block w-44 h-24 overflow-hidden rounded-md border border-default bg-default" :aria-label="`Open ${row.original.name}`" data-session-thumbnail>
-            <TerminalView :key="row.original.id" :create-transport="transportFor(row.original)" read-only fit="scale" compact :auto-focus="false" class="pointer-events-none" />
-          </NuxtLink>
-        </template>
-        <template #name-cell="{ row }">
-          <NuxtLink :to="`/sessions/${row.original.id}`" class="font-medium hover:underline">{{ row.original.name }}</NuxtLink>
-        </template>
-        <template #agentId-cell="{ row }">
-          <span :title="row.original.command.join(' ')">{{ row.original.agentId }}</span>
-        </template>
-        <template #kind-cell="{ row }">
-          <UBadge :label="row.original.kind === 'hosted' ? `hosted · ${row.original.hostName || 'dev machine'}` : 'server'" :icon="row.original.kind === 'hosted' ? 'i-lucide-laptop' : 'i-lucide-server'" color="neutral" variant="subtle" size="sm" />
-        </template>
-        <template #status-cell="{ row }">
-          <div class="flex items-center gap-1.5">
-            <SessionStatusBadge :status="row.original.status" :exit-code="row.original.exitCode" />
-            <AttentionBadge :attention="row.original.attention" />
-          </div>
-        </template>
-        <template #viewers-cell="{ row }">
-          <span class="inline-flex items-center gap-1"><UIcon name="i-lucide-users" class="size-4 text-muted" />{{ row.original.viewers }}</span>
-        </template>
-        <template #createdAt-cell="{ row }">
-          <span :title="new Date(row.original.createdAt).toLocaleString()">{{ since(row.original.createdAt) }}</span>
-        </template>
-        <template #actions-cell="{ row }">
-          <div class="flex justify-end gap-1">
-            <UButton icon="i-lucide-square-terminal" size="xs" color="neutral" variant="ghost" aria-label="Open" :to="`/sessions/${row.original.id}`" />
-            <UButton icon="i-lucide-share-2" size="xs" color="neutral" variant="ghost" aria-label="Share" @click="share(row.original)" />
-            <UButton
-              :icon="row.original.status === 'running' || row.original.status === 'starting' ? 'i-lucide-square' : 'i-lucide-trash-2'"
-              size="xs"
-              color="error"
-              variant="ghost"
-              :aria-label="row.original.status === 'running' ? 'Stop' : 'Remove'"
-              @click="stop(row.original)"
-            />
-          </div>
-        </template>
-      </UTable>
+      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="mb-4" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
+      <div class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8 text-center">
+        <UIcon name="i-lucide-terminal" class="size-10" />
+        <p class="text-sm">No active sessions. Launch an agent here or run <code>conductor host</code> from your machine.</p>
+        <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />
+      </div>
     </template>
   </UDashboardPanel>
-
-  <LaunchSessionModal v-model:open="launch" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
-  <ShareLinksModal v-if="shareFor" v-model:open="shareOpen" :session-id="shareFor" />
 </template>
