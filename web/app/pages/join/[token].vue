@@ -17,7 +17,7 @@ const info = ref<JoinInfo | null>(null)
 const error = ref('')
 const viewers = ref(0)
 const status = ref('')
-const transport = ref<{ kind: TransportKind; state: TransportState }>({ kind: 'ws', state: 'idle' })
+const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 const fileOpen = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
@@ -83,7 +83,7 @@ function requestFile(path: string, stat?: boolean) {
       <UBadge :label="info.role === 'control' ? 'control' : 'view only'" :icon="info.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info.role === 'control' ? 'warning' : 'neutral'" variant="subtle" size="sm" />
       <SessionStatusBadge v-if="status" :status="status as any" />
       <AttentionBadge :attention="attention as any" />
-      <TransportBadge :kind="transport.kind" :state="transport.state" />
+      <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
       <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="info.session.kind === 'hosted'" :label="`hosted on ${info.session.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
     </template>

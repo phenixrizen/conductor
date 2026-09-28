@@ -13,6 +13,7 @@ import {
   type TransportKind,
   type Welcome,
 } from '../protocol'
+import { rttFromPong } from './rtt'
 import type { CloseInfo, TerminalTransport, TransportState } from './types'
 
 const FILE_TIMEOUT_MS = 20000
@@ -25,6 +26,7 @@ const FILE_TIMEOUT_MS = 20000
 export abstract class BaseTransport implements TerminalTransport {
   readonly kind: Ref<TransportKind>
   readonly state: Ref<TransportState> = ref('idle')
+  readonly rtt: Ref<number | null> = ref(null)
 
   protected outputCbs: Array<(data: Uint8Array, replay: boolean) => void> = []
   protected controlCbs: Array<(msg: ControlMessage) => void> = []
@@ -134,6 +136,9 @@ export abstract class BaseTransport implements TerminalTransport {
       this.welcomeReject = undefined
     } else if (msg.t === 'error') {
       this.lastError = { code: msg.code, message: msg.message }
+    } else if (msg.t === 'pong') {
+      const r = rttFromPong(msg.ts, Date.now())
+      if (r !== null) this.rtt.value = r
     }
     for (const cb of this.controlCbs) cb(msg)
   }

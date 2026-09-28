@@ -16,7 +16,7 @@ const id = computed(() => String(route.params.id))
 const session = ref<SessionInfo | null>(null)
 const error = ref('')
 const viewers = ref(0)
-const transport = ref<{ kind: TransportKind; state: TransportState }>({ kind: 'ws', state: 'idle' })
+const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 const share = ref(false)
 const fileOpen = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
@@ -140,7 +140,7 @@ watch(id, () => {
           <div class="flex items-center gap-2 ml-2">
             <SessionStatusBadge v-if="session" :status="session.status" :exit-code="session.exitCode" />
             <AttentionBadge :attention="attention as any" />
-            <TransportBadge :kind="transport.kind" :state="transport.state" />
+            <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
             <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
             <UBadge v-if="session?.kind === 'hosted'" :label="`hosted on ${session.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
           </div>

@@ -29,7 +29,7 @@ const focusId = computed(() => (typeof route.query.focus === 'string' ? route.qu
 const focused = computed<SessionInfo | undefined>(() => attention.sessions.value.find((s) => s.id === focusId.value))
 const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 const viewers = ref(0)
-const transport = ref<{ kind: TransportKind; state: TransportState }>({ kind: 'ws', state: 'idle' })
+const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 const fileOpen = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
@@ -39,7 +39,7 @@ watch(fileOpen, (open) => {
 })
 watch(focusId, () => {
   viewers.value = 0
-  transport.value = { kind: 'ws', state: 'idle' }
+  transport.value = { kind: 'ws', state: 'idle', rtt: null }
   fileTarget.value = null
   previewUrl.value = null
 })
@@ -144,7 +144,7 @@ onMounted(() => {
             <template v-if="focusId">
               <SessionStatusBadge v-if="focused" :status="focused.status" :exit-code="focused.exitCode" />
               <AttentionBadge :attention="focused?.attention" />
-              <TransportBadge :kind="transport.kind" :state="transport.state" />
+              <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
               <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
             </template>
             <template v-else>

@@ -13,6 +13,8 @@ export interface CloseInfo {
 export interface TerminalTransport {
   readonly kind: Ref<TransportKind>
   readonly state: Ref<TransportState>
+  /** Last measured ping/pong round trip in ms; null until the first pong. */
+  readonly rtt: Ref<number | null>
   connect(hello: { cols: number; rows: number }): Promise<Welcome>
   sendInput(data: Uint8Array): void
   resize(cols: number, rows: number): void

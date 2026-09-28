@@ -35,7 +35,7 @@ const emit = defineEmits<{
   status: [status: string, exitCode?: number]
   attention: [msg: { state: string; message?: string; source?: string }]
   viewers: [count: number]
-  transport: [info: { kind: TransportKind; state: TransportState }]
+  transport: [info: { kind: TransportKind; state: TransportState; rtt: number | null }]
   closed: [info: CloseInfo]
   openFile: [loc: { path: string; line?: number }]
   openUrl: [url: string]
@@ -188,7 +188,7 @@ async function connect() {
   connecting.value = true
   const t = props.createTransport()
   transport = t
-  stopWatch = watch([t.kind, t.state], ([kind, state]) => emit('transport', { kind, state }), { immediate: true })
+  stopWatch = watch([t.kind, t.state, t.rtt], ([kind, state, rtt]) => emit('transport', { kind, state, rtt }), { immediate: true })
   t.onOutput((data) => term?.write(data))
   t.onControl(handleControl)
   t.onClose((info) => {
@@ -200,6 +200,7 @@ async function connect() {
   term.reset()
   try {
     await t.connect(measure())
+    t.ping()
     if (!props.readOnly) t.resize(term.cols, term.rows)
     if (props.autoFocus && !props.readOnly) term.focus()
   } catch (e) {
@@ -223,7 +224,14 @@ function requestFile(path: string, stat = false): Promise<FileResponse> {
   return transport.requestFile(path, stat)
 }
 
-defineExpose({ connect, disconnect, requestFile, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+/** Sends text to the PTY as if typed; false when the transport is not open. */
+function sendInput(text: string): boolean {
+  if (!transport || transport.state.value !== 'open') return false
+  transport.sendInput(encodeText(text))
+  return true
+}
+
+defineExpose({ connect, disconnect, requestFile, sendInput, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({
@@ -279,7 +287,7 @@ onMounted(() => {
   })
   observer.observe(host.value!)
   if (props.fit === 'scale' && term.element) observer.observe(term.element)
-  pingTimer = window.setInterval(() => transport?.ping(), 25000)
+  pingTimer = window.setInterval(() => transport?.ping(), 10000)
   if (props.autoConnect) connect()
 })
 
