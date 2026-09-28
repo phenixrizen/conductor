@@ -9,48 +9,56 @@ export interface ShortcutGroup {
   rows: ShortcutRow[]
 }
 
+/**
+ * Key codes that a focused terminal hands back to the page when Alt is held,
+ * so the Alt variants below work while typing into an agent. Plain keys keep
+ * going to the agent; xterm ignores only these Alt chords.
+ */
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'KeyA', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
+
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   title: 'Everywhere',
   rows: [
-    { keys: ['meta', 'B'], label: 'Show or hide the sidebar' },
-    { keys: ['?'], label: 'Keyboard shortcuts' },
-    { keys: ['N'], label: 'Launch an agent' },
-    { keys: ['/'], label: 'Filter sessions' },
-    { keys: ['G', 'W'], label: 'Go to the Wall' },
-    { keys: ['G', 'C'], label: 'Go to the Carousel' },
-    { keys: ['G', 'A'], label: 'Go to Agents' },
+    { keys: ['meta', 'B'], label: 'Show or hide the sidebar (Alt+B in a terminal)' },
+    { keys: ['?'], label: 'Keyboard shortcuts (Alt+H in a terminal)' },
+    { keys: ['N'], label: 'Launch an agent (Alt+N in a terminal)' },
+    { keys: ['/'], label: 'Filter sessions (Alt+S in a terminal)' },
+    { keys: ['G', 'W'], label: 'Go to the Wall (Alt+W in a terminal)' },
+    { keys: ['G', 'C'], label: 'Go to the Carousel (Alt+C in a terminal)' },
+    { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
   ],
 }
 
 export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Wall',
   rows: [
-    { keys: ['escape'], label: 'Back to the grid' },
-    { keys: ['J'], label: 'Next in the queue' },
-    { keys: ['K'], label: 'Previous in the queue' },
+    { keys: ['escape'], label: 'Back to the grid (Alt+Esc in a terminal)' },
+    { keys: ['J'], label: 'Next in the queue (Alt+J in a terminal)' },
+    { keys: ['K'], label: 'Previous in the queue (Alt+K in a terminal)' },
     { keys: ['enter'], label: 'Reply to the selected queue item' },
-    { keys: ['F'], label: 'Toggle fullscreen' },
+    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 
 export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
   title: 'Carousel',
   rows: [
-    { keys: ['arrowleft'], label: 'Previous session' },
-    { keys: ['arrowright'], label: 'Next session' },
+    { keys: ['arrowleft'], label: 'Previous session (Alt+← in a terminal)' },
+    { keys: ['arrowright'], label: 'Next session (Alt+→ in a terminal)' },
     { keys: ['enter'], label: 'Type into the current session' },
-    { keys: ['space'], label: 'Pause or resume rotation' },
-    { keys: ['escape'], label: 'Leave the terminal' },
-    { keys: ['F'], label: 'Toggle fullscreen' },
+    { keys: ['space'], label: 'Pause or resume rotation (Alt+P in a terminal)' },
+    { keys: ['escape'], label: 'Leave the terminal (Alt+Esc in a terminal)' },
+    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 
 /**
  * State for the shortcuts modal. Pages register the group that applies to
  * them so the modal always lists what works on the current screen.
- * Shortcuts never fire while a terminal or a form field has focus: keys go
- * to the terminal, and the buttons in the navbar do the same jobs.
+ * Plain shortcuts never fire while a terminal or a form field has focus
+ * (keys go to the agent); the Alt variants do, because the terminal hands
+ * those chords back to the page.
  */
 export function useShortcutsModal() {
   const open = useState<boolean>('shortcutsOpen', () => false)

@@ -5,6 +5,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/user"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +68,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/catalog", s.requireAdmin(s.handleCatalog))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.requireAdmin(s.handleCreateSession))
@@ -162,6 +165,30 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 
 // Unwrap lets http.ResponseController reach the hijacker for WebSockets.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// handleWhoAmI tells an admin which OS user runs the server: the workbench
+// uses it as the default display name. It is a label, not authentication.
+func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"user": serverUser()})
+}
+
+// serverUser is the OS user running this process, bounded to 64 bytes.
+func serverUser() string {
+	name := ""
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+	}
+	if name == "" {
+		name = os.Getenv("USER")
+	}
+	if i := strings.LastIndexAny(name, `\/`); i >= 0 {
+		name = name[i+1:]
+	}
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	return name
+}
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -1,15 +1,22 @@
 <script setup lang="ts">
 const attention = useAttention()
 const admin = useAdminToken()
+const identity = useIdentity()
+const api = useSessions()
 useAttentionHead()
 
+function begin() {
+  attention.start()
+  identity.ensureDefault(api.whoami)
+}
+
 onMounted(() => {
-  if (admin.hasToken.value) attention.start()
+  if (admin.hasToken.value) begin()
 })
 watch(
   () => admin.hasToken.value,
   (has) => {
-    if (has) attention.start()
+    if (has) begin()
   },
 )
 </script>

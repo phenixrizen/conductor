@@ -82,8 +82,18 @@ function terminalRef(id: string) {
 // carousel back); rotation is started and stopped explicitly. It stops while
 // a session needs input (follow mode), while a terminal has keyboard focus,
 // while paused, and while the mouse hovers over the pane.
-const holding = computed(() => settings.value.follow && waiting.value.length > 0)
+// Follow mode holds on a waiting session for a bounded time (two intervals,
+// at least 20 s) so one stray prompt never freezes the rotation; the waiting
+// session stays in the rotation and the hold repeats for each new prompt.
+const now = ref(Date.now())
+const holdUntil = ref(0)
+const holdMs = computed(() => Math.max(2 * settings.value.intervalMs, 20000))
+const holding = computed(() => settings.value.follow && waiting.value.length > 0 && now.value < holdUntil.value)
+const holdLeft = computed(() => Math.max(0, Math.ceil((holdUntil.value - now.value) / 1000)))
 const holdingId = computed(() => (holding.value && current.value?.attention?.state === 'needs_input' ? current.value.id : undefined))
+function releaseHold() {
+  holdUntil.value = 0
+}
 const autoplayOptions = computed(() =>
   settings.value.autoplay && active.value.length > 1
     ? { delay: settings.value.intervalMs, stopOnMouseEnter: true, stopOnInteraction: false, stopOnFocusIn: false }
@@ -169,6 +179,10 @@ function next() {
 }
 
 function togglePlay() {
+  if (holding.value) {
+    releaseHold()
+    return
+  }
   paused.value = !paused.value
 }
 
@@ -181,10 +195,11 @@ function onFocusOut(e: FocusEvent) {
   typing.value = !!to?.closest?.('.terminal-host')
 }
 
-// Follow mode: jump to the session that needs input and hold there. With
-// several waiting, cycle among them only. Never yank the keyboard away
-// from someone who is typing.
+// Follow mode: jump to a session the first time it asks for input and hold
+// there for a bounded time. With several waiting, cycle among them while
+// holding. Never yank the keyboard away from someone who is typing.
 const jumpedAt = ref<string | null>(null)
+const seenPrompts = new Map<string, string>() // session id → attention.since already jumped to
 let cycleTimer: number | undefined
 watch(
   [waiting, () => settings.value.follow],
@@ -192,23 +207,24 @@ watch(
     window.clearInterval(cycleTimer)
     if (!follow || !list.length) {
       jumpedAt.value = null
+      holdUntil.value = 0
       return
     }
-    const target = active.value.findIndex((s) => s.id === list[0]!.id)
-    if (target >= 0 && target !== selected.value && !typing.value) {
-      scrollTo(target)
+    const fresh = list.find((s) => seenPrompts.get(s.id) !== (s.attention?.since ?? ''))
+    if (fresh) {
+      for (const s of list) seenPrompts.set(s.id, s.attention?.since ?? '')
+      holdUntil.value = Date.now() + holdMs.value
+      const target = active.value.findIndex((s) => s.id === fresh.id)
+      if (target >= 0 && target !== selected.value && !typing.value) scrollTo(target)
       jumpedAt.value = new Date().toISOString()
-    } else if (!jumpedAt.value) jumpedAt.value = new Date().toISOString()
+    }
     if (list.length > 1) {
       let i = 0
       cycleTimer = window.setInterval(() => {
-        if (typing.value) return
+        if (typing.value || !holding.value) return
         i = (i + 1) % list.length
         const idx = active.value.findIndex((s) => s.id === list[i]!.id)
-        if (idx >= 0) {
-          scrollTo(idx)
-          jumpedAt.value = new Date().toISOString()
-        }
+        if (idx >= 0) scrollTo(idx)
       }, Math.max(settings.value.intervalMs, 5000))
     }
   },
@@ -227,15 +243,21 @@ const nextUp = computed<{ session: SessionInfo; waiting: boolean } | null>(() =>
   return s ? { session: s, waiting: s.attention?.state === 'needs_input' } : null
 })
 
-const now = ref(Date.now())
 let tick: number | undefined
 
+// Plain keys work outside the terminal; the Alt chords also work inside it.
+const inTerminal = { usingInput: true }
 defineShortcuts({
   arrowleft: prev,
   arrowright: next,
   enter: focusCurrent,
   ' ': togglePlay,
   f: () => fs.toggle(),
+  alt_arrowleft: { ...inTerminal, handler: prev },
+  alt_arrowright: { ...inTerminal, handler: next },
+  alt_p: { ...inTerminal, handler: togglePlay },
+  alt_f: { ...inTerminal, handler: () => fs.toggle() },
+  alt_escape: { ...inTerminal, handler: leaveTerminal },
 })
 
 function transportFor(s: SessionInfo) {
@@ -296,7 +318,9 @@ onBeforeUnmount(() => {
         <template #right>
           <div class="flex items-center gap-0.5 rounded-md border border-default p-0.5">
             <UButton icon="i-lucide-chevron-left" size="xs" color="neutral" variant="ghost" aria-label="Previous session" @click="prev" />
-            <UButton :label="stateLabel" :icon="rotating ? 'i-lucide-play' : 'i-lucide-pause'" size="xs" color="neutral" variant="soft" class="font-semibold" @click="togglePlay" />
+            <UTooltip :text="holding ? 'Release the hold and keep rotating' : paused ? 'Resume rotation' : 'Pause rotation'" :kbds="['space']">
+              <UButton :label="stateLabel" :icon="rotating ? 'i-lucide-play' : 'i-lucide-pause'" size="xs" color="neutral" variant="soft" class="font-semibold" @click="togglePlay" />
+            </UTooltip>
             <UButton icon="i-lucide-chevron-right" size="xs" color="neutral" variant="ghost" aria-label="Next session" @click="next" />
           </div>
           <span class="hidden md:flex items-center gap-1.5 text-xs text-muted">Every <USelect v-model="settings.intervalMs" :items="intervalItems" size="xs" class="w-20 font-mono" :disabled="!settings.autoplay" /></span>
@@ -339,7 +363,7 @@ onBeforeUnmount(() => {
                   <span class="truncate font-mono text-[11.5px] text-muted">{{ meta(item) }}</span>
                 </div>
                 <div class="ml-auto flex items-center gap-2">
-                  <UBadge v-if="holdingId === item.id && jumpedAt" color="warning" variant="subtle" size="sm" icon="i-lucide-hand" :label="`Jumped here ${relativeTime(jumpedAt, now)} ago. Stays until someone answers`" />
+                  <UBadge v-if="holdingId === item.id && jumpedAt" color="warning" variant="subtle" size="sm" icon="i-lucide-hand" :label="`Jumped here ${relativeTime(jumpedAt, now)} ago · holding ${holdLeft}s more`" />
                   <UButton label="Open page" icon="i-lucide-square-terminal" size="sm" color="neutral" variant="outline" :to="`/sessions/${item.id}`" />
                 </div>
               </div>

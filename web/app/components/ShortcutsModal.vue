@@ -3,7 +3,7 @@ const shortcuts = useShortcutsModal()
 </script>
 
 <template>
-  <UModal v-model:open="shortcuts.open.value" title="Keyboard shortcuts" description="Shortcuts pause while a terminal or a text field has focus; the same actions are always available as buttons.">
+  <UModal v-model:open="shortcuts.open.value" title="Keyboard shortcuts" description="Plain keys work when no terminal or text field has focus. While typing into an agent, hold Alt with the key shown in brackets. Every action is also a button.">
     <template #body>
       <div class="flex flex-col gap-5">
         <section v-for="group in shortcuts.groups.value" :key="group.title">

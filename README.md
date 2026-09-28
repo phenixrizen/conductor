@@ -99,8 +99,9 @@ turns a spare monitor into a status wall.
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow input requests** on, the
-carousel jumps to any session that needs input and holds there until it is
-answered (it never jumps away while you are typing). A film strip under the
+carousel jumps to any session that needs input and holds there for two
+intervals (at least 20 s) before rotating on; click **Holding** to release it
+sooner. It never jumps away while you are typing. A film strip under the
 terminal shows every session with the rotation progress, and the footer says
 which session is next.
 
@@ -110,8 +111,10 @@ The sidebar hides completely with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac); the choice is remembered per browser, and a
 button in every page's navbar brings it back. Press **?** (or use
 **Shortcuts** in the sidebar) for the list of shortcuts on the current screen.
-Shortcuts never fire while a terminal or a text field has focus, so keys reach
-the agent; the same actions are always available as buttons.
+Plain keys reach the agent while a terminal has focus, so they only work
+outside it; hold **Alt** with the same key (**Alt+N**, **Alt+W**, **Alt+←**)
+to use a shortcut without leaving the terminal. Your display name defaults to
+the server's user and can be changed from the person button in the sidebar.
 
 ## Let agents tell Conductor they need you
 

@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
+import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
 import { closeReason, encodeText, type ActivityEntry, type ControlMessage, type FileResponse, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 
@@ -260,6 +261,9 @@ onMounted(() => {
     }),
   )
   term.registerLinkProvider(fileLinkProvider)
+  // Alt+<page shortcut> is for the page, not the agent: xterm skips it and the
+  // keydown bubbles to the shortcut handlers. Everything else reaches the PTY.
+  term.attachCustomKeyEventHandler((e) => !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code)))
   term.open(host.value!)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {

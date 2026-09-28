@@ -11,6 +11,12 @@ const shortcuts = useShortcutsModal()
 const launch = useLaunchModal()
 const identity = useIdentity()
 const nameDraft = ref('')
+const nameOpen = ref(false)
+
+function saveName() {
+  identity.set(nameDraft.value)
+  nameOpen.value = false
+}
 const router = useRouter()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
@@ -25,6 +31,9 @@ function toggleTheme() {
 }
 
 // Shortcuts pause while a terminal or a text field has focus (see useShortcuts).
+// Plain keys work outside terminals and text fields; the Alt chords also
+// work inside a terminal (see ALT_PASSTHROUGH_CODES in useShortcuts).
+const inTerminal = { usingInput: true }
 defineShortcuts({
   meta_b: () => sidebar.toggle(),
   '?': () => shortcuts.show(),
@@ -33,6 +42,13 @@ defineShortcuts({
   'g-w': () => router.push('/wall'),
   'g-c': () => router.push('/carousel'),
   'g-a': () => router.push('/agents'),
+  alt_b: { ...inTerminal, handler: () => sidebar.toggle() },
+  alt_h: { ...inTerminal, handler: () => shortcuts.show() },
+  alt_n: { ...inTerminal, handler: () => launch.show() },
+  alt_s: { ...inTerminal, handler: () => list.value?.focusFilter() },
+  alt_w: { ...inTerminal, handler: () => router.push('/wall') },
+  alt_c: { ...inTerminal, handler: () => router.push('/carousel') },
+  alt_a: { ...inTerminal, handler: () => router.push('/agents') },
 })
 </script>
 
@@ -77,13 +93,13 @@ defineShortcuts({
               </div>
             </template>
           </UPopover>
-          <UPopover @update:open="(o: boolean) => o && (nameDraft = identity.name.value)">
+          <UPopover v-model:open="nameOpen" @update:open="(o: boolean) => o && (nameDraft = identity.name.value)">
             <UTooltip :text="identity.name.value ? `You are ${identity.name.value}` : 'Set your name'">
               <UButton :icon="identity.name.value ? 'i-lucide-user-round-check' : 'i-lucide-user-round'" color="neutral" variant="ghost" size="sm" aria-label="Your name" />
             </UTooltip>
             <template #content>
-              <form class="p-3 flex flex-col gap-2 w-64" @submit.prevent="identity.set(nameDraft)">
-                <p class="text-xs text-muted">Shown to others on a session. A label, not a login.</p>
+              <form class="p-3 flex flex-col gap-2 w-64" @submit.prevent="saveName">
+                <p class="text-xs text-muted">Shown to others on a session. Defaults to the server's user; a label, not a login.</p>
                 <UInput v-model="nameDraft" placeholder="Your name" size="sm" maxlength="40" />
                 <UButton type="submit" label="Save" size="sm" class="self-end" />
               </form>

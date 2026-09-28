@@ -71,22 +71,30 @@ function backToGrid() {
   router.push({ path: '/wall' })
 }
 
+function leaveFocus() {
+  // Esc first closes the file panel (handled by the panel); only a second Esc leaves focus mode.
+  if (!focusId.value || fileOpen.value || Date.now() - fileClosedAt < 400) return
+  backToGrid()
+}
+function queueNext() {
+  if (waiting.value.length) queueSel.value = (queueSel.value + 1) % waiting.value.length
+}
+function queuePrev() {
+  if (waiting.value.length) queueSel.value = (queueSel.value - 1 + waiting.value.length) % waiting.value.length
+}
+const inTerminal = { usingInput: true }
 defineShortcuts({
-  escape: () => {
-    // Esc first closes the file panel (handled by the panel); only a second Esc leaves focus mode.
-    if (!focusId.value || fileOpen.value || Date.now() - fileClosedAt < 400) return
-    backToGrid()
-  },
+  escape: leaveFocus,
   f: () => fs.toggle(),
-  j: () => {
-    if (waiting.value.length) queueSel.value = (queueSel.value + 1) % waiting.value.length
-  },
-  k: () => {
-    if (waiting.value.length) queueSel.value = (queueSel.value - 1 + waiting.value.length) % waiting.value.length
-  },
+  j: queueNext,
+  k: queuePrev,
   enter: () => {
     if (!focusId.value && waiting.value.length) queue.value?.focusSelected()
   },
+  alt_escape: { ...inTerminal, handler: leaveFocus },
+  alt_f: { ...inTerminal, handler: () => fs.toggle() },
+  alt_j: { ...inTerminal, handler: queueNext },
+  alt_k: { ...inTerminal, handler: queuePrev },
 })
 
 // Grid: every active session fits on screen; tiles shrink as sessions are added.

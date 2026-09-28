@@ -26,5 +26,21 @@ export function useIdentity() {
     }
   }
 
-  return { name, set }
+  /**
+   * Fills in a default from the server's OS user when nothing is stored.
+   * Runs at most once per page; failures leave the name empty.
+   */
+  const defaulted = useState<boolean>('displayNameDefaulted', () => false)
+  async function ensureDefault(fetchUser: () => Promise<{ user: string }>) {
+    if (name.value || defaulted.value) return
+    defaulted.value = true
+    try {
+      const { user } = await fetchUser()
+      if (user && !name.value) set(user)
+    } catch {
+      /* stays empty; the user can set one in the sidebar */
+    }
+  }
+
+  return { name, set, ensureDefault }
 }

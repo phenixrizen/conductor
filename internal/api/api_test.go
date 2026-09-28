@@ -382,3 +382,18 @@ func TestCreateSessionRecordsGitBranch(t *testing.T) {
 		t.Fatalf("branch: %v", got["session"])
 	}
 }
+
+func TestWhoAmIReportsServerUser(t *testing.T) {
+	e := newTestEnv(t, nil)
+	resp, _ := e.do("GET", "/api/whoami", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous whoami: %d", resp.StatusCode)
+	}
+	resp, out := e.do("GET", "/api/whoami", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("whoami: %d %v", resp.StatusCode, out)
+	}
+	if u, _ := out["user"].(string); u == "" || len(u) > 64 {
+		t.Fatalf("user %q", u)
+	}
+}

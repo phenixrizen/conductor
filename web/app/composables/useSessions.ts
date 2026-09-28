@@ -65,6 +65,8 @@ export function useSessions() {
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
+    /** OS user running the server; the default display name for admins. */
+    whoami: () => request<{ user: string }>('/api/whoami'),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),
     createLink: (id: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
       request<{ link: ShareLink; token: string; url: string }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),

@@ -28,7 +28,9 @@ for the wire details.
   lists every session waiting for input with its attention message and a
   reply box that sends text plus Enter over a control connection.
 - **Carousel** (1g): film strip of all sessions with a rotation progress bar,
-  a "next up" line, and a "jumped here" note when follow mode moved.
+  a "next up" line, and a "jumped here" note when follow mode moved. Follow
+  mode holds for two intervals (at least 20 s), not forever, so a stray
+  prompt cannot freeze the rotation.
 - **Launch** (1d): "Runs on: Server / My machine". The latter shows the exact
   `conductor host` command, including the host token, and waits for a hosted
   session with that name to appear.
