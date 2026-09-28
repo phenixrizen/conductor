@@ -27,11 +27,21 @@ export const CloseCode = {
 export type Role = 'view' | 'control'
 export type AttentionState = '' | 'working' | 'needs_input' | 'done'
 
+export type AttentionKind = '' | 'permission' | 'prompt' | 'done'
+
+/** A quick-reply choice; `input` is exactly what a client sends as INPUT. */
+export interface AttentionOption {
+  label: string
+  input: string
+}
+
 export interface Attention {
   state: AttentionState
   message?: string
   source?: string
   since?: string
+  kind?: AttentionKind
+  options?: AttentionOption[]
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 

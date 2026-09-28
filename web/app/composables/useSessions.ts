@@ -21,6 +21,8 @@ export interface SessionInfo {
   /** Git branch of the working directory when known. */
   branch?: string
   attention?: Attention
+  /** Who last answered a needs-input prompt (server-reported). */
+  lastAnswer?: { by?: string; byName: string; at: string; message?: string }
   createdAt: string
   endedAt?: string
 }

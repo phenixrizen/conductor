@@ -15,13 +15,32 @@ const attention = useAttention()
 const admin = useAdminToken()
 const api = useSessions()
 const toast = useToast()
+const quick = useQuickReply()
 const { create } = useTerminalTransport()
 const { httpBase } = useApiBase()
 const fs = useFullscreenToggle()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
 
+type Filter = 'all' | 'needs' | 'running'
+const filter = ref<Filter>('all')
 const active = computed(() => attention.sessions.value.filter(isActive))
 const waiting = computed(() => attention.needsInput.value.filter(isActive))
+const running = computed(() => active.value.filter((s) => s.attention?.state !== 'needs_input'))
+const tiles = computed(() => (filter.value === 'needs' ? waiting.value : filter.value === 'running' ? running.value : active.value))
+const answered = computed(() =>
+  attention.sessions.value
+    .filter((s) => s.lastAnswer)
+    .sort((a, b) => (b.lastAnswer?.at ?? '').localeCompare(a.lastAnswer?.at ?? ''))
+    .slice(0, 8),
+)
+const showQueue = computed(() => waiting.value.length > 0 || answered.value.length > 0)
+
+// Queue keyboard selection (J / K, Enter to type a reply).
+const queueSel = ref(0)
+const queue = useTemplateRef<{ focusSelected: () => void }>('queue')
+watch(waiting, (list) => {
+  queueSel.value = Math.min(queueSel.value, Math.max(0, list.length - 1))
+})
 
 // Focus mode: /wall?focus=<id> expands one session in place. The grid is one
 // Esc, one click or one browser Back away; the URL stays shareable.
@@ -59,6 +78,15 @@ defineShortcuts({
     backToGrid()
   },
   f: () => fs.toggle(),
+  j: () => {
+    if (waiting.value.length) queueSel.value = (queueSel.value + 1) % waiting.value.length
+  },
+  k: () => {
+    if (waiting.value.length) queueSel.value = (queueSel.value - 1 + waiting.value.length) % waiting.value.length
+  },
+  enter: () => {
+    if (!focusId.value && waiting.value.length) queue.value?.focusSelected()
+  },
 })
 
 // Grid: every active session fits on screen; tiles shrink as sessions are added.
@@ -77,7 +105,7 @@ watch(
   },
   { immediate: true },
 )
-const layout = computed(() => bestGrid(active.value.length, box.value.w, box.value.h, 8, 1.6))
+const layout = computed(() => bestGrid(tiles.value.length, box.value.w, box.value.h, 12, 1.6))
 const gridStyle = computed(() => ({
   gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`,
   gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))`,
@@ -87,12 +115,26 @@ function transportFor(s: SessionInfo) {
   return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
 }
 
+function fail(title: string) {
+  return (e: unknown) => toast.add({ title, description: (e as Error).message, color: 'error' })
+}
+
+function reply(s: SessionInfo, text: string) {
+  quick.send(s, text + '\r').catch(fail(`Reply to ${s.name} failed`))
+}
+
+function option(s: SessionInfo, index: number) {
+  const o = s.attention?.options?.[index]
+  if (!o) return
+  quick.send(s, o.input).catch(fail(`Reply to ${s.name} failed`))
+}
+
 async function stop(s: SessionInfo) {
   try {
     await api.stop(s.id)
     toast.add({ title: 'Stop requested', description: s.name, color: 'neutral' })
   } catch (e) {
-    toast.add({ title: 'Stop failed', description: (e as Error).message, color: 'error' })
+    fail('Stop failed')(e)
   }
 }
 
@@ -132,7 +174,7 @@ onMounted(() => {
 <template>
   <UDashboardPanel id="wall" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar :title="focusId ? focused?.name || 'Session' : 'Wall'">
+      <UDashboardNavbar :title="focusId ? focused?.name || 'Session' : 'Wall'" :ui="{ root: 'h-14' }">
         <template #leading>
           <SidebarReveal />
           <UTooltip v-if="focusId" text="Back to the grid" :kbds="['escape']">
@@ -145,13 +187,14 @@ onMounted(() => {
               <SessionStatusBadge v-if="focused" :status="focused.status" :exit-code="focused.exitCode" />
               <AttentionBadge :attention="focused?.attention" />
               <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
-              <UBadge :label="`${viewers} viewer${viewers === 1 ? '' : 's'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
+              <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
             </template>
-            <template v-else>
-              <UBadge :label="`${active.length} active`" color="neutral" variant="subtle" size="sm" />
-              <UBadge v-if="waiting.length" :label="`${waiting.length} waiting`" icon="i-lucide-hand" color="secondary" variant="solid" size="sm" />
+            <div v-else class="flex items-center gap-1.5 text-xs">
+              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" @click="filter = 'all'" />
+              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" @click="filter = 'needs'" />
+              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" @click="filter = 'running'" />
               <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
-            </template>
+            </div>
           </div>
         </template>
         <template #right>
@@ -170,15 +213,6 @@ onMounted(() => {
       <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
       <div v-if="focusId" class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">
-        <UAlert
-          v-if="focused?.attention?.state === 'needs_input'"
-          color="secondary"
-          variant="subtle"
-          icon="i-lucide-hand"
-          title="Agent is waiting for input"
-          :description="focused?.attention?.message || 'Type into the terminal to continue.'"
-          :actions="[{ label: 'Focus terminal', icon: 'i-lucide-keyboard', onClick: () => focusTerminal?.focus() }]"
-        />
         <div class="flex-1 min-h-0">
           <TerminalView
             v-if="focused"
@@ -196,6 +230,7 @@ onMounted(() => {
             <UButton label="Back to the grid" icon="i-lucide-arrow-left" color="neutral" variant="soft" @click="backToGrid" />
           </div>
         </div>
+        <QuickReplyBar v-if="focused" :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="reply(focused!, $event)" @option="option(focused!, $event)" />
       </div>
 
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
@@ -204,9 +239,13 @@ onMounted(() => {
         <UButton label="Launch agent" icon="i-lucide-play" @click="useLaunchModal().show()" />
       </div>
 
-      <div v-else ref="grid" class="flex-1 min-h-0 p-2 sm:p-3">
-        <div class="grid h-full w-full gap-2" :style="gridStyle">
-          <SessionTile v-for="s in active" :key="s.id" :session="s" :create-transport="transportFor(s)" @select="focusSession(s)" />
+      <div v-else class="flex flex-1 min-h-0">
+        <WallQueue v-if="showQueue" ref="queue" :sessions="waiting" :answered="answered" :selected="queueSel" :sending="quick.sending.value" @reply="reply" @option="option" @open="focusSession" @select="queueSel = $event" />
+        <div ref="grid" class="flex-1 min-h-0 p-3">
+          <div v-if="!tiles.length" class="h-full flex items-center justify-center text-sm text-muted">Nothing matches this filter.</div>
+          <div v-else class="grid h-full w-full gap-3" :style="gridStyle">
+            <SessionTile v-for="s in tiles" :key="s.id" :session="s" :create-transport="transportFor(s)" @select="focusSession(s)" />
+          </div>
         </div>
       </div>
     </template>

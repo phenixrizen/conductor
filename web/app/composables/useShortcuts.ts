@@ -27,6 +27,9 @@ export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Wall',
   rows: [
     { keys: ['escape'], label: 'Back to the grid' },
+    { keys: ['J'], label: 'Next in the queue' },
+    { keys: ['K'], label: 'Previous in the queue' },
+    { keys: ['enter'], label: 'Reply to the selected queue item' },
     { keys: ['F'], label: 'Toggle fullscreen' },
   ],
 }
