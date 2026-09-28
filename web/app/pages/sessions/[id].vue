@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, Attention, TransportKind, ViewerInfo } from '~/utils/protocol'
+import type { ActivityEntry, Attention, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
@@ -146,6 +146,12 @@ function onActivity(e: ActivityEntry) {
   activity.value = [...activity.value.slice(-199), e]
 }
 
+// Every (re)connection replays the last 50 entries, so start the log afresh.
+function onWelcome(w: Welcome) {
+  selfId.value = w.subscriberId ?? w.viewerId ?? ''
+  activity.value = []
+}
+
 function createTransport() {
   return create({ sessionId: id.value, token: admin.token.value, kind: session.value?.kind ?? 'server' })
 }
@@ -288,7 +294,7 @@ watch(id, () => {
             <TerminalView
               ref="terminal"
               :create-transport="createTransport"
-              @welcome="(w) => (selfId = w.subscriberId ?? w.viewerId ?? '')"
+              @welcome="onWelcome"
               @status="onStatus"
               @attention="onAttention"
               @viewers="onViewers"

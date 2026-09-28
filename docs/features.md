@@ -54,6 +54,16 @@ Each item touches `internal/proto`, `web/app/utils/protocol.ts` and
   reported by the host for hosted ones), host OS user, per-link viewer count,
   client-measured transport round-trip time.
 
+## Open verification
+
+- **Claude Code permission keys.** Quick-reply buttons send the digits `1`,
+  `2`, `3` with no Enter, assuming Claude Code's permission dialog confirms
+  on the number key and offers three choices. This has not been checked
+  against a live Claude Code prompt from this repository's checks (no agent
+  runs in CI). First real use: trigger a permission prompt, press **Yes** in
+  the reply bar, and confirm Claude proceeds. If it only highlights, change
+  `permissionOptions()` in `internal/notify/notify.go` to send `"1\r"` etc.
+
 ## Decisions
 
 - **Theme is system wide.** One dark or light setting for the whole app. The

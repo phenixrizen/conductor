@@ -258,10 +258,20 @@ func TestFileGetPolicyAndResponse(t *testing.T) {
 	if err := s.FileGet(sub, proto.FileGet{ReqID: "r1", Path: "a.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	sink.waitFrames(t, before+1)
-	f, _ := proto.Decode(sink.frame(before))
+	// Presence and activity frames may interleave; find the file frame.
+	var f proto.Frame
+	deadline := time.Now().Add(2 * time.Second)
+	for f.Type != proto.TypeFile && time.Now().Before(deadline) {
+		sink.waitFrames(t, before+1)
+		for i := before; i < sink.count(); i++ {
+			if fr, _ := proto.Decode(sink.frame(i)); fr.Type == proto.TypeFile {
+				f = fr
+			}
+		}
+		before = sink.count()
+	}
 	if f.Type != proto.TypeFile {
-		t.Fatalf("expected file frame, got %d", f.Type)
+		t.Fatalf("expected a file frame, got none")
 	}
 	h, body, err := proto.DecodeFile(f.Payload)
 	if err != nil || h.ReqID != "r1" || h.Kind != "file" || string(body) != "hello" {
@@ -573,5 +583,35 @@ func TestLinkViewersCountsPerLink(t *testing.T) {
 	s.Detach(sub)
 	if got := s.LinkViewers(); got["L1"] != 2 {
 		t.Fatalf("after detaching the owner: %v", got)
+	}
+}
+
+func TestConcurrentAnswersRecordExactlyOne(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		s, _ := newLocal(t, t.TempDir())
+		a, b := newChanSink(false), newChanSink(false)
+		subA, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Priya", Cols: 80, Rows: 24}, a)
+		subB, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Marco", Cols: 80, Rows: 24}, b)
+		s.SetAttention(AttentionNeedsInput, "Apply edit?", SourceAPI)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+		go func() { defer wg.Done(); <-start; _ = s.Input(subA, []byte("1")) }()
+		go func() { defer wg.Done(); <-start; _ = s.Input(subB, []byte("1")) }()
+		close(start)
+		wg.Wait()
+		if got := activityTypes(s)["input"]; got != 1 {
+			t.Fatalf("round %d: %d input entries, want exactly one", round, got)
+		}
+		info := s.Info()
+		if info.LastAnswer == nil || info.Attention.State != AttentionNone {
+			t.Fatalf("round %d: lastAnswer %+v state %q", round, info.LastAnswer, info.Attention.State)
+		}
+		// The recorded answer names the same person as lastAnswer.
+		for _, e := range s.Activity() {
+			if e.Type == ActivityInput && e.ByName != info.LastAnswer.ByName {
+				t.Fatalf("round %d: entry by %q but lastAnswer by %q", round, e.ByName, info.LastAnswer.ByName)
+			}
+		}
 	}
 }

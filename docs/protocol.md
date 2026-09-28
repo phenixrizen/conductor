@@ -96,12 +96,12 @@ Host → server: `register{proto, host{name,version,user?}, session{name,agentId
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `branch` ≤ 200 bytes is read from `.git/HEAD`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source}`.
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
-`attention{state,message?,source}` (API-originated change to broadcast), `error`.
+`attention{state,message?,source,kind?,options?}` (API-originated change to broadcast), `error`.
 
 The host registers before it starts the process so the session ID can be
 placed in the agent's environment.
@@ -126,7 +126,11 @@ frame when the human picks it. Clearing the state drops `kind` and `options`.
 `conductor notify --claude-hook` maps Claude Code `PermissionRequest` hooks
 (and `permission_prompt` notifications) to `kind:"permission"` with the
 options `Yes`/`1`, `Always for this session`/`2`, `No, explain…`/`3`; other
-notifications are `kind:"prompt"` with no options.
+notifications are `kind:"prompt"` with no options. The digit inputs assume
+Claude Code's permission dialog selects and confirms on the number key and
+that the dialog has three choices; if a prompt only highlights the choice, or
+offers two, `permissionOptions()` in `internal/notify/notify.go` is the one
+place to change.
 
 Automatic detection runs on whichever process owns the PTY. A bare BEL
 (`0x07`) outside an escape sequence, `ESC ] 9 ; text ST` (iTerm2/ConEmu style)

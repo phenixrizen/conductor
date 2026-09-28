@@ -39,9 +39,11 @@ type Request struct {
 	Options []Option `json:"options,omitempty"`
 }
 
-// permissionOptions mirrors Claude Code's permission dialog. The dialog
-// confirms on the digit key, so no trailing Enter is sent; this is the one
-// place to change if that ever differs.
+// permissionOptions mirrors Claude Code's permission dialog. It assumes the
+// dialog selects and confirms on the digit key (so no trailing Enter is
+// sent) and offers three choices; this is the one place to change if a
+// Claude Code release differs. Not yet verified against a live dialog from
+// an automated test: see docs/features.md.
 func permissionOptions() []Option {
 	return []Option{{Label: "Yes", Input: "1"}, {Label: "Always for this session", Input: "2"}, {Label: "No, explain…", Input: "3"}}
 }

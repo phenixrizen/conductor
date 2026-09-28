@@ -441,18 +441,21 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			s.hub.Broadcast(s.viewersFrame())
 			s.mu.Unlock()
 		}
+		// First reply wins: the check, the answer record and the clear all
+		// happen in one critical section so two concurrent typists cannot
+		// both claim the prompt.
 		s.mu.Lock()
 		waiting := s.info.Attention.State == AttentionNeedsInput
 		prompt := s.info.Attention.Message
 		if waiting {
-			// Claim the answer under the lock so two typists record one entry.
-			now := time.Now().UTC()
-			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: now, Message: prompt}
+			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: time.Now().UTC(), Message: prompt}
+			s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+			s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 		}
 		s.mu.Unlock()
 		if waiting {
 			s.Record(ActivityEntry{Type: ActivityInput, By: sub.ID, ByName: sub.Name, Message: prompt})
-			s.SetAttention(AttentionNone, "", SourceInput)
+			s.notifyChange()
 		}
 	}
 	return err

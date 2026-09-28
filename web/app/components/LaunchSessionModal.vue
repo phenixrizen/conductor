@@ -15,7 +15,7 @@ const agents = ref<AgentInfo[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 const error = ref('')
-const openedAt = ref('')
+const knownHosted = ref<Set<string>>(new Set())
 
 const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: string; cwd: string; args: string }>({ agentId: '', runsOn: 'server', name: '', cwd: '', args: '' })
 
@@ -24,7 +24,7 @@ const selected = computed(() => agents.value.find((a) => a.id === state.agentId)
 watch(open, async (v) => {
   if (!v) return
   error.value = ''
-  openedAt.value = new Date().toISOString()
+  knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
   loading.value = true
   try {
     agents.value = await api.catalog()
@@ -60,10 +60,13 @@ async function copyCommand() {
   }
 }
 
-// "My machine": the dialog waits for a hosted session with this name to show up.
+// "My machine": the dialog waits for a hosted session with this name that did
+// not exist when it opened. Ids, not timestamps, so clock skew between the
+// browser and the server cannot make it wait forever.
+const localReady = computed(() => state.runsOn === 'local' && !!selected.value && !!state.name.trim())
 const arrived = computed(() => {
-  if (!open.value || state.runsOn !== 'local' || !state.name.trim()) return null
-  return live.sessions.value.find((s) => s.kind === 'hosted' && s.name === state.name.trim() && s.createdAt >= openedAt.value) ?? null
+  if (!open.value || !localReady.value) return null
+  return live.sessions.value.find((s) => s.kind === 'hosted' && s.name === state.name.trim() && !knownHosted.value.has(s.id)) ?? null
 })
 watch(arrived, (s) => {
   if (!s) return
@@ -127,7 +130,7 @@ async function submit() {
           </div>
         </UFormField>
 
-        <UFormField label="Name" name="name" :hint="state.runsOn === 'local' ? 'required to spot it when it connects' : 'optional'">
+        <UFormField label="Name" name="name" :hint="state.runsOn === 'local' ? 'required to spot it when it connects' : 'optional'" :error="state.runsOn === 'local' && !state.name.trim() ? 'Give the session a name first' : undefined">
           <UInput v-model="state.name" placeholder="e.g. auth-refactor" class="w-full" />
         </UFormField>
 
@@ -145,9 +148,9 @@ async function submit() {
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />
           </UFormField>
           <UFormField label="Run this in your terminal" name="command">
-            <div class="flex items-start gap-3 rounded-md bg-forest-950 px-3.5 py-3 font-mono text-xs leading-relaxed text-forest-100">
+            <div class="flex items-start gap-3 rounded-md bg-forest-950 px-3.5 py-3 font-mono text-xs leading-relaxed text-forest-100" :class="!localReady && 'opacity-60'">
               <code class="flex-1 break-all select-all"><span class="text-forest-400">$</span> {{ command }}</code>
-              <UButton label="Copy" size="xs" variant="link" color="success" class="flex-none" @click="copyCommand" />
+              <UButton label="Copy" size="xs" variant="link" color="success" class="flex-none" :disabled="!localReady" @click="copyCommand" />
             </div>
             <template #hint><span>uses your admin token; keep it private</span></template>
           </UFormField>
@@ -157,7 +160,7 @@ async function submit() {
     </template>
     <template #footer>
       <div class="flex w-full items-center gap-2">
-        <span v-if="state.runsOn === 'local'" class="flex items-center gap-2 text-xs text-muted"><span class="size-1.5 rounded-full bg-warning animate-pulse" aria-hidden="true" />Waiting for your machine…</span>
+        <span v-if="localReady" class="flex items-center gap-2 text-xs text-muted"><span class="size-1.5 rounded-full bg-warning animate-pulse" aria-hidden="true" />Waiting for your machine…</span>
         <div class="flex-1" />
         <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
         <UButton v-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId" @click="submit" />
