@@ -16,6 +16,10 @@ export interface SessionInfo {
   rows: number
   viewers: number
   hostName?: string
+  /** OS user running `conductor host` (hosted sessions). */
+  hostUser?: string
+  /** Git branch of the working directory when known. */
+  branch?: string
   attention?: Attention
   createdAt: string
   endedAt?: string
