@@ -25,7 +25,7 @@ Requirements: Go 1.26+, Node 22+, and the agent CLIs you want to launch on the
 `PATH` of whichever machine runs them.
 
 ```bash
-make web-install          # npm ci
+make deps                 # checks go/node/npm/python3, then go mod download + npm ci
 make build                # generates the SPA and builds bin/conductor with it embedded
 CONDUCTOR_ADMIN_TOKEN=change-me ./bin/conductor serve
 ```
