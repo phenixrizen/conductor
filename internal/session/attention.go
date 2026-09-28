@@ -35,12 +35,69 @@ const (
 	SourceAdmin = "admin"
 )
 
+// Attention kinds describe the shape of a needs-input prompt so clients can
+// offer quick replies. An empty kind is a free-text prompt of unknown shape.
+const (
+	KindPermission = "permission" // numbered permission dialog (Claude Code)
+	KindPrompt     = "prompt"     // free-text reply expected
+	KindDone       = "done"       // agent finished its turn
+)
+
+// ValidKind reports whether k is a known attention kind (or empty).
+func ValidKind(k string) bool {
+	switch k {
+	case "", KindPermission, KindPrompt, KindDone:
+		return true
+	}
+	return false
+}
+
+// Option is one quick-reply choice: Input is exactly what a client sends as
+// INPUT when the human picks it.
+type Option struct {
+	Label string `json:"label"`
+	Input string `json:"input"`
+}
+
+// Limits for quick-reply options.
+const (
+	MaxAttentionOptions = 6
+	MaxOptionLabel      = 60 // runes
+	MaxOptionInput      = 16 // bytes
+)
+
+// CleanOptions drops entries without a label or input, trims both to their
+// limits and keeps at most MaxAttentionOptions. nil in, nil out.
+func CleanOptions(in []Option) []Option {
+	var out []Option
+	for _, o := range in {
+		label := CleanMessage(o.Label)
+		if r := []rune(label); len(r) > MaxOptionLabel {
+			label = strings.TrimSpace(string(r[:MaxOptionLabel]))
+		}
+		input := o.Input
+		if len(input) > MaxOptionInput {
+			input = input[:MaxOptionInput]
+		}
+		if label == "" || input == "" {
+			continue
+		}
+		out = append(out, Option{Label: label, Input: input})
+		if len(out) == MaxAttentionOptions {
+			break
+		}
+	}
+	return out
+}
+
 // Attention is the current signal state of a session.
 type Attention struct {
 	State   AttentionState `json:"state"`
 	Message string         `json:"message,omitempty"`
 	Source  string         `json:"source,omitempty"`
 	Since   *time.Time     `json:"since,omitempty"`
+	Kind    string         `json:"kind,omitempty"`
+	Options []Option       `json:"options,omitempty"`
 }
 
 // CleanName normalises a display name from a client: control characters are

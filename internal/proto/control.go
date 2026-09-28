@@ -164,12 +164,21 @@ type ErrorInfo struct {
 	Message string `json:"message"`
 }
 
-// Attention reports whether the agent is waiting for a human.
+// AttentionOption is a quick-reply choice; Input is sent verbatim as INPUT.
+type AttentionOption struct {
+	Label string `json:"label"`
+	Input string `json:"input"`
+}
+
+// Attention reports whether the agent is waiting for a human. Kind and
+// Options describe the prompt's shape (see docs/protocol.md, Attention).
 type Attention struct {
-	T       string `json:"t"`
-	State   string `json:"state"`
-	Message string `json:"message,omitempty"`
-	Source  string `json:"source,omitempty"`
+	T       string            `json:"t"`
+	State   string            `json:"state"`
+	Message string            `json:"message,omitempty"`
+	Source  string            `json:"source,omitempty"`
+	Kind    string            `json:"kind,omitempty"`
+	Options []AttentionOption `json:"options,omitempty"`
 }
 
 // Simple is a message with only a discriminator (ready).

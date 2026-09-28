@@ -69,6 +69,11 @@ function reply(text: string) {
   if (!terminal.value?.sendInput(text + '\r')) toast.add({ title: 'Not connected', color: 'warning' })
 }
 
+function option(index: number) {
+  const o = attention.value.options?.[index]
+  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', color: 'warning' })
+}
+
 function openFile(loc: { path: string; line?: number }) {
   previewUrl.value = null
   fileTarget.value = { ...loc }
@@ -160,7 +165,7 @@ function requestFile(path: string, stat?: boolean) {
           @open-url="openUrl"
         />
       </div>
-      <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" />
+      <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
     </main>
 
     <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />

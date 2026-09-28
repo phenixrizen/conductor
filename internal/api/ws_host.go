@@ -192,7 +192,7 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
 		if json.Unmarshal(data, &m) != nil || !session.AttentionState(m.State).Valid() {
 			return false
 		}
-		hs.SetAttention(session.AttentionState(m.State), m.Message, m.Source, false)
+		hs.SetAttentionFull(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), false)
 	case proto.HostRegister:
 		return false
 	default:

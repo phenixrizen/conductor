@@ -310,3 +310,28 @@ func TestUnknownRoutesAndNoUI(t *testing.T) {
 		t.Fatalf("missing UI: %d", resp.StatusCode)
 	}
 }
+
+func TestAttentionKindAndOptions(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	opts := []map[string]any{}
+	for i := 0; i < 7; i++ {
+		opts = append(opts, map[string]any{"label": "Option " + strings.Repeat("x", i), "input": strings.Repeat("1", i+1)})
+	}
+	resp, out := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "Allow Bash?", "kind": "permission", "options": opts})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set attention: %d %v", resp.StatusCode, out)
+	}
+	_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+	att := got["session"].(map[string]any)["attention"].(map[string]any)
+	if att["kind"] != "permission" {
+		t.Fatalf("kind %v", att)
+	}
+	if list, _ := att["options"].([]any); len(list) != 6 {
+		t.Fatalf("options capped at 6, got %d", len(list))
+	}
+	resp, out = e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "kind": "bogus"})
+	if resp.StatusCode != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "invalid_kind" {
+		t.Fatalf("bogus kind: %d %v", resp.StatusCode, out)
+	}
+}

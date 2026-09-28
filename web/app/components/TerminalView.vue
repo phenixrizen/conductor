@@ -33,7 +33,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   welcome: [welcome: Welcome]
   status: [status: string, exitCode?: number]
-  attention: [msg: { state: string; message?: string; source?: string }]
+  attention: [msg: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }> }]
   viewers: [info: { count: number; list?: ViewerInfo[] }]
   activity: [entry: ActivityEntry]
   transport: [info: { kind: TransportKind; state: TransportState; rtt: number | null }]
@@ -169,7 +169,7 @@ function handleControl(msg: ControlMessage) {
       }
       break
     case 'attention':
-      emit('attention', { state: msg.state, message: msg.message, source: msg.source })
+      emit('attention', { state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options })
       break
     case 'viewers':
       emit('viewers', { count: msg.count, list: msg.list })

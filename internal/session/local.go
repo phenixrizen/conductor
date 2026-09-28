@@ -184,28 +184,63 @@ func (s *Local) scanOutput(chunk []byte) {
 	}
 }
 
-// SetAttention records an attention change, broadcasts it to attached
-// clients and notifies OnChange. AttentionNone clears the signal.
+// SetAttention records an attention change without prompt details. See
+// SetAttentionFull.
 func (s *Local) SetAttention(state AttentionState, message, source string) {
+	s.SetAttentionFull(state, message, source, "", nil)
+}
+
+// SetAttentionFull records an attention change, broadcasts it to attached
+// clients and notifies OnChange. AttentionNone clears the signal along with
+// any kind and options. Unknown kinds are dropped rather than rejected.
+func (s *Local) SetAttentionFull(state AttentionState, message, source, kind string, options []Option) {
 	if !state.Valid() {
 		return
 	}
 	message = CleanMessage(message)
+	if !ValidKind(kind) {
+		kind = ""
+	}
+	options = CleanOptions(options)
+	if state == AttentionNone {
+		kind, options = "", nil
+	}
 	s.mu.Lock()
 	cur := s.info.Attention
-	if cur.State == state && cur.Message == message && cur.Source == source {
+	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
 		return
 	}
-	att := Attention{State: state, Message: message, Source: source}
+	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
 	}
 	s.info.Attention = att
-	s.hub.Broadcast(proto.MustControl(proto.Attention{T: proto.CtlAttention, State: string(state), Message: message, Source: source}))
+	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
 	s.mu.Unlock()
 	s.notifyChange()
+}
+
+func sameOptions(a, b []Option) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// attentionMessage encodes an Attention as the wire control message.
+func attentionMessage(att Attention) proto.Attention {
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+	for _, o := range att.Options {
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+	}
+	return m
 }
 
 // SetAgentToken records the per-session token agents use to report attention.
@@ -326,8 +361,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	s.hub.add(sub)
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
-		att := s.info.Attention
-		sub.send(proto.MustControl(proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source}))
+		sub.send(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
 	s.mu.Unlock()
 	go func() {

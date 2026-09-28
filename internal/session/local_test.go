@@ -440,3 +440,45 @@ func TestAttachRejectsOverlongName(t *testing.T) {
 		t.Fatalf("name not capped: %d runes", len([]rune(got)))
 	}
 }
+
+func TestSetAttentionFullBroadcastsOptionsAndInputClears(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	sink := newChanSink(false)
+	sub, _ := s.Attach("", RoleControl, "", 80, 24, sink)
+	sink.waitFrames(t, 3)
+	n := sink.count()
+	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, "permission", []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}})
+	sink.waitFrames(t, n+1)
+	m := decodeControl(t, sink.frame(n))
+	if m["t"] != proto.CtlAttention || m["kind"] != "permission" || len(m["options"].([]any)) != 2 {
+		t.Fatalf("attention: %v", m)
+	}
+	if got := s.Info().Attention; got.Kind != "permission" || len(got.Options) != 2 || got.Options[1].Input != "3" {
+		t.Fatalf("info: %+v", got)
+	}
+	_ = s.Input(sub, []byte("1"))
+	deadline := time.Now().Add(time.Second)
+	for s.Info().Attention.State != AttentionNone && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if a := s.Info().Attention; a.State != AttentionNone || a.Kind != "" || a.Options != nil {
+		t.Fatalf("not cleared: %+v", a)
+	}
+}
+
+func TestCleanOptionsBounds(t *testing.T) {
+	in := make([]Option, 10)
+	for i := range in {
+		in[i] = Option{Label: strings.Repeat("l", 100), Input: strings.Repeat("i", 40)}
+	}
+	out := CleanOptions(in)
+	if len(out) != MaxAttentionOptions || len([]rune(out[0].Label)) != MaxOptionLabel || len(out[0].Input) != MaxOptionInput {
+		t.Fatalf("%d options, label %d, input %d", len(out), len([]rune(out[0].Label)), len(out[0].Input))
+	}
+	if CleanOptions([]Option{{Label: "", Input: "1"}, {Label: "x", Input: ""}}) != nil {
+		t.Fatal("empty label or input must be dropped")
+	}
+	if CleanOptions(nil) != nil {
+		t.Fatal("nil stays nil")
+	}
+}

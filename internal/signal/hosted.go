@@ -211,15 +211,27 @@ func (h *HostedSession) setAgentToken(tok string) {
 	h.hasAgentToken = tok != ""
 }
 
-// SetAttention records an attention change. When forward is true (API
-// origin) the host is told so its viewers see the change too.
+// SetAttention records an attention change without prompt details.
 func (h *HostedSession) SetAttention(state session.AttentionState, message, source string, forward bool) {
+	h.SetAttentionFull(state, message, source, "", nil, forward)
+}
+
+// SetAttentionFull records an attention change. When forward is true (API
+// origin) the host is told so its viewers see the change too.
+func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) {
 	if !state.Valid() {
 		return
 	}
 	message = session.CleanMessage(message)
+	if !session.ValidKind(kind) {
+		kind = ""
+	}
+	options = session.CleanOptions(options)
+	if state == session.AttentionNone {
+		kind, options = "", nil
+	}
 	h.mu.Lock()
-	att := session.Attention{State: state, Message: message, Source: source}
+	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != session.AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
@@ -228,9 +240,30 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 	conn := h.conn
 	h.mu.Unlock()
 	if forward && conn != nil {
-		conn.sendJSON(proto.HostAttentionMsg{T: proto.HostAttention, State: string(state), Message: message, Source: source})
+		conn.sendJSON(hostAttentionMsg("", att))
 	}
 	h.notifyChange()
+}
+
+// hostAttentionMsg encodes an attention change for the host control link.
+func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+	for _, o := range att.Options {
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+	}
+	return m
+}
+
+// OptionsFromProto converts wire options to session options.
+func OptionsFromProto(in []proto.AttentionOption) []session.Option {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]session.Option, 0, len(in))
+	for _, o := range in {
+		out = append(out, session.Option{Label: o.Label, Input: o.Input})
+	}
+	return out
 }
 
 func (h *HostedSession) notifyChange() {

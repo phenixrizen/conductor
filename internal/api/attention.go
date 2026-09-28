@@ -8,8 +8,10 @@ import (
 )
 
 type attentionRequest struct {
-	State   string `json:"state"`
-	Message string `json:"message"`
+	State   string           `json:"state"`
+	Message string           `json:"message"`
+	Kind    string           `json:"kind"`
+	Options []session.Option `json:"options"`
 }
 
 // agentTokenOK reports whether the presented token is the session's agent token.
@@ -66,15 +68,23 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "message too long")
 		return
 	}
+	if !session.ValidKind(req.Kind) {
+		writeError(w, http.StatusBadRequest, "invalid_kind", "kind must be permission, prompt, done or empty")
+		return
+	}
+	if len(req.Options) > 32 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "too many options")
+		return
+	}
 	if d.Info().Status.Ended() {
 		writeError(w, http.StatusConflict, "session_ended", "the session has ended")
 		return
 	}
 	switch drv := d.(type) {
 	case *session.Local:
-		drv.SetAttention(state, req.Message, source)
+		drv.SetAttentionFull(state, req.Message, source, req.Kind, req.Options)
 	case *signal.HostedSession:
-		drv.SetAttention(state, req.Message, source, true)
+		drv.SetAttentionFull(state, req.Message, source, req.Kind, req.Options, true)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"attention": d.Info().Attention})
 }

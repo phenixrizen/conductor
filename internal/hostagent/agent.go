@@ -345,12 +345,21 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 // server so listings stay current for hosted sessions.
 func (a *agent) onLocalChange(info session.Info) {
 	a.mu.Lock()
-	changed := info.Attention.State != a.lastAttention.State || info.Attention.Message != a.lastAttention.Message
+	changed := info.Attention.State != a.lastAttention.State || info.Attention.Message != a.lastAttention.Message || info.Attention.Kind != a.lastAttention.Kind || len(info.Attention.Options) != len(a.lastAttention.Options)
 	a.lastAttention = info.Attention
 	a.mu.Unlock()
 	if changed {
-		a.send(proto.HostAttentionMsg{T: proto.HostAttention, SessionID: info.ID, State: string(info.Attention.State), Message: info.Attention.Message, Source: info.Attention.Source})
+		a.send(hostAttentionMsg(info.ID, info.Attention))
 	}
+}
+
+// hostAttentionMsg encodes an attention change for the control connection.
+func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+	for _, o := range att.Options {
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+	}
+	return m
 }
 
 // serveConn processes messages on an established control connection until
@@ -359,7 +368,7 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	// Re-send the current attention after a reconnect.
 	if att := a.local.Info().Attention; att.State != session.AttentionNone {
-		a.send(proto.HostAttentionMsg{T: proto.HostAttention, SessionID: a.sessionID(), State: string(att.State), Message: att.Message, Source: att.Source})
+		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
 	defer func() {
 		a.mu.Lock()
@@ -494,7 +503,11 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if source == "" {
 			source = session.SourceAPI
 		}
-		a.local.SetAttention(session.AttentionState(m.State), m.Message, source)
+		var opts []session.Option
+		for _, o := range m.Options {
+			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
+		}
+		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 	case proto.HostStop:
 		a.log.Info("stop requested by server")
 		go func() {

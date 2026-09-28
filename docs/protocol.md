@@ -46,7 +46,7 @@ Owner → client:
 | `ready` | end of scrollback; live output follows |
 | `resize` | `cols, rows, by` (subscriber that resized) |
 | `status` | `status, exitCode?` |
-| `attention` | `state, message?, source?` (see Attention) |
+| `attention` | `state, message?, source?, kind?, options?[{label, input}]` (see Attention) |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type. `link` is the share link's label. |
 | `error` | `code, message` |
 | `pong` | `ts` |
@@ -110,10 +110,21 @@ removed after 60 s without the host.
 
 ## Attention
 
-Each session carries `attention{state, message, source, since}` in its `Info`.
-States: `""` (nothing), `working`, `needs_input`, `done`. Sources: `api` (the
-agent's own token), `admin`, `bell`, `osc`, `input` (cleared by a controller
-typing).
+Each session carries `attention{state, message, source, since, kind?, options?}`
+in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
+Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `input`
+(cleared by a controller typing).
+
+`kind` describes the shape of a prompt so clients can offer one-click answers:
+`permission` (a numbered permission dialog), `prompt` (a free-text reply is
+expected), `done` (the agent finished its turn), or empty when unknown.
+`options` is at most 6 entries of `{label, input}`: `label` is shown on a
+button (≤ 60 runes) and `input` (≤ 16 bytes) is sent verbatim as an INPUT
+frame when the human picks it. Clearing the state drops `kind` and `options`.
+`conductor notify --claude-hook` maps Claude Code `PermissionRequest` hooks
+(and `permission_prompt` notifications) to `kind:"permission"` with the
+options `Yes`/`1`, `Always for this session`/`2`, `No, explain…`/`3`; other
+notifications are `kind:"prompt"` with no options.
 
 Automatic detection runs on whichever process owns the PTY. A bare BEL
 (`0x07`) outside an escape sequence, `ESC ] 9 ; text ST` (iTerm2/ConEmu style)
@@ -123,7 +134,7 @@ does not. Bursts are limited to one change per 500 ms. Any successful input from
 a `control` client clears a `needs_input` state.
 
 Explicit updates: `POST /api/sessions/{id}/attention` with
-`{state: "needs_input"|"working"|"done"|"clear", message?}` and
+`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?}` and
 `Authorization: Bearer <agent token>` (or the admin token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored

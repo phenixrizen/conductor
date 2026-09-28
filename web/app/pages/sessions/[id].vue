@@ -172,6 +172,12 @@ function reply(text: string) {
   if (!terminal.value?.sendInput(text + '\r')) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
 }
 
+function option(index: number) {
+  const o = attention.value.options?.[index]
+  if (!o) return
+  if (!terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+}
+
 function openFile(loc: { path: string; line?: number }) {
   previewUrl.value = null
   fileTarget.value = { ...loc }
@@ -293,7 +299,7 @@ watch(id, () => {
             />
             <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           </div>
-          <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" />
+          <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" />
         </div>
         <div v-if="inspector" class="hidden xl:flex w-[332px] flex-none">
           <SessionInspector

@@ -24,10 +24,26 @@ const (
 	EnvToken     = "CONDUCTOR_NOTIFY_TOKEN"
 )
 
-// Request is the attention update to send.
+// Option is one quick-reply choice; Input is what the browser types for it.
+type Option struct {
+	Label string `json:"label"`
+	Input string `json:"input"`
+}
+
+// Request is the attention update to send. Kind and Options let the
+// workbench offer one-click answers (see docs/protocol.md, Attention).
 type Request struct {
-	State   string `json:"state"`
-	Message string `json:"message,omitempty"`
+	State   string   `json:"state"`
+	Message string   `json:"message,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Options []Option `json:"options,omitempty"`
+}
+
+// permissionOptions mirrors Claude Code's permission dialog. The dialog
+// confirms on the digit key, so no trailing Enter is sent; this is the one
+// place to change if that ever differs.
+func permissionOptions() []Option {
+	return []Option{{Label: "Yes", Input: "1"}, {Label: "Always for this session", Input: "2"}, {Label: "No, explain…", Input: "3"}}
 }
 
 // ErrNotInSession is returned when the environment is not set. Callers treat
@@ -91,7 +107,16 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 		return Request{}, false
 	}
 	switch h.HookEventName {
-	case "Notification", "PermissionRequest":
+	case "PermissionRequest":
+		msg := strings.TrimSpace(h.Message)
+		if msg == "" && h.ToolName != "" {
+			msg = "Allow " + h.ToolName + "?"
+		}
+		if msg == "" {
+			msg = "Allow this action?"
+		}
+		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
+	case "Notification":
 		msg := strings.TrimSpace(h.Message)
 		if msg == "" {
 			msg = strings.TrimSpace(h.Title)
@@ -105,10 +130,12 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 		switch h.NotificationType {
 		case "auth_success", "elicitation_complete", "elicitation_response", "agent_completed":
 			return Request{State: "working", Message: truncate(msg, 200)}, true
+		case "permission_prompt":
+			return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
 		}
-		return Request{State: "needs_input", Message: truncate(msg, 200)}, true
+		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "prompt"}, true
 	case "Stop":
-		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200)}, true
+		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done"}, true
 	case "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart":
 		return Request{State: "working"}, true
 	}
@@ -133,7 +160,7 @@ func MapCodex(raw []byte) (req Request, ok bool) {
 		if msg == "" {
 			msg = "Codex finished its turn"
 		}
-		return Request{State: "needs_input", Message: msg}, true
+		return Request{State: "needs_input", Message: msg, Kind: "prompt"}, true
 	}
 	return Request{}, false
 }

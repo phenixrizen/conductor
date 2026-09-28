@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,60 @@ func TestFromEnvAndSend(t *testing.T) {
 	}
 	if err := Send(context.Background(), srv.URL+"/redirect", "tok", Request{State: "done"}); err == nil {
 		t.Fatal("redirect must be an error")
+	}
+}
+
+func TestMapClaudeHookPermissionOptions(t *testing.T) {
+	req, ok := MapClaudeHook([]byte(`{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf x"}}`))
+	if !ok || req.State != "needs_input" || req.Kind != "permission" {
+		t.Fatalf("%+v %v", req, ok)
+	}
+	if req.Message != "Allow Bash?" {
+		t.Fatalf("message %q", req.Message)
+	}
+	if len(req.Options) != 3 || req.Options[0].Input != "1" || req.Options[2].Input != "3" || req.Options[0].Label != "Yes" {
+		t.Fatalf("options %+v", req.Options)
+	}
+}
+
+func TestMapClaudeHookPermissionPromptNotification(t *testing.T) {
+	req, ok := MapClaudeHook([]byte(`{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}`))
+	if !ok || req.Kind != "permission" || len(req.Options) != 3 || req.Message != "Claude needs your permission to use Bash" {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestMapClaudeHookUnknownNotificationIsPlainPrompt(t *testing.T) {
+	req, ok := MapClaudeHook([]byte(`{"hook_event_name":"Notification","notification_type":"something_new","message":"hi"}`))
+	if !ok || req.Kind != "prompt" || len(req.Options) != 0 || req.Message != "hi" {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestMapClaudeHookPermissionWithoutToolName(t *testing.T) {
+	req, _ := MapClaudeHook([]byte(`{"hook_event_name":"PermissionRequest"}`))
+	if req.Message != "Allow this action?" || len(req.Options) != 3 {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestMapClaudeHookStopIsDoneKind(t *testing.T) {
+	req, _ := MapClaudeHook([]byte(`{"hook_event_name":"Stop","last_assistant_message":"All done."}`))
+	if req.Kind != "done" {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestMapCodexIsPromptKind(t *testing.T) {
+	req, _ := MapCodex([]byte(`{"type":"agent-turn-complete","last-assistant-message":"Need a decision"}`))
+	if req.Kind != "prompt" {
+		t.Fatalf("%+v", req)
+	}
+}
+
+func TestRequestJSONCarriesKindAndOptions(t *testing.T) {
+	b, _ := json.Marshal(Request{State: "needs_input", Kind: "permission", Options: []Option{{Label: "Yes", Input: "1"}}})
+	if !strings.Contains(string(b), `"kind":"permission"`) || !strings.Contains(string(b), `"input":"1"`) {
+		t.Fatalf("json %s", b)
 	}
 }

@@ -126,11 +126,13 @@ type ViewerError struct {
 // HostAttentionMsg carries an attention change between host and server.
 // SessionID and Source are set by the host; the server omits them.
 type HostAttentionMsg struct {
-	T         string `json:"t"`
-	SessionID string `json:"sessionId,omitempty"`
-	State     string `json:"state"`
-	Message   string `json:"message,omitempty"`
-	Source    string `json:"source,omitempty"`
+	T         string            `json:"t"`
+	SessionID string            `json:"sessionId,omitempty"`
+	State     string            `json:"state"`
+	Message   string            `json:"message,omitempty"`
+	Source    string            `json:"source,omitempty"`
+	Kind      string            `json:"kind,omitempty"`
+	Options   []AttentionOption `json:"options,omitempty"`
 }
 
 // HostStopMsg asks the host to stop its process.
