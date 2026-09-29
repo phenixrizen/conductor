@@ -16,7 +16,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention |
 | `internal/share`, `internal/signal`, `internal/api` | share tokens; hosted-session brokering; HTTP + WebSocket surface |
 | `internal/hostagent` | `conductor host`: pion WebRTC peers, relay sink, local terminal |
-| `internal/notify` | `conductor notify`: attention reports from inside a session (Claude Code hook / Codex payload mapping) |
+| `internal/notify` | `conductor notify`: attention and event reports from inside a session; hook payload mappers (Claude Code, Codex, agy, Copilot, Cursor, Goose) |
 | `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `docs/` | `protocol.md`, `architecture.md`, `features.md` (scope and deferred work), `design/brand.md` |
