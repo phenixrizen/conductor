@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -22,12 +24,35 @@ type Agent struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Cwd         string            `json:"cwd,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
+	// EnvPassthrough names server environment variables this agent's
+	// sessions may inherit, in addition to the server-wide envPassthrough.
+	EnvPassthrough []string `json:"envPassthrough,omitempty"`
+	// Adapter names the hook adapter for this agent; empty means none.
+	Adapter string `json:"adapter,omitempty"`
+	// Signal says how the agent reports that it needs input; nil means the
+	// bell default (see EffectiveSignal).
+	Signal *Signal `json:"signal,omitempty"`
+}
+
+// Signal describes how an agent reports that it needs attention.
+type Signal struct {
+	Kind    string `json:"kind"`              // hook | bell | pattern | none
+	Pattern string `json:"pattern,omitempty"` // RE2 on the last screen line, kind=pattern only
+	// ToolEvents asks hook adapters to report tool use as events (chatty; off by default).
+	ToolEvents bool `json:"toolEvents,omitempty"`
 }
 
 // File is the JSON shape operators write.
 type File struct {
 	DisableDefaults bool    `json:"disableDefaults"`
 	Agents          []Agent `json:"agents"`
+}
+
+// Overlay is the UI-managed layer over the configured catalog: agents to add
+// or replace by ID, and IDs to hide.
+type Overlay struct {
+	Agents []Agent  `json:"agents"`
+	Hidden []string `json:"hidden,omitempty"`
 }
 
 // Catalog is an ordered, validated set of agents keyed by ID.
@@ -37,6 +62,15 @@ type Catalog struct {
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// envNamePattern matches the environment variable names an agent may list in
+// envPassthrough.
+var envNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+const (
+	maxSignalPattern  = 200 // bytes
+	maxEnvPassthrough = 32  // entries per agent
+)
 
 // ReadFile parses a catalog file, rejecting unknown fields.
 func ReadFile(path string) (File, error) {
@@ -88,6 +122,9 @@ func Load(f File) (Catalog, error) {
 }
 
 func (c *Catalog) add(a Agent) {
+	if c.agents == nil {
+		c.agents = map[string]Agent{}
+	}
 	if _, exists := c.agents[a.ID]; !exists {
 		c.order = append(c.order, a.ID)
 	}
@@ -114,7 +151,95 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: invalid env entry %q", a.ID, k)
 		}
 	}
+	if a.Signal != nil {
+		switch a.Signal.Kind {
+		case "hook", "bell", "none":
+			if a.Signal.Pattern != "" {
+				return fmt.Errorf("agent %s: signal: pattern only applies to kind=pattern", a.ID)
+			}
+		case "pattern":
+			if a.Signal.Pattern == "" || len(a.Signal.Pattern) > maxSignalPattern {
+				return fmt.Errorf("agent %s: signal: pattern required, at most %d bytes", a.ID, maxSignalPattern)
+			}
+			if _, err := regexp.Compile(a.Signal.Pattern); err != nil {
+				return fmt.Errorf("agent %s: signal: %w", a.ID, err)
+			}
+		default:
+			return fmt.Errorf("agent %s: signal: unknown kind %q", a.ID, a.Signal.Kind)
+		}
+	}
+	if len(a.EnvPassthrough) > maxEnvPassthrough {
+		return fmt.Errorf("agent %s: too many envPassthrough entries (at most %d)", a.ID, maxEnvPassthrough)
+	}
+	for _, name := range a.EnvPassthrough {
+		if !envNamePattern.MatchString(name) {
+			return fmt.Errorf("agent %s: invalid envPassthrough entry %q", a.ID, name)
+		}
+	}
 	return nil
+}
+
+// Upsert validates a, then replaces the agent with the same ID in place (so it
+// keeps its position) or appends a as a new one.
+func (c *Catalog) Upsert(a Agent) error {
+	if err := validate(a); err != nil {
+		return err
+	}
+	c.add(a)
+	return nil
+}
+
+// Hide removes the agent with the given ID and reports whether it was there.
+func (c *Catalog) Hide(id string) bool {
+	if _, ok := c.agents[id]; !ok {
+		return false
+	}
+	delete(c.agents, id)
+	c.order = slices.DeleteFunc(c.order, func(other string) bool { return other == id })
+	return true
+}
+
+// ApplyOverlay upserts every agent in o, then hides every ID in o.Hidden, so
+// hiding wins over an agent with the same ID. Hiding an ID that is not in the
+// catalog is not an error. If any agent is invalid the catalog is unchanged.
+func (c *Catalog) ApplyOverlay(o Overlay) error {
+	next := c.Clone()
+	for i, a := range o.Agents {
+		if err := next.Upsert(a); err != nil {
+			return fmt.Errorf("agents[%d]: %w", i, err)
+		}
+	}
+	for _, id := range o.Hidden {
+		next.Hide(id)
+	}
+	*c = next
+	return nil
+}
+
+// Clone returns a deep copy: no map, slice or signal is shared with c. Upsert,
+// Hide and ApplyOverlay change a catalog in place, so a catalog that other
+// goroutines read should be cloned, changed and swapped in, not changed itself.
+func (c *Catalog) Clone() Catalog {
+	out := Catalog{
+		agents: make(map[string]Agent, len(c.agents)),
+		order:  slices.Clone(c.order),
+	}
+	for id, a := range c.agents {
+		out.agents[id] = a.clone()
+	}
+	return out
+}
+
+// clone returns a copy of a that shares no slice, map or pointer with it.
+func (a Agent) clone() Agent {
+	a.Command = slices.Clone(a.Command)
+	a.Env = maps.Clone(a.Env)
+	a.EnvPassthrough = slices.Clone(a.EnvPassthrough)
+	if a.Signal != nil {
+		s := *a.Signal
+		a.Signal = &s
+	}
+	return a
 }
 
 // Get returns the agent with the given ID.
@@ -132,7 +257,9 @@ func (c Catalog) List() []Agent {
 	return out
 }
 
-// Redacted returns a copy with environment values hidden, suitable for API output.
+// Redacted returns a copy with environment values hidden, suitable for API
+// output. Everything else, including Adapter, Signal and EnvPassthrough, is
+// kept: none of it is secret.
 func (a Agent) Redacted() Agent {
 	if len(a.Env) == 0 {
 		return a
@@ -143,4 +270,13 @@ func (a Agent) Redacted() Agent {
 		cp.Env[k] = "***"
 	}
 	return cp
+}
+
+// EffectiveSignal returns the agent's signal, or the bell default when it has
+// none.
+func (a Agent) EffectiveSignal() Signal {
+	if a.Signal == nil {
+		return Signal{Kind: "bell"}
+	}
+	return *a.Signal
 }

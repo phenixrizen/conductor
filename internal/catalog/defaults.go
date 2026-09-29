@@ -11,6 +11,8 @@ func defaults() []Agent {
 			Command:     []string{"claude"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-sparkles",
+			Adapter:     "claude",
+			Signal:      &Signal{Kind: "hook"},
 		},
 		{
 			ID:          "codex",
@@ -19,6 +21,8 @@ func defaults() []Agent {
 			Command:     []string{"codex"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-bot",
+			Adapter:     "codex",
+			Signal:      &Signal{Kind: "hook"},
 		},
 		{
 			ID:          "agy",
@@ -27,6 +31,8 @@ func defaults() []Agent {
 			Command:     []string{"agy"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-orbit",
+			Adapter:     "agy",
+			Signal:      &Signal{Kind: "bell"},
 		},
 		{
 			ID:          "shell",
@@ -35,6 +41,7 @@ func defaults() []Agent {
 			Command:     []string{"/bin/bash", "-l"},
 			AllowArgs:   false,
 			Icon:        "i-lucide-terminal",
+			Signal:      &Signal{Kind: "none"},
 		},
 	}
 }
