@@ -189,6 +189,13 @@ func TestDataDirOverlap(t *testing.T) {
 	if err := os.Symlink(proj, link); err != nil {
 		t.Fatal(err)
 	}
+	// A root reached through a symlinked parent, as every temp directory is on
+	// macOS (/var is a symlink to /private/var).
+	mkdir("real", "root")
+	viaLink := filepath.Join(base, "link", "root")
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name    string
 		roots   []string
@@ -202,6 +209,11 @@ func TestDataDirOverlap(t *testing.T) {
 		{"the second root overlaps", []string{elsewhere + "-x", proj}, projData, proj},
 		{"root given through a symlink", []string{link}, projData, link},
 		{"data directory given through a symlink", []string{proj}, filepath.Join(link, "conductor.d"), proj},
+		// The data directory does not exist yet, so only its existing ancestors
+		// resolve; the missing part is joined back on to compare.
+		{"data directory not created yet under a symlinked root", []string{viaLink}, filepath.Join(viaLink, "conductor.d"), viaLink},
+		{"data directory two levels below a symlinked root, not created yet", []string{viaLink}, filepath.Join(viaLink, "state", "conductor.d"), viaLink},
+		{"data directory not created yet beside a symlinked root", []string{viaLink}, filepath.Join(base, "link", "root-data", "conductor.d"), ""},
 		{"sibling with a common name prefix", []string{proj}, sibling, ""},
 		{"separate directories", []string{proj}, elsewhere, ""},
 		{"the file system root holds everything", []string{"/"}, elsewhere, "/"},

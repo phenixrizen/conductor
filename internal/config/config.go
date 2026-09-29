@@ -313,10 +313,11 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 
 // DataDirOverlap returns the first allowed root that overlaps DataDir: one that
 // contains it, is inside it or is the same directory. It returns "" when none
-// does. Paths are compared with their symlinks resolved where they exist. An
-// overlap is a misconfiguration: agents working in the root can read the data
-// directory and commit its secrets, and the file viewer refuses the whole
-// data directory, so it reads nothing in a root inside it.
+// does. Paths are compared with the symlinks of their existing part resolved,
+// so a data directory not created yet is placed correctly too. An overlap is a
+// misconfiguration: agents working in the root can read the data directory and
+// commit its secrets, and the file viewer refuses the whole data directory, so
+// it reads nothing in a root inside it.
 func (c *Config) DataDirOverlap() string {
 	data := resolved(c.DataDir)
 	for _, root := range c.AllowedRoots {
@@ -328,13 +329,37 @@ func (c *Config) DataDirOverlap() string {
 	return ""
 }
 
-// resolved returns p with its symlinks evaluated, or cleaned when it does not
-// exist (yet).
+// resolved returns p with its symlinks evaluated. Where p does not exist (yet)
+// its longest existing ancestor is evaluated and the rest joined back on, so a
+// data directory not created yet compares with a root that does exist. When
+// even that fails, p is only cleaned.
 func resolved(p string) string {
-	if real, err := filepath.EvalSymlinks(p); err == nil {
+	if real, err := evalExisting(p); err == nil {
 		return real
 	}
 	return filepath.Clean(p)
+}
+
+// evalExisting is filepath.EvalSymlinks for a path whose last elements need
+// not exist. It mirrors the helper of the same name in internal/session, which
+// this package does not import.
+func evalExisting(p string) (string, error) {
+	real, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return real, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	dir, base := filepath.Split(filepath.Clean(p))
+	if dir == "" || dir == p {
+		return "", err
+	}
+	parent, err := evalExisting(filepath.Clean(dir))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, base), nil
 }
 
 // within reports whether path is dir or inside it. Both must be absolute.
