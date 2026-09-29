@@ -68,6 +68,31 @@ func decodeControl(t *testing.T, frame []byte) map[string]any {
 	return m
 }
 
+// waitControl returns the first control message that sink has received, or
+// receives within 3 s, for which match is true; nil on timeout. State that
+// Info() already shows is not proof that its broadcast frame reached the sink:
+// a subscription delivers from a queue on its own goroutine.
+func waitControl(sink *chanSink, match func(m map[string]any) bool) map[string]any {
+	deadline := time.After(3 * time.Second)
+	for i := 0; ; {
+		for ; i < sink.count(); i++ {
+			f, err := proto.Decode(sink.frame(i))
+			if err != nil || f.Type != proto.TypeControl {
+				continue
+			}
+			var m map[string]any
+			if json.Unmarshal(f.Payload, &m) == nil && match(m) {
+				return m
+			}
+		}
+		select {
+		case <-sink.writeCh:
+		case <-deadline:
+			return nil
+		}
+	}
+}
+
 func newLocal(t *testing.T, cwd string) (*Local, *fakeProc) {
 	t.Helper()
 	p := newFakeProc()
@@ -318,18 +343,11 @@ func TestAttentionFromBellAndClearOnInput(t *testing.T) {
 	if att.State != AttentionNeedsInput || att.Message != "need approval" || att.Source != SourceOSC || att.Since == nil {
 		t.Fatalf("attention %+v", att)
 	}
-	// broadcast reached the viewer
-	found := false
-	for i := 0; i < viewer.count(); i++ {
-		if f, _ := proto.Decode(viewer.frame(i)); f.Type == proto.TypeControl {
-			var m map[string]any
-			json.Unmarshal(f.Payload, &m)
-			if m["t"] == proto.CtlAttention && m["state"] == "needs_input" {
-				found = true
-			}
-		}
-	}
-	if !found {
+	// The broadcast reaches the viewer after Info() already shows the state,
+	// so wait for the frame instead of scanning what has arrived so far.
+	if waitControl(viewer, func(m map[string]any) bool {
+		return m["t"] == proto.CtlAttention && m["state"] == "needs_input"
+	}) == nil {
 		t.Fatal("attention control frame not broadcast")
 	}
 	// view-role input is rejected and does not clear
@@ -347,18 +365,11 @@ func TestAttentionFromBellAndClearOnInput(t *testing.T) {
 	s.SetAttention(AttentionNeedsInput, "again", SourceAPI)
 	late := newChanSink(false)
 	s.Attach("", RoleView, "", 80, 24, late)
-	late.waitFrames(t, 4)
-	seen := false
-	for i := 0; i < late.count(); i++ {
-		if f, _ := proto.Decode(late.frame(i)); f.Type == proto.TypeControl {
-			var m map[string]any
-			json.Unmarshal(f.Payload, &m)
-			if m["t"] == proto.CtlAttention && m["message"] == "again" {
-				seen = true
-			}
-		}
-	}
-	if !seen {
+	// The current attention is the last thing a late attach queues, behind the
+	// scrollback and the activity replay.
+	if waitControl(late, func(m map[string]any) bool {
+		return m["t"] == proto.CtlAttention && m["message"] == "again"
+	}) == nil {
 		t.Fatal("late attach did not receive attention state")
 	}
 	cmu.Lock()
