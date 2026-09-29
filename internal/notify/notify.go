@@ -13,8 +13,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Environment variables injected into every Conductor session.
@@ -133,16 +135,19 @@ func Send(ctx context.Context, url, token string, req Request) error {
 // Field names follow the documented common fields; message/title/
 // notification_type are read when present.
 type ClaudeHook struct {
-	HookEventName        string `json:"hook_event_name"`
-	NotificationType     string `json:"notification_type"`
-	Message              string `json:"message"`
-	Title                string `json:"title"`
-	LastAssistantMessage string `json:"last_assistant_message"`
-	ToolName             string `json:"tool_name"`
+	HookEventName        string          `json:"hook_event_name"`
+	NotificationType     string          `json:"notification_type"`
+	Message              string          `json:"message"`
+	Title                string          `json:"title"`
+	LastAssistantMessage string          `json:"last_assistant_message"`
+	ToolName             string          `json:"tool_name"`
+	Error                json.RawMessage `json:"error"`
 }
 
-// MapClaudeHook turns a Claude Code hook payload into an attention update.
-// ok is false for events that carry no attention meaning.
+// MapClaudeHook turns a Claude Code hook payload into an attention update, or
+// into an event for the tool hooks: a denied permission, a tool that ran or
+// failed, a subagent that finished. ok is false for hooks that mean nothing
+// to Conductor.
 func MapClaudeHook(raw []byte) (req Request, ok bool) {
 	var h ClaudeHook
 	if json.Unmarshal(raw, &h) != nil {
@@ -178,8 +183,16 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "prompt"}, true
 	case "Stop":
 		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done"}, true
-	case "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart":
+	case "UserPromptSubmit", "PreToolUse", "SessionStart":
 		return Request{State: "working"}, true
+	case "PermissionDenied":
+		return Request{Event: "tool_denied", Tool: h.ToolName}, true
+	case "PostToolUse":
+		return Request{Event: "tool_use", Tool: h.ToolName}, true
+	case "PostToolUseFailure":
+		return Request{Event: "error", Message: truncate(errorText(h.Error), 200), Tool: h.ToolName}, true
+	case "SubagentStop":
+		return Request{Event: "progress", Message: "subagent finished"}, true
 	}
 	return Request{}, false
 }
@@ -207,11 +220,197 @@ func MapCodex(raw []byte) (req Request, ok bool) {
 	return Request{}, false
 }
 
-func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+// MapCodexHook turns a payload of Codex's hooks (hooks.json, run with
+// features.hooks on) into an update. MapCodex reads the payload of Codex's
+// notify program instead. A permission request has no quick-reply options:
+// the keys Codex's dialog takes are not verified yet.
+func MapCodexHook(raw []byte) (req Request, ok bool) {
+	var h struct {
+		HookEventName        string `json:"hook_event_name"`
+		ToolName             string `json:"tool_name"`
+		LastAssistantMessage string `json:"last_assistant_message"`
 	}
-	return s
+	if json.Unmarshal(raw, &h) != nil {
+		return Request{}, false
+	}
+	switch h.HookEventName {
+	case "Stop":
+		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done"}, true
+	case "PostToolUse":
+		return Request{Event: "tool_use", Tool: h.ToolName}, true
+	case "PermissionRequest":
+		msg := "Codex asks for permission"
+		if h.ToolName != "" {
+			msg = "Allow " + h.ToolName + "?"
+		}
+		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission"}, true
+	case "PreToolUse":
+		return Request{State: "working"}, true
+	}
+	return Request{}, false
+}
+
+// MapCopilotHook turns a GitHub Copilot CLI hook payload into an update.
+// Copilot names few of its events: a hook_event_name it knows decides, and
+// otherwise the fields that are there do. notification_type is a
+// notification, error an error, toolResult a tool that ran, stopReason the end
+// of a turn and prompt a prompt the user sent. A permission prompt has no
+// quick-reply options: the keys Copilot's dialog takes are not verified yet.
+func MapCopilotHook(raw []byte) (req Request, ok bool) {
+	var h struct {
+		HookEventName    string          `json:"hook_event_name"`
+		NotificationType *string         `json:"notification_type"`
+		Message          string          `json:"message"`
+		Title            string          `json:"title"`
+		ToolName         string          `json:"toolName"`
+		ToolResult       json.RawMessage `json:"toolResult"`
+		StopReason       *string         `json:"stopReason"`
+		Prompt           *string         `json:"prompt"`
+		Error            json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &h) != nil {
+		return Request{}, false
+	}
+	event := strings.ToLower(h.HookEventName)
+	if !slices.Contains([]string{"notification", "erroroccurred", "posttooluse", "agentstop", "userpromptsubmitted"}, event) {
+		// No name, or one this mapper does not know: the fields decide.
+		event = ""
+		switch {
+		case h.NotificationType != nil:
+			event = "notification"
+		case present(h.Error):
+			event = "erroroccurred"
+		case present(h.ToolResult):
+			event = "posttooluse"
+		case h.StopReason != nil:
+			event = "agentstop"
+		case h.Prompt != nil:
+			event = "userpromptsubmitted"
+		}
+	}
+	switch event {
+	case "notification":
+		msg := truncate(firstOf(h.Message, h.Title, "Copilot needs your input"), 200)
+		if h.NotificationType != nil && *h.NotificationType == "permission_prompt" {
+			return Request{State: "needs_input", Message: msg, Kind: "permission"}, true
+		}
+		return Request{State: "needs_input", Message: msg, Kind: "prompt"}, true
+	case "erroroccurred":
+		return Request{Event: "error", Message: truncate(errorText(h.Error), 200), Tool: h.ToolName}, true
+	case "posttooluse":
+		return Request{Event: "tool_use", Tool: h.ToolName}, true
+	case "agentstop":
+		return Request{State: "done", Kind: "done"}, true
+	case "userpromptsubmitted":
+		return Request{State: "working"}, true
+	}
+	return Request{}, false
+}
+
+// MapCursorHook turns a Cursor CLI hook payload into an update: the end of a
+// turn, or a tool that ran (a file edit is one, named after the file).
+func MapCursorHook(raw []byte) (req Request, ok bool) {
+	var h struct {
+		HookEventName string `json:"hook_event_name"`
+		ToolName      string `json:"tool_name"`
+		FilePath      string `json:"file_path"`
+	}
+	if json.Unmarshal(raw, &h) != nil {
+		return Request{}, false
+	}
+	switch h.HookEventName {
+	case "stop":
+		return Request{State: "done", Kind: "done"}, true
+	case "postToolUse":
+		return Request{Event: "tool_use", Tool: h.ToolName}, true
+	case "afterFileEdit":
+		return Request{Event: "tool_use", Tool: strings.TrimSpace("edit " + h.FilePath)}, true
+	}
+	return Request{}, false
+}
+
+// MapAgyHook turns an Antigravity hook payload into an update. The payload
+// names no event, and the flag that ran the mapper says only that it is
+// Antigravity's: a toolCall is a tool that ran (PostToolUse), a
+// terminationReason the end of a turn (Stop).
+func MapAgyHook(raw []byte) (req Request, ok bool) {
+	var h struct {
+		ToolCall *struct {
+			Name string `json:"name"`
+		} `json:"toolCall"`
+		TerminationReason *string `json:"terminationReason"`
+	}
+	if json.Unmarshal(raw, &h) != nil {
+		return Request{}, false
+	}
+	switch {
+	case h.ToolCall != nil:
+		return Request{Event: "tool_use", Tool: h.ToolCall.Name}, true
+	case h.TerminationReason != nil:
+		return Request{State: "done", Message: truncate(strings.TrimSpace(*h.TerminationReason), 200), Kind: "done"}, true
+	}
+	return Request{}, false
+}
+
+// MapGooseHook turns a Goose hook payload, which names its event in "event",
+// into an update: the end of a turn, or a tool that ran.
+func MapGooseHook(raw []byte) (req Request, ok bool) {
+	var h struct {
+		Event    string `json:"event"`
+		ToolName string `json:"tool_name"`
+	}
+	if json.Unmarshal(raw, &h) != nil {
+		return Request{}, false
+	}
+	switch h.Event {
+	case "Stop":
+		return Request{State: "done", Kind: "done"}, true
+	case "PostToolUse":
+		return Request{Event: "tool_use", Tool: h.ToolName}, true
+	}
+	return Request{}, false
+}
+
+// present reports whether a JSON field was sent with a value other than null.
+func present(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
+// errorText reads an error a hook reports, which is a string or an object
+// with a message.
+func errorText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	var e struct {
+		Message string `json:"message"`
+		Name    string `json:"name"`
+	}
+	if json.Unmarshal(raw, &e) == nil {
+		return strings.TrimSpace(firstOf(e.Message, e.Name, ""))
+	}
+	return ""
+}
+
+func firstOf(values ...string) string {
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// truncate cuts s to at most n bytes, on a character boundary.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // ReadAllBounded reads at most 1 MiB from r.

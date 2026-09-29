@@ -86,6 +86,11 @@ func TestNotifyEventRefusesHookFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"--event", "progress", "--claude-hook"},
 		{"--event", "progress", "--codex", "{}"},
+		{"--event", "progress", "--codex-hook"},
+		{"--event", "progress", "--copilot-hook"},
+		{"--event", "progress", "--cursor-hook"},
+		{"--event", "progress", "--agy-hook"},
+		{"--event", "progress", "--goose-hook"},
 	} {
 		code, _, err := runNotifyWith(t, `{"hook_event_name":"Stop"}`, args...)
 		if code != 2 || err == nil || !strings.Contains(err.Error(), "--event") {
@@ -131,5 +136,65 @@ func TestNotifyEventOutsideASessionIsSilent(t *testing.T) {
 	code, stderr, err := runNotifyWith(t, "", "--event", "progress", "--message", "x")
 	if code != 0 || err != nil || stderr != "" {
 		t.Fatalf("exit %d %v %q", code, err, stderr)
+	}
+}
+
+// Each agent's hook flag reads the payload its hooks write to stdin, and sends
+// what the payload maps to: an attention state to the attention route, an
+// event to the events route.
+func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
+	cases := []struct {
+		flag, stdin, path string
+		body              map[string]any
+	}{
+		{"--copilot-hook", `{"sessionId":"s","stopReason":"end_turn"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "kind": "done"}},
+		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "edit /x/a.go"}},
+		{"--agy-hook", `{"terminationReason":"completed"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "message": "completed", "kind": "done"}},
+		{"--goose-hook", `{"event":"PostToolUse","tool_name":"shell"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "shell"}},
+		{"--codex-hook", `{"hook_event_name":"PermissionRequest","tool_name":"shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "needs_input", "message": "Allow shell?", "kind": "permission"}},
+		{"--claude-hook", `{"hook_event_name":"PermissionDenied","tool_name":"Bash"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_denied", "tool": "Bash"}},
+	}
+	for _, c := range cases {
+		t.Run(c.flag, func(t *testing.T) {
+			ns := startNotifyServer(t)
+			if code, stderr, err := runNotifyWith(t, c.stdin, c.flag); code != 0 || err != nil {
+				t.Fatalf("exit %d %v %q", code, err, stderr)
+			}
+			if ns.calls != 1 || ns.path != c.path || !reflect.DeepEqual(ns.body, c.body) {
+				t.Fatalf("server saw %d calls, %q %v; want %q %v", ns.calls, ns.path, ns.body, c.path, c.body)
+			}
+		})
+	}
+}
+
+// A payload that means nothing to Conductor is not sent, and the hook still
+// succeeds.
+func TestNotifyHookFlagsSkipOtherPayloads(t *testing.T) {
+	ns := startNotifyServer(t)
+	for _, flag := range []string{"--codex-hook", "--copilot-hook", "--cursor-hook", "--agy-hook", "--goose-hook"} {
+		if code, stderr, err := runNotifyWith(t, `{"unrelated":true}`, flag); code != 0 || err != nil || stderr != "" {
+			t.Fatalf("%s: exit %d %v %q", flag, code, err, stderr)
+		}
+	}
+	if ns.calls != 0 {
+		t.Fatalf("%d requests were sent", ns.calls)
+	}
+}
+
+// One payload, one way to read it: two hook flags are a wrong install.
+func TestNotifyTakesOneHookFlag(t *testing.T) {
+	ns := startNotifyServer(t)
+	for _, args := range [][]string{
+		{"--claude-hook", "--codex-hook"},
+		{"--copilot-hook", "--codex", "{}"},
+		{"--cursor-hook", "--goose-hook", "--agy-hook"},
+	} {
+		code, _, err := runNotifyWith(t, `{"hook_event_name":"stop"}`, args...)
+		if code != 2 || err == nil || !strings.Contains(err.Error(), args[0]) || !strings.Contains(err.Error(), args[1]) {
+			t.Fatalf("%v: exit %d, err %v", args, code, err)
+		}
+	}
+	if ns.calls != 0 {
+		t.Fatalf("%d requests were sent", ns.calls)
 	}
 }
