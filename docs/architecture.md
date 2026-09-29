@@ -62,6 +62,7 @@ command.
 | `internal/cli` | flag parsing only |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
+| `internal/store` | atomic JSON documents in the data directory |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
 | `internal/session` | ring buffer, fan-out hub, `Local` session, registry, bounded file reads |
@@ -91,6 +92,7 @@ command.
 
 ## Persistence
 
-None in v1. Sessions and links live in memory; a server restart ends server
-sessions and forgets links. Hosted sessions survive a brief server outage through
-the host's reconnect-and-resume secret only while the server process is alive.
+Sessions and links remain in memory, while the data directory (`dataDir`) holds
+UI-managed state as JSON files. A server restart ends server sessions and
+forgets links. Hosted sessions survive a brief server outage through the host's
+reconnect-and-resume secret only while the server process is alive.

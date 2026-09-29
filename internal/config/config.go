@@ -279,16 +279,22 @@ func (c *Config) Validate() error {
 }
 
 // ResolveDataDir fills DataDir from the config file location when unset:
-// <dir of configPath>/conductor.d, or ./conductor.d without a config file.
+// <dir of configPath>/conductor.d, or ./conductor.d without a config file. The
+// result is always absolute (a relative value is taken relative to the current
+// directory, like allowedRoots and defaultCwd) because agent processes started
+// in other working directories are handed paths under it. If the working
+// directory cannot be determined the chosen value is kept as it is.
 func (c *Config) ResolveDataDir(configPath string) {
-	if c.DataDir != "" {
-		return
+	if c.DataDir == "" {
+		base := "."
+		if configPath != "" {
+			base = filepath.Dir(configPath)
+		}
+		c.DataDir = filepath.Join(base, "conductor.d")
 	}
-	base := "."
-	if configPath != "" {
-		base = filepath.Dir(configPath)
+	if abs, err := filepath.Abs(c.DataDir); err == nil {
+		c.DataDir = abs
 	}
-	c.DataDir = filepath.Join(base, "conductor.d")
 }
 
 // LoadCatalog merges the inline catalog and the optional catalog file.
