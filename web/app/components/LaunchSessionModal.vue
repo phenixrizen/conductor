@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
+import { splitArgs } from '~/utils/argv'
 import { hostCommand } from '~/utils/hostCommand'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -35,14 +36,6 @@ watch(open, async (v) => {
     loading.value = false
   }
 })
-
-function splitArgs(s: string): string[] {
-  // Minimal shell-like splitting: whitespace separated, quotes group.
-  const out: string[] = []
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
-  for (const m of s.matchAll(re)) out.push(m[1] ?? m[2] ?? m[3] ?? '')
-  return out
-}
 
 const server = computed(() => httpBase.value || (import.meta.client ? location.origin : ''))
 const command = computed(() => {
