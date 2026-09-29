@@ -61,7 +61,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	}
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", cfg.DataDir, err)
+	}
+	if root := cfg.DataDirOverlap(); root != "" {
+		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; set dataDir or CONDUCTOR_DATA_DIR to a directory outside allowedRoots", "dataDir", cfg.DataDir, "allowedRoot", root)
 	}
 
 	ui := web.Handler()
@@ -82,7 +85,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
-	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(srv.Catalog().List()))
+	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(srv.Catalog().List()), "dataDir", cfg.DataDir)
 	if cfg.GeneratedAdminToken {
 		// Printed once so a developer can sign in; set CONDUCTOR_ADMIN_TOKEN to avoid this.
 		log.Warn("no admin token configured; generated one for this run", "adminToken", cfg.AdminToken)

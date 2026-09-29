@@ -310,3 +310,35 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 	}
 	return catalog.Load(file)
 }
+
+// DataDirOverlap returns the first allowed root that overlaps DataDir: one that
+// contains it, is inside it or is the same directory. It returns "" when none
+// does. Paths are compared with their symlinks resolved where they exist. An
+// overlap is a misconfiguration: agents working in the root can read the data
+// directory and commit its secrets, and the file viewer refuses the whole
+// data directory, so it reads nothing in a root inside it.
+func (c *Config) DataDirOverlap() string {
+	data := resolved(c.DataDir)
+	for _, root := range c.AllowedRoots {
+		r := resolved(root)
+		if within(data, r) || within(r, data) {
+			return root
+		}
+	}
+	return ""
+}
+
+// resolved returns p with its symlinks evaluated, or cleaned when it does not
+// exist (yet).
+func resolved(p string) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
+}
+
+// within reports whether path is dir or inside it. Both must be absolute.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}

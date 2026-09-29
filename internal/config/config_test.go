@@ -169,3 +169,51 @@ func TestResolveDataDirDefaults(t *testing.T) {
 		}
 	})
 }
+
+func TestDataDirOverlap(t *testing.T) {
+	base := t.TempDir()
+	mkdir := func(parts ...string) string {
+		t.Helper()
+		p := filepath.Join(append([]string{base}, parts...)...)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	proj := mkdir("proj")
+	projData := mkdir("proj", "conductor.d")
+	sibling := mkdir("proj-data") // shares a name prefix with proj, nothing else
+	elsewhere := mkdir("var", "lib", "conductor")
+	nested := mkdir("var", "lib", "conductor", "workspaces")
+	link := filepath.Join(base, "link-to-proj")
+	if err := os.Symlink(proj, link); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		roots   []string
+		dataDir string
+		want    string
+	}{
+		{"data directory inside a root", []string{proj}, projData, proj},
+		{"data directory not created yet inside a root", []string{proj}, filepath.Join(proj, "later"), proj},
+		{"data directory is a root", []string{proj}, proj, proj},
+		{"root inside the data directory", []string{nested}, elsewhere, nested},
+		{"the second root overlaps", []string{elsewhere + "-x", proj}, projData, proj},
+		{"root given through a symlink", []string{link}, projData, link},
+		{"data directory given through a symlink", []string{proj}, filepath.Join(link, "conductor.d"), proj},
+		{"sibling with a common name prefix", []string{proj}, sibling, ""},
+		{"separate directories", []string{proj}, elsewhere, ""},
+		{"the file system root holds everything", []string{"/"}, elsewhere, "/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.AllowedRoots = tc.roots
+			cfg.DataDir = tc.dataDir
+			if got := cfg.DataDirOverlap(); got != tc.want {
+				t.Fatalf("DataDirOverlap() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
