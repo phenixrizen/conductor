@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // Agent describes one launchable command.
@@ -68,9 +69,16 @@ var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 // https_proxy and no_proxy are lower case by convention.
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// Size limits enforced by validate, so that a saved agent stays small enough
+// for catalog.json and the Agents page.
 const (
-	maxSignalPattern  = 200 // bytes
-	maxEnvPassthrough = 32  // entries per agent
+	maxName           = 60   // characters (runes)
+	maxDescription    = 200  // characters (runes)
+	maxCommandArgs    = 32   // elements in command
+	maxCommandArg     = 4096 // bytes in one command element
+	maxEnvKeys        = 32   // entries in env
+	maxEnvPassthrough = 32   // entries in envPassthrough
+	maxSignalPattern  = 200  // bytes in a signal pattern
 )
 
 // ReadFile parses a catalog file, rejecting unknown fields.
@@ -132,6 +140,8 @@ func (c *Catalog) add(a Agent) {
 	c.agents[a.ID] = a
 }
 
+// validate checks one agent against every rule. Load and Upsert both run it,
+// and ApplyOverlay goes through Upsert.
 func validate(a Agent) error {
 	if !idPattern.MatchString(a.ID) {
 		return fmt.Errorf("id %q must match %s", a.ID, idPattern)
@@ -139,13 +149,28 @@ func validate(a Agent) error {
 	if strings.TrimSpace(a.Name) == "" {
 		return fmt.Errorf("agent %s: name must not be empty", a.ID)
 	}
+	if utf8.RuneCountInString(a.Name) > maxName {
+		return fmt.Errorf("agent %s: name must be at most %d characters", a.ID, maxName)
+	}
+	if utf8.RuneCountInString(a.Description) > maxDescription {
+		return fmt.Errorf("agent %s: description must be at most %d characters", a.ID, maxDescription)
+	}
 	if len(a.Command) == 0 || strings.TrimSpace(a.Command[0]) == "" {
 		return fmt.Errorf("agent %s: command must have at least one element", a.ID)
 	}
-	for _, arg := range a.Command {
+	if len(a.Command) > maxCommandArgs {
+		return fmt.Errorf("agent %s: command has too many elements (at most %d)", a.ID, maxCommandArgs)
+	}
+	for i, arg := range a.Command {
 		if strings.ContainsRune(arg, 0) {
 			return fmt.Errorf("agent %s: command contains NUL", a.ID)
 		}
+		if len(arg) > maxCommandArg {
+			return fmt.Errorf("agent %s: command[%d] is longer than %d bytes", a.ID, i, maxCommandArg)
+		}
+	}
+	if len(a.Env) > maxEnvKeys {
+		return fmt.Errorf("agent %s: too many env entries (at most %d)", a.ID, maxEnvKeys)
 	}
 	for k, v := range a.Env {
 		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) {
@@ -153,20 +178,8 @@ func validate(a Agent) error {
 		}
 	}
 	if a.Signal != nil {
-		switch a.Signal.Kind {
-		case "hook", "bell", "none":
-			if a.Signal.Pattern != "" {
-				return fmt.Errorf("agent %s: signal: pattern only applies to kind=pattern", a.ID)
-			}
-		case "pattern":
-			if a.Signal.Pattern == "" || len(a.Signal.Pattern) > maxSignalPattern {
-				return fmt.Errorf("agent %s: signal: pattern required, at most %d bytes", a.ID, maxSignalPattern)
-			}
-			if _, err := regexp.Compile(a.Signal.Pattern); err != nil {
-				return fmt.Errorf("agent %s: signal: %w", a.ID, err)
-			}
-		default:
-			return fmt.Errorf("agent %s: signal: unknown kind %q", a.ID, a.Signal.Kind)
+		if err := validateSignal(*a.Signal); err != nil {
+			return fmt.Errorf("agent %s: signal: %w", a.ID, err)
 		}
 	}
 	if len(a.EnvPassthrough) > maxEnvPassthrough {
@@ -176,6 +189,27 @@ func validate(a Agent) error {
 		if !envNamePattern.MatchString(name) {
 			return fmt.Errorf("agent %s: invalid envPassthrough entry %q", a.ID, name)
 		}
+	}
+	return nil
+}
+
+// validateSignal checks a signal's kind and pattern. Its errors carry no agent
+// id; validate adds it.
+func validateSignal(s Signal) error {
+	switch s.Kind {
+	case "hook", "bell", "none":
+		if s.Pattern != "" {
+			return errors.New("pattern only applies to kind=pattern")
+		}
+	case "pattern":
+		if s.Pattern == "" || len(s.Pattern) > maxSignalPattern {
+			return fmt.Errorf("pattern required, at most %d bytes", maxSignalPattern)
+		}
+		if _, err := regexp.Compile(s.Pattern); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", s.Kind)
 	}
 	return nil
 }

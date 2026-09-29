@@ -62,6 +62,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{ID: "ok", Name: "x", Command: []string{"x"}, Env: map[string]string{"A=B": "c"}},
 		{ID: "ok", Name: "x", Command: []string{"x"}, Signal: &Signal{Kind: "nope"}},
 		{ID: "ok", Name: "x", Command: []string{"x"}, EnvPassthrough: []string{"not a name"}},
+		{ID: "ok", Name: strings.Repeat("a", 61), Command: []string{"x"}},
 	}
 	for i, a := range cases {
 		if _, err := Load(File{Agents: []Agent{a}}); err == nil {
@@ -192,6 +193,63 @@ func TestEnvPassthroughValidation(t *testing.T) {
 	full.EnvPassthrough = append(full.EnvPassthrough, "ONE_MORE")
 	if err := validate(full); err == nil {
 		t.Fatal("33 entries accepted")
+	}
+}
+
+func TestSizeLimits(t *testing.T) {
+	// Name and description are measured in characters, so multibyte text counts
+	// once per rune. Command elements are measured in bytes, so the same text
+	// counts in full.
+	const (
+		twoByte  = "\u00e9"     // one character, 2 bytes
+		fourByte = "\U0001F600" // one character, 4 bytes
+	)
+	env := func(n int) map[string]string {
+		m := make(map[string]string, n)
+		for i := 1; i <= n; i++ {
+			m[strings.Repeat("K", i)] = "v"
+		}
+		return m
+	}
+	cases := []struct {
+		name   string
+		change func(*Agent)
+		field  string // the field the error must name; empty when the agent is valid
+	}{
+		{"name 60 characters", func(a *Agent) { a.Name = strings.Repeat("a", 60) }, ""},
+		{"name 61 characters", func(a *Agent) { a.Name = strings.Repeat("a", 61) }, "name"},
+		{"name 60 two-byte characters", func(a *Agent) { a.Name = strings.Repeat(twoByte, 60) }, ""},
+		{"name 61 two-byte characters", func(a *Agent) { a.Name = strings.Repeat(twoByte, 61) }, "name"},
+		{"name 60 four-byte characters", func(a *Agent) { a.Name = strings.Repeat(fourByte, 60) }, ""},
+		{"name 61 four-byte characters", func(a *Agent) { a.Name = strings.Repeat(fourByte, 61) }, "name"},
+		{"description 200 characters", func(a *Agent) { a.Description = strings.Repeat("a", 200) }, ""},
+		{"description 201 characters", func(a *Agent) { a.Description = strings.Repeat("a", 201) }, "description"},
+		{"description 200 two-byte characters", func(a *Agent) { a.Description = strings.Repeat(twoByte, 200) }, ""},
+		{"description 201 two-byte characters", func(a *Agent) { a.Description = strings.Repeat(twoByte, 201) }, "description"},
+		{"command 32 elements", func(a *Agent) { a.Command = slices.Repeat([]string{"x"}, 32) }, ""},
+		{"command 33 elements", func(a *Agent) { a.Command = slices.Repeat([]string{"x"}, 33) }, "command"},
+		{"command element 4096 bytes", func(a *Agent) { a.Command = []string{strings.Repeat("a", 4096)} }, ""},
+		{"command element 4097 bytes", func(a *Agent) { a.Command = []string{strings.Repeat("a", 4097)} }, "command"},
+		{"later command element 4097 bytes", func(a *Agent) { a.Command = []string{"x", strings.Repeat("a", 4097)} }, "command"},
+		{"command element 2048 two-byte characters", func(a *Agent) { a.Command = []string{strings.Repeat(twoByte, 2048)} }, ""},
+		{"command element 2049 two-byte characters", func(a *Agent) { a.Command = []string{strings.Repeat(twoByte, 2049)} }, "command"},
+		{"env 32 keys", func(a *Agent) { a.Env = env(32) }, ""},
+		{"env 33 keys", func(a *Agent) { a.Env = env(33) }, "env"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := Agent{ID: "x", Name: "X", Command: []string{"x"}}
+			c.change(&a)
+			err := validate(a)
+			switch {
+			case c.field == "" && err != nil:
+				t.Fatalf("valid agent rejected: %v", err)
+			case c.field != "" && err == nil:
+				t.Fatal("agent over the limit accepted")
+			case c.field != "" && !strings.Contains(err.Error(), c.field):
+				t.Fatalf("error does not name %q: %v", c.field, err)
+			}
+		})
 	}
 }
 
