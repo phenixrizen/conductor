@@ -609,6 +609,22 @@ func (e *testEnv) catalogIDs() []string {
 	return ids
 }
 
+// catalogHidden returns the IDs GET /api/catalog lists as hidden. The list
+// must be there, as an array, even when nothing is hidden.
+func (e *testEnv) catalogHidden() []string {
+	e.t.Helper()
+	resp, out := e.do("GET", "/api/catalog", adminToken, nil)
+	raw, ok := out["hidden"].([]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		e.t.Fatalf("catalog hidden list: %d %v", resp.StatusCode, out)
+	}
+	ids := []string{}
+	for _, id := range raw {
+		ids = append(ids, id.(string))
+	}
+	return ids
+}
+
 // overlayFile returns the text of catalog.json in the data directory.
 func (e *testEnv) overlayFile() string {
 	e.t.Helper()
@@ -729,6 +745,7 @@ func TestCatalogRoutesNeedTheAdminToken(t *testing.T) {
 		{"POST", "/api/catalog", agentBody("intruder")},
 		{"DELETE", "/api/catalog/cat", nil},
 		{"POST", "/api/catalog/check", map[string]any{"command": []string{"sh"}}},
+		{"POST", "/api/catalog/cat/unhide", nil},
 	}
 	for _, r := range routes {
 		for _, token := range []string{"", "wrong", "test-host-token"} {
@@ -831,6 +848,81 @@ func TestCatalogDeleteRestoresOrHides(t *testing.T) {
 	}
 }
 
+// Hiding is reversible: GET /api/catalog lists what is hidden, and unhiding
+// an ID brings its agent back as it was, launchable and in its old place,
+// also after a restart.
+func TestCatalogUnhideRestoresAHiddenAgent(t *testing.T) {
+	e := newTestEnv(t, nil)
+	if hidden := e.catalogHidden(); len(hidden) != 0 {
+		t.Fatalf("hidden before any edit: %v", hidden)
+	}
+	if c := e.del("cat"); c != http.StatusNoContent {
+		t.Fatalf("hide: %d", c)
+	}
+	if hidden := e.catalogHidden(); !slices.Equal(hidden, []string{"cat"}) {
+		t.Fatalf("hidden after hiding: %v", hidden)
+	}
+	if resp, _ := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat"}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("hidden agent launched: %d", resp.StatusCode)
+	}
+
+	resp, out := e.do("POST", "/api/catalog/cat/unhide", adminToken, nil)
+	agent, _ := out["agent"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || agent["id"] != "cat" || agent["name"] != "cat" || !reflect.DeepEqual(agent["command"], []any{"/bin/cat"}) {
+		t.Fatalf("unhide: %d %v", resp.StatusCode, out)
+	}
+	if hidden := e.catalogHidden(); len(hidden) != 0 {
+		t.Fatalf("hidden after unhiding: %v", hidden)
+	}
+	if ids := e.catalogIDs(); !slices.Equal(ids, []string{"cat", "sh", "exit"}) {
+		t.Fatalf("catalog after unhiding: %v", ids)
+	}
+	e.createSession("cat")
+	if raw := e.overlayFile(); strings.Contains(raw, `"hidden"`) {
+		t.Fatalf("catalog.json still hides it: %s", raw)
+	}
+	if hidden := e.restart().catalogHidden(); len(hidden) != 0 {
+		t.Fatalf("hidden after a restart: %v", hidden)
+	}
+
+	// Only a hidden ID can be unhidden; anything else is 404 and changes nothing.
+	before := e.overlayFile()
+	for _, id := range []string{"cat", "no-such-agent"} {
+		resp, out := e.do("POST", "/api/catalog/"+id+"/unhide", adminToken, nil)
+		if resp.StatusCode != http.StatusNotFound || out["error"].(map[string]any)["code"] != "not_found" {
+			t.Fatalf("unhide %s: %d %v", id, resp.StatusCode, out)
+		}
+	}
+	if got := e.overlayFile(); got != before {
+		t.Fatalf("a refused unhide changed catalog.json:\n%s\nwas:\n%s", got, before)
+	}
+}
+
+// A hand-edited catalog.json may hide an ID that no agent has, or repeat one.
+// The list shows each ID once, and unhiding such an ID clears it with no agent
+// in the reply.
+func TestCatalogUnhideClearsAnIDWithNoAgent(t *testing.T) {
+	e := newTestEnv(t, nil)
+	file := `{"agents": [], "hidden": ["ghost", "sh", "ghost"]}`
+	if err := os.WriteFile(filepath.Join(e.srv.store.Dir(), "catalog.json"), []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e = e.restart()
+	if hidden := e.catalogHidden(); !slices.Equal(hidden, []string{"ghost", "sh"}) {
+		t.Fatalf("hidden: %v", hidden)
+	}
+	resp, out := e.do("POST", "/api/catalog/ghost/unhide", adminToken, nil)
+	if _, has := out["agent"]; resp.StatusCode != http.StatusOK || has {
+		t.Fatalf("unhide ghost: %d %v", resp.StatusCode, out)
+	}
+	if hidden := e.catalogHidden(); !slices.Equal(hidden, []string{"sh"}) {
+		t.Fatalf("hidden after clearing ghost: %v", hidden)
+	}
+	if ids := e.catalogIDs(); !slices.Equal(ids, []string{"cat", "exit"}) {
+		t.Fatalf("catalog: %v", ids)
+	}
+}
+
 func TestCatalogEditingNeedsAStore(t *testing.T) {
 	e := newTestEnv(t, nil)
 	srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, nil)
@@ -841,7 +933,7 @@ func TestCatalogEditingNeedsAStore(t *testing.T) {
 	for _, r := range []struct {
 		method, path string
 		body         any
-	}{{"POST", "/api/catalog", agentBody("x")}, {"DELETE", "/api/catalog/cat", nil}} {
+	}{{"POST", "/api/catalog", agentBody("x")}, {"DELETE", "/api/catalog/cat", nil}, {"POST", "/api/catalog/cat/unhide", nil}} {
 		resp, out := ro.do(r.method, r.path, adminToken, r.body)
 		if resp.StatusCode != http.StatusServiceUnavailable || out["error"].(map[string]any)["code"] != "store_unavailable" {
 			t.Errorf("%s %s: %d %v", r.method, r.path, resp.StatusCode, out)
@@ -849,6 +941,9 @@ func TestCatalogEditingNeedsAStore(t *testing.T) {
 	}
 	if ids := ro.catalogIDs(); !slices.Equal(ids, []string{"cat", "sh", "exit"}) {
 		t.Fatalf("read-only catalog: %v", ids)
+	}
+	if hidden := ro.catalogHidden(); len(hidden) != 0 {
+		t.Fatalf("read-only catalog hides %v", hidden)
 	}
 	if resp, out := ro.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"/bin/sh"}}); resp.StatusCode != http.StatusOK || out["found"] != true {
 		t.Fatalf("check needs no store: %d %v", resp.StatusCode, out)
@@ -889,6 +984,9 @@ func TestNewRefusesAnUnusableOverlay(t *testing.T) {
 func TestCatalogFailedSaveChangesNothing(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.save(agentBody("kept"))
+	if c := e.del("sh"); c != http.StatusNoContent { // hidden, to try unhiding it below
+		t.Fatalf("hide: %d", c)
+	}
 	before := e.catalogIDs()
 
 	// The data directory disappears, so no save can succeed.
@@ -903,6 +1001,7 @@ func TestCatalogFailedSaveChangesNothing(t *testing.T) {
 		{"POST", "/api/catalog", agentBody("lost")},
 		{"DELETE", "/api/catalog/cat", nil},
 		{"DELETE", "/api/catalog/kept", nil},
+		{"POST", "/api/catalog/sh/unhide", nil},
 	}
 	for _, a := range attempts {
 		resp, out := e.do(a.method, a.path, adminToken, a.body)
@@ -914,6 +1013,9 @@ func TestCatalogFailedSaveChangesNothing(t *testing.T) {
 	if got := e.catalogIDs(); !slices.Equal(got, before) {
 		t.Fatalf("a failed save changed the catalog: %v, want %v", got, before)
 	}
+	if hidden := e.catalogHidden(); !slices.Equal(hidden, []string{"sh"}) {
+		t.Fatalf("a failed unhide changed the hidden list: %v", hidden)
+	}
 
 	// Once the directory is back, the next save writes what the server still
 	// holds plus the new agent, and nothing from the failed attempts.
@@ -922,7 +1024,7 @@ func TestCatalogFailedSaveChangesNothing(t *testing.T) {
 	}
 	e.save(agentBody("back"))
 	var ov catalog.Overlay
-	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 2 || ov.Agents[0].ID != "kept" || ov.Agents[1].ID != "back" || len(ov.Hidden) != 0 {
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 2 || ov.Agents[0].ID != "kept" || ov.Agents[1].ID != "back" || !slices.Equal(ov.Hidden, []string{"sh"}) {
 		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
 	}
 }

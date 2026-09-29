@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/catalog", s.requireAdmin(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.requireAdmin(s.handleCheckCommand))
 	mux.HandleFunc("DELETE /api/catalog/{id}", s.requireAdmin(s.handleDeleteAgent))
+	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.requireAdmin(s.handleUnhideAgent))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.requireAdmin(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)

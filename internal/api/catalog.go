@@ -16,13 +16,18 @@ import (
 // Agents page edits. The configured catalog is never written.
 const catalogFile = "catalog.json"
 
+// handleCatalog lists the launchable agents, env values masked, and the IDs
+// the overlay hides, which POST /api/catalog/{id}/unhide brings back.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
-	list := s.Catalog().List()
+	s.catalogMu.Lock()
+	cat, hidden := s.catalog, uniqueIDs(s.overlay.Hidden)
+	s.catalogMu.Unlock()
+	list := cat.List()
 	out := make([]catalog.Agent, 0, len(list))
 	for _, a := range list {
 		out = append(out, a.Redacted())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden})
 }
 
 // handleSaveAgent adds an agent to the overlay, or replaces the agent with the
@@ -98,6 +103,37 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("catalog agent changed", "agent", id, "action", action)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleUnhideAgent takes an ID off the overlay's hidden list, which brings
+// back the built-in or configured agent it hid, and persists the overlay. The
+// reply carries that agent, or no agent when none has the ID any more (a
+// hand-edited file, or an agent since removed from the config).
+func (s *Server) handleUnhideAgent(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
+		return
+	}
+	id := r.PathValue("id")
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	ov := s.overlay
+	if !slices.Contains(ov.Hidden, id) {
+		writeError(w, http.StatusNotFound, "not_found", "no hidden agent with that id")
+		return
+	}
+	ov.Hidden = withoutID(ov.Hidden, id)
+	if err := s.commitOverlay(ov); err != nil {
+		s.log.Error("catalog save failed", "agent", id, "err", err)
+		writeError(w, http.StatusInternalServerError, "store_failed", "could not save the catalog")
+		return
+	}
+	s.log.Info("catalog agent changed", "agent", id, "action", "unhidden")
+	out := map[string]any{}
+	if a, ok := s.catalog.Get(id); ok {
+		out["agent"] = a.Redacted()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // checkCommandRequest is the body of POST /api/catalog/check.
@@ -218,6 +254,17 @@ func upsertAgent(agents []catalog.Agent, a catalog.Agent) []catalog.Agent {
 // withoutAgent returns a copy of agents without the entries for id.
 func withoutAgent(agents []catalog.Agent, id string) []catalog.Agent {
 	return slices.DeleteFunc(slices.Clone(agents), func(a catalog.Agent) bool { return a.ID == id })
+}
+
+// uniqueIDs returns a copy of ids without repeats, in order, never nil.
+func uniqueIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // withoutID returns a copy of ids without id.

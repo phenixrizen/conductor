@@ -187,9 +187,10 @@ rejected. Errors are `{"error":{"code","message"}}`. The WebSocket routes,
 |---|---|---|
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions` |
 | `GET /api/whoami` | admin | OS user running the server (the default display name) |
-| `GET /api/catalog` | admin | launchable agents; `env` values are masked as `***` |
+| `GET /api/catalog` | admin | `{agents, hidden}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value stored for that key and is rejected for a key the agent does not have; `400 invalid_agent` carries the validation message, `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
+| `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
 | `GET /api/sessions` | admin | list sessions |
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?}`, reply `201` with the session `Info` |
