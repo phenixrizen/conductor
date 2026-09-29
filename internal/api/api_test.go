@@ -924,6 +924,92 @@ func TestCatalogSavedAgentsRun(t *testing.T) {
 	}
 }
 
+// GET /api/catalog masks env values, so a client that edits an agent it read
+// there sends the mask back to mean "unchanged". Saving that must keep the
+// stored value and never write the mask into catalog.json.
+func TestCatalogSaveKeepsMaskedEnvValues(t *testing.T) {
+	e := newTestEnv(t, nil)
+	body := agentBody("keyed")
+	body["env"] = map[string]string{"API_KEY": "secret", "REGION": "eu"}
+	e.save(body)
+
+	// The listing masks every value.
+	listed := e.catalogAgent("keyed")
+	if env := listed["env"].(map[string]any); len(env) != 2 || env["API_KEY"] != "***" || env["REGION"] != "***" {
+		t.Fatalf("listed env: %v", env)
+	}
+	// wantEnv checks the stored overlay, the running catalog and the file.
+	wantEnv := func(want map[string]string) {
+		t.Helper()
+		var ov catalog.Overlay
+		if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 || !reflect.DeepEqual(ov.Agents[0].Env, want) {
+			t.Fatalf("stored env, want %v: %v %v %+v", want, ok, err, ov)
+		}
+		if a, _ := e.srv.Catalog().Get("keyed"); !reflect.DeepEqual(a.Env, want) {
+			t.Fatalf("running env, want %v: %v", want, a.Env)
+		}
+		if strings.Contains(e.overlayFile(), "***") {
+			t.Fatalf("the mask reached catalog.json: %s", e.overlayFile())
+		}
+	}
+
+	// Edit the description and send the agent back exactly as it was read.
+	listed["description"] = "edited"
+	out := e.save(listed)
+	if env := out["agent"].(map[string]any)["env"].(map[string]any); env["API_KEY"] != "***" || env["REGION"] != "***" {
+		t.Fatalf("save response env: %v", env)
+	}
+	wantEnv(map[string]string{"API_KEY": "secret", "REGION": "eu"})
+	if a, _ := e.srv.Catalog().Get("keyed"); a.Description != "edited" {
+		t.Fatalf("the edit was not saved: %+v", a)
+	}
+
+	// A real value replaces the old one, a masked one keeps its own, and a key
+	// that is left out is dropped.
+	listed["env"] = map[string]any{"API_KEY": "rotated", "REGION": "***"}
+	e.save(listed)
+	wantEnv(map[string]string{"API_KEY": "rotated", "REGION": "eu"})
+	listed["env"] = map[string]any{"API_KEY": "***"}
+	e.save(listed)
+	wantEnv(map[string]string{"API_KEY": "rotated"})
+
+	// A masked value has nothing to keep for a key the agent never had, or for
+	// an agent that is not stored yet: nothing is saved, and with several such
+	// keys the first by name is reported. The requests are repeated because a
+	// wrong answer here would depend on map order.
+	withEnv := func(id string, env map[string]any) map[string]any {
+		b := agentBody(id)
+		b["env"] = env
+		return b
+	}
+	cases := []struct {
+		name string
+		body map[string]any
+		key  string
+	}{
+		{"new key on a stored agent", withEnv("keyed", map[string]any{"API_KEY": "***", "NEW_KEY": "***"}), "NEW_KEY"},
+		{"agent that is not stored yet", withEnv("fresh", map[string]any{"API_KEY": "***"}), "API_KEY"},
+		{"several keys", withEnv("keyed", map[string]any{"ZED": "***", "MID": "***", "ALPHA": "***", "OMEGA": "***", "BETA": "***", "GAMMA": "***", "DELTA": "***", "SIGMA": "***"}), "ALPHA"},
+	}
+	before := e.overlayFile()
+	for range 20 {
+		for _, tc := range cases {
+			resp, out := e.do("POST", "/api/catalog", adminToken, tc.body)
+			apiErr, _ := out["error"].(map[string]any)
+			if resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "invalid_agent" || apiErr["message"] != "env "+tc.key+": value is redacted; set a real value" {
+				t.Fatalf("%s: %d %v", tc.name, resp.StatusCode, out)
+			}
+		}
+	}
+	if got := e.overlayFile(); got != before {
+		t.Fatalf("a rejected save changed catalog.json:\n%s\nwas:\n%s", got, before)
+	}
+	wantEnv(map[string]string{"API_KEY": "rotated"})
+	if e.catalogAgent("fresh") != nil {
+		t.Fatal("a rejected agent was added")
+	}
+}
+
 // A hand-edited catalog.json may repeat an ID; the last entry wins at startup,
 // so a save has to replace every copy or a restart would bring an old one back.
 func TestCatalogSaveCollapsesDuplicateOverlayEntries(t *testing.T) {

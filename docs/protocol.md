@@ -186,7 +186,7 @@ rejected. Errors are `{"error":{"code","message"}}`. The WebSocket routes,
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions` |
 | `GET /api/whoami` | admin | OS user running the server (the default display name) |
 | `GET /api/catalog` | admin | launchable agents; `env` values are masked as `***` |
-| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `400 invalid_agent` carries the validation message, `503 store_unavailable` when there is no data directory |
+| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value stored for that key and is rejected for a key the agent does not have; `400 invalid_agent` carries the validation message, `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
 | `GET /api/sessions` | admin | list sessions |

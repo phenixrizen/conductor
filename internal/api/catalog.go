@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,15 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	// The stored agent is read under the lock the save holds, so no other save
+	// can change it in between.
+	stored, _ := s.catalog.Get(a.ID)
+	if err := restoreMaskedEnv(&a, stored); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
+		return
+	}
 	// Check a by itself, so the message is about this agent and not an index
 	// into the overlay.
 	var probe catalog.Catalog
@@ -43,8 +53,6 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
 		return
 	}
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
 	ov := s.overlay
 	ov.Agents = upsertAgent(ov.Agents, a)
 	ov.Hidden = withoutID(ov.Hidden, a.ID)
@@ -117,6 +125,28 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"found": true, "path": path})
+}
+
+// restoreMaskedEnv puts the stored value back for every env entry of a whose
+// value is catalog.RedactedValue. GET /api/catalog and the save response show
+// that in place of real values, so a client that edits an agent it read there
+// sends it back to mean "unchanged"; saving it as it is would replace the secret
+// with the mask. stored is the agent now listed under a.ID, the zero Agent when
+// there is none. A masked entry for a key stored does not have has no value to
+// keep and is an error; the first such key by name is reported, so the answer
+// does not depend on map order.
+func restoreMaskedEnv(a *catalog.Agent, stored catalog.Agent) error {
+	for _, k := range slices.Sorted(maps.Keys(a.Env)) {
+		if a.Env[k] != catalog.RedactedValue {
+			continue
+		}
+		v, ok := stored.Env[k]
+		if !ok {
+			return fmt.Errorf("env %s: value is redacted; set a real value", k)
+		}
+		a.Env[k] = v
+	}
+	return nil
 }
 
 // commitOverlay makes ov the current overlay. It builds the catalog ov yields

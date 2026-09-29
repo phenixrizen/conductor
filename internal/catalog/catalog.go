@@ -292,6 +292,11 @@ func (c Catalog) List() []Agent {
 	return out
 }
 
+// RedactedValue replaces every environment value in the output of Redacted.
+// The API treats it as "unchanged" when an agent comes back on save with a value
+// still set to it.
+const RedactedValue = "***"
+
 // Redacted returns a copy with environment values hidden, suitable for API
 // output. Everything else, including Adapter, Signal and EnvPassthrough, is
 // kept: none of it is secret.
@@ -302,7 +307,7 @@ func (a Agent) Redacted() Agent {
 	cp := a
 	cp.Env = make(map[string]string, len(a.Env))
 	for k := range a.Env {
-		cp.Env[k] = "***"
+		cp.Env[k] = RedactedValue
 	}
 	return cp
 }

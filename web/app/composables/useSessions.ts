@@ -49,7 +49,7 @@ export interface AgentInfo {
   signal?: AgentSignal
   /** Names of server environment variables this agent may inherit. */
   envPassthrough?: string[]
-  /** Variable names the server sets for this agent. Every value is masked as "***": it means "set on the server", never the real value. */
+  /** Variable names the server sets for this agent. Every value is masked as "***": it means "set on the server", never the real value. Send it back unchanged to keep the stored value. */
   env?: Record<string, string>
 }
 
@@ -60,6 +60,7 @@ export interface AgentInput {
   description?: string
   command: string[]
   allowArgs: boolean
+  /** A value of "***", as read from the catalog, keeps the value stored on the server for that key; the server rejects it for a key the agent does not have. */
   env?: Record<string, string>
   envPassthrough?: string[]
   cwd?: string
