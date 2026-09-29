@@ -78,6 +78,7 @@ directory; clicking opens it in a side panel at that line with syntax
 highlighting, directory browsing and a copy-path button. Reads go through the
 terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`).
+The server's data directory is never served, even inside a working directory.
 
 ## The wall
 
@@ -169,7 +170,21 @@ detected with no configuration at all (for Codex set
 | `fileView` | `CONDUCTOR_FILE_VIEW` | `view` | who may read session files |
 | `scrollbackBytes`, `maxSessions`, `maxViewersPerSession`, `exitedRetention`, `envPassthrough` | matching `CONDUCTOR_*` | see example | limits |
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
-| `dataDir` | `CONDUCTOR_DATA_DIR` | `conductor.d` next to the config | UI-managed state |
+| `dataDir` | `CONDUCTOR_DATA_DIR` | `conductor.d` next to the config, else in the current directory | UI-managed state; must be writable, best outside `allowedRoots` |
+
+### Upgrading
+
+The server now keeps UI-managed state, such as agents added on the **Agents**
+page, in a data directory, and must be able to create and write it at startup.
+Unless `dataDir` or `CONDUCTOR_DATA_DIR` says otherwise, that is `conductor.d`
+next to the config file, or in the current directory when there is none. If
+the config lives somewhere the server user cannot write, such as `/etc`,
+`conductor serve` now refuses to start with `data directory … is not usable`:
+set `dataDir` in the config, or `CONDUCTOR_DATA_DIR`, to a writable directory
+outside `allowedRoots`, for example `/var/lib/conductor`. The Docker image
+already uses `/var/lib/conductor`, declared as a volume. At startup the server
+logs the directory it uses, and warns when it overlaps an allowed root: agents
+working there can read and commit its secrets.
 
 ### Agent catalog
 
@@ -195,12 +210,13 @@ launch form append extra arguments. `disableDefaults: true` drops the built-ins.
 saved as `catalog.json` in the data directory (`dataDir`) and layered over the
 configured catalog at startup: an agent with the ID of a built-in or configured
 one replaces it, and deleting that entry brings the original back. Hiding an
-agent removes it from the launch dialog; sessions already running are not
-affected. The config file is never written. The server refuses to start when
-`catalog.json` cannot be parsed or holds an invalid agent, rather than
-overwrite it. The form checks the command against the server's `PATH`, and an
-agent whose program is missing there can still be saved, for use with
-`conductor host`.
+agent removes it from the launch dialog and lists it under **Hidden** on the
+Agents page, where **Restore** brings it back as it was; sessions already
+running are not affected. The config file is never written. The server
+refuses to start when `catalog.json` cannot be parsed or holds an invalid
+agent, rather than overwrite it. The form checks the command against the
+server's `PATH`, and an agent whose program is missing there can still be
+saved, for use with `conductor host`.
 
 Every agent, from the config file or the UI, is held to the same limits: the ID
 matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
@@ -211,9 +227,20 @@ most 200 bytes.
 
 ## Security model and limits
 
-- The admin token gates launching, listing, stopping and link management; share
-  tokens grant one role on one session; host tokens only allow registering hosted
-  sessions. Tokens are compared in constant time and stored hashed.
+- The admin token gates launching, listing, stopping, link management and
+  editing the agent catalog; share tokens grant one role on one session; host
+  tokens only allow registering hosted sessions. Tokens are compared in
+  constant time and stored hashed.
+- Editing the catalog is as powerful as the server user. An admin can add or
+  replace any agent, built-in and configured ones included, with any argv and
+  env, and it runs as the user running `conductor serve`; `disableDefaults` or
+  a curated `catalog` does not limit what the **Agents** page can add. Env
+  values saved from the UI, secrets included, are stored in `catalog.json`
+  (mode 0600) in the data directory. The file viewer never serves that
+  directory, but agents run as the same user and can read it. Changing a
+  built-in or configured agent saves a full copy of it, env values included,
+  that replaces the original until it is deleted: a secret rotated in the
+  config file does not reach that agent while the copy exists.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Terminal output is not persisted. Sessions and links live in memory and are
@@ -239,3 +266,4 @@ The wire protocol is documented in [docs/protocol.md](docs/protocol.md), the
 architecture in [docs/architecture.md](docs/architecture.md), and the brand in
 [docs/design/brand.md](docs/design/brand.md). A `Dockerfile` builds a server
 image without agent CLIs; install them in a derived image or use `conductor host`.
+The image keeps its data directory on the `/var/lib/conductor` volume.
