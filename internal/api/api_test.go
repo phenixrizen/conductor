@@ -17,6 +17,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/store"
 )
 
 const adminToken = "test-admin-token"
@@ -54,7 +55,11 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := New(cfg, cat, log, nil)
+	st, err := store.Open(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(cfg, cat, log, nil, st)
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() {
 		hs.Close()

@@ -169,6 +169,7 @@ detected with no configuration at all (for Codex set
 | `fileView` | `CONDUCTOR_FILE_VIEW` | `view` | who may read session files |
 | `scrollbackBytes`, `maxSessions`, `maxViewersPerSession`, `exitedRetention`, `envPassthrough` | matching `CONDUCTOR_*` | see example | limits |
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
+| `dataDir` | `CONDUCTOR_DATA_DIR` | `conductor.d` next to the config | UI-managed state |
 
 ### Agent catalog
 

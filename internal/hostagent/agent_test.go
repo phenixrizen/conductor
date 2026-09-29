@@ -35,7 +35,7 @@ func startServer(t *testing.T) (*api.Server, *httptest.Server) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := api.New(cfg, catalog.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	srv := api.New(cfg, catalog.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	return srv, hs

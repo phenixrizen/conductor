@@ -16,6 +16,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
 	"github.com/phenixrizen/conductor/internal/signal"
+	"github.com/phenixrizen/conductor/internal/store"
 	"github.com/phenixrizen/conductor/internal/version"
 )
 
@@ -30,13 +31,15 @@ type Server struct {
 	limiter  *rateLimiter
 	log      *slog.Logger
 	web      http.Handler
+	store    *store.Store
 
 	mu      sync.Mutex
 	counter int
 }
 
-// New wires the server. web serves the embedded SPA and may be nil.
-func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler) *Server {
+// New wires the server. web serves the embedded SPA and may be nil. st persists
+// UI-managed state in the data directory and may be nil when there is none.
+func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -48,6 +51,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		limiter:  newRateLimiter(5, 20),
 		log:      log,
 		web:      web,
+		store:    st,
 	}
 	s.events = newEventHub()
 	s.hosts = signal.NewHub(s.registry, log)

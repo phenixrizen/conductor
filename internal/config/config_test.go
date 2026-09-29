@@ -53,3 +53,68 @@ func TestValidateBounds(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestResolveDataDirDefaults(t *testing.T) {
+	writeConfig := func(t *testing.T, body string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "conductor.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("without a config file it is conductor.d in the current directory", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.ResolveDataDir("")
+		if want := "conductor.d"; cfg.DataDir != want {
+			t.Fatalf("DataDir = %q, want %q", cfg.DataDir, want)
+		}
+	})
+
+	t.Run("with a config file it sits next to it", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.ResolveDataDir("/etc/x/conductor.json")
+		if want := filepath.Join("/etc/x", "conductor.d"); cfg.DataDir != want {
+			t.Fatalf("DataDir = %q, want %q", cfg.DataDir, want)
+		}
+	})
+
+	t.Run("a value from the config file is left alone", func(t *testing.T) {
+		t.Setenv("CONDUCTOR_DATA_DIR", "")
+		path := writeConfig(t, `{"dataDir":"/srv/from-file"}`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.ResolveDataDir(path)
+		if cfg.DataDir != "/srv/from-file" {
+			t.Fatalf("DataDir = %q", cfg.DataDir)
+		}
+	})
+
+	t.Run("the environment override wins and is left alone", func(t *testing.T) {
+		t.Setenv("CONDUCTOR_DATA_DIR", "/srv/from-env")
+		path := writeConfig(t, `{"dataDir":"/srv/from-file"}`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.DataDir != "/srv/from-env" {
+			t.Fatalf("after Load DataDir = %q, want the env value", cfg.DataDir)
+		}
+		cfg.ResolveDataDir(path)
+		if cfg.DataDir != "/srv/from-env" {
+			t.Fatalf("after ResolveDataDir DataDir = %q", cfg.DataDir)
+		}
+		// The same holds without a config file at all.
+		cfg, err = Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.ResolveDataDir("")
+		if cfg.DataDir != "/srv/from-env" {
+			t.Fatalf("no config file: DataDir = %q", cfg.DataDir)
+		}
+	})
+}

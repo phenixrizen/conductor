@@ -99,6 +99,8 @@ type Config struct {
 	Catalog catalog.File `json:"catalog"`
 	// CatalogPath points at a separate catalog JSON file.
 	CatalogPath string `json:"catalogPath"`
+	// DataDir is the writable directory for UI-managed state: catalog overlay, crews, generated hook assets.
+	DataDir string `json:"dataDir"`
 	// Dev relaxes origin checks for the Nuxt dev server on localhost:3000.
 	Dev bool `json:"dev"`
 
@@ -183,6 +185,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	str("CONDUCTOR_DEFAULT_CWD", &cfg.DefaultCwd)
 	list("CONDUCTOR_ENV_PASSTHROUGH", &cfg.EnvPassthrough)
 	str("CONDUCTOR_CATALOG_PATH", &cfg.CatalogPath)
+	str("CONDUCTOR_DATA_DIR", &cfg.DataDir)
 	if v := getenv("CONDUCTOR_FILE_VIEW"); v != "" {
 		cfg.FileView = FileView(v)
 	}
@@ -273,6 +276,19 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ResolveDataDir fills DataDir from the config file location when unset:
+// <dir of configPath>/conductor.d, or ./conductor.d without a config file.
+func (c *Config) ResolveDataDir(configPath string) {
+	if c.DataDir != "" {
+		return
+	}
+	base := "."
+	if configPath != "" {
+		base = filepath.Dir(configPath)
+	}
+	c.DataDir = filepath.Join(base, "conductor.d")
 }
 
 // LoadCatalog merges the inline catalog and the optional catalog file.

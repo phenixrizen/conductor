@@ -15,6 +15,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/share"
+	"github.com/phenixrizen/conductor/internal/store"
 	"github.com/phenixrizen/conductor/internal/version"
 	"github.com/phenixrizen/conductor/internal/web"
 )
@@ -42,6 +43,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, err
 	}
+	cfg.ResolveDataDir(*configPath)
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
@@ -57,12 +59,16 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, err
 	}
+	st, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return 1, err
+	}
 
 	ui := web.Handler()
 	if ui == nil {
 		log.Warn("web UI is not embedded; run `make web-build` before building, API only")
 	}
-	srv := api.New(cfg, cat, log, ui)
+	srv := api.New(cfg, cat, log, ui, st)
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
