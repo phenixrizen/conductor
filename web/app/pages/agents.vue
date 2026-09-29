@@ -101,10 +101,12 @@ async function restore(id: string) {
     const a = await api.unhideAgent(id)
     if (a) toast.add({ title: 'Restored', description: a.name, icon: 'i-lucide-eye', color: 'success' })
     else toast.add({ title: 'Nothing to restore', description: `No agent has the ID ${id} any more; it is off the hidden list.`, icon: 'i-lucide-eye', color: 'neutral' })
-    await refresh()
   } catch (e) {
     toast.add({ title: 'Restore failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
+    // Reload after a failure too: a 404 usually means another admin restored
+    // the agent first, and its stale entry should leave the Hidden list.
+    await refresh()
     restoring.value = ''
   }
 }
