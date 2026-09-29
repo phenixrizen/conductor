@@ -193,6 +193,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
 			return false
 		}
 		hs.SetAttentionFull(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), false)
+	case proto.HostActivity:
+		var m proto.HostActivityMsg
+		if json.Unmarshal(data, &m) != nil {
+			return false
+		}
+		// The session is the connection's, whatever m.SessionID says; the
+		// entry is checked and cleaned by HostActivity, and one of a type this
+		// server does not know (a newer host's) is dropped, not fatal.
+		hs.HostActivity(m.Entry)
 	case proto.HostRegister:
 		return false
 	default:

@@ -30,11 +30,33 @@ type Option struct {
 	Input string `json:"input"`
 }
 
-// Request is the attention update to send. Kind and Options let the
-// workbench offer one-click answers (see docs/protocol.md, Attention).
+// Request is the update to send: an attention state, or an event when Event
+// is set. Kind and Options let the workbench offer one-click answers (see
+// docs/protocol.md, Attention).
 type Request struct {
 	State   string   `json:"state"`
 	Message string   `json:"message,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Options []Option `json:"options,omitempty"`
+	// Event reports something the agent did instead of a state: one of the
+	// six event types of docs/protocol.md (Events), or an attention word
+	// (needs_input, working, done, clear). URL, To and Tool go with the events
+	// that use them. Send ignores State for an event.
+	Event string `json:"event,omitempty"`
+	URL   string `json:"url,omitempty"`
+	To    string `json:"to,omitempty"`
+	Tool  string `json:"tool,omitempty"`
+}
+
+// eventBody is what the events route reads: the same report under its own
+// names. The route refuses fields it does not know, so an event cannot travel
+// as a Request.
+type eventBody struct {
+	Type    string   `json:"type"`
+	Message string   `json:"message,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	To      string   `json:"to,omitempty"`
+	Tool    string   `json:"tool,omitempty"`
 	Kind    string   `json:"kind,omitempty"`
 	Options []Option `json:"options,omitempty"`
 }
@@ -61,10 +83,28 @@ func FromEnv(getenv func(string) string) (url, token string, err error) {
 	return url, token, nil
 }
 
-// Send posts the request to url with the agent token. Redirects are refused
-// so a token never follows a rewrite, and only one attempt is made.
+// eventsURL turns a session's attention URL, which is the one Conductor puts
+// in the environment, into the URL of its events route. Any other URL is
+// where the caller pointed it, and stays.
+func eventsURL(u string) string {
+	if base, ok := strings.CutSuffix(u, "/attention"); ok {
+		return base + "/events"
+	}
+	return u
+}
+
+// Send posts the request to url with the agent token. A request with Event
+// set goes to the session's events route (url with /attention replaced by
+// /events) as an event; any other goes to url as an attention update, as it
+// always did. Redirects are refused so a token never follows a rewrite, and
+// only one attempt is made.
 func Send(ctx context.Context, url, token string, req Request) error {
-	body, err := json.Marshal(req)
+	var payload any = req
+	if req.Event != "" {
+		url = eventsURL(url)
+		payload = eventBody{Type: req.Event, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Kind: req.Kind, Options: req.Options}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -100,6 +101,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// process starts and can be placed in its environment.
 	agentToken, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken}
+	a.activity = newActivityForwarder(a.sendActivity, opts.Log)
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return Result{}, err
@@ -132,6 +134,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Transport:       proto.TransportWebRTC,
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,
+		OnActivity:      a.onLocalActivity,
 	})
 	a.mu.Lock()
 	a.local, a.proc = local, proc
@@ -139,6 +142,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go a.activity.run(runCtx)
 
 	if opts.LocalAttach && opts.Stdin != nil && opts.Stdout != nil {
 		restore, err := a.attachLocal(runCtx)
@@ -158,8 +162,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		_ = local.Stop(stopCtx)
 		stopCancel()
 	}
-	// Give the control connection a moment to deliver the final status.
-	a.flushStatus()
+	// Give the control connection a moment to deliver the final status and the
+	// last activity entries.
+	a.settle()
 	cancel()
 	a.closeAllPeers()
 	exit := proc.Exit()
@@ -186,6 +191,11 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
+
+	// activity carries the local session's activity entries to the server;
+	// statusQueued says the session's final (status) entry is in it.
+	activity     *activityForwarder
+	statusQueued atomic.Bool
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
@@ -384,6 +394,62 @@ func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttenti
 	return m
 }
 
+// onLocalActivity is the local session's OnActivity hook: it queues the entry
+// for the server, whose admin stream shows every entry of every session. The
+// session calls it on the goroutine that recorded the entry, so it never waits
+// for the connection. Entries recorded while the connection is down are lost
+// to the stream; the session log has them.
+func (a *agent) onLocalActivity(_ string, e session.ActivityEntry) {
+	a.activity.push(e)
+	if e.Type == session.ActivityStatus {
+		a.statusQueued.Store(true)
+	}
+}
+
+// sendActivity delivers one entry on the control connection.
+func (a *agent) sendActivity(e session.ActivityEntry) {
+	a.send(hostActivityMsg(a.sessionID(), e))
+}
+
+// settle gives the control connection a moment to deliver what the session
+// leaves behind when it ends: the final status message, and the activity
+// entries queued for the server, the final status entry among them.
+func (a *agent) settle() {
+	a.flushStatus()
+	a.flushActivity()
+}
+
+// flushActivity gives the entries the local session recorded a moment to
+// reach the server before the connection closes. Once the process has ended
+// that includes the final status entry, which the session records just after
+// it announces the end.
+func (a *agent) flushActivity() {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if (!a.local.Info().Status.Ended() || a.statusQueued.Load()) && a.activity.idle() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// hostActivityMsg encodes an entry for the control connection. An entry
+// without a time is sent without one.
+func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivityMsg {
+	m := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
+	if !e.At.IsZero() {
+		m.At = e.At.UTC().Format(time.RFC3339Nano)
+	}
+	return proto.HostActivityMsg{T: proto.HostActivity, SessionID: sessionID, Entry: m}
+}
+
+// entryFromProto decodes an entry from the control connection. A time that
+// cannot be read leaves At zero, for the session to stamp.
+func entryFromProto(a proto.Activity) session.ActivityEntry {
+	at, _ := time.Parse(time.RFC3339Nano, a.At)
+	return session.ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+}
+
 // serveConn processes messages on an established control connection until
 // it fails. Peers are closed when the connection ends.
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
@@ -530,6 +596,18 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+	case proto.HostActivity:
+		// An event an agent reported through the API for this session. It is
+		// recorded like any other entry, so the people watching the host see
+		// it, and the OnActivity hook reports it back to the server.
+		var m proto.HostActivityMsg
+		if err := json.Unmarshal(data, &m); err != nil {
+			return err
+		}
+		if !session.ValidEventType(m.Entry.Type) {
+			return errors.New("activity of an unknown type")
+		}
+		a.local.Record(entryFromProto(m.Entry))
 	case proto.HostStop:
 		a.log.Info("stop requested by server")
 		go func() {

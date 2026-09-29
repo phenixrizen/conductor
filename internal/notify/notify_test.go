@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -122,5 +123,88 @@ func TestRequestJSONCarriesKindAndOptions(t *testing.T) {
 	b, _ := json.Marshal(Request{State: "needs_input", Kind: "permission", Options: []Option{{Label: "Yes", Input: "1"}}})
 	if !strings.Contains(string(b), `"kind":"permission"`) || !strings.Contains(string(b), `"input":"1"`) {
 		t.Fatalf("json %s", b)
+	}
+}
+
+func TestRequestEventTargetsEventsRoute(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { path = r.URL.Path; w.WriteHeader(202) }))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+"/api/sessions/s1/attention", "tok", Request{Event: "progress", Message: "1/7"}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/api/sessions/s1/events" {
+		t.Fatalf("path %q", path)
+	}
+}
+
+// sendTo posts req to srv under path and returns the path, the credential and
+// the decoded JSON body the server saw.
+func sendTo(t *testing.T, path string, req Request) (string, string, map[string]any) {
+	t.Helper()
+	var gotPath, gotAuth string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("body is not JSON: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+path, "tok", req); err != nil {
+		t.Fatal(err)
+	}
+	return gotPath, gotAuth, body
+}
+
+// The events route rejects unknown fields, so an event must travel as the
+// route's own body: {"type", "message", "url", "to", "tool", …}, not as the
+// attention request with an extra "event" key.
+func TestRequestEventBodyIsAnEventsRequest(t *testing.T) {
+	path, auth, body := sendTo(t, "/api/sessions/s1/attention", Request{
+		Event: "artifact", Message: "PR opened", URL: "https://github.com/x/y/pull/1", To: "review", Tool: "gh",
+	})
+	if path != "/api/sessions/s1/events" || auth != "Bearer tok" {
+		t.Fatalf("server saw %q %q", path, auth)
+	}
+	want := map[string]any{"type": "artifact", "message": "PR opened", "url": "https://github.com/x/y/pull/1", "to": "review", "tool": "gh"}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body %v, want %v", body, want)
+	}
+}
+
+func TestRequestEventBodyKeepsKindAndOptions(t *testing.T) {
+	_, _, body := sendTo(t, "/api/sessions/s1/attention", Request{Event: "needs_input", Message: "Allow?", Kind: "permission", Options: permissionOptions()})
+	if body["type"] != "needs_input" || body["kind"] != "permission" || len(body["options"].([]any)) != 3 {
+		t.Fatalf("body %v", body)
+	}
+	for _, key := range []string{"state", "event"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("body carries %q: %v", key, body)
+		}
+	}
+}
+
+// Without Event the request goes to /attention exactly as before, and the
+// body keeps the attention shape.
+func TestRequestWithoutEventKeepsTheAttentionRoute(t *testing.T) {
+	path, _, body := sendTo(t, "/api/sessions/s1/attention", Request{State: "needs_input", Message: "m"})
+	if path != "/api/sessions/s1/attention" {
+		t.Fatalf("path %q", path)
+	}
+	want := map[string]any{"state": "needs_input", "message": "m"}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body %v, want %v", body, want)
+	}
+}
+
+// Only a URL that ends in /attention is rewritten; anything else is where the
+// caller pointed it.
+func TestRequestEventLeavesOtherURLsAlone(t *testing.T) {
+	for _, in := range []string{"/api/x", "/api/sessions/s1/attention/more", "/attentions"} {
+		if path, _, _ := sendTo(t, in, Request{Event: "progress"}); path != in {
+			t.Fatalf("%s was sent to %s", in, path)
+		}
 	}
 }

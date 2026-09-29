@@ -73,6 +73,9 @@ export interface ActivityEntry {
   tool?: string
 }
 
+/** Data of an `activity` event on GET /api/events: an activity entry and the session it belongs to. */
+export type SessionActivity = ActivityEntry & { sessionId: string }
+
 export interface ICEServer {
   urls: string[]
   username?: string

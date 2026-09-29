@@ -1,5 +1,6 @@
 import type { SessionInfo } from './useSessions'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
+import type { SessionActivity } from '~/utils/protocol'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 
@@ -70,6 +71,7 @@ export function useAttention() {
   const admin = useAdminToken()
   const { httpBase } = useApiBase()
   const api = useSessions()
+  const events = useEvents()
   const { settings } = useAttentionSettings()
 
   const sessions = computed(() => {
@@ -187,6 +189,10 @@ export function useAttention() {
       if (event === 'snapshot') replaceAll(payload as SessionInfo[])
       else if (event === 'session') upsert(payload as SessionInfo)
       else if (event === 'removed') remove((payload as { id: string }).id)
+      else if (event === 'activity') {
+        const { sessionId, ...entry } = payload as SessionActivity
+        events.push(sessionId, entry)
+      }
     } catch {
       /* ignore malformed event */
     }

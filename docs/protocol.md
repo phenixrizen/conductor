@@ -96,12 +96,33 @@ Host → server: `register{proto, host{name,version,user?}, session{name,agentId
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `branch` ≤ 200 bytes is read from `.git/HEAD`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`.
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`,
+`activity{sessionId,entry}`.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
-`attention{state,message?,source,kind?,options?}` (API-originated change to broadcast), `error`.
+`attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
+`activity{entry}` (an event reported through the API, for the host to record), `error`.
+
+`activity` carries one activity-log entry, the fields of the `activity`
+control message above (`entry` has its own `t`), in both directions. Host to
+server, it carries every entry the host's session records, so that
+`GET /api/events` shows a hosted session like a server one. The host queues
+them (at most 256 waiting; a burst past that is dropped, and so is anything
+recorded while the connection is down, for the session log has it all) and
+sends them in order. The server takes the session from the connection and
+ignores `sessionId`, drops an entry whose `type` it does not know instead of
+closing the connection, cuts every field to the limits of Events (a `by` over
+64 bytes is dropped), stamps the time of receipt on an entry without a
+readable `at`, and never sends the entry back. Server to host, it carries an
+event that an agent reported through `POST /api/sessions/{id}/events` for the
+hosted session: the server has no activity log for it, so the host records it
+(its own event limit applies) and reports it back like any other entry. Both
+directions are text frames under the host-message limit (64 KiB): `entry`
+is bounded so that it fits one 8 KiB CONTROL frame, and the envelope adds
+under 100 bytes. A peer that does not know `activity` ignores it, so a hosted
+session of an older host produces no events.
 
 The host registers before it starts the process so the session ID can be
 placed in the agent's environment.
@@ -158,7 +179,8 @@ answered and who answered it) and an `input` activity entry.
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
 header-authenticated `fetch`: `snapshot` with the full list first, then
-`session` per change and `removed{id}` when a session leaves the registry).
+`session` per change, `removed{id}` when a session leaves the registry, and
+`activity` for every activity entry, see Events).
 
 ## Events
 
@@ -194,6 +216,39 @@ broadcast; the session counts it and logs the first drop and every 100th at
 debug level. `join`, `leave`, `input`, `link` and `status` entries, which the
 session and the server produce themselves, skip the limit, so a chatty hook
 cannot crowd out the roster or the final `status` row.
+
+Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
+<agent token>` (or the admin token) and the body `{type, message?, url?, to?,
+tool?, kind?, options?}`. `type` is one of the six event types or an
+attention word: `needs_input`, `working`, `done` or `clear`. An attention word
+is applied exactly as `POST /api/sessions/{id}/attention` applies it, with the
+same checks, `kind`, `options` and effect, and the same `source` (`api` for the
+agent token, `admin` for the admin); only the reply differs. The entries a
+session records itself (`attention`, `input`, `join`, `leave`, `link`,
+`status`) cannot be reported: they skip the limit above, and only the session
+may make them. The reply is `202 {"accepted": true}`, and the entry has
+`byName` `agent`. Errors: `400 invalid_type`, `400 invalid_request` (a body
+that is not one JSON object of known fields, and for the attention words the
+checks of `/attention`), `400 invalid_kind`, `401 unauthorized`, `404
+not_found`, `409 session_ended`, and `429 rate_limited` when a server
+session's bucket is empty. A hosted session has no log on the server and no
+bucket of its own: the server sends the entry to the host (see Host control
+connection) and answers `202` once it is on its way. It cannot know whether
+the host's own limit takes the entry, so an entry the host drops is dropped
+without a word to the caller; `409 host_disconnected` says that no host is
+connected. `conductor notify --event <type> [--message M] [--url U] [--to T]
+[--tool N]` sends an event from inside a session: it turns the
+`CONDUCTOR_NOTIFY_URL` of the session (`…/attention`) into `…/events`.
+
+Streaming: every entry a session records, whether an agent reported it or the
+session made it, reaches admins as an `activity` event on `GET /api/events`,
+next to `session` and `removed`:
+`data: {"sessionId", "at", "type", "by"?, "byName"?, "message"?, "url"?, "to"?, "tool"?}`.
+Entries arrive as the sessions record them, so a few can be out of order; `at`
+says when each happened. The feed is live, not a log: a client that has fallen
+behind (its queue is three quarters full) misses entries and keeps its
+stream, with room left for the `session` and `removed` events it cannot do
+without. The session's own `activity` control messages replay the log.
 
 ## File reads
 
@@ -240,7 +295,8 @@ rejected. Errors are `{"error":{"code","message"}}`. The WebSocket routes,
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204` |
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
-| `GET /api/events` | admin | Server-Sent Events of session changes, see Attention |
+| `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`) and of activity entries (`activity`), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited) |
 
 The catalog routes persist their changes as `catalog.json` in the data

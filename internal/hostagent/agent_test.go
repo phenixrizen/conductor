@@ -1,6 +1,7 @@
 package hostagent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -290,4 +291,126 @@ func TestHostDisconnectClosesViewers(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("session status not updated after host disconnect")
+}
+
+// adminFeed opens GET /api/events as the admin and returns what it streams as
+// "<event> <data>" strings.
+func adminFeed(t *testing.T, base string) <-chan string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), "GET", base+"/api/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("events stream: %v %v", err, resp)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	feed := make(chan string, 1024)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(nil, 1<<20)
+		var name string
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				select {
+				case feed <- name + " " + strings.TrimPrefix(line, "data: "):
+				case <-t.Context().Done():
+					return
+				}
+			}
+		}
+	}()
+	return feed
+}
+
+func waitFeed(t *testing.T, feed <-chan string, what string, match func(string) bool) string {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-feed:
+			if match(ev) {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("never saw %s", what)
+		}
+	}
+}
+
+// An event reported for a hosted session travels server, host, server before
+// the admin stream shows it, and the host reports its own last entry, the
+// final status, before it lets go of its connection.
+func TestHostActivityTravelsBothWaysThroughTheServer(t *testing.T) {
+	_, hs := startServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registered := make(chan string, 1)
+	done := make(chan Result, 1)
+	go func() {
+		res, err := Run(ctx, Options{
+			ServerURL: hs.URL, Token: hostToken, Name: "activity test", Argv: []string{"/bin/cat"}, RelayOnly: true,
+			Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Registered: func(id, _ string) { registered <- id },
+		})
+		if err != nil {
+			t.Errorf("run: %v", err)
+		}
+		done <- res
+	}()
+	var sessionID string
+	select {
+	case sessionID = <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("host did not register")
+	}
+	feed := adminFeed(t, hs.URL)
+
+	post := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", hs.URL+"/api/sessions/"+sessionID+"/events", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("post %s: %d", body, resp.StatusCode)
+		}
+	}
+	post(`{"type":"artifact","message":"PR opened","url":"https://github.com/x/y/pull/1"}`)
+	ev := waitFeed(t, feed, "the artifact entry", func(ev string) bool {
+		return strings.HasPrefix(ev, "activity ") && strings.Contains(ev, `"type":"artifact"`) && strings.Contains(ev, sessionID)
+	})
+	for _, want := range []string{`"sessionId":"` + sessionID + `"`, `"byName":"agent"`, `"message":"PR opened"`, `"url":"https://github.com/x/y/pull/1"`} {
+		if !strings.Contains(ev, want) {
+			t.Fatalf("streamed %s, missing %s", ev, want)
+		}
+	}
+
+	// Stopping the session ends the process; the final status entry, made
+	// on the host, reaches the stream before the host exits.
+	req, _ := http.NewRequest("DELETE", hs.URL+"/api/sessions/"+sessionID, nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	waitFeed(t, feed, "the final status entry", func(ev string) bool {
+		return strings.HasPrefix(ev, "activity ") && strings.Contains(ev, `"type":"status"`) && strings.Contains(ev, `"message":"stopped`) && strings.Contains(ev, sessionID)
+	})
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("host did not exit after stop")
+	}
 }

@@ -1,4 +1,4 @@
-import type { Attention, Role } from '~/utils/protocol'
+import type { Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -69,6 +69,21 @@ export interface AgentInput {
   signal?: AgentSignal
 }
 
+/** Body of POST /api/sessions/{id}/events: something the agent did, or an attention word. */
+export interface EventInput {
+  type: 'progress' | 'artifact' | 'handoff' | 'tool_use' | 'tool_denied' | 'error' | 'needs_input' | 'working' | 'done' | 'clear'
+  message?: string
+  /** `artifact`: where the result lives (≤ 2048 bytes). */
+  url?: string
+  /** `handoff`: who the work goes to (≤ 40 characters). */
+  to?: string
+  /** `tool_use`, `tool_denied`, `error`: the tool involved (≤ 100 bytes). */
+  tool?: string
+  /** With the attention words: the shape of the prompt and its quick replies. */
+  kind?: AttentionKind
+  options?: AttentionOption[]
+}
+
 export interface ShareLink {
   id: string
   sessionId: string
@@ -120,6 +135,9 @@ export function useSessions() {
     join: (token: string) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token }),
     setAttention: (id: string, state: 'needs_input' | 'working' | 'done' | 'clear', message?: string) =>
       request<{ attention: Attention }>(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: 'POST', body: { state, message } }),
+    /** Reports an event for a session. 202 means recorded, or on its way to the host of a hosted session; 429 `rate_limited` means the session's event limit was reached; 409 `host_disconnected` means a hosted session has no host connected. */
+    sendEvent: (id: string, body: EventInput) =>
+      request<{ accepted: boolean }>(`/api/sessions/${encodeURIComponent(id)}/events`, { method: 'POST', body }),
   }
 }
 

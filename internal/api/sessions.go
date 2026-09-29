@@ -127,6 +127,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Transport:       proto.TransportWS,
 		Log:             s.log,
 		OnChange:        s.events.publish,
+		OnActivity:      s.events.activity,
 	})
 	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {

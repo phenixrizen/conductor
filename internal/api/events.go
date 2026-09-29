@@ -13,6 +13,12 @@ import (
 const (
 	eventQueue     = 256
 	eventPingEvery = 20 * time.Second
+	// activityQueueLimit is how full a client's queue may be before activity
+	// entries skip it. Session changes and removals carry state a client
+	// cannot do without, and a client that misses one is dropped and starts
+	// over from a snapshot; the entries are a live feed a client may miss
+	// some of. So a burst of entries never uses the last quarter of the queue.
+	activityQueueLimit = eventQueue - eventQueue/4
 )
 
 // eventHub fans session changes out to Server-Sent Events clients.
@@ -52,6 +58,37 @@ func (h *eventHub) publish(info session.Info) {
 		default:
 			delete(h.clients, ch)
 			close(ch)
+		}
+	}
+}
+
+// activityEvent is the data of an `activity` event: the entry, and the session
+// it belongs to.
+type activityEvent struct {
+	SessionID string `json:"sessionId"`
+	session.ActivityEntry
+}
+
+// activity queues an activity entry of a session for every client. It is the
+// OnActivity hook of every session, so it runs on the goroutines that record,
+// concurrently and out of order (each entry says when it happened), and it
+// never waits: a client whose queue is past activityQueueLimit misses the
+// entry and keeps its stream.
+func (h *eventHub) activity(sessionID string, e session.ActivityEntry) {
+	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e})
+	if err != nil {
+		return
+	}
+	msg := []byte("event: activity\ndata: " + string(b) + "\n\n")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.clients {
+		if len(ch) >= activityQueueLimit {
+			continue
+		}
+		select {
+		case ch <- msg:
+		default:
 		}
 	}
 }

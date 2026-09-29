@@ -13,6 +13,7 @@ const (
 	HostViewerClose = "viewer_closed"
 	// both directions
 	HostAttention = "attention"
+	HostActivity  = "activity"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -140,6 +141,20 @@ type HostAttentionMsg struct {
 	Source    string            `json:"source,omitempty"`
 	Kind      string            `json:"kind,omitempty"`
 	Options   []AttentionOption `json:"options,omitempty"`
+}
+
+// HostActivityMsg carries one activity-log entry between host and server.
+// Host to server: an entry the host's session recorded. Server to host: an
+// event an agent reported through the events route for the hosted session,
+// which the host records like any other. SessionID is set by the host and
+// ignored by the server, which takes the session from the connection; the
+// server omits it. Entry is bounded by session.CleanEntry so that it fits one
+// CONTROL frame (MaxControl); the envelope adds a few dozen bytes, far below
+// MaxHostMessage.
+type HostActivityMsg struct {
+	T         string   `json:"t"`
+	SessionID string   `json:"sessionId,omitempty"`
+	Entry     Activity `json:"entry"`
 }
 
 // HostStopMsg asks the host to stop its process.

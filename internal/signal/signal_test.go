@@ -1,7 +1,10 @@
 package signal
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,5 +128,300 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 	hub.Expire(time.Now().Add(DisconnectGrace + time.Second))
 	if _, ok := reg.Get(hs.Info().ID); ok {
 		t.Fatal("must be removed after grace")
+	}
+}
+
+// activityRecorder collects what a Hub hands to OnActivity.
+type activityRecorder struct {
+	mu  sync.Mutex
+	ids []string
+	got []session.ActivityEntry
+}
+
+func (r *activityRecorder) hook(id string, e session.ActivityEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, id)
+	r.got = append(r.got, e)
+}
+
+func (r *activityRecorder) entries() []session.ActivityEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]session.ActivityEntry(nil), r.got...)
+}
+
+func TestHostActivityReachesTheHubHook(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+
+	at := time.Date(2026, 9, 29, 12, 0, 0, 123456789, time.UTC)
+	hs.HostActivity(proto.Activity{
+		T: proto.CtlActivity, At: at.Format(time.RFC3339Nano), Type: session.ActivityArtifact, By: "0123456789abcdef", ByName: "agent",
+		Message: "PR opened", URL: "https://github.com/x/y/pull/1", To: "review", Tool: "gh",
+	})
+	got := rec.entries()
+	if len(got) != 1 || rec.ids[0] != hs.Info().ID {
+		t.Fatalf("hook saw %v for %v, want one entry for %s", got, rec.ids, hs.Info().ID)
+	}
+	want := session.ActivityEntry{
+		At: at, Type: session.ActivityArtifact, By: "0123456789abcdef", ByName: "agent",
+		Message: "PR opened", URL: "https://github.com/x/y/pull/1", To: "review", Tool: "gh",
+	}
+	if got[0] != want {
+		t.Fatalf("entry %+v, want %+v", got[0], want)
+	}
+}
+
+// The host's session id in the message is not used: the connection says whose
+// entry it is, so one host cannot write into another session's feed.
+func TestHostActivityIsAttributedToTheConnectionsSession(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	hs.HostActivity(proto.Activity{At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityProgress, Message: "1/7"})
+	if len(rec.ids) != 1 || rec.ids[0] != hs.Info().ID {
+		t.Fatalf("attributed to %v, want %s", rec.ids, hs.Info().ID)
+	}
+}
+
+func TestHostActivityDropsTypesItDoesNotKnow(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	for _, typ := range []string{"", "bogus", "clear", "needs_input", "PROGRESS", strings.Repeat("x", 100000)} {
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: typ, Message: "m"})
+	}
+	if got := rec.entries(); len(got) != 0 {
+		t.Fatalf("unknown types reached the hook: %+v", got)
+	}
+	// Every type the session itself can record is welcome from a host.
+	for _, typ := range []string{
+		session.ActivityAttention, session.ActivityInput, session.ActivityJoin, session.ActivityLeave, session.ActivityLink, session.ActivityStatus,
+		session.ActivityProgress, session.ActivityArtifact, session.ActivityHandoff, session.ActivityToolUse, session.ActivityToolDenied, session.ActivityError,
+	} {
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: typ})
+	}
+	if got := rec.entries(); len(got) != 12 {
+		t.Fatalf("%d of 12 known types reached the hook", len(got))
+	}
+}
+
+func TestHostActivityIsCleanedBeforeItIsFannedOut(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	hs.HostActivity(proto.Activity{
+		T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityError,
+		By:      strings.Repeat("b", 1000),
+		ByName:  "  bob\x00\x1b[31m" + strings.Repeat("n", 100),
+		Message: "line\x00 one\nline two " + strings.Repeat("m", 5000),
+		URL:     "https://x/" + strings.Repeat("u", 5000),
+		To:      strings.Repeat("t", 100),
+		Tool:    strings.Repeat("k", 500),
+	})
+	got := rec.entries()
+	if len(got) != 1 {
+		t.Fatalf("entries %+v", got)
+	}
+	e := got[0]
+	if len(e.Message) > session.MaxAttentionMessage || strings.ContainsRune(e.Message, 0) || !strings.HasPrefix(e.Message, "line one\nline two ") {
+		t.Fatalf("message %q", e.Message)
+	}
+	if len(e.URL) > session.MaxEventURL || len([]rune(e.To)) > session.MaxEventTo || len(e.Tool) > session.MaxEventTool {
+		t.Fatalf("url %d, to %d, tool %d", len(e.URL), len([]rune(e.To)), len(e.Tool))
+	}
+	if len([]rune(e.ByName)) > proto.MaxNameLen || strings.ContainsAny(e.ByName, "\x00\x1b") {
+		t.Fatalf("byName %q", e.ByName)
+	}
+	if e.By != "" {
+		t.Fatalf("a subscriber id of %d bytes was kept", len(e.By))
+	}
+	frame, err := json.Marshal(proto.Activity{T: proto.CtlActivity, At: e.At.Format(time.RFC3339Nano), Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool})
+	if err != nil || len(frame) > proto.MaxControl {
+		t.Fatalf("cleaned entry is %d bytes as a control message (%v)", len(frame), err)
+	}
+}
+
+// Entries are stamped when the host sends them; one without a usable time
+// gets the moment the server saw it.
+func TestHostActivityStampsAMissingOrUnreadableTime(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	before := time.Now()
+	for _, at := range []string{"", "yesterday", "0000-00-00T00:00:00Z"} {
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: at, Type: session.ActivityProgress})
+	}
+	got := rec.entries()
+	if len(got) != 3 {
+		t.Fatalf("entries %+v", got)
+	}
+	for _, e := range got {
+		if e.At.Before(before) || time.Since(e.At) > 5*time.Second {
+			t.Fatalf("stamp %v is not the time of receipt", e.At)
+		}
+	}
+}
+
+func TestHostActivityWithoutAHookIsIgnored(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, _ := register(t, hub)
+	hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityProgress})
+}
+
+// The hook may be slow to reach and is called from every host's read loop:
+// HostActivity itself takes no lock the hook could wait on.
+func TestHostActivityIsSafeFromManyGoroutines(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityToolUse, Tool: "Bash"})
+			}
+		}()
+	}
+	wg.Wait()
+	if n := len(rec.entries()); n != 800 {
+		t.Fatalf("%d of 800 entries reached the hook", n)
+	}
+}
+
+func TestForwardActivityQueuesAnActivityMessage(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	at := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	err := hs.ForwardActivity(session.ActivityEntry{
+		At: at, Type: session.ActivityHandoff, ByName: "agent", Message: "over to review", To: "reviewer", Tool: "gh", URL: "https://x/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m proto.HostActivityMsg
+	select {
+	case o := <-conn.Send:
+		if o.Text == nil || json.Unmarshal(o.Text, &m) != nil {
+			t.Fatalf("queued %+v", o)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no activity message queued")
+	}
+	want := proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{
+		T: proto.CtlActivity, At: at.Format(time.RFC3339Nano), Type: session.ActivityHandoff, ByName: "agent", Message: "over to review", URL: "https://x/1", To: "reviewer", Tool: "gh",
+	}}
+	if m != want {
+		t.Fatalf("message %+v, want %+v", m, want)
+	}
+}
+
+// The API does not stamp the events it forwards: the host does, when it
+// records them, and its clock is the one the session log uses.
+func TestForwardActivityLeavesTheTimeToTheHost(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "1/7"}); err != nil {
+		t.Fatal(err)
+	}
+	var m proto.HostActivityMsg
+	if err := json.Unmarshal((<-conn.Send).Text, &m); err != nil || m.Entry.At != "" {
+		t.Fatalf("message %+v %v", m, err)
+	}
+}
+
+// A host reads at most MaxHostMessage; whatever the caller hands over is
+// bounded before it is queued.
+func TestForwardActivityCleansWhatItSends(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: strings.Repeat("m", 50000), URL: strings.Repeat("u", 50000), Tool: strings.Repeat("t", 50000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := <-conn.Send
+	if len(o.Text) > proto.MaxControl {
+		t.Fatalf("queued %d bytes", len(o.Text))
+	}
+}
+
+func TestForwardActivityNeedsAHostWithRoom(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	for i := 0; i < cap(conn.Send); i++ {
+		conn.Send <- Outbound{Text: []byte("{}")}
+	}
+	if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); !errors.Is(err, ErrSlowHost) {
+		t.Fatalf("full queue: %v", err)
+	}
+	hs2, conn2 := register(t, NewHub(session.NewRegistry(4), nil))
+	hs2.HostDisconnected(conn2)
+	if err := hs2.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); !errors.Is(err, ErrHostGone) {
+		t.Fatalf("no host: %v", err)
+	}
+}
+
+// What one side sends the other can read: an entry forwarded to a host comes
+// back through HostActivity as the same entry.
+func TestActivityMessageRoundTrip(t *testing.T) {
+	src, srcConn := register(t, NewHub(session.NewRegistry(4), nil))
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	dst, _ := register(t, hub)
+
+	in := session.ActivityEntry{
+		At: time.Date(2026, 9, 29, 12, 0, 0, 5, time.UTC), Type: session.ActivityToolDenied, By: "b1", ByName: "agent",
+		Message: "denied", URL: "https://x/1", To: "them", Tool: "Bash",
+	}
+	if err := src.ForwardActivity(in); err != nil {
+		t.Fatal(err)
+	}
+	var m proto.HostActivityMsg
+	if err := json.Unmarshal((<-srcConn.Send).Text, &m); err != nil {
+		t.Fatal(err)
+	}
+	dst.HostActivity(m.Entry)
+	if got := rec.entries(); len(got) != 1 || got[0] != in {
+		t.Fatalf("round trip gave %+v, want %+v", got, in)
+	}
+}
+
+// MaxHostMessage bounds a host control text frame. The entry alone is bounded
+// by CleanEntry so that its control frame fits 8 KiB; the host envelope adds a
+// few dozen bytes to that, far under 64 KiB, in both directions.
+func TestActivityMessagesFitTheHostMessageLimit(t *testing.T) {
+	// The characters JSON writes longest: 6 bytes each for < > &.
+	worst := session.CleanEntry(session.ActivityEntry{
+		At: time.Date(2006, 1, 2, 15, 4, 5, 999999999, time.UTC), Type: session.ActivityToolDenied, By: strings.Repeat("b", maxEntryBy),
+		ByName: strings.Repeat("<", 200), Message: strings.Repeat("<", 5000), URL: strings.Repeat("a", 5000),
+		To: strings.Repeat("&", 200), Tool: strings.Repeat(">", 500),
+	})
+	if worst.URL == "" || len(worst.Message) != session.MaxAttentionMessage || len(worst.Tool) != session.MaxEventTool {
+		t.Fatalf("the test entry is not maximal: %+v", worst)
+	}
+	toServer := hostActivityMsg(worst)
+	toServer.SessionID = session.NewID() // the host names its session; the server does not
+	for name, msg := range map[string]proto.HostActivityMsg{"host to server": toServer, "server to host": hostActivityMsg(worst)} {
+		b, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry, _ := json.Marshal(msg.Entry)
+		if len(entry) > proto.MaxControl {
+			t.Fatalf("%s: the entry is %d bytes, over the %d byte control limit", name, len(entry), proto.MaxControl)
+		}
+		if len(b) > proto.MaxHostMessage {
+			t.Fatalf("%s: the message is %d bytes, over the %d byte host limit", name, len(b), proto.MaxHostMessage)
+		}
+		if extra := len(b) - len(entry); extra > 100 {
+			t.Fatalf("%s: the envelope adds %d bytes, more than the headroom it is given", name, extra)
+		}
 	}
 }

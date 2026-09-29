@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -120,6 +121,118 @@ func (e *testEnv) createSession(agent string) string {
 		}
 	})
 	return id
+}
+
+// agentToken gives a server session a known agent token, as the process in it
+// receives one, and returns it.
+func (e *testEnv) agentToken(id string) string {
+	e.t.Helper()
+	d, ok := e.srv.registry.Get(id)
+	local, isLocal := d.(*session.Local)
+	if !ok || !isLocal {
+		e.t.Fatalf("session %s is not a server session", id)
+	}
+	tok := "agent-token-" + id
+	local.SetAgentToken(tok)
+	return tok
+}
+
+// sse opens GET /api/events as the admin and returns what it streams as
+// "<event> <data>" strings, the snapshot first. The subscription is in place
+// when sse returns, and the stream is read for as long as the test runs, so a
+// test that posts a great many events cannot stall it.
+func (e *testEnv) sse(t *testing.T) <-chan string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), "GET", e.http.URL+"/api/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("events stream: %d", resp.StatusCode)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	events := make(chan string, 4096)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(nil, 1<<20)
+		var name string
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				select {
+				case events <- name + " " + strings.TrimPrefix(line, "data: "):
+				case <-t.Context().Done():
+					return
+				}
+			}
+		}
+	}()
+	return events
+}
+
+// waitEvent reads events until match accepts one and returns it. Events
+// before it are discarded.
+func (e *testEnv) waitEvent(t *testing.T, events <-chan string, match func(string) bool) string {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if match(ev) {
+				return ev
+			}
+		case <-deadline:
+			t.Fatal("event not observed")
+		}
+	}
+}
+
+// activityPayload decodes the data of an "activity <json>" event.
+func activityPayload(t *testing.T, ev string) map[string]any {
+	t.Helper()
+	data, ok := strings.CutPrefix(ev, "activity ")
+	if !ok {
+		t.Fatalf("not an activity event: %.200s", ev)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		t.Fatalf("activity data: %v in %.200s", err, data)
+	}
+	return m
+}
+
+func isActivity(typ, sessionID string) func(string) bool {
+	return func(ev string) bool {
+		return strings.HasPrefix(ev, "activity ") && strings.Contains(ev, `"type":"`+typ+`"`) && strings.Contains(ev, sessionID)
+	}
+}
+
+// waitEnded blocks until the server session has ended.
+func (e *testEnv) waitEnded(id string) {
+	e.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if d, ok := e.srv.registry.Get(id); ok && d.Info().Status.Ended() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.t.Fatalf("session %s did not end", id)
+}
+
+func errorCode(out map[string]any) any {
+	if m, ok := out["error"].(map[string]any); ok {
+		return m["code"]
+	}
+	return nil
 }
 
 func TestAuthAndHealth(t *testing.T) {
@@ -1329,4 +1442,295 @@ func TestCatalogSaveCollapsesDuplicateOverlayEntries(t *testing.T) {
 	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 {
 		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
 	}
+}
+
+func TestEventsRouteRecordsAndStreams(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	events := e.sse(t) // the admin stream, subscribed before anything is posted
+	resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "artifact", "message": "PR opened", "url": "https://github.com/x/y/pull/1"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	if out["accepted"] != true {
+		t.Fatalf("reply %v", out)
+	}
+	e.waitEvent(t, events, func(ev string) bool {
+		return strings.HasPrefix(ev, "activity ") && strings.Contains(ev, `"type":"artifact"`) && strings.Contains(ev, id)
+	})
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "bogus"}); resp.StatusCode != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "invalid_type" {
+		t.Fatalf("bogus: %d %v", resp.StatusCode, out)
+	}
+	// attention types still update attention
+	e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "needs_input", "message": "?"})
+	_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+	if got["session"].(map[string]any)["attention"].(map[string]any)["state"] != "needs_input" {
+		t.Fatal("needs_input via /events did not apply")
+	}
+}
+
+// A hook that floods the route costs the session its excess (the bucket
+// answers 429) and nobody else anything: the admin stream stays connected
+// and keeps delivering.
+func TestEventsFloodKeepsSSEClient(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	events := e.sse(t)
+	limited := 0
+	for i := 0; i < 1000; i++ {
+		resp, _ := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "progress", "message": "n"})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	if limited == 0 {
+		t.Fatal("1000 events in a row were never rate limited")
+	}
+	// The client must still receive a later event. The flood emptied the
+	// session's bucket, which earns a token every 50 ms, so the next event is
+	// admitted after a moment.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "error", "message": "last"})
+		if resp.StatusCode == http.StatusAccepted {
+			break
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || time.Now().After(deadline) {
+			t.Fatalf("later event: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	e.waitEvent(t, events, func(ev string) bool { return strings.Contains(ev, `"message":"last"`) })
+}
+
+func TestEventsRouteAnswersRateLimitedWhenTheBucketIsEmpty(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	d, _ := e.srv.registry.Get(id)
+	local := d.(*session.Local)
+	var last map[string]any
+	for i := 0; i < 5*session.EventBurst; i++ {
+		resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "tool_use", "tool": "Bash"})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			last = out
+			break
+		}
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("event %d: %d %v", i, resp.StatusCode, out)
+		}
+	}
+	if errorCode(last) != "rate_limited" {
+		t.Fatalf("never limited, or not as rate_limited: %v", last)
+	}
+	if local.Dropped() == 0 {
+		t.Fatal("the session did not count the dropped event")
+	}
+}
+
+func TestEventsRouteAuthentication(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, other := e.createSession("cat"), e.createSession("cat")
+	agent, otherAgent := e.agentToken(id), e.agentToken(other)
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	linkToken := lo["token"].(string)
+	body := map[string]any{"type": "progress", "message": "1/7"}
+	path := "/api/sessions/" + id + "/events"
+
+	for name, token := range map[string]string{
+		"no token":             "",
+		"wrong token":          "nope",
+		"another session's":    otherAgent,
+		"a host token":         "test-host-token",
+		"a share link's token": linkToken,
+	} {
+		resp, out := e.do("POST", path, token, body)
+		if resp.StatusCode != http.StatusUnauthorized || errorCode(out) != "unauthorized" {
+			t.Errorf("%s: %d %v", name, resp.StatusCode, out)
+		}
+	}
+	// The credential is read from the Authorization header alone.
+	req, _ := http.NewRequest("POST", e.http.URL+path+"?token="+agent, strings.NewReader(`{"type":"progress"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := e.client.Do(req); err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("token in the query: %v %v", err, resp)
+	}
+	for name, token := range map[string]string{"the session's agent token": agent, "the admin token": adminToken} {
+		if resp, out := e.do("POST", path, token, body); resp.StatusCode != http.StatusAccepted {
+			t.Errorf("%s: %d %v", name, resp.StatusCode, out)
+		}
+	}
+	if resp, out := e.do("POST", "/api/sessions/nosuchsession0000/events", adminToken, body); resp.StatusCode != http.StatusNotFound || errorCode(out) != "not_found" {
+		t.Errorf("unknown session: %d %v", resp.StatusCode, out)
+	}
+}
+
+func TestEventsRouteRejectsWhatItDoesNotAccept(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	path := "/api/sessions/" + id + "/events"
+
+	// Only what an agent reports: the entries a session records itself skip
+	// the rate bucket, so an agent must not be able to write them.
+	for _, typ := range []string{"", "bogus", "PROGRESS", "attention", "input", "join", "leave", "link", "status", "state"} {
+		resp, out := e.do("POST", path, adminToken, map[string]any{"type": typ})
+		if resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_type" {
+			t.Errorf("type %q: %d %v", typ, resp.StatusCode, out)
+		}
+	}
+	for name, body := range map[string]any{
+		"an unknown field":         map[string]any{"type": "progress", "state": "done"},
+		"a missing type":           map[string]any{"message": "no type"},
+		"a state, not a type":      map[string]any{"state": "needs_input"},
+		"a type of the wrong kind": map[string]any{"type": 7},
+	} {
+		if resp, out := e.do("POST", path, adminToken, body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d %v", name, resp.StatusCode, out)
+		}
+	}
+	req, _ := http.NewRequest("POST", e.http.URL+path, strings.NewReader(`{"type":"progress"} {"type":"progress"}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	if resp, err := e.client.Do(req); err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("two objects: %v %v", err, resp)
+	}
+
+	// Attention types are held to what /attention holds them to.
+	tooMany := make([]map[string]any, 33)
+	for i := range tooMany {
+		tooMany[i] = map[string]any{"label": "x", "input": "1"}
+	}
+	for name, c := range map[string]struct {
+		body map[string]any
+		code string
+	}{
+		"an unknown kind":    {map[string]any{"type": "needs_input", "kind": "bogus"}, "invalid_kind"},
+		"too many options":   {map[string]any{"type": "needs_input", "options": tooMany}, "invalid_request"},
+		"a message too long": {map[string]any{"type": "done", "message": strings.Repeat("m", 4097)}, "invalid_request"},
+	} {
+		resp, out := e.do("POST", path, adminToken, c.body)
+		if resp.StatusCode != http.StatusBadRequest || errorCode(out) != c.code {
+			t.Errorf("%s: %d %v", name, resp.StatusCode, out)
+		}
+	}
+}
+
+func TestEventsRouteRefusesAnEndedSession(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("exit")
+	e.waitEnded(id)
+	for _, typ := range []string{"progress", "needs_input"} {
+		resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": typ})
+		if resp.StatusCode != http.StatusConflict || errorCode(out) != "session_ended" {
+			t.Errorf("%s on an ended session: %d %v", typ, resp.StatusCode, out)
+		}
+	}
+}
+
+// /events and /attention are two doors to one room for the attention types:
+// the same reports leave the same attention behind, whoever makes them.
+func TestEventsRouteAttentionTypesMatchTheAttentionRoute(t *testing.T) {
+	e := newTestEnv(t, nil)
+	viaEvents, viaAttention := e.createSession("cat"), e.createSession("cat")
+	tokens := map[string][2]string{ // who reports: the token on each session
+		"admin":       {adminToken, adminToken},
+		"agent token": {e.agentToken(viaEvents), e.agentToken(viaAttention)},
+	}
+	options := []map[string]any{{"label": "Yes", "input": "1"}, {"label": "No, explain", "input": "3"}}
+	steps := []struct {
+		state string
+		body  map[string]any
+	}{
+		{"needs_input", map[string]any{"message": "Allow Bash?", "kind": "permission", "options": options}},
+		{"working", map[string]any{"message": "on it"}},
+		{"done", map[string]any{"message": "finished", "kind": "done"}},
+		{"needs_input", map[string]any{"message": "again", "kind": "prompt"}},
+		{"clear", map[string]any{}},
+	}
+	attention := func(id string) map[string]any {
+		_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+		att := got["session"].(map[string]any)["attention"].(map[string]any)
+		delete(att, "since")
+		return att
+	}
+	for who, tok := range tokens {
+		for _, st := range steps {
+			evBody, atBody := map[string]any{"type": st.state}, map[string]any{"state": st.state}
+			for k, v := range st.body {
+				evBody[k], atBody[k] = v, v
+			}
+			if resp, out := e.do("POST", "/api/sessions/"+viaEvents+"/events", tok[0], evBody); resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("%s %s via /events: %d %v", who, st.state, resp.StatusCode, out)
+			}
+			if resp, out := e.do("POST", "/api/sessions/"+viaAttention+"/attention", tok[1], atBody); resp.StatusCode != http.StatusOK {
+				t.Fatalf("%s %s via /attention: %d %v", who, st.state, resp.StatusCode, out)
+			}
+			if a, b := attention(viaEvents), attention(viaAttention); !reflect.DeepEqual(a, b) {
+				t.Fatalf("%s %s: /events left %v, /attention left %v", who, st.state, a, b)
+			}
+		}
+	}
+	// And the source says who reported.
+	e.do("POST", "/api/sessions/"+viaEvents+"/events", tokens["agent token"][0], map[string]any{"type": "working"})
+	if src := attention(viaEvents)["source"]; src != session.SourceAPI {
+		t.Fatalf("agent token source %v", src)
+	}
+	e.do("POST", "/api/sessions/"+viaEvents+"/events", adminToken, map[string]any{"type": "done"})
+	if src := attention(viaEvents)["source"]; src != session.SourceAdmin {
+		t.Fatalf("admin source %v", src)
+	}
+}
+
+// What the route stores and streams is bounded and clean, and says the agent
+// reported it.
+func TestEventsRouteRecordsCleanedEntriesReportedByTheAgent(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	events := e.sse(t)
+	resp, out := e.do("POST", "/api/sessions/"+id+"/events", e.agentToken(id), map[string]any{
+		"type":    "handoff",
+		"message": "to\x00 review\nplease " + strings.Repeat("m", 4000),
+		"url":     "https://github.com/x/y/pull/1\x07",
+		"to":      strings.Repeat("t", 100),
+		"tool":    strings.Repeat("k", 300),
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	got := activityPayload(t, e.waitEvent(t, events, isActivity("handoff", id)))
+	msg, _ := got["message"].(string)
+	if got["sessionId"] != id || got["byName"] != "agent" || got["by"] != nil {
+		t.Fatalf("attribution: %v", got)
+	}
+	if len(msg) != session.MaxAttentionMessage || !strings.HasPrefix(msg, "to review\nplease m") {
+		t.Fatalf("message %d bytes %.40q", len(msg), msg)
+	}
+	if got["url"] != "https://github.com/x/y/pull/1" || len([]rune(got["to"].(string))) != session.MaxEventTo || len(got["tool"].(string)) != session.MaxEventTool {
+		t.Fatalf("fields %v", got)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, got["at"].(string)); err != nil {
+		t.Fatalf("at %v", got["at"])
+	}
+	// The session keeps the same entry in its own log, so viewers replay it.
+	d, _ := e.srv.registry.Get(id)
+	log := d.(*session.Local).Activity()
+	last := log[len(log)-1]
+	if last.Type != session.ActivityHandoff || last.ByName != "agent" || last.Message != msg || last.To != got["to"] {
+		t.Fatalf("session log ends with %+v", last)
+	}
+}
+
+// Every entry a server session records reaches the admin stream, not just the
+// ones sent to the events route.
+func TestSessionOwnEntriesReachTheEventStream(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	events := e.sse(t)
+	c := dialViewer(t, e, id, adminToken)
+	c.helloNamed(80, 24, "Ada")
+	c.expectControl(proto.CtlReady)
+	got := activityPayload(t, e.waitEvent(t, events, isActivity("join", id)))
+	if got["byName"] != "Ada" || got["sessionId"] != id {
+		t.Fatalf("join entry %v", got)
+	}
+	c.c.CloseNow()
+	e.waitEvent(t, events, isActivity("leave", id))
 }

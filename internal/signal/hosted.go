@@ -406,6 +406,66 @@ func (h *HostedSession) viewer(id string) *Viewer {
 	return h.viewers[id]
 }
 
+// --- activity ---
+
+// maxEntryBy bounds the subscriber id of an entry a host reports: ids are 16
+// characters, and session.CleanEntry leaves By alone.
+const maxEntryBy = 64
+
+// ForwardActivity sends an event that an agent reported through the API to
+// the host. A hosted session has no activity log on the server: the host
+// records the event in its own and reports it back, which reaches
+// HostActivity. e is cleaned again here, which changes nothing for an entry
+// that was cleaned already, so that no caller can push the message past
+// proto.MaxHostMessage, which the host takes as a protocol error. It returns
+// ErrHostGone when no host is connected and ErrSlowHost when the host's queue
+// is full.
+func (h *HostedSession) ForwardActivity(e session.ActivityEntry) error {
+	return h.toHost(hostActivityMsg(session.CleanEntry(e)))
+}
+
+// HostActivity takes an activity entry the host reports and hands it to the
+// hub's OnActivity. The host is not trusted with it: an entry of a type this
+// server does not know is dropped (a newer host may have more), the text is
+// cut to its limits, and a missing or unreadable time becomes the time of
+// receipt. It is attributed to this session whatever session the host named.
+// HostActivity does not send the entry back to the host.
+func (h *HostedSession) HostActivity(a proto.Activity) {
+	if !session.ValidEventType(a.Type) {
+		return
+	}
+	e := session.CleanEntry(entryFromProto(a))
+	if len(e.By) > maxEntryBy {
+		e.By = ""
+	}
+	if e.At.IsZero() {
+		e.At = time.Now().UTC()
+	}
+	h.mu.Lock()
+	id := h.info.ID
+	h.mu.Unlock()
+	if h.hub != nil && h.hub.OnActivity != nil {
+		h.hub.OnActivity(id, e)
+	}
+}
+
+// hostActivityMsg encodes an entry for the host control link. An entry
+// without a time is sent without one, for the host to stamp.
+func hostActivityMsg(e session.ActivityEntry) proto.HostActivityMsg {
+	m := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
+	if !e.At.IsZero() {
+		m.At = e.At.UTC().Format(time.RFC3339Nano)
+	}
+	return proto.HostActivityMsg{T: proto.HostActivity, Entry: m}
+}
+
+// entryFromProto decodes an entry from the host control link. A time that
+// cannot be read leaves At zero.
+func entryFromProto(a proto.Activity) session.ActivityEntry {
+	at, _ := time.Parse(time.RFC3339Nano, a.At)
+	return session.ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+}
+
 // --- messages from the host ---
 
 // HostAnswer delivers an SDP answer to a viewer.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
 )
 
 // wsClient is a minimal viewer used by the end-to-end tests.
@@ -398,4 +399,261 @@ func TestViewerRosterCarriesNamesAndLinkLabels(t *testing.T) {
 	long := dialViewer(t, e, id, adminToken)
 	long.helloNamed(80, 24, strings.Repeat("n", 1000))
 	long.expectClose(proto.CloseProtocolError)
+}
+
+// fakeHost is a `conductor host` reduced to its control connection: it
+// registers a session and then sends and reads the JSON messages by hand, so
+// a test decides exactly what the server hears and checks exactly what it
+// says back.
+type fakeHost struct {
+	t         *testing.T
+	c         *websocket.Conn
+	sessionID string
+}
+
+func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
+	t.Helper()
+	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	c.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
+	t.Cleanup(func() { c.CloseNow() })
+	h := &fakeHost{t: t, c: c}
+	h.send(proto.Register{
+		T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
+		Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, AgentToken: agentToken},
+	})
+	h.sessionID, _ = h.expect(proto.HostRegistered)["sessionId"].(string)
+	if h.sessionID == "" {
+		t.Fatal("the server registered no session")
+	}
+	return h
+}
+
+func (h *fakeHost) send(v any) {
+	h.t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(h.t.Context(), 5*time.Second)
+	defer cancel()
+	if err := h.c.Write(ctx, websocket.MessageText, b); err != nil {
+		h.t.Fatalf("host write: %v", err)
+	}
+}
+
+// expect reads messages from the server until one with the given t arrives.
+func (h *fakeHost) expect(t string) map[string]any {
+	h.t.Helper()
+	for {
+		ctx, cancel := context.WithTimeout(h.t.Context(), 5*time.Second)
+		typ, data, err := h.c.Read(ctx)
+		cancel()
+		if err != nil {
+			h.t.Fatalf("host waiting for %s: %v", t, err)
+		}
+		if typ != websocket.MessageText {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err != nil {
+			h.t.Fatalf("host read %q: %v", data, err)
+		}
+		if m["t"] == t {
+			return m
+		}
+	}
+}
+
+func hostActivity(typ string, mutate func(*proto.Activity)) proto.HostActivityMsg {
+	a := proto.Activity{T: proto.CtlActivity, At: time.Now().UTC().Format(time.RFC3339Nano), Type: typ}
+	if mutate != nil {
+		mutate(&a)
+	}
+	return proto.HostActivityMsg{T: proto.HostActivity, Entry: a}
+}
+
+// quiet fails if an event whose text starts with prefix arrives within d.
+func quiet(t *testing.T, events <-chan string, d time.Duration, prefix string) {
+	t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case ev := <-events:
+			if strings.HasPrefix(ev, prefix) {
+				t.Fatalf("unexpected %.200s", ev)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+func TestHostActivityReachesTheEventStream(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	events := e.sse(t)
+
+	// The entry is the host's; the session id it names is not believed.
+	msg := hostActivity(session.ActivityToolUse, func(a *proto.Activity) {
+		a.By, a.ByName, a.Message, a.Tool = "0123456789abcdef", "Ada", "ran\x00 it", "Bash"
+	})
+	msg.SessionID = "someoneelse00000"
+	host.send(msg)
+	got := activityPayload(t, e.waitEvent(t, events, isActivity("tool_use", host.sessionID)))
+	if got["sessionId"] != host.sessionID || got["by"] != "0123456789abcdef" || got["byName"] != "Ada" || got["message"] != "ran it" || got["tool"] != "Bash" {
+		t.Fatalf("entry %v", got)
+	}
+
+	// What the server cannot use is dropped without costing the host its
+	// connection: an entry of a type nobody has, a message from a newer host,
+	// and an entry far too big.
+	host.send(hostActivity("bogus", func(a *proto.Activity) { a.Message = "bogus entry" }))
+	host.send(map[string]any{"t": "from_the_future", "n": 1})
+	host.send(hostActivity(session.ActivityError, func(a *proto.Activity) {
+		a.Message, a.URL, a.Tool, a.ByName = strings.Repeat("m", 8000), "https://x/"+strings.Repeat("u", 8000), strings.Repeat("k", 500), strings.Repeat("n", 500)
+	}))
+	host.send(hostActivity(session.ActivityProgress, func(a *proto.Activity) { a.Message = "marker" }))
+	sawBogus := false
+	var big map[string]any
+	e.waitEvent(t, events, func(ev string) bool {
+		if strings.Contains(ev, "bogus") {
+			sawBogus = true
+		}
+		if isActivity(session.ActivityError, host.sessionID)(ev) {
+			big = activityPayload(t, ev)
+		}
+		return strings.Contains(ev, `"message":"marker"`)
+	})
+	if sawBogus {
+		t.Fatal("an entry of an unknown type was streamed")
+	}
+	if big == nil {
+		t.Fatal("the big entry was not streamed")
+	}
+	if len(big["message"].(string)) != session.MaxAttentionMessage || len(big["url"].(string)) > session.MaxEventURL || len(big["tool"].(string)) != session.MaxEventTool || len([]rune(big["byName"].(string))) != proto.MaxNameLen {
+		t.Fatalf("the big entry was not cut: message %d, url %d, tool %d, byName %d", len(big["message"].(string)), len(big["url"].(string)), len(big["tool"].(string)), len(big["byName"].(string)))
+	}
+}
+
+// A message that cannot be read is the host's mistake, as for every other
+// host message, and ends the connection with a protocol error.
+func TestHostActivityThatIsNotAnEntryClosesTheConnection(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	host.send(map[string]any{"t": proto.HostActivity, "entry": "not an entry"})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		if _, _, err := host.c.Read(ctx); err != nil {
+			if websocket.CloseStatus(err) != proto.CloseProtocolError {
+				t.Fatalf("closed with %v, want %d", err, proto.CloseProtocolError)
+			}
+			return
+		}
+	}
+}
+
+func TestEventsRouteForwardsAHostedSessionsEventsToItsHost(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	events := e.sse(t)
+	path := "/api/sessions/" + host.sessionID + "/events"
+
+	resp, out := e.do("POST", path, "hosted-agent-token", map[string]any{
+		"type": "artifact", "message": "PR opened\x00", "url": "https://github.com/x/y/pull/1", "to": "review",
+	})
+	if resp.StatusCode != http.StatusAccepted || out["accepted"] != true {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	m := host.expect(proto.HostActivity)
+	entry, _ := m["entry"].(map[string]any)
+	if _, named := m["sessionId"]; named {
+		t.Fatalf("the server named the session: %v", m)
+	}
+	if entry["t"] != proto.CtlActivity || entry["type"] != "artifact" || entry["byName"] != "agent" || entry["message"] != "PR opened" ||
+		entry["url"] != "https://github.com/x/y/pull/1" || entry["to"] != "review" || entry["at"] != "" {
+		t.Fatalf("the host was sent %v", m)
+	}
+
+	// The server has no session of its own to record in: nothing streams
+	// until the host has recorded the entry and reports it.
+	quiet(t, events, 200*time.Millisecond, "activity ")
+	entry["at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	host.send(map[string]any{"t": proto.HostActivity, "sessionId": host.sessionID, "entry": entry})
+	got := activityPayload(t, e.waitEvent(t, events, isActivity("artifact", host.sessionID)))
+	if got["url"] != "https://github.com/x/y/pull/1" || got["byName"] != "agent" {
+		t.Fatalf("streamed %v", got)
+	}
+
+	// What the host reports is not sent back to it, or the two would echo
+	// each other for ever: the next thing the host hears is the next event.
+	if resp, out := e.do("POST", path, "hosted-agent-token", map[string]any{"type": "progress", "message": "marker"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	if next, _ := host.expect(proto.HostActivity)["entry"].(map[string]any); next["message"] != "marker" {
+		t.Fatalf("the host was sent %v before the marker", next)
+	}
+}
+
+// Attention types are applied to a hosted session as /attention applies
+// them: recorded on the server and told to the host.
+func TestEventsRouteAttentionTypesReachAHostLikeTheAttentionRoute(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	d, _ := e.srv.registry.Get(host.sessionID)
+	options := []map[string]any{{"label": "Yes", "input": "1"}}
+
+	resp, out := e.do("POST", "/api/sessions/"+host.sessionID+"/events", "hosted-agent-token", map[string]any{"type": "needs_input", "message": "Allow Bash?", "kind": "permission", "options": options})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	m := host.expect(proto.HostAttention)
+	if m["state"] != "needs_input" || m["message"] != "Allow Bash?" || m["kind"] != "permission" || m["source"] != session.SourceAPI || len(m["options"].([]any)) != 1 {
+		t.Fatalf("the host was told %v", m)
+	}
+	if att := d.Info().Attention; att.State != session.AttentionNeedsInput || att.Kind != "permission" {
+		t.Fatalf("server attention %+v", att)
+	}
+
+	resp, out = e.do("POST", "/api/sessions/"+host.sessionID+"/attention", "hosted-agent-token", map[string]any{"state": "working"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	if m := host.expect(proto.HostAttention); m["state"] != "working" || m["source"] != session.SourceAPI {
+		t.Fatalf("the host was told %v", m)
+	}
+}
+
+// A report about a hosted session whose host is away has nowhere to be
+// recorded; the caller is told, not given a 202.
+func TestEventsRouteTellsWhenTheHostIsAway(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	d, _ := e.srv.registry.Get(host.sessionID)
+	host.c.CloseNow()
+	deadline := time.Now().Add(5 * time.Second)
+	for d.Info().Status != session.StatusHostDisconnected {
+		if time.Now().After(deadline) {
+			t.Fatalf("status %s", d.Info().Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	path := "/api/sessions/" + host.sessionID + "/events"
+	resp, out := e.do("POST", path, "hosted-agent-token", map[string]any{"type": "progress", "message": "1/7"})
+	if resp.StatusCode != http.StatusConflict || errorCode(out) != "host_disconnected" {
+		t.Fatalf("event for a hostless session: %d %v", resp.StatusCode, out)
+	}
+	// Attention is held on the server meanwhile, as /attention holds it.
+	if resp, out := e.do("POST", path, "hosted-agent-token", map[string]any{"type": "needs_input", "message": "?"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("attention for a hostless session: %d %v", resp.StatusCode, out)
+	}
+	if d.Info().Attention.State != session.AttentionNeedsInput {
+		t.Fatalf("attention %+v", d.Info().Attention)
+	}
 }

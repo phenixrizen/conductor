@@ -79,6 +79,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.events = newEventHub()
 	s.hosts = signal.NewHub(s.registry, log)
 	s.hosts.OnChange = s.events.publish
+	s.hosts.OnActivity = s.events.activity
 	s.registry.OnRemove = func(id string) {
 		s.links.DeleteSession(id)
 		s.events.removed(id)
@@ -110,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}/links/{linkId}", s.requireAdmin(s.handleRevokeLink))
 	mux.HandleFunc("GET /api/sessions/{id}/files", s.handleGetFile)
 	mux.HandleFunc("POST /api/sessions/{id}/attention", s.handleAttention)
+	mux.HandleFunc("POST /api/sessions/{id}/events", s.handleEvent)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/join/{token}", s.handleJoin)
 	mux.HandleFunc("GET /ws/sessions/{id}", s.handleViewerWS)
