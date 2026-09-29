@@ -97,10 +97,16 @@ export function useSessions() {
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
+    /** The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back. */
+    catalogWithHidden: () =>
+      request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
     /** Removes the saved override with this id, restoring a built-in it replaced; an agent without one is hidden instead. */
     deleteAgent: (id: string) => request<void>(`/api/catalog/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** Takes a hidden id off the hidden list and returns its agent, back as it was; undefined when no agent has that id any more. */
+    unhideAgent: (id: string) =>
+      request<{ agent?: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}/unhide`, { method: 'POST' }).then((r) => r.agent),
     /** Whether the program (argv[0]) resolves on the server. Nothing is run. */
     checkCommand: (argv: string[]) =>
       request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: argv } }),

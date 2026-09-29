@@ -8,6 +8,8 @@ const api = useSessions()
 const admin = useAdminToken()
 const toast = useToast()
 const agents = ref<AgentInfo[]>([])
+/** IDs the server hides from the catalog; each can be restored. */
+const hidden = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
 const launch = useLaunchModal()
@@ -19,7 +21,9 @@ async function refresh() {
   }
   loading.value = true
   try {
-    agents.value = await api.catalog()
+    const r = await api.catalogWithHidden()
+    agents.value = r.agents
+    hidden.value = r.hidden
     error.value = ''
   } catch (e) {
     error.value = (e as Error).message
@@ -34,10 +38,6 @@ watch(() => admin.token.value, refresh)
 // Add and edit share one slideover; `editing` is the agent being changed.
 const formOpen = ref(false)
 const editing = ref<AgentInfo | undefined>()
-// IDs saved from this page. The API does not say whether an agent comes from
-// the saved overlay or from a built-in or the config file, so this is how the
-// Hide toast tells "removed" from "hidden".
-const savedHere = new Set<string>()
 
 function addAgent() {
   editing.value = undefined
@@ -47,8 +47,7 @@ function editAgent(a: AgentInfo) {
   editing.value = a
   formOpen.value = true
 }
-async function onSaved(a: AgentInfo) {
-  savedHere.add(a.id)
+async function onSaved() {
   await refresh()
 }
 
@@ -72,14 +71,41 @@ async function confirmHide() {
   hideError.value = ''
   try {
     await api.deleteAgent(a.id)
-    const wasSaved = savedHere.delete(a.id)
-    toast.add({ title: wasSaved ? 'Removed' : 'Hidden or removed', description: a.name, icon: 'i-lucide-eye-off', color: 'neutral' })
     hideOpen.value = false
     await refresh()
+    // The server either hid the agent, dropped a saved change to a built-in
+    // (the original is listed again) or deleted an agent added here. Which one
+    // shows in the lists, unless they could not be reloaded.
+    if (error.value) {
+      toast.add({ title: 'Hidden or removed', description: a.name, icon: 'i-lucide-eye-off', color: 'neutral' })
+    } else if (hidden.value.includes(a.id)) {
+      toast.add({ title: 'Hidden', description: `${a.name} can be restored from the Hidden list.`, icon: 'i-lucide-eye-off', color: 'neutral' })
+    } else if (agents.value.some((x) => x.id === a.id)) {
+      toast.add({ title: 'Change removed', description: `${a.id} is back to its original definition.`, icon: 'i-lucide-undo-2', color: 'neutral' })
+    } else {
+      toast.add({ title: 'Removed', description: a.name, icon: 'i-lucide-trash-2', color: 'neutral' })
+    }
   } catch (e) {
     hideError.value = (e as Error).message
   } finally {
     hiding.value = false
+  }
+}
+
+// Restore takes an ID off the hidden list; its agent comes back as it was.
+const restoring = ref('')
+
+async function restore(id: string) {
+  restoring.value = id
+  try {
+    const a = await api.unhideAgent(id)
+    if (a) toast.add({ title: 'Restored', description: a.name, icon: 'i-lucide-eye', color: 'success' })
+    else toast.add({ title: 'Nothing to restore', description: `No agent has the ID ${id} any more; it is off the hidden list.`, icon: 'i-lucide-eye', color: 'neutral' })
+    await refresh()
+  } catch (e) {
+    toast.add({ title: 'Restore failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    restoring.value = ''
   }
 }
 
@@ -139,13 +165,34 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
       </div>
       <p v-if="!agents.length && !loading && !error" class="text-sm text-muted">No agents in the catalog.</p>
 
+      <section v-if="hidden.length" class="mt-8" aria-labelledby="hidden-agents">
+        <h2 id="hidden-agents" class="text-[11px] font-semibold uppercase tracking-wider text-muted">Hidden · {{ hidden.length }}</h2>
+        <p class="mt-1 mb-3 text-sm text-muted">Not offered when launching. Restore brings an agent back as it was.</p>
+        <ul class="flex flex-wrap gap-2">
+          <li v-for="id in hidden" :key="id" class="flex items-center gap-1 rounded-md border border-default py-1 ps-3 pe-1">
+            <span class="font-mono text-xs">{{ id }}</span>
+            <UButton
+              label="Restore"
+              icon="i-lucide-eye"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :loading="restoring === id"
+              :disabled="!!restoring && restoring !== id"
+              :aria-label="`Restore ${id}`"
+              @click="restore(id)"
+            />
+          </li>
+        </ul>
+      </section>
+
       <AddAgentSlideover v-model:open="formOpen" :agent="editing" :taken-ids="agents.map((a) => a.id)" @saved="onSaved" />
 
-      <UModal v-model:open="hideOpen" :title="`Hide ${hideTarget?.name ?? 'agent'}?`" description="It leaves this page and the Launch dialog. Sessions already running keep going.">
+      <UModal v-model:open="hideOpen" :title="`Hide ${hideTarget?.name ?? 'agent'}?`" description="It leaves the agent list and the Launch dialog. Sessions already running keep going.">
         <template #body>
           <div class="flex flex-col gap-3 text-sm text-muted">
             <UAlert v-if="hideError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="hideError" />
-            <p>An agent you added is deleted. If you changed a built-in agent, the original comes back instead. To bring a hidden agent back, add it again with the same ID.</p>
+            <p>An agent you added is deleted. If you changed a built-in agent, the original comes back instead. Hidden agents can be restored from the list below.</p>
           </div>
         </template>
         <template #footer>
