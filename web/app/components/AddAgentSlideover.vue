@@ -92,11 +92,13 @@ watch(
   { deep: true },
 )
 
-// The ID follows the name until someone types in the ID field.
+// The ID follows the name until someone types in the ID field, and stops for
+// good once it is locked: after the first save it names the saved agent, and
+// following a rename would save a second agent under the new ID.
 watch(
   () => form.name,
   (n) => {
-    if (!idTouched.value) form.id = slugId(n)
+    if (!idTouched.value && !idLocked.value) form.id = slugId(n)
   },
 )
 function setId(v: string | number | null | undefined) {
@@ -164,6 +166,7 @@ const errors = computed(() => {
   if (!form.name.trim()) e.name = 'Give the agent a name'
   if (!ID_PATTERN.test(form.id)) e.id = form.id ? 'Use lowercase letters, digits and dashes, up to 32' : 'An ID is required'
   if (!form.command[0]?.trim()) e.command = 'Add the command to run'
+  // Spaces count in a regex (a "> " prompt), so trim only to tell whether anything was typed.
   if (form.signal === 'pattern' && !form.pattern.trim()) e.pattern = 'Enter the pattern to look for'
   const seen = new Set<string>()
   for (const r of form.env) {
@@ -185,7 +188,7 @@ function signalOut(): AgentSignal | undefined {
   const toolEvents = prev?.toolEvents || undefined
   switch (form.signal) {
     case 'pattern':
-      return { kind: 'pattern', pattern: form.pattern.trim(), toolEvents }
+      return { kind: 'pattern', pattern: form.pattern, toolEvents }
     case 'hook':
       return { kind: 'hook', toolEvents }
     case 'none':
@@ -232,6 +235,9 @@ async function persist(): Promise<AgentInfo | null> {
   }
   try {
     const saved = await api.saveAgent(payload())
+    // A rename typed while the request was in flight may have moved the ID (it
+    // is not locked yet): lock the ID that was actually saved.
+    form.id = saved.id
     idLocked.value = true
     emit('saved', saved)
     return saved
