@@ -48,6 +48,9 @@ const overlay = ref<{ title: string; detail?: string } | null>(null)
 const connecting = ref(false)
 const fileView = ref(false)
 const notice = ref('')
+/** True once the process is gone: the cursor is hidden and stops blinking. */
+const ended = ref(false)
+let endedAtWelcome = false
 
 let term: Terminal | undefined
 let fit: FitAddon | undefined
@@ -152,21 +155,42 @@ function scheduleScale() {
   })
 }
 
+function isEnded(status: string) {
+  return status === 'exited' || status === 'stopped'
+}
+
+/**
+ * A finished process has no cursor. The DECTCEM hide sequence goes through
+ * the terminal's own write queue, so it lands after any replayed output.
+ */
+function markEnded() {
+  ended.value = true
+  if (!term) return
+  term.options.cursorBlink = false
+  term.write('\x1b[?25l')
+}
+
 function handleControl(msg: ControlMessage) {
   switch (msg.t) {
     case 'welcome':
       fileView.value = msg.fileView
       existsCache.clear()
+      // Sessions that already ended are marked once the scrollback has replayed.
+      endedAtWelcome = isEnded(msg.status)
       if (props.readOnly && msg.cols && msg.rows) term?.resize(msg.cols, msg.rows)
       emit('welcome', msg)
+      break
+    case 'ready':
+      if (endedAtWelcome) markEnded()
       break
     case 'resize':
       if (msg.cols && msg.rows && (term?.cols !== msg.cols || term?.rows !== msg.rows)) term?.resize(msg.cols, msg.rows)
       break
     case 'status':
       emit('status', msg.status, msg.exitCode)
-      if (msg.status === 'exited' || msg.status === 'stopped') {
+      if (isEnded(msg.status)) {
         notice.value = msg.status === 'exited' ? `Process exited${msg.exitCode !== undefined ? ` with code ${msg.exitCode}` : ''}` : 'Session stopped'
+        markEnded()
       }
       break
     case 'attention':
@@ -202,6 +226,10 @@ async function connect() {
     overlay.value = { title: info.error?.message || closeReason(info.code, info.reason), detail: info.error ? info.error.code : undefined }
     emit('closed', info)
   })
+  // A fresh connection starts live again; reset() also re-shows the cursor.
+  ended.value = false
+  endedAtWelcome = false
+  term.options.cursorBlink = !props.compact
   term.reset()
   try {
     await t.connect(measure())
@@ -313,7 +341,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
-    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale' }" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale' }" :data-ended="ended ? 'true' : undefined" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />
