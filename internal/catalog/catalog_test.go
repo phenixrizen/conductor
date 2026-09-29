@@ -170,11 +170,12 @@ func TestEffectiveSignal(t *testing.T) {
 func TestEnvPassthroughValidation(t *testing.T) {
 	base := Agent{ID: "x", Name: "X", Command: []string{"x"}}
 	ok := base
-	ok.EnvPassthrough = []string{"HTTP_PROXY", "_PRIVATE", "OPENAI_API_KEY", "A1"}
+	// Proxy variables are lower case by convention, so both cases must pass.
+	ok.EnvPassthrough = []string{"HTTP_PROXY", "_PRIVATE", "OPENAI_API_KEY", "A1", "http_proxy", "https_proxy", "no_proxy", "Mixed_Case9"}
 	if err := validate(ok); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"", "http_proxy", "1ABC", "A-B", "A=B", "A B", "A\n", "A\x00", "$HOME"} {
+	for _, name := range []string{"", "1BAD", "1bad", "BAD-NAME", "bad-name", "A=B", "A B", "A\n", "A\x00", "$HOME"} {
 		a := base
 		a.EnvPassthrough = []string{"OK", name}
 		if err := validate(a); err == nil {

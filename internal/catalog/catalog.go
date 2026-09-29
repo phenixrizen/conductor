@@ -64,8 +64,9 @@ type Catalog struct {
 var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // envNamePattern matches the environment variable names an agent may list in
-// envPassthrough.
-var envNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+// envPassthrough. Lower case is allowed: proxy variables such as http_proxy,
+// https_proxy and no_proxy are lower case by convention.
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 const (
 	maxSignalPattern  = 200 // bytes
