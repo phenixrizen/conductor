@@ -129,12 +129,20 @@ func (v *Viewer) close(reason error) {
 // viewer is closed, and then closes sink with the reason it was closed for.
 // The API layer runs it on its own goroutine for the viewer's connection.
 //
-// Frames that were queued before the close are written first when the viewer
-// was closed for a reason that is the host's: it went away, asked for the
-// close, or reported an error for the viewer. They are the host's last words,
-// the session's final status among them, and the viewer would otherwise be told
-// the host is gone without being told why. A viewer that was cut off (link
-// revoked, too slow to keep up) or has left is sent nothing more.
+// What becomes of the frames still queued when the viewer is closed depends on
+// the reason. They are dropped when the link was revoked, when the viewer's own
+// queue overflowed (ErrSlowViewer) and when the viewer left (a nil reason). For
+// every other reason, the host going away, asking for the close or reporting an
+// error for the viewer, they are written first: at most as many as the queue
+// holds, and up to the first frame that cannot be written. They are the host's
+// last words, the session's final status among them, and the viewer would
+// otherwise be told the host is gone without being told why. A viewer that the
+// host evicted as too slow (the host asks for the close) is in that second
+// group and is drained too.
+//
+// The close is looked at before each frame, but it does not stop a frame that
+// is being written, or one that is picked just as the close lands: a revoked
+// viewer can still be written a frame.
 func (v *Viewer) Pump(sink session.Sink) {
 	for {
 		// Once the viewer is closed, the close comes before any frame that is
@@ -177,8 +185,8 @@ func (v *Viewer) finish(sink session.Sink) {
 }
 
 // framesOwed reports whether a viewer closed for reason is still sent the frames
-// queued for it: it is when the host went away or asked for the close, and it
-// is not when the viewer was cut off or has left.
+// queued for it: it is unless the link was revoked, the viewer's own queue
+// overflowed or the viewer left.
 func framesOwed(reason error) bool {
 	switch {
 	case reason == nil, errors.Is(reason, session.ErrRevoked), errors.Is(reason, ErrSlowViewer):

@@ -44,9 +44,10 @@ Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
 headless, or `--stun stun:host:3478` to override the ICE servers. An agent with
 no hooks and no bell can still raise the needs-input badge:
-`--signal-pattern '<regexp>'` (RE2, at most 200 bytes) is matched against the
-last line of the terminal after 500 ms without output; the Launch dialog's
-command carries it for agents whose catalog entry has a pattern signal.
+`--signal-pattern '<regexp>'` (RE2, at most 200 bytes, not matching an empty
+line) is matched against the last line of the terminal after 500 ms without
+output; the Launch dialog's command carries it for agents whose catalog entry
+has a pattern signal.
 
 ## The workbench
 
@@ -232,7 +233,7 @@ matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
 200, `command` has at most 32 elements of at most 4096 bytes each, `env` has at
 most 32 keys, `envPassthrough` (names of server environment variables the agent
 may inherit) at most 32 names, and a signal `pattern` (a regular expression) at
-most 200 bytes.
+most 200 bytes that does not match an empty line.
 
 ## Security model and limits
 

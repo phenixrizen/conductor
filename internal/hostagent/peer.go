@@ -156,6 +156,18 @@ func (p *peer) startRelay() {
 	}
 }
 
+// buffered returns the bytes the peer's data channel holds that the viewer has
+// not acknowledged; zero for a viewer on the relay or one not connected yet.
+func (p *peer) buffered() uint64 {
+	p.mu.Lock()
+	sink := p.dc
+	p.mu.Unlock()
+	if sink == nil {
+		return 0
+	}
+	return sink.buffered()
+}
+
 // handleFrame processes a terminal frame from the viewer over either transport.
 func (p *peer) handleFrame(f proto.Frame) {
 	p.mu.Lock()

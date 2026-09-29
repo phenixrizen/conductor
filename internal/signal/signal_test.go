@@ -597,9 +597,9 @@ func (s *pumpSink) written() int {
 // random, and the viewer was told the host was gone without why.
 func TestViewerPumpDeliversWhatWasQueuedBeforeTheHostClosedIt(t *testing.T) {
 	for name, reason := range map[string]error{
-		"host disconnected":             ErrHostGone,
-		"host closed it":                ErrViewerGone,
-		"host reported an error for it": errors.New("webrtc_failed"),
+		"host disconnected": ErrHostGone,
+		"host closed it, also when it evicted it as too slow": ErrViewerGone,
+		"host reported an error for it":                       errors.New("webrtc_failed"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			for i := 0; i < 50; i++ { // the choice between frame and close was a coin toss
@@ -627,7 +627,9 @@ func TestViewerPumpDeliversWhatWasQueuedBeforeTheHostClosedIt(t *testing.T) {
 	}
 }
 
-// A viewer that is cut off, or has left on its own, is sent nothing more.
+// A viewer whose link was revoked, whose own queue overflowed or that has left
+// is not sent what was queued for it, once the close has been seen. (A frame
+// that is being written as the close lands is another matter.)
 func TestViewerPumpSendsNothingMoreToAViewerThatWasCutOff(t *testing.T) {
 	for name, reason := range map[string]error{
 		"link revoked": session.ErrRevoked,

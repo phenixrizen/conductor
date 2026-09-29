@@ -30,7 +30,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	stun := fs.String("stun", "", "comma separated ICE server URLs overriding the server's list")
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
-	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
+	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: conductor host [flags] -- <command...>")

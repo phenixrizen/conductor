@@ -159,19 +159,24 @@ Automatic detection runs on whichever process owns the PTY. A bare BEL
 (`0x07`) outside an escape sequence, `ESC ] 9 ; text ST` (iTerm2/ConEmu style)
 or `ESC ] 777 ; notify ; title ; body ST` (urxvt style) marks the session
 `needs_input`; the BEL that terminates an ordinary OSC (window title, hyperlink)
-does not. Bursts are limited to one change per 500 ms. Any successful input from
-a `control` client clears a `needs_input` state.
+does not. Bursts are limited to one change per 500 ms. Successful input from a
+`control` client clears the `needs_input` state that was showing when the input
+began. One raised while the input was being written (a process that answers at
+once, an echo that rings the bell) is left for the next input.
 
 An agent with no hook and no bell can be given a screen pattern instead: a
-catalog signal `{"kind": "pattern", "pattern": "<RE2>"}` (at most 200 bytes) for
-server sessions, `conductor host --signal-pattern '<RE2>'` for hosted ones. The
+catalog signal `{"kind": "pattern", "pattern": "<RE2>"}` for server sessions,
+`conductor host --signal-pattern '<RE2>'` for hosted ones; the pattern is at most
+200 bytes and must not match an empty line. The
 process that owns the PTY keeps the text of the last screen line: escape
 sequences are stripped, `\r` rewrites the line from column 0, `\b` deletes a
 character, and only the last 4096 bytes of a longer line are kept. After 500 ms
-without output the line is matched against the pattern. A match marks the
-session `needs_input` with `source:"pattern"`, `kind:"prompt"` and the message
-`prompt: <line>`, unless it is `needs_input` already: a prompt a hook or a bell
-raised keeps its own message, and the same prompt does not report itself twice.
+without output the line is matched against the pattern; an empty line or one of
+white space never counts. A match marks the session `needs_input` with
+`source:"pattern"`, `kind:"prompt"` and the message `prompt: <line>` (of a line
+longer than a message can be, its last 492 bytes, cut on a character boundary),
+unless it is `needs_input` already: a prompt a hook or a bell raised keeps its
+own message, kind and options, and the same prompt does not report itself twice.
 Output that never pauses (a spinner, a TUI that redraws continuously) never
 gives the 500 ms of silence, so such an agent is not served by a pattern. A
 host reports the change to the server like any other attention change.
@@ -339,4 +344,5 @@ overlay is applied over the configured catalog, and the server refuses to start
 when the file cannot be parsed or an agent in it is invalid. Agents are held to
 these limits everywhere: `id` matches `^[a-z0-9-]{1,32}$`, `name` at most 60
 characters, `description` 200, `command` 1 to 32 elements of at most 4096 bytes
-each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern` 200 bytes.
+each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern` 200 bytes that
+does not match an empty line.

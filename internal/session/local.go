@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
@@ -274,13 +275,30 @@ func (s *Local) scanOutput(chunk []byte) {
 
 // firePattern is the pattern watcher's fire: the last line matched after the
 // output went quiet. A session that is waiting already keeps what marked it so
-// (a hook's message and options, the bell), and the same prompt does not
-// report itself again while it stays on the screen.
+// (a hook's message, kind and options, the bell), and the same prompt does not
+// report itself again while it stays on the screen. That is decided under the
+// lock that sets the state: a report that lands between a look at the state and
+// the set would be overwritten.
 func (s *Local) firePattern(line string) {
-	if s.Info().Attention.State == AttentionNeedsInput {
-		return
+	s.setAttention(AttentionNeedsInput, promptMessage(line), SourcePattern, KindPrompt, nil, true)
+}
+
+// promptMessage is the attention message for the prompt on a line. A message
+// is cut at MaxAttentionMessage bytes from its start, and it is the end of a
+// long line that says what the agent waits for, so the line is trimmed at its
+// start instead, on a character boundary.
+func promptMessage(line string) string {
+	const prefix = "prompt: "
+	if room := MaxAttentionMessage - len(prefix); len(line) > room {
+		line = line[len(line)-room:]
+		// The cut may have landed inside a character (so may the tracker's, on
+		// a line longer than it keeps): the next character starts at most 3
+		// bytes on.
+		for i := 0; i < utf8.UTFMax-1 && len(line) > 0 && !utf8.RuneStart(line[0]); i++ {
+			line = line[1:]
+		}
 	}
-	s.SetAttentionFull(AttentionNeedsInput, "prompt: "+line, SourcePattern, KindPrompt, nil)
+	return prefix + line
 }
 
 // SetAttention records an attention change without prompt details. See
@@ -293,6 +311,13 @@ func (s *Local) SetAttention(state AttentionState, message, source string) {
 // clients and notifies OnChange. AttentionNone clears the signal along with
 // any kind and options. Unknown kinds are dropped rather than rejected.
 func (s *Local) SetAttentionFull(state AttentionState, message, source, kind string, options []Option) {
+	s.setAttention(state, message, source, kind, options, false)
+}
+
+// setAttention is SetAttentionFull. With unlessWaiting it changes nothing when
+// the session is needs_input already; the check and the change share one
+// critical section.
+func (s *Local) setAttention(state AttentionState, message, source, kind string, options []Option, unlessWaiting bool) {
 	if !state.Valid() {
 		return
 	}
@@ -306,6 +331,10 @@ func (s *Local) SetAttentionFull(state AttentionState, message, source, kind str
 	}
 	s.mu.Lock()
 	cur := s.info.Attention
+	if unlessWaiting && cur.State == AttentionNeedsInput {
+		s.mu.Unlock()
+		return
+	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
 		return

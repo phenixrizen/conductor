@@ -214,12 +214,21 @@ func validateSignal(s Signal) error {
 // CompilePattern compiles a screen pattern: the pattern of a signal of kind
 // "pattern" and the value of `conductor host --signal-pattern`. It is RE2, so
 // matching the last line of a terminal takes linear time whatever the pattern,
-// and it is at most 200 bytes.
+// it is at most 200 bytes, and it does not match an empty line: one that did
+// would match a screen that shows nothing and mark every quiet session as
+// waiting.
 func CompilePattern(pattern string) (*regexp.Regexp, error) {
 	if pattern == "" || len(pattern) > maxSignalPattern {
 		return nil, fmt.Errorf("pattern required, at most %d bytes", maxSignalPattern)
 	}
-	return regexp.Compile(pattern)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	if re.MatchString("") {
+		return nil, errors.New("pattern must not match an empty line")
+	}
+	return re, nil
 }
 
 // Upsert validates a, then replaces the agent with the same ID in place (so it

@@ -2,6 +2,7 @@ package session
 
 import (
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -187,7 +188,8 @@ func (t *LineTracker) Last() string {
 //
 // One quiet period gives at most one fire, and only new output starts another
 // period. Output that never stops, a spinner for instance, never reaches the
-// end of one.
+// end of one. A line that is empty or only white space is never a prompt,
+// whatever the pattern says.
 type PatternWatcher struct {
 	re    *regexp.Regexp
 	quiet time.Duration
@@ -201,6 +203,8 @@ type PatternWatcher struct {
 	tracker LineTracker
 	timer   *time.Timer
 	last    time.Time // of the last Feed
+	feeds   uint64    // Feeds so far
+	checked uint64    // the value of feeds at the last check of the line
 	stopped bool
 }
 
@@ -221,6 +225,7 @@ func (w *PatternWatcher) Feed(chunk []byte) {
 	}
 	w.tracker.Write(chunk)
 	w.last = time.Now()
+	w.feeds++
 	if w.timer == nil {
 		w.timer = time.AfterFunc(w.quiet, w.expire)
 	} else {
@@ -230,18 +235,22 @@ func (w *PatternWatcher) Feed(chunk []byte) {
 
 // expire is the timer's function: the stream has been quiet since w.last,
 // unless a Feed has come in between the timer going off and the lock being
-// taken, in which case the Feed has armed the timer again.
+// taken, in which case the Feed has armed the timer again. A fire that runs
+// longer than the quiet period leaves timers going off behind it, and they all
+// find the stream quiet since the same Feed; the first of them takes the quiet
+// period, the others find it taken.
 func (w *PatternWatcher) expire() {
 	w.fireMu.Lock()
 	defer w.fireMu.Unlock()
 	w.mu.Lock()
-	if w.stopped || time.Since(w.last) < w.quiet {
+	if w.stopped || w.checked == w.feeds || time.Since(w.last) < w.quiet {
 		w.mu.Unlock()
 		return
 	}
+	w.checked = w.feeds
 	line := w.tracker.Last()
 	w.mu.Unlock()
-	if w.re.MatchString(line) {
+	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
 	}
 }

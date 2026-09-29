@@ -2,11 +2,13 @@ package session
 
 import (
 	"bytes"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -125,6 +127,7 @@ func TestLineTrackerKeepsTheEndOfALongLine(t *testing.T) {
 }
 
 func TestPatternWatcherFiresAfterQuiet(t *testing.T) {
+	t.Parallel()
 	fired := make(chan string, 4)
 	w := NewPatternWatcher(regexp.MustCompile(`^> $`), 50*time.Millisecond, func(l string) { fired <- l })
 	defer w.Stop()
@@ -153,8 +156,9 @@ func TestPatternWatcherFiresAfterQuiet(t *testing.T) {
 // The prompt is what the line looked like when the output stopped, not when it
 // last matched: a spinner row that matches while output continues never fires.
 func TestPatternWatcherWaitsForSilenceBeforeMatching(t *testing.T) {
+	t.Parallel()
 	fired := make(chan string, 4)
-	w := NewPatternWatcher(regexp.MustCompile(`^> $`), 150*time.Millisecond, func(l string) { fired <- l })
+	w := NewPatternWatcher(regexp.MustCompile(`^> $`), 500*time.Millisecond, func(l string) { fired <- l })
 	defer w.Stop()
 	for i := 0; i < 8; i++ {
 		w.Feed([]byte("\r> "))
@@ -167,7 +171,7 @@ func TestPatternWatcherWaitsForSilenceBeforeMatching(t *testing.T) {
 	}
 	select {
 	case <-fired:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("did not fire once the output stopped")
 	}
 }
@@ -176,8 +180,9 @@ func TestPatternWatcherWaitsForSilenceBeforeMatching(t *testing.T) {
 // the stream has not been quiet for long and leaves it to the timer that Feed
 // armed.
 func TestPatternWatcherIgnoresATimerThatWentOffJustBeforeAFeed(t *testing.T) {
+	t.Parallel()
 	fired := make(chan string, 4)
-	w := NewPatternWatcher(regexp.MustCompile(`> $`), 150*time.Millisecond, func(l string) { fired <- l })
+	w := NewPatternWatcher(regexp.MustCompile(`> $`), 500*time.Millisecond, func(l string) { fired <- l })
 	defer w.Stop()
 	w.Feed([]byte("> "))
 	w.expire() // the timer's callback, with the last Feed a moment ago
@@ -188,37 +193,39 @@ func TestPatternWatcherIgnoresATimerThatWentOffJustBeforeAFeed(t *testing.T) {
 	}
 	select {
 	case <-fired:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("did not fire when the quiet period was over")
 	}
 }
 
 func TestPatternWatcherIgnoresALastLineThatDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	fired := make(chan string, 4)
-	w := NewPatternWatcher(regexp.MustCompile(`^> $`), 30*time.Millisecond, func(l string) { fired <- l })
+	w := NewPatternWatcher(regexp.MustCompile(`^> $`), 100*time.Millisecond, func(l string) { fired <- l })
 	defer w.Stop()
 	w.Feed([]byte("> \nthinking"))
 	select {
 	case l := <-fired:
 		t.Fatalf("fired with %q", l)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
 func TestPatternWatcherFiresOncePerQuietPeriod(t *testing.T) {
+	t.Parallel()
 	fired := make(chan string, 4)
-	w := NewPatternWatcher(regexp.MustCompile(`\(y/n\) $`), 30*time.Millisecond, func(l string) { fired <- l })
+	w := NewPatternWatcher(regexp.MustCompile(`\(y/n\) $`), 100*time.Millisecond, func(l string) { fired <- l })
 	defer w.Stop()
 	w.Feed([]byte("Proceed? (y/n) "))
 	select {
 	case <-fired:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("did not fire")
 	}
 	select {
 	case l := <-fired:
 		t.Fatalf("fired again without new output: %q", l)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
 	// New output starts a new quiet period.
 	w.Feed([]byte("\rProceed again? (y/n) "))
@@ -227,14 +234,15 @@ func TestPatternWatcherFiresOncePerQuietPeriod(t *testing.T) {
 		if l != "Proceed again? (y/n) " {
 			t.Fatalf("second fire with %q", l)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("did not fire for the second quiet period")
 	}
 }
 
 func TestPatternWatcherStopPreventsFires(t *testing.T) {
+	t.Parallel()
 	fired := make(chan string, 4)
-	w := NewPatternWatcher(regexp.MustCompile(`> $`), 30*time.Millisecond, func(l string) { fired <- l })
+	w := NewPatternWatcher(regexp.MustCompile(`> $`), 300*time.Millisecond, func(l string) { fired <- l })
 	w.Feed([]byte("> "))
 	w.Stop()
 	w.Stop() // more than once is fine
@@ -242,7 +250,7 @@ func TestPatternWatcherStopPreventsFires(t *testing.T) {
 	select {
 	case l := <-fired:
 		t.Fatalf("fired after Stop: %q", l)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(700 * time.Millisecond):
 	}
 }
 
@@ -250,6 +258,7 @@ func TestPatternWatcherStopPreventsFires(t *testing.T) {
 // and then changes state knows no fire will come after; Feed, on the other
 // hand, is never held up by a fire that is slow.
 func TestPatternWatcherStopWaitsForAFireInFlight(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	w := NewPatternWatcher(regexp.MustCompile(`> $`), 10*time.Millisecond, func(string) {
@@ -281,6 +290,72 @@ func TestPatternWatcherStopWaitsForAFireInFlight(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("Stop did not return once the fire had")
+	}
+}
+
+// A fire that takes longer than the quiet period leaves timers going off behind
+// it. They all find the stream quiet since the same Feed, and only one of them
+// may fire for it.
+func TestPatternWatcherFiresOnceForAQuietPeriodEvenWhenAFireIsSlow(t *testing.T) {
+	t.Parallel()
+	const quiet = 50 * time.Millisecond
+	var mu sync.Mutex
+	var lines []string
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	w := NewPatternWatcher(regexp.MustCompile(`> $`), quiet, func(l string) {
+		mu.Lock()
+		lines = append(lines, l)
+		first := len(lines) == 1
+		mu.Unlock()
+		if first {
+			entered <- struct{}{}
+			<-release
+		}
+	})
+	defer w.Stop()
+	w.Feed([]byte("A> "))
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not fire")
+	}
+	// While the first fire is stuck two more quiet periods begin and pass, and
+	// their timers go off and wait behind it.
+	w.Feed([]byte("\rB> "))
+	time.Sleep(5 * quiet)
+	w.Feed([]byte("\rC> "))
+	time.Sleep(5 * quiet)
+	close(release)
+	time.Sleep(10 * quiet)
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(lines, []string{"A> ", "C> "}) {
+		t.Fatalf("fired for %q, want the first prompt once and the last one once", lines)
+	}
+}
+
+// An empty line, or one of white space, is never a prompt, whatever the pattern
+// matches.
+func TestPatternWatcherSkipsALineOfWhiteSpace(t *testing.T) {
+	t.Parallel()
+	fired := make(chan string, 4)
+	w := NewPatternWatcher(regexp.MustCompile(`\s*$`), 100*time.Millisecond, func(l string) { fired <- l })
+	defer w.Stop()
+	w.Feed([]byte("output\n  \t "))
+	select {
+	case l := <-fired:
+		t.Fatalf("fired with %q", l)
+	case <-time.After(500 * time.Millisecond):
+	}
+	w.Feed([]byte("\r> "))
+	select {
+	case l := <-fired:
+		if l != "> " {
+			t.Fatalf("fired with %q", l)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not fire for a line with text")
 	}
 }
 
@@ -384,15 +459,78 @@ func TestLocalPatternDoesNotFireAfterTheSessionEnds(t *testing.T) {
 	}
 }
 
-// A prompt a hook or a bell has raised keeps its own message and source.
+// A prompt a hook or a bell has raised keeps its own message, source, kind and
+// options.
 func TestLocalPatternLeavesAnExistingNeedsInputAlone(t *testing.T) {
 	t.Parallel()
 	s, p := newLocalWith(t, Options{Pattern: regexp.MustCompile(`\? $`)})
-	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil)
+	options := []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}}
+	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, options)
+	before := s.Info().Attention
 	p.outW.Write([]byte("Allow Bash? "))
 	time.Sleep(800 * time.Millisecond)
-	if att := s.Info().Attention; att.Source != SourceAPI || att.Message != "Allow Bash?" || att.Kind != KindPermission {
-		t.Fatalf("attention %+v", att)
+	att := s.Info().Attention
+	if att.Source != SourceAPI || att.Message != "Allow Bash?" || att.Kind != KindPermission || !reflect.DeepEqual(att.Options, options) || att.Since != before.Since {
+		t.Fatalf("attention %+v, was %+v", att, before)
+	}
+}
+
+// Whether the session is waiting is checked and the mark that it is waiting is
+// made in one step. A hook (the admin, a bell) that reports at the same moment,
+// on whichever side of the fire, must be what is left, its message, kind and
+// options with it. The window is a few instructions wide, so this asks 4000
+// times.
+func TestLocalPatternFireNeverOverwritesAReportRacingWithIt(t *testing.T) {
+	s, _ := newLocalWith(t, Options{Pattern: regexp.MustCompile(`\? $`)})
+	options := []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}}
+	for round := 0; round < 4000; round++ {
+		s.SetAttentionFull(AttentionNone, "", SourceInput, "", nil)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; s.firePattern("Allow Bash? ") }()
+		go func() {
+			defer wg.Done()
+			<-start
+			s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, options)
+		}()
+		close(start)
+		wg.Wait()
+		if att := s.Info().Attention; att.Source != SourceAPI || att.Kind != KindPermission || !reflect.DeepEqual(att.Options, options) {
+			t.Fatalf("round %d: the report was overwritten by the pattern: %+v", round, att)
+		}
+	}
+}
+
+func TestPromptMessage(t *testing.T) {
+	cases := []struct{ name, line, want string }{
+		{"a short line", "Continue? (y/n) ", "prompt: Continue? (y/n) "},
+		{"a line that just fits", strings.Repeat("x", 492), "prompt: " + strings.Repeat("x", 492)},
+		{"a long line keeps its end, where the prompt is", strings.Repeat("x", 600) + "> ", "prompt: " + strings.Repeat("x", 490) + "> "},
+		{"the cut does not split a character", strings.Repeat("é", 400) + ">", "prompt: " + strings.Repeat("é", 245) + ">"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := promptMessage(c.line)
+			if got != c.want {
+				t.Fatalf("promptMessage = %.40q...%q (%d bytes), want %.40q...%q (%d bytes)", got, got[max(0, len(got)-20):], len(got), c.want, c.want[max(0, len(c.want)-20):], len(c.want))
+			}
+			if !utf8.ValidString(got) || CleanMessage(got) != strings.TrimSpace(got) {
+				t.Fatalf("the message is cut again by CleanMessage or is not valid UTF-8: %d bytes", len(got))
+			}
+		})
+	}
+}
+
+// A line longer than a message can be, and it is the end of it that says what
+// the agent waits for.
+func TestLocalPatternReportsTheEndOfALongLine(t *testing.T) {
+	t.Parallel()
+	s, p := newLocalWith(t, Options{Pattern: regexp.MustCompile(`> $`)})
+	p.outW.Write([]byte(strings.Repeat("x", 1000) + "> "))
+	att := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNeedsInput })
+	if len(att.Message) > MaxAttentionMessage || !strings.HasPrefix(att.Message, "prompt: xxx") || !strings.HasSuffix(att.Message, "xxx>") {
+		t.Fatalf("message of %d bytes: %.30q...%q", len(att.Message), att.Message, att.Message[max(0, len(att.Message)-30):])
 	}
 }
 

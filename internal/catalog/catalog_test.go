@@ -109,6 +109,27 @@ func TestCompilePattern(t *testing.T) {
 	}
 }
 
+// A pattern that matches an empty line would match a screen that shows
+// nothing, and mark every quiet session as waiting.
+func TestCompilePatternRejectsAPatternThatMatchesAnEmptyLine(t *testing.T) {
+	for _, p := range []string{`^$`, `.*`, `x*`, `(?:)`, `\s*$`, `^\s*$`, `a?`, `$`, `(?i)`, `^|x`} {
+		re, err := CompilePattern(p)
+		if err == nil || re != nil || !strings.Contains(err.Error(), "empty line") {
+			t.Fatalf("CompilePattern(%q) = %v, %v; want an error about an empty line", p, re, err)
+		}
+		a := Agent{ID: "x", Name: "X", Command: []string{"x"}, Signal: &Signal{Kind: "pattern", Pattern: p}}
+		if err := validate(a); err == nil {
+			t.Fatalf("an agent whose signal pattern is %q was accepted", p)
+		}
+	}
+	// A pattern that needs some text stays valid, whatever else it says.
+	for _, p := range []string{`^> $`, `\? $`, `\(Y\)es/\(N\)o\s*$`, `x+`, `\S`, `\b|x`} {
+		if _, err := CompilePattern(p); err != nil {
+			t.Fatalf("CompilePattern(%q): %v", p, err)
+		}
+	}
+}
+
 func TestOverlayUpsertsAndHides(t *testing.T) {
 	c := Default()
 	if err := c.ApplyOverlay(Overlay{

@@ -2,6 +2,7 @@ package hostagent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -17,29 +18,12 @@ import (
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
-// TestPeerDataChannelLoopback runs the real host peer code against an
-// in-process browser-like pion peer: the viewer creates the data channel and
-// the offer, the host answers, ICE trickles through channels.
-func TestPeerDataChannelLoopback(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "big.txt"), bytes.Repeat([]byte("k"), 200<<10), 0o600)
-	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
-	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
-
-	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	a.sendHook = func(v any) { out <- v }
-
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
-	if err := p.startWebRTC(nil); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(p.close)
-
+// loopbackViewer connects a browser-like pion peer to p: the viewer creates the
+// data channel and the offer, p answers, and ICE and the answer reach the
+// viewer through out, which the agent's sendHook fills. It returns the viewer's
+// data channel, once open, and the messages the viewer receives on it.
+func loopbackViewer(t *testing.T, p *peer, out <-chan any) (*webrtc.DataChannel, <-chan []byte) {
+	t.Helper()
 	viewerPC, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +70,33 @@ func TestPeerDataChannelLoopback(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("data channel did not open")
 	}
+	return dc, frames
+}
+
+// TestPeerDataChannelLoopback runs the real host peer code against an
+// in-process browser-like pion peer: the viewer creates the data channel and
+// the offer, the host answers, ICE trickles through channels.
+func TestPeerDataChannelLoopback(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "big.txt"), bytes.Repeat([]byte("k"), 200<<10), 0o600)
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+
+	out := make(chan any, 64)
+	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a.sendHook = func(v any) { out <- v }
+
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+
+	dc, frames := loopbackViewer(t, p, out)
 	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 100, Rows: 40}))
 	next := func() proto.Frame {
 		t.Helper()
@@ -156,5 +167,109 @@ func TestPeerDataChannelLoopback(t *testing.T) {
 	h, body, err := proto.DecodeFile(full.Payload)
 	if err != nil || h.ReqID != "big" || len(body) != 200<<10 {
 		t.Fatalf("file %+v %d %v", h, len(body), err)
+	}
+}
+
+// webrtcViewerAgent is a host with a real session and one WebRTC viewer whose
+// data channel is open and who is attached: what a host has while somebody
+// watches over the default transport.
+func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
+	t.Helper()
+	a, out := activityTestAgent(t, 0)
+	a.flushed = make(chan struct{}) // no watchStatus here to report the status message
+	close(a.flushed)
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	a.peers[p.id] = p
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	dc, frames := loopbackViewer(t, p, out)
+	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24}))
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case raw := <-frames:
+			if f, err := proto.Decode(raw); err == nil && f.Type == proto.TypeControl {
+				if typ, _ := proto.ParseHeader(f.Payload); typ == proto.CtlReady {
+					return a, p, frames
+				}
+			}
+		case <-deadline:
+			t.Fatal("the viewer was not attached")
+		}
+	}
+}
+
+// flood queues 480 KiB of output for the viewer: less than the session and the
+// data channel take without holding anything up, more than the connection has
+// carried and had acknowledged by the time the host is done.
+func flood(t *testing.T, a *agent, p *peer) {
+	t.Helper()
+	p.mu.Lock()
+	sub := p.sub
+	p.mu.Unlock()
+	if sub == nil {
+		t.Fatal("the viewer is not attached")
+	}
+	frame := proto.Encode(proto.TypeOutput, bytes.Repeat([]byte{'x'}, 30<<10))
+	for i := 0; i < 16; i++ {
+		a.local.Send(sub, frame)
+	}
+}
+
+// A data channel holds what it was given until the other end acknowledges it,
+// and closing the peer connection drops what it still holds. Drained says the
+// frames were handed to the channel, not that they got anywhere, so settle has
+// to wait for the channel as well, or a WebRTC viewer, the default transport,
+// is never told that the session ended.
+func TestSettleWaitsForAWebRTCViewerToGetTheFinalStatus(t *testing.T) {
+	a, p, frames := webrtcViewerAgent(t)
+	flood(t, a, p)
+	go a.local.Stop(t.Context())
+	select {
+	case <-a.local.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session did not end")
+	}
+	start := time.Now()
+	a.settle(t.Context())
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Fatalf("settle took %v: it ran into its limit instead of seeing the channel drain", took)
+	}
+	a.closeAllPeers()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case raw := <-frames:
+			f, err := proto.Decode(raw)
+			if err != nil || f.Type != proto.TypeControl {
+				continue
+			}
+			if typ, _ := proto.ParseHeader(f.Payload); typ == proto.CtlStatus {
+				var m map[string]any
+				_ = json.Unmarshal(f.Payload, &m)
+				if m["status"] != "stopped" {
+					t.Fatalf("status %v", m)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("the viewer never learned that the session ended")
+		}
+	}
+}
+
+// Like the other waits, this one gives up at once when the host has been
+// stopped from outside.
+func TestSettleDoesNotWaitForWebRTCViewersOnceCancelled(t *testing.T) {
+	a, p, _ := webrtcViewerAgent(t)
+	flood(t, a, p)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	a.settle(ctx)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("settle took %v after the host was cancelled", took)
 	}
 }

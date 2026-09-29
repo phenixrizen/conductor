@@ -27,14 +27,15 @@ func runHostWith(t *testing.T, args ...string) (int, string, error) {
 // catalog holds an agent's pattern to: RE2, at most 200 bytes.
 func TestHostRejectsABadSignalPattern(t *testing.T) {
 	clearConductorEnv(t)
-	for name, pattern := range map[string]string{
-		"not a regular expression": "(",
-		"longer than 200 bytes":    strings.Repeat("a", 201),
+	for _, c := range []struct{ name, pattern, want string }{
+		{"not a regular expression", "(", "missing closing"},
+		{"longer than 200 bytes", strings.Repeat("a", 201), "at most 200 bytes"},
+		{"matches an empty line", `.*`, "must not match an empty line"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--token", "t", "--signal-pattern", pattern, "--", "sh")
-			if code != 2 || err == nil || !strings.Contains(err.Error(), "invalid --signal-pattern") {
-				t.Fatalf("exit %d, error %v", code, err)
+		t.Run(c.name, func(t *testing.T) {
+			code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--token", "t", "--signal-pattern", c.pattern, "--", "sh")
+			if code != 2 || err == nil || !strings.Contains(err.Error(), "invalid --signal-pattern") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("exit %d, error %v, want one about %q", code, err, c.want)
 			}
 		})
 	}
