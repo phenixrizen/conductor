@@ -1015,6 +1015,37 @@ func TestCatalogSavedAgentsRun(t *testing.T) {
 	}
 }
 
+// A saved agent's envPassthrough lets its sessions inherit those server
+// variables on top of the server-wide list. Other agents do not get them, and
+// CONDUCTOR_* variables stay out even when listed.
+func TestCatalogEnvPassthroughReachesTheSession(t *testing.T) {
+	t.Setenv("PASS_PROBE_AGENT", "from-agent-list")
+	t.Setenv("PASS_PROBE_SERVER", "from-server-list")
+	t.Setenv("PASS_PROBE_NONE", "never-listed")
+	t.Setenv("CONDUCTOR_PROBE_SECRET", "server-only")
+	e := newTestEnv(t, func(c *config.Config) { c.EnvPassthrough = []string{"PASS_PROBE_SERVER"} })
+	script := `echo "A=[$PASS_PROBE_AGENT] S=[$PASS_PROBE_SERVER] N=[$PASS_PROBE_NONE] C=[$CONDUCTOR_PROBE_SECRET] END"; exec /bin/cat`
+	with := agentBody("with")
+	with["command"] = []string{"/bin/sh", "-c", script}
+	with["envPassthrough"] = []string{"PASS_PROBE_AGENT", "CONDUCTOR_PROBE_SECRET"}
+	e.save(with)
+	without := agentBody("without")
+	without["command"] = []string{"/bin/sh", "-c", script}
+	e.save(without)
+
+	// "without" runs after "with", so a launch that grew the server-wide list
+	// would show here.
+	for _, tc := range []struct{ agent, want string }{
+		{"with", "A=[from-agent-list] S=[from-server-list] N=[] C=[] END"},
+		{"without", "A=[] S=[from-server-list] N=[] C=[] END"},
+	} {
+		id := e.createSession(tc.agent)
+		c := dialViewer(t, e, id, adminToken)
+		c.hello(80, 24)
+		c.expectOutput(tc.want)
+	}
+}
+
 // GET /api/catalog masks env values, so a client that edits an agent it read
 // there sends the mask back to mean "unchanged". Saving that must keep the
 // stored value and never write the mask into catalog.json.

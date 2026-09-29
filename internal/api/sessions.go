@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -90,10 +91,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
 	notifyURL := s.cfg.PublicURL + "/api/sessions/" + id + "/attention"
+	// The agent's envPassthrough adds to the server-wide list; the clone keeps
+	// one launch from growing the list another launch reads.
+	passthrough := append(slices.Clone(s.cfg.EnvPassthrough), agent.EnvPassthrough...)
 	proc, err := pty.Start(pty.Spec{
 		Argv: argv,
 		Dir:  cwd,
-		Env:  pty.BuildEnv(pty.ParentEnv(), s.cfg.EnvPassthrough, agent.Env, pty.Inject(id, notifyURL, agentToken)),
+		Env:  pty.BuildEnv(pty.ParentEnv(), passthrough, agent.Env, pty.Inject(id, notifyURL, agentToken)),
 		Cols: cols,
 		Rows: rows,
 	})
