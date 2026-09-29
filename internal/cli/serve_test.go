@@ -185,3 +185,31 @@ func TestServeWritesTheHookAssets(t *testing.T) {
 		t.Fatalf("hooks dir: %v %v", fi.Mode(), err)
 	}
 }
+
+// When the conductor on PATH is this binary through a link, as package
+// managers install it, the assets name the link: it survives an upgrade that
+// replaces the binary it points to.
+func TestServeNamesTheConductorOnPATH(t *testing.T) {
+	clearConductorEnv(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(exe, filepath.Join(bin, "conductor")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	serveUntilListening(t, "--config", cfg)
+	b, err := os.ReadFile(filepath.Join(data, "hooks", "claude.json"))
+	if err != nil || !strings.Contains(string(b), `"`+filepath.Join(bin, "conductor")+` notify --claude-hook"`) {
+		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+}

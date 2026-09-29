@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -308,7 +309,8 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 }
 
 // MapCursorHook turns a Cursor CLI hook payload into an update: the end of a
-// turn, or a tool that ran (a file edit is one, named after the file).
+// turn, or a tool that ran (a file edit is one, named after the file: its
+// name, not its path, which could fill the 100 bytes the server keeps).
 func MapCursorHook(raw []byte) (req Request, ok bool) {
 	var h struct {
 		HookEventName string `json:"hook_event_name"`
@@ -324,7 +326,10 @@ func MapCursorHook(raw []byte) (req Request, ok bool) {
 	case "postToolUse":
 		return Request{Event: "tool_use", Tool: h.ToolName}, true
 	case "afterFileEdit":
-		return Request{Event: "tool_use", Tool: strings.TrimSpace("edit " + h.FilePath)}, true
+		if h.FilePath == "" {
+			return Request{Event: "tool_use", Tool: "edit"}, true
+		}
+		return Request{Event: "tool_use", Tool: "edit " + path.Base(h.FilePath)}, true
 	}
 	return Request{}, false
 }

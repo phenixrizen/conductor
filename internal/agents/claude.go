@@ -28,6 +28,16 @@ var claudeAssets = map[string]string{
 		"PostToolUse", "PostToolUseFailure", "SubagentStop"),
 }
 
+func claudeSteps(hooksDir string) []step {
+	return []step{{claudeSettings, func(h *homeDir) (bool, error) {
+		asset, err := assetFor(claudeAssets, hooksDir, "claude.json")
+		if err != nil {
+			return false, err
+		}
+		return mergeJSONHooks(h, claudeSettings, asset, claudeMarker)
+	}}}
+}
+
 func claudeAdapter() Adapter {
 	return Adapter{
 		ID:     "claude",
@@ -41,16 +51,10 @@ func claudeAdapter() Adapter {
 			return []string{"--settings", filepath.Join(hooksDir, settings)}, nil
 		},
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, step{claudeSettings, func(h *homeDir) (bool, error) {
-				asset, err := assetFor(claudeAssets, hooksDir, "claude.json")
-				if err != nil {
-					return false, err
-				}
-				return mergeJSONHooks(h, claudeSettings, asset, claudeMarker)
-			}})
+			return install(home, claudeSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return hooksMention(home, claudeSettings, claudeMarker)
+			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(claudeAssets, hooksDir, "claude.json")

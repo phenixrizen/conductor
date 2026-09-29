@@ -14,22 +14,26 @@ var cursorAssets = map[string]string{
 		"stop", "postToolUse", "afterFileEdit") + `}}`),
 }
 
+func cursorSteps(hooksDir string) []step {
+	return []step{{cursorHooks, func(h *homeDir) (bool, error) {
+		asset, err := assetFor(cursorAssets, hooksDir, "cursor-hooks.json")
+		if err != nil {
+			return false, err
+		}
+		return mergeJSONHooks(h, cursorHooks, asset, cursorMarker)
+	}}}
+}
+
 func cursorAdapter() Adapter {
 	return Adapter{
 		ID:     "cursor",
 		Name:   "Cursor CLI",
 		Assets: cursorAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, step{cursorHooks, func(h *homeDir) (bool, error) {
-				asset, err := assetFor(cursorAssets, hooksDir, "cursor-hooks.json")
-				if err != nil {
-					return false, err
-				}
-				return mergeJSONHooks(h, cursorHooks, asset, cursorMarker)
-			}})
+			return install(home, cursorSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return hooksMention(home, cursorHooks, cursorMarker)
+			return statusOf(home, cursorHooks, cursorSteps("")...)
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(cursorAssets, hooksDir, "cursor-hooks.json")

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/phenixrizen/conductor/internal/notify"
@@ -43,11 +45,17 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] | --event E [--message M] [--url U] [--to T] [--tool N] | --<agent>-hook | --codex <json>")
 		fs.PrintDefaults()
 	}
+	// Agents' hooks run this command, and a hook runner reads exit 2 as
+	// "block the agent": a mistake in a hook's command line exits 1.
+	misuse := 2
+	if hookMode(args) {
+		misuse = 1
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
 		}
-		return 2, err
+		return misuse, err
 	}
 	// The payload flags given, in the order of the usage: at most one may be.
 	var payload []string
@@ -60,7 +68,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		payload = append(payload, "--codex")
 	}
 	if len(payload) > 1 {
-		return 2, fmt.Errorf("%s cannot be combined: a payload is read one way", strings.Join(payload, " and "))
+		return misuse, fmt.Errorf("%s cannot be combined: a payload is read one way", strings.Join(payload, " and "))
 	}
 	if *event != "" {
 		// --state has a default, so only Visit can tell that it was given.
@@ -71,11 +79,18 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 			with = append([]string{"--state"}, payload...)
 		}
 		if len(with) > 0 {
-			return 2, fmt.Errorf("--event cannot be combined with %s", strings.Join(with, " or "))
+			return misuse, fmt.Errorf("--event cannot be combined with %s", strings.Join(with, " or "))
 		}
 	}
 	url, token, err := notify.FromEnv(os.Getenv)
 	if err != nil {
+		// A hook runner writes the payload whether or not there is a session
+		// to report to: read it, so the runner never writes into a closed
+		// pipe. (--codex has its payload in an argument, and its stdin is
+		// Codex's own.)
+		if len(payload) == 1 && payload[0] != "--codex" {
+			_, _ = readPayload(stdin)
+		}
 		if *quiet {
 			return 0, nil
 		}
@@ -89,7 +104,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		if !*h.set {
 			continue
 		}
-		raw, err := notify.ReadAllBounded(stdin)
+		raw, err := readPayload(stdin)
 		if err != nil {
 			return 1, err
 		}
@@ -119,4 +134,37 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return 1, err
 	}
 	return 0, nil
+}
+
+// payloadFlags are the flags that make the command map an agent's payload.
+var payloadFlags = []string{"claude-hook", "codex-hook", "copilot-hook", "cursor-hook", "agy-hook", "goose-hook", "codex"}
+
+// hookMode reports whether args ask for an agent's payload to be mapped, which
+// is how agents' hooks run the command, whether or not the rest of args parses.
+func hookMode(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		name, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !strings.HasPrefix(a, "-") || !slices.Contains(payloadFlags, name) {
+			continue
+		}
+		if on, err := strconv.ParseBool(value); !hasValue || err != nil || on {
+			return true
+		}
+	}
+	return false
+}
+
+// readPayload reads a hook's payload from stdin, at most 1 MiB. A terminal is
+// not read: nothing writes a payload to one, and what is typed there is the
+// agent's.
+func readPayload(stdin io.Reader) ([]byte, error) {
+	if f, ok := stdin.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return nil, nil
+		}
+	}
+	return notify.ReadAllBounded(stdin)
 }

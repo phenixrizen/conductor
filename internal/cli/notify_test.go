@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
 
 // notifyServer records the one request `conductor notify` makes and points
@@ -80,7 +84,8 @@ func TestNotifyWithoutEventStillPostsAttention(t *testing.T) {
 }
 
 // --event and a hook payload are two ways to say what happened; taking one
-// silently would hide a wrong install.
+// silently would hide a wrong install. A hook runner reads exit 2 as "block
+// the agent", so a hook's mistake exits 1.
 func TestNotifyEventRefusesHookFlags(t *testing.T) {
 	ns := startNotifyServer(t)
 	for _, args := range [][]string{
@@ -93,7 +98,7 @@ func TestNotifyEventRefusesHookFlags(t *testing.T) {
 		{"--event", "progress", "--goose-hook"},
 	} {
 		code, _, err := runNotifyWith(t, `{"hook_event_name":"Stop"}`, args...)
-		if code != 2 || err == nil || !strings.Contains(err.Error(), "--event") {
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "--event") {
 			t.Fatalf("%v: exit %d, err %v", args, code, err)
 		}
 	}
@@ -148,7 +153,7 @@ func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
 		body              map[string]any
 	}{
 		{"--copilot-hook", `{"sessionId":"s","stopReason":"end_turn"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "kind": "done"}},
-		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "edit /x/a.go"}},
+		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "edit a.go"}},
 		{"--agy-hook", `{"terminationReason":"completed"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "message": "completed", "kind": "done"}},
 		{"--goose-hook", `{"event":"PostToolUse","tool_name":"shell"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "shell"}},
 		{"--codex-hook", `{"hook_event_name":"PermissionRequest","tool_name":"shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "needs_input", "message": "Allow shell?", "kind": "permission"}},
@@ -190,11 +195,114 @@ func TestNotifyTakesOneHookFlag(t *testing.T) {
 		{"--cursor-hook", "--goose-hook", "--agy-hook"},
 	} {
 		code, _, err := runNotifyWith(t, `{"hook_event_name":"stop"}`, args...)
-		if code != 2 || err == nil || !strings.Contains(err.Error(), args[0]) || !strings.Contains(err.Error(), args[1]) {
+		if code != 1 || err == nil || !strings.Contains(err.Error(), args[0]) || !strings.Contains(err.Error(), args[1]) {
 			t.Fatalf("%v: exit %d, err %v", args, code, err)
 		}
 	}
 	if ns.calls != 0 {
 		t.Fatalf("%d requests were sent", ns.calls)
+	}
+}
+
+// Claude-shaped hook runners read exit 2 as "block": a hook's usage mistake,
+// even one the flag parser finds, exits 1 and says why on stderr. Outside a
+// hook the command keeps exiting 2 for a usage mistake.
+func TestNotifyHookModeNeverExitsTwo(t *testing.T) {
+	startNotifyServer(t)
+	for _, args := range [][]string{
+		{"--claude-hook", "--no-such-flag"},
+		{"--no-such-flag", "--copilot-hook"},
+		{"--codex", "--no-such-flag", "{}"},
+		{"--goose-hook=true", "--agy-hook"},
+		{"--cursor-hook", "--state", "done", "--event", "progress"},
+	} {
+		code, stderr, err := runNotifyWith(t, "{}", args...)
+		if code != 1 || err == nil {
+			t.Errorf("%v: exit %d, %v", args, code, err)
+		}
+		_ = stderr
+	}
+	for _, args := range [][]string{{"--no-such-flag"}, {"--claude-hook=false", "--no-such-flag"}} {
+		if code, _, _ := runNotifyWith(t, "", args...); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+	}
+}
+
+// countingReader records how much of its payload was read.
+type countingReader struct {
+	r    io.Reader
+	read int
+	eof  bool
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += n
+	c.eof = c.eof || err == io.EOF
+	return n, err
+}
+
+// A hook runner writes the payload whatever happens to it: outside a session
+// the command still reads it, up to 1 MiB, so the runner never writes into a
+// closed pipe. --codex takes its payload as an argument, and its stdin is
+// Codex's own: it is not read.
+func TestNotifyHookReadsItsPayloadOutsideASession(t *testing.T) {
+	t.Setenv("CONDUCTOR_NOTIFY_URL", "")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "")
+	run := func(payload string, args ...string) *countingReader {
+		t.Helper()
+		in := &countingReader{r: strings.NewReader(payload)}
+		code, err := runNotify(context.Background(), args, in, &bytes.Buffer{}, &bytes.Buffer{})
+		if code != 0 || err != nil {
+			t.Fatalf("%v: exit %d %v", args, code, err)
+		}
+		return in
+	}
+	small := `{"hook_event_name":"Stop","pad":"` + strings.Repeat("x", 100<<10) + `"}`
+	if in := run(small, "--claude-hook"); !in.eof || in.read != len(small) {
+		t.Fatalf("read %d of %d bytes, eof %v", in.read, len(small), in.eof)
+	}
+	if in := run(strings.Repeat("x", 3<<20), "--copilot-hook"); in.read != 1<<20 {
+		t.Fatalf("read %d bytes of a 3 MiB payload, want 1 MiB", in.read)
+	}
+	if in := run("typed by the user", "--codex", "{}"); in.read != 0 {
+		t.Fatalf("--codex read %d bytes of its stdin", in.read)
+	}
+	if in := run("not a hook", "--state", "done"); in.read != 0 {
+		t.Fatalf("a plain report read %d bytes of its stdin", in.read)
+	}
+}
+
+// A terminal is never read: nothing writes a payload to one, and the keys on
+// it belong to the agent. The command returns at once, in a session or not.
+func TestNotifyHookDoesNotReadATerminal(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pseudo-terminal: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	for _, inSession := range []bool{false, true} {
+		var ns *notifyServer
+		if inSession {
+			ns = startNotifyServer(t)
+		} else {
+			t.Setenv("CONDUCTOR_NOTIFY_URL", "")
+			t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "")
+		}
+		done := make(chan int, 1)
+		go func() {
+			code, _ := runNotify(context.Background(), []string{"--claude-hook"}, tty, &bytes.Buffer{}, &bytes.Buffer{})
+			done <- code
+		}()
+		select {
+		case code := <-done:
+			if code != 0 || (ns != nil && ns.calls != 0) {
+				t.Fatalf("in session %v: exit %d", inSession, code)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("in session %v: the command waited on the terminal", inSession)
+		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
@@ -97,6 +98,59 @@ func TestWriteAssetsRefusesALink(t *testing.T) {
 	}
 }
 
+// WriteAssets owns the hooks dir: the directory is 0700 and every asset 0600,
+// whatever they were before, even when the content is already right.
+func TestWriteAssetsTightensModes(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(dir, "claude.json")
+	os.Chmod(asset, 0o644)
+	os.Chmod(dir, 0o755)
+	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("hooks dir %v", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(asset); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("asset %v", fi.Mode().Perm())
+	}
+}
+
+// The hooks name the conductor on PATH when that is this binary, as a package
+// manager's link to a versioned install is: the link survives an upgrade, the
+// versioned path does not. Anything else names this binary.
+func TestBinaryPath(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := t.TempDir()
+	if err := os.Symlink(exe, filepath.Join(link, "conductor")); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "conductor"), []byte("#!/bin/sh\n"), 0o755)
+	for _, c := range []struct{ name, path, want string }{
+		{"a link to this binary", link, filepath.Join(link, "conductor")},
+		{"another conductor", other + string(os.PathListSeparator) + link, exe},
+		{"none on PATH", t.TempDir(), exe},
+	} {
+		t.Setenv("PATH", c.path)
+		if got, err := BinaryPath(); err != nil || got != c.want {
+			t.Errorf("%s: %q %v, want %q", c.name, got, err, c.want)
+		}
+	}
+	// A relative PATH entry is not a path to name in a config file.
+	t.Chdir(link)
+	t.Setenv("PATH", ".")
+	if got, err := BinaryPath(); err != nil || got != exe {
+		t.Errorf("relative PATH: %q %v, want %q", got, err, exe)
+	}
+}
+
 func TestWriteAssetsNeedsAbsolutePaths(t *testing.T) {
 	if err := WriteAssets(t.TempDir(), "conductor"); err == nil {
 		t.Fatal("a relative binary path was accepted")
@@ -161,9 +215,9 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// oddDir makes a directory whose name has a space, both quotes and a
-// backslash, with a stand-in for conductor in it that writes its arguments,
-// one per line, to $ARGS_OUT.
+// oddBinary makes a directory whose name has a space, both quotes and a
+// backslash, with a stand-in for conductor in it that waits $ARGS_DELAY
+// seconds, then writes its arguments, one per line, to $ARGS_OUT.
 func oddBinary(t *testing.T) (bin, out string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), `my "odd' dir\`)
@@ -171,10 +225,26 @@ func oddBinary(t *testing.T) (bin, out string) {
 		t.Fatal(err)
 	}
 	bin = filepath.Join(dir, "conductor")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARGS_OUT\"\n"), 0o700); err != nil {
+	script := "#!/bin/sh\nsleep \"${ARGS_DELAY:-0}\"\nprintf '%s\\n' \"$@\" > \"$ARGS_OUT.tmp\" && mv \"$ARGS_OUT.tmp\" \"$ARGS_OUT\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return bin, filepath.Join(t.TempDir(), "args")
+}
+
+// waitArgs waits for the stand-in to have written its arguments.
+func waitArgs(t *testing.T, out string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if b, err := os.ReadFile(out); err == nil {
+			return string(b)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the binary did not run")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // runShell runs command the way hook runners do, with sh -c, and returns the
@@ -291,7 +361,8 @@ func TestAssetsEscapeTheBinaryPath(t *testing.T) {
 
 // With node at hand, every script asset loads as a module with an odd binary
 // path, registers its handlers with the agent and, when one fires, runs that
-// binary.
+// binary without waiting for it: a slow or unreachable server must never hold
+// up the agent.
 func TestScriptAssetsRunInNode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -310,8 +381,9 @@ const mod = await import(process.argv[1]);
 if (typeof mod.default === "function") {
   const handlers = [];
   mod.default({ on: (name, fn) => handlers.push([name, fn]) });
+  const start = Date.now();
   await handlers[0][1]({});
-  console.log(JSON.stringify({ on: handlers.map(([name]) => name) }));
+  console.log(JSON.stringify({ on: handlers.map(([name]) => name), ms: Date.now() - start }));
 } else {
   const calls = [];
   const $ = (strings, ...values) => { calls.push(values); const r = { quiet: () => r, nothrow: () => r, then: (ok) => ok() }; return r; };
@@ -337,22 +409,29 @@ if (typeof mod.default === "function") {
 			os.WriteFile(mod, src, 0o600)
 			os.Remove(out)
 			cmd := exec.Command(node, "--input-type=module", "-e", harness, (&url.URL{Scheme: "file", Path: mod}).String())
-			cmd.Env = append(os.Environ(), "ARGS_OUT="+out)
+			// The stand-in takes a second: the handler must not wait for it.
+			cmd.Env = append(os.Environ(), "ARGS_OUT="+out, "ARGS_DELAY=1")
 			stdout, err := cmd.Output()
 			if err != nil {
 				t.Fatalf("%s: %v\n%s", rel, err, stdout)
 			}
 			var res struct {
 				On    []string `json:"on"`
+				MS    int      `json:"ms"`
 				Calls [][]any  `json:"calls"`
 			}
 			if err := json.Unmarshal(stdout, &res); err != nil {
 				t.Fatalf("%s: %v %s", rel, err, stdout)
 			}
 			if first, ok := firstHandler[rel]; ok {
-				args, err := os.ReadFile(out)
-				if len(res.On) == 0 || res.On[0] != first || err != nil || string(args) != "notify\n--state\ndone\n" {
-					t.Fatalf("%s: handlers %v, binary ran with %q (%v)", rel, res.On, args, err)
+				if len(res.On) == 0 || res.On[0] != first || res.MS > 500 {
+					t.Fatalf("%s: handlers %v, the first took %d ms", rel, res.On, res.MS)
+				}
+				if args := waitArgs(t, out); args != "notify\n--state\ndone\n" {
+					t.Fatalf("%s: the binary ran with %q", rel, args)
+				}
+				if strings.Contains(string(src), "spawnSync") {
+					t.Fatalf("%s still waits for the binary", rel)
 				}
 				continue
 			}

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -21,9 +22,32 @@ import (
 const binPlaceholder = "{{BIN}}"
 
 // executable finds the conductor binary the hooks run when an adapter renders
-// something itself: its launch flags and environment, and an asset missing
-// from the hooks dir. Tests replace it.
-var executable = os.Executable
+// something itself: its launch flags and environment, an asset missing from
+// the hooks dir, and what Status compares an install with. Tests replace it.
+var executable = BinaryPath
+
+// BinaryPath is the conductor binary for hooks to run: the conductor on PATH
+// when that is this very binary, and this binary's own path otherwise.
+// Package managers (Homebrew, Nix, a /usr/local/bin link to a versioned
+// directory) install conductor as a link to a path that changes with every
+// version: hooks that name the link survive an upgrade, hooks that name the
+// versioned path stop working when the old version is removed.
+func BinaryPath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	// LookPath fails for a match in a relative PATH entry, which is no path
+	// to write into a config file.
+	if onPath, err := exec.LookPath("conductor"); err == nil && filepath.IsAbs(onPath) {
+		a, errA := os.Stat(onPath)
+		b, errB := os.Stat(exe)
+		if errA == nil && errB == nil && os.SameFile(a, b) {
+			return onPath, nil
+		}
+	}
+	return exe, nil
+}
 
 // binPath returns the running conductor binary, checked the way WriteAssets
 // checks the one it is given.
@@ -48,9 +72,10 @@ func checkBin(bin string) error {
 }
 
 // WriteAssets renders every adapter's assets for bin, the absolute path of the
-// conductor binary, and writes them under hooksDir: directories 0700, files
-// 0600. Each file is replaced whole, so an agent reading one never sees half
-// of it, and one that already holds the right content is left alone.
+// conductor binary, and writes them under hooksDir. Conductor owns the
+// directory: it is made 0700 and every asset 0600, whatever they were. Each
+// file is replaced whole, so an agent reading one never sees half of it, and
+// one that already holds the right content is not rewritten.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -61,6 +86,9 @@ func WriteAssets(hooksDir, bin string) error {
 	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
 		return err
 	}
+	if err := os.Chmod(hooksDir, 0o700); err != nil {
+		return err
+	}
 	for _, a := range registry {
 		for _, rel := range slices.Sorted(maps.Keys(a.Assets)) {
 			content, err := render(rel, a.Assets[rel], bin)
@@ -68,7 +96,7 @@ func WriteAssets(hooksDir, bin string) error {
 				return err
 			}
 			p := filepath.Join(hooksDir, filepath.FromSlash(rel))
-			if _, err := replaceFile(p, p, []byte(content)); err != nil {
+			if _, err := replaceFile(p, p, []byte(content), 0o600); err != nil {
 				return err
 			}
 		}

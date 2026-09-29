@@ -13,7 +13,7 @@ const testAsset = `{"version":1,"hooks":{"Stop":[{"command":"/opt/conductor noti
 func openTestHome(t *testing.T) (*homeDir, string) {
 	t.Helper()
 	dir := t.TempDir()
-	h, err := openHome(dir)
+	h, err := openHome(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,17 +86,18 @@ func TestMergeJSONHooksKeepsWhatItDoesNotOwn(t *testing.T) {
 	}
 }
 
-// A list that already holds a Conductor entry, under any binary path, gets no
-// second one; a list without one gets it even when another list has it.
+// A list that already holds an entry that runs conductor for the marker, a
+// bare one of the user's included, gets no second one; a list without one
+// gets it even when another list has it.
 func TestMergeJSONHooksLooksForTheMarkerPerList(t *testing.T) {
 	h, dir := openTestHome(t)
 	p := filepath.Join(dir, "hooks.json")
-	os.WriteFile(p, []byte(`{"hooks":{"Stop":[{"command":"/elsewhere/conductor notify --x-hook"}]}}`), 0o600)
+	os.WriteFile(p, []byte(`{"hooks":{"Stop":[{"command":"conductor notify --x-hook"}]}}`), 0o600)
 	if changed, err := mergeJSONHooks(h, "hooks.json", []byte(testAsset), "notify --x-hook"); !changed || err != nil {
 		t.Fatalf("merge: %v %v", changed, err)
 	}
 	b, _ := os.ReadFile(p)
-	if strings.Count(string(b), "notify --x-hook") != 2 || !strings.Contains(string(b), "/elsewhere/conductor") {
+	if strings.Count(string(b), "notify --x-hook") != 2 || !strings.Contains(string(b), `"conductor notify --x-hook"`) {
 		t.Fatalf("merged:\n%s", b)
 	}
 }
@@ -155,14 +156,14 @@ func TestSetJSONKeyOwnsOneKey(t *testing.T) {
 func TestCreateJSONNeverOverwrites(t *testing.T) {
 	h, dir := openTestHome(t)
 	p := filepath.Join(dir, "hooks.json")
-	if changed, err := createJSON(h, "hooks.json", []byte(testAsset)); !changed || err != nil {
+	if changed, err := createJSON(h, "hooks.json", []byte(testAsset), "notify --x-hook", "see the snippet"); !changed || err != nil {
 		t.Fatalf("create: %v %v", changed, err)
 	}
-	if changed, err := createJSON(h, "hooks.json", []byte(testAsset)); changed || err != nil {
+	if changed, err := createJSON(h, "hooks.json", []byte(testAsset), "notify --x-hook", "see the snippet"); changed || err != nil {
 		t.Fatalf("same content: %v %v", changed, err)
 	}
 	os.WriteFile(p, []byte(`{"hooks":{}}`), 0o600)
-	if changed, err := createJSON(h, "hooks.json", []byte(testAsset)); changed || !errors.Is(err, ErrByHand) {
+	if changed, err := createJSON(h, "hooks.json", []byte(testAsset), "notify --x-hook", "see the snippet"); changed || !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), "see the snippet") {
 		t.Fatalf("someone else's file: %v %v", changed, err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != `{"hooks":{}}` {
@@ -170,7 +171,81 @@ func TestCreateJSONNeverOverwrites(t *testing.T) {
 	}
 }
 
-func TestWithMarkedBlock(t *testing.T) {
+// staleCommand tells Conductor's own commands for an older binary from
+// everything else: the user's commands, bare `conductor` ones and ours.
+func TestStaleCommand(t *testing.T) {
+	const marker, ours = "notify --x-hook", "/opt/new/conductor notify --x-hook"
+	for in, want := range map[string]bool{
+		"/opt/old/conductor notify --x-hook":       true,
+		"'/opt/my apps/conductor' notify --x-hook": true,
+		`'/opt/it'\''s/conductor' notify --x-hook`: true,
+		ours:                          false,
+		"conductor notify --x-hook":   false, // bare: the user's
+		"./conductor notify --x-hook": false,
+		"/opt/old/conductor notify --x-hook --quiet=false": false,
+		"/opt/old/conductor notify --y-hook":               false,
+		"say done; /opt/old/conductor notify --x-hook":     false,
+		`"/opt/old/conductor" notify --x-hook`:             false,
+		"/opt/my apps/conductor notify --x-hook":           false,
+	} {
+		if got := staleCommand(in, marker, ours); got != want {
+			t.Errorf("staleCommand(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A stale command is rewritten where it is; the rest of the document, key
+// order and raw values included, is kept.
+func TestMergeJSONHooksRewritesStaleCommandsInPlace(t *testing.T) {
+	h, dir := openTestHome(t)
+	p := filepath.Join(dir, "hooks.json")
+	os.WriteFile(p, []byte(`{"hooks":{"Stop":[{"when":1.50,"command":"/opt/old/conductor notify --x-hook","z":"é"},{"command":"conductor notify --x-hook"}],"Start":[{"command":"/opt/old/conductor notify --x-hook"}]},"version":1}`), 0o600)
+	if changed, err := mergeJSONHooks(h, "hooks.json", []byte(testAsset), "notify --x-hook"); !changed || err != nil {
+		t.Fatalf("merge: %v %v", changed, err)
+	}
+	b, _ := os.ReadFile(p)
+	want := `{
+  "hooks": {
+    "Stop": [
+      {
+        "when": 1.50,
+        "command": "/opt/conductor notify --x-hook",
+        "z": "é"
+      },
+      {
+        "command": "conductor notify --x-hook"
+      }
+    ],
+    "Start": [
+      {
+        "command": "/opt/conductor notify --x-hook"
+      }
+    ]
+  },
+  "version": 1
+}
+`
+	if string(b) != want {
+		t.Fatalf("got\n%s\nwant\n%s", b, want)
+	}
+}
+
+// The dry run behind Status reports what a write would change and writes
+// nothing.
+func TestDryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	touched, err := run(dir, true, step{"a/hooks.json", func(h *homeDir) (bool, error) {
+		return mergeJSONHooks(h, "a/hooks.json", []byte(testAsset), "notify --x-hook")
+	}})
+	if err != nil || len(touched) != 1 {
+		t.Fatalf("dry run: %q %v", touched, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("the dry run wrote %v", entries)
+	}
+}
+
+func TestTOMLBlock(t *testing.T) {
 	const begin, end = "# >>> conductor", "# <<< conductor"
 	block := begin + "\nnotify = [\"a\"]\n" + end + "\n"
 	cases := []struct{ in, want string }{
@@ -181,15 +256,25 @@ func TestWithMarkedBlock(t *testing.T) {
 		{"a = 1\n" + begin + "\nnotify = [\"old\"]\n" + end + "\nb = 2\n", "a = 1\n" + block + "b = 2\n"},
 		{block + "\nrest = 1\n", block + "\nrest = 1\n"},
 		{"  " + begin + "\nold\n  " + end, block},
+		// A byte order mark stays first.
+		{"\ufeffmodel = 1\n", "\ufeff" + block + "\nmodel = 1\n"},
+		{"\ufeff" + begin + "\nold\n" + end + "\n", "\ufeff" + block},
+		// Marker lines inside a multi-line string are text, not the block.
+		{"doc = \"\"\"\n" + begin + "\n" + end + "\n\"\"\"\n", block + "\ndoc = \"\"\"\n" + begin + "\n" + end + "\n\"\"\"\n"},
 	}
 	for _, c := range cases {
-		got, err := withMarkedBlock(c.in, begin, end, `notify = ["a"]`)
+		doc, err := readTOML(c.in)
+		if err != nil {
+			t.Fatalf("readTOML(%q): %v", c.in, err)
+		}
+		got, err := doc.withBlock(begin, end, `notify = ["a"]`)
 		if err != nil || got != c.want {
-			t.Errorf("withMarkedBlock(%q) = %q, %v; want %q", c.in, got, err, c.want)
+			t.Errorf("withBlock(%q) = %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
-	if _, err := withMarkedBlock(begin+"\nnotify = 1\n", begin, end, "x"); !errors.Is(err, ErrByHand) {
-		t.Fatalf("a block without its end: %v", err)
+	doc, _ := readTOML(begin + "\nnotify = 1\n")
+	if _, err := doc.withBlock(begin, end, "x"); err == nil {
+		t.Fatal("a block without its end")
 	}
 }
 
@@ -199,15 +284,43 @@ func TestTOMLSetsRootKey(t *testing.T) {
 		"notify = [\"a\"]\n":                        true,
 		"  notify=[\"a\"]\n":                        true,
 		"\"notify\" = [\"a\"]\n":                    true,
+		"\ufeffnotify = [\"a\"]\n":                  true,
 		"model = 1\n# notify = [\"a\"]\n":           false,
 		"notifications = true\n":                    false,
 		"[tui]\nnotify = [\"a\"]\n":                 false,
 		begin + "\nnotify = [\"a\"]\n" + end + "\n": false,
 		"model = 1\n[profiles.x]\nnotify = 1\n":     false,
+		// A line that starts with [ inside a multi-line array or string is
+		// not a table header: the root goes on after it.
+		"paths = [\n  [\"a\", \"b\"],\n]\nnotify = [\"x\"]\n":      true,
+		"doc = \"\"\"\n[not a table]\n\"\"\"\nnotify = [\"x\"]\n":  true,
+		"doc = '''\n[not a table]\n'''\nnotify = [\"x\"]\n":        true,
+		"doc = \"\"\"\nnotify = 1\n\"\"\"\n":                       false,
+		"a = \"[x] # not a comment\" # a comment [y\nnotify = 1\n": true,
 	}
 	for in, want := range cases {
-		if got := tomlSetsRootKey(in, "notify", begin, end); got != want {
-			t.Errorf("tomlSetsRootKey(%q) = %v, want %v", in, got, want)
+		doc, err := readTOML(in)
+		if err != nil {
+			t.Fatalf("readTOML(%q): %v", in, err)
+		}
+		if got := doc.setsRootKey("notify", begin, end); got != want {
+			t.Errorf("setsRootKey(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A document that ends inside a string or an array cannot be read line by
+// line with any confidence: the codex step leaves it to the user.
+func TestReadTOMLRefusesWhatItCannotRead(t *testing.T) {
+	for _, in := range []string{
+		"doc = \"\"\"\nnever closed\n",
+		"doc = '''\nnever closed\n",
+		"paths = [\n  \"a\",\n",
+		"name = \"never closed\n",
+		"name = 'never closed\n",
+	} {
+		if _, err := readTOML(in); err == nil {
+			t.Errorf("readTOML(%q) read it", in)
 		}
 	}
 }
@@ -225,6 +338,9 @@ func TestWithYAMLListItem(t *testing.T) {
 		{"extensions: # mine\n  - a.ts\n\n# next\nmodel: y\n", "extensions: # mine\n  - a.ts\n  # conductor\n  - " + item + "\n\n# next\nmodel: y\n"},
 		// Already listed: nothing changes.
 		{"extensions:\n  - " + match + "\n", "extensions:\n  - " + match + "\n"},
+		// An explicit start of the one document, and comments in the list.
+		{"---\nextensions:\n  # mine\n  - a.ts\n", "---\nextensions:\n  # mine\n  - a.ts\n  # conductor\n  - " + item + "\n"},
+		{"extensions:\n  - \"a b.ts\" # quoted\n", "extensions:\n  - \"a b.ts\" # quoted\n  # conductor\n  - " + item + "\n"},
 	}
 	for _, c := range cases {
 		got, err := withYAMLListItem(c.in, "extensions", "# conductor", item, match)
@@ -232,7 +348,17 @@ func TestWithYAMLListItem(t *testing.T) {
 			t.Errorf("withYAMLListItem(%q) = %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
-	for _, in := range []string{"extensions: []\n", "extensions: [a.ts]\n", "extensions: a.ts\n", "\"extensions\":\n  - a.ts\n"} {
+	for _, in := range []string{
+		"extensions: []\n", "extensions: [a.ts]\n", "extensions: a.ts\n", "\"extensions\":\n  - a.ts\n",
+		// A mapping, not a list, and a list of mappings.
+		"extensions:\n  foo: bar\n",
+		"extensions:\n  - path: a.ts\n    enabled: true\n",
+		"extensions:\n  - [a.ts]\n",
+		// More than one document: an entry could land in the wrong one.
+		"extensions:\n  - a.ts\n---\nmodel: y\n",
+		"model: y\n---\nother: 1\n",
+		"model: y\n...\n",
+	} {
 		if _, err := withYAMLListItem(in, "extensions", "# conductor", item, match); !errors.Is(err, ErrByHand) {
 			t.Errorf("%q: %v", in, err)
 		}

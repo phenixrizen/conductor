@@ -15,13 +15,16 @@ import (
 )
 
 // homeDir is a user's home directory as Install writes to it: a file goes only
-// where its path really lies inside home, and never through a link.
+// where its path really lies inside home, and never through a link. A dry run
+// writes nothing and reports what a write would change: that is how Status
+// tells whether Install would change anything.
 type homeDir struct {
-	dir  string // as given: the paths Install reports are under it
-	real string // with its links resolved, for the checks
+	dir    string // as given: the paths Install reports are under it
+	real   string // with its links resolved, for the checks
+	dryRun bool
 }
 
-func openHome(dir string) (*homeDir, error) {
+func openHome(dir string, dryRun bool) (*homeDir, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("home %q is not an absolute path", dir)
 	}
@@ -29,7 +32,7 @@ func openHome(dir string) (*homeDir, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &homeDir{dir: dir, real: real}, nil
+	return &homeDir{dir: dir, real: real, dryRun: dryRun}, nil
 }
 
 // path is the file rel under home, as Install reports it.
@@ -75,28 +78,29 @@ func (h *homeDir) read(rel string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	fi, err := os.Lstat(p)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if err := regularFile(h.path(rel), fi); err != nil {
+	fi, err := existing(p, h.path(rel))
+	if err != nil || fi == nil {
 		return nil, false, linkByHand(err)
 	}
 	b, err := os.ReadFile(p)
 	return b, err == nil, err
 }
 
-// write makes the file rel hold data, and reports whether it had to change it.
-// A link is left to the user (ErrByHand).
+// write makes the file rel hold data, and reports whether it had to change it;
+// a dry run only reports it. A link is left to the user (ErrByHand).
 func (h *homeDir) write(rel string, data []byte) (bool, error) {
 	p, err := h.resolve(rel)
 	if err != nil {
 		return false, err
 	}
-	changed, err := replaceFile(p, h.path(rel), data)
+	if h.dryRun {
+		fi, err := existing(p, h.path(rel))
+		if err != nil {
+			return false, linkByHand(err)
+		}
+		return fi == nil || !holds(p, data), nil
+	}
+	changed, err := replaceFile(p, h.path(rel), data, 0)
 	return changed, linkByHand(err)
 }
 
@@ -111,35 +115,55 @@ func linkByHand(err error) error {
 	return err
 }
 
-// regularFile refuses a link, and anything else that is not a regular file.
-func regularFile(name string, fi fs.FileInfo) error {
+// existing returns the file at p, or nil when there is none; name is how
+// errors call it. A link, or anything else that is not a regular file, is
+// refused.
+func existing(p, name string) (fs.FileInfo, error) {
+	fi, err := os.Lstat(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	if fi.Mode()&fs.ModeSymlink != 0 {
-		return fmt.Errorf("%s %w", name, errLink)
+		return nil, fmt.Errorf("%s %w", name, errLink)
 	}
 	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", name)
+		return nil, fmt.Errorf("%s is not a regular file", name)
 	}
-	return nil
+	return fi, nil
+}
+
+// holds reports whether the file at p holds exactly data.
+func holds(p string, data []byte) bool {
+	cur, err := os.ReadFile(p)
+	return err == nil && bytes.Equal(cur, data)
 }
 
 // replaceFile makes the file at p hold data; name is how errors call it. When
 // the content differs it writes a temporary file next to it and renames that
-// over p, so a reader sees the old content or the new, never half of it. A new
-// file is 0600, in directories made 0700; a file that was there keeps its
-// mode. A link or anything else that is not a regular file is refused.
-func replaceFile(p, name string, data []byte) (bool, error) {
-	fi, err := os.Lstat(p)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		fi = nil
-	case err != nil:
+// over p, so a reader sees the old content or the new, never half of it. With
+// mode zero a new file is 0600 and a file that was there keeps its mode;
+// otherwise the file gets mode, even when its content was right. Directories
+// it makes are 0700. A link or anything else that is not a regular file is
+// refused.
+func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
+	fi, err := existing(p, name)
+	if err != nil {
 		return false, err
-	default:
-		if err := regularFile(name, fi); err != nil {
-			return false, err
+	}
+	if fi != nil && holds(p, data) {
+		if mode != 0 && fi.Mode().Perm() != mode {
+			return false, os.Chmod(p, mode)
 		}
-		if cur, err := os.ReadFile(p); err == nil && bytes.Equal(cur, data) {
-			return false, nil
+		return false, nil
+	}
+	perm := mode
+	if perm == 0 {
+		perm = 0o600
+		if fi != nil {
+			perm = fi.Mode().Perm()
 		}
 	}
 	dir := filepath.Dir(p)
@@ -157,10 +181,8 @@ func replaceFile(p, name string, data []byte) (bool, error) {
 			os.Remove(f.Name())
 		}
 	}()
-	if fi != nil {
-		if err := f.Chmod(fi.Mode().Perm()); err != nil {
-			return false, err
-		}
+	if err := f.Chmod(perm); err != nil {
+		return false, err
 	}
 	if _, err := f.Write(data); err != nil {
 		return false, err
@@ -178,18 +200,19 @@ func replaceFile(p, name string, data []byte) (bool, error) {
 	return true, nil
 }
 
-// step changes one file under home and reports whether it did.
+// step changes one file under home and reports whether it did (or, in a dry
+// run, would).
 type step struct {
 	rel string
 	do  func(h *homeDir) (bool, error)
 }
 
-// install runs steps in order on home and returns the files they changed. A
-// step that leaves its file to the user (ErrByHand) does not stop the steps
-// after it, and what each such step says comes back joined; any other error
-// stops there.
-func install(home string, steps ...step) ([]string, error) {
-	h, err := openHome(home)
+// run runs steps in order on home, for real or as a dry run, and returns the
+// files they changed or would change. A step that leaves its file to the user
+// (ErrByHand) does not stop the steps after it, and what each such step says
+// comes back joined; any other error stops there.
+func run(home string, dryRun bool, steps ...step) ([]string, error) {
+	h, err := openHome(home, dryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +232,21 @@ func install(home string, steps ...step) ([]string, error) {
 		}
 	}
 	return touched, errors.Join(manual...)
+}
+
+// install is Install: it runs the steps on home and returns the files they
+// changed.
+func install(home string, steps ...step) ([]string, error) {
+	return run(home, false, steps...)
+}
+
+// statusOf is Status: whether Install would change nothing under home and
+// leave nothing to the user, so that an install that is partial or names an
+// older binary reads as not installed, and where the install's main file,
+// rel, is.
+func statusOf(home, rel string, steps ...step) (bool, string) {
+	touched, err := run(home, true, steps...)
+	return err == nil && len(touched) == 0, filepath.Join(home, filepath.FromSlash(rel))
 }
 
 // copyAsset is the step that makes the file rel under home a copy of the
@@ -233,70 +271,6 @@ func copyAssetDir(assets map[string]string, hooksDir, prefix, dir string) []step
 		}
 	}
 	return steps
-}
-
-// fileExists reports whether the regular file rel exists under home, and
-// where it is.
-func fileExists(home, rel string) (bool, string) {
-	p := filepath.Join(home, filepath.FromSlash(rel))
-	fi, err := os.Stat(p)
-	return err == nil && fi.Mode().IsRegular(), p
-}
-
-// fileHasLine reports whether the file rel under home has a line that is line
-// once trimmed, and where the file is.
-func fileHasLine(home, rel, line string) (bool, string) {
-	p := filepath.Join(home, filepath.FromSlash(rel))
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return false, p
-	}
-	for _, l := range strings.Split(string(b), "\n") {
-		if strings.TrimSpace(l) == line {
-			return true, p
-		}
-	}
-	return false, p
-}
-
-// fileMentions reports whether the file rel under home contains s, and where
-// the file is.
-func fileMentions(home, rel, s string) (bool, string) {
-	p := filepath.Join(home, filepath.FromSlash(rel))
-	b, err := os.ReadFile(p)
-	return err == nil && strings.Contains(string(b), s), p
-}
-
-// hasJSONKey reports whether the JSON object in the file rel under home has
-// the member key, and where the file is.
-func hasJSONKey(home, rel, key string) (bool, string) {
-	p := filepath.Join(home, filepath.FromSlash(rel))
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return false, p
-	}
-	doc, err := parseObject(b)
-	if err != nil {
-		return false, p
-	}
-	_, ok := doc.get(key)
-	return ok, p
-}
-
-// hooksMention reports whether the JSON file rel under home has an entry that
-// mentions marker under "hooks", and where the file is.
-func hooksMention(home, rel, marker string) (bool, string) {
-	p := filepath.Join(home, filepath.FromSlash(rel))
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return false, p
-	}
-	doc, err := parseObject(b)
-	if err != nil {
-		return false, p
-	}
-	raw, ok := doc.get("hooks")
-	return ok && mentions(raw, marker), p
 }
 
 // object is a JSON object read for editing: its members in their order, each
@@ -402,27 +376,141 @@ func isNull(raw json.RawMessage) bool {
 // mentions reports whether a string anywhere in the JSON value contains
 // marker.
 func mentions(raw json.RawMessage, marker string) bool {
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
-		return false
+	found := false
+	rewriteStrings(raw, func(s string) (string, bool) {
+		found = found || strings.Contains(s, marker)
+		return "", false
+	})
+	return found
+}
+
+// rewriteStrings returns raw with every string value that f replaces
+// replaced, and whether f replaced any. Everything else, the order of keys
+// and the text of other values included, is kept as it was.
+func rewriteStrings(raw json.RawMessage, f func(string) (string, bool)) (json.RawMessage, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, false
 	}
-	var walk func(v any) bool
-	walk = func(v any) bool {
-		switch v := v.(type) {
-		case string:
-			return strings.Contains(v, marker)
-		case []any:
-			return slices.ContainsFunc(v, walk)
-		case map[string]any:
-			for _, e := range v {
-				if walk(e) {
-					return true
-				}
+	switch trimmed[0] {
+	case '{':
+		o, err := parseObject(trimmed)
+		if err != nil {
+			return raw, false
+		}
+		changed := false
+		for _, k := range o.keys {
+			if v, ok := rewriteStrings(o.vals[k], f); ok {
+				o.vals[k], changed = v, true
 			}
 		}
+		if !changed {
+			return raw, false
+		}
+		return o.encode(), true
+	case '[':
+		var items []json.RawMessage
+		if json.Unmarshal(trimmed, &items) != nil {
+			return raw, false
+		}
+		changed := false
+		for i := range items {
+			if v, ok := rewriteStrings(items[i], f); ok {
+				items[i], changed = v, true
+			}
+		}
+		if !changed {
+			return raw, false
+		}
+		return encodeList(items), true
+	case '"':
+		var s string
+		if json.Unmarshal(trimmed, &s) != nil {
+			return raw, false
+		}
+		if r, ok := f(s); ok {
+			return json.RawMessage(`"` + jsonEscape(r) + `"`), true
+		}
+	}
+	return raw, false
+}
+
+// ourCommand returns the command the asset's hooks run for marker: its first
+// string that ends in " "+marker.
+func ourCommand(asset []byte, marker string) (string, error) {
+	var cmd string
+	rewriteStrings(asset, func(s string) (string, bool) {
+		if cmd == "" && strings.HasSuffix(s, " "+marker) {
+			cmd = s
+		}
+		return "", false
+	})
+	if cmd == "" {
+		return "", fmt.Errorf("the asset runs no %q", marker)
+	}
+	return cmd, nil
+}
+
+// staleCommand reports whether s is a hook command Conductor wrote for
+// marker, `<absolute path> notify --x-hook` with the path quoted the way
+// Conductor quotes it, naming another binary than ours does. A bare
+// `conductor notify --x-hook` is the user's own, and anything longer or
+// shaped otherwise is not Conductor's to rewrite.
+func staleCommand(s, marker, ours string) bool {
+	if s == ours {
 		return false
 	}
-	return walk(v)
+	quoted, ok := strings.CutSuffix(s, " "+marker)
+	if !ok {
+		return false
+	}
+	bin, ok := shellUnquote(quoted)
+	return ok && filepath.IsAbs(bin)
+}
+
+// shellUnquote undoes shellQuote: ok is false for a word shellQuote would not
+// have written.
+func shellUnquote(q string) (string, bool) {
+	if !strings.HasPrefix(q, "'") {
+		return q, q != "" && shellQuote(q) == q
+	}
+	var b strings.Builder
+	for rest := q; rest != ""; {
+		switch {
+		case strings.HasPrefix(rest, `\'`):
+			b.WriteByte('\'')
+			rest = rest[2:]
+		case strings.HasPrefix(rest, "'"):
+			end := strings.IndexByte(rest[1:], '\'')
+			if end < 0 {
+				return "", false
+			}
+			b.WriteString(rest[1 : 1+end])
+			rest = rest[2+end:]
+		default:
+			return "", false
+		}
+	}
+	return b.String(), shellQuote(b.String()) == q
+}
+
+// staleRewriter is the rewriteStrings function that gives Conductor's stale
+// commands for marker the command ours.
+func staleRewriter(marker, ours string) func(string) (string, bool) {
+	return func(s string) (string, bool) {
+		return ours, staleCommand(s, marker, ours)
+	}
+}
+
+// hooksOf returns the "hooks" object of a JSON document, empty when there is
+// none or it is null. ok is false when it is not an object.
+func hooksOf(doc *object) (*object, bool) {
+	raw, found := doc.get("hooks")
+	if !found || isNull(raw) {
+		return &object{vals: map[string]json.RawMessage{}}, true
+	}
+	hooks, err := parseObject(raw)
+	return hooks, err == nil
 }
 
 func writeJSON(h *homeDir, rel string, data []byte) (bool, error) {
@@ -435,11 +523,13 @@ func writeJSON(h *homeDir, rel string, data []byte) (bool, error) {
 
 // mergeJSONHooks adds the hook entries of asset to the JSON file rel: every
 // list under the asset's "hooks" is added to the file's list of the same name,
-// unless an entry there already mentions marker. A file that is missing or
-// empty becomes the asset. Everything else in the file is kept as it was, in
-// its order, and the file is written with two-space indentation. It reports
-// whether the file changed. A file that is not a JSON object with an object of
-// lists under "hooks" is left alone: ErrByHand.
+// unless an entry there already mentions marker. Conductor's own entries that
+// name an older binary get this one, where they are; bare `conductor` entries
+// are the user's and stay. A file that is missing or empty becomes the asset.
+// Everything else in the file is kept as it was, in its order, and the file is
+// written with two-space indentation. It reports whether the file changed. A
+// file that is not a JSON object with an object of lists under "hooks" is left
+// alone: ErrByHand.
 func mergeJSONHooks(h *homeDir, rel string, asset []byte, marker string) (bool, error) {
 	cur, ok, err := h.read(rel)
 	if err != nil {
@@ -456,18 +546,24 @@ func mergeJSONHooks(h *homeDir, rel string, asset []byte, marker string) (bool, 
 	if err != nil {
 		return false, fmt.Errorf("asset for %s: %w", rel, err)
 	}
-	ourHooks, _ := ours.get("hooks")
-	add, err := parseObject(ourHooks)
-	if err != nil {
-		return false, fmt.Errorf("asset for %s: hooks: %w", rel, err)
+	add, ok := hooksOf(ours)
+	if !ok {
+		return false, fmt.Errorf("asset for %s: hooks is not an object", rel)
 	}
-	hooks := &object{vals: map[string]json.RawMessage{}}
-	if raw, ok := doc.get("hooks"); ok && !isNull(raw) {
-		if hooks, err = parseObject(raw); err != nil {
-			return false, byHand("in %s, \"hooks\" is not an object, so Conductor cannot merge its hooks into it; add them from the snippet", h.path(rel))
-		}
+	command, err := ourCommand(asset, marker)
+	if err != nil {
+		return false, fmt.Errorf("asset for %s: %w", rel, err)
+	}
+	hooks, ok := hooksOf(doc)
+	if !ok {
+		return false, byHand("in %s, \"hooks\" is not an object, so Conductor cannot merge its hooks into it; add them from the snippet", h.path(rel))
 	}
 	changed := false
+	for _, event := range hooks.keys {
+		if v, ok := rewriteStrings(hooks.vals[event], staleRewriter(marker, command)); ok {
+			hooks.vals[event], changed = v, true
+		}
+	}
 	for _, event := range add.keys {
 		var list []json.RawMessage
 		if raw, ok := hooks.get(event); ok && !isNull(raw) {
@@ -519,52 +615,131 @@ func setJSONKey(h *homeDir, rel string, asset []byte, key string) (bool, error) 
 	return writeJSON(h, rel, doc.encode())
 }
 
-// createJSON writes asset as the JSON file rel when there is none. A file
-// with other content is never overwritten: ErrByHand.
-func createJSON(h *homeDir, rel string, asset []byte) (bool, error) {
+// createJSON writes asset as the JSON file rel when there is none. A file that
+// is there is never overwritten: Conductor's own commands for marker in it
+// that name an older binary get this one, where they are, and unless the file
+// then holds every hook list of the asset, the rest is left to the user
+// (ErrByHand, saying hint).
+func createJSON(h *homeDir, rel string, asset []byte, marker, hint string) (bool, error) {
 	cur, ok, err := h.read(rel)
 	if err != nil {
 		return false, err
 	}
-	if ok && len(bytes.TrimSpace(cur)) > 0 {
-		if sameJSON(cur, asset) {
-			return false, nil
-		}
-		return false, byHand("%s exists and Conductor does not overwrite it; add its hooks from the snippet", h.path(rel))
+	if !ok || len(bytes.TrimSpace(cur)) == 0 {
+		return writeJSON(h, rel, asset)
 	}
-	return writeJSON(h, rel, asset)
+	doc, err := parseObject(cur)
+	if err != nil {
+		return false, byHand("%s: %v; %s", h.path(rel), err, hint)
+	}
+	command, err := ourCommand(asset, marker)
+	if err != nil {
+		return false, fmt.Errorf("asset for %s: %w", rel, err)
+	}
+	changed := false
+	if next, ok := rewriteStrings(cur, staleRewriter(marker, command)); ok {
+		if changed, err = writeJSON(h, rel, next); err != nil {
+			return false, err
+		}
+		if doc, err = parseObject(next); err != nil {
+			return false, err
+		}
+	}
+	ours, _ := parseObject(asset)
+	want, _ := hooksOf(ours)
+	have, isObject := hooksOf(doc)
+	complete := isObject
+	for _, event := range want.keys {
+		raw, ok := have.get(event)
+		var list []json.RawMessage
+		complete = complete && ok && json.Unmarshal(raw, &list) == nil &&
+			slices.ContainsFunc(list, func(e json.RawMessage) bool { return mentions(e, marker) })
+	}
+	if complete {
+		return changed, nil
+	}
+	return changed, byHand("%s exists and Conductor does not overwrite it; %s", h.path(rel), hint)
 }
 
-// withMarkedBlock returns content with body between the lines begin and end.
-// A block that is there already is replaced where it is. A new one goes at the
-// top: in TOML a key belongs to the table whose header comes before it, so a
-// block appended below a [table] would not set a root key.
-func withMarkedBlock(content, begin, end, body string) (string, error) {
-	block := begin + "\n" + body + "\n" + end + "\n"
-	lines := strings.SplitAfter(content, "\n")
-	for i, l := range lines {
-		if strings.TrimSpace(l) != begin {
-			continue
-		}
-		for j := i + 1; j < len(lines); j++ {
-			if strings.TrimSpace(lines[j]) == end {
-				return strings.Join(lines[:i], "") + block + strings.Join(lines[j+1:], ""), nil
+// tomlDoc is a TOML document read line by line: enough to tell its root keys
+// and a marked block from the text of its multi-line strings and arrays, and
+// to put a block at its top.
+type tomlDoc struct {
+	bom   string   // a leading byte order mark, kept first
+	lines []string // each with its "\n"
+	top   []bool   // the line starts outside every multi-line string and array
+}
+
+// readTOML reads content. It refuses a document that ends inside a string or
+// an array, or has a string that does not end on its line: this reader cannot
+// tell where its root keys are.
+func readTOML(content string) (*tomlDoc, error) {
+	d := &tomlDoc{}
+	if rest, ok := strings.CutPrefix(content, "\ufeff"); ok {
+		d.bom, content = "\ufeff", rest
+	}
+	d.lines = strings.SplitAfter(content, "\n")
+	d.top = make([]bool, len(d.lines))
+	basic, literal, depth := false, false, 0 // inside """ or ''', open [ and {
+	for i, l := range d.lines {
+		d.top[i] = !basic && !literal && depth == 0
+		for j := 0; j < len(l); j++ {
+			switch {
+			case basic:
+				if l[j] == '\\' {
+					j++
+				} else if strings.HasPrefix(l[j:], `"""`) {
+					basic, j = false, j+2
+				}
+			case literal:
+				if strings.HasPrefix(l[j:], "'''") {
+					literal, j = false, j+2
+				}
+			case l[j] == '#':
+				j = len(l)
+			case strings.HasPrefix(l[j:], `"""`):
+				basic, j = true, j+2
+			case strings.HasPrefix(l[j:], "'''"):
+				literal, j = true, j+2
+			case l[j] == '"':
+				k := j + 1
+				for k < len(l) && l[k] != '"' && l[k] != '\n' {
+					if l[k] == '\\' {
+						k++
+					}
+					k++
+				}
+				if k >= len(l) || l[k] != '"' {
+					return nil, fmt.Errorf("the string on line %d does not end on it", i+1)
+				}
+				j = k
+			case l[j] == '\'':
+				k := strings.IndexAny(l[j+1:], "'\n")
+				if k < 0 || l[j+1+k] != '\'' {
+					return nil, fmt.Errorf("the string on line %d does not end on it", i+1)
+				}
+				j += k + 1
+			case l[j] == '[' || l[j] == '{':
+				depth++
+			case l[j] == ']' || l[j] == '}':
+				depth--
 			}
 		}
-		return "", byHand("the line %q has no %q line after it", begin, end)
 	}
-	if strings.TrimSpace(content) == "" {
-		return block, nil
+	if basic || literal || depth != 0 {
+		return nil, errors.New("it ends inside a string or an array")
 	}
-	return block + "\n" + content, nil
+	return d, nil
 }
 
-// tomlSetsRootKey reports whether content, a TOML document, sets key at its
-// root anywhere but between the lines begin and end: on a line above the first
-// table header. It reads lines, not TOML.
-func tomlSetsRootKey(content, key, begin, end string) bool {
+// setsRootKey reports whether the document sets key at its root anywhere but
+// in the block begin…end: on a line of its own above the first table header.
+func (d *tomlDoc) setsRootKey(key, begin, end string) bool {
 	inBlock := false
-	for _, l := range strings.Split(content, "\n") {
+	for i, l := range d.lines {
+		if !d.top[i] {
+			continue
+		}
 		t := strings.TrimSpace(l)
 		switch {
 		case t == begin:
@@ -584,17 +759,57 @@ func tomlSetsRootKey(content, key, begin, end string) bool {
 	return false
 }
 
+// withBlock returns the document with body between the lines begin and end.
+// A block that is there already is replaced where it is. A new one goes at the
+// top, after a byte order mark: a key belongs to the table whose header comes
+// before it, so a block appended below a [table] would not set a root key.
+func (d *tomlDoc) withBlock(begin, end, body string) (string, error) {
+	block := begin + "\n" + body + "\n" + end + "\n"
+	for i, l := range d.lines {
+		if !d.top[i] || strings.TrimSpace(l) != begin {
+			continue
+		}
+		for j := i + 1; j < len(d.lines); j++ {
+			if d.top[j] && strings.TrimSpace(d.lines[j]) == end {
+				return d.bom + strings.Join(d.lines[:i], "") + block + strings.Join(d.lines[j+1:], ""), nil
+			}
+		}
+		return "", fmt.Errorf("the line %q has no %q line after it", begin, end)
+	}
+	rest := strings.Join(d.lines, "")
+	if strings.TrimSpace(rest) == "" {
+		return d.bom + block, nil
+	}
+	return d.bom + block + "\n" + rest, nil
+}
+
 // withYAMLListItem returns content, a YAML document, with item added to the
 // block list under the root key key: after the list's last entry, at its
 // indentation, under a marker comment. Without the key, the list is added at
-// the end. Content that mentions match already is returned as it is. It reads
-// lines, not YAML: a key that is quoted or whose value is written inline is
-// left to the user (ErrByHand).
+// the end. Content that mentions match already (match is item as written) is
+// returned as it is. It reads lines, not YAML, and leaves to the user
+// (ErrByHand) what it cannot edit that way: a key that is quoted, a value
+// written inline or that is not a list of single entries, and a file of more
+// than one document, where the entry could land in the wrong one.
 func withYAMLListItem(content, key, marker, item, match string) (string, error) {
 	if strings.Contains(content, match) {
 		return content, nil
 	}
 	lines := strings.Split(content, "\n")
+	started := false // past a leading "---" and the comments before it
+	for _, l := range lines {
+		t := strings.TrimRight(l, "\r")
+		if t == "---" || strings.HasPrefix(t, "--- ") || t == "..." {
+			if !started && t == "---" {
+				started = true
+				continue
+			}
+			return "", byHand("the file holds more than one YAML document; add %s to %s by hand", item, key)
+		}
+		if s := strings.TrimSpace(t); s != "" && !strings.HasPrefix(s, "#") {
+			started = true
+		}
+	}
 	at := -1
 	for i, l := range lines {
 		l = strings.TrimRight(l, "\r")
@@ -624,14 +839,38 @@ func withYAMLListItem(content, key, marker, item, match string) (string, error) 
 		if t == "" {
 			continue
 		}
-		if l[0] != ' ' && l[0] != '\t' && l[0] != '-' {
+		lead := l[:len(l)-len(strings.TrimLeft(l, " \t"))]
+		entry := t == "-" || strings.HasPrefix(t, "- ")
+		if lead == "" && !entry {
 			break // the next root key, or a comment at the root
 		}
-		if !seen && strings.HasPrefix(t, "-") {
-			indent, seen = l[:len(l)-len(strings.TrimLeft(l, " \t"))], true
+		if strings.HasPrefix(t, "#") {
+			continue
 		}
-		last = i
+		if !entry || !yamlScalarEntry(t) || (seen && lead != indent) {
+			return "", byHand("%s is not a list of single entries; add %s to it by hand", key, item)
+		}
+		indent, last, seen = lead, i, true
 	}
 	lines = slices.Insert(lines, last+1, indent+marker, indent+"- "+item)
 	return strings.Join(lines, "\n"), nil
+}
+
+// yamlScalarEntry reports whether the list entry line t ("- …") holds a plain
+// or quoted scalar, not a mapping, a nested list or a flow collection.
+func yamlScalarEntry(t string) bool {
+	v := strings.TrimSpace(strings.TrimPrefix(t, "-"))
+	if v == "" {
+		return false
+	}
+	if v[0] == '"' || v[0] == '\'' {
+		return true
+	}
+	if strings.ContainsRune("[{-&*!|>", rune(v[0])) {
+		return false
+	}
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return !strings.Contains(v, ": ") && !strings.HasSuffix(v, ":")
 }

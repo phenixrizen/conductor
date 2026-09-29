@@ -57,7 +57,7 @@ func opencodeAdapter() Adapter {
 			return install(home, copyAsset(opencodeAssets, hooksDir, "opencode/plugins/conductor.ts", opencodePlugin))
 		},
 		Status: func(home string) (bool, string) {
-			return fileExists(home, opencodePlugin)
+			return statusOf(home, opencodePlugin, copyAsset(opencodeAssets, "", "opencode/plugins/conductor.ts", opencodePlugin))
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(opencodeAssets, hooksDir, "opencode/plugins/conductor.ts")

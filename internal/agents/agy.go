@@ -15,22 +15,26 @@ var agyAssets = map[string]string{
 		hookLists(`{"matcher":"*","hooks":[{"type":"command","command":"{{BIN}} notify --agy-hook"}]}`, "Stop", "PostToolUse") + `}}`),
 }
 
+func agySteps(hooksDir string) []step {
+	return []step{{agyHooks, func(h *homeDir) (bool, error) {
+		asset, err := assetFor(agyAssets, hooksDir, "agy-hooks.json")
+		if err != nil {
+			return false, err
+		}
+		return setJSONKey(h, agyHooks, asset, agyKey)
+	}}}
+}
+
 func agyAdapter() Adapter {
 	return Adapter{
 		ID:     "agy",
 		Name:   "Antigravity",
 		Assets: agyAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, step{agyHooks, func(h *homeDir) (bool, error) {
-				asset, err := assetFor(agyAssets, hooksDir, "agy-hooks.json")
-				if err != nil {
-					return false, err
-				}
-				return setJSONKey(h, agyHooks, asset, agyKey)
-			}})
+			return install(home, agySteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return hasJSONKey(home, agyHooks, agyKey)
+			return statusOf(home, agyHooks, agySteps("")...)
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(agyAssets, hooksDir, "agy-hooks.json")

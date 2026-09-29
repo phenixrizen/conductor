@@ -56,9 +56,13 @@ func TestMapCursorHook(t *testing.T) {
 	if !ok || r.State != "done" || r.Kind != "done" {
 		t.Fatalf("stop: %+v %v", r, ok)
 	}
-	r, ok = MapCursorHook([]byte(`{"hook_event_name":"afterFileEdit","file_path":"/x/main.go","edits":[{"old_string":"a","new_string":"b"}]}`))
-	if !ok || r.Event != "tool_use" || r.Tool != "edit /x/main.go" {
+	// The file's name, not its path: the server keeps 100 bytes of a tool.
+	r, ok = MapCursorHook([]byte(`{"hook_event_name":"afterFileEdit","file_path":"/x/` + strings.Repeat("deep/", 30) + `main.go","edits":[{"old_string":"a","new_string":"b"}]}`))
+	if !ok || r.Event != "tool_use" || r.Tool != "edit main.go" {
 		t.Fatalf("afterFileEdit: %+v %v", r, ok)
+	}
+	if r, _ := MapCursorHook([]byte(`{"hook_event_name":"afterFileEdit"}`)); r.Tool != "edit" {
+		t.Fatalf("afterFileEdit without a file: %+v", r)
 	}
 	r, ok = MapCursorHook([]byte(`{"hook_event_name":"postToolUse","tool_name":"Shell"}`))
 	if !ok || r.Event != "tool_use" || r.Tool != "Shell" {

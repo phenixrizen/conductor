@@ -19,7 +19,7 @@ func copilotAdapter() Adapter {
 			return install(home, copyAsset(copilotAssets, hooksDir, "copilot.json", copilotFile))
 		},
 		Status: func(home string) (bool, string) {
-			return fileExists(home, copilotFile)
+			return statusOf(home, copilotFile, copyAsset(copilotAssets, "", "copilot.json", copilotFile))
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(copilotAssets, hooksDir, "copilot.json")

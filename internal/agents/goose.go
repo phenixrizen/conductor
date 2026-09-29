@@ -21,7 +21,7 @@ func gooseAdapter() Adapter {
 			return install(home, copyAssetDir(gooseAssets, hooksDir, "goose/", gooseDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return fileExists(home, gooseDir+"hooks/hooks.json")
+			return statusOf(home, gooseDir+"hooks/hooks.json", copyAssetDir(gooseAssets, "", "goose/", gooseDir)...)
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(gooseAssets, hooksDir, "goose/hooks/hooks.json")

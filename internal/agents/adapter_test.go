@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -374,7 +375,7 @@ func TestInstallCodexKeepsTheConfigAndNeverOverwritesHooks(t *testing.T) {
 	os.WriteFile(hooksJSON, []byte(`{"hooks":{}}`), 0o600)
 	a, _ := Get("codex")
 	touched, err := a.Install(home, t.TempDir())
-	if !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), hooksJSON) || !slices.Equal(touched, []string{config}) {
+	if !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), hooksJSON) || !strings.Contains(err.Error(), "features.hooks") || !slices.Equal(touched, []string{config}) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	block := "# >>> conductor\nnotify = [\"/opt/conductor\", \"notify\", \"--codex\"]\n# <<< conductor\n"
@@ -541,8 +542,13 @@ func TestInstallDshIsByHand(t *testing.T) {
 	if entries, _ := os.ReadDir(home); len(entries) != 0 {
 		t.Fatalf("home has %v", entries)
 	}
-	if !slices.Contains(a.Events, "experimental") {
-		t.Fatalf("events %v are not marked experimental", a.Events)
+	if !a.Experimental || slices.Contains(a.Events, "experimental") {
+		t.Fatalf("experimental %v, events %v", a.Experimental, a.Events)
+	}
+	for _, other := range All() {
+		if other.Experimental != (other.ID == "dsh") {
+			t.Errorf("%s: experimental %v", other.ID, other.Experimental)
+		}
 	}
 	if s := a.Snippet(t.TempDir()); !strings.Contains(s, "permission-requested") || !strings.Contains(s, "question-asked") {
 		t.Fatalf("snippet:\n%s", s)
@@ -623,5 +629,204 @@ func TestInstallDoesNotFollowLinksOutOfHome(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dotfiles, "hooks", "conductor.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// allFiles returns the content of every file under dir, keyed by path.
+func allFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		out[p] = string(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func joined(files map[string]string) string {
+	var b strings.Builder
+	for _, p := range slices.Sorted(maps.Keys(files)) {
+		b.WriteString(files[p])
+	}
+	return b.String()
+}
+
+// After an upgrade moves the binary, Status reads the install as out of date,
+// and Install rewrites Conductor's entries to the new path where they are:
+// each once, next to the user's entries, which stay as they were.
+func TestInstallAfterTheBinaryMoved(t *testing.T) {
+	const oldBin, newBin = "/opt/conductor-1.0/conductor", "/opt/conductor-1.1/conductor"
+	// Something of the user's in the files Conductor edits.
+	seed := map[string][2]string{
+		"claude": {".claude/settings.json", `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`},
+		"cursor": {".cursor/hooks.json", `{"version":1,"hooks":{"stop":[{"command":"say done"}]}}`},
+		"agy":    {".gemini/config/hooks.json", `{"mine":{"enabled":true,"say":"done"}}`},
+		"omp":    {".omp/agent/config.yml", "extensions:\n  - /x/say-done.ts\n"},
+		"codex":  {".codex/config.toml", "model = \"say done\"\n"},
+	}
+	for _, a := range All() {
+		if _, ok := installed[a.ID]; !ok {
+			continue
+		}
+		t.Run(a.ID, func(t *testing.T) {
+			home := t.TempDir()
+			if s, ok := seed[a.ID]; ok {
+				p := filepath.Join(home, filepath.FromSlash(s[0]))
+				os.MkdirAll(filepath.Dir(p), 0o700)
+				os.WriteFile(p, []byte(s[1]), 0o600)
+			}
+			useBin(t, oldBin)
+			if _, err := a.Install(home, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			if ok, _ := a.Status(home); !ok {
+				t.Fatal("status after the first install")
+			}
+			count := strings.Count(joined(allFiles(t, home)), oldBin)
+			if count == 0 {
+				t.Fatal("the first install names no binary")
+			}
+
+			useBin(t, newBin)
+			if ok, where := a.Status(home); ok || where != filepath.Join(home, filepath.FromSlash(installed[a.ID].status)) {
+				t.Fatalf("status with the old binary installed: %v %q", ok, where)
+			}
+			touched, err := a.Install(home, t.TempDir())
+			if err != nil || len(touched) == 0 {
+				t.Fatalf("install after the move: %q %v", touched, err)
+			}
+			after := joined(allFiles(t, home))
+			if strings.Contains(after, oldBin) || strings.Count(after, newBin) != count {
+				t.Fatalf("after the move, %d mentions of the new binary, want %d, and the old one %v:\n%s", strings.Count(after, newBin), count, strings.Contains(after, oldBin), after)
+			}
+			if _, ok := seed[a.ID]; ok && !strings.Contains(after, "say") {
+				t.Fatalf("the user's entry is gone:\n%s", after)
+			}
+			if ok, _ := a.Status(home); !ok {
+				t.Fatal("status after the repair")
+			}
+			if again, err := a.Install(home, t.TempDir()); err != nil || len(again) != 0 {
+				t.Fatalf("third install: %q %v", again, err)
+			}
+		})
+	}
+}
+
+// Entries that run a bare `conductor` are the user's own (the README showed
+// them): Install leaves them as they are and adds what is missing, and a
+// partial install reads as not installed until it has.
+func TestInstallLeavesBareConductorEntriesAlone(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	home := t.TempDir()
+	settings := filepath.Join(home, ".claude", "settings.json")
+	os.MkdirAll(filepath.Dir(settings), 0o700)
+	bare := `{"hooks":[{"type":"command","command":"conductor notify --claude-hook"}]}`
+	os.WriteFile(settings, []byte(`{"hooks":{"Notification":[`+bare+`],"Stop":[`+bare+`]}}`), 0o600)
+	a, _ := Get("claude")
+	if ok, _ := a.Status(home); ok {
+		t.Fatal("a partial install reads as installed")
+	}
+	touched, err := a.Install(home, t.TempDir())
+	if err != nil || !slices.Equal(touched, []string{settings}) {
+		t.Fatalf("install: %q %v", touched, err)
+	}
+	b, _ := os.ReadFile(settings)
+	var doc struct {
+		Hooks map[string][]struct {
+			Hooks []struct{ Command string }
+		}
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for event, want := range map[string]string{
+		"Notification":      "conductor notify --claude-hook",
+		"Stop":              "conductor notify --claude-hook",
+		"UserPromptSubmit":  "/opt/conductor notify --claude-hook",
+		"PermissionRequest": "/opt/conductor notify --claude-hook",
+		"PermissionDenied":  "/opt/conductor notify --claude-hook",
+	} {
+		if l := doc.Hooks[event]; len(l) != 1 || l[0].Hooks[0].Command != want {
+			t.Errorf("%s: %+v, want one %q", event, l, want)
+		}
+	}
+	if ok, _ := a.Status(home); !ok {
+		t.Fatal("status after install")
+	}
+	if again, err := a.Install(home, t.TempDir()); err != nil || len(again) != 0 {
+		t.Fatalf("second install: %q %v", again, err)
+	}
+}
+
+// A hooks.json of the user's that holds Conductor's hooks, merged by hand,
+// gets the new binary path in place and needs nothing more by hand.
+func TestInstallCodexRepairsItsHooksAmongTheUsers(t *testing.T) {
+	useBin(t, "/opt/old/conductor")
+	asset, err := assetFor(codexAssets, "", "codex-hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := strings.Replace(string(asset), `"hooks": {`, `"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "say hi"}]}],`, 1)
+	home := t.TempDir()
+	hooksJSON := filepath.Join(home, ".codex", "hooks.json")
+	os.MkdirAll(filepath.Dir(hooksJSON), 0o700)
+	os.WriteFile(hooksJSON, []byte(mine), 0o600)
+	useBin(t, "/opt/new/conductor")
+	a, _ := Get("codex")
+	touched, err := a.Install(home, t.TempDir())
+	if err != nil || !slices.Contains(touched, hooksJSON) {
+		t.Fatalf("install: %q %v", touched, err)
+	}
+	b, _ := os.ReadFile(hooksJSON)
+	if !strings.Contains(string(b), "say hi") || strings.Contains(string(b), "/opt/old/") || strings.Count(string(b), "/opt/new/conductor notify --codex-hook") != 4 {
+		t.Fatalf("hooks.json:\n%s", b)
+	}
+	if ok, _ := a.Status(home); !ok {
+		t.Fatal("status after the repair")
+	}
+}
+
+// The snippet covers both of Codex's files, and says when the hooks run.
+func TestCodexSnippetCoversBothFiles(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	a, _ := Get("codex")
+	s := a.Snippet(t.TempDir())
+	for _, want := range []string{"# >>> conductor", `notify = ["/opt/conductor", "notify", "--codex"]`, "hooks.json", "features.hooks", `"PermissionRequest"`, "/opt/conductor notify --codex-hook"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("snippet lacks %q:\n%s", want, s)
+		}
+	}
+}
+
+// omp lists the extension by a path with a quote and a backslash in it once:
+// the check for it compares what was written.
+func TestInstallOmpListsAnOddPathOnce(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	home := filepath.Join(t.TempDir(), `my "odd\ home`)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Get("omp")
+	if _, err := a.Install(home, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := a.Install(home, t.TempDir()); err != nil || len(again) != 0 {
+		t.Fatalf("second install: %q %v", again, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(home, ".omp", "agent", "config.yml"))
+	items := regexp.MustCompile(`(?m)^  - (".*")$`).FindAllSubmatch(b, -1)
+	var got string
+	if len(items) != 1 || json.Unmarshal(items[0][1], &got) != nil || got != filepath.Join(home, ".omp", "agent", "extensions", "conductor.ts") {
+		t.Fatalf("config.yml:\n%s", b)
+	}
+	if ok, _ := a.Status(home); !ok {
+		t.Fatal("status after install")
 	}
 }

@@ -66,7 +66,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	}
 	// Launches inject flags that name the hook assets in the data directory,
 	// and the assets run this binary: the server does not start without them.
-	exe, err := os.Executable()
+	exe, err := agents.BinaryPath()
 	if err != nil {
 		return 1, fmt.Errorf("locate the conductor binary for the hook assets: %w", err)
 	}

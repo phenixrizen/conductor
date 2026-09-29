@@ -8,13 +8,16 @@ import (
 // gets a notify program and the terminal bell without anything written to
 // ~/.codex. Install puts the same notify line in a marked block of
 // ~/.codex/config.toml and writes ~/.codex/hooks.json, Codex's experimental
-// hooks (they run only with features.hooks on), when there is none.
+// hooks, when there is none; Codex runs those only with features.hooks on.
 
 const (
 	codexConfig = ".codex/config.toml"
 	codexHooks  = ".codex/hooks.json"
 	codexBegin  = "# >>> conductor"
 	codexEnd    = "# <<< conductor"
+	codexMarker = "notify --codex-hook"
+	// codexHooksHint is what to do about a hooks.json Conductor did not write.
+	codexHooksHint = "add Conductor's hooks from the snippet to it by hand (Codex runs the hooks in hooks.json only with features.hooks enabled)"
 )
 
 var codexAssets = map[string]string{
@@ -26,6 +29,42 @@ var codexAssets = map[string]string{
 // the program with the event's JSON as the last argument.
 func codexNotify(bin string) string {
 	return "notify = [" + tomlString(bin) + `, "notify", "--codex"]`
+}
+
+func codexSteps(hooksDir string) []step {
+	return []step{
+		{codexConfig, func(h *homeDir) (bool, error) {
+			bin, err := binPath()
+			if err != nil {
+				return false, err
+			}
+			cur, _, err := h.read(codexConfig)
+			if err != nil {
+				return false, err
+			}
+			line := codexNotify(bin)
+			doc, err := readTOML(string(cur))
+			if err != nil {
+				return false, byHand("%s cannot be read line by line (%v); put %s at its top by hand", h.path(codexConfig), err, line)
+			}
+			// A second notify at the root would make config.toml invalid.
+			if doc.setsRootKey("notify", codexBegin, codexEnd) {
+				return false, byHand("%s sets notify already; make it %s by hand", h.path(codexConfig), line)
+			}
+			next, err := doc.withBlock(codexBegin, codexEnd, line)
+			if err != nil {
+				return false, byHand("%s: %v", h.path(codexConfig), err)
+			}
+			return h.write(codexConfig, []byte(next))
+		}},
+		{codexHooks, func(h *homeDir) (bool, error) {
+			asset, err := assetFor(codexAssets, hooksDir, "codex-hooks.json")
+			if err != nil {
+				return false, err
+			}
+			return createJSON(h, codexHooks, asset, codexMarker, codexHooksHint)
+		}},
+	}
 }
 
 func codexAdapter() Adapter {
@@ -41,44 +80,19 @@ func codexAdapter() Adapter {
 			return []string{"-c", "notify=[" + tomlString(bin) + `,"notify","--codex"]`, "-c", `tui.notification_method="bel"`}, nil
 		},
 		Install: func(home, hooksDir string) ([]string, error) {
-			bin, err := binPath()
-			if err != nil {
-				return nil, err
-			}
-			return install(home,
-				step{codexConfig, func(h *homeDir) (bool, error) {
-					cur, _, err := h.read(codexConfig)
-					if err != nil {
-						return false, err
-					}
-					// A second notify at the root would make config.toml invalid.
-					if tomlSetsRootKey(string(cur), "notify", codexBegin, codexEnd) {
-						return false, byHand("%s sets notify already; make it %s by hand", h.path(codexConfig), codexNotify(bin))
-					}
-					next, err := withMarkedBlock(string(cur), codexBegin, codexEnd, codexNotify(bin))
-					if err != nil {
-						return false, byHand("%s: %v", h.path(codexConfig), err)
-					}
-					return h.write(codexConfig, []byte(next))
-				}},
-				step{codexHooks, func(h *homeDir) (bool, error) {
-					asset, err := assetFor(codexAssets, hooksDir, "codex-hooks.json")
-					if err != nil {
-						return false, err
-					}
-					return createJSON(h, codexHooks, asset)
-				}},
-			)
+			return install(home, codexSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return fileHasLine(home, codexConfig, codexBegin)
+			return statusOf(home, codexConfig, codexSteps("")...)
 		},
 		Snippet: func(hooksDir string) string {
 			bin, err := binPath()
 			if err != nil {
 				bin = "conductor"
 			}
-			return codexBegin + "\n" + codexNotify(bin) + "\n" + codexEnd + "\n"
+			return "# ~/.codex/config.toml, at the top:\n" + codexBegin + "\n" + codexNotify(bin) + "\n" + codexEnd + "\n\n" +
+				"# ~/.codex/hooks.json (Codex runs these hooks only with features.hooks enabled):\n" +
+				snippetOf(codexAssets, hooksDir, "codex-hooks.json")
 		},
 		Events: []string{"needs_input", "working", "done", "tool_use"},
 	}

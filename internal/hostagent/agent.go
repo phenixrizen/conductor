@@ -96,16 +96,13 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	// The flags are part of the command from the start, so the server lists
 	// the command as it runs.
-	argv, adapterEnv, err := injectHooks(opts)
-	if err != nil {
-		return Result{}, err
-	}
-	opts.Argv = argv
+	var adapterEnv map[string]string
+	opts.Argv, adapterEnv = injectHooks(opts)
 	dir := opts.Dir
 	if dir == "" {
 		dir, _ = os.Getwd()
 	}
-	dir, err = filepath.Abs(dir)
+	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -280,27 +277,26 @@ func currentUser() string {
 // adapter opts.Adapter names, after writing the hook assets its flags point
 // at. The host has no catalog, so the adapter is taken to report through
 // hooks, without tool events. A name that is no adapter's leaves the command
-// as it is and writes nothing.
-func injectHooks(opts Options) ([]string, map[string]string, error) {
+// as it is and writes nothing. Hooks are a convenience: when they cannot be
+// written, the host says so and runs the command as it is.
+func injectHooks(opts Options) ([]string, map[string]string) {
 	if _, ok := agents.Get(opts.Adapter); !ok {
-		return opts.Argv, nil, nil
+		return opts.Argv, nil
 	}
 	dir := opts.HooksDir
-	if dir == "" {
-		var err error
-		if dir, err = agents.HostHooksDir(); err != nil {
-			return nil, nil, fmt.Errorf("host: hooks directory: %w", err)
-		}
+	bin, err := agents.BinaryPath()
+	if err == nil && dir == "" {
+		dir, err = agents.HostHooksDir()
 	}
-	exe, err := os.Executable()
+	if err == nil {
+		err = agents.WriteAssets(dir, bin)
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("host: locate the conductor binary for the hooks: %w", err)
-	}
-	if err := agents.WriteAssets(dir, exe); err != nil {
-		return nil, nil, fmt.Errorf("host: write the hook assets to %s: %w", dir, err)
+		opts.Log.Warn("hosting without Conductor's hooks: they could not be written", "adapter", opts.Adapter, "dir", dir, "err", err)
+		return opts.Argv, nil
 	}
 	extra, env := agents.InjectFor(opts.Adapter, dir, catalog.Signal{Kind: "hook"})
-	return append(slices.Clone(opts.Argv), extra...), env, nil
+	return append(slices.Clone(opts.Argv), extra...), env
 }
 
 // hostEnv forwards the developer's full environment (agents need their own

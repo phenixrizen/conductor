@@ -30,6 +30,9 @@ type Adapter struct {
 	Snippet func(hooksDir string) string
 	// Events documents what this adapter can report (for the Events page).
 	Events []string // e.g. "needs_input", "done", "tool_use"
+	// Experimental marks an adapter for an agent whose hook interface is still
+	// changing (a developer preview); the Events page says so.
+	Experimental bool
 }
 
 // ErrByHand wraps what Install leaves to the user: a file it would have to

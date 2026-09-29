@@ -9,15 +9,19 @@ var dshAssets = map[string]string{
 // Conductor. It tells the Conductor session dsh runs in when a session
 // completes or fails and when dsh asks a question or for a permission. Outside
 // a Conductor session conductor notify does nothing.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const CONDUCTOR = "{{BIN}}";
 
 const short = (value, fallback) => String(value || fallback).slice(0, 200);
 
+// Fire and forget: the agent never waits for Conductor, however slow or far
+// away the server is.
 function notify(args) {
   try {
-    spawnSync(CONDUCTOR, ["notify", ...args], { stdio: "ignore", timeout: 10000 });
+    const child = spawn(CONDUCTOR, ["notify", ...args], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
   } catch {
     // Reporting must never get in the agent's way.
   }
@@ -43,6 +47,7 @@ func dshAdapter() Adapter {
 		Snippet: func(hooksDir string) string {
 			return snippetOf(dshAssets, hooksDir, "dsh-conductor.js")
 		},
-		Events: []string{"needs_input", "done", "error", "experimental"},
+		Events:       []string{"needs_input", "done", "error"},
+		Experimental: true,
 	}
 }
