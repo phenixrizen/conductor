@@ -31,6 +31,9 @@ type Server struct {
 	log      *slog.Logger
 	web      http.Handler
 	store    *store.Store
+	// fileDeny lists the directories no file read may enter, even inside a
+	// session's working directory (see fileDeny).
+	fileDeny []string
 
 	// catalogMu guards overlay and catalog. catalog is the effective catalog,
 	// base with overlay applied. It is replaced as a whole and never edited in
@@ -71,6 +74,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		log:      log,
 		web:      web,
 		store:    st,
+		fileDeny: fileDeny(cfg, st),
 	}
 	s.events = newEventHub()
 	s.hosts = signal.NewHub(s.registry, log)

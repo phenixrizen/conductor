@@ -119,6 +119,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
 		MaxViewers:      s.cfg.MaxViewersPerSession,
 		FileView:        string(s.cfg.FileView),
+		FileDeny:        s.fileDeny,
 		Transport:       proto.TransportWS,
 		Log:             s.log,
 		OnChange:        s.events.publish,

@@ -85,7 +85,8 @@ command.
   appended element-wise only for agents that allow it. Server sessions get an
   allowlisted environment; `CONDUCTOR_*` never reaches a child.
 - Server session working directories must resolve under `allowedRoots` after
-  symlink evaluation. File reads are confined to the session directory.
+  symlink evaluation. File reads are confined to the session directory and
+  never enter the data directory, even when it lies inside one.
 - Frame sizes, viewer counts, session counts, scrollback and in-flight file
   requests are all bounded. Query strings (which may carry tokens) are never
   logged.

@@ -31,6 +31,10 @@ type Options struct {
 	MaxViewers      int
 	// FileView decides which roles may read files: "view" (both), "control", "off".
 	FileView string
+	// FileDeny lists directories no file read may enter, even inside the
+	// working directory. The server passes its data directory, whose
+	// catalog.json holds agent secrets; `conductor host` has none.
+	FileDeny []string
 	// Transport is reported in welcome messages ("ws" on the server, "webrtc"/"relay" on hosts).
 	Transport string
 	Log       *slog.Logger

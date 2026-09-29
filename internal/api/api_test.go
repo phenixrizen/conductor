@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -47,6 +48,11 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	if mutate != nil {
 		mutate(cfg)
 	}
+	// The store opens at cfg.DataDir, as in `conductor serve`; unless a test
+	// places it, that is a directory outside the session root.
+	if cfg.DataDir == "" {
+		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +65,7 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st, err := store.Open(filepath.Join(t.TempDir(), "data"))
+	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,6 +315,91 @@ func TestFilesEndpoint(t *testing.T) {
 	raw.Body.Close()
 	if string(body) != "# hi\n" || !strings.HasPrefix(raw.Header.Get("Content-Type"), "text/plain") {
 		t.Fatalf("raw %q %s", body, raw.Header.Get("Content-Type"))
+	}
+}
+
+// The data directory holds catalog.json, whose env values are secrets. When it
+// sits inside a session's working directory, as it did by default in the
+// Docker image and with conductor.example.json, no file read may reach it: not
+// the HTTP route and not the in-band file_get, not through a view link and not
+// with the admin token. The rest of the working directory stays readable.
+func TestFileReadsNeverReachTheDataDirectory(t *testing.T) {
+	const secret = "sk-live-do-not-share"
+	e := newTestEnv(t, func(c *config.Config) { c.DataDir = filepath.Join(c.DefaultCwd, "conductor.d") })
+	body := agentBody("keyed")
+	body["env"] = map[string]string{"OPENAI_API_KEY": secret}
+	e.save(body)
+	if err := os.WriteFile(filepath.Join(e.root, "notes.md"), []byte("# hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink inside the working directory is no way around the rule.
+	if err := os.Symlink(filepath.Join(e.root, "conductor.d"), filepath.Join(e.root, "state")); err != nil {
+		t.Fatal(err)
+	}
+	id := e.createSession("keyed")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+
+	denied := []string{
+		"conductor.d/catalog.json",
+		filepath.Join(e.root, "conductor.d", "catalog.json"),
+		"state/catalog.json",
+		"conductor.d",
+		"conductor.d/no-such-file.json", // denied, not not_found: nothing about its contents leaks
+	}
+	// getFile reads path over HTTP with mode "raw", "stat" or "" (JSON) and
+	// returns the status, the body and, for a JSON reply, the error code.
+	getFile := func(token, path, mode string) (int, string, string) {
+		t.Helper()
+		q := url.Values{"path": {path}}
+		if mode != "" {
+			q.Set(mode, "1")
+		}
+		req, _ := http.NewRequest("GET", e.http.URL+"/api/sessions/"+id+"/files?"+q.Encode(), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := e.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		var out struct {
+			File proto.FileHeader `json:"file"`
+		}
+		code := ""
+		if json.Unmarshal(b, &out) == nil && out.File.Error != nil {
+			code = out.File.Error.Code
+		}
+		return resp.StatusCode, string(b), code
+	}
+	for _, token := range []string{view, adminToken} {
+		for _, p := range denied {
+			for _, mode := range []string{"raw", "stat", ""} {
+				if status, got, code := getFile(token, p, mode); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
+					t.Errorf("HTTP %q (mode %q): %d %s", p, mode, status, got)
+				}
+			}
+		}
+		if status, got, _ := getFile(token, "notes.md", "raw"); status != http.StatusOK || got != "# hi\n" {
+			t.Fatalf("ordinary file over HTTP: %d %q", status, got)
+		}
+	}
+
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range denied {
+		for _, stat := range []bool{false, true} {
+			reqID := fmt.Sprintf("d%d-%t", i, stat)
+			c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p, Stat: stat}))
+			if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+				t.Errorf("file_get %q (stat %t): %+v %q", p, stat, h, b)
+			}
+		}
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "ok", Path: "notes.md"}))
+	if h, b := c.expectFile("ok"); h.Kind != "file" || string(b) != "# hi\n" {
+		t.Fatalf("ordinary file in-band: %+v %q", h, b)
 	}
 }
 

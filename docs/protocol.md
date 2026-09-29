@@ -164,7 +164,9 @@ header-authenticated `fetch`: `snapshot` with the full list first, then
 
 `file_get` resolves `path` against the session working directory (`~` expands to
 the owner's home). After symlink resolution the target must stay inside the
-working directory; `.git/objects` is never readable. Responses carry a JSON header
+working directory; `.git/objects` is never readable, and neither is anything in
+the server's data directory (`dataDir`, which holds agent secrets). Both rules
+answer `denied`. Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?}`
 followed by up to 1 MiB of bytes for text files. Files with a NUL byte in the
 first 8 KiB are reported `binary` without bytes; images are sent as bytes. Up to

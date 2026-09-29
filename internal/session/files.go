@@ -49,7 +49,7 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 	}
 	go func() {
 		defer sub.inflight.Add(-1)
-		h, body := ReadPath(s.info.Cwd, req.Path, req.Stat)
+		h, body := ReadPath(s.info.Cwd, req.Path, req.Stat, s.opts.FileDeny)
 		h.ReqID = req.ReqID
 		frame, err := proto.EncodeFile(h, body)
 		if err != nil {
@@ -63,11 +63,12 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 
 // ReadPath resolves raw against root and returns a header plus body. Paths may
 // be absolute, relative to root, or start with "~" (the process home). The
-// resolved target must stay under root after symlink evaluation. When statOnly
-// is set only existence and kind are reported.
-func ReadPath(root, raw string, statOnly bool) (proto.FileHeader, []byte) {
+// resolved target must stay under root after symlink evaluation and outside
+// every directory in deny. When statOnly is set only existence and kind are
+// reported.
+func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
 	h := proto.FileHeader{Path: raw}
-	target, err := ResolvePath(root, raw)
+	target, err := ResolvePath(root, raw, deny)
 	if err != nil {
 		h.Kind = "error"
 		h.Error = &proto.ErrorInfo{Code: "denied", Message: err.Error()}
@@ -148,8 +149,9 @@ func ReadPath(root, raw string, statOnly bool) (proto.FileHeader, []byte) {
 }
 
 // ResolvePath turns raw into an absolute path under root, following symlinks
-// and rejecting anything that escapes root or enters .git/objects.
-func ResolvePath(root, raw string) (string, error) {
+// and rejecting anything that escapes root, enters .git/objects or is inside
+// one of the deny directories (the server passes its data directory).
+func ResolvePath(root, raw string, deny []string) (string, error) {
 	if raw == "" {
 		raw = "."
 	}
@@ -193,7 +195,40 @@ func ResolvePath(root, raw string) (string, error) {
 			return "", errors.New("path is not readable")
 		}
 	}
+	if insideAny(real, deny) {
+		return "", errors.New("path is not readable")
+	}
 	return real, nil
+}
+
+// insideAny reports whether real, an absolute path with its symlinks resolved,
+// is one of dirs or inside one. Directories are compared as files
+// (os.SameFile), not by name, so neither a symlink to one nor another spelling
+// of it on a case-insensitive file system gets around the rule. A directory
+// that does not exist holds nothing and is skipped.
+func insideAny(real string, dirs []string) bool {
+	var denied []os.FileInfo
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil {
+			denied = append(denied, fi)
+		}
+	}
+	if len(denied) == 0 {
+		return false
+	}
+	// Every ancestor counts, above root too: a session may run inside one.
+	for p := real; ; p = filepath.Dir(p) {
+		if fi, err := os.Stat(p); err == nil {
+			for _, d := range denied {
+				if os.SameFile(fi, d) {
+					return true
+				}
+			}
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
+	}
 }
 
 func evalExisting(p string) (string, error) {
