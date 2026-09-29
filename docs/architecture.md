@@ -58,7 +58,7 @@ command.
 
 | Package | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point; `serve`, `host`, `version` |
+| `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `version` |
 | `internal/cli` | flag parsing only |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
