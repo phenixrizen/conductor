@@ -115,13 +115,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
 	notifyURL := s.cfg.PublicURL + "/api/sessions/" + id + "/attention"
+	// The binary the hooks run, for what the agent runs itself (the skill).
+	bin, _ := agents.Binary()
 	// The agent's envPassthrough adds to the server-wide list; the clone keeps
 	// one launch from growing the list another launch reads.
 	passthrough := append(slices.Clone(s.cfg.EnvPassthrough), agent.EnvPassthrough...)
 	proc, err := pty.Start(pty.Spec{
 		Argv: argv,
 		Dir:  cwd,
-		Env:  pty.BuildEnv(pty.ParentEnv(), passthrough, env, pty.Inject(id, notifyURL, agentToken)),
+		Env:  pty.BuildEnv(pty.ParentEnv(), passthrough, env, pty.Inject(id, notifyURL, agentToken, bin)),
 		Cols: cols,
 		Rows: rows,
 	})

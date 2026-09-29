@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,13 @@ import (
 
 const hooksUsage = `Usage:
   conductor hooks install <adapter>|all [--home DIR] [--data-dir DIR]
-      put Conductor's hooks into the agents' own config under a home
+      put Conductor's hooks into the agents' own config in your home
       directory, as the Events page does for the server's user
-  conductor hooks status [--home DIR]
+  conductor hooks status [--home DIR] [--data-dir DIR]
       list the adapters and whether their hooks are installed
+
+Both take the hooks, and the conductor binary they run, from hooks/ in the
+data directory of conductor serve.
 `
 
 // runHooks installs Conductor's hooks into agents' own configuration for the
@@ -51,8 +55,8 @@ func runHooks(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 func runHooksInstall(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("hooks install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	home := fs.String("home", "", "home directory whose agent configs to install into (default: yours)")
-	dataDir := fs.String("data-dir", "", "data directory of conductor serve: the hooks written to its hooks/ are the ones installed (default: CONDUCTOR_DATA_DIR, else conductor.d in the current directory; without them the hooks name this binary)")
+	home := fs.String("home", "", "home directory whose agent configs to install into, which must be yours (default: your home)")
+	dataDir := fs.String("data-dir", "", dataDirUsage)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, hooksUsage)
 		fs.PrintDefaults()
@@ -80,7 +84,14 @@ func runHooksInstall(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	hooksDir := serveHooksDir(*dataDir)
+	// Refused once here rather than by every adapter's Install.
+	if err := agents.CheckHome(dir); err != nil {
+		return 1, err
+	}
+	hooksDir, err := adoptHooksDir(*dataDir, stderr)
+	if err != nil {
+		return 1, err
+	}
 	one := len(list) == 1
 	left := false
 	var failed []string
@@ -129,6 +140,7 @@ func runHooksStatus(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("hooks status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	home := fs.String("home", "", "home directory whose agent configs to check (default: yours)")
+	dataDir := fs.String("data-dir", "", dataDirUsage)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, hooksUsage)
 		fs.PrintDefaults()
@@ -146,6 +158,10 @@ func runHooksStatus(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	dir, err := homeOf(*home)
 	if err != nil {
+		return 1, err
+	}
+	// Status renders what Install would put in place for the adopted binary.
+	if _, err := adoptHooksDir(*dataDir, stderr); err != nil {
 		return 1, err
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -222,12 +238,40 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 }
 
 // homeOf is the home directory to work in: dir, made absolute, or the
-// user's own.
+// user's own, which must be an absolute path.
 func homeOf(dir string) (string, error) {
-	if dir == "" {
-		return os.UserHomeDir()
+	if dir != "" {
+		return filepath.Abs(dir)
 	}
-	return filepath.Abs(dir)
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return "", fmt.Errorf("your home directory is unknown (HOME is %q); name it with --home", os.Getenv("HOME"))
+	}
+	return home, nil
+}
+
+const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the hooks and names the binary they run (default: CONDUCTOR_DATA_DIR, else conductor.d in the current directory)"
+
+// adoptHooksDir adopts the binary that the hooks in the data directory
+// dataDir were written for, so that what install puts in place and what
+// status checks name the binary the server's hooks do, and returns that
+// hooks dir. When no server wrote hooks there, it says so and returns "":
+// the hooks are then made for this conductor.
+func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
+	hooksDir := serveHooksDir(dataDir)
+	_, err := agents.AdoptBinary(hooksDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		bin, err := agents.Binary()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(stderr, "conductor hooks: no hooks written by conductor serve in %s; the hooks run this conductor, %s\n", hooksDir, bin)
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return hooksDir, nil
 }
 
 // serveHooksDir is the hooks dir of the data directory dataDir or, when it is

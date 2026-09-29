@@ -2,17 +2,32 @@ package pty
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestBuildEnv(t *testing.T) {
 	parent := []string{
 		"PATH=/bin", "HOME=/home/x", "SECRET=1", "LC_ALL=C", "CONDUCTOR_ADMIN_TOKEN=t",
-		"LD_PRELOAD=/evil.so", "EXTRA=yes", "TERM=dumb",
+		"LD_PRELOAD=/evil.so", "EXTRA=yes", "TERM=dumb", "CONDUCTOR_BIN=/from/the/parent",
 	}
-	env := BuildEnv(parent, []string{"EXTRA"}, map[string]string{"FOO": "bar", "CONDUCTOR_X": "no", "LD_LIBRARY_PATH": "/x"}, Inject("s1", "http://c/api/sessions/s1/attention", "tok"))
-	want := []string{"COLORTERM=truecolor", "CONDUCTOR_NOTIFY_TOKEN=tok", "CONDUCTOR_NOTIFY_URL=http://c/api/sessions/s1/attention", "CONDUCTOR_SESSION_ID=s1", "EXTRA=yes", "FOO=bar", "HOME=/home/x", "LC_ALL=C", "PATH=/bin", "TERM=xterm-256color"}
+	set := map[string]string{"FOO": "bar", "CONDUCTOR_X": "no", "LD_LIBRARY_PATH": "/x", "CONDUCTOR_BIN": "/from/the/catalog"}
+	env := BuildEnv(parent, []string{"EXTRA", "CONDUCTOR_BIN"}, set, Inject("s1", "http://c/api/sessions/s1/attention", "tok", "/opt/conductor"))
+	want := []string{"COLORTERM=truecolor", "CONDUCTOR_BIN=/opt/conductor", "CONDUCTOR_NOTIFY_TOKEN=tok", "CONDUCTOR_NOTIFY_URL=http://c/api/sessions/s1/attention", "CONDUCTOR_SESSION_ID=s1", "EXTRA=yes", "FOO=bar", "HOME=/home/x", "LC_ALL=C", "PATH=/bin", "TERM=xterm-256color"}
 	if !slices.Equal(env, want) {
 		t.Fatalf("got %v\nwant %v", env, want)
+	}
+}
+
+// CONDUCTOR_BIN is the binary Conductor injects, or nothing when it has none:
+// never what the parent or the catalog says.
+func TestInjectWithoutABinary(t *testing.T) {
+	inject := Inject("s1", "http://c/api/sessions/s1/attention", "tok", "")
+	if _, ok := inject["CONDUCTOR_BIN"]; ok || len(inject) != 3 {
+		t.Fatalf("inject %v", inject)
+	}
+	env := BuildEnv([]string{"CONDUCTOR_BIN=/from/the/parent"}, []string{"CONDUCTOR_BIN"}, nil, inject)
+	if slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "CONDUCTOR_BIN=") }) {
+		t.Fatalf("env %v", env)
 	}
 }

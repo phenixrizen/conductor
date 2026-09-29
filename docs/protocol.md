@@ -185,7 +185,11 @@ Explicit updates: `POST /api/sessions/{id}/attention` with
 `{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?}` and
 `Authorization: Bearer <agent token>` (or the admin token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
-`CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored
+`CONDUCTOR_NOTIFY_TOKEN`, which `conductor notify` reads, and `CONDUCTOR_BIN`,
+the absolute path of the conductor binary its hooks run, which the Conductor
+skill runs its commands with. Only Conductor sets them: `CONDUCTOR_*` from the
+server's or the developer's environment and from an agent's `env` never reach
+a session. The token is stored
 hashed and only ever authorizes this route and `POST /api/sessions/{id}/events`
 for this one session. For a hosted
 session the state is also sent on to the host, and that counts against

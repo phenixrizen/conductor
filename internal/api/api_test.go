@@ -1445,17 +1445,25 @@ func TestCatalogSavedAgentsRun(t *testing.T) {
 
 // A saved agent's envPassthrough lets its sessions inherit those server
 // variables on top of the server-wide list. Other agents do not get them, and
-// CONDUCTOR_* variables stay out even when listed.
+// CONDUCTOR_* variables stay out even when listed. Every session gets
+// CONDUCTOR_BIN, the binary the hooks run, from Conductor itself: neither the
+// server's environment nor the agent's env can set it.
 func TestCatalogEnvPassthroughReachesTheSession(t *testing.T) {
 	t.Setenv("PASS_PROBE_AGENT", "from-agent-list")
 	t.Setenv("PASS_PROBE_SERVER", "from-server-list")
 	t.Setenv("PASS_PROBE_NONE", "never-listed")
 	t.Setenv("CONDUCTOR_PROBE_SECRET", "server-only")
-	e := newTestEnv(t, func(c *config.Config) { c.EnvPassthrough = []string{"PASS_PROBE_SERVER"} })
-	script := `echo "A=[$PASS_PROBE_AGENT] S=[$PASS_PROBE_SERVER] N=[$PASS_PROBE_NONE] C=[$CONDUCTOR_PROBE_SECRET] END"; exec /bin/cat`
+	t.Setenv("CONDUCTOR_BIN", "/from/the/server/env")
+	e := newTestEnv(t, func(c *config.Config) { c.EnvPassthrough = []string{"PASS_PROBE_SERVER", "CONDUCTOR_BIN"} })
+	bin, err := agents.Binary()
+	if err != nil || !filepath.IsAbs(bin) {
+		t.Fatalf("binary %q %v", bin, err)
+	}
+	script := `echo "A=[$PASS_PROBE_AGENT] S=[$PASS_PROBE_SERVER] N=[$PASS_PROBE_NONE] C=[$CONDUCTOR_PROBE_SECRET] B=[$CONDUCTOR_BIN] END"; exec /bin/cat`
 	with := agentBody("with")
 	with["command"] = []string{"/bin/sh", "-c", script}
-	with["envPassthrough"] = []string{"PASS_PROBE_AGENT", "CONDUCTOR_PROBE_SECRET"}
+	with["envPassthrough"] = []string{"PASS_PROBE_AGENT", "CONDUCTOR_PROBE_SECRET", "CONDUCTOR_BIN"}
+	with["env"] = map[string]string{"CONDUCTOR_BIN": "/from/the/agent"}
 	e.save(with)
 	without := agentBody("without")
 	without["command"] = []string{"/bin/sh", "-c", script}
@@ -1464,8 +1472,8 @@ func TestCatalogEnvPassthroughReachesTheSession(t *testing.T) {
 	// "without" runs after "with", so a launch that grew the server-wide list
 	// would show here.
 	for _, tc := range []struct{ agent, want string }{
-		{"with", "A=[from-agent-list] S=[from-server-list] N=[] C=[] END"},
-		{"without", "A=[] S=[from-server-list] N=[] C=[] END"},
+		{"with", "A=[from-agent-list] S=[from-server-list] N=[] C=[] B=[" + bin + "] END"},
+		{"without", "A=[] S=[from-server-list] N=[] C=[] B=[" + bin + "] END"},
 	} {
 		id := e.createSession(tc.agent)
 		c := dialViewer(t, e, id, adminToken)
@@ -2073,5 +2081,24 @@ func TestCatalogSaveChecksTheAdapter(t *testing.T) {
 	}
 	if slices.Contains(e.catalogIDs(), "ghost") {
 		t.Fatal("an agent with an unknown adapter was saved")
+	}
+}
+
+// A home that is not an absolute path is no home: nothing is checked or
+// written there, and the install says the home is unknown.
+func TestIntegrationsWithoutAKnownHome(t *testing.T) {
+	t.Setenv("HOME", "relative/home")
+	e := newTestEnv(t, nil)
+	if e.srv.home != "" {
+		t.Fatalf("home %q", e.srv.home)
+	}
+	list, _ := e.integrations()
+	if c := list["copilot"]; c["installed"] != false || c["where"] != "" {
+		t.Fatalf("copilot: %v", c)
+	}
+	resp, out := e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
+	apiErr, _ := out["error"].(map[string]any)
+	if msg, _ := apiErr["message"].(string); resp.StatusCode != http.StatusInternalServerError || apiErr["code"] != "install_failed" || !strings.Contains(msg, "unknown") {
+		t.Fatalf("install: %d %v", resp.StatusCode, out)
 	}
 }

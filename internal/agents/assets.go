@@ -36,11 +36,12 @@ var (
 )
 
 // assetBinary is the binary the hooks dir names: the one WriteAssets last
-// wrote the assets for or, in a process that has written none, BinaryPath as
-// it answered the first time. It never follows a later change to PATH, so a
-// running server's Status compares an install with what its Install copies
-// from the hooks dir, and a launch names the same binary as the assets, even
-// after an upgrade has changed the conductor on PATH.
+// wrote the assets for or AdoptBinary adopted or, in a process that has done
+// neither, BinaryPath as it answered the first time. It never follows a
+// later change to PATH, so a running server's Status compares an install
+// with what its Install copies from the hooks dir, and a launch names the
+// same binary as the assets, even after an upgrade has changed the conductor
+// on PATH.
 func assetBinary() (string, error) {
 	assetBinMu.Lock()
 	bin := assetBin
@@ -49,6 +50,74 @@ func assetBinary() (string, error) {
 		return bin, nil
 	}
 	return lookedUp()
+}
+
+// remember makes bin the binary the adapters name; "" leaves it to
+// BinaryPath.
+func remember(bin string) {
+	assetBinMu.Lock()
+	assetBin = bin
+	assetBinMu.Unlock()
+}
+
+// Binary is the conductor binary this process's hooks run, as the adapters
+// name it (see assetBinary). Sessions get it as CONDUCTOR_BIN, so that a
+// command an agent runs itself names the binary its hooks do.
+func Binary() (string, error) {
+	return binPath()
+}
+
+// binRecord is the file in the hooks dir that names the binary its assets
+// were written for, so that another conductor process can name the same one
+// (AdoptBinary).
+const binRecord = ".bin"
+
+// maxBinRecord bounds what AdoptBinary reads: a path of at most PATH_MAX.
+const maxBinRecord = 4096
+
+// AdoptBinary makes the binary the hook assets in hooksDir were written for
+// the one this process's adapters name, as they are in the process that
+// wrote them, and returns it. A conductor that installs or checks hooks from
+// a server's hooks dir adopts the server's binary this way, so what it
+// installs and what it checks agree. The error is fs.ErrNotExist when no
+// assets record a binary there; on any error the binary stays as it was.
+func AdoptBinary(hooksDir string) (string, error) {
+	if !filepath.IsAbs(hooksDir) {
+		return "", fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
+	}
+	p := filepath.Join(hooksDir, binRecord)
+	fi, err := os.Lstat(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("%s: %w", p, fs.ErrNotExist)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > maxBinRecord {
+		return "", fmt.Errorf("%s is not the record of a binary: not a regular file of at most %d bytes", p, maxBinRecord)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", err
+	}
+	bin := string(b)
+	if err := checkBin(bin); err != nil {
+		return "", fmt.Errorf("%s: %w", p, err)
+	}
+	remember(bin)
+	return bin, nil
+}
+
+// ForgetBinary forgets the binary WriteAssets or AdoptBinary recorded, as in
+// a process that recorded none, and returns a function that puts back what
+// it forgot. Both record the binary for the whole process: a test that calls
+// them restores it with this.
+func ForgetBinary() (restore func()) {
+	assetBinMu.Lock()
+	old := assetBin
+	assetBin = ""
+	assetBinMu.Unlock()
+	return func() { remember(old) }
 }
 
 // BinaryPath is the conductor binary for hooks to run: the conductor on PATH
@@ -97,12 +166,12 @@ func checkBin(bin string) error {
 }
 
 // WriteAssets renders every adapter's assets for bin, the absolute path of the
-// conductor binary, and writes them under hooksDir with the Conductor skill.
-// Conductor owns the directory: it is made 0700 and every asset 0600,
-// whatever they were. Each file is replaced whole, so an agent reading one
-// never sees half of it, and one that already holds the right content is not
-// rewritten. From then on the adapters name bin wherever they render the
-// binary themselves.
+// conductor binary, and writes them under hooksDir with the Conductor skill,
+// and bin itself as .bin for AdoptBinary. Conductor owns the directory: it is
+// made 0700 and every asset 0600, whatever they were. Each file is replaced
+// whole, so an agent reading one never sees half of it, and one that already
+// holds the right content is not rewritten. From then on the adapters name
+// bin wherever they render the binary themselves.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -132,9 +201,11 @@ func WriteAssets(hooksDir, bin string) error {
 			}
 		}
 	}
-	assetBinMu.Lock()
-	assetBin = bin
-	assetBinMu.Unlock()
+	record := filepath.Join(hooksDir, binRecord)
+	if _, err := replaceFile(record, record, []byte(bin), 0o600); err != nil {
+		return err
+	}
+	remember(bin)
 	return nil
 }
 

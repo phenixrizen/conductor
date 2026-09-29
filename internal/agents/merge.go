@@ -9,8 +9,10 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -32,7 +34,46 @@ func openHome(dir string, dryRun bool) (*homeDir, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !dryRun {
+		fi, err := os.Stat(real)
+		if err != nil {
+			return nil, err
+		}
+		if err := ownedBy(dir, fi, geteuid()); err != nil {
+			return nil, err
+		}
+	}
 	return &homeDir{dir: dir, real: real, dryRun: dryRun}, nil
+}
+
+// geteuid is the user Install writes as. Tests replace it.
+var geteuid = os.Geteuid
+
+// CheckHome refuses a home directory that belongs to another user than the
+// one running conductor (under sudo, for example). What Install writes, 0600
+// files in 0700 directories, belongs to the user writing it, so the home's
+// owner could not use it: the install is for that user to run. Install
+// checks it before it writes anything. It takes a system that says who owns
+// a file, as Unix systems do; elsewhere it passes.
+func CheckHome(home string) error {
+	fi, err := os.Stat(home)
+	if err != nil {
+		return err
+	}
+	return ownedBy(home, fi, geteuid())
+}
+
+// ownedBy refuses home, which fi describes, unless the user uid owns it.
+func ownedBy(home string, fi fs.FileInfo, uid int) error {
+	owner, ok := fileOwner(fi)
+	if !ok || owner == uid {
+		return nil
+	}
+	who := strconv.Itoa(owner)
+	if u, err := user.LookupId(who); err == nil && u.Username != "" {
+		who = u.Username
+	}
+	return fmt.Errorf("%s belongs to %s, and what Conductor wrote there would not: run it as %s, for example sudo -u %s conductor hooks install …", home, who, who, who)
 }
 
 // path is the file rel under home, as Install reports it.

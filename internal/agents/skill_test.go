@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,16 +20,25 @@ func TestSkillText(t *testing.T) {
 	if want := "name: conductor\ndescription: Report progress, artifacts, blockers and handoffs to Conductor while working in a Conductor session"; front != want {
 		t.Fatalf("frontmatter:\n%s\nwant\n%s", front, want)
 	}
+	// The marker that makes the file Conductor's comes first after it.
+	if !strings.HasPrefix(body, "\n<!-- "+skillMarker+" ") || strings.Count(Skill, skillMarker) != 1 {
+		t.Fatalf("no marker line after the frontmatter:\n%s", body)
+	}
+	// The commands run the binary the session names in CONDUCTOR_BIN, quoted
+	// for a path with spaces, or the conductor on PATH.
 	for _, want := range []string{
-		`conductor notify --event progress --message "4/7 handlers"`,
-		`conductor notify --event artifact --url <url>`,
-		`conductor notify --event handoff --to <member> --message "…"`,
-		`conductor notify --state needs_input --message "…"`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --event progress --message "4/7 handlers"`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --event artifact --url <url>`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to <member> --message "…"`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "…"`,
 		"ever call notify outside a Conductor session; the command exits silently there",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the skill does not say %q", want)
 		}
+	}
+	if n := strings.Count(body, " notify --"); n != 4 {
+		t.Errorf("%d notify commands, want the 4 above", n)
 	}
 	if strings.Contains(Skill, binPlaceholder) || !strings.HasSuffix(Skill, "\n") {
 		t.Fatalf("skill:\n%s", Skill)
@@ -39,7 +49,7 @@ func TestSkillText(t *testing.T) {
 // held to the same modes.
 func TestWriteAssetsWritesTheSkill(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(dir, "skills", "conductor", "SKILL.md")
@@ -73,7 +83,7 @@ var skillFor = map[string]string{
 func TestInstallCopiesTheSkill(t *testing.T) {
 	useBin(t, "/opt/conductor")
 	hooks := t.TempDir()
-	if err := WriteAssets(hooks, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range All() {
@@ -130,5 +140,49 @@ func TestInstallCopiesTheSkill(t *testing.T) {
 	touched, err := goose.Install(home, hooks)
 	if err != nil || !slices.Equal(touched, under(home, installed["goose"].files[0])) {
 		t.Fatalf("goose after pi: %q %v", touched, err)
+	}
+}
+
+// A SKILL.md of the user's own where Conductor's would go stays theirs:
+// Install leaves it by hand and does the rest, and Status reads not
+// installed. A skill Conductor wrote, which carries its marker, is replaced,
+// and an empty file counts as none.
+func TestInstallLeavesTheUsersOwnSkillAlone(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	a, _ := Get("claude")
+	home := t.TempDir()
+	settings := filepath.Join(home, ".claude", "settings.json")
+	skill := filepath.Join(home, ".claude", "skills", "conductor", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mine := "---\nname: conductor\ndescription: my notes on the orchestra\n---\n\nMine.\n"
+	os.WriteFile(skill, []byte(mine), 0o644)
+	touched, err := a.Install(home, t.TempDir())
+	if !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), skill) || !strings.Contains(err.Error(), "conductor skill") || !slices.Equal(touched, []string{settings}) {
+		t.Fatalf("install: %q %v", touched, err)
+	}
+	if b, _ := os.ReadFile(skill); string(b) != mine {
+		t.Fatalf("the user's skill changed:\n%s", b)
+	}
+	if ok, _ := a.Status(home); ok {
+		t.Fatal("status reads installed with the user's skill in place")
+	}
+
+	for name, content := range map[string]string{
+		"an older Conductor skill": strings.Replace(Skill, "4/7 handlers", "3/7 handlers", 1),
+		"an empty file":            "",
+	} {
+		os.WriteFile(skill, []byte(content), 0o600)
+		touched, err := a.Install(home, t.TempDir())
+		if err != nil || !slices.Equal(touched, []string{skill}) {
+			t.Fatalf("%s: %q %v", name, touched, err)
+		}
+		if b, _ := os.ReadFile(skill); string(b) != Skill {
+			t.Fatalf("%s: not replaced:\n%s", name, b)
+		}
+		if ok, _ := a.Status(home); !ok {
+			t.Fatalf("%s: status after the install", name)
+		}
 	}
 }

@@ -127,7 +127,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	notifyURL := strings.TrimRight(opts.ServerURL, "/") + "/api/sessions/" + registered.SessionID + "/attention"
-	env := pty.Inject(registered.SessionID, notifyURL, agentToken)
+	// The binary the hooks run (the one the assets name when injectHooks
+	// wrote them), for what the agent runs itself (the skill).
+	bin, _ := agents.Binary()
+	env := pty.Inject(registered.SessionID, notifyURL, agentToken, bin)
 	for k, v := range adapterEnv {
 		if _, ok := env[k]; !ok {
 			env[k] = v

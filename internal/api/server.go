@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +68,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if err != nil {
 		return nil, err
 	}
-	home, _ := os.UserHomeDir()
+	// A home that is not an absolute path (HOME=relative) is no home.
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		home = ""
+	}
 	s := &Server{
 		cfg:      cfg,
 		base:     base,

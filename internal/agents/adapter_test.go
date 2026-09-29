@@ -25,7 +25,7 @@ func useBin(t *testing.T, bin string) {
 
 func TestWriteAssetsAndInjectClaude(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "claude.json"))
@@ -223,7 +223,7 @@ func TestInstallOnAnEmptyHome(t *testing.T) {
 		}
 		t.Run(a.ID, func(t *testing.T) {
 			home, hooks := t.TempDir(), t.TempDir()
-			if err := WriteAssets(hooks, "/opt/conductor"); err != nil {
+			if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
 				t.Fatal(err)
 			}
 			where := filepath.Join(home, filepath.FromSlash(want.status))
@@ -274,7 +274,7 @@ func TestInstallReplacesOnlyItsOwnFile(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.id, func(t *testing.T) {
 			home, hooks := t.TempDir(), t.TempDir()
-			if err := WriteAssets(hooks, "/opt/conductor"); err != nil {
+			if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
 				t.Fatal(err)
 			}
 			own := filepath.Join(home, filepath.FromSlash(c.file))
@@ -578,7 +578,7 @@ func TestAiderHasOnlyALaunchRoute(t *testing.T) {
 func TestSnippetsNameTheBinary(t *testing.T) {
 	useBin(t, "/opt/conductor")
 	hooks := t.TempDir()
-	if err := WriteAssets(hooks, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range All() {

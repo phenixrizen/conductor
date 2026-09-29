@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/agents"
 )
 
 // syncBuffer collects what the server logs while the test reads it.
@@ -56,6 +58,9 @@ func writeServeConfig(t *testing.T, dir, body string) string {
 // reports that it is serving, stops it, and returns everything it logged.
 func serveUntilListening(t *testing.T, args ...string) string {
 	t.Helper()
+	// Serve records the binary it writes the hook assets for, for the whole
+	// process: forget it when the test ends.
+	t.Cleanup(agents.ForgetBinary())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var logs syncBuffer

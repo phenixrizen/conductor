@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/agents"
 )
 
 // logBuffer collects what the host logs while the test reads it.
@@ -32,12 +34,15 @@ func (l *logBuffer) String() string {
 	return l.b.String()
 }
 
-// hostProbe hosts a command that writes its arguments and AIDER_NOTIFICATIONS
-// to a file, with adapter selecting the hooks, and returns what it wrote and
-// the command the server lists for the session. What the host logs goes to
-// logs when it is not nil.
+// hostProbe hosts a command that writes its arguments, AIDER_NOTIFICATIONS
+// and CONDUCTOR_BIN to a file, with adapter selecting the hooks, and returns
+// what it wrote and the command the server lists for the session. What the
+// host logs goes to logs when it is not nil. The host starts as a new
+// process does, with no binary recorded, and what it records is forgotten
+// when the test ends.
 func hostProbe(t *testing.T, adapter, hooks string, logs ...io.Writer) (string, []string) {
 	t.Helper()
+	t.Cleanup(agents.ForgetBinary())
 	logOut := io.Discard
 	if len(logs) > 0 {
 		logOut = logs[0]
@@ -46,11 +51,13 @@ func hostProbe(t *testing.T, adapter, hooks string, logs ...io.Writer) (string, 
 	out := filepath.Join(t.TempDir(), "probe")
 	t.Setenv("PROBE_OUT", out)
 	t.Setenv("AIDER_NOTIFICATIONS", "")
+	// The developer's own value never reaches the session.
+	t.Setenv("CONDUCTOR_BIN", "/from/the/developer")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	registered := make(chan string, 1)
 	done := make(chan struct{})
-	argv := []string{"/bin/sh", "-c", `printf 'ARGS[%s] N=[%s]' "$*" "$AIDER_NOTIFICATIONS" > "$PROBE_OUT"; exec /bin/cat`, "sh"}
+	argv := []string{"/bin/sh", "-c", `printf 'ARGS[%s] N=[%s] B=[%s]' "$*" "$AIDER_NOTIFICATIONS" "$CONDUCTOR_BIN" > "$PROBE_OUT"; exec /bin/cat`, "sh"}
 	go func() {
 		defer close(done)
 		_, err := Run(ctx, Options{
@@ -102,10 +109,21 @@ func hostProbe(t *testing.T, adapter, hooks string, logs ...io.Writer) (string, 
 	return string(wrote), d.Info().Command
 }
 
+// recorded is the binary the hook assets in hooks name.
+func recorded(t *testing.T, hooks string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(hooks, ".bin"))
+	if err != nil || !filepath.IsAbs(string(b)) {
+		t.Fatalf("the hooks dir names %q: %v", b, err)
+	}
+	return string(b)
+}
+
 // --agent names the adapter on the host too: the host writes the hook assets
 // to its hooks dir and launches the command with the adapter's flags, which
 // the server lists as part of the command. The assets name the conductor on
-// PATH, which is this binary through a link, as a package manager installs it.
+// PATH, which is this binary through a link, as a package manager installs it,
+// and so does CONDUCTOR_BIN in the session.
 func TestHostInjectsTheAdaptersFlags(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -119,8 +137,9 @@ func TestHostInjectsTheAdaptersFlags(t *testing.T) {
 	hooks := filepath.Join(t.TempDir(), "state", "hooks")
 	wrote, command := hostProbe(t, "claude", hooks)
 	settings := filepath.Join(hooks, "claude.json")
-	if want := "ARGS[--settings " + settings + "] N=[]"; wrote != want {
-		t.Fatalf("the command saw %q, want %q", wrote, want)
+	link := filepath.Join(bin, "conductor")
+	if want := "ARGS[--settings " + settings + "] N=[] B=[" + link + "]"; wrote != want || recorded(t, hooks) != link {
+		t.Fatalf("the command saw %q, want %q; the hooks dir names %q", wrote, want, recorded(t, hooks))
 	}
 	if n := len(command); n < 2 || !slices.Equal(command[n-2:], []string{"--settings", settings}) {
 		t.Fatalf("server lists %q", command)
@@ -135,10 +154,22 @@ func TestHostInjectsTheAdaptersFlags(t *testing.T) {
 }
 
 func TestHostInjectsTheAdaptersEnvironment(t *testing.T) {
-	wrote, _ := hostProbe(t, "aider", t.TempDir())
-	if wrote != "ARGS[] N=[true]" {
-		t.Fatalf("the command saw %q", wrote)
+	hooks := t.TempDir()
+	wrote, _ := hostProbe(t, "aider", hooks)
+	if want := "ARGS[] N=[true] B=[" + recorded(t, hooks) + "]"; wrote != want {
+		t.Fatalf("the command saw %q, want %q", wrote, want)
 	}
+}
+
+// binary is the conductor binary a host that wrote no hook assets names in
+// CONDUCTOR_BIN.
+func binary(t *testing.T) string {
+	t.Helper()
+	bin, err := agents.Binary()
+	if err != nil || !filepath.IsAbs(bin) {
+		t.Fatalf("binary %q %v", bin, err)
+	}
+	return bin
 }
 
 // A label that names no adapter changes nothing and writes nothing.
@@ -146,7 +177,7 @@ func TestHostWithoutAnAdapterInjectsNothing(t *testing.T) {
 	hooks := filepath.Join(t.TempDir(), "hooks")
 	for _, adapter := range []string{"", "my-tool"} {
 		wrote, command := hostProbe(t, adapter, hooks)
-		if wrote != "ARGS[] N=[]" || len(command) != 4 {
+		if wrote != "ARGS[] N=[] B=["+binary(t)+"]" || len(command) != 4 {
 			t.Fatalf("%q: the command saw %q, server lists %q", adapter, wrote, command)
 		}
 	}
@@ -164,7 +195,7 @@ func TestHostRunsWithoutHooksItCannotWrite(t *testing.T) {
 	}
 	var logs logBuffer
 	wrote, command := hostProbe(t, "claude", filepath.Join(file, "hooks"), &logs)
-	if wrote != "ARGS[] N=[]" || len(command) != 4 {
+	if wrote != "ARGS[] N=[] B=["+binary(t)+"]" || len(command) != 4 {
 		t.Fatalf("the command saw %q, server lists %q", wrote, command)
 	}
 	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "adapter=claude") {

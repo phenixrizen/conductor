@@ -10,14 +10,28 @@ import (
 	"github.com/phenixrizen/conductor/internal/agents"
 )
 
-// runHooksWith runs `conductor hooks` with args. HOME is a temporary
-// directory, so that no test can write to the real one.
+// runHooksWith runs `conductor hooks` with args, as a new conductor process
+// would: with no binary recorded, and what it records forgotten when the
+// test ends. HOME is a temporary directory, so that no test can write to the
+// real one.
 func runHooksWith(t *testing.T, args ...string) (code int, stdout, stderr string, err error) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(agents.ForgetBinary())
 	var out, errOut bytes.Buffer
 	code, err = runHooks(t.Context(), args, &out, &errOut)
 	return code, out.String(), errOut.String(), err
+}
+
+// serverAssets writes the hook assets that a server naming bin writes to the
+// data dir data. Writing them records bin for this process; the next
+// runHooksWith forgets it, as a separate conductor process never knew it.
+func serverAssets(t *testing.T, data, bin string) {
+	t.Helper()
+	t.Cleanup(agents.ForgetBinary())
+	if err := agents.WriteAssets(filepath.Join(data, "hooks"), bin); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // conductor hooks install puts an adapter's hooks into the home it is given,
@@ -26,10 +40,7 @@ func runHooksWith(t *testing.T, args ...string) (code int, stdout, stderr string
 func TestHooksInstallCLI(t *testing.T) {
 	clearConductorEnv(t)
 	home, data := t.TempDir(), t.TempDir()
-	// The assets a server with this data dir wrote, naming its binary.
-	if err := agents.WriteAssets(filepath.Join(data, "hooks"), "/opt/conductor"); err != nil {
-		t.Fatal(err)
-	}
+	serverAssets(t, data, "/opt/conductor")
 	code, stdout, stderr, err := runHooksWith(t, "install", "copilot", "--home", home, "--data-dir", data)
 	file := filepath.Join(home, ".copilot", "hooks", "conductor.json")
 	if code != 0 || err != nil || !strings.Contains(stdout, file) {
@@ -49,13 +60,9 @@ func TestHooksInstallCLI(t *testing.T) {
 func TestHooksInstallFindsTheDataDirLikeServe(t *testing.T) {
 	clearConductorEnv(t)
 	env := t.TempDir()
-	if err := agents.WriteAssets(filepath.Join(env, "hooks"), "/opt/from-env/conductor"); err != nil {
-		t.Fatal(err)
-	}
+	serverAssets(t, env, "/opt/from-env/conductor")
 	cwd := t.TempDir()
-	if err := agents.WriteAssets(filepath.Join(cwd, "conductor.d", "hooks"), "/opt/from-cwd/conductor"); err != nil {
-		t.Fatal(err)
-	}
+	serverAssets(t, filepath.Join(cwd, "conductor.d"), "/opt/from-cwd/conductor")
 	t.Chdir(cwd)
 	for _, tc := range []struct{ env, want string }{
 		{env, "/opt/from-env/conductor"},
@@ -203,6 +210,7 @@ func TestHooksUsage(t *testing.T) {
 func TestSkillCommand(t *testing.T) {
 	clearConductorEnv(t)
 	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(agents.ForgetBinary())
 	var stdout, stderr bytes.Buffer
 	if code, err := Run(t.Context(), []string{"skill"}, strings.NewReader(""), &stdout, &stderr); code != 0 || err != nil || stdout.String() != agents.Skill {
 		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout.String(), stderr.String())
@@ -217,5 +225,111 @@ func TestSkillCommand(t *testing.T) {
 	stdout.Reset()
 	if code, _ := Run(t.Context(), []string{"help"}, strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "conductor hooks") || !strings.Contains(stdout.String(), "conductor skill") {
 		t.Fatalf("usage:\n%s", stdout.String())
+	}
+}
+
+// install and status name the binary the data dir's hooks were written for,
+// whichever conductor runs them: what install puts in place, status reads as
+// installed, and installing again changes nothing.
+func TestHooksStatusAgreesWithInstall(t *testing.T) {
+	clearConductorEnv(t)
+	home, data := t.TempDir(), t.TempDir()
+	serverAssets(t, data, "/opt/other/conductor")
+	file := filepath.Join(home, ".copilot", "hooks", "conductor.json")
+	code, stdout, stderr, err := runHooksWith(t, "install", "copilot", "--home", home, "--data-dir", data)
+	if code != 0 || err != nil || stderr != "" || !strings.Contains(stdout, file) {
+		t.Fatalf("install: exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
+	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"/opt/other/conductor notify --copilot-hook"`) {
+		t.Fatalf("%s:\n%s", file, b)
+	}
+	code, stdout, stderr, err = runHooksWith(t, "status", "--home", home, "--data-dir", data)
+	row := statusRow(stdout, "copilot")
+	if code != 0 || err != nil || stderr != "" || !strings.Contains(row, " installed ") || strings.Contains(row, "not installed") {
+		t.Fatalf("status: exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
+	}
+	if code, stdout, _, err = runHooksWith(t, "install", "copilot", "--home", home, "--data-dir", data); code != 0 || err != nil || !strings.Contains(stdout, "nothing to change") {
+		t.Fatalf("second install: exit %d %v\n%s", code, err, stdout)
+	}
+}
+
+// statusRow is the row of `conductor hooks status` output for adapter id.
+func statusRow(stdout, id string) string {
+	for _, l := range strings.Split(stdout, "\n") {
+		if f := strings.Fields(l); len(f) > 0 && f[0] == id {
+			return l + " "
+		}
+	}
+	return ""
+}
+
+// A data dir whose hooks name no binary (no server has written them) leaves
+// install and status to this binary, and both say so; they agree with each
+// other all the same.
+func TestHooksWithoutServerAssetsNameThisBinary(t *testing.T) {
+	clearConductorEnv(t)
+	home, data := t.TempDir(), t.TempDir()
+	t.Cleanup(agents.ForgetBinary())
+	bin, err := agents.Binary() // a process that recorded none: this binary
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"install", "copilot", "--home", home, "--data-dir", data},
+		{"status", "--home", home, "--data-dir", data},
+	} {
+		code, stdout, stderr, err := runHooksWith(t, args...)
+		if code != 0 || err != nil || !strings.Contains(stderr, filepath.Join(data, "hooks")) || !strings.Contains(stderr, bin) {
+			t.Fatalf("%q: exit %d %v\nstdout:\n%s\nstderr:\n%s", args, code, err, stdout, stderr)
+		}
+		if args[0] == "status" && strings.Contains(statusRow(stdout, "copilot"), "not installed") {
+			t.Fatalf("status after install:\n%s", stdout)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(home, ".copilot", "hooks", "conductor.json")); !strings.Contains(string(b), bin+" notify --copilot-hook") {
+		t.Fatalf("installed:\n%s", b)
+	}
+}
+
+// Without --home the home is the user's own, which must be an absolute path:
+// a relative HOME is no home, and nothing is checked or written.
+func TestHooksNeedAKnownHome(t *testing.T) {
+	clearConductorEnv(t)
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", "relative/home")
+	t.Cleanup(agents.ForgetBinary())
+	for _, args := range [][]string{{"install", "copilot"}, {"status"}} {
+		var stdout, stderr bytes.Buffer
+		code, err := runHooks(t.Context(), append(args, "--data-dir", t.TempDir()), &stdout, &stderr)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "--home") || stdout.Len() != 0 {
+			t.Fatalf("%q: exit %d %v\n%s", args, code, err, stdout.String())
+		}
+	}
+	if _, err := os.Stat("relative"); !os.IsNotExist(err) {
+		t.Fatalf("wrote into the relative home: %v", err)
+	}
+}
+
+// Installing into a home of another user is refused before anything is
+// written: the files would belong to the user running conductor, and the
+// home's owner could not use them. Checking it is fine.
+func TestHooksRefuseAHomeOfAnotherUser(t *testing.T) {
+	clearConductorEnv(t)
+	if os.Geteuid() != 0 {
+		t.Skip("only root can make a directory another user's")
+	}
+	home := t.TempDir()
+	if err := os.Chown(home, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr, err := runHooksWith(t, "install", "all", "--home", home, "--data-dir", t.TempDir())
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "sudo -u ") || strings.Contains(stdout, "wrote") {
+		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
+	}
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Fatalf("wrote %v", entries)
+	}
+	if code, _, _, err := runHooksWith(t, "status", "--home", home, "--data-dir", t.TempDir()); code != 0 || err != nil {
+		t.Fatalf("status: exit %d %v", code, err)
 	}
 }

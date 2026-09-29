@@ -11,8 +11,10 @@ import (
 // The built-ins are the thirteen supported agents, in the order the launch
 // dialog lists them: every one with an adapter names an adapter that exists
 // and reports the way the adapter matrix says, every signal is one the
-// catalog accepts, and the shell, last, has no adapter and takes no extra
-// arguments. (An external test: internal/agents imports the catalog.)
+// catalog accepts, and the shell, last, has no adapter, takes no extra
+// arguments and no signal: readline rings the bell on a failed completion,
+// which is no call for attention. (An external test: internal/agents imports
+// the catalog.)
 func TestDefaultsHaveAdaptersAndValidSignals(t *testing.T) {
 	want := []struct {
 		id      string
@@ -33,7 +35,7 @@ func TestDefaultsHaveAdaptersAndValidSignals(t *testing.T) {
 		{"goose", []string{"goose"}, "goose", catalog.Signal{Kind: "bell"}, "i-lucide-feather"},
 		{"amp", []string{"amp"}, "amp", catalog.Signal{Kind: "hook"}, "i-lucide-zap"},
 		{"dsh", []string{"dsh"}, "dsh", catalog.Signal{Kind: "none"}, "i-lucide-cpu"},
-		{"shell", []string{"/bin/bash", "-l"}, "", catalog.Signal{Kind: "bell"}, "i-lucide-terminal"},
+		{"shell", []string{"/bin/bash", "-l"}, "", catalog.Signal{Kind: "none"}, "i-lucide-terminal"},
 	}
 	list := catalog.Default().List()
 	if len(list) != len(want) {

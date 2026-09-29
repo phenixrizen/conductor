@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -20,12 +21,20 @@ import (
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
 
+// writeAssets is WriteAssets for a test: the binary WriteAssets records for
+// the whole process is put back as it was when the test ends.
+func writeAssets(t *testing.T, hooksDir, bin string) error {
+	t.Helper()
+	t.Cleanup(ForgetBinary())
+	return WriteAssets(hooksDir, bin)
+}
+
 // Every adapter's assets land under the hooks dir with the binary path in
 // place of the placeholder: files 0600, directories 0700, JSON indented with
 // two spaces.
 func TestWriteAssetsWritesEveryAsset(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data", "hooks")
-	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
@@ -73,7 +82,7 @@ func TestWriteAssetsWritesEveryAsset(t *testing.T) {
 func TestWriteAssetsFollowsTheBinary(t *testing.T) {
 	dir := t.TempDir()
 	for _, bin := range []string{"/opt/conductor", "/usr/local/bin/conductor"} {
-		if err := WriteAssets(dir, bin); err != nil {
+		if err := writeAssets(t, dir, bin); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -91,7 +100,7 @@ func TestWriteAssetsRefusesALink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "claude.json")); err != nil {
 		t.Fatal(err)
 	}
-	err := WriteAssets(dir, "/opt/conductor")
+	err := writeAssets(t, dir, "/opt/conductor")
 	if err == nil || errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("WriteAssets: %v", err)
 	}
@@ -104,13 +113,13 @@ func TestWriteAssetsRefusesALink(t *testing.T) {
 // whatever they were before, even when the content is already right.
 func TestWriteAssetsTightensModes(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	asset := filepath.Join(dir, "claude.json")
 	os.Chmod(asset, 0o644)
 	os.Chmod(dir, 0o755)
-	if err := WriteAssets(dir, "/opt/conductor"); err != nil {
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
@@ -176,7 +185,7 @@ func TestAdaptersNameTheBinaryTheAssetsWereWrittenFor(t *testing.T) {
 	keepBinary(t)
 	lookedUp = sync.OnceValues(func() (string, error) { return "/opt/conductor-1.1/conductor", nil })
 	hooks, home := t.TempDir(), t.TempDir()
-	if err := WriteAssets(hooks, "/opt/conductor-1.0/conductor"); err != nil {
+	if err := writeAssets(t, hooks, "/opt/conductor-1.0/conductor"); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"copilot", "claude", "codex"} {
@@ -191,6 +200,74 @@ func TestAdaptersNameTheBinaryTheAssetsWereWrittenFor(t *testing.T) {
 	argv, _ := InjectFor("codex", hooks, catalog.Signal{Kind: "hook"})
 	if len(argv) != 4 || argv[1] != `notify=["/opt/conductor-1.0/conductor","notify","--codex"]` {
 		t.Fatalf("codex launch: %q", argv)
+	}
+}
+
+// WriteAssets leaves the binary it wrote the assets for in the hooks dir, as
+// .bin, and another process adopts it from there: its adapters then name
+// that binary, as the process that wrote the assets does, so an install it
+// makes from the hooks dir reads as installed. A hooks dir without it is
+// fs.ErrNotExist; a record that is not an absolute path, or is a link, is
+// refused and changes nothing.
+func TestAdoptBinary(t *testing.T) {
+	keepBinary(t)
+	lookedUp = sync.OnceValues(func() (string, error) { return "/opt/cli/conductor", nil })
+	hooks := t.TempDir()
+	if err := writeAssets(t, hooks, "/opt/server/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(hooks, ".bin")
+	if b, err := os.ReadFile(record); err != nil || string(b) != "/opt/server/conductor" {
+		t.Fatalf("%s: %v %q", record, err, b)
+	}
+	if fi, err := os.Lstat(record); err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("%s: %v %v", record, fi.Mode(), err)
+	}
+	ForgetBinary() // from here on, a process that did not write the assets
+	if bin, err := Binary(); err != nil || bin != "/opt/cli/conductor" {
+		t.Fatalf("before adopting: %q %v", bin, err)
+	}
+	if bin, err := AdoptBinary(hooks); err != nil || bin != "/opt/server/conductor" {
+		t.Fatalf("AdoptBinary: %q %v", bin, err)
+	}
+	if bin, err := Binary(); err != nil || bin != "/opt/server/conductor" {
+		t.Fatalf("after adopting: %q %v", bin, err)
+	}
+	home := t.TempDir()
+	for _, id := range []string{"copilot", "codex"} {
+		a, _ := Get(id)
+		if _, err := a.Install(home, hooks); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := a.Status(home); !ok {
+			t.Fatalf("%s: status disagrees with the install", id)
+		}
+	}
+
+	if _, err := AdoptBinary(t.TempDir()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no record: %v", err)
+	}
+	for name, content := range map[string]string{"empty": "", "relative": "conductor", "not UTF-8": "/opt/\xffconductor"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".bin"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AdoptBinary(dir); err == nil || errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s record: %v", name, err)
+		}
+	}
+	link := t.TempDir()
+	if err := os.Symlink(record, filepath.Join(link, ".bin")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AdoptBinary(link); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a link: %v", err)
+	}
+	if _, err := AdoptBinary("hooks"); err == nil {
+		t.Error("a relative hooks dir was accepted")
+	}
+	if bin, _ := Binary(); bin != "/opt/server/conductor" {
+		t.Fatalf("a refused record changed the binary: %q", bin)
 	}
 }
 
@@ -214,13 +291,13 @@ func TestTheBinaryIsLookedUpOnce(t *testing.T) {
 }
 
 func TestWriteAssetsNeedsAbsolutePaths(t *testing.T) {
-	if err := WriteAssets(t.TempDir(), "conductor"); err == nil {
+	if err := writeAssets(t, t.TempDir(), "conductor"); err == nil {
 		t.Fatal("a relative binary path was accepted")
 	}
-	if err := WriteAssets("hooks", "/opt/conductor"); err == nil {
+	if err := writeAssets(t, "hooks", "/opt/conductor"); err == nil {
 		t.Fatal("a relative hooks dir was accepted")
 	}
-	if err := WriteAssets(t.TempDir(), "/opt/\xffconductor"); err == nil {
+	if err := writeAssets(t, t.TempDir(), "/opt/\xffconductor"); err == nil {
 		t.Fatal("a binary path that is not UTF-8 was accepted")
 	}
 }
@@ -354,7 +431,7 @@ var jsConst = regexp.MustCompile(`(?m)^const CONDUCTOR = (".*");$`)
 func TestAssetsEscapeTheBinaryPath(t *testing.T) {
 	bin, out := oddBinary(t)
 	hooks := t.TempDir()
-	if err := WriteAssets(hooks, bin); err != nil {
+	if err := writeAssets(t, hooks, bin); err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range All() {
@@ -432,7 +509,7 @@ func TestScriptAssetsRunInNode(t *testing.T) {
 	}
 	bin, out := oddBinary(t)
 	hooks := t.TempDir()
-	if err := WriteAssets(hooks, bin); err != nil {
+	if err := writeAssets(t, hooks, bin); err != nil {
 		t.Fatal(err)
 	}
 	// The harness hands a plugin a fake agent: a default export gets an

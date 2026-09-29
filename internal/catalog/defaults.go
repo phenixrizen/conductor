@@ -138,7 +138,10 @@ func defaults() []Agent {
 			Command:     []string{"/bin/bash", "-l"},
 			AllowArgs:   false,
 			Icon:        "i-lucide-terminal",
-			Signal:      &Signal{Kind: "bell"},
+			// Readline rings the bell on a failed completion or a backspace
+			// at the start of the line: no call for attention while a person
+			// types.
+			Signal: &Signal{Kind: "none"},
 		},
 	}
 }

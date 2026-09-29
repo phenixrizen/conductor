@@ -166,11 +166,15 @@ conductor hooks status            # which agents have the hooks, and where
 
 `install` prints the files it wrote, and a second run changes nothing. What it
 cannot do from a file it prints with the snippet instead: DeepSeek Harness, a
-developer preview, is always installed by hand, and a Codex `hooks.json` of
-your own is never overwritten. `--home DIR` installs into another home
-directory. The hooks are copied from `hooks/` in the data directory
+developer preview, is always installed by hand, and a Codex `hooks.json` or a
+`SKILL.md` of your own is never overwritten. Both commands take the hooks, and
+the conductor binary they run, from `hooks/` in the data directory
 `--data-dir DIR` names, by default the one `conductor serve` uses without a
-config file; when there are none there, they name the binary you run.
+config file; when no server wrote hooks there, they say so and use the binary
+you run. `--home DIR` names another home directory of yours. A home that
+belongs to another user is refused, because what Conductor wrote there would
+belong to you: install for that user as that user
+(`sudo -u <user> conductor hooks install …`).
 
 **Agents without hooks.** Any tool that rings the terminal bell or emits an
 OSC 9 / OSC 777 notification is detected with no configuration at all. A
@@ -187,7 +191,10 @@ cannot make (`--state needs_input`). Installing the hooks for Claude Code,
 Codex, pi or Goose also puts the skill in their skills directory
 (`~/.claude/skills/conductor/`, `~/.codex/skills/conductor/`, or
 `~/.agents/skills/conductor/` for pi and Goose), and the server keeps a copy
-in `hooks/skills/conductor/SKILL.md`.
+in `hooks/skills/conductor/SKILL.md`. Its commands run
+`"${CONDUCTOR_BIN:-conductor}"`: every session carries `CONDUCTOR_BIN`, the
+absolute path of the binary its hooks run, while the manual snippets below
+assume `conductor` on the `PATH`.
 
 <details>
 <summary>Wiring the hooks by hand</summary>
