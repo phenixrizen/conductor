@@ -4,9 +4,11 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,7 +47,14 @@ func Open(dir string) (*Store, error) {
 func (s *Store) Dir() string { return s.dir }
 
 // Load decodes the document called name into v. It reports false, with no
-// error, when the document does not exist yet.
+// error, only when the document does not exist yet.
+//
+// Decoding is strict, like every other reader of external JSON here: an unknown
+// field, an empty file or anything after the JSON value is an error, so a typo
+// in a hand-edited file is caught instead of silently dropped. A load error is
+// a real error: callers must surface it and never treat the document as empty,
+// or their next Save would overwrite what is on disk. v may be partly filled
+// after an error.
 func (s *Store) Load(name string, v any) (bool, error) {
 	if !namePattern.MatchString(name) {
 		return false, fmt.Errorf("store: bad name %q", name)
@@ -57,10 +66,33 @@ func (s *Store) Load(name string, v any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := json.Unmarshal(b, v); err != nil {
+	if err := decodeStrict(b, v); err != nil {
 		return false, fmt.Errorf("store: parse %s: %w", name, err)
 	}
 	return true, nil
+}
+
+// decodeStrict decodes exactly one JSON value from b into v. Unknown fields are
+// errors, and so is anything but whitespace after the value: unlike
+// json.Unmarshal, Decoder.Decode stops after the first value and would accept it.
+func decodeStrict(b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) { // Decode only reports a bare EOF when there is no value at all
+			return errors.New("empty document")
+		}
+		return err
+	}
+	var extra json.RawMessage
+	switch err := dec.Decode(&extra); {
+	case errors.Is(err, io.EOF):
+		return nil
+	case err == nil:
+		return errors.New("more than one JSON value")
+	default:
+		return fmt.Errorf("unexpected data after the JSON value: %w", err)
+	}
 }
 
 // Save writes v as indented JSON to a temp file in the data directory and
