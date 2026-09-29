@@ -70,7 +70,7 @@ type Local struct {
 	stopRequested bool
 
 	activity       activityRing
-	events         eventBucket // guarded by mu
+	events         EventBucket // guarded by mu
 	dropped        atomic.Uint64
 	scanner        Scanner
 	lastBell       time.Time
@@ -193,7 +193,7 @@ func (s *Local) markEnded(status Status) {
 // row.
 func (s *Local) Record(e ActivityEntry) bool {
 	s.mu.Lock()
-	if bucketed(e.Type) && !s.events.take(time.Now()) {
+	if bucketed(e.Type) && !s.events.Take(time.Now()) {
 		log := s.log
 		s.mu.Unlock()
 		if n := s.dropped.Add(1); n == 1 || n%100 == 0 {
@@ -205,7 +205,7 @@ func (s *Local) Record(e ActivityEntry) bool {
 	// attaching meanwhile finds the entry in its replay or receives the
 	// broadcast, never both.
 	e = s.activity.Add(e)
-	s.hub.Broadcast(proto.MustControl(activityMessage(e)))
+	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
 	id := s.info.ID
 	s.mu.Unlock()
 	if s.opts.OnActivity != nil {
@@ -220,10 +220,6 @@ func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 
 // Activity returns the activity log, oldest first.
 func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
-
-func activityMessage(e ActivityEntry) proto.Activity {
-	return proto.Activity{T: proto.CtlActivity, At: e.At.UTC().Format(time.RFC3339Nano), Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
-}
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
@@ -433,7 +429,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	sub.send(proto.MustControl(proto.Simple{T: proto.CtlReady}))
 	for _, e := range s.activity.Tail(ActivityReplay) {
-		sub.send(proto.MustControl(activityMessage(e)))
+		sub.send(proto.MustControl(EntryToProto(e)))
 	}
 	s.hub.add(sub)
 	s.hub.Broadcast(s.viewersFrame())

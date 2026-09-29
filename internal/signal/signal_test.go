@@ -3,6 +3,7 @@ package signal
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -387,6 +388,14 @@ func TestActivityMessageRoundTrip(t *testing.T) {
 	if err := json.Unmarshal((<-srcConn.Send).Text, &m); err != nil {
 		t.Fatal(err)
 	}
+	// The entry on the wire is the shared pair's, in both directions: no
+	// conversion of this package's own can drift from the session's.
+	if want := session.EntryToProto(in); m.Entry != want {
+		t.Fatalf("ForwardActivity queued %+v, want session.EntryToProto's %+v", m.Entry, want)
+	}
+	if back := session.EntryFromProto(m.Entry); back != in {
+		t.Fatalf("session.EntryFromProto gave %+v, want %+v", back, in)
+	}
 	dst.HostActivity(m.Entry)
 	if got := rec.entries(); len(got) != 1 || got[0] != in {
 		t.Fatalf("round trip gave %+v, want %+v", got, in)
@@ -422,6 +431,135 @@ func TestActivityMessagesFitTheHostMessageLimit(t *testing.T) {
 		}
 		if extra := len(b) - len(entry); extra > 100 {
 			t.Fatalf("%s: the envelope adds %d bytes, more than the headroom it is given", name, extra)
+		}
+	}
+}
+
+// Whatever the API sends on to a host goes down the one connection that also
+// carries the input of every viewer, and closes it when its queue is full. So
+// the server spends a token of the session's bucket, the same size as a
+// session's own log bucket, on each report it forwards.
+func TestForwardActivityIsLimitedPerSession(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	accepted := 0
+	var refused error
+	for i := 0; i < 3*session.EventBurst; i++ {
+		if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"}); err != nil {
+			refused = err
+			break
+		}
+		accepted++
+	}
+	if !errors.Is(refused, ErrRateLimited) {
+		t.Fatalf("after %d events: %v, want ErrRateLimited", accepted, refused)
+	}
+	// A burst at once, plus what the bucket earned while the loop ran (a second's
+	// worth of allowance for a slow machine; twice the burst would mean a bucket
+	// of the wrong size).
+	if accepted < session.EventBurst || accepted > session.EventBurst+session.EventRatePerSecond {
+		t.Fatalf("accepted %d events, want the burst of %d", accepted, session.EventBurst)
+	}
+	if queued := len(conn.Send); queued != accepted {
+		t.Fatalf("%d messages queued for the host, %d accepted: a refused event must queue nothing", queued, accepted)
+	}
+}
+
+// Events and attention words share one budget, whichever route they came by.
+func TestEventsAndAttentionForwardsShareOneBucket(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	events, words := 0, 0
+	for i := 0; i < 3*session.EventBurst; i++ {
+		var err error
+		if i%2 == 0 {
+			if err = hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "n"}); err == nil {
+				events++
+			}
+		} else {
+			if err = hs.SetAttentionFull(session.AttentionWorking, fmt.Sprint("n", i), session.SourceAPI, "", nil, true); err == nil {
+				words++
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, ErrRateLimited) {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if total := events + words; total < session.EventBurst || total > session.EventBurst+session.EventRatePerSecond {
+		t.Fatalf("%d events and %d attention words were forwarded, want %d in all", events, words, session.EventBurst)
+	}
+	if events < session.EventBurst/3 || words < session.EventBurst/3 {
+		t.Fatalf("one kind used the budget alone: %d events, %d attention words", events, words)
+	}
+	if queued := len(conn.Send); queued != events+words {
+		t.Fatalf("%d messages queued, %d forwarded", queued, events+words)
+	}
+}
+
+// A refused attention word is refused whole: the server does not keep what it
+// could not pass on.
+func TestSetAttentionFullChangesNothingWhenItIsLimited(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var changes int
+	hub.OnChange = func(session.Info) { changes++ }
+	hs, conn := register(t, hub)
+	before := changes
+	last := -1
+	for i := 0; i < 3*session.EventBurst; i++ {
+		err := hs.SetAttentionFull(session.AttentionNeedsInput, fmt.Sprint("n", i), session.SourceAPI, "", nil, true)
+		if errors.Is(err, ErrRateLimited) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = i
+	}
+	if last < session.EventBurst-1 || last >= 3*session.EventBurst-1 {
+		t.Fatalf("limited after %d words, want about %d", last+1, session.EventBurst)
+	}
+	if got, want := hs.Info().Attention.Message, fmt.Sprint("n", last); got != want {
+		t.Fatalf("attention %q after a refused word, want %q", got, want)
+	}
+	if changes-before != last+1 || len(conn.Send) != last+1 {
+		t.Fatalf("%d changes announced and %d messages queued for %d accepted words", changes-before, len(conn.Send), last+1)
+	}
+}
+
+// Only what is sent on to the host is limited. The host's own reports come
+// the other way and are not, and neither is a session with no host to protect.
+func TestOnlyForwardsToAConnectedHostAreLimited(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	for i := 0; i < 5*session.EventBurst; i++ {
+		if err := hs.SetAttentionFull(session.AttentionWorking, fmt.Sprint("n", i), "bell", "", nil, false); err != nil {
+			t.Fatalf("the host's own report %d was limited: %v", i, err)
+		}
+	}
+	if len(conn.Send) != 0 {
+		t.Fatalf("%d messages went back to the host that sent them", len(conn.Send))
+	}
+
+	hs.HostDisconnected(conn)
+	for i := 0; i < 5*session.EventBurst; i++ {
+		if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); !errors.Is(err, ErrHostGone) {
+			t.Fatalf("event %d for a session without a host: %v", i, err)
+		}
+		if err := hs.SetAttentionFull(session.AttentionNeedsInput, "n", session.SourceAPI, "", nil, true); err != nil {
+			t.Fatalf("attention word %d for a session without a host: %v", i, err)
+		}
+	}
+
+	// Nothing above spent a token: the host comes back to a full bucket.
+	conn2 := NewHostConn()
+	if _, resumed, err := hub.Register(proto.Register{Proto: 1, Session: proto.HostSession{Command: []string{"bash"}, Cols: 10, Rows: 10},
+		Resume: &proto.HostResume{SessionID: hs.Info().ID, Secret: hs.Secret()}}, conn2); err != nil || !resumed {
+		t.Fatalf("resume: %v %v", err, resumed)
+	}
+	for i := 0; i < session.EventBurst; i++ {
+		if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); err != nil {
+			t.Fatalf("event %d after the host came back: %v", i, err)
 		}
 	}
 }

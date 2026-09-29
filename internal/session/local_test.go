@@ -703,7 +703,7 @@ func TestRecordDropsAreNotStoredBroadcastOrReported(t *testing.T) {
 	// receives frames in the order they were queued, so a dropped entry that
 	// had been broadcast would already be in front of the sentinel.
 	s.mu.Lock()
-	s.events = eventBucket{}
+	s.events = EventBucket{}
 	s.mu.Unlock()
 	if !s.Record(ActivityEntry{Type: ActivityProgress, Message: "sentinel"}) {
 		t.Fatal("a fresh bucket refused an entry")
@@ -743,7 +743,7 @@ func TestRecordDropsAreNotStoredBroadcastOrReported(t *testing.T) {
 // slowly it runs.
 func drainBucket(s *Local) {
 	s.mu.Lock()
-	s.events = eventBucket{last: time.Now().Add(time.Hour)}
+	s.events = EventBucket{last: time.Now().Add(time.Hour)}
 	s.mu.Unlock()
 }
 

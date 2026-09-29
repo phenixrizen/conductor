@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +121,8 @@ func TestCleanEntryFitsOneControlFrame(t *testing.T) {
 		Tool:    strings.Repeat("&", 300),
 	}
 	e := CleanEntry(worst)
-	frame := proto.MustControl(activityMessage(e))
+	e.At = longestStamp // stamped, as the ring stamps what it stores
+	frame := proto.MustControl(EntryToProto(e))
 	if _, err := proto.Decode(frame); err != nil {
 		t.Fatalf("cleaned entry does not fit a control frame: %v (%d bytes)", err, len(frame))
 	}
@@ -141,14 +143,15 @@ func TestCleanEntryFitsOneControlFrame(t *testing.T) {
 // An entry is cleaned before the ring stamps it, and a stamp adds up to ten
 // bytes to the message: a URL that fits only without one must not survive.
 func TestCleanEntryLeavesRoomForTheTimestamp(t *testing.T) {
-	unstamped, err := json.Marshal(activityMessage(ActivityEntry{Type: ActivityArtifact}))
+	// Measured with the shortest stamp there is: no fraction of a second.
+	shortest, err := json.Marshal(EntryToProto(ActivityEntry{Type: ActivityArtifact, At: time.Date(2026, 9, 29, 17, 14, 20, 0, time.UTC)}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	room := proto.MaxControl - len(unstamped) - len(`,"url":""`)
+	room := proto.MaxControl - len(shortest) - len(`,"url":""`)
 	e := CleanEntry(ActivityEntry{Type: ActivityArtifact, URL: strings.Repeat("&", room/6)}) // 6 bytes each once escaped
 	e.At = time.Date(2026, 9, 29, 17, 14, 20, 999999999, time.UTC)                           // the longest RFC 3339 stamp
-	b, err := json.Marshal(activityMessage(e))
+	b, err := json.Marshal(EntryToProto(e))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,11 +172,11 @@ func TestActivityRingCleansEntries(t *testing.T) {
 }
 
 func TestEventBucketRefillsAtTheConfiguredRate(t *testing.T) {
-	var b eventBucket
+	var b EventBucket
 	start := time.Now()
 	took := func(at time.Time, attempts int) (n int) {
 		for range attempts {
-			if b.take(at) {
+			if b.Take(at) {
 				n++
 			}
 		}
@@ -198,5 +201,83 @@ func TestEventBucketRefillsAtTheConfiguredRate(t *testing.T) {
 	}
 	if got := took(start.Add(time.Hour+time.Second), 100); got != EventRatePerSecond {
 		t.Fatalf("one second after the last call refills %d, took %d", EventRatePerSecond, got)
+	}
+}
+
+// The zero bucket is full, so an owner needs no constructor: a HostedSession
+// holds one as a field, under its own lock.
+func TestEventBucketStartsFull(t *testing.T) {
+	var b EventBucket
+	now := time.Now()
+	for i := 0; i < EventBurst; i++ {
+		if !b.Take(now) {
+			t.Fatalf("token %d of %d refused by a bucket nobody has touched", i+1, EventBurst)
+		}
+	}
+	if b.Take(now) {
+		t.Fatalf("token %d granted", EventBurst+1)
+	}
+}
+
+// Server and host exchange entries as `activity` messages, and a viewer gets
+// the same message from the session: one pair of functions makes it, so a
+// field added to an entry cannot be sent one way and lost the other.
+func TestEntryProtoCarriesEveryField(t *testing.T) {
+	var e ActivityEntry
+	v := reflect.ValueOf(&e).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f, name := v.Field(i), v.Type().Field(i).Name
+		switch {
+		case f.Kind() == reflect.String:
+			f.SetString("value of " + name)
+		case f.Type() == reflect.TypeOf(time.Time{}):
+			f.Set(reflect.ValueOf(time.Date(2026, 9, 29, 12, 0, 0, 5, time.UTC)))
+		default:
+			t.Fatalf("ActivityEntry.%s is a %s: teach EntryToProto and EntryFromProto, and this test, about it", name, f.Type())
+		}
+	}
+	msg := EntryToProto(e)
+	if got := EntryFromProto(msg); got != e {
+		t.Fatalf("entry -> message -> entry\n got %+v\nwant %+v", got, e)
+	}
+	if msg.T != proto.CtlActivity {
+		t.Fatalf("message discriminator %q", msg.T)
+	}
+	// And the other way: no field of the message is left behind either.
+	var m proto.Activity
+	mv := reflect.ValueOf(&m).Elem()
+	for i := 0; i < mv.NumField(); i++ {
+		f, name := mv.Field(i), mv.Type().Field(i).Name
+		if f.Kind() != reflect.String {
+			t.Fatalf("proto.Activity.%s is a %s: teach this test about it", name, f.Type())
+		}
+		f.SetString("value of " + name)
+	}
+	m.T, m.At = proto.CtlActivity, "2026-09-29T12:00:00.000000005Z"
+	if got := EntryToProto(EntryFromProto(m)); got != m {
+		t.Fatalf("message -> entry -> message\n got %+v\nwant %+v", got, m)
+	}
+}
+
+func TestEntryToProtoLeavesOutAMissingTime(t *testing.T) {
+	msg := EntryToProto(ActivityEntry{Type: ActivityProgress, Message: "1/7"})
+	if msg.At != "" {
+		t.Fatalf("an entry without a time was sent at %q", msg.At)
+	}
+	stamped := EntryToProto(ActivityEntry{Type: ActivityProgress, At: time.Date(2026, 9, 29, 14, 0, 0, 0, time.FixedZone("CDT", -5*3600))})
+	if stamped.At != "2026-09-29T19:00:00Z" {
+		t.Fatalf("time %q: want UTC", stamped.At)
+	}
+}
+
+func TestEntryFromProtoLeavesAnUnreadableTimeZero(t *testing.T) {
+	for _, at := range []string{"", "yesterday", "2026-09-29", "0000-00-00T00:00:00Z", "0001-01-01T00:00:00Z"} {
+		if e := EntryFromProto(proto.Activity{Type: ActivityProgress, At: at}); !e.At.IsZero() {
+			t.Errorf("at %q was read as %v", at, e.At)
+		}
+	}
+	want := time.Date(2026, 9, 29, 12, 0, 0, 123456789, time.UTC)
+	if e := EntryFromProto(proto.Activity{Type: ActivityProgress, At: "2026-09-29T07:00:00.123456789-05:00"}); !e.At.Equal(want) || e.At.Location() != time.UTC {
+		t.Fatalf("at read as %v, want %v in UTC", e.At, want)
 	}
 }

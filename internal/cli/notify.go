@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/phenixrizen/conductor/internal/notify"
 )
@@ -36,8 +37,22 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		}
 		return 2, err
 	}
-	if *event != "" && (*claudeHook || *codex) {
-		return 2, errors.New("--event cannot be combined with --claude-hook or --codex")
+	if *event != "" {
+		// --state has a default, so only Visit can tell that it was given.
+		stateGiven := false
+		fs.Visit(func(f *flag.Flag) { stateGiven = stateGiven || f.Name == "state" })
+		var with []string
+		for _, c := range []struct {
+			flag string
+			set  bool
+		}{{"--state", stateGiven}, {"--claude-hook", *claudeHook}, {"--codex", *codex}} {
+			if c.set {
+				with = append(with, c.flag)
+			}
+		}
+		if len(with) > 0 {
+			return 2, fmt.Errorf("--event cannot be combined with %s", strings.Join(with, " or "))
+		}
 	}
 	url, token, err := notify.FromEnv(os.Getenv)
 	if err != nil {

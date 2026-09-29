@@ -97,6 +97,33 @@ func TestNotifyEventRefusesHookFlags(t *testing.T) {
 	}
 }
 
+// --state has a default, so an explicit one is the only way to know the
+// caller meant it; giving both says two different things and one would be
+// dropped without a word.
+func TestNotifyEventRefusesAnExplicitState(t *testing.T) {
+	ns := startNotifyServer(t)
+	for _, args := range [][]string{
+		{"--event", "progress", "--state", "done"},
+		{"--state", "needs_input", "--event", "progress"}, // the default, said out loud, still counts
+		{"--event", "progress", "--message", "m", "--state=clear"},
+	} {
+		code, _, err := runNotifyWith(t, "", args...)
+		if code != 2 || err == nil || !strings.Contains(err.Error(), "--event") || !strings.Contains(err.Error(), "--state") {
+			t.Fatalf("%v: exit %d, err %v", args, code, err)
+		}
+	}
+	if ns.calls != 0 {
+		t.Fatalf("%d requests were sent", ns.calls)
+	}
+	// The default alone is not a conflict.
+	if code, stderr, err := runNotifyWith(t, "", "--event", "progress"); code != 0 || err != nil {
+		t.Fatalf("--event alone: exit %d %v %q", code, err, stderr)
+	}
+	if ns.calls != 1 {
+		t.Fatalf("%d requests were sent, want 1", ns.calls)
+	}
+}
+
 // Outside a session the command stays a silent no-op, --event or not.
 func TestNotifyEventOutsideASessionIsSilent(t *testing.T) {
 	t.Setenv("CONDUCTOR_NOTIFY_URL", "")

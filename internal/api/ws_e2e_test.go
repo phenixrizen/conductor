@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -404,11 +405,16 @@ func TestViewerRosterCarriesNamesAndLinkLabels(t *testing.T) {
 // fakeHost is a `conductor host` reduced to its control connection: it
 // registers a session and then sends and reads the JSON messages by hand, so
 // a test decides exactly what the server hears and checks exactly what it
-// says back.
+// says back. A goroutine reads the connection for as long as the test runs, so
+// a test can wait for a while for nothing more to come without giving up the
+// connection (a read that times out closes it).
 type fakeHost struct {
 	t         *testing.T
 	c         *websocket.Conn
 	sessionID string
+	msgs      chan map[string]any // the server's text messages, in order
+	done      chan struct{}       // closed when the connection has ended
+	err       error               // why, once done is closed
 }
 
 func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
@@ -422,7 +428,8 @@ func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
 	}
 	c.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
 	t.Cleanup(func() { c.CloseNow() })
-	h := &fakeHost{t: t, c: c}
+	h := &fakeHost{t: t, c: c, msgs: make(chan map[string]any, 4096), done: make(chan struct{})}
+	go h.pump()
 	h.send(proto.Register{
 		T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
 		Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, AgentToken: agentToken},
@@ -432,6 +439,31 @@ func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
 		t.Fatal("the server registered no session")
 	}
 	return h
+}
+
+// pump moves the server's text messages to msgs until the connection ends.
+func (h *fakeHost) pump() {
+	defer close(h.done)
+	for {
+		typ, data, err := h.c.Read(h.t.Context())
+		if err != nil {
+			h.err = err
+			return
+		}
+		if typ != websocket.MessageText {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err != nil {
+			h.err = fmt.Errorf("unreadable message %q: %w", data, err)
+			return
+		}
+		select {
+		case h.msgs <- m:
+		case <-h.t.Context().Done():
+			return
+		}
+	}
 }
 
 func (h *fakeHost) send(v any) {
@@ -447,27 +479,59 @@ func (h *fakeHost) send(v any) {
 	}
 }
 
-// expect reads messages from the server until one with the given t arrives.
+// expect returns the next message from the server with the given t, skipping
+// the others.
 func (h *fakeHost) expect(t string) map[string]any {
 	h.t.Helper()
+	timeout := time.After(5 * time.Second)
 	for {
-		ctx, cancel := context.WithTimeout(h.t.Context(), 5*time.Second)
-		typ, data, err := h.c.Read(ctx)
-		cancel()
-		if err != nil {
-			h.t.Fatalf("host waiting for %s: %v", t, err)
-		}
-		if typ != websocket.MessageText {
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal(data, &m); err != nil {
-			h.t.Fatalf("host read %q: %v", data, err)
-		}
-		if m["t"] == t {
-			return m
+		select {
+		case m := <-h.msgs:
+			if m["t"] == t {
+				return m
+			}
+		case <-h.done:
+			// Whatever arrived before the end is still queued.
+			for {
+				select {
+				case m := <-h.msgs:
+					if m["t"] == t {
+						return m
+					}
+				default:
+					h.t.Fatalf("host waiting for %s: the connection ended: %v", t, h.err)
+				}
+			}
+		case <-timeout:
+			h.t.Fatalf("host waiting for %s: nothing came", t)
 		}
 	}
+}
+
+// drain returns what the server sends until it has been quiet for idle.
+func (h *fakeHost) drain(idle time.Duration) []map[string]any {
+	var got []map[string]any
+	for {
+		select {
+		case m := <-h.msgs:
+			got = append(got, m)
+		case <-h.done:
+			return got
+		case <-time.After(idle):
+			return got
+		}
+	}
+}
+
+// ofType keeps the messages with the given t.
+func ofType(msgs []map[string]any, t string) []map[string]any {
+	var out []map[string]any
+	for _, m := range msgs {
+		if m["t"] == t {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func hostActivity(typ string, mutate func(*proto.Activity)) proto.HostActivityMsg {
@@ -547,15 +611,13 @@ func TestHostActivityThatIsNotAnEntryClosesTheConnection(t *testing.T) {
 	e := newTestEnv(t, nil)
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	host.send(map[string]any{"t": proto.HostActivity, "entry": "not an entry"})
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	for {
-		if _, _, err := host.c.Read(ctx); err != nil {
-			if websocket.CloseStatus(err) != proto.CloseProtocolError {
-				t.Fatalf("closed with %v, want %d", err, proto.CloseProtocolError)
-			}
-			return
+	select {
+	case <-host.done:
+		if websocket.CloseStatus(host.err) != proto.CloseProtocolError {
+			t.Fatalf("closed with %v, want %d", host.err, proto.CloseProtocolError)
 		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection stayed open")
 	}
 }
 
@@ -655,5 +717,124 @@ func TestEventsRouteTellsWhenTheHostIsAway(t *testing.T) {
 	}
 	if d.Info().Attention.State != session.AttentionNeedsInput {
 		t.Fatalf("attention %+v", d.Info().Attention)
+	}
+}
+
+// Every event the route accepts for a hosted session is a message down the
+// one connection that also carries the input of the session's viewers, and a
+// full queue closes it. So the server keeps a bucket for the session, the size
+// of a server session's own, and refuses the rest with a 429 instead of
+// forwarding it.
+func TestEventsRouteLimitsWhatItForwardsToAHost(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	path := "/api/sessions/" + host.sessionID + "/events"
+
+	accepted := 0
+	var refused map[string]any
+	for i := 0; i < 5*session.EventBurst; i++ {
+		resp, out := e.do("POST", path, "hosted-agent-token", map[string]any{"type": "tool_use", "tool": "Bash"})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			refused = out
+			break
+		}
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("event %d: %d %v", i, resp.StatusCode, out)
+		}
+		accepted++
+	}
+	if errorCode(refused) != "rate_limited" {
+		t.Fatalf("%d events in a row were never refused as rate_limited: %v", accepted, refused)
+	}
+	// A burst at once, plus what the bucket earned while the requests were made.
+	if accepted < session.EventBurst || accepted > session.EventBurst+session.EventRatePerSecond {
+		t.Fatalf("accepted %d events before the first 429, want about %d", accepted, session.EventBurst)
+	}
+
+	// The host got what was accepted and nothing else: a refused event is
+	// not forwarded.
+	got := ofType(host.drain(300*time.Millisecond), proto.HostActivity)
+	if len(got) != accepted {
+		t.Fatalf("the host was sent %d activity messages for %d accepted events", len(got), accepted)
+	}
+}
+
+// The attention route, and the attention words of the events route, are more
+// ways to the same connection and get the same treatment. A word the server
+// refuses changes nothing on the server either.
+func TestAttentionWordsAreLimitedOnBothRoutesForAHostedSession(t *testing.T) {
+	routes := []struct {
+		name, suffix, field string
+		ok                  int
+	}{
+		{"attention route", "/attention", "state", http.StatusOK},
+		{"events route", "/events", "type", http.StatusAccepted},
+	}
+	for _, r := range routes {
+		t.Run(r.name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			host := dialFakeHost(t, e, "hosted-agent-token")
+			d, _ := e.srv.registry.Get(host.sessionID)
+			path := "/api/sessions/" + host.sessionID + r.suffix
+			states := []string{"working", "done"}
+
+			accepted := 0
+			var refused map[string]any
+			for i := 0; i < 5*session.EventBurst; i++ {
+				resp, out := e.do("POST", path, "hosted-agent-token", map[string]any{r.field: states[i%2], "message": fmt.Sprint("n", i)})
+				if resp.StatusCode == http.StatusTooManyRequests {
+					refused = out
+					break
+				}
+				if resp.StatusCode != r.ok {
+					t.Fatalf("word %d: %d %v", i, resp.StatusCode, out)
+				}
+				accepted++
+			}
+			if errorCode(refused) != "rate_limited" {
+				t.Fatalf("%d attention words in a row were never refused as rate_limited: %v", accepted, refused)
+			}
+			if accepted < session.EventBurst || accepted > session.EventBurst+session.EventRatePerSecond {
+				t.Fatalf("accepted %d attention words before the first 429, want about %d", accepted, session.EventBurst)
+			}
+			if att := d.Info().Attention; att.Message != fmt.Sprint("n", accepted-1) {
+				t.Fatalf("attention %+v: the refused word must not be applied", att)
+			}
+			if got := ofType(host.drain(300*time.Millisecond), proto.HostAttention); len(got) != accepted {
+				t.Fatalf("the host was told %d times for %d accepted words", len(got), accepted)
+			}
+		})
+	}
+}
+
+// One budget for a hosted session, whichever route an agent uses: a hook that
+// alternates between the two cannot double it.
+func TestEventsAndAttentionRoutesShareAHostedSessionsBudget(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	events := "/api/sessions/" + host.sessionID + "/events"
+	attention := "/api/sessions/" + host.sessionID + "/attention"
+
+	for i := 0; i < session.EventBurst; i++ {
+		if resp, out := e.do("POST", events, "hosted-agent-token", map[string]any{"type": "progress", "message": fmt.Sprint("n", i)}); resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("event %d: %d %v", i, resp.StatusCode, out)
+		}
+	}
+	// The burst is spent. Separate budgets would allow another burst of words.
+	words := 0
+	var refused map[string]any
+	for i := 0; i < 3*session.EventBurst; i++ {
+		resp, out := e.do("POST", attention, "hosted-agent-token", map[string]any{"state": "working", "message": fmt.Sprint("w", i)})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			refused = out
+			break
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("word %d: %d %v", i, resp.StatusCode, out)
+		}
+		words++
+	}
+	if errorCode(refused) != "rate_limited" || words > session.EventBurst/2 {
+		t.Fatalf("%d attention words followed a spent burst of events, refusal %v", words, refused)
 	}
 }

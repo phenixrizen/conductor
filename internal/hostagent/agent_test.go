@@ -414,3 +414,40 @@ func TestHostActivityTravelsBothWaysThroughTheServer(t *testing.T) {
 		t.Fatal("host did not exit after stop")
 	}
 }
+
+// SIGINT and SIGTERM cancel Run's context. The host stops the process and
+// leaves: it has no connection left to say anything on, so it waits for
+// nothing.
+func TestHostExitsPromptlyWhenCancelled(t *testing.T) {
+	_, hs := startServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registered := make(chan string, 1)
+	done := make(chan Result, 1)
+	go func() {
+		res, err := Run(ctx, Options{
+			ServerURL: hs.URL, Token: hostToken, Name: "cancel test", Argv: []string{"/bin/cat"}, RelayOnly: true,
+			Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Registered: func(id, _ string) { registered <- id },
+		})
+		if err != nil {
+			t.Errorf("run: %v", err)
+		}
+		done <- res
+	}()
+	select {
+	case <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("host did not register")
+	}
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("host did not exit after cancel")
+	}
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Fatalf("Run took %v to return after its context was cancelled", took)
+	}
+}

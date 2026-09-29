@@ -118,7 +118,9 @@ closing the connection, cuts every field to the limits of Events (a `by` over
 readable `at`, and never sends the entry back. Server to host, it carries an
 event that an agent reported through `POST /api/sessions/{id}/events` for the
 hosted session: the server has no activity log for it, so the host records it
-(its own event limit applies) and reports it back like any other entry. Both
+(its own event limit applies) and reports it back like any other entry. The
+server sends at most 20 of these a second, 40 at once, together with the
+`attention` messages it forwards (see Events). Both
 directions are text frames under the host-message limit (64 KiB): `entry`
 is bounded so that it fits one 8 KiB CONTROL frame, and the envelope adds
 under 100 bytes. A peer that does not know `activity` ignores it, so a hosted
@@ -165,7 +167,10 @@ Explicit updates: `POST /api/sessions/{id}/attention` with
 `Authorization: Bearer <agent token>` (or the admin token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored
-hashed and only ever authorizes this one route for this one session.
+hashed and only ever authorizes this one route for this one session. For a
+hosted session the state is also sent on to the host, and that counts against
+the same bucket as the events of that session (see Events): with none left the
+answer is `429 rate_limited` and the state does not change.
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
@@ -230,15 +235,29 @@ may make them. The reply is `202 {"accepted": true}`, and the entry has
 `byName` `agent`. Errors: `400 invalid_type`, `400 invalid_request` (a body
 that is not one JSON object of known fields, and for the attention words the
 checks of `/attention`), `400 invalid_kind`, `401 unauthorized`, `404
-not_found`, `409 session_ended`, and `429 rate_limited` when a server
-session's bucket is empty. A hosted session has no log on the server and no
-bucket of its own: the server sends the entry to the host (see Host control
-connection) and answers `202` once it is on its way. It cannot know whether
-the host's own limit takes the entry, so an entry the host drops is dropped
-without a word to the caller; `409 host_disconnected` says that no host is
-connected. `conductor notify --event <type> [--message M] [--url U] [--to T]
-[--tool N]` sends an event from inside a session: it turns the
-`CONDUCTOR_NOTIFY_URL` of the session (`…/attention`) into `…/events`.
+not_found`, `409 session_ended` and `429 rate_limited`, which has two sources.
+One is the session's bucket, when it has no token left (below). The other is the
+per-client limiter that the API's credential checks share: a client refused with
+`401` or `404` 20 times in quick succession (and 5 times a second after that) is
+answered `429` in place of the next refusal.
+
+A server session spends a token of its bucket on each event it records. A
+hosted session keeps no log on the server, but the server holds a bucket for
+it, of the same size (20 a second, 40 at once), and spends a token on every
+event and every attention word it sends on to the host, by this route or by
+`/attention`: the host's connection also carries its viewers' input, and closes
+when its queue is full, so a flood of reports must not reach it. With no token
+the answer is `429 rate_limited` and nothing is sent or changed. Only a report
+that goes to a connected host spends one, and the host's own reports do not.
+Otherwise the server sends the entry to the host (see Host control connection)
+and answers `202` once it is on its way. It cannot know whether the host's own
+bucket takes the entry, so an entry the host drops is dropped without a word to
+the caller; `409 host_disconnected` says that no host is connected.
+
+`conductor notify --event <type> [--message M] [--url U] [--to T] [--tool N]`
+sends an event from inside a session: it turns the `CONDUCTOR_NOTIFY_URL` of
+the session (`…/attention`) into `…/events`. `--event` cannot be combined with
+`--state`, `--claude-hook` or `--codex`.
 
 Streaming: every entry a session records, whether an agent reported it or the
 session made it, reaches admins as an `activity` event on `GET /api/events`,

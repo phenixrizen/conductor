@@ -60,8 +60,11 @@ const (
 )
 
 // A session records EventRatePerSecond entries a second on average and
-// EventBurst at once (a token bucket), so a chatty hook cannot flood its log.
-// Entries the session and the server produce themselves are exempt (bucketed).
+// EventBurst at once (a token bucket, EventBucket), so a chatty hook cannot
+// flood its log. The server spends the same allowance, from a bucket of its
+// own, on the reports it forwards to a hosted session's host, so a flood of
+// them cannot fill the host's connection either. Entries the session and the
+// server produce themselves are exempt (see bucketed).
 const (
 	EventRatePerSecond = 20
 	EventBurst         = 40
@@ -156,21 +159,45 @@ var longestStamp = time.Date(2006, 1, 2, 15, 4, 5, 999999999, time.UTC)
 // stamped.
 func fitsControlFrame(e ActivityEntry) bool {
 	e.At = longestStamp
-	b, err := json.Marshal(activityMessage(e))
+	b, err := json.Marshal(EntryToProto(e))
 	return err == nil && len(b) <= proto.MaxControl
 }
 
-// eventBucket is a token bucket: it holds up to EventBurst tokens, earns
+// EntryToProto encodes e as the `activity` message of docs/protocol.md, with
+// the time as RFC 3339 in UTC. It is what a viewer is sent for an entry, and
+// the entry of the host `activity` message in both directions, so it is the
+// one place that lists an entry's fields. An entry without a time is encoded
+// without one, for the receiver to stamp.
+func EntryToProto(e ActivityEntry) proto.Activity {
+	a := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
+	if !e.At.IsZero() {
+		a.At = e.At.UTC().Format(time.RFC3339Nano)
+	}
+	return a
+}
+
+// EntryFromProto decodes an `activity` message received from outside the
+// session, a host or the server. Nothing is checked or cleaned (see
+// ValidEventType and CleanEntry), and a time that cannot be read leaves At
+// zero.
+func EntryFromProto(a proto.Activity) ActivityEntry {
+	at, _ := time.Parse(time.RFC3339Nano, a.At)
+	return ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+}
+
+// EventBucket is a token bucket: it holds up to EventBurst tokens, earns
 // EventRatePerSecond a second and spends one per entry. The zero value is
-// full. It is not safe for concurrent use; Local guards it with its lock.
-type eventBucket struct {
+// full, so an owner needs no constructor. It is not safe for concurrent use:
+// its owner guards it with its own lock (a Local with its session lock, a
+// signal.HostedSession with its mutex).
+type EventBucket struct {
 	tokens float64
 	last   time.Time
 }
 
-// take spends a token, first adding those earned since the last call. It
+// Take spends a token, first adding those earned since the last call. It
 // reports false when none is left. A clock that steps back earns nothing.
-func (b *eventBucket) take(now time.Time) bool {
+func (b *EventBucket) Take(now time.Time) bool {
 	switch {
 	case b.last.IsZero():
 		b.tokens, b.last = EventBurst, now

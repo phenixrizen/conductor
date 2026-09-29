@@ -205,6 +205,9 @@ func TestHostForwardsWhatTheLocalSessionRecords(t *testing.T) {
 		t.Fatalf("message %+v", m)
 	}
 	e := m.Entry
+	if want := session.EntryToProto(a.local.Activity()[0]); e != want {
+		t.Fatalf("entry %+v is not the shared conversion's %+v", e, want)
+	}
 	if e.T != proto.CtlActivity || e.Type != session.ActivityToolDenied || e.By != "b1" || e.ByName != "Ada" || e.Message != "no" || e.URL != "https://x/1" || e.To != "them" || e.Tool != "Bash" {
 		t.Fatalf("entry %+v", e)
 	}
@@ -292,7 +295,7 @@ func TestSettleWaitsForTheFinalStatusEntry(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the session did not end")
 	}
-	a.settle()
+	a.settle(t.Context())
 	for {
 		select {
 		case v := <-out:
@@ -305,5 +308,26 @@ func TestSettleWaitsForTheFinalStatusEntry(t *testing.T) {
 		default:
 			t.Fatal("settle returned before the final status entry was sent")
 		}
+	}
+}
+
+// When the host is stopped with SIGINT or SIGTERM the control connection goes
+// first and the forwarder with it, so the final status message and entry have
+// nowhere to go. settle must not wait for them: each of its two waits runs to
+// a 2 s deadline otherwise, and the host takes 4 s to exit.
+func TestSettleDoesNotWaitOnceCancelled(t *testing.T) {
+	a, _ := activityTestAgent(t, 0)
+	release := make(chan struct{})
+	a.sendHook = func(any) { <-release }
+	defer close(release)
+	a.activity.push(entryMessage("stuck")) // the forwarder takes it and stalls in send: never idle
+	// a.flushed is nil, as it is when watchStatus returned on the cancel.
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	a.settle(ctx)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("settle took %v after the host was cancelled", took)
 	}
 }

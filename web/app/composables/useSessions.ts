@@ -135,7 +135,12 @@ export function useSessions() {
     join: (token: string) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token }),
     setAttention: (id: string, state: 'needs_input' | 'working' | 'done' | 'clear', message?: string) =>
       request<{ attention: Attention }>(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: 'POST', body: { state, message } }),
-    /** Reports an event for a session. 202 means recorded, or on its way to the host of a hosted session; 429 `rate_limited` means the session's event limit was reached; 409 `host_disconnected` means a hosted session has no host connected. */
+    /**
+     * Reports an event for a session. 202 means recorded, or on its way to the host of a hosted session (the host's own limit may still drop it).
+     * 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, is used up (its own log for a server session; for a hosted
+     * session what the server sends on to the host, attention words included), or that this client has been refused too often.
+     * 409 `host_disconnected` means a hosted session has no host connected.
+     */
     sendEvent: (id: string, body: EventInput) =>
       request<{ accepted: boolean }>(`/api/sessions/${encodeURIComponent(id)}/events`, { method: 'POST', body }),
   }

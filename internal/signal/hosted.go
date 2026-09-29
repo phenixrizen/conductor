@@ -23,6 +23,7 @@ var (
 	ErrViewerGone    = errors.New("signal: viewer closed")
 	ErrSlowViewer    = errors.New("signal: slow viewer")
 	ErrSlowHost      = errors.New("signal: slow host")
+	ErrRateLimited   = errors.New("signal: too many reports for this session")
 	ErrTooManyViewer = errors.New("signal: too many viewers")
 )
 
@@ -153,6 +154,11 @@ type HostedSession struct {
 	viewers        map[string]*Viewer
 	disconnectedAt time.Time
 	maxViewers     int
+	// events limits what the server forwards to the host on an agent's behalf
+	// (ForwardActivity, and SetAttentionFull with forward): the host's
+	// connection also carries its viewers' input, and closes when its queue is
+	// full. Guarded by mu.
+	events session.EventBucket
 }
 
 // Info returns the session description.
@@ -211,16 +217,21 @@ func (h *HostedSession) setAgentToken(tok string) {
 	h.hasAgentToken = tok != ""
 }
 
-// SetAttention records an attention change without prompt details.
-func (h *HostedSession) SetAttention(state session.AttentionState, message, source string, forward bool) {
-	h.SetAttentionFull(state, message, source, "", nil, forward)
+// SetAttention records an attention change without prompt details. See
+// SetAttentionFull.
+func (h *HostedSession) SetAttention(state session.AttentionState, message, source string, forward bool) error {
+	return h.SetAttentionFull(state, message, source, "", nil, forward)
 }
 
 // SetAttentionFull records an attention change. When forward is true (API
-// origin) the host is told so its viewers see the change too.
-func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) {
+// origin) the host is told so its viewers see the change too, and the report
+// spends a token of the session's bucket, the one ForwardActivity spends
+// from: it returns ErrRateLimited, having changed nothing, when there is none.
+// Only a report that would be sent to a connected host is limited, and a
+// change from the host (forward false) never is.
+func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
 	if !state.Valid() {
-		return
+		return nil
 	}
 	message = session.CleanMessage(message)
 	if !session.ValidKind(kind) {
@@ -231,18 +242,23 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 		kind, options = "", nil
 	}
 	h.mu.Lock()
+	conn := h.conn
+	if forward && conn != nil && !h.events.Take(time.Now()) {
+		h.mu.Unlock()
+		return ErrRateLimited
+	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != session.AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
 	}
 	h.info.Attention = att
-	conn := h.conn
 	h.mu.Unlock()
 	if forward && conn != nil {
 		conn.sendJSON(hostAttentionMsg("", att))
 	}
 	h.notifyChange()
+	return nil
 }
 
 // hostAttentionMsg encodes an attention change for the host control link.
@@ -417,11 +433,30 @@ const maxEntryBy = 64
 // records the event in its own and reports it back, which reaches
 // HostActivity. e is cleaned again here, which changes nothing for an entry
 // that was cleaned already, so that no caller can push the message past
-// proto.MaxHostMessage, which the host takes as a protocol error. It returns
-// ErrHostGone when no host is connected and ErrSlowHost when the host's queue
-// is full.
+// proto.MaxHostMessage, which the host takes as a protocol error.
+//
+// Each event spends a token of the session's bucket (see SetAttentionFull):
+// the host's connection also carries its viewers' input and closes when its
+// queue is full, and an event can be several KiB. It returns ErrHostGone when
+// no host is connected, before it spends anything, ErrRateLimited when the
+// bucket is empty and ErrSlowHost when the host's queue is full.
 func (h *HostedSession) ForwardActivity(e session.ActivityEntry) error {
-	return h.toHost(hostActivityMsg(session.CleanEntry(e)))
+	msg := hostActivityMsg(session.CleanEntry(e))
+	h.mu.Lock()
+	conn := h.conn
+	if conn == nil {
+		h.mu.Unlock()
+		return ErrHostGone
+	}
+	if !h.events.Take(time.Now()) {
+		h.mu.Unlock()
+		return ErrRateLimited
+	}
+	h.mu.Unlock()
+	if !conn.sendJSON(msg) {
+		return ErrSlowHost
+	}
+	return nil
 }
 
 // HostActivity takes an activity entry the host reports and hands it to the
@@ -434,7 +469,7 @@ func (h *HostedSession) HostActivity(a proto.Activity) {
 	if !session.ValidEventType(a.Type) {
 		return
 	}
-	e := session.CleanEntry(entryFromProto(a))
+	e := session.CleanEntry(session.EntryFromProto(a))
 	if len(e.By) > maxEntryBy {
 		e.By = ""
 	}
@@ -449,21 +484,10 @@ func (h *HostedSession) HostActivity(a proto.Activity) {
 	}
 }
 
-// hostActivityMsg encodes an entry for the host control link. An entry
-// without a time is sent without one, for the host to stamp.
+// hostActivityMsg wraps an entry in the host `activity` message. The server
+// names no session: the connection says which.
 func hostActivityMsg(e session.ActivityEntry) proto.HostActivityMsg {
-	m := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
-	if !e.At.IsZero() {
-		m.At = e.At.UTC().Format(time.RFC3339Nano)
-	}
-	return proto.HostActivityMsg{T: proto.HostActivity, Entry: m}
-}
-
-// entryFromProto decodes an entry from the host control link. A time that
-// cannot be read leaves At zero.
-func entryFromProto(a proto.Activity) session.ActivityEntry {
-	at, _ := time.Parse(time.RFC3339Nano, a.At)
-	return session.ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+	return proto.HostActivityMsg{T: proto.HostActivity, Entry: session.EntryToProto(e)}
 }
 
 // --- messages from the host ---

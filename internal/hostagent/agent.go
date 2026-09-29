@@ -163,8 +163,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		stopCancel()
 	}
 	// Give the control connection a moment to deliver the final status and the
-	// last activity entries.
-	a.settle()
+	// last activity entries, unless it is gone already: ctx is cancelled when
+	// the host is stopped from outside.
+	a.settle(ctx)
 	cancel()
 	a.closeAllPeers()
 	exit := proc.Exit()
@@ -413,19 +414,23 @@ func (a *agent) sendActivity(e session.ActivityEntry) {
 
 // settle gives the control connection a moment to deliver what the session
 // leaves behind when it ends: the final status message, and the activity
-// entries queued for the server, the final status entry among them.
-func (a *agent) settle() {
-	a.flushStatus()
-	a.flushActivity()
+// entries queued for the server, the final status entry among them. It gives
+// up at once when ctx is cancelled. That is how the host is stopped from
+// outside (SIGINT, SIGTERM), and it ends the control connection and the
+// forwarder before the session records its last entry, so there is nothing
+// left to wait for.
+func (a *agent) settle(ctx context.Context) {
+	a.flushStatus(ctx)
+	a.flushActivity(ctx)
 }
 
 // flushActivity gives the entries the local session recorded a moment to
 // reach the server before the connection closes. Once the process has ended
 // that includes the final status entry, which the session records just after
-// it announces the end.
-func (a *agent) flushActivity() {
+// it announces the end. See settle for ctx.
+func (a *agent) flushActivity(ctx context.Context) {
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) && ctx.Err() == nil {
 		if (!a.local.Info().Status.Ended() || a.statusQueued.Load()) && a.activity.idle() {
 			return
 		}
@@ -433,21 +438,10 @@ func (a *agent) flushActivity() {
 	}
 }
 
-// hostActivityMsg encodes an entry for the control connection. An entry
-// without a time is sent without one.
+// hostActivityMsg wraps an entry in the host `activity` message. The host
+// names its session; the server ignores it, and takes the connection's.
 func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivityMsg {
-	m := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
-	if !e.At.IsZero() {
-		m.At = e.At.UTC().Format(time.RFC3339Nano)
-	}
-	return proto.HostActivityMsg{T: proto.HostActivity, SessionID: sessionID, Entry: m}
-}
-
-// entryFromProto decodes an entry from the control connection. A time that
-// cannot be read leaves At zero, for the session to stamp.
-func entryFromProto(a proto.Activity) session.ActivityEntry {
-	at, _ := time.Parse(time.RFC3339Nano, a.At)
-	return session.ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+	return proto.HostActivityMsg{T: proto.HostActivity, SessionID: sessionID, Entry: session.EntryToProto(e)}
 }
 
 // serveConn processes messages on an established control connection until
@@ -511,8 +505,9 @@ func (a *agent) watchStatus(ctx context.Context, c *websocket.Conn) {
 	a.mu.Unlock()
 }
 
-// flushStatus waits briefly for the final status message to be sent.
-func (a *agent) flushStatus() {
+// flushStatus waits briefly for the final status message to be sent. It gives
+// up at once when ctx is cancelled: watchStatus stops then without sending it.
+func (a *agent) flushStatus(ctx context.Context) {
 	deadline := time.After(2 * time.Second)
 	for {
 		a.mu.Lock()
@@ -523,6 +518,8 @@ func (a *agent) flushStatus() {
 		}
 		select {
 		case <-deadline:
+			return
+		case <-ctx.Done():
 			return
 		case <-time.After(50 * time.Millisecond):
 		}
@@ -607,7 +604,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if !session.ValidEventType(m.Entry.Type) {
 			return errors.New("activity of an unknown type")
 		}
-		a.local.Record(entryFromProto(m.Entry))
+		a.local.Record(session.EntryFromProto(m.Entry))
 	case proto.HostStop:
 		a.log.Info("stop requested by server")
 		go func() {

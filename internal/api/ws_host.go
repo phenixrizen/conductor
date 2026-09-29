@@ -192,7 +192,8 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
 		if json.Unmarshal(data, &m) != nil || !session.AttentionState(m.State).Valid() {
 			return false
 		}
-		hs.SetAttentionFull(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), false)
+		// The host's own report is not forwarded, so it is never limited.
+		_ = hs.SetAttentionFull(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), false)
 	case proto.HostActivity:
 		var m proto.HostActivityMsg
 		if json.Unmarshal(data, &m) != nil {

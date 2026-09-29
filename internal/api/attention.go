@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/phenixrizen/conductor/internal/session"
@@ -127,9 +128,19 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 	case *session.Local:
 		drv.SetAttentionFull(state, message, source, kind, options)
 	case *signal.HostedSession:
-		drv.SetAttentionFull(state, message, source, kind, options, true)
+		if err := drv.SetAttentionFull(state, message, source, kind, options, true); err != nil {
+			writeSessionLimited(w)
+			return false
+		}
 	}
 	return true
+}
+
+// writeSessionLimited answers a report the session's bucket has no token for:
+// a server session's own, or the one that protects a hosted session's host.
+// (The per-client limiter answers with the same code, for repeated failures.)
+func writeSessionLimited(w http.ResponseWriter) {
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "too many reports for this session")
 }
 
 // handleAttention lets the agent running in a session (or an admin) report
@@ -209,14 +220,18 @@ func reportEvent(w http.ResponseWriter, d session.Driver, req eventRequest) bool
 	switch drv := d.(type) {
 	case *session.Local:
 		if !drv.Record(entry) {
-			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many events for this session")
+			writeSessionLimited(w)
 			return false
 		}
 	case *signal.HostedSession:
-		// It fails when no host is connected (signal.ErrHostGone) and when the
-		// host's queue is full, which closes its connection
-		// (signal.ErrSlowHost): either way, the host is not connected.
 		if err := drv.ForwardActivity(entry); err != nil {
+			if errors.Is(err, signal.ErrRateLimited) {
+				writeSessionLimited(w)
+				return false
+			}
+			// No host is connected (signal.ErrHostGone), or its queue is full,
+			// which closes its connection (signal.ErrSlowHost): either way,
+			// the host is not connected.
 			writeError(w, http.StatusConflict, "host_disconnected", "the session's host is not connected")
 			return false
 		}
