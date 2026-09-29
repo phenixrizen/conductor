@@ -56,6 +56,68 @@ Each item touches `internal/proto`, `web/app/utils/protocol.ts` and
   reported by the host for hosted ones), host OS user, per-link viewer count,
   client-measured transport round-trip time.
 
+## Round 2: crews, adding agents, events and hooks (planned 2026-09-29)
+
+Source: claude.ai/design project "Conductor Mockups v2" (`Conductor Mockups
+v2.dc.html`, screens 2a Crews, 2b Crew running, 2c Add agent, 2d Events).
+Plans: `docs/superpowers/plans/2026-09-29-data-dir-and-catalog-editing.md`,
+`2026-09-29-events-and-agent-adapters.md`, `2026-09-29-crews.md`, executed in
+that order.
+
+### Decisions
+
+- **Persistence.** A writable data directory (`dataDir`, env
+  `CONDUCTOR_DATA_DIR`, default `conductor.d` next to the config file) holds
+  `catalog.json` (agents added or hidden from the UI), `crews.json`, generated
+  hook assets under `hooks/` and the Conductor skill. The config file stays
+  read-only; the data directory overlays it.
+- **Hook wiring.** Inject at launch wherever the agent's CLI allows it
+  (Claude Code `--settings`, Codex `-c`, pi `--extension`, aider env vars,
+  OpenCode `OPENCODE_CONFIG_DIR`); everything else gets an explicit
+  "Install on this machine" that merges a Conductor block into the agent's own
+  config, plus copyable snippets and `conductor hooks install <agent>` for
+  hosts. Conductor never edits an agent's files without a click or a command.
+- **Events are a superset of attention.** The per-session activity log
+  already broadcasts join, leave, attention, input, link and status entries.
+  Round 2 adds `progress`, `artifact`, `handoff`, `tool_use`, `tool_denied`
+  and `error`, a `POST /api/sessions/{id}/events` route the agent token may
+  call, `conductor notify --event`, and an admin SSE feed of every entry.
+  Attention state (`needs_input`, `working`, `done`) is unchanged and still
+  derived from the same reports.
+- **Supported agents.** Events and one-click install exist only for agents
+  with an adapter (table below). Any other catalog entry still works with
+  bell/OSC, the new screen-pattern detector, or `conductor notify` called by
+  hand. Gemini CLI is not added: it is superseded by Antigravity (`agy`).
+- **Crews** ship in full (2a and 2b): saved crews with named members, role
+  prompts, extra args, per-member git worktrees, start conditions, a crew
+  running view with tiles, feed, broadcast and stop-all, and `conductor up`.
+
+### Agent adapter matrix
+
+| Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping |
+|---|---|---|---|---|---|---|
+| Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — |
+| Codex CLI | `codex` | `notify` (agent-turn-complete) + `tui.notification_method="bel"` | same | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape |
+| Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse`/`PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path |
+| Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options |
+| Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today |
+| OpenCode | `opencode` | plugin `permission.asked`, `session.idle` | `session.idle` | `tool.execute.after`, `session.error` | launch: `OPENCODE_CONFIG_DIR=<hooks/opencode>` if additive, else file: `~/.config/opencode/plugins/conductor.ts` | whether `OPENCODE_CONFIG_DIR` adds to or replaces the default dir |
+| pi | `pi` | `agent_end` | `agent_end` | `tool_call`/`tool_result` | launch: `--extension <hooks/pi-conductor.ts>` | — |
+| oh-my-pi | `omp` | as pi | as pi | as pi | file: `extensions:` entry in `~/.omp/agent/config.yml` | pi extension API compatibility (issue #2166) |
+| aider | `aider` | `--notifications-command` | same | none | launch: `AIDER_NOTIFICATIONS=true`, `AIDER_NOTIFICATIONS_COMMAND` | confirmations (`(Y)es/(N)o`) need the pattern detector |
+| Goose | `goose` | bell / pattern (no waiting event yet) | `Stop` | `PostToolUse` | file: `~/.agents/plugins/conductor/hooks/hooks.json` | — |
+| Amp | `amp` | `agent.end` (in-process plugin) | `agent.end` | `tool.call`/`tool.result` | file: `~/.config/amp/plugins/conductor/` | plugin API surface |
+| DeepSeek Harness | `dsh` (with the TUI plugin) | plugin events `question-asked`, `permission-requested` | `session completed/failed` | none | file: dsh plugin | developer preview; plugin API changes |
+| Shell / anything | any argv | bell / OSC / pattern | exit | none | — | — |
+
+### Open verification (round 2)
+
+- Each "Verify before shipping" cell above is a manual check against the
+  real CLI before that adapter is marked supported on the Events page.
+- The screen-pattern detector strips ANSI sequences and matches the last
+  line after 500 ms of silence; TUIs that redraw continuously (spinners) may
+  never go quiet. Ship it as opt-in per catalog entry.
+
 ## Open verification
 
 - **Claude Code permission keys.** Quick-reply buttons send the digits `1`,
