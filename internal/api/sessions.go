@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
@@ -91,14 +93,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// An agent with a screen pattern gets the detector. The catalog held the
 	// pattern to the same rules when it took the agent in.
+	sig := agent.EffectiveSignal()
 	var pattern *regexp.Regexp
-	if sig := agent.EffectiveSignal(); sig.Kind == "pattern" {
+	if sig.Kind == "pattern" {
 		if pattern, err = catalog.CompilePattern(sig.Pattern); err != nil {
 			writeError(w, http.StatusInternalServerError, "invalid_agent", "the agent's signal pattern is invalid")
 			return
 		}
 	}
-	argv := append(append([]string{}, agent.Command...), req.Args...)
+	// An agent that reports through hooks gets them at launch: its adapter's
+	// flags after the command and the user's arguments, and its adapter's
+	// environment under the agent's own, so a variable the agent sets keeps
+	// its value. The hooks are the assets `conductor serve` wrote at startup.
+	extra, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), sig)
+	argv := append(append(append([]string{}, agent.Command...), req.Args...), extra...)
+	env := agent.Env
+	if len(adapterEnv) > 0 {
+		env = maps.Clone(adapterEnv)
+		maps.Copy(env, agent.Env)
+	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
 	notifyURL := s.cfg.PublicURL + "/api/sessions/" + id + "/attention"
@@ -108,7 +121,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	proc, err := pty.Start(pty.Spec{
 		Argv: argv,
 		Dir:  cwd,
-		Env:  pty.BuildEnv(pty.ParentEnv(), passthrough, agent.Env, pty.Inject(id, notifyURL, agentToken)),
+		Env:  pty.BuildEnv(pty.ParentEnv(), passthrough, env, pty.Inject(id, notifyURL, agentToken)),
 		Cols: cols,
 		Rows: rows,
 	})

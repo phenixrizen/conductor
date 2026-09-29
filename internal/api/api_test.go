@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -657,6 +658,110 @@ func TestSessionUsesTheAgentsSignalPattern(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // the other session has been as quiet as long
 	if att := attention(plainID); att["state"] != nil && att["state"] != "" {
 		t.Fatalf("an agent with no pattern got attention %v", att)
+	}
+}
+
+// launch starts an agent with the given arguments and returns the session.
+func (e *testEnv) launch(agentID string, args []string) map[string]any {
+	e.t.Helper()
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": agentID, "args": args})
+	if resp.StatusCode != http.StatusCreated {
+		e.t.Fatalf("launch %s: %d %v", agentID, resp.StatusCode, out)
+	}
+	id, _ := out["id"].(string)
+	e.t.Cleanup(func() {
+		if d, ok := e.srv.registry.Get(id); ok {
+			_ = d.Stop(e.t.Context())
+		}
+	})
+	return out
+}
+
+// An agent with a hook adapter and the hook signal is launched with the
+// adapter's flags after its command and the user's arguments: Claude Code
+// reads Conductor's hooks from the hooks directory in the data directory, the
+// set with tool events when the signal asks for them. With another signal the
+// same agent gets nothing.
+func TestCreateSessionInjectsTheAdapter(t *testing.T) {
+	e := newTestEnv(t, nil)
+	hooks := filepath.Join(e.srv.cfg.DataDir, "hooks")
+	script := []string{"/bin/sh", "-c", `printf 'ARGS[%s]\n' "$*"; exec /bin/cat`, "sh"}
+	for _, tc := range []struct {
+		id     string
+		signal map[string]any
+		args   []string
+		extra  []string
+	}{
+		{"hooked", map[string]any{"kind": "hook"}, []string{"--resume"}, []string{"--settings", filepath.Join(hooks, "claude.json")}},
+		{"chatty", map[string]any{"kind": "hook", "toolEvents": true}, nil, []string{"--settings", filepath.Join(hooks, "claude-tools.json")}},
+		{"belled", map[string]any{"kind": "bell"}, nil, nil},
+		{"unset", nil, nil, nil},
+	} {
+		body := agentBody(tc.id)
+		body["command"] = script
+		body["allowArgs"] = true
+		body["adapter"] = "claude"
+		if tc.signal != nil {
+			body["signal"] = tc.signal
+		}
+		e.save(body)
+		info := e.launch(tc.id, tc.args)
+		want := append(append(slices.Clone(script), tc.args...), tc.extra...)
+		var got []string
+		for _, a := range info["command"].([]any) {
+			got = append(got, a.(string))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s: command %q, want %q", tc.id, got, want)
+		}
+		c := dialViewer(t, e, info["id"].(string), adminToken)
+		c.hello(80, 24)
+		c.expectOutput("ARGS[" + strings.Join(append(slices.Clone(tc.args), tc.extra...), " ") + "]")
+	}
+}
+
+// The adapter's environment reaches the session, under the agent's own: a
+// variable the agent sets itself keeps its value.
+func TestCreateSessionAdapterEnvYieldsToTheAgent(t *testing.T) {
+	t.Setenv("AIDER_NOTIFICATIONS", "from-the-server")
+	e := newTestEnv(t, nil)
+	_, env := agents.InjectFor("aider", filepath.Join(e.srv.cfg.DataDir, "hooks"), catalog.Signal{Kind: "hook"})
+	command := env["AIDER_NOTIFICATIONS_COMMAND"]
+	if !strings.Contains(command, " notify --state needs_input") {
+		t.Fatalf("aider's command %q", command)
+	}
+	script := []string{"/bin/sh", "-c", `echo "N=[$AIDER_NOTIFICATIONS] C=[$AIDER_NOTIFICATIONS_COMMAND] END"; exec /bin/cat`}
+	for _, tc := range []struct {
+		id   string
+		env  map[string]string
+		want string
+	}{
+		{"aider-plain", nil, "N=[true] C=[" + command + "] END"},
+		{"aider-own", map[string]string{"AIDER_NOTIFICATIONS": "false"}, "N=[false] C=[" + command + "] END"},
+	} {
+		body := agentBody(tc.id)
+		body["command"] = script
+		body["adapter"] = "aider"
+		body["signal"] = map[string]any{"kind": "hook"}
+		if tc.env != nil {
+			body["env"] = tc.env
+		}
+		e.save(body)
+		id := e.createSession(tc.id)
+		c := dialViewer(t, e, id, adminToken)
+		c.hello(80, 24)
+		c.expectOutput(tc.want)
+	}
+}
+
+// An adapter adds flags, not a new way to fail: a command the server does not
+// have still answers start_failed.
+func TestCreateSessionWithAnAdapterAndAMissingCommand(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.save(map[string]any{"id": "ghost", "name": "Ghost", "command": []string{"definitely-not-a-real-binary-xyz"}, "adapter": "claude", "signal": map[string]any{"kind": "hook"}})
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "ghost"})
+	if resp.StatusCode != http.StatusBadGateway || errorCode(out) != "start_failed" {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
 	}
 }
 

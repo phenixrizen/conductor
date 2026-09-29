@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/share"
@@ -62,6 +63,15 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		return 1, fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", cfg.DataDir, err)
+	}
+	// Launches inject flags that name the hook assets in the data directory,
+	// and the assets run this binary: the server does not start without them.
+	exe, err := os.Executable()
+	if err != nil {
+		return 1, fmt.Errorf("locate the conductor binary for the hook assets: %w", err)
+	}
+	if err := agents.WriteAssets(agents.HooksDir(cfg.DataDir), exe); err != nil {
+		return 1, fmt.Errorf("write the hook assets to %s: %w", agents.HooksDir(cfg.DataDir), err)
 	}
 	if root := cfg.DataDirOverlap(); root != "" {
 		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; set dataDir or CONDUCTOR_DATA_DIR to a directory outside allowedRoots", "dataDir", cfg.DataDir, "allowedRoot", root)

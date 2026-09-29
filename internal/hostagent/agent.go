@@ -16,6 +16,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,8 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -54,6 +57,14 @@ type Options struct {
 	// 500 ms without output; a match marks the session needs_input. See
 	// session.Options.Pattern.
 	Pattern *regexp.Regexp
+	// Adapter names the hook adapter of the command (`conductor host --agent`).
+	// When it is one, the hook assets are written to HooksDir and the command
+	// is started with the adapter's flags and environment, as the server
+	// starts an agent whose signal is "hook". Any other name changes nothing.
+	Adapter string
+	// HooksDir is where the host writes the hook assets; empty means
+	// agents.HostHooksDir().
+	HooksDir string
 	// ReconnectMax bounds the reconnect backoff.
 	ReconnectMax time.Duration
 	// Registered is called once the first registration succeeds (tests, CLI banner).
@@ -83,11 +94,18 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if opts.AgentID == "" {
 		opts.AgentID = filepath.Base(opts.Argv[0])
 	}
+	// The flags are part of the command from the start, so the server lists
+	// the command as it runs.
+	argv, adapterEnv, err := injectHooks(opts)
+	if err != nil {
+		return Result{}, err
+	}
+	opts.Argv = argv
 	dir := opts.Dir
 	if dir == "" {
 		dir, _ = os.Getwd()
 	}
-	dir, err := filepath.Abs(dir)
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -112,7 +130,13 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	notifyURL := strings.TrimRight(opts.ServerURL, "/") + "/api/sessions/" + registered.SessionID + "/attention"
-	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, Env: hostEnv(pty.Inject(registered.SessionID, notifyURL, agentToken)), Cols: cols, Rows: rows})
+	env := pty.Inject(registered.SessionID, notifyURL, agentToken)
+	for k, v := range adapterEnv {
+		if _, ok := env[k]; !ok {
+			env[k] = v
+		}
+	}
+	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, Env: hostEnv(env), Cols: cols, Rows: rows})
 	if err != nil {
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
@@ -252,9 +276,36 @@ func currentUser() string {
 	return name
 }
 
+// injectHooks returns the command to start and the environment to add for the
+// adapter opts.Adapter names, after writing the hook assets its flags point
+// at. The host has no catalog, so the adapter is taken to report through
+// hooks, without tool events. A name that is no adapter's leaves the command
+// as it is and writes nothing.
+func injectHooks(opts Options) ([]string, map[string]string, error) {
+	if _, ok := agents.Get(opts.Adapter); !ok {
+		return opts.Argv, nil, nil
+	}
+	dir := opts.HooksDir
+	if dir == "" {
+		var err error
+		if dir, err = agents.HostHooksDir(); err != nil {
+			return nil, nil, fmt.Errorf("host: hooks directory: %w", err)
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, nil, fmt.Errorf("host: locate the conductor binary for the hooks: %w", err)
+	}
+	if err := agents.WriteAssets(dir, exe); err != nil {
+		return nil, nil, fmt.Errorf("host: write the hook assets to %s: %w", dir, err)
+	}
+	extra, env := agents.InjectFor(opts.Adapter, dir, catalog.Signal{Kind: "hook"})
+	return append(slices.Clone(opts.Argv), extra...), env, nil
+}
+
 // hostEnv forwards the developer's full environment (agents need their own
 // credentials) minus conductor tokens and loader overrides, then adds the
-// per-session variables.
+// per-session variables, which win over what the environment says.
 func hostEnv(inject map[string]string) []string {
 	var out []string
 	for _, kv := range os.Environ() {

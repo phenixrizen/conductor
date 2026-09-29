@@ -160,3 +160,28 @@ func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 		t.Fatalf("serve listened anyway:\n%s", logs.String())
 	}
 }
+
+// The server writes the hook assets into its data directory at startup, naming
+// its own binary, before it serves: a launch that injects them finds them.
+func TestServeWritesTheHookAssets(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	serveUntilListening(t, "--config", cfg)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(data, "hooks", "claude.json"))
+	if err != nil || !strings.Contains(string(b), exe+" notify --claude-hook") {
+		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(data, "hooks")); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("hooks dir: %v %v", fi.Mode(), err)
+	}
+}

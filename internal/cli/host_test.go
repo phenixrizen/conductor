@@ -6,6 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +93,71 @@ func TestHostSignalPatternReachesTheSession(t *testing.T) {
 			t.Fatalf("the hosted session never needed input: %+v", srv.Registry().List())
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+// --agent picks the adapter: the hooks go to the host's hooks dir under
+// XDG_STATE_HOME and the session is launched with the adapter's flags.
+func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
+	clearConductorEnv(t)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	cfg := config.Defaults()
+	cfg.AdminToken = "admin-token"
+	cfg.HostTokens = []string{"host-token"}
+	cfg.AllowedRoots = []string{t.TempDir()}
+	cfg.Dev = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := api.New(cfg, catalog.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var stderr bytes.Buffer
+		args := []string{"--server", hs.URL, "--token", "host-token", "--no-local", "--relay-only", "--name", "hooked",
+			"--agent", "claude", "--", "/bin/cat"}
+		if code, err := runHost(ctx, args, strings.NewReader(""), &bytes.Buffer{}, &stderr); err != nil {
+			t.Errorf("host: exit %d, %v, %s", code, err, stderr.String())
+		}
+	}()
+	settings := filepath.Join(state, "conductor", "hooks", "claude.json")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var command []string
+		var agentID string
+		for _, info := range srv.Registry().List() {
+			if info.Name == "hooked" {
+				command, agentID = info.Command, info.AgentID
+			}
+		}
+		if command != nil {
+			if !slices.Equal(command, []string{"/bin/cat", "--settings", settings}) || agentID != "claude" {
+				t.Fatalf("server lists %q for agent %q", command, agentID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the hosted session never registered: %+v", srv.Registry().List())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if b, err := os.ReadFile(settings); err != nil || !strings.Contains(string(b), "notify --claude-hook") {
+		t.Fatalf("asset: %v %s", err, b)
 	}
 	cancel()
 	select {
