@@ -42,7 +42,11 @@ CONDUCTOR_HOST_TOKEN=host-token ./bin/conductor host --server http://localhost:8
 
 Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
-headless, or `--stun stun:host:3478` to override the ICE servers.
+headless, or `--stun stun:host:3478` to override the ICE servers. An agent with
+no hooks and no bell can still raise the needs-input badge:
+`--signal-pattern '<regexp>'` (RE2, at most 200 bytes) is matched against the
+last line of the terminal after 500 ms without output; the Launch dialog's
+command carries it for agents whose catalog entry has a pattern signal.
 
 ## The workbench
 

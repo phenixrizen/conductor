@@ -28,11 +28,12 @@ func (s AttentionState) Valid() bool {
 
 // Attention sources.
 const (
-	SourceAPI   = "api"
-	SourceBell  = "bell"
-	SourceOSC   = "osc"
-	SourceInput = "input"
-	SourceAdmin = "admin"
+	SourceAPI     = "api"
+	SourceBell    = "bell"
+	SourceOSC     = "osc"
+	SourcePattern = "pattern" // the last line of the screen matched Options.Pattern
+	SourceInput   = "input"
+	SourceAdmin   = "admin"
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can

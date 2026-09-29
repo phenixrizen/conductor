@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,10 @@ type Options struct {
 	MaxViewers      int
 	FileView        string
 	Log             *slog.Logger
+	// Pattern, when set, is matched against the last line of the terminal after
+	// 500 ms without output; a match marks the session needs_input. See
+	// session.Options.Pattern.
+	Pattern *regexp.Regexp
 	// ReconnectMax bounds the reconnect backoff.
 	ReconnectMax time.Duration
 	// Registered is called once the first registration succeeds (tests, CLI banner).
@@ -135,6 +140,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,
 		OnActivity:      a.onLocalActivity,
+		Pattern:         opts.Pattern,
 	})
 	a.mu.Lock()
 	a.local, a.proc = local, proc

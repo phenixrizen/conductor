@@ -92,6 +92,23 @@ func TestSignalValidation(t *testing.T) {
 	}
 }
 
+// CompilePattern is the one rule for a screen pattern, for the catalog and
+// for `conductor host --signal-pattern` alike.
+func TestCompilePattern(t *testing.T) {
+	re, err := CompilePattern(`^> $`)
+	if err != nil || !re.MatchString("> ") || re.MatchString(">") {
+		t.Fatalf("CompilePattern(^> $) = %v, %v", re, err)
+	}
+	if _, err := CompilePattern(strings.Repeat("a", 200)); err != nil {
+		t.Fatalf("a pattern of 200 bytes was rejected: %v", err)
+	}
+	for _, p := range []string{"", "(", `(?P<n>`, `a**`, strings.Repeat("a", 201)} {
+		if re, err := CompilePattern(p); err == nil || re != nil {
+			t.Fatalf("CompilePattern(%.20q) = %v, %v; want an error", p, re, err)
+		}
+	}
+}
+
 func TestOverlayUpsertsAndHides(t *testing.T) {
 	c := Default()
 	if err := c.ApplyOverlay(Overlay{

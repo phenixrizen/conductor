@@ -8,8 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -28,6 +30,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	stun := fs.String("stun", "", "comma separated ICE server URLs overriding the server's list")
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
+	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: conductor host [flags] -- <command...>")
@@ -54,6 +57,14 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	case "view", "control", "off":
 	default:
 		return 2, fmt.Errorf("invalid --file-view %q", *fileView)
+	}
+	var pattern *regexp.Regexp
+	if *signalPattern != "" {
+		re, err := catalog.CompilePattern(*signalPattern)
+		if err != nil {
+			return 2, fmt.Errorf("invalid --signal-pattern: %w", err)
+		}
+		pattern = re
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
@@ -88,6 +99,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		ICEServers:      ice,
 		ScrollbackBytes: *scrollback,
 		FileView:        *fileView,
+		Pattern:         pattern,
 		Log:             log,
 		Registered: func(sessionID, base string) {
 			fmt.Fprintf(stderr, "conductor: hosting session %s at %s/sessions/%s\r\n", sessionID, base, sessionID)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,7 +54,17 @@ type Options struct {
 	// must be safe for concurrent use. An entry the event bucket drops never
 	// reaches it.
 	OnActivity func(sessionID string, e ActivityEntry)
+	// Pattern, when set, is matched against the last line of the terminal
+	// after patternQuiet without output. A match marks the session needs_input
+	// (source "pattern", kind "prompt") unless it is that already. It is for
+	// agents that neither run hooks nor ring the bell; a TUI that redraws
+	// without pause never goes quiet and is not served by it.
+	Pattern *regexp.Regexp
 }
+
+// patternQuiet is how long the output must stay silent before the last line is
+// matched against Options.Pattern.
+const patternQuiet = 500 * time.Millisecond
 
 // Local owns a PTY process and serves attached clients. It is used by the
 // server for server-hosted sessions and by `conductor host` for hosted ones.
@@ -73,6 +84,7 @@ type Local struct {
 	events         EventBucket // guarded by mu
 	dropped        atomic.Uint64
 	scanner        Scanner
+	pattern        *PatternWatcher // nil without Options.Pattern
 	lastBell       time.Time
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -115,6 +127,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		info:  info,
 		ended: make(chan struct{}),
 	}
+	if opts.Pattern != nil {
+		s.pattern = NewPatternWatcher(opts.Pattern, patternQuiet, s.firePattern)
+	}
 	go s.pump()
 	return s
 }
@@ -131,6 +146,9 @@ func (s *Local) pump() {
 			s.hub.Broadcast(proto.Encode(proto.TypeOutput, chunk))
 			s.mu.Unlock()
 			s.scanOutput(chunk)
+			if s.pattern != nil {
+				s.pattern.Feed(chunk)
+			}
 		}
 		if err != nil {
 			break
@@ -151,6 +169,13 @@ func (s *Local) pump() {
 }
 
 func (s *Local) markEnded(status Status) {
+	// A prompt left on the screen by a process that is gone must not raise
+	// needs_input after the session has ended, where typing could not clear it.
+	// Stop waits for a fire in flight, so it comes before the lock: that fire
+	// takes it.
+	if s.pattern != nil {
+		s.pattern.Stop()
+	}
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		s.mu.Unlock()
@@ -245,6 +270,17 @@ func (s *Local) scanOutput(chunk []byte) {
 		}
 		s.SetAttention(AttentionNeedsInput, msg, ev.Source)
 	}
+}
+
+// firePattern is the pattern watcher's fire: the last line matched after the
+// output went quiet. A session that is waiting already keeps what marked it so
+// (a hook's message and options, the bell), and the same prompt does not
+// report itself again while it stays on the screen.
+func (s *Local) firePattern(line string) {
+	if s.Info().Attention.State == AttentionNeedsInput {
+		return
+	}
+	s.SetAttentionFull(AttentionNeedsInput, "prompt: "+line, SourcePattern, KindPrompt, nil)
 }
 
 // SetAttention records an attention change without prompt details. See

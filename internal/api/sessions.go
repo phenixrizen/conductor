@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -87,6 +89,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "terminal size out of range")
 		return
 	}
+	// An agent with a screen pattern gets the detector. The catalog held the
+	// pattern to the same rules when it took the agent in.
+	var pattern *regexp.Regexp
+	if sig := agent.EffectiveSignal(); sig.Kind == "pattern" {
+		if pattern, err = catalog.CompilePattern(sig.Pattern); err != nil {
+			writeError(w, http.StatusInternalServerError, "invalid_agent", "the agent's signal pattern is invalid")
+			return
+		}
+	}
 	argv := append(append([]string{}, agent.Command...), req.Args...)
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
@@ -128,6 +139,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Log:             s.log,
 		OnChange:        s.events.publish,
 		OnActivity:      s.events.activity,
+		Pattern:         pattern,
 	})
 	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {

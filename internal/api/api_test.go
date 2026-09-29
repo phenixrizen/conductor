@@ -622,6 +622,44 @@ func TestAttentionKindAndOptions(t *testing.T) {
 	}
 }
 
+// An agent whose signal is a pattern gets the detector when it is launched: a
+// prompt left on the last line marks its session needs_input. The same prompt
+// from an agent with no pattern does nothing.
+func TestSessionUsesTheAgentsSignalPattern(t *testing.T) {
+	e := newTestEnv(t, nil)
+	script := []string{"/bin/sh", "-c", `printf 'Proceed? (y/n) '; exec /bin/cat`}
+	watched := agentBody("watched")
+	watched["command"] = script
+	watched["signal"] = map[string]any{"kind": "pattern", "pattern": `\(y/n\) $`}
+	e.save(watched)
+	plain := agentBody("plain")
+	plain["command"] = script
+	e.save(plain)
+	watchedID := e.createSession("watched")
+	plainID := e.createSession("plain")
+
+	attention := func(id string) map[string]any {
+		_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+		att, _ := got["session"].(map[string]any)["attention"].(map[string]any)
+		return att
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for attention(watchedID)["state"] != "needs_input" {
+		if time.Now().After(deadline) {
+			t.Fatalf("attention %v, want needs_input", attention(watchedID))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	att := attention(watchedID)
+	if att["source"] != "pattern" || att["kind"] != "prompt" || att["message"] != "prompt: Proceed? (y/n)" {
+		t.Fatalf("attention %v", att)
+	}
+	time.Sleep(300 * time.Millisecond) // the other session has been as quiet as long
+	if att := attention(plainID); att["state"] != nil && att["state"] != "" {
+		t.Fatalf("an agent with no pattern got attention %v", att)
+	}
+}
+
 func TestLinksListReportsActiveViewers(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")

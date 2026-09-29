@@ -137,8 +137,8 @@ removed after 60 s without the host.
 
 Each session carries `attention{state, message, source, since, kind?, options?}`
 in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
-Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `input`
-(cleared by a controller typing).
+Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `pattern` (the
+screen-pattern detector, below), `input` (cleared by a controller typing).
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
@@ -161,6 +161,20 @@ or `ESC ] 777 ; notify ; title ; body ST` (urxvt style) marks the session
 `needs_input`; the BEL that terminates an ordinary OSC (window title, hyperlink)
 does not. Bursts are limited to one change per 500 ms. Any successful input from
 a `control` client clears a `needs_input` state.
+
+An agent with no hook and no bell can be given a screen pattern instead: a
+catalog signal `{"kind": "pattern", "pattern": "<RE2>"}` (at most 200 bytes) for
+server sessions, `conductor host --signal-pattern '<RE2>'` for hosted ones. The
+process that owns the PTY keeps the text of the last screen line: escape
+sequences are stripped, `\r` rewrites the line from column 0, `\b` deletes a
+character, and only the last 4096 bytes of a longer line are kept. After 500 ms
+without output the line is matched against the pattern. A match marks the
+session `needs_input` with `source:"pattern"`, `kind:"prompt"` and the message
+`prompt: <line>`, unless it is `needs_input` already: a prompt a hook or a bell
+raised keeps its own message, and the same prompt does not report itself twice.
+Output that never pauses (a spinner, a TUI that redraws continuously) never
+gives the 500 ms of silence, so such an agent is not served by a pattern. A
+host reports the change to the server like any other attention change.
 
 Explicit updates: `POST /api/sessions/{id}/attention` with
 `{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?}` and

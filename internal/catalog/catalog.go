@@ -202,16 +202,24 @@ func validateSignal(s Signal) error {
 			return errors.New("pattern only applies to kind=pattern")
 		}
 	case "pattern":
-		if s.Pattern == "" || len(s.Pattern) > maxSignalPattern {
-			return fmt.Errorf("pattern required, at most %d bytes", maxSignalPattern)
-		}
-		if _, err := regexp.Compile(s.Pattern); err != nil {
+		if _, err := CompilePattern(s.Pattern); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown kind %q", s.Kind)
 	}
 	return nil
+}
+
+// CompilePattern compiles a screen pattern: the pattern of a signal of kind
+// "pattern" and the value of `conductor host --signal-pattern`. It is RE2, so
+// matching the last line of a terminal takes linear time whatever the pattern,
+// and it is at most 200 bytes.
+func CompilePattern(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" || len(pattern) > maxSignalPattern {
+		return nil, fmt.Errorf("pattern required, at most %d bytes", maxSignalPattern)
+	}
+	return regexp.Compile(pattern)
 }
 
 // Upsert validates a, then replaces the agent with the same ID in place (so it
