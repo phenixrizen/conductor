@@ -164,16 +164,20 @@ header-authenticated `fetch`: `snapshot` with the full list first, then
 
 `file_get` resolves `path` against the session working directory (`~` expands to
 the owner's home). After symlink resolution the target must stay inside the
-working directory; `.git/objects` is never readable, and neither is anything in
-the server's data directory (`dataDir`, which holds agent secrets). Both rules
-answer `denied`. Responses carry a JSON header
+working directory, and `.git/objects` is never readable. Server sessions also
+refuse the server's data directory (`dataDir`, which holds agent secrets) with
+everything in it, its config file (admin and host tokens) and its catalog file
+(`catalogPath`), even inside the working directory. Every one of these rules
+answers `denied`. A hosted session applies only the first two: the host serves
+everything else under its working directory. Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?}`
 followed by up to 1 MiB of bytes for text files. Files with a NUL byte in the
 first 8 KiB are reported `binary` without bytes; images are sent as bytes. Up to
 four requests may be in flight per client. `stat:true` returns only the header.
 
 The `fileView` server setting decides who may read: `view` (both roles, the
-default), `control` (controllers only) or `off`.
+default), `control` (controllers only) or `off`; `conductor host --file-view`
+does the same for a hosted session.
 
 ## HTTP API
 

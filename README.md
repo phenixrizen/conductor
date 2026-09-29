@@ -77,8 +77,13 @@ traceback lines are underlined when the file exists in the session's working
 directory; clicking opens it in a side panel at that line with syntax
 highlighting, directory browsing and a copy-path button. Reads go through the
 terminal connection, so for hosted sessions the file comes from the developer's
-machine. Limit reads with the `fileView` setting (`view`, `control` or `off`).
-The server's data directory is never served, even inside a working directory.
+machine. Limit reads with the `fileView` setting (`view`, `control` or `off`;
+`--file-view` for `conductor host`). Server sessions never serve the server's
+data directory, config file or catalog file (`catalogPath`), even inside a
+working directory. A hosted session serves everything under its working
+directory, so do not run `conductor host` from a directory that holds a
+server's data directory or config file: anyone the session is shared with
+could read the catalog's env secrets and the admin token.
 
 ## The wall
 
@@ -236,11 +241,12 @@ most 200 bytes.
   env, and it runs as the user running `conductor serve`; `disableDefaults` or
   a curated `catalog` does not limit what the **Agents** page can add. Env
   values saved from the UI, secrets included, are stored in `catalog.json`
-  (mode 0600) in the data directory. The file viewer never serves that
-  directory, but agents run as the same user and can read it. Changing a
-  built-in or configured agent saves a full copy of it, env values included,
-  that replaces the original until it is deleted: a secret rotated in the
-  config file does not reach that agent while the copy exists.
+  (mode 0600) in the data directory. The file viewer of a server session never
+  serves that directory, the config file or the catalog file, but agents run
+  as the same user and can read them. Changing a built-in or configured agent
+  saves a full copy of it, env values included, that replaces the original
+  until it is deleted: a secret rotated in the config file does not reach that
+  agent while the copy exists.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Terminal output is not persisted. Sessions and links live in memory and are

@@ -75,7 +75,9 @@ command.
 
 ## Security model
 
-- The admin token protects launching, listing, stopping and link management.
+- The admin token protects launching, listing, stopping, link management and
+  editing the agent catalog, which is as powerful as the server user: a saved
+  agent's argv and env run as that user.
 - Share links carry their own 256-bit token; only its SHA-256 is stored. A link
   grants `view` or `control` on exactly one session and can be revoked, which
   disconnects its viewers immediately.
@@ -85,8 +87,10 @@ command.
   appended element-wise only for agents that allow it. Server sessions get an
   allowlisted environment; `CONDUCTOR_*` never reaches a child.
 - Server session working directories must resolve under `allowedRoots` after
-  symlink evaluation. File reads are confined to the session directory and
-  never enter the data directory, even when it lies inside one.
+  symlink evaluation. File reads are confined to the session directory. In
+  server sessions they never reach the data directory, the config file or the
+  catalog file, even when those lie inside it; a hosted session serves
+  everything under its working directory.
 - Frame sizes, viewer counts, session counts, scrollback and in-flight file
   requests are all bounded. Query strings (which may carry tokens) are never
   logged.
