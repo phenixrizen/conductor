@@ -183,7 +183,9 @@ type Attention struct {
 }
 
 // Activity is one entry of the session activity log (owner -> client). The
-// last 50 entries are replayed after ready; new ones follow live.
+// last 50 entries are replayed after ready; new ones follow live. URL, To and
+// Tool belong to the event types (docs/protocol.md, Events). The owner bounds
+// the text fields (session.CleanEntry) so that the message fits MaxControl.
 type Activity struct {
 	T       string `json:"t"`
 	At      string `json:"at"`
@@ -191,6 +193,9 @@ type Activity struct {
 	By      string `json:"by,omitempty"`
 	ByName  string `json:"byName,omitempty"`
 	Message string `json:"message,omitempty"`
+	URL     string `json:"url,omitempty"`
+	To      string `json:"to,omitempty"`
+	Tool    string `json:"tool,omitempty"`
 }
 
 // Simple is a message with only a discriminator (ready).

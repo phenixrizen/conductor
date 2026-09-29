@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +99,16 @@ func newLocal(t *testing.T, cwd string) (*Local, *fakeProc) {
 	t.Helper()
 	p := newFakeProc()
 	s := NewLocal(Info{ID: "sess", Cwd: cwd, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096})
+	t.Cleanup(func() { p.exit() })
+	return s, p
+}
+
+// newLocalWith is newLocal with the caller's Options and a temporary
+// working directory.
+func newLocalWith(t *testing.T, opts Options) (*Local, *fakeProc) {
+	t.Helper()
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "sess", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, opts)
 	t.Cleanup(func() { p.exit() })
 	return s, p
 }
@@ -547,8 +559,9 @@ func TestInputDuringNeedsInputRecordsOneAnswer(t *testing.T) {
 
 func TestActivityBroadcastAndReplay(t *testing.T) {
 	s, _ := newLocal(t, t.TempDir())
+	// Fill the log directly: Record admits EventBurst entries at a time.
 	for i := 0; i < 60; i++ {
-		s.Record(ActivityEntry{Type: "link", Message: "x"})
+		s.activity.Add(ActivityEntry{Type: "link", Message: "x"})
 	}
 	sink := newChanSink(false)
 	s.Attach("", RoleView, "", 80, 24, sink)
@@ -579,6 +592,217 @@ func TestActivityBroadcastAndReplay(t *testing.T) {
 	if m := decodeControl(t, sink.frame(before)); m["t"] != proto.CtlActivity || m["message"] != "live" {
 		t.Fatalf("live entry: %v", m)
 	}
+}
+
+func TestRecordRateLimitsPerSession(t *testing.T) {
+	var got int
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(string, ActivityEntry) { got++ }})
+	accepted := 0
+	for i := 0; i < 200; i++ {
+		if s.Record(ActivityEntry{Type: ActivityProgress, Message: "x"}) {
+			accepted++
+		}
+	}
+	if accepted > EventBurst || accepted < EventBurst/2 || s.Dropped() != uint64(200-accepted) || got != accepted {
+		t.Fatalf("accepted %d dropped %d hooks %d", accepted, s.Dropped(), got)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if !s.Record(ActivityEntry{Type: ActivityProgress}) {
+		t.Fatal("bucket did not refill")
+	}
+}
+
+// syncBuffer is a log destination the test can read while the session writes.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func TestRecordDropsAreNotStoredBroadcastOrReported(t *testing.T) {
+	var hmu sync.Mutex
+	hooked := map[string]bool{}
+	logs := &syncBuffer{}
+	s, _ := newLocalWith(t, Options{
+		Log: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		OnActivity: func(_ string, e ActivityEntry) {
+			hmu.Lock()
+			hooked[e.Message] = true
+			hmu.Unlock()
+		},
+	})
+	sink := newChanSink(false)
+	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	dropped := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		msg := fmt.Sprintf("p%d", i)
+		if !s.Record(ActivityEntry{Type: ActivityProgress, Message: msg}) {
+			dropped[msg] = true
+		}
+	}
+	if len(dropped) < 100 || s.Dropped() != uint64(len(dropped)) {
+		t.Fatalf("%d entries refused, Dropped() = %d", len(dropped), s.Dropped())
+	}
+
+	// A fresh bucket is full: this stands in for waiting a second. The sink
+	// receives frames in the order they were queued, so a dropped entry that
+	// had been broadcast would already be in front of the sentinel.
+	s.mu.Lock()
+	s.events = eventBucket{}
+	s.mu.Unlock()
+	if !s.Record(ActivityEntry{Type: ActivityProgress, Message: "sentinel"}) {
+		t.Fatal("a fresh bucket refused an entry")
+	}
+	if waitControl(sink, func(m map[string]any) bool { return m["message"] == "sentinel" }) == nil {
+		t.Fatal("sentinel not broadcast")
+	}
+	for i := 0; i < sink.count(); i++ {
+		if f, err := proto.Decode(sink.frame(i)); err == nil && f.Type == proto.TypeControl {
+			var m map[string]any
+			if json.Unmarshal(f.Payload, &m) == nil && dropped[fmt.Sprint(m["message"])] {
+				t.Fatalf("dropped entry %v was broadcast", m["message"])
+			}
+		}
+	}
+	for _, e := range s.Activity() {
+		if dropped[e.Message] {
+			t.Fatalf("dropped entry %q was stored", e.Message)
+		}
+	}
+	hmu.Lock()
+	for msg := range dropped {
+		if hooked[msg] {
+			t.Fatalf("OnActivity was called for dropped entry %q", msg)
+		}
+	}
+	hmu.Unlock()
+
+	// A flood must not become a log flood: the first drop and every 100th.
+	if n := strings.Count(logs.String(), "event rate limit"); n != 2 {
+		t.Fatalf("%d debug lines for %d drops, want 2:\n%s", n, len(dropped), logs.String())
+	}
+}
+
+func TestOnActivityRunsAfterTheBroadcastAndOutsideTheLock(t *testing.T) {
+	type seen struct {
+		id        string
+		entry     ActivityEntry
+		stored    ActivityEntry
+		info      Info
+		broadcast bool
+	}
+	sink := newChanSink(false)
+	got := make(chan seen, 1)
+	var s *Local
+	s, _ = newLocalWith(t, Options{OnActivity: func(id string, e ActivityEntry) {
+		if e.Type != ActivityArtifact {
+			return
+		}
+		log := s.Activity()
+		got <- seen{
+			id:     id,
+			entry:  e,
+			stored: log[len(log)-1],
+			info:   s.Info(), // takes the session lock: hangs if Record still holds it
+			// The viewer's frame is already queued, so it arrives without Record's help.
+			broadcast: waitControl(sink, func(m map[string]any) bool { return m["type"] == ActivityArtifact }) != nil,
+		}
+	}})
+	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- s.Record(ActivityEntry{Type: ActivityArtifact, Message: "PR opened\x1b", URL: " https://example.com/pull/1 "})
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("Record refused the entry")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Record did not return: the hook ran under the session lock")
+	}
+	var c seen
+	select {
+	case c = <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnActivity was not called")
+	}
+	if c.id != "sess" || c.info.ID != "sess" {
+		t.Errorf("hook session id %q (info %q), want sess", c.id, c.info.ID)
+	}
+	if c.entry.Message != "PR opened" || c.entry.URL != "https://example.com/pull/1" || c.entry.At.IsZero() {
+		t.Errorf("hook got an entry that is not the cleaned, stamped one: %+v", c.entry)
+	}
+	if c.stored != c.entry {
+		t.Errorf("hook entry %+v differs from the stored %+v", c.entry, c.stored)
+	}
+	if !c.broadcast {
+		t.Error("the hook ran before the entry was broadcast")
+	}
+}
+
+func TestActivityFramesCarryEventFields(t *testing.T) {
+	s, _ := newLocalWith(t, Options{})
+	sink := newChanSink(false)
+	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []ActivityEntry{
+		{Type: ActivityHandoff, Message: "review please", To: "Marco"},
+		{Type: ActivityArtifact, URL: "https://example.com/pull/1"},
+		{Type: ActivityToolDenied, Tool: "Bash"},
+		{Type: ActivityProgress, Message: "3/7"},
+	} {
+		if !s.Record(e) {
+			t.Fatalf("Record refused %+v", e)
+		}
+	}
+	entry := func(sink *chanSink, typ string) map[string]any {
+		return waitControl(sink, func(m map[string]any) bool { return m["t"] == proto.CtlActivity && m["type"] == typ })
+	}
+	check := func(who string, sink *chanSink) {
+		if m := entry(sink, ActivityHandoff); m == nil || m["to"] != "Marco" || m["message"] != "review please" {
+			t.Errorf("%s handoff: %v", who, m)
+		}
+		if m := entry(sink, ActivityArtifact); m == nil || m["url"] != "https://example.com/pull/1" {
+			t.Errorf("%s artifact: %v", who, m)
+		}
+		if m := entry(sink, ActivityToolDenied); m == nil || m["tool"] != "Bash" {
+			t.Errorf("%s tool_denied: %v", who, m)
+		}
+		// Fields an entry does not use are left out of the JSON, not sent empty.
+		m := entry(sink, ActivityProgress)
+		if m == nil {
+			t.Fatalf("%s progress entry missing", who)
+		}
+		for _, k := range []string{"url", "to", "tool", "by", "byName"} {
+			if _, present := m[k]; present {
+				t.Errorf("%s progress entry carries %q: %v", who, k, m)
+			}
+		}
+	}
+	check("live", sink)
+
+	late := newChanSink(false)
+	if _, err := s.Attach("", RoleView, "", 80, 24, late); err != nil {
+		t.Fatal(err)
+	}
+	check("replayed", late)
 }
 
 func TestLinkViewersCountsPerLink(t *testing.T) {

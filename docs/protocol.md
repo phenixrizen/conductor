@@ -47,7 +47,7 @@ Owner → client:
 | `resize` | `cols, rows, by` (subscriber that resized) |
 | `status` | `status, exitCode?` |
 | `attention` | `state, message?, source?, kind?, options?[{label, input}]` (see Attention) |
-| `activity` | `at, type, by?, byName?, message?` — one activity-log entry (`attention`, `input`, `join`, `leave`, `link`, `status`). The last 50 entries replay right after `ready`; new ones follow live. |
+| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type. `link` is the share link's label. |
 | `error` | `code, message` |
 | `pong` | `ts` |
@@ -159,6 +159,39 @@ Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
 header-authenticated `fetch`: `snapshot` with the full list first, then
 `session` per change and `removed{id}` when a session leaves the registry).
+
+## Events
+
+An event is an activity entry that an agent reports about its work, next to
+the entries the session records itself (`attention`, `input`, `join`, `leave`,
+`link`, `status`). All twelve types travel as `activity` control messages,
+live and in the replay after `ready`. The six event types:
+
+| `type` | Meaning | Fields |
+|---|---|---|
+| `progress` | a step finished | `message` says which |
+| `artifact` | something was produced | `url` points at it, `message` describes it |
+| `handoff` | work passed to another member | `to` names them, `message` says why |
+| `tool_use` | the agent ran a tool | `tool` names it |
+| `tool_denied` | a tool call was refused | `tool` names it |
+| `error` | the agent hit an error | `message` says what, `tool` names the tool involved |
+
+The reporter chooses which fields an event carries; none is required.
+
+Limits, applied to every entry as the session stores it: control characters
+are dropped and surrounding space is trimmed. `message` is at most 500 bytes
+and `tool` at most 100; both keep line breaks and tabs. `url` (at most 2048
+bytes), `to` and `byName` (at most 40 runes each) are single lines. `url`,
+`to`, `tool` and `byName` are cut at a character boundary. The session stores
+`url` as text and does not look at its scheme, so a client links it only when
+it is `http:` or `https:`. JSON writes `&`, `<` and `>` as six bytes each, so
+a URL made of them could push the message past the 8 KiB CONTROL limit, which
+a relay rejects: such a URL is dropped and the rest of the entry kept.
+
+Each session records at most 20 entries a second on average and 40 at once (a
+token bucket that refills continuously), whatever their type. An entry beyond
+that is not stored or broadcast; the session counts it and logs the first drop
+and every 100th at debug level.
 
 ## File reads
 

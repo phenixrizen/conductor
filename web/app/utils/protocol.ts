@@ -59,10 +59,18 @@ export interface ViewerInfo {
 /** One line of a session's activity log (`activity` control message). */
 export interface ActivityEntry {
   at: string
-  type: 'attention' | 'input' | 'join' | 'leave' | 'link' | 'status'
+  type:
+    | 'attention' | 'input' | 'join' | 'leave' | 'link' | 'status'
+    | 'progress' | 'artifact' | 'handoff' | 'tool_use' | 'tool_denied' | 'error'
   by?: string
   byName?: string
   message?: string
+  /** `artifact`: where the result lives (≤ 2048 bytes). Stored as sent: link it only when it is http(s). */
+  url?: string
+  /** `handoff`: who the work goes to (≤ 40 characters). */
+  to?: string
+  /** `tool_use`, `tool_denied`, `error`: the tool involved (≤ 100 bytes). */
+  tool?: string
 }
 
 export interface ICEServer {
@@ -96,7 +104,7 @@ export type ControlMessage =
   | { t: 'status'; status: string; exitCode?: number }
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
-  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string }
+  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string }
   | { t: 'error'; code: string; message: string }
   | { t: 'pong'; ts: number }
 

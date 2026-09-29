@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -44,6 +45,11 @@ type Options struct {
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.
 	OnChange func(Info)
+	// OnActivity is called (outside the session lock) with the session ID and
+	// the stored entry after Record has appended and broadcast it. It runs on
+	// the recording goroutine, which may be the one reading the process, so it
+	// must not block. An entry the event bucket drops never reaches it.
+	OnActivity func(sessionID string, e ActivityEntry)
 }
 
 // Local owns a PTY process and serves attached clients. It is used by the
@@ -55,12 +61,14 @@ type Local struct {
 	hub  *Hub
 	log  *slog.Logger
 
-	mu   sync.Mutex // guards info and orders ring writes against attaches
+	mu   sync.Mutex // guards info and events, and orders ring writes against attaches
 	info Info
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
 
 	activity       activityRing
+	events         eventBucket // guarded by mu
+	dropped        atomic.Uint64
 	scanner        Scanner
 	lastBell       time.Time
 	agentTokenHash [32]byte
@@ -170,19 +178,42 @@ func (s *Local) markEnded(status Status) {
 	s.notifyChange()
 }
 
-// Record appends an activity entry and broadcasts it to attached clients.
-func (s *Local) Record(e ActivityEntry) {
-	e = s.activity.Add(e)
+// Record appends an activity entry, broadcasts it to attached clients and
+// passes it to OnActivity. A session records EventRatePerSecond entries a
+// second on average and EventBurst at once, of every type: beyond that Record
+// does nothing else, counts the entry in Dropped and returns false.
+func (s *Local) Record(e ActivityEntry) bool {
 	s.mu.Lock()
+	if !s.events.take(time.Now()) {
+		log := s.log
+		s.mu.Unlock()
+		if n := s.dropped.Add(1); n == 1 || n%100 == 0 {
+			log.Debug("activity dropped by the event rate limit", "type", e.Type, "dropped", n)
+		}
+		return false
+	}
+	// The ring write and the broadcast share one critical section, so a client
+	// attaching meanwhile finds the entry in its replay or receives the
+	// broadcast, never both.
+	e = s.activity.Add(e)
 	s.hub.Broadcast(proto.MustControl(activityMessage(e)))
+	id := s.info.ID
 	s.mu.Unlock()
+	if s.opts.OnActivity != nil {
+		s.opts.OnActivity(id, e)
+	}
+	return true
 }
+
+// Dropped counts the entries Record refused because the session's event
+// bucket was empty.
+func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 
 // Activity returns the activity log, oldest first.
 func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
 
 func activityMessage(e ActivityEntry) proto.Activity {
-	return proto.Activity{T: proto.CtlActivity, At: e.At.UTC().Format(time.RFC3339Nano), Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message}
+	return proto.Activity{T: proto.CtlActivity, At: e.At.UTC().Format(time.RFC3339Nano), Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
 }
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.

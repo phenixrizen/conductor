@@ -1,8 +1,13 @@
 package session
 
 import (
+	"encoding/json"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // ActivityEntry is one line of a session's activity log: who joined, left,
@@ -11,13 +16,16 @@ import (
 // message and replays the last ActivityReplay to every new client.
 type ActivityEntry struct {
 	At      time.Time `json:"at"`
-	Type    string    `json:"type"`              // attention | input | join | leave | link | status
+	Type    string    `json:"type"`              // one of the Activity* constants
 	By      string    `json:"by,omitempty"`      // subscriber id
 	ByName  string    `json:"byName,omitempty"`  // display name at the time
 	Message string    `json:"message,omitempty"` // ≤ MaxAttentionMessage
+	URL     string    `json:"url,omitempty"`     // artifact link, ≤ MaxEventURL bytes
+	To      string    `json:"to,omitempty"`      // handoff target, ≤ MaxEventTo runes
+	Tool    string    `json:"tool,omitempty"`    // tool involved, ≤ MaxEventTool bytes
 }
 
-// Activity entry types.
+// Activity entry types the session records itself.
 const (
 	ActivityAttention = "attention"
 	ActivityInput     = "input"
@@ -27,11 +35,136 @@ const (
 	ActivityStatus    = "status"
 )
 
+// Event types: entries an agent reports about its work (docs/protocol.md,
+// Events).
+const (
+	ActivityProgress   = "progress"    // a step finished; Message says which
+	ActivityArtifact   = "artifact"    // something was produced; URL points at it
+	ActivityHandoff    = "handoff"     // work passed to another member; To names them
+	ActivityToolUse    = "tool_use"    // the agent ran a tool; Tool names it
+	ActivityToolDenied = "tool_denied" // a tool call was refused; Tool names it
+	ActivityError      = "error"       // the agent hit an error; Message says what
+)
+
 // Bounds for the activity log.
 const (
 	MaxActivity    = 200 // entries kept per session
 	ActivityReplay = 50  // entries replayed to a new client
 )
+
+// Limits for the text of an event, beside MaxAttentionMessage for Message.
+const (
+	MaxEventURL  = 2048 // bytes
+	MaxEventTo   = 40   // runes, like a display name
+	MaxEventTool = 100  // bytes
+)
+
+// A session records EventRatePerSecond entries a second on average and
+// EventBurst at once (a token bucket), so a chatty hook cannot flood its log.
+const (
+	EventRatePerSecond = 20
+	EventBurst         = 40
+)
+
+// ValidEventType reports whether t is an activity entry type: one the session
+// records itself or one an agent reports.
+func ValidEventType(t string) bool {
+	switch t {
+	case ActivityAttention, ActivityInput, ActivityJoin, ActivityLeave, ActivityLink, ActivityStatus,
+		ActivityProgress, ActivityArtifact, ActivityHandoff, ActivityToolUse, ActivityToolDenied, ActivityError:
+		return true
+	}
+	return false
+}
+
+// CleanEntry bounds the text of an entry that may come from outside the
+// session, so a hook or a peer cannot fill the log or a control frame with it:
+// control characters are dropped, surrounding space is trimmed and each field
+// is cut to its limit at a character boundary. Message and Tool follow
+// CleanMessage (line breaks stay); URL, To and ByName are single lines. Empty
+// fields stay empty, and cleaning twice changes nothing.
+//
+// Of the fields it bounds, only URL can push an entry past proto.MaxControl:
+// JSON writes & < > as six bytes each, so a URL near its limit can encode to
+// more than a control frame. The relay rejects such a frame and closes the
+// host's connection, so that URL is dropped and the rest of the entry kept.
+func CleanEntry(e ActivityEntry) ActivityEntry {
+	e.ByName = oneLine(e.ByName, proto.MaxNameLen)
+	e.Message = CleanMessage(e.Message)
+	e.To = oneLine(e.To, MaxEventTo)
+	e.Tool = cutBytes(CleanMessage(e.Tool), MaxEventTool)
+	e.URL = cutBytes(strings.TrimSpace(strings.Map(dropControl, e.URL)), MaxEventURL)
+	if e.URL != "" && !fitsControlFrame(e) {
+		e.URL = ""
+	}
+	return e
+}
+
+// dropControl is a strings.Map function that removes control characters.
+func dropControl(r rune) rune {
+	if r < 0x20 || r == 0x7f {
+		return -1
+	}
+	return r
+}
+
+// oneLine drops control characters and surrounding space and keeps at most n
+// runes: CleanName without its "guest" default.
+func oneLine(s string, n int) string {
+	s = strings.TrimSpace(strings.Map(dropControl, s))
+	if utf8.RuneCountInString(s) > n {
+		s = strings.TrimSpace(string([]rune(s)[:n]))
+	}
+	return s
+}
+
+// cutBytes keeps at most n bytes of s without splitting a character.
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return strings.TrimSpace(s[:n])
+}
+
+// longestStamp formats as the longest RFC 3339 timestamp an entry can carry.
+var longestStamp = time.Date(2006, 1, 2, 15, 4, 5, 999999999, time.UTC)
+
+// fitsControlFrame reports whether e, as an `activity` message, fits in one
+// CONTROL frame whatever its timestamp: entries are cleaned before they are
+// stamped.
+func fitsControlFrame(e ActivityEntry) bool {
+	e.At = longestStamp
+	b, err := json.Marshal(activityMessage(e))
+	return err == nil && len(b) <= proto.MaxControl
+}
+
+// eventBucket is a token bucket: it holds up to EventBurst tokens, earns
+// EventRatePerSecond a second and spends one per entry. The zero value is
+// full. It is not safe for concurrent use; Local guards it with its lock.
+type eventBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+// take spends a token, first adding those earned since the last call. It
+// reports false when none is left. A clock that steps back earns nothing.
+func (b *eventBucket) take(now time.Time) bool {
+	switch {
+	case b.last.IsZero():
+		b.tokens, b.last = EventBurst, now
+	case now.After(b.last):
+		b.tokens = min(EventBurst, b.tokens+now.Sub(b.last).Seconds()*EventRatePerSecond)
+		b.last = now
+	}
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 // Answer records who last cleared a needs-input prompt.
 type Answer struct {
@@ -47,13 +180,13 @@ type activityRing struct {
 	buf []ActivityEntry
 }
 
-// Add appends e, stamping At when zero and dropping the oldest entry past
-// MaxActivity. It returns the stored entry.
+// Add appends e, stamping At when zero, cleaning its text with CleanEntry and
+// dropping the oldest entry past MaxActivity. It returns the stored entry.
 func (r *activityRing) Add(e ActivityEntry) ActivityEntry {
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
-	e.Message = CleanMessage(e.Message)
+	e = CleanEntry(e)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.buf) >= MaxActivity {
