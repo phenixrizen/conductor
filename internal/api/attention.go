@@ -129,7 +129,11 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		drv.SetAttentionFull(state, message, source, kind, options)
 	case *signal.HostedSession:
 		if err := drv.SetAttentionFull(state, message, source, kind, options, true); err != nil {
-			writeSessionLimited(w)
+			if errors.Is(err, signal.ErrRateLimited) {
+				writeSessionLimited(w)
+				return false
+			}
+			writeError(w, http.StatusConflict, "host_disconnected", "the session's host is not connected")
 			return false
 		}
 	}
@@ -178,8 +182,9 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 // admins, unless its rate bucket is empty: that is a 429. A hosted session
 // has no log on the server, so the event is sent to its host, which records
 // it and reports it back; the server cannot know whether the host's bucket
-// took it, so the answer is 202 once the event is on its way, or 409 when the
-// host is not connected.
+// took it, so the answer is 202 once the event is on its way, 429 when the
+// server-side bucket for that host is empty, or 409 when the host is not
+// connected.
 func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.reportTarget(w, r)
 	if !ok {

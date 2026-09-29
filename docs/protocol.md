@@ -167,8 +167,9 @@ Explicit updates: `POST /api/sessions/{id}/attention` with
 `Authorization: Bearer <agent token>` (or the admin token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`; `conductor notify` reads them. The token is stored
-hashed and only ever authorizes this one route for this one session. For a
-hosted session the state is also sent on to the host, and that counts against
+hashed and only ever authorizes this route and `POST /api/sessions/{id}/events`
+for this one session. For a hosted
+session the state is also sent on to the host, and that counts against
 the same bucket as the events of that session (see Events): with none left the
 answer is `429 rate_limited` and the state does not change.
 
