@@ -227,7 +227,7 @@ func TestWriteAssetsNeedsAbsolutePaths(t *testing.T) {
 
 func TestAssetPathsAreLocalAndUnique(t *testing.T) {
 	seen := map[string]string{}
-	for _, a := range All() {
+	for _, a := range append(All(), Adapter{ID: "the skill", Assets: skillAssets}) {
 		for rel := range a.Assets {
 			if !filepath.IsLocal(rel) || rel != path.Clean(rel) {
 				t.Errorf("%s: asset path %q", a.ID, rel)

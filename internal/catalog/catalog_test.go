@@ -8,15 +8,12 @@ import (
 	"testing"
 )
 
+// builtIns is the IDs of the built-in agents in order, comma separated.
+const builtIns = "claude,codex,agy,copilot,cursor,opencode,pi,omp,aider,goose,amp,dsh,shell"
+
 func TestDefaultContainsBuiltIns(t *testing.T) {
-	c := Default()
-	for _, id := range []string{"claude", "codex", "agy", "shell"} {
-		if _, ok := c.Get(id); !ok {
-			t.Fatalf("missing default agent %s", id)
-		}
-	}
-	if got := c.List()[0].ID; got != "claude" {
-		t.Fatalf("expected claude first, got %s", got)
+	if got := idsOf(Default()); got != builtIns {
+		t.Fatalf("built-ins %s, want %s", got, builtIns)
 	}
 }
 
@@ -32,8 +29,8 @@ func TestLoadMergesByID(t *testing.T) {
 	if a.Name != "Claude (pinned)" || a.Command[0] != "/opt/claude" {
 		t.Fatalf("override not applied: %+v", a)
 	}
-	if len(c.List()) != 5 {
-		t.Fatalf("expected 5 agents, got %d", len(c.List()))
+	if len(c.List()) != 14 {
+		t.Fatalf("expected 14 agents, got %d", len(c.List()))
 	}
 	if r, _ := c.Get("my-tool"); r.Redacted().Env["TOKEN"] != "***" {
 		t.Fatal("env not redacted")
@@ -133,7 +130,7 @@ func TestCompilePatternRejectsAPatternThatMatchesAnEmptyLine(t *testing.T) {
 func TestOverlayUpsertsAndHides(t *testing.T) {
 	c := Default()
 	if err := c.ApplyOverlay(Overlay{
-		Agents: []Agent{{ID: "claude", Name: "Claude (opus)", Command: []string{"claude", "--model", "opus"}, AllowArgs: true}, {ID: "aider", Name: "Aider", Command: []string{"aider"}}},
+		Agents: []Agent{{ID: "claude", Name: "Claude (opus)", Command: []string{"claude", "--model", "opus"}, AllowArgs: true}, {ID: "zed", Name: "Zed", Command: []string{"zed"}}},
 		Hidden: []string{"shell"},
 	}); err != nil {
 		t.Fatal(err)
@@ -144,14 +141,14 @@ func TestOverlayUpsertsAndHides(t *testing.T) {
 	if _, ok := c.Get("shell"); ok {
 		t.Fatal("hidden agent still visible")
 	}
-	if _, ok := c.Get("aider"); !ok {
+	if _, ok := c.Get("zed"); !ok {
 		t.Fatal("new agent missing")
 	}
 	ids := []string{}
 	for _, a := range c.List() {
 		ids = append(ids, a.ID)
 	}
-	if ids[0] != "claude" || ids[len(ids)-1] != "aider" {
+	if ids[0] != "claude" || ids[len(ids)-1] != "zed" {
 		t.Fatalf("order: %v", ids)
 	}
 	if err := c.Upsert(Agent{ID: "Bad ID", Name: "x", Command: []string{"x"}}); err == nil {
@@ -296,19 +293,20 @@ func TestUpsertKeepsPositionAndHideRemoves(t *testing.T) {
 	if err := c.Upsert(Agent{ID: "codex", Name: "Codex (pinned)", Command: []string{"codex", "--yolo"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := idsOf(c); got != "claude,codex,agy,shell" {
+	if got := idsOf(c); got != builtIns {
 		t.Fatalf("replacing an agent moved it: %s", got)
 	}
 	if err := c.Upsert(Agent{ID: "zed", Name: "Zed", Command: []string{"zed"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := idsOf(c); got != "claude,codex,agy,shell,zed" {
+	if got := idsOf(c); got != builtIns+",zed" {
 		t.Fatalf("new agent not appended: %s", got)
 	}
 	if !c.Hide("agy") {
 		t.Fatal("hiding an existing agent reported false")
 	}
-	if got := idsOf(c); got != "claude,codex,shell,zed" {
+	withoutAgy := strings.Replace(builtIns, "agy,", "", 1)
+	if got := idsOf(c); got != withoutAgy+",zed" {
 		t.Fatalf("hide left the wrong order: %s", got)
 	}
 	if c.Hide("agy") || c.Hide("never-there") {
@@ -318,7 +316,7 @@ func TestUpsertKeepsPositionAndHideRemoves(t *testing.T) {
 	if err := c.Upsert(Agent{ID: "agy", Name: "Antigravity", Command: []string{"agy"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := idsOf(c); got != "claude,codex,shell,zed,agy" {
+	if got := idsOf(c); got != withoutAgy+",zed,agy" {
 		t.Fatalf("re-added agent misplaced: %s", got)
 	}
 	// A rejected upsert changes nothing.
@@ -342,7 +340,7 @@ func TestApplyOverlayIsAllOrNothing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "agents[1]") {
 		t.Fatalf("expected an error naming agents[1], got %v", err)
 	}
-	if got := idsOf(c); got != "claude,codex,agy,shell" {
+	if got := idsOf(c); got != builtIns {
 		t.Fatalf("failed overlay changed the catalog: %s", got)
 	}
 	if _, ok := c.Get("fine"); ok {
@@ -359,17 +357,17 @@ func TestApplyOverlayHidesLast(t *testing.T) {
 	if err := c.ApplyOverlay(Overlay{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := idsOf(c); got != "claude,codex,agy,shell" {
+	if got := idsOf(c); got != builtIns {
 		t.Fatalf("no-op overlay changed the catalog: %s", got)
 	}
 	// Agents apply first, so hiding wins over an agent with the same id.
 	if err := c.ApplyOverlay(Overlay{
-		Agents: []Agent{{ID: "aider", Name: "Aider", Command: []string{"aider"}}},
-		Hidden: []string{"aider", "shell"},
+		Agents: []Agent{{ID: "zed", Name: "Zed", Command: []string{"zed"}}},
+		Hidden: []string{"zed", "shell"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := idsOf(c); got != "claude,codex,agy" {
+	if got := idsOf(c); got != strings.TrimSuffix(builtIns, ",shell") {
 		t.Fatalf("hidden did not win: %s", got)
 	}
 }
@@ -401,7 +399,7 @@ func TestCloneIsIndependent(t *testing.T) {
 	a.EnvPassthrough[0] = "CHANGED"
 	a.Signal.Pattern = "changed"
 
-	if got := idsOf(orig); got != "claude,codex,agy,shell,tool" {
+	if got := idsOf(orig); got != builtIns+",tool" {
 		t.Fatalf("original order changed: %s", got)
 	}
 	b, _ := orig.Get("tool")
@@ -424,31 +422,6 @@ func TestZeroCatalogIsUsable(t *testing.T) {
 	}
 	if idsOf(c) != "y" || idsOf(clone) != "x" {
 		t.Fatalf("zero catalog and its clone share state: %q %q", idsOf(c), idsOf(clone))
-	}
-}
-
-func TestDefaultAdaptersAndSignals(t *testing.T) {
-	want := map[string]struct{ adapter, kind string }{
-		"claude": {"claude", "hook"},
-		"codex":  {"codex", "hook"},
-		"agy":    {"agy", "bell"},
-		"shell":  {"", "none"},
-	}
-	c := Default()
-	for id, w := range want {
-		a, ok := c.Get(id)
-		if !ok {
-			t.Fatalf("missing default agent %s", id)
-		}
-		if a.Adapter != w.adapter {
-			t.Errorf("%s: adapter %q, want %q", id, a.Adapter, w.adapter)
-		}
-		if a.Signal == nil || a.Signal.Kind != w.kind {
-			t.Errorf("%s: signal %+v, want kind %q", id, a.Signal, w.kind)
-		}
-		if err := validate(a); err != nil {
-			t.Errorf("%s: built-in fails validation: %v", id, err)
-		}
 	}
 }
 

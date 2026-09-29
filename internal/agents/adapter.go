@@ -21,8 +21,11 @@ type Adapter struct {
 	// Inject returns extra argv and env for a launch, given the hooks dir. Empty
 	// when the agent has no launch-time route.
 	Inject func(hooksDir string, sig catalog.Signal) (argv []string, env map[string]string)
-	// Install merges Conductor's hooks into the agent's own config under home.
-	// Idempotent. Returns the files it touched. nil when the agent has no file route.
+	// Install merges Conductor's hooks into the agent's own config under home
+	// and, for an agent that reads skills, copies the Conductor skill there.
+	// Idempotent. Returns the files it touched, none when nothing changed;
+	// what it leaves to the user comes back as an error wrapping ErrByHand.
+	// nil when the agent has no file route.
 	Install func(home, hooksDir string) ([]string, error)
 	// Status is a dry run of Install on home: installed is true when Install
 	// would change nothing and leave nothing to do by hand, so an install

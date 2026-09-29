@@ -8,8 +8,9 @@ import (
 
 // pi loads an extension named with --extension, so a session launched by
 // Conductor gets its extension from the hooks dir; Install copies it into
-// ~/.pi/agent/extensions, which pi loads on every start. oh-my-pi runs the
-// same extension (see omp.go).
+// ~/.pi/agent/extensions, which pi loads on every start, and puts the
+// Conductor skill in ~/.agents/skills. oh-my-pi runs the same extension (see
+// omp.go).
 
 const piExtension = ".pi/agent/extensions/conductor.ts"
 
@@ -42,6 +43,13 @@ export default function (pi) {
 
 var piAssets = map[string]string{"pi-conductor.ts": piScript}
 
+func piSteps(hooksDir string) []step {
+	return []step{
+		copyAsset(piAssets, hooksDir, "pi-conductor.ts", piExtension),
+		skillStep(hooksDir, agentsSkill),
+	}
+}
+
 func piAdapter() Adapter {
 	return Adapter{
 		ID:     "pi",
@@ -51,10 +59,10 @@ func piAdapter() Adapter {
 			return []string{"--extension", filepath.Join(hooksDir, "pi-conductor.ts")}, nil
 		},
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, copyAsset(piAssets, hooksDir, "pi-conductor.ts", piExtension))
+			return install(home, piSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return statusOf(home, piExtension, copyAsset(piAssets, "", "pi-conductor.ts", piExtension))
+			return statusOf(home, piExtension, piSteps("")...)
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(piAssets, hooksDir, "pi-conductor.ts")

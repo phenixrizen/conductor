@@ -34,6 +34,10 @@ type Server struct {
 	// fileDeny lists the directories and files no file read may reach, even
 	// inside a session's working directory (see fileDeny).
 	fileDeny []string
+	// home is the server user's home directory: the integrations routes
+	// report and install the agents' hooks there, and nowhere else. Empty
+	// when it is unknown.
+	home string
 
 	// catalogMu guards overlay and catalog. catalog is the effective catalog,
 	// base with overlay applied. It is replaced as a whole and never edited in
@@ -63,6 +67,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if err != nil {
 		return nil, err
 	}
+	home, _ := os.UserHomeDir()
 	s := &Server{
 		cfg:      cfg,
 		base:     base,
@@ -75,6 +80,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		web:      web,
 		store:    st,
 		fileDeny: fileDeny(cfg, st),
+		home:     home,
 	}
 	s.events = newEventHub()
 	s.hosts = signal.NewHub(s.registry, log)
@@ -102,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/catalog/check", s.requireAdmin(s.handleCheckCommand))
 	mux.HandleFunc("DELETE /api/catalog/{id}", s.requireAdmin(s.handleDeleteAgent))
 	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.requireAdmin(s.handleUnhideAgent))
+	mux.HandleFunc("GET /api/integrations", s.requireAdmin(s.handleIntegrations))
+	mux.HandleFunc("POST /api/integrations/{id}/install", s.requireAdmin(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.requireAdmin(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)

@@ -9,6 +9,7 @@ import (
 // ~/.codex. Install puts the same notify line in a marked block of
 // ~/.codex/config.toml and writes ~/.codex/hooks.json, Codex's experimental
 // hooks, when there is none; Codex runs those only with features.hooks on.
+// Install also puts the Conductor skill in ~/.codex/skills.
 
 const (
 	codexConfig = ".codex/config.toml"
@@ -64,6 +65,7 @@ func codexSteps(hooksDir string) []step {
 			}
 			return createJSON(h, codexHooks, asset, codexMarker, codexHooksHint)
 		}},
+		skillStep(hooksDir, codexSkill),
 	}
 }
 

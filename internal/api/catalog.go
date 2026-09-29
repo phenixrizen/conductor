@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -55,6 +57,10 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 	// into the overlay.
 	var probe catalog.Catalog
 	if err := probe.Upsert(a); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
+		return
+	}
+	if err := checkAdapter(a); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
 		return
 	}
@@ -161,6 +167,24 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"found": true, "path": path})
+}
+
+// checkAdapter rejects an agent whose adapter Conductor does not have. The
+// catalog cannot check it itself (the adapters import the catalog), so an
+// unknown adapter in a config file is only noticed at launch, where it wires
+// nothing; the Agents page is told at once.
+func checkAdapter(a catalog.Agent) error {
+	if a.Adapter == "" {
+		return nil
+	}
+	if _, ok := agents.Get(a.Adapter); ok {
+		return nil
+	}
+	var ids []string
+	for _, ad := range agents.All() {
+		ids = append(ids, ad.ID)
+	}
+	return fmt.Errorf("agent %s: unknown adapter %q (one of %s)", a.ID, a.Adapter, strings.Join(ids, ", "))
 }
 
 // restoreMaskedEnv puts the stored value back for every env entry of a whose

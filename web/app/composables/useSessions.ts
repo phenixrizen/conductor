@@ -84,6 +84,24 @@ export interface EventInput {
   options?: AttentionOption[]
 }
 
+/** One hook adapter as GET /api/integrations lists it, checked against the home of the user running the server. */
+export interface Integration {
+  id: string
+  name: string
+  /** What the adapter can report, such as needs_input, done or tool_use. */
+  events: string[]
+  /** A launch from this server wires the hooks in (flags or environment). */
+  launchInjection: boolean
+  /** The hooks are in place as an install would leave them: false after an upgrade moved the binary, until installed again. */
+  installed: boolean
+  /** The install's main file; empty when there is no file to install into. */
+  where: string
+  /** What to paste to wire the agent by hand. */
+  snippet: string
+  /** The agent's hook interface is still changing (a developer preview). */
+  experimental: boolean
+}
+
 export interface ShareLink {
   id: string
   sessionId: string
@@ -127,6 +145,15 @@ export function useSessions() {
       request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: argv } }),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
+    /** Every hook adapter, in a stable order, with its install checked in the server user's home. */
+    integrations: () => request<{ integrations: Integration[] }>('/api/integrations').then((r) => r.integrations ?? []),
+    /**
+     * Installs an adapter's hooks into the server user's home and returns the files it changed, [] when they were in place.
+     * 400 `no_file_route`: nothing to install, or a step left to do by hand with the adapter's `snippet` (files changed before it stay changed);
+     * 500 `install_failed`.
+     */
+    installIntegration: (id: string) =>
+      request<{ changed: string[] }>(`/api/integrations/${encodeURIComponent(id)}/install`, { method: 'POST' }).then((r) => r.changed ?? []),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),
     createLink: (id: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
       request<{ link: ShareLink; token: string; url: string }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),

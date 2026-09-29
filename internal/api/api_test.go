@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1876,4 +1877,201 @@ func TestSessionOwnEntriesReachTheEventStream(t *testing.T) {
 	}
 	c.c.CloseNow()
 	e.waitEvent(t, events, isActivity("leave", id))
+}
+
+// integrations returns what GET /api/integrations lists, keyed by id, and the
+// ids in their order.
+func (e *testEnv) integrations() (map[string]map[string]any, []string) {
+	e.t.Helper()
+	resp, out := e.do("GET", "/api/integrations", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		e.t.Fatalf("list integrations: %d %v", resp.StatusCode, out)
+	}
+	raw, ok := out["integrations"].([]any)
+	if !ok {
+		e.t.Fatalf("integrations: %v", out)
+	}
+	byID := map[string]map[string]any{}
+	var ids []string
+	for _, r := range raw {
+		it := r.(map[string]any)
+		id, _ := it["id"].(string)
+		byID[id] = it
+		ids = append(ids, id)
+	}
+	return byID, ids
+}
+
+// GET /api/integrations lists every adapter with what it reports, whether it
+// is wired at launch and whether its hooks are installed in the server
+// user's home; POST /api/integrations/{id}/install puts them there, once.
+// An agent whose hooks cannot be installed from a file answers
+// no_file_route, with the snippet to do it by hand.
+func TestIntegrationsListAndInstall(t *testing.T) {
+	e := newTestEnv(t, nil)
+	home := t.TempDir()
+	e.srv.home = home
+
+	list, ids := e.integrations()
+	var want []string
+	for _, a := range agents.All() {
+		want = append(want, a.ID)
+	}
+	if len(ids) != 12 || !slices.Equal(ids, want) {
+		t.Fatalf("integrations %v, want %v", ids, want)
+	}
+	fields := []string{"events", "experimental", "id", "installed", "launchInjection", "name", "snippet", "where"}
+	for _, id := range ids {
+		it := list[id]
+		if keys := slices.Sorted(maps.Keys(it)); !slices.Equal(keys, fields) {
+			t.Errorf("%s: fields %v, want %v", id, keys, fields)
+		}
+		a, _ := agents.Get(id)
+		if it["name"] != a.Name || it["launchInjection"] != (a.Inject != nil) || it["experimental"] != a.Experimental || it["installed"] != false {
+			t.Errorf("%s: %v", id, it)
+		}
+		if events, _ := it["events"].([]any); len(events) != len(a.Events) || events[0] != a.Events[0] {
+			t.Errorf("%s: events %v, want %v", id, it["events"], a.Events)
+		}
+		if s, _ := it["snippet"].(string); s == "" {
+			t.Errorf("%s: no snippet", id)
+		}
+	}
+	copilotFile := filepath.Join(home, ".copilot", "hooks", "conductor.json")
+	if c := list["copilot"]; c["where"] != copilotFile || !strings.Contains(c["snippet"].(string), " notify --copilot-hook") || c["launchInjection"] != false {
+		t.Fatalf("copilot: %v", c)
+	}
+	if c := list["claude"]; c["launchInjection"] != true || c["where"] != filepath.Join(home, ".claude", "settings.json") {
+		t.Fatalf("claude: %v", c)
+	}
+	// Nothing to install for aider (its environment is set at launch) or
+	// dsh (by hand): no place to report.
+	for _, id := range []string{"aider", "dsh"} {
+		if list[id]["where"] != "" {
+			t.Fatalf("%s: %v", id, list[id])
+		}
+	}
+	if list["dsh"]["experimental"] != true {
+		t.Fatalf("dsh: %v", list["dsh"])
+	}
+
+	resp, out := e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out["changed"], []any{copilotFile}) {
+		t.Fatalf("install: %d %v", resp.StatusCode, out)
+	}
+	if b, err := os.ReadFile(copilotFile); err != nil || !strings.Contains(string(b), " notify --copilot-hook") {
+		t.Fatalf("%s: %v\n%s", copilotFile, err, b)
+	}
+	resp, out = e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
+	if changed, ok := out["changed"].([]any); resp.StatusCode != http.StatusOK || !ok || len(changed) != 0 {
+		t.Fatalf("second install: %d %v", resp.StatusCode, out)
+	}
+	if list, _ = e.integrations(); list["copilot"]["installed"] != true || list["copilot"]["where"] != copilotFile {
+		t.Fatalf("copilot after install: %v", list["copilot"])
+	}
+
+	for _, tc := range []struct{ id, message, snippet string }{
+		{"dsh", "developer preview", "permission-requested"},
+		{"aider", "at launch", "AIDER_NOTIFICATIONS=true"},
+	} {
+		resp, out = e.do("POST", "/api/integrations/"+tc.id+"/install", adminToken, nil)
+		apiErr, _ := out["error"].(map[string]any)
+		msg, _ := apiErr["message"].(string)
+		snippet, _ := apiErr["snippet"].(string)
+		if resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "no_file_route" || !strings.Contains(msg, tc.message) || !strings.Contains(snippet, tc.snippet) {
+			t.Fatalf("%s: %d %v", tc.id, resp.StatusCode, out)
+		}
+	}
+	resp, out = e.do("POST", "/api/integrations/gemini/install", adminToken, nil)
+	if resp.StatusCode != http.StatusNotFound || errorCode(out) != "not_found" {
+		t.Fatalf("unknown integration: %d %v", resp.StatusCode, out)
+	}
+	// Only the server user's home was written, and only copilot's file.
+	var written []string
+	filepath.WalkDir(home, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			written = append(written, p)
+		}
+		return err
+	})
+	if !slices.Equal(written, []string{copilotFile}) {
+		t.Fatalf("home holds %q", written)
+	}
+}
+
+// What Install does before a step it leaves to the admin is kept and
+// reported with no_file_route; an install that fails answers install_failed.
+func TestIntegrationsInstallByHandAndFailure(t *testing.T) {
+	e := newTestEnv(t, nil)
+	home := t.TempDir()
+	e.srv.home = home
+	hooksJSON := filepath.Join(home, ".codex", "hooks.json")
+	os.MkdirAll(filepath.Dir(hooksJSON), 0o700)
+	os.WriteFile(hooksJSON, []byte(`{"hooks":{}}`), 0o600)
+	resp, out := e.do("POST", "/api/integrations/codex/install", adminToken, nil)
+	apiErr, _ := out["error"].(map[string]any)
+	msg, _ := apiErr["message"].(string)
+	snippet, _ := apiErr["snippet"].(string)
+	config := filepath.Join(home, ".codex", "config.toml")
+	skill := filepath.Join(home, ".codex", "skills", "conductor", "SKILL.md")
+	if resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "no_file_route" || !strings.Contains(msg, hooksJSON) ||
+		!strings.Contains(snippet, "# >>> conductor") || !reflect.DeepEqual(apiErr["changed"], []any{config, skill}) {
+		t.Fatalf("codex: %d %v", resp.StatusCode, out)
+	}
+	if b, _ := os.ReadFile(hooksJSON); string(b) != `{"hooks":{}}` {
+		t.Fatalf("hooks.json changed: %s", b)
+	}
+
+	// A home that is a file cannot hold the agent's directories.
+	file := filepath.Join(t.TempDir(), "home")
+	os.WriteFile(file, nil, 0o600)
+	e.srv.home = file
+	resp, out = e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
+	if resp.StatusCode != http.StatusInternalServerError || errorCode(out) != "install_failed" {
+		t.Fatalf("install into a file: %d %v", resp.StatusCode, out)
+	}
+	if list, _ := e.integrations(); list["copilot"]["installed"] != false {
+		t.Fatalf("copilot: %v", list["copilot"])
+	}
+}
+
+func TestIntegrationsRoutesNeedTheAdminToken(t *testing.T) {
+	e := newTestEnv(t, nil)
+	home := t.TempDir()
+	e.srv.home = home
+	for _, r := range []struct{ method, path string }{
+		{"GET", "/api/integrations"},
+		{"POST", "/api/integrations/copilot/install"},
+	} {
+		for _, token := range []string{"", "wrong", "test-host-token"} {
+			if resp, _ := e.do(r.method, r.path, token, nil); resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s %s with token %q: %d", r.method, r.path, token, resp.StatusCode)
+			}
+		}
+	}
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Fatalf("an unauthorized call wrote %v", entries)
+	}
+}
+
+// An agent's adapter must be one Conductor has: every registered adapter
+// saves, and an unknown one is rejected with a message that names it.
+func TestCatalogSaveChecksTheAdapter(t *testing.T) {
+	e := newTestEnv(t, nil)
+	for _, a := range agents.All() {
+		body := agentBody("with-" + a.ID)
+		body["adapter"] = a.ID
+		e.save(body)
+	}
+	body := agentBody("ghost")
+	body["adapter"] = "gemini"
+	resp, out := e.do("POST", "/api/catalog", adminToken, body)
+	apiErr, _ := out["error"].(map[string]any)
+	msg, _ := apiErr["message"].(string)
+	if resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "invalid_agent" || !strings.Contains(msg, `"gemini"`) {
+		t.Fatalf("unknown adapter: %d %v", resp.StatusCode, out)
+	}
+	if slices.Contains(e.catalogIDs(), "ghost") {
+		t.Fatal("an agent with an unknown adapter was saved")
+	}
 }

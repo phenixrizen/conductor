@@ -10,6 +10,7 @@ import (
 // Conductor gets its hooks without anything written to ~/.claude. Install
 // merges the same hooks into ~/.claude/settings.json for Claude Code started
 // anywhere else; Claude Code runs a hook command it finds in both only once.
+// Install also puts the Conductor skill in ~/.claude/skills.
 
 const (
 	claudeMarker   = "notify --claude-hook"
@@ -29,13 +30,16 @@ var claudeAssets = map[string]string{
 }
 
 func claudeSteps(hooksDir string) []step {
-	return []step{{claudeSettings, func(h *homeDir) (bool, error) {
-		asset, err := assetFor(claudeAssets, hooksDir, "claude.json")
-		if err != nil {
-			return false, err
-		}
-		return mergeJSONHooks(h, claudeSettings, asset, claudeMarker)
-	}}}
+	return []step{
+		{claudeSettings, func(h *homeDir) (bool, error) {
+			asset, err := assetFor(claudeAssets, hooksDir, "claude.json")
+			if err != nil {
+				return false, err
+			}
+			return mergeJSONHooks(h, claudeSettings, asset, claudeMarker)
+		}},
+		skillStep(hooksDir, claudeSkill),
+	}
 }
 
 func claudeAdapter() Adapter {

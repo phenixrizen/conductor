@@ -17,6 +17,10 @@ Usage:
   conductor host [flags] -- <command...>
                                host a local terminal session
   conductor notify [flags]     report "needs input" from inside a session
+  conductor hooks install <adapter>|all [--home DIR] [--data-dir DIR]
+                               put Conductor's hooks into an agent's own config
+  conductor hooks status       show which agents have Conductor's hooks
+  conductor skill              print the Conductor skill (SKILL.md)
   conductor version            print the version
 
 Run "conductor <command> -h" for command flags.
@@ -35,6 +39,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":
 		return runNotify(ctx, args[1:], stdin, stdout, stderr)
+	case "hooks":
+		return runHooks(ctx, args[1:], stdout, stderr)
+	case "skill":
+		return runSkill(args[1:], stdout, stderr)
 	case "version", "-v", "--version":
 		fmt.Fprintln(stdout, "conductor", version.String())
 		return 0, nil

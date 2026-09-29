@@ -97,11 +97,12 @@ func checkBin(bin string) error {
 }
 
 // WriteAssets renders every adapter's assets for bin, the absolute path of the
-// conductor binary, and writes them under hooksDir. Conductor owns the
-// directory: it is made 0700 and every asset 0600, whatever they were. Each
-// file is replaced whole, so an agent reading one never sees half of it, and
-// one that already holds the right content is not rewritten. From then on the
-// adapters name bin wherever they render the binary themselves.
+// conductor binary, and writes them under hooksDir with the Conductor skill.
+// Conductor owns the directory: it is made 0700 and every asset 0600,
+// whatever they were. Each file is replaced whole, so an agent reading one
+// never sees half of it, and one that already holds the right content is not
+// rewritten. From then on the adapters name bin wherever they render the
+// binary themselves.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -115,9 +116,13 @@ func WriteAssets(hooksDir, bin string) error {
 	if err := os.Chmod(hooksDir, 0o700); err != nil {
 		return err
 	}
+	sets := []map[string]string{skillAssets}
 	for _, a := range registry {
-		for _, rel := range slices.Sorted(maps.Keys(a.Assets)) {
-			content, err := render(rel, a.Assets[rel], bin)
+		sets = append(sets, a.Assets)
+	}
+	for _, assets := range sets {
+		for _, rel := range slices.Sorted(maps.Keys(assets)) {
+			content, err := render(rel, assets[rel], bin)
 			if err != nil {
 				return err
 			}

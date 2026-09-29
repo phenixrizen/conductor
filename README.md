@@ -127,39 +127,100 @@ outside it; hold **Alt** with the same key (**Alt+N**, **Alt+W**, **Alt+←**)
 to use a shortcut without leaving the terminal. Your display name defaults to
 the server's user and can be changed from the person button in the sidebar.
 
-## Let agents tell Conductor they need you
+## Events and hooks
 
 Every session's process gets `CONDUCTOR_NOTIFY_URL` and `CONDUCTOR_NOTIFY_TOKEN`
-in its environment, and `conductor notify` posts a state with them. Outside a
-Conductor session the command exits silently, so it is safe to install
-globally. Sessions that need a human show an amber **needs input** badge, move
-to the top of the sidebar, count in the tab title, can raise a browser
-notification, and appear in the wall queue. Claude Code permission requests
-arrive with their options, so **Yes / Always / No** buttons appear wherever
-the prompt is shown.
+in its environment, and `conductor notify` reports with them: an attention
+state (`--state needs_input`, `working`, `done` or `clear`) or an event
+(`--event progress`, `artifact`, `handoff`, `tool_use`, `tool_denied` or
+`error`). Outside a Conductor session the command exits silently, so it is
+safe to install globally. Sessions that need a human show an amber **needs
+input** badge, move to the top of the sidebar, count in the tab title, can
+raise a browser notification, and appear in the wall queue. Claude Code
+permission requests arrive with their options, so **Yes / Always / No** buttons
+appear wherever the prompt is shown. Every report also lands in the session's
+activity log and in the live feed of the **Events** page.
 
-Claude Code (`~/.claude/settings.json` or a project's `.claude/settings.json`):
+**Wired at launch.** Conductor has a hook adapter for every built-in agent but
+the shell. At startup `conductor serve` writes the hook files into `hooks/` in
+its data directory, naming its own binary, and an agent whose catalog signal
+is `hook` gets them when the server launches it, with nothing written to the
+agent's own config: Claude Code through `--settings`, Codex through
+`-c notify=…`, pi through `--extension`, aider through its notification
+environment variables. `conductor host --agent <id> -- <command>` does the same
+on your machine.
 
-```json
-{
-  "hooks": {
-    "Notification": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }]
+**Installed on demand.** The other agents read hooks only from their own
+config, and so do the agents above when something other than Conductor starts
+them. The **Events** page lists every adapter with what it reports and whether
+its hooks are installed, the snippet to paste, and **Install on this machine**,
+which adds Conductor's hooks to the agent's config in the server user's home,
+next to your own settings and hooks and never over them: entries in its hook
+lists, a marked block, or a file of Conductor's own. The same from a shell, for
+whoever runs it, a host included:
+
+```bash
+conductor hooks install claude    # one adapter, or: conductor hooks install all
+conductor hooks status            # which agents have the hooks, and where
+```
+
+`install` prints the files it wrote, and a second run changes nothing. What it
+cannot do from a file it prints with the snippet instead: DeepSeek Harness, a
+developer preview, is always installed by hand, and a Codex `hooks.json` of
+your own is never overwritten. `--home DIR` installs into another home
+directory. The hooks are copied from `hooks/` in the data directory
+`--data-dir DIR` names, by default the one `conductor serve` uses without a
+config file; when there are none there, they name the binary you run.
+
+**Agents without hooks.** Any tool that rings the terminal bell or emits an
+OSC 9 / OSC 777 notification is detected with no configuration at all. A
+catalog signal of kind `pattern` watches the last line of the screen instead,
+as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
+--state needs_input --message "approve?"` from a script for anything else;
+`--state clear` resets it.
+
+**The Conductor skill.** `conductor skill` prints a `SKILL.md` that teaches an
+agent to report on its own: progress (`--event progress --message "4/7
+handlers"`), an artifact such as a pull request (`--event artifact --url …`),
+a handoff to another crew member (`--event handoff --to …`) and a decision it
+cannot make (`--state needs_input`). Installing the hooks for Claude Code,
+Codex, pi or Goose also puts the skill in their skills directory
+(`~/.claude/skills/conductor/`, `~/.codex/skills/conductor/`, or
+`~/.agents/skills/conductor/` for pi and Goose), and the server keeps a copy
+in `hooks/skills/conductor/SKILL.md`.
+
+<details>
+<summary>Wiring the hooks by hand</summary>
+
+`conductor hooks install` and the Events page write these for you, naming the
+binary by its absolute path. Written by hand as below, `conductor` must be on
+the `PATH` the agent runs its hooks with. A session Conductor launches already
+gets Claude Code's hooks through `--settings`: add them to your own settings
+for Claude Code started elsewhere.
+
+- Claude Code (`~/.claude/settings.json` or a project's `.claude/settings.json`):
+
+  ```json
+  {
+    "hooks": {
+      "Notification": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }],
+      "Stop": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }],
+      "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "conductor notify --claude-hook" }] }]
+    }
   }
-}
-```
+  ```
 
-Codex (`~/.codex/config.toml`):
+- Codex (`~/.codex/config.toml`, above its first `[table]`; set
+  `tui.notification_method = "bel"` too for the bell):
 
-```toml
-notify = ["conductor", "notify", "--codex"]
-```
+  ```toml
+  notify = ["conductor", "notify", "--codex"]
+  ```
 
-Any tool that rings the terminal bell or emits an OSC 9 / OSC 777 notification is
-detected with no configuration at all (for Codex set
-`tui.notification_method = "bel"`). Run `conductor notify --state needs_input
---message "approve?"` from a script for anything else; `--state clear` resets it.
+- Every other agent: the snippet on its card on the Events page, which is also
+  its file in `hooks/` in the server's data directory.
+
+</details>
 
 ## Configuration
 
@@ -198,8 +259,11 @@ working there can read and commit its secrets.
 
 ### Agent catalog
 
-Built-in entries: `claude`, `codex`, `agy` and `shell`. Add your own or override
-an entry by ID:
+Built-in entries, one for each agent with a hook adapter (see
+[Events and hooks](#events-and-hooks)): `claude`, `codex`, `agy`, `copilot`,
+`cursor` (runs `cursor-agent`), `opencode`, `pi`, `omp`, `aider`, `goose`,
+`amp` and `dsh`, then `shell` (`/bin/bash -l`, which takes no extra
+arguments). Add your own or override an entry by ID:
 
 ```json
 {
@@ -233,7 +297,8 @@ matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
 200, `command` has at most 32 elements of at most 4096 bytes each, `env` has at
 most 32 keys, `envPassthrough` (names of server environment variables the agent
 may inherit) at most 32 names, and a signal `pattern` (a regular expression) at
-most 200 bytes that does not match an empty line.
+most 200 bytes that does not match an empty line. An agent saved from the UI
+must name a known `adapter`, if it names one.
 
 ## Security model and limits
 

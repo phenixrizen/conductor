@@ -175,20 +175,21 @@ func TestInjectNeedsAnAbsoluteHooksDir(t *testing.T) {
 }
 
 // The files each adapter's Install writes, relative to home, and the one its
-// Status reports.
+// Status reports. The agents that read skills also get the Conductor skill
+// (skillFor).
 var installed = map[string]struct {
 	files  []string
 	status string
 }{
-	"claude":   {[]string{".claude/settings.json"}, ".claude/settings.json"},
-	"codex":    {[]string{".codex/config.toml", ".codex/hooks.json"}, ".codex/config.toml"},
+	"claude":   {[]string{".claude/settings.json", skillFor["claude"]}, ".claude/settings.json"},
+	"codex":    {[]string{".codex/config.toml", ".codex/hooks.json", skillFor["codex"]}, ".codex/config.toml"},
 	"agy":      {[]string{".gemini/config/hooks.json"}, ".gemini/config/hooks.json"},
 	"copilot":  {[]string{".copilot/hooks/conductor.json"}, ".copilot/hooks/conductor.json"},
 	"cursor":   {[]string{".cursor/hooks.json"}, ".cursor/hooks.json"},
 	"opencode": {[]string{".config/opencode/plugins/conductor.ts"}, ".config/opencode/plugins/conductor.ts"},
-	"pi":       {[]string{".pi/agent/extensions/conductor.ts"}, ".pi/agent/extensions/conductor.ts"},
+	"pi":       {[]string{".pi/agent/extensions/conductor.ts", skillFor["pi"]}, ".pi/agent/extensions/conductor.ts"},
 	"omp":      {[]string{".omp/agent/config.yml", ".omp/agent/extensions/conductor.ts"}, ".omp/agent/extensions/conductor.ts"},
-	"goose":    {[]string{".agents/plugins/conductor/hooks/hooks.json"}, ".agents/plugins/conductor/hooks/hooks.json"},
+	"goose":    {[]string{".agents/plugins/conductor/hooks/hooks.json", skillFor["goose"]}, ".agents/plugins/conductor/hooks/hooks.json"},
 	"amp":      {[]string{".config/amp/plugins/conductor/index.ts"}, ".config/amp/plugins/conductor/index.ts"},
 }
 
@@ -260,7 +261,7 @@ func TestInstallOnAnEmptyHome(t *testing.T) {
 
 // An adapter that owns its file writes exactly what Conductor generated,
 // replaces a stale copy of it and leaves every other file in the directory
-// alone.
+// alone. (pi and Goose also write the skill, on a home that has none.)
 func TestInstallReplacesOnlyItsOwnFile(t *testing.T) {
 	useBin(t, "/opt/conductor")
 	cases := []struct{ id, asset, file string }{
@@ -285,8 +286,12 @@ func TestInstallReplacesOnlyItsOwnFile(t *testing.T) {
 			os.WriteFile(own, []byte("an older conductor wrote this"), 0o644)
 			a, _ := Get(c.id)
 			touched, err := a.Install(home, hooks)
-			if err != nil || !slices.Equal(touched, []string{own}) {
-				t.Fatalf("install: %q %v", touched, err)
+			wantTouched := []string{own}
+			if rel, ok := skillFor[c.id]; ok {
+				wantTouched = append(wantTouched, filepath.Join(home, filepath.FromSlash(rel)))
+			}
+			if err != nil || !slices.Equal(touched, wantTouched) {
+				t.Fatalf("install: %q %v, want %q", touched, err, wantTouched)
 			}
 			got, _ := os.ReadFile(own)
 			want, _ := os.ReadFile(filepath.Join(hooks, filepath.FromSlash(c.asset)))
@@ -325,7 +330,7 @@ func TestInstallClaudeMergesEveryHookList(t *testing.T) {
 	os.WriteFile(settings, []byte("{\n    \"permissions\": {\"allow\": [\"Bash(ls)\"]},\n    \"hooks\": {\"PreToolUse\": [{\"matcher\": \"Bash\", \"hooks\": [{\"type\": \"command\", \"command\": \"guard\"}]}]},\n    \"model\": \"opus\"\n}\n"), 0o644)
 	a, _ := Get("claude")
 	touched, err := a.Install(home, t.TempDir())
-	if err != nil || !slices.Equal(touched, []string{settings}) {
+	if err != nil || !slices.Equal(touched, []string{settings, filepath.Join(home, ".claude", "skills", "conductor", "SKILL.md")}) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	b, _ := os.ReadFile(settings)
@@ -375,7 +380,8 @@ func TestInstallCodexKeepsTheConfigAndNeverOverwritesHooks(t *testing.T) {
 	os.WriteFile(hooksJSON, []byte(`{"hooks":{}}`), 0o600)
 	a, _ := Get("codex")
 	touched, err := a.Install(home, t.TempDir())
-	if !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), hooksJSON) || !strings.Contains(err.Error(), "features.hooks") || !slices.Equal(touched, []string{config}) {
+	skill := filepath.Join(home, ".codex", "skills", "conductor", "SKILL.md")
+	if !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), hooksJSON) || !strings.Contains(err.Error(), "features.hooks") || !slices.Equal(touched, []string{config, skill}) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	block := "# >>> conductor\nnotify = [\"/opt/conductor\", \"notify\", \"--codex\"]\n# <<< conductor\n"
@@ -414,8 +420,8 @@ func TestInstallCodexRefusesASecondNotify(t *testing.T) {
 	if b, _ := os.ReadFile(config); string(b) != original {
 		t.Fatalf("config.toml changed:\n%s", b)
 	}
-	// The hooks file is independent of it and still written.
-	if !slices.Equal(touched, []string{filepath.Join(home, ".codex", "hooks.json")}) {
+	// The hooks file and the skill are independent of it and still written.
+	if !slices.Equal(touched, []string{filepath.Join(home, ".codex", "hooks.json"), filepath.Join(home, ".codex", "skills", "conductor", "SKILL.md")}) {
 		t.Fatalf("touched %q", touched)
 	}
 	if ok, _ := a.Status(home); ok {
@@ -584,7 +590,7 @@ func TestSnippetsNameTheBinary(t *testing.T) {
 
 // Install never writes through a link: not when the file is one, and not
 // when a directory on the way leads out of home. A link that stays in home is
-// followed.
+// followed. A step refused that way leaves the others to go ahead.
 func TestInstallDoesNotFollowLinksOutOfHome(t *testing.T) {
 	useBin(t, "/opt/conductor")
 	outside := t.TempDir()
@@ -597,7 +603,8 @@ func TestInstallDoesNotFollowLinksOutOfHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude, _ := Get("claude")
-	if touched, err := claude.Install(home, t.TempDir()); !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), "symbolic link") || len(touched) != 0 {
+	skill := filepath.Join(home, ".claude", "skills", "conductor", "SKILL.md")
+	if touched, err := claude.Install(home, t.TempDir()); !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), "symbolic link") || !slices.Equal(touched, []string{skill}) {
 		t.Fatalf("file link: %q %v", touched, err)
 	}
 	if b, _ := os.ReadFile(target); string(b) != `{"model":"opus"}` {
@@ -734,7 +741,7 @@ func TestInstallLeavesBareConductorEntriesAlone(t *testing.T) {
 		t.Fatal("a partial install reads as installed")
 	}
 	touched, err := a.Install(home, t.TempDir())
-	if err != nil || !slices.Equal(touched, []string{settings}) {
+	if err != nil || !slices.Equal(touched, []string{settings, filepath.Join(home, ".claude", "skills", "conductor", "SKILL.md")}) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	b, _ := os.ReadFile(settings)

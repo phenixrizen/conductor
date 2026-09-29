@@ -313,18 +313,21 @@ does the same for a hosted session.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <admin token>`; a share token is also accepted where the
 table says so. JSON request bodies are limited to 64 KiB and unknown fields are
-rejected. Errors are `{"error":{"code","message"}}`. The WebSocket routes,
-`GET /ws/sessions/{id}` and `GET /ws/host`, are described above.
+rejected. Errors are `{"error":{"code","message"}}`, with more fields where the
+table says so. The WebSocket routes, `GET /ws/sessions/{id}` and
+`GET /ws/host`, are described above.
 
 | Route | Auth | Purpose |
 |---|---|---|
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions` |
 | `GET /api/whoami` | admin | OS user running the server (the default display name) |
 | `GET /api/catalog` | admin | `{agents, hidden}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog |
-| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value stored for that key and is rejected for a key the agent does not have; `400 invalid_agent` carries the validation message, `503 store_unavailable` when there is no data directory |
+| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value stored for that key and is rejected for a key the agent does not have; `400 invalid_agent` carries the validation message, an unknown `adapter` included; `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
+| `GET /api/integrations` | admin | `{integrations}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installed, where, snippet, experimental}`; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
+| `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `snippet` and `changed` (files already written); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?}`, reply `201` with the session `Info` |
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links` |
