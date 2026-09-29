@@ -10,6 +10,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `cmd/conductor` | entry point (`serve`, `host`, `notify`, `version`) |
 | `internal/cli` | flags only; no business logic |
 | `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog |
+| `internal/store` | atomic JSON documents in the data directory (`dataDir`) |
 | `internal/proto` | binary framing and JSON messages |
 | `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention |
 | `internal/share`, `internal/signal`, `internal/api` | share tokens; hosted-session brokering; HTTP + WebSocket surface |
