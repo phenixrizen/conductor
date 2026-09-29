@@ -236,19 +236,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		return
 	}
 	// Writer: drain frames queued by the host side.
-	go func() {
-		for {
-			select {
-			case <-v.Done():
-				sink.Close(v.Reason())
-				return
-			case frame := <-v.Out:
-				if err := sink.WriteFrame(frame); err != nil {
-					return
-				}
-			}
-		}
-	}()
+	go v.Pump(sink)
 	go keepalive(sink.ctx, c)
 	for {
 		f, err := readFrame(sink.ctx, c, 0)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -308,6 +309,94 @@ func TestSettleWaitsForTheFinalStatusEntry(t *testing.T) {
 		default:
 			t.Fatal("settle returned before the final status entry was sent")
 		}
+	}
+}
+
+// gatedSink is a viewer whose transport is slow to take the final status: it
+// records every frame and holds the status until gate is closed, as a relay
+// write that takes a while would.
+type gatedSink struct {
+	gate chan struct{}
+	mu   sync.Mutex
+	got  []string
+}
+
+func (*gatedSink) Transport() string { return "test" }
+func (g *gatedSink) WriteFrame(frame []byte) error {
+	f, err := proto.Decode(frame)
+	if err != nil || f.Type != proto.TypeControl {
+		return nil
+	}
+	t, _ := proto.ParseHeader(f.Payload)
+	if t == proto.CtlStatus {
+		<-g.gate
+	}
+	g.mu.Lock()
+	g.got = append(g.got, t)
+	g.mu.Unlock()
+	return nil
+}
+func (*gatedSink) Close(error) {}
+
+func (g *gatedSink) saw(t string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Contains(g.got, t)
+}
+
+// The session announces its end to its viewers by queueing a status frame for
+// each; the viewer's own goroutine writes it, which for a relay viewer means
+// on the control connection. Run closes that connection once settle returns,
+// so settle must wait for the viewers to be handed the frame, or a relay
+// viewer is told the host is gone without ever being told why.
+func TestSettleWaitsForTheViewersToGetTheFinalStatus(t *testing.T) {
+	a, _ := activityTestAgent(t, 0)
+	a.flushed = make(chan struct{}) // no watchStatus here to report the status message
+	close(a.flushed)
+	sink := &gatedSink{gate: make(chan struct{})}
+	if _, err := a.local.Attach("v1", session.RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	go a.local.Stop(t.Context())
+	select {
+	case <-a.local.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session did not end")
+	}
+	time.AfterFunc(200*time.Millisecond, func() { close(sink.gate) })
+	a.settle(t.Context())
+	if !sink.saw(proto.CtlStatus) {
+		t.Fatal("settle returned before the viewer was handed the final status")
+	}
+}
+
+// stuckSink is a viewer whose transport never takes a frame.
+type stuckSink struct{ release chan struct{} }
+
+func (*stuckSink) Transport() string { return "test" }
+func (s *stuckSink) WriteFrame([]byte) error {
+	<-s.release
+	return nil
+}
+func (*stuckSink) Close(error) {}
+
+// A viewer that will not take its frames must not hold up a host that has been
+// stopped from outside either: there is no connection left to send them on.
+func TestSettleDoesNotWaitForViewersOnceCancelled(t *testing.T) {
+	a, _ := activityTestAgent(t, 0)
+	a.flushed = make(chan struct{})
+	close(a.flushed)
+	stuck := &stuckSink{release: make(chan struct{})}
+	defer close(stuck.release)
+	if _, err := a.local.Attach("v1", session.RoleView, "", 80, 24, stuck); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	a.settle(ctx)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("settle took %v after the host was cancelled", took)
 	}
 }
 

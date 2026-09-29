@@ -162,9 +162,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		_ = local.Stop(stopCtx)
 		stopCancel()
 	}
-	// Give the control connection a moment to deliver the final status and the
-	// last activity entries, unless it is gone already: ctx is cancelled when
-	// the host is stopped from outside.
+	// Give the control connection a moment to deliver the final status, the
+	// last activity entries and what the viewers are still to be sent, unless
+	// it is gone already: ctx is cancelled when the host is stopped from
+	// outside.
 	a.settle(ctx)
 	cancel()
 	a.closeAllPeers()
@@ -413,15 +414,33 @@ func (a *agent) sendActivity(e session.ActivityEntry) {
 }
 
 // settle gives the control connection a moment to deliver what the session
-// leaves behind when it ends: the final status message, and the activity
-// entries queued for the server, the final status entry among them. It gives
-// up at once when ctx is cancelled. That is how the host is stopped from
-// outside (SIGINT, SIGTERM), and it ends the control connection and the
-// forwarder before the session records its last entry, so there is nothing
-// left to wait for.
+// leaves behind when it ends: the final status message, the activity entries
+// queued for the server, the final status entry among them, and the frames
+// queued for the viewers, whose final status is the last thing a relay viewer
+// hears before the connection closes. It gives up at once when ctx is
+// cancelled. That is how the host is stopped from outside (SIGINT, SIGTERM),
+// and it ends the control connection and the forwarder before the session
+// records its last entry, so there is nothing left to wait for.
 func (a *agent) settle(ctx context.Context) {
 	a.flushStatus(ctx)
 	a.flushActivity(ctx)
+	a.flushViewers(ctx)
+}
+
+// flushViewers waits for the viewers to be handed the frames queued for them.
+// A relay viewer's frames go out on the control connection, which closes once
+// settle returns; a frame still queued by then is lost, and the viewer is told
+// the host is gone without the status that says the session ended. Run it
+// after flushActivity: the session announces its end, and only then queues the
+// status entry for its viewers.
+func (a *agent) flushViewers(ctx context.Context) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if a.local.Drained() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // flushActivity gives the entries the local session recorded a moment to

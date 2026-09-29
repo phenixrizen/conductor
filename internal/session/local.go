@@ -469,6 +469,11 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
+	// The prompt this input answers is the one on the screen as it is typed.
+	// A process that reacts before Write returns (an echo that rings the bell)
+	// may raise the next one meanwhile, and typing must not clear that one.
+	// Each attention change gets a new Since, which tells the prompts apart.
+	promptSince := s.info.Attention.Since
 	s.mu.Unlock()
 	if ended {
 		return ErrSessionEnded
@@ -486,16 +491,16 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		// happen in one critical section so two concurrent typists cannot
 		// both claim the prompt.
 		s.mu.Lock()
-		waiting := s.info.Attention.State == AttentionNeedsInput
-		prompt := s.info.Attention.Message
+		waiting := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Since == promptSince
+		question := s.info.Attention.Message
 		if waiting {
-			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: time.Now().UTC(), Message: prompt}
+			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: time.Now().UTC(), Message: question}
 			s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
 			s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 		}
 		s.mu.Unlock()
 		if waiting {
-			s.Record(ActivityEntry{Type: ActivityInput, By: sub.ID, ByName: sub.Name, Message: prompt})
+			s.Record(ActivityEntry{Type: ActivityInput, By: sub.ID, ByName: sub.Name, Message: question})
 			s.notifyChange()
 		}
 	}
@@ -559,6 +564,10 @@ func (s *Local) Send(sub *Subscription, frame []byte) { sub.send(frame) }
 
 // Viewers returns the number of attached clients.
 func (s *Local) Viewers() int { return s.hub.Count() }
+
+// Drained reports whether every attached client has been handed all the frames
+// the session sent it, the final status among them once the session has ended.
+func (s *Local) Drained() bool { return s.hub.Drained() }
 
 // LinkViewers counts attached clients per share link id.
 func (s *Local) LinkViewers() map[string]int { return s.hub.CountByLink() }

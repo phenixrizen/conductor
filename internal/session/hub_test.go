@@ -126,3 +126,55 @@ type errSink struct{ closed chan error }
 
 func (e *errSink) WriteFrame([]byte) error { return errors.New("boom") }
 func (e *errSink) Close(reason error)      { e.closed <- reason }
+
+// Drained is what a host asks before it closes the connections its clients
+// read from: nothing sent to a client may still be queued, and nothing may be
+// half written. A frame that was taken off the queue and is being written
+// still counts.
+func TestHubDrainedWaitsForQueuedAndInFlightFrames(t *testing.T) {
+	h := NewHub()
+	if !h.Drained() {
+		t.Fatal("an empty hub is drained")
+	}
+	sink := newChanSink(true)
+	h.add(newSubscription("s", RoleView, "", sink))
+	if !h.Drained() {
+		t.Fatal("a hub with nothing sent is drained")
+	}
+	h.Broadcast([]byte{1, 'a'})
+	time.Sleep(20 * time.Millisecond) // the frame is taken off the queue and blocks in WriteFrame
+	if h.Drained() {
+		t.Fatal("drained with a frame being written")
+	}
+	h.Broadcast([]byte{1, 'b'})
+	if h.Drained() {
+		t.Fatal("drained with a frame being written and one queued")
+	}
+	close(sink.block)
+	deadline := time.Now().Add(3 * time.Second)
+	for !h.Drained() {
+		if time.Now().After(deadline) {
+			t.Fatal("never drained")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if sink.count() != 2 {
+		t.Fatalf("drained after %d of 2 frames were written", sink.count())
+	}
+}
+
+// A subscription that has ended will write nothing more, so it cannot hold a
+// host up.
+func TestHubDrainedIgnoresEndedSubscriptions(t *testing.T) {
+	h := NewHub()
+	sink := newChanSink(true)
+	sub := newSubscription("s", RoleView, "", sink)
+	h.add(sub)
+	h.Broadcast([]byte{1, 'a'})
+	h.Broadcast([]byte{1, 'b'})
+	sub.closeWith(nil)
+	if !h.Drained() {
+		t.Fatal("an ended subscription still holds the hub back")
+	}
+	close(sink.block)
+}

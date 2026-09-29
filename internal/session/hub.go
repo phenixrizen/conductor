@@ -38,6 +38,9 @@ type Subscription struct {
 	sink   Sink
 	queue  chan []byte
 	queued atomic.Int64
+	// unsent counts the frames that are queued or being written; a frame
+	// leaves it when WriteFrame returns. See Hub.Drained.
+	unsent atomic.Int64
 	done   chan struct{}
 	once   sync.Once
 	reason error
@@ -67,7 +70,9 @@ func (s *Subscription) run() {
 			return
 		case frame := <-s.queue:
 			s.queued.Add(-int64(len(frame)))
-			if err := s.sink.WriteFrame(frame); err != nil {
+			err := s.sink.WriteFrame(frame)
+			s.unsent.Add(-1)
+			if err != nil {
 				s.closeWith(err)
 				return
 			}
@@ -87,12 +92,25 @@ func (s *Subscription) send(frame []byte) {
 		s.closeWith(ErrSlowConsumer)
 		return
 	}
+	s.unsent.Add(1) // before the frame can be seen, so a check never finds it missing
 	select {
 	case s.queue <- frame:
 		s.queued.Add(int64(len(frame)))
 	default:
+		s.unsent.Add(-1)
 		s.closeWith(ErrSlowConsumer)
 	}
+}
+
+// drained reports whether the sink has been handed everything sent to it, or
+// the subscription has ended and nothing more will be.
+func (s *Subscription) drained() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+	}
+	return s.unsent.Load() == 0
 }
 
 func (s *Subscription) closeWith(reason error) {
@@ -144,6 +162,21 @@ func (h *Hub) Broadcast(frame []byte) {
 	for _, s := range h.subs {
 		s.send(frame)
 	}
+}
+
+// Drained reports whether every live subscription has been handed all the frames
+// sent to it: none is queued and none is being written. A host asks it before
+// it closes the connection its clients' frames travel on. It says nothing of
+// what a transport does with a frame after taking it.
+func (h *Hub) Drained() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, s := range h.subs {
+		if !s.drained() {
+			return false
+		}
+	}
+	return true
 }
 
 // Count returns the number of live subscriptions.

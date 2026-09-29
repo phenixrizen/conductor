@@ -599,6 +599,59 @@ func TestInputDuringNeedsInputRecordsOneAnswer(t *testing.T) {
 	}
 }
 
+// reactingProc answers a write at once, before Write returns, the way an echo
+// does.
+type reactingProc struct {
+	*fakeProc
+	react func()
+}
+
+func (r *reactingProc) Write(b []byte) (int, error) {
+	n, err := r.fakeProc.Write(b)
+	r.react()
+	return n, err
+}
+
+// Typing answers the prompt that was on the screen when it was typed. A process
+// that reacts before the write returns, cat echoing a bell for one, may raise
+// the next prompt in that time, and that one is not answered yet.
+func TestInputDoesNotClearAPromptItsOwnOutputRaised(t *testing.T) {
+	fp := newFakeProc()
+	var s *Local
+	reacted := false // Input, and so react, runs on this goroutine only
+	p := &reactingProc{fakeProc: fp}
+	p.react = func() {
+		if reacted {
+			return
+		}
+		reacted = true
+		fp.outW.Write([]byte("\a")) // returns once the pump has read it
+		deadline := time.Now().Add(3 * time.Second)
+		for s.Info().Attention.State != AttentionNeedsInput && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	s = NewLocal(Info{ID: "sess", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, Options{})
+	t.Cleanup(fp.exit)
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Input(sub, []byte("\n")); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceBell {
+		t.Fatalf("typing cleared the prompt its own output raised: %+v", att)
+	}
+	// The next input does answer it.
+	if err := s.Input(sub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.State != AttentionNone {
+		t.Fatalf("the answer left %+v", att)
+	}
+}
+
 func TestActivityBroadcastAndReplay(t *testing.T) {
 	s, _ := newLocal(t, t.TempDir())
 	for i := 0; i < 60; i++ {

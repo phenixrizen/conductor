@@ -84,7 +84,7 @@ func (c *HostConn) sendJSON(v any) bool {
 }
 
 // Viewer is one browser attached to a hosted session. Frames queued to Out
-// are written to the viewer's WebSocket by the API layer.
+// are written to the viewer's WebSocket by Pump, which the API layer runs.
 type Viewer struct {
 	ID        string
 	Role      session.Role
@@ -123,6 +123,68 @@ func (v *Viewer) close(reason error) {
 		v.reason = reason
 		close(v.done)
 	})
+}
+
+// Pump writes the frames queued for the viewer to sink, in order, until the
+// viewer is closed, and then closes sink with the reason it was closed for.
+// The API layer runs it on its own goroutine for the viewer's connection.
+//
+// Frames that were queued before the close are written first when the viewer
+// was closed for a reason that is the host's: it went away, asked for the
+// close, or reported an error for the viewer. They are the host's last words,
+// the session's final status among them, and the viewer would otherwise be told
+// the host is gone without being told why. A viewer that was cut off (link
+// revoked, too slow to keep up) or has left is sent nothing more.
+func (v *Viewer) Pump(sink session.Sink) {
+	for {
+		// Once the viewer is closed, the close comes before any frame that is
+		// still queued: select would pick at random between the two.
+		select {
+		case <-v.done:
+			v.finish(sink)
+			return
+		default:
+		}
+		select {
+		case <-v.done:
+			v.finish(sink)
+			return
+		case frame := <-v.Out:
+			if err := sink.WriteFrame(frame); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// finish is Pump's end: the frames the viewer is owed, if any, and the close.
+func (v *Viewer) finish(sink session.Sink) {
+	reason := v.Reason()
+	if framesOwed(reason) {
+	owed:
+		for {
+			select {
+			case frame := <-v.Out:
+				if err := sink.WriteFrame(frame); err != nil {
+					return
+				}
+			default:
+				break owed
+			}
+		}
+	}
+	sink.Close(reason)
+}
+
+// framesOwed reports whether a viewer closed for reason is still sent the frames
+// queued for it: it is when the host went away or asked for the close, and it
+// is not when the viewer was cut off or has left.
+func framesOwed(reason error) bool {
+	switch {
+	case reason == nil, errors.Is(reason, session.ErrRevoked), errors.Is(reason, ErrSlowViewer):
+		return false
+	}
+	return true
 }
 
 func (v *Viewer) push(frame []byte) {

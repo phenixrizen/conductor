@@ -563,3 +563,117 @@ func TestOnlyForwardsToAConnectedHostAreLimited(t *testing.T) {
 		}
 	}
 }
+
+// pumpSink records what Pump writes to it and the reason it is closed with.
+type pumpSink struct {
+	mu     sync.Mutex
+	frames [][]byte
+	reason error
+	closed bool
+}
+
+func (s *pumpSink) WriteFrame(f []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frames = append(s.frames, f)
+	return nil
+}
+
+func (s *pumpSink) Close(reason error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed, s.reason = true, reason
+}
+
+func (s *pumpSink) written() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.frames)
+}
+
+// A viewer closed because its host went away, or asked for it, still gets the
+// frames that were queued before: the host's last words, the session's final
+// status among them. Pump used to choose between the frames and the close at
+// random, and the viewer was told the host was gone without why.
+func TestViewerPumpDeliversWhatWasQueuedBeforeTheHostClosedIt(t *testing.T) {
+	for name, reason := range map[string]error{
+		"host disconnected":             ErrHostGone,
+		"host closed it":                ErrViewerGone,
+		"host reported an error for it": errors.New("webrtc_failed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < 50; i++ { // the choice between frame and close was a coin toss
+				v := newViewer("v", session.RoleView, "", "")
+				want := [][]byte{{1, 'a'}, {1, 'b'}, {1, 'c'}}
+				for _, f := range want {
+					v.push(f)
+				}
+				v.close(reason)
+				sink := &pumpSink{}
+				v.Pump(sink)
+				if len(sink.frames) != len(want) {
+					t.Fatalf("round %d: %d of %d frames written before the close", i, len(sink.frames), len(want))
+				}
+				for j := range want {
+					if string(sink.frames[j]) != string(want[j]) {
+						t.Fatalf("round %d: frame %d is %q, want %q", i, j, sink.frames[j], want[j])
+					}
+				}
+				if !sink.closed || sink.reason != reason {
+					t.Fatalf("round %d: closed %v with %v, want %v", i, sink.closed, sink.reason, reason)
+				}
+			}
+		})
+	}
+}
+
+// A viewer that is cut off, or has left on its own, is sent nothing more.
+func TestViewerPumpSendsNothingMoreToAViewerThatWasCutOff(t *testing.T) {
+	for name, reason := range map[string]error{
+		"link revoked": session.ErrRevoked,
+		"too slow":     ErrSlowViewer,
+		"viewer left":  nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < 50; i++ {
+				v := newViewer("v", session.RoleView, "", "")
+				v.push([]byte{1, 'a'})
+				v.push([]byte{1, 'b'})
+				v.close(reason)
+				sink := &pumpSink{}
+				v.Pump(sink)
+				if sink.written() != 0 {
+					t.Fatalf("round %d: %d frames written to a viewer closed for %v", i, sink.written(), reason)
+				}
+				if !sink.closed || sink.reason != reason {
+					t.Fatalf("round %d: closed %v with %v, want %v", i, sink.closed, sink.reason, reason)
+				}
+			}
+		})
+	}
+}
+
+func TestViewerPumpWritesFramesAsTheyArrive(t *testing.T) {
+	v := newViewer("v", session.RoleView, "", "")
+	sink := &pumpSink{}
+	done := make(chan struct{})
+	go func() { v.Pump(sink); close(done) }()
+	v.push([]byte{1, 'a'})
+	deadline := time.Now().Add(3 * time.Second)
+	for sink.written() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("a queued frame was not written")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	v.push([]byte{1, 'b'})
+	v.close(ErrHostGone)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Pump did not return once the viewer was closed")
+	}
+	if sink.written() != 2 || !sink.closed {
+		t.Fatalf("written %d, closed %v", sink.written(), sink.closed)
+	}
+}
