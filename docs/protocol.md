@@ -189,9 +189,11 @@ a URL made of them could push the message past the 8 KiB CONTROL limit, which
 a relay rejects: such a URL is dropped and the rest of the entry kept.
 
 Each session records at most 20 entries a second on average and 40 at once (a
-token bucket that refills continuously), whatever their type. An entry beyond
-that is not stored or broadcast; the session counts it and logs the first drop
-and every 100th at debug level.
+token bucket that refills continuously). An entry beyond that is not stored or
+broadcast; the session counts it and logs the first drop and every 100th at
+debug level. `join`, `leave`, `input`, `link` and `status` entries, which the
+session and the server produce themselves, skip the limit, so a chatty hook
+cannot crowd out the roster or the final `status` row.
 
 ## File reads
 

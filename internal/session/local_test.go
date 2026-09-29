@@ -251,6 +251,39 @@ func TestExitBroadcastsStatus(t *testing.T) {
 	}
 }
 
+func TestSessionEndedLogShowsTheExitCode(t *testing.T) {
+	t.Run("exited", func(t *testing.T) {
+		logs := &syncBuffer{}
+		status := make(chan struct{}, 1)
+		_, p := newLocalWith(t, Options{
+			Log: slog.New(slog.NewTextHandler(logs, nil)),
+			// The status row is recorded after the log line, in the same goroutine.
+			OnActivity: func(_ string, e ActivityEntry) {
+				if e.Type == ActivityStatus {
+					status <- struct{}{}
+				}
+			},
+		})
+		p.exit()
+		select {
+		case <-status:
+		case <-time.After(3 * time.Second):
+			t.Fatal("session did not end")
+		}
+		if line := logs.String(); !strings.Contains(line, "status=exited") || !strings.Contains(line, "exitCode=7") {
+			t.Fatalf("want the exit code in the log line, got %q", line)
+		}
+	})
+	t.Run("no exit status", func(t *testing.T) {
+		logs := &syncBuffer{}
+		s, _ := newLocalWith(t, Options{Log: slog.New(slog.NewTextHandler(logs, nil))})
+		s.markEnded(StatusStopped) // ended before the process reported an exit status
+		if line := logs.String(); !strings.Contains(line, "status=stopped") || strings.Contains(line, "exitCode") {
+			t.Fatalf("want no exitCode in the log line, got %q", line)
+		}
+	})
+}
+
 func TestDisconnectLink(t *testing.T) {
 	s, _ := newLocal(t, t.TempDir())
 	a, b := newChanSink(false), newChanSink(false)
@@ -433,7 +466,11 @@ func TestViewersRosterCarriesNamesAndTyping(t *testing.T) {
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Cols: 80, Rows: 24}, b); err != nil {
 		t.Fatal(err)
 	}
-	b.waitFrames(t, 3) // welcome, ready, viewers
+	// B receives welcome, ready, A's replayed join, the roster and its own
+	// join, one at a time from its queue: wait for the roster itself.
+	if waitControl(b, func(m map[string]any) bool { return m["t"] == proto.CtlViewers && m["count"] == float64(2) }) == nil {
+		t.Fatal("no viewers message listing both clients received")
+	}
 	msg, list := rosterOf(t, b)
 	if msg["count"].(float64) != 2 || len(list) != 2 {
 		t.Fatalf("roster: %v", msg)
@@ -451,20 +488,25 @@ func TestViewersRosterCarriesNamesAndTyping(t *testing.T) {
 	if byName["guest"]["link"] != nil {
 		t.Fatalf("guest should have no link label: %v", byName["guest"])
 	}
-	// Typing: input from A stamps lastInputAt and rebroadcasts the roster.
-	before := b.count()
+	// Typing: input from A stamps lastInputAt and rebroadcasts the roster. Wait
+	// for that roster, not for one more frame: B's own join may still be queued.
 	if err := s.Input(subA, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	b.waitFrames(t, before+1)
-	_, list = rosterOf(t, b)
-	var typed bool
-	for _, v := range list {
-		if v["name"] == "Priya" && v["lastInputAt"] != nil {
-			typed = true
+	typed := waitControl(b, func(m map[string]any) bool {
+		if m["t"] != proto.CtlViewers {
+			return false
 		}
-	}
-	if !typed {
+		raw, _ := m["list"].([]any)
+		for _, v := range raw {
+			if e, ok := v.(map[string]any); ok && e["name"] == "Priya" && e["lastInputAt"] != nil {
+				return true
+			}
+		}
+		return false
+	})
+	if typed == nil {
+		_, list = rosterOf(t, b)
 		t.Fatalf("expected lastInputAt on Priya after input: %v", list)
 	}
 }
@@ -559,9 +601,8 @@ func TestInputDuringNeedsInputRecordsOneAnswer(t *testing.T) {
 
 func TestActivityBroadcastAndReplay(t *testing.T) {
 	s, _ := newLocal(t, t.TempDir())
-	// Fill the log directly: Record admits EventBurst entries at a time.
 	for i := 0; i < 60; i++ {
-		s.activity.Add(ActivityEntry{Type: "link", Message: "x"})
+		s.Record(ActivityEntry{Type: "link", Message: "x"})
 	}
 	sink := newChanSink(false)
 	s.Attach("", RoleView, "", 80, 24, sink)
@@ -603,7 +644,8 @@ func TestRecordRateLimitsPerSession(t *testing.T) {
 			accepted++
 		}
 	}
-	if accepted > EventBurst || accepted < EventBurst/2 || s.Dropped() != uint64(200-accepted) || got != accepted {
+	// The bucket earns tokens while the loop runs: allow 200 ms of stall.
+	if accepted > EventBurst+EventRatePerSecond/5 || accepted < EventBurst/2 || s.Dropped() != uint64(200-accepted) || got != accepted {
 		t.Fatalf("accepted %d dropped %d hooks %d", accepted, s.Dropped(), got)
 	}
 	time.Sleep(1100 * time.Millisecond)
@@ -693,6 +735,99 @@ func TestRecordDropsAreNotStoredBroadcastOrReported(t *testing.T) {
 	// A flood must not become a log flood: the first drop and every 100th.
 	if n := strings.Count(logs.String(), "event rate limit"); n != 2 {
 		t.Fatalf("%d debug lines for %d drops, want 2:\n%s", n, len(dropped), logs.String())
+	}
+}
+
+// drainBucket empties the session's event bucket and stops it refilling for an
+// hour, so a test can rely on every bucketed entry being dropped however
+// slowly it runs.
+func drainBucket(s *Local) {
+	s.mu.Lock()
+	s.events = eventBucket{last: time.Now().Add(time.Hour)}
+	s.mu.Unlock()
+}
+
+// The session and the server produce join, leave, input, link and status
+// entries themselves; a chatty hook must never starve the roster rows or the
+// final status row.
+func TestRecordSessionEntriesBypassTheBucket(t *testing.T) {
+	var hmu sync.Mutex
+	hooked := map[string]bool{}
+	s, _ := newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry) {
+		hmu.Lock()
+		hooked[e.Message] = true
+		hmu.Unlock()
+	}})
+	sink := newChanSink(false)
+	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+
+	// They do not spend tokens: after sixty of them the bucket holds a full burst.
+	for i := 0; i < 60; i++ {
+		s.Record(ActivityEntry{Type: ActivityLink, Message: "warm-up"})
+	}
+	accepted := 0
+	for i := 0; i < 200; i++ { // a chatty hook empties the bucket
+		if s.Record(ActivityEntry{Type: ActivityProgress, Message: "flood"}) {
+			accepted++
+		}
+	}
+	if accepted < EventBurst {
+		t.Fatalf("only %d of the first entries an agent reported were accepted: session entries spent tokens", accepted)
+	}
+	drainBucket(s) // and it stays empty however slowly this test runs
+	dropped := s.Dropped()
+
+	// What an agent reports is still refused, and so is a type nobody knows ...
+	agent := []string{ActivityAttention, ActivityProgress, ActivityArtifact, ActivityHandoff, ActivityToolUse, ActivityToolDenied, ActivityError, "mystery"}
+	for _, typ := range agent {
+		if s.Record(ActivityEntry{Type: typ, Message: "agent " + typ}) {
+			t.Errorf("a %s entry got past an empty bucket", typ)
+		}
+	}
+	// ... but what the session and the server produce themselves is not.
+	own := []string{ActivityStatus, ActivityJoin, ActivityLeave, ActivityInput, ActivityLink}
+	for _, typ := range own {
+		if !s.Record(ActivityEntry{Type: typ, Message: "own " + typ}) {
+			t.Errorf("a %s entry was refused by an empty bucket", typ)
+		}
+	}
+	if got, want := s.Dropped(), dropped+uint64(len(agent)); got != want {
+		t.Errorf("Dropped() = %d, want %d: only the agent entries count", got, want)
+	}
+
+	// Frames reach the sink in the order they were queued, so once the last
+	// entry has arrived every earlier one has too.
+	if waitControl(sink, func(m map[string]any) bool { return m["message"] == "own link" }) == nil {
+		t.Fatal("the last session entry was not broadcast")
+	}
+	stored := map[string]bool{}
+	for _, e := range s.Activity() {
+		stored[e.Message] = true
+	}
+	broadcast := map[string]bool{}
+	for i := 0; i < sink.count(); i++ {
+		if f, err := proto.Decode(sink.frame(i)); err == nil && f.Type == proto.TypeControl {
+			var m map[string]any
+			if json.Unmarshal(f.Payload, &m) == nil && m["t"] == proto.CtlActivity {
+				broadcast[fmt.Sprint(m["message"])] = true
+			}
+		}
+	}
+	hmu.Lock()
+	defer hmu.Unlock()
+	for _, typ := range own {
+		msg := "own " + typ
+		if !stored[msg] || !broadcast[msg] || !hooked[msg] {
+			t.Errorf("%s: stored %v, broadcast %v, passed to OnActivity %v; want all three", typ, stored[msg], broadcast[msg], hooked[msg])
+		}
+	}
+	for _, typ := range agent {
+		msg := "agent " + typ
+		if stored[msg] || broadcast[msg] || hooked[msg] {
+			t.Errorf("%s: stored %v, broadcast %v, passed to OnActivity %v; want none", typ, stored[msg], broadcast[msg], hooked[msg])
+		}
 	}
 }
 

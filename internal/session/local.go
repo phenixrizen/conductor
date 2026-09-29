@@ -48,7 +48,10 @@ type Options struct {
 	// OnActivity is called (outside the session lock) with the session ID and
 	// the stored entry after Record has appended and broadcast it. It runs on
 	// the recording goroutine, which may be the one reading the process, so it
-	// must not block. An entry the event bucket drops never reaches it.
+	// must not block. Because it runs after the lock is released, calls for
+	// different entries can overlap and arrive out of order: implementations
+	// must be safe for concurrent use. An entry the event bucket drops never
+	// reaches it.
 	OnActivity func(sessionID string, e ActivityEntry)
 }
 
@@ -169,22 +172,28 @@ func (s *Local) markEnded(status Status) {
 	s.hub.Broadcast(frame)
 	s.mu.Unlock()
 	close(s.ended)
-	s.log.Info("session ended", "status", status, "exitCode", exitCode)
+	attrs := []any{"status", status}
 	msg := string(status)
 	if exitCode != nil {
+		attrs = append(attrs, "exitCode", *exitCode)
 		msg = fmt.Sprintf("%s (exit %d)", status, *exitCode)
 	}
+	s.log.Info("session ended", attrs...)
 	s.Record(ActivityEntry{Type: ActivityStatus, Message: msg})
 	s.notifyChange()
 }
 
 // Record appends an activity entry, broadcasts it to attached clients and
-// passes it to OnActivity. A session records EventRatePerSecond entries a
-// second on average and EventBurst at once, of every type: beyond that Record
-// does nothing else, counts the entry in Dropped and returns false.
+// passes it to OnActivity. What an agent reports (attention and the six event
+// types) is limited to EventRatePerSecond entries a second on average and
+// EventBurst at once: beyond that Record does nothing else, counts the entry
+// in Dropped and returns false. join, leave, input, link and status entries
+// are the session's and the server's own; they skip the limit and spend no
+// tokens, so a chatty hook cannot starve the roster rows or the final status
+// row.
 func (s *Local) Record(e ActivityEntry) bool {
 	s.mu.Lock()
-	if !s.events.take(time.Now()) {
+	if bucketed(e.Type) && !s.events.take(time.Now()) {
 		log := s.log
 		s.mu.Unlock()
 		if n := s.dropped.Add(1); n == 1 || n%100 == 0 {

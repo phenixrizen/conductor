@@ -61,10 +61,26 @@ const (
 
 // A session records EventRatePerSecond entries a second on average and
 // EventBurst at once (a token bucket), so a chatty hook cannot flood its log.
+// Entries the session and the server produce themselves are exempt (bucketed).
 const (
 	EventRatePerSecond = 20
 	EventBurst         = 40
 )
+
+// bucketed reports whether entries of type t count against a session's event
+// bucket. join, leave, input, link and status entries are produced by the
+// session and the server themselves, at the pace of people and of the
+// process, and must never wait behind an agent's reports: a chatty hook may
+// not starve the roster rows or the final status row. attention and the six
+// event types come from what an agent says or does, and so does any type not
+// listed here.
+func bucketed(t string) bool {
+	switch t {
+	case ActivityJoin, ActivityLeave, ActivityInput, ActivityLink, ActivityStatus:
+		return false
+	}
+	return true
+}
 
 // ValidEventType reports whether t is an activity entry type: one the session
 // records itself or one an agent reports.
@@ -88,6 +104,9 @@ func ValidEventType(t string) bool {
 // JSON writes & < > as six bytes each, so a URL near its limit can encode to
 // more than a control frame. The relay rejects such a frame and closes the
 // host's connection, so that URL is dropped and the rest of the entry kept.
+// The guarantee assumes what CleanEntry leaves alone: Type and By are short
+// and set by trusted code (an Activity* constant or a type checked with
+// ValidEventType, and a subscriber ID), so it holds without bounding them.
 func CleanEntry(e ActivityEntry) ActivityEntry {
 	e.ByName = oneLine(e.ByName, proto.MaxNameLen)
 	e.Message = CleanMessage(e.Message)
