@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -24,7 +25,31 @@ const binPlaceholder = "{{BIN}}"
 // executable finds the conductor binary the hooks run when an adapter renders
 // something itself: its launch flags and environment, an asset missing from
 // the hooks dir, and what Status compares an install with. Tests replace it.
-var executable = BinaryPath
+var executable = assetBinary
+
+var (
+	assetBinMu sync.Mutex
+	// assetBin is the binary WriteAssets last wrote the assets for.
+	assetBin string
+	// lookedUp is BinaryPath, asked once.
+	lookedUp = sync.OnceValues(BinaryPath)
+)
+
+// assetBinary is the binary the hooks dir names: the one WriteAssets last
+// wrote the assets for or, in a process that has written none, BinaryPath as
+// it answered the first time. It never follows a later change to PATH, so a
+// running server's Status compares an install with what its Install copies
+// from the hooks dir, and a launch names the same binary as the assets, even
+// after an upgrade has changed the conductor on PATH.
+func assetBinary() (string, error) {
+	assetBinMu.Lock()
+	bin := assetBin
+	assetBinMu.Unlock()
+	if bin != "" {
+		return bin, nil
+	}
+	return lookedUp()
+}
 
 // BinaryPath is the conductor binary for hooks to run: the conductor on PATH
 // when that is this very binary, and this binary's own path otherwise.
@@ -75,7 +100,8 @@ func checkBin(bin string) error {
 // conductor binary, and writes them under hooksDir. Conductor owns the
 // directory: it is made 0700 and every asset 0600, whatever they were. Each
 // file is replaced whole, so an agent reading one never sees half of it, and
-// one that already holds the right content is not rewritten.
+// one that already holds the right content is not rewritten. From then on the
+// adapters name bin wherever they render the binary themselves.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -101,6 +127,9 @@ func WriteAssets(hooksDir, bin string) error {
 			}
 		}
 	}
+	assetBinMu.Lock()
+	assetBin = bin
+	assetBinMu.Unlock()
 	return nil
 }
 

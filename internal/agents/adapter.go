@@ -24,7 +24,11 @@ type Adapter struct {
 	// Install merges Conductor's hooks into the agent's own config under home.
 	// Idempotent. Returns the files it touched. nil when the agent has no file route.
 	Install func(home, hooksDir string) ([]string, error)
-	// Status reports whether the install exists under home.
+	// Status is a dry run of Install on home: installed is true when Install
+	// would change nothing and leave nothing to do by hand, so an install
+	// that is partial or names another binary reads as not installed; where
+	// is the install's main file. nil when there is nothing Install can put
+	// in place (aider, dsh).
 	Status func(home string) (installed bool, where string)
 	// Snippet is what a host user pastes when Install is not available to them.
 	Snippet func(hooksDir string) string

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -148,6 +150,66 @@ func TestBinaryPath(t *testing.T) {
 	t.Setenv("PATH", ".")
 	if got, err := BinaryPath(); err != nil || got != exe {
 		t.Errorf("relative PATH: %q %v, want %q", got, err, exe)
+	}
+}
+
+// keepBinary restores what the adapters take for the conductor binary when
+// the test ends, and starts it from nothing: no assets written, no lookup.
+func keepBinary(t *testing.T) {
+	t.Helper()
+	assetBinMu.Lock()
+	oldBin, oldLookup := assetBin, lookedUp
+	assetBin = ""
+	assetBinMu.Unlock()
+	t.Cleanup(func() {
+		assetBinMu.Lock()
+		assetBin, lookedUp = oldBin, oldLookup
+		assetBinMu.Unlock()
+	})
+}
+
+// The adapters name the binary the hooks dir was written for: after an
+// upgrade changes what PATH finds, a running server's Status still compares
+// an install with what its Install copies, and codex is still launched with
+// that binary.
+func TestAdaptersNameTheBinaryTheAssetsWereWrittenFor(t *testing.T) {
+	keepBinary(t)
+	lookedUp = sync.OnceValues(func() (string, error) { return "/opt/conductor-1.1/conductor", nil })
+	hooks, home := t.TempDir(), t.TempDir()
+	if err := WriteAssets(hooks, "/opt/conductor-1.0/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"copilot", "claude", "codex"} {
+		a, _ := Get(id)
+		if _, err := a.Install(home, hooks); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := a.Status(home); !ok {
+			t.Fatalf("%s: status disagrees with the install it made", id)
+		}
+	}
+	argv, _ := InjectFor("codex", hooks, catalog.Signal{Kind: "hook"})
+	if len(argv) != 4 || argv[1] != `notify=["/opt/conductor-1.0/conductor","notify","--codex"]` {
+		t.Fatalf("codex launch: %q", argv)
+	}
+}
+
+// Before any assets are written the binary is looked up once, and a later
+// lookup that would answer otherwise changes nothing.
+func TestTheBinaryIsLookedUpOnce(t *testing.T) {
+	keepBinary(t)
+	calls := 0
+	lookedUp = sync.OnceValues(func() (string, error) {
+		calls++
+		return fmt.Sprintf("/opt/conductor-%d/conductor", calls), nil
+	})
+	for range 3 {
+		if bin, err := executable(); err != nil || bin != "/opt/conductor-1/conductor" {
+			t.Fatalf("executable() = %q %v", bin, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("looked up %d times", calls)
 	}
 }
 
