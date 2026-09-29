@@ -63,9 +63,9 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 
 // ReadPath resolves raw against root and returns a header plus body. Paths may
 // be absolute, relative to root, or start with "~" (the process home). The
-// resolved target must stay under root after symlink evaluation and outside
-// every directory in deny. When statOnly is set only existence and kind are
-// reported.
+// resolved target must stay under root after symlink evaluation and must not
+// be, or be inside, an entry of deny. When statOnly is set only existence and
+// kind are reported.
 func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
 	h := proto.FileHeader{Path: raw}
 	target, err := ResolvePath(root, raw, deny)
@@ -149,8 +149,9 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 }
 
 // ResolvePath turns raw into an absolute path under root, following symlinks
-// and rejecting anything that escapes root, enters .git/objects or is inside
-// one of the deny directories (the server passes its data directory).
+// and rejecting anything that escapes root, enters .git/objects or is one of
+// the deny entries or inside one (the server passes its data directory, its
+// config file and its catalog file).
 func ResolvePath(root, raw string, deny []string) (string, error) {
 	if raw == "" {
 		raw = "."
@@ -202,13 +203,15 @@ func ResolvePath(root, raw string, deny []string) (string, error) {
 }
 
 // insideAny reports whether real, an absolute path with its symlinks resolved,
-// is one of dirs or inside one. Directories are compared as files
-// (os.SameFile), not by name, so neither a symlink to one nor another spelling
-// of it on a case-insensitive file system gets around the rule. A directory
-// that does not exist holds nothing and is skipped.
-func insideAny(real string, dirs []string) bool {
+// is one of deny or inside one. An entry is a directory, which denies
+// everything in it, or a single file, which only real itself can match.
+// Entries are compared as files (os.SameFile), not by name, so neither a
+// symlink to one, a hard link to a denied file, nor another spelling on a
+// case-insensitive file system gets around the rule. An entry that does not
+// exist denies nothing and is skipped.
+func insideAny(real string, deny []string) bool {
 	var denied []os.FileInfo
-	for _, d := range dirs {
+	for _, d := range deny {
 		if fi, err := os.Stat(d); err == nil {
 			denied = append(denied, fi)
 		}

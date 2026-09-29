@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,11 +39,94 @@ func TestLoadFileAndEnvPrecedence(t *testing.T) {
 }
 
 func TestLoadRejectsUnknownField(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "c.json")
-	os.WriteFile(path, []byte(`{"nope":1}`), 0o600)
-	if _, err := Load(path); err == nil {
-		t.Fatal("expected error")
+	// Config.Path is filled by Load, not read from the file: a "path" key, in
+	// any case, is as unknown as any other.
+	for _, body := range []string{`{"nope":1}`, `{"path":"/etc/other.json"}`, `{"Path":"/etc/other.json"}`} {
+		path := filepath.Join(t.TempDir(), "c.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("%s: got %v, want an unknown field error", body, err)
+		}
 	}
+}
+
+// Load records the config file it read as an absolute path, so the server can
+// keep it away from file reads (it holds the admin token).
+func TestLoadRecordsTheConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll("conf", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("conf", "conductor.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "conf", "conductor.json")
+	for _, path := range []string{"conf/conductor.json", "./conf/../conf/conductor.json", want} {
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Path != want {
+			t.Errorf("Load(%q): Path = %q, want %q", path, cfg.Path, want)
+		}
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Path != "" {
+		t.Errorf("without a config file Path = %q, want it empty", cfg.Path)
+	}
+}
+
+// A catalogPath from the file or the environment is made absolute, relative to
+// the current directory like allowedRoots, and still loads.
+func TestLoadMakesTheCatalogPathAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	agents := `{"agents":[{"id":"extra","name":"Extra","command":["/bin/cat"]}]}`
+	if err := os.WriteFile("agents.json", []byte(agents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("conductor.json", []byte(`{"catalogPath":"agents.json"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "agents.json")
+	for _, tc := range []struct{ name, env string }{
+		{"from the config file", ""},
+		{"from the environment", "./sub/../agents.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CONDUCTOR_CATALOG_PATH", tc.env)
+			cfg, err := Load("conductor.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.CatalogPath != want {
+				t.Fatalf("CatalogPath = %q, want %q", cfg.CatalogPath, want)
+			}
+			cat, err := cfg.LoadCatalog()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := cat.Get("extra"); !ok {
+				t.Fatal("the catalog file was not loaded")
+			}
+		})
+	}
+	t.Run("unset stays unset", func(t *testing.T) {
+		t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.CatalogPath != "" {
+			t.Fatalf("CatalogPath = %q, want it empty", cfg.CatalogPath)
+		}
+	})
 }
 
 func TestValidateBounds(t *testing.T) {

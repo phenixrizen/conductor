@@ -347,40 +347,15 @@ func TestFileReadsNeverReachTheDataDirectory(t *testing.T) {
 		"conductor.d",
 		"conductor.d/no-such-file.json", // denied, not not_found: nothing about its contents leaks
 	}
-	// getFile reads path over HTTP with mode "raw", "stat" or "" (JSON) and
-	// returns the status, the body and, for a JSON reply, the error code.
-	getFile := func(token, path, mode string) (int, string, string) {
-		t.Helper()
-		q := url.Values{"path": {path}}
-		if mode != "" {
-			q.Set(mode, "1")
-		}
-		req, _ := http.NewRequest("GET", e.http.URL+"/api/sessions/"+id+"/files?"+q.Encode(), nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := e.client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		var out struct {
-			File proto.FileHeader `json:"file"`
-		}
-		code := ""
-		if json.Unmarshal(b, &out) == nil && out.File.Error != nil {
-			code = out.File.Error.Code
-		}
-		return resp.StatusCode, string(b), code
-	}
 	for _, token := range []string{view, adminToken} {
 		for _, p := range denied {
 			for _, mode := range []string{"raw", "stat", ""} {
-				if status, got, code := getFile(token, p, mode); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
+				if status, got, code := e.getFile(id, token, p, mode); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
 					t.Errorf("HTTP %q (mode %q): %d %s", p, mode, status, got)
 				}
 			}
 		}
-		if status, got, _ := getFile(token, "notes.md", "raw"); status != http.StatusOK || got != "# hi\n" {
+		if status, got, _ := e.getFile(id, token, "notes.md", "raw"); status != http.StatusOK || got != "# hi\n" {
 			t.Fatalf("ordinary file over HTTP: %d %q", status, got)
 		}
 	}
@@ -400,6 +375,100 @@ func TestFileReadsNeverReachTheDataDirectory(t *testing.T) {
 	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "ok", Path: "notes.md"}))
 	if h, b := c.expectFile("ok"); h.Kind != "file" || string(b) != "# hi\n" {
 		t.Fatalf("ordinary file in-band: %+v %q", h, b)
+	}
+}
+
+// getFile reads path from session id over HTTP with mode "raw", "stat" or ""
+// (JSON) and returns the status, the body and, for a JSON reply, the error
+// code.
+func (e *testEnv) getFile(id, token, path, mode string) (int, string, string) {
+	e.t.Helper()
+	q := url.Values{"path": {path}}
+	if mode != "" {
+		q.Set(mode, "1")
+	}
+	req, _ := http.NewRequest("GET", e.http.URL+"/api/sessions/"+id+"/files?"+q.Encode(), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var out struct {
+		File proto.FileHeader `json:"file"`
+	}
+	code := ""
+	if json.Unmarshal(b, &out) == nil && out.File.Error != nil {
+		code = out.File.Error.Code
+	}
+	return resp.StatusCode, string(b), code
+}
+
+// The config file holds the admin token and host tokens, and a catalogPath
+// file can hold agents' env secrets. `make run` serves from the directory that
+// holds conductor.example.json, an allowed root, so a view link could read the
+// admin token with GET /api/sessions/{id}/files?path=conductor.example.json.
+// Like the data directory, neither file is readable over HTTP or in-band, by
+// name, by absolute path or through a symlink; the files beside them are.
+func TestFileReadsNeverReachTheConfigOrCatalogFile(t *testing.T) {
+	const secret = "sk-live-from-the-catalog-file"
+	var configFile, catalogFile string
+	e := newTestEnv(t, func(c *config.Config) {
+		// What config.Load and Validate leave for a config file and a catalog
+		// file inside the session root.
+		configFile = filepath.Join(c.DefaultCwd, "conductor.json")
+		catalogFile = filepath.Join(c.DefaultCwd, "agents.json")
+		c.Path, c.CatalogPath = configFile, catalogFile
+	})
+	for path, body := range map[string]string{
+		configFile:  fmt.Sprintf(`{"adminToken": %q, "hostTokens": ["test-host-token"], "catalogPath": "agents.json"}`, adminToken),
+		catalogFile: fmt.Sprintf(`{"agents": [{"id": "keyed", "name": "keyed", "command": ["/bin/cat"], "env": {"OPENAI_API_KEY": %q}}]}`, secret),
+		filepath.Join(e.root, "conductor.example.json"): `{"listen": ":8080"}`,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(configFile, filepath.Join(e.root, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+
+	denied := []string{"conductor.json", configFile, "settings.json", "agents.json", catalogFile}
+	leaks := func(body string) bool {
+		return strings.Contains(body, adminToken) || strings.Contains(body, "test-host-token") || strings.Contains(body, secret)
+	}
+	for _, token := range []string{view, adminToken} {
+		for _, p := range denied {
+			for _, mode := range []string{"raw", "stat", ""} {
+				if status, got, code := e.getFile(id, token, p, mode); status != http.StatusForbidden || code != "denied" || leaks(got) {
+					t.Errorf("HTTP %q (mode %q): %d %s", p, mode, status, got)
+				}
+			}
+		}
+		if status, got, _ := e.getFile(id, token, "conductor.example.json", "raw"); status != http.StatusOK || got != `{"listen": ":8080"}` {
+			t.Fatalf("the sibling file over HTTP: %d %q", status, got)
+		}
+	}
+
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range denied {
+		for _, stat := range []bool{false, true} {
+			reqID := fmt.Sprintf("d%d-%t", i, stat)
+			c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p, Stat: stat}))
+			if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+				t.Errorf("file_get %q (stat %t): %+v %q", p, stat, h, b)
+			}
+		}
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "ok", Path: "conductor.example.json"}))
+	if h, b := c.expectFile("ok"); h.Kind != "file" || string(b) != `{"listen": ":8080"}` {
+		t.Fatalf("the sibling file in-band: %+v %q", h, b)
 	}
 }
 

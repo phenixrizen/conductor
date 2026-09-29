@@ -8,19 +8,27 @@ import (
 	"github.com/phenixrizen/conductor/internal/store"
 )
 
-// fileDeny returns the directories no file read may enter, even inside a
-// session's working directory: the data directory, whose catalog.json holds
-// the agents' env secrets. It names both the configured directory and the one
-// st writes to, should the two ever differ.
+// fileDeny returns what no file read of a server session may reach, even
+// inside its working directory: the data directory, whose catalog.json holds
+// the agents' env secrets, the config file, which holds the admin token and
+// host tokens, and the catalog file (catalogPath), which can hold env secrets.
+// It names both the configured data directory and the one st writes to, should
+// the two ever differ. A directory is denied with everything in it, a file on
+// its own (see session.ResolvePath).
 func fileDeny(cfg *config.Config, st *store.Store) []string {
-	var dirs []string
+	var deny []string
 	if cfg.DataDir != "" {
-		dirs = append(dirs, cfg.DataDir)
+		deny = append(deny, cfg.DataDir)
 	}
 	if st != nil && st.Dir() != cfg.DataDir {
-		dirs = append(dirs, st.Dir())
+		deny = append(deny, st.Dir())
 	}
-	return dirs
+	for _, file := range []string{cfg.Path, cfg.CatalogPath} {
+		if file != "" {
+			deny = append(deny, file)
+		}
+	}
+	return deny
 }
 
 // handleGetFile reads a file from a server-hosted session's working directory

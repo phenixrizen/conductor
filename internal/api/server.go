@@ -31,8 +31,8 @@ type Server struct {
 	log      *slog.Logger
 	web      http.Handler
 	store    *store.Store
-	// fileDeny lists the directories no file read may enter, even inside a
-	// session's working directory (see fileDeny).
+	// fileDeny lists the directories and files no file read may reach, even
+	// inside a session's working directory (see fileDeny).
 	fileDeny []string
 
 	// catalogMu guards overlay and catalog. catalog is the effective catalog,

@@ -148,6 +148,52 @@ func TestReadPathReportsDeniedForTheDenyList(t *testing.T) {
 	}
 }
 
+// A deny entry may be a single file, as the server's config file is: that file
+// is refused under every name that resolves to it, while the files beside it
+// and the directory holding it still read.
+func TestResolvePathDenyListFileEntry(t *testing.T) {
+	root := setupTree(t)
+	secret := filepath.Join(root, "conductor.json")
+	for path, body := range map[string]string{
+		secret: `{"adminToken":"secret"}`,
+		filepath.Join(root, "conductor.example.json"): `{}`,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "sub", "config-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(secret, filepath.Join(root, "hard.json")); err != nil {
+		t.Fatal(err)
+	}
+	deny := []string{secret}
+	for _, p := range []string{"conductor.json", "./conductor.json", secret, "sub/../conductor.json", "sub/config-link", "hard.json"} {
+		if r, err := ResolvePath(root, p, deny); err == nil {
+			t.Errorf("%q: resolved to %s, want it denied", p, r)
+		}
+		for _, stat := range []bool{false, true} {
+			if h, body := ReadPath(root, p, stat, deny); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || h.Exists || body != nil {
+				t.Errorf("%q (stat %t): %+v %q", p, stat, h, body)
+			}
+		}
+	}
+	// A deny entry given as a symlink names the file it points to.
+	if r, err := ResolvePath(root, "conductor.json", []string{filepath.Join(root, "sub", "config-link")}); err == nil {
+		t.Errorf("deny entry given as a symlink: resolved to %s", r)
+	}
+	if h, body := ReadPath(root, "conductor.example.json", false, deny); h.Kind != "file" || string(body) != "{}" {
+		t.Errorf("the sibling file: %+v %q", h, body)
+	}
+	if h, _ := ReadPath(root, ".", false, deny); h.Kind != "dir" {
+		t.Errorf("the directory holding the denied file: %+v", h)
+	}
+	if h, body := ReadPath(root, "sub/file.go", false, deny); h.Kind != "file" || string(body) != "package sub\n" {
+		t.Errorf("a file elsewhere in the root: %+v %q", h, body)
+	}
+}
+
 // On a case-insensitive file system (macOS and Windows by default) another
 // spelling of the data directory names the same directory. The rule compares
 // directories, not names, so it holds there too. Skipped where names are case

@@ -97,7 +97,8 @@ type Config struct {
 	FileView FileView `json:"fileView"`
 	// Catalog holds inline agent definitions.
 	Catalog catalog.File `json:"catalog"`
-	// CatalogPath points at a separate catalog JSON file.
+	// CatalogPath points at a separate catalog JSON file. Validate makes it
+	// absolute, relative to the current directory.
 	CatalogPath string `json:"catalogPath"`
 	// DataDir is the writable directory for UI-managed state: catalog overlay, crews, generated hook assets.
 	DataDir string `json:"dataDir"`
@@ -106,6 +107,10 @@ type Config struct {
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
+	// Path is the absolute path of the config file Load read, or "" when there
+	// was none. It is not a config key: the decoder ignores it, so a "path" key
+	// in the file is rejected as unknown.
+	Path string `json:"-"`
 }
 
 // Defaults returns the configuration used when nothing is specified.
@@ -127,6 +132,7 @@ func Defaults() *Config {
 }
 
 // Load reads path (optional), applies environment overrides and validates.
+// The file it read is recorded in Path.
 func Load(path string) (*Config, error) {
 	cfg := Defaults()
 	if path != "" {
@@ -138,6 +144,10 @@ func Load(path string) (*Config, error) {
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(cfg); err != nil {
 			return nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
+		cfg.Path = path
+		if abs, err := filepath.Abs(path); err == nil {
+			cfg.Path = abs
 		}
 	}
 	if err := applyEnv(cfg, os.Getenv); err != nil {
@@ -268,6 +278,14 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("defaultCwd: %w", err))
 		} else {
 			c.DefaultCwd = abs
+		}
+	}
+	if c.CatalogPath != "" {
+		abs, err := filepath.Abs(c.CatalogPath)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("catalogPath: %w", err))
+		} else {
+			c.CatalogPath = abs
 		}
 	}
 	for i, s := range c.ICEServers {
