@@ -37,7 +37,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	agent, ok := s.catalog.Get(req.AgentID)
+	agent, ok := s.Catalog().Get(req.AgentID)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_agent", "unknown agent id")
 		return

@@ -23,7 +23,6 @@ import (
 // Server holds the shared state behind every route.
 type Server struct {
 	cfg      *config.Config
-	catalog  catalog.Catalog
 	registry *session.Registry
 	links    *share.Store
 	hosts    *signal.Hub
@@ -33,19 +32,39 @@ type Server struct {
 	web      http.Handler
 	store    *store.Store
 
+	// catalogMu guards overlay and catalog. catalog is the effective catalog,
+	// base with overlay applied. It is replaced as a whole and never edited in
+	// place, so a copy taken under the lock (see Catalog) is a stable snapshot.
+	// Editing holds the lock from reading overlay to publishing the new catalog,
+	// so two admins cannot lose each other's change.
+	catalogMu sync.Mutex
+	base      catalog.Catalog // the configured catalog, before the overlay
+	overlay   catalog.Overlay // the UI-managed layer, as saved in catalog.json
+	catalog   catalog.Catalog
+
 	mu      sync.Mutex
 	counter int
 }
 
-// New wires the server. web serves the embedded SPA and may be nil. st persists
-// UI-managed state in the data directory and may be nil when there is none.
-func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) *Server {
+// New wires the server. cat is the configured catalog; when st holds a
+// catalog.json overlay it is applied on top. A corrupt or invalid overlay is an
+// error, so that startup fails instead of a later save overwriting the file.
+// web serves the embedded SPA and may be nil. st persists UI-managed state in
+// the data directory and may be nil when there is none.
+func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	base := cat.Clone()
+	effective, overlay, err := loadCatalog(st, base)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		cfg:      cfg,
-		catalog:  cat,
+		base:     base,
+		overlay:  overlay,
+		catalog:  effective,
 		registry: session.NewRegistry(cfg.MaxSessions),
 		links:    share.NewStore(),
 		limiter:  newRateLimiter(5, 20),
@@ -65,7 +84,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			d.DisconnectLink(linkID)
 		}
 	}
-	return s
+	return s, nil
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -74,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/catalog", s.requireAdmin(s.handleCatalog))
+	mux.HandleFunc("POST /api/catalog", s.requireAdmin(s.handleSaveAgent))
+	mux.HandleFunc("POST /api/catalog/check", s.requireAdmin(s.handleCheckCommand))
+	mux.HandleFunc("DELETE /api/catalog/{id}", s.requireAdmin(s.handleDeleteAgent))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.requireAdmin(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
@@ -236,3 +258,12 @@ func (s *Server) Registry() *session.Registry { return s.registry }
 
 // Links exposes the share store.
 func (s *Server) Links() *share.Store { return s.links }
+
+// Catalog returns a snapshot of the launchable agents: the configured catalog
+// with the data directory overlay applied. A snapshot is never changed by later
+// edits, so it can be read without a lock.
+func (s *Server) Catalog() catalog.Catalog {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	return s.catalog
+}

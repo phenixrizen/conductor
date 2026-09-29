@@ -27,6 +27,15 @@ export interface SessionInfo {
   endedAt?: string
 }
 
+/** How an agent tells Conductor it needs a human. No signal means the bell default. */
+export interface AgentSignal {
+  kind: 'hook' | 'bell' | 'pattern' | 'none'
+  /** RE2 on the last screen line; only with kind 'pattern'. */
+  pattern?: string
+  /** Ask hook adapters to report tool use as events (chatty; off by default). */
+  toolEvents?: boolean
+}
+
 export interface AgentInfo {
   id: string
   name: string
@@ -35,6 +44,28 @@ export interface AgentInfo {
   allowArgs: boolean
   cwd?: string
   icon?: string
+  /** Hook adapter id; empty or missing means none. */
+  adapter?: string
+  signal?: AgentSignal
+  /** Names of server environment variables this agent may inherit. */
+  envPassthrough?: string[]
+  /** Variable names the server sets for this agent. Every value is masked as "***": it means "set on the server", never the real value. */
+  env?: Record<string, string>
+}
+
+/** Body of POST /api/catalog: the whole agent, replacing any agent with the same id. */
+export interface AgentInput {
+  id: string
+  name: string
+  description?: string
+  command: string[]
+  allowArgs: boolean
+  env?: Record<string, string>
+  envPassthrough?: string[]
+  cwd?: string
+  icon?: string
+  adapter?: string
+  signal?: AgentSignal
 }
 
 export interface ShareLink {
@@ -65,6 +96,13 @@ export function useSessions() {
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
+    /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
+    saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
+    /** Removes the saved override with this id, restoring a built-in it replaced; an agent without one is hidden instead. */
+    deleteAgent: (id: string) => request<void>(`/api/catalog/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** Whether the program (argv[0]) resolves on the server. Nothing is run. */
+    checkCommand: (argv: string[]) =>
+      request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: argv } }),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),

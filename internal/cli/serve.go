@@ -68,7 +68,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if ui == nil {
 		log.Warn("web UI is not embedded; run `make web-build` before building, API only")
 	}
-	srv := api.New(cfg, cat, log, ui, st)
+	srv, err := api.New(cfg, cat, log, ui, st)
+	if err != nil {
+		return 1, err
+	}
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -79,7 +82,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
-	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(cat.List()))
+	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(srv.Catalog().List()))
 	if cfg.GeneratedAdminToken {
 		// Printed once so a developer can sign in; set CONDUCTOR_ADMIN_TOKEN to avoid this.
 		log.Warn("no admin token configured; generated one for this run", "adminToken", cfg.AdminToken)

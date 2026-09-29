@@ -3,13 +3,17 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,7 +63,10 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(cfg, cat, log, nil, st)
+	srv, err := New(cfg, cat, log, nil, st)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() {
 		hs.Close()
@@ -400,5 +407,547 @@ func TestWhoAmIReportsServerUser(t *testing.T) {
 	}
 	if u, _ := out["user"].(string); u == "" || len(u) > 64 {
 		t.Fatalf("user %q", u)
+	}
+}
+
+func TestCatalogEditingPersistsOverlay(t *testing.T) {
+	e := newTestEnv(t, nil) // newTestEnv opens a store in t.TempDir()
+	body := map[string]any{"id": "aider", "name": "Aider", "command": []string{"aider", "--no-auto-commits"}, "allowArgs": true, "signal": map[string]any{"kind": "pattern", "pattern": `^> $`}}
+	resp, out := e.do("POST", "/api/catalog", adminToken, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save: %d %v", resp.StatusCode, out)
+	}
+	_, list := e.do("GET", "/api/catalog", adminToken, nil)
+	var found bool
+	for _, raw := range list["agents"].([]any) {
+		a := raw.(map[string]any)
+		if a["id"] == "aider" && a["signal"].(map[string]any)["kind"] == "pattern" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("saved agent missing from catalog: %v", list)
+	}
+	// Persisted: the overlay file names the agent.
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 || ov.Agents[0].ID != "aider" {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+	// Hiding a built-in.
+	if resp, _ := e.do("DELETE", "/api/catalog/cat", adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("hide: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat"}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("hidden agent still launchable: %d", resp.StatusCode)
+	}
+	// Validation and unknown fields.
+	if resp, out := e.do("POST", "/api/catalog", adminToken, map[string]any{"id": "bad id", "name": "x", "command": []string{"x"}}); resp.StatusCode != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "invalid_agent" {
+		t.Fatalf("bad id: %d %v", resp.StatusCode, out)
+	}
+	if resp, _ := e.do("POST", "/api/catalog", adminToken, map[string]any{"id": "x", "name": "x", "command": []string{"x"}, "bogus": 1}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field accepted: %d", resp.StatusCode)
+	}
+	// Auth.
+	if resp, _ := e.do("POST", "/api/catalog", "", body); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous save: %d", resp.StatusCode)
+	}
+}
+
+func TestCatalogCheckCommand(t *testing.T) {
+	e := newTestEnv(t, nil)
+	_, out := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"/bin/sh", "-c", "x"}})
+	if out["found"] != true || out["path"] != "/bin/sh" {
+		t.Fatalf("sh: %v", out)
+	}
+	_, out = e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"definitely-not-a-real-binary-xyz"}})
+	if out["found"] != false {
+		t.Fatalf("missing: %v", out)
+	}
+	if resp, _ := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty argv: %d", resp.StatusCode)
+	}
+}
+
+// serve exposes srv over HTTP next to e's server, sharing its temp root.
+func (e *testEnv) serve(srv *Server) *testEnv {
+	e.t.Helper()
+	hs := httptest.NewServer(srv.Handler())
+	e.t.Cleanup(hs.Close)
+	return &testEnv{t: e.t, srv: srv, http: hs, root: e.root, client: hs.Client()}
+}
+
+// restart starts a second server over the same store and configured catalog,
+// the way `conductor serve` comes up again after a restart.
+func (e *testEnv) restart() *testEnv {
+	e.t.Helper()
+	srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, e.srv.store)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return e.serve(srv)
+}
+
+// catalogList returns the agents GET /api/catalog lists, in order.
+func (e *testEnv) catalogList() []any {
+	e.t.Helper()
+	resp, out := e.do("GET", "/api/catalog", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		e.t.Fatalf("catalog: %d %v", resp.StatusCode, out)
+	}
+	return out["agents"].([]any)
+}
+
+// catalogAgent returns the agent GET /api/catalog lists under id, or nil.
+func (e *testEnv) catalogAgent(id string) map[string]any {
+	e.t.Helper()
+	for _, raw := range e.catalogList() {
+		if a := raw.(map[string]any); a["id"] == id {
+			return a
+		}
+	}
+	return nil
+}
+
+// catalogIDs returns the agent IDs GET /api/catalog lists, in order.
+func (e *testEnv) catalogIDs() []string {
+	e.t.Helper()
+	var ids []string
+	for _, raw := range e.catalogList() {
+		ids = append(ids, raw.(map[string]any)["id"].(string))
+	}
+	return ids
+}
+
+// overlayFile returns the text of catalog.json in the data directory.
+func (e *testEnv) overlayFile() string {
+	e.t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.srv.store.Dir(), "catalog.json"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return string(b)
+}
+
+// save posts an agent to /api/catalog and requires it to be accepted.
+func (e *testEnv) save(body map[string]any) map[string]any {
+	e.t.Helper()
+	resp, out := e.do("POST", "/api/catalog", adminToken, body)
+	if resp.StatusCode != http.StatusOK {
+		e.t.Fatalf("save %v: %d %v", body["id"], resp.StatusCode, out)
+	}
+	return out
+}
+
+// del sends DELETE /api/catalog/{id} and returns the status.
+func (e *testEnv) del(id string) int {
+	e.t.Helper()
+	resp, _ := e.do("DELETE", "/api/catalog/"+id, adminToken, nil)
+	return resp.StatusCode
+}
+
+func agentBody(id string) map[string]any {
+	return map[string]any{"id": id, "name": id, "command": []string{"/bin/cat"}}
+}
+
+func TestCatalogCheckLooksUpWithoutRunning(t *testing.T) {
+	e := newTestEnv(t, nil)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "agent")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(dir, "plain")
+	if err := os.WriteFile(plain, []byte("not a program"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	cases := []struct {
+		name    string
+		command []string
+		found   bool
+		path    string
+	}{
+		{"absolute path, later elements ignored", []string{script, "--no-such-flag", "no-such-binary"}, true, script},
+		{"bare name found through PATH", []string{"agent"}, true, script},
+		{"file that is not executable", []string{plain}, false, ""},
+		{"bare name of a file that is not executable", []string{"plain"}, false, ""},
+		{"missing absolute path", []string{filepath.Join(dir, "missing")}, false, ""},
+	}
+	for _, tc := range cases {
+		resp, out := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": tc.command})
+		path, hasPath := out["path"]
+		if resp.StatusCode != http.StatusOK || out["found"] != tc.found || (tc.found && path != tc.path) || (!tc.found && hasPath) {
+			t.Errorf("%s: %d %v", tc.name, resp.StatusCode, out)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the check ran the command")
+	}
+	if resp, _ := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"sh"}, "bogus": 1}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field accepted: %d", resp.StatusCode)
+	}
+}
+
+func TestCatalogSaveRejectsInvalidAgents(t *testing.T) {
+	e := newTestEnv(t, nil)
+	with := func(k string, v any) map[string]any {
+		b := agentBody("ok")
+		b[k] = v
+		return b
+	}
+	cases := []struct {
+		name string
+		body any
+		code string
+		msg  string // part of the message
+	}{
+		{"bad id", with("id", "Bad Id"), "invalid_agent", "must match"},
+		{"blank name", with("name", "  "), "invalid_agent", "name must not be empty"},
+		{"name over 60 characters", with("name", strings.Repeat("n", 61)), "invalid_agent", "at most 60"},
+		{"empty command", with("command", []string{}), "invalid_agent", "at least one element"},
+		{"33 command elements", with("command", slices.Repeat([]string{"x"}, 33)), "invalid_agent", "at most 32"},
+		{"unknown signal kind", with("signal", map[string]any{"kind": "smoke"}), "invalid_agent", "unknown kind"},
+		{"pattern on a bell signal", with("signal", map[string]any{"kind": "bell", "pattern": "x"}), "invalid_agent", "pattern only applies"},
+		{"pattern that does not compile", with("signal", map[string]any{"kind": "pattern", "pattern": "("}), "invalid_agent", "error parsing regexp"},
+		{"bad envPassthrough name", with("envPassthrough", []string{"NOT OK"}), "invalid_agent", "envPassthrough"},
+		{"unknown field", with("bogus", 1), "invalid_request", `"bogus"`},
+		{"no body", nil, "invalid_request", ""},
+		{"body over 64 KiB", with("description", strings.Repeat("d", 70<<10)), "invalid_request", "too large"},
+	}
+	for _, tc := range cases {
+		resp, out := e.do("POST", "/api/catalog", adminToken, tc.body)
+		apiErr, _ := out["error"].(map[string]any)
+		msg, _ := apiErr["message"].(string)
+		if resp.StatusCode != http.StatusBadRequest || apiErr["code"] != tc.code || !strings.Contains(msg, tc.msg) {
+			t.Errorf("%s: %d %v", tc.name, resp.StatusCode, out)
+		}
+	}
+	// A rejected agent is not persisted.
+	if ok, err := e.srv.store.Load("catalog.json", &catalog.Overlay{}); ok || err != nil {
+		t.Fatalf("overlay written for invalid agents: %v %v", ok, err)
+	}
+}
+
+func TestCatalogRoutesNeedTheAdminToken(t *testing.T) {
+	e := newTestEnv(t, nil)
+	routes := []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/api/catalog", agentBody("intruder")},
+		{"DELETE", "/api/catalog/cat", nil},
+		{"POST", "/api/catalog/check", map[string]any{"command": []string{"sh"}}},
+	}
+	for _, r := range routes {
+		for _, token := range []string{"", "wrong", "test-host-token"} {
+			if resp, _ := e.do(r.method, r.path, token, r.body); resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s %s with token %q: %d", r.method, r.path, token, resp.StatusCode)
+			}
+		}
+	}
+	if ids := e.catalogIDs(); !slices.Equal(ids, []string{"cat", "sh", "exit"}) {
+		t.Fatalf("an unauthorized call changed the catalog: %v", ids)
+	}
+	if ok, err := e.srv.store.Load("catalog.json", &catalog.Overlay{}); ok || err != nil {
+		t.Fatalf("an unauthorized call wrote the overlay: %v %v", ok, err)
+	}
+}
+
+// A running server and one started from the saved overlay must list the same
+// agents in the same order, including after a built-in was hidden and saved again.
+func TestCatalogEditsMatchARestart(t *testing.T) {
+	e := newTestEnv(t, nil)
+	snapshot := e.srv.Catalog()
+
+	e.save(agentBody("aider"))
+	e.save(map[string]any{"id": "aider", "name": "Aider v2", "command": []string{"aider"}}) // replaces, does not repeat
+	if c := e.del("cat"); c != http.StatusNoContent {
+		t.Fatalf("hide: %d", c)
+	}
+	e.save(map[string]any{"id": "cat", "name": "Cat again", "command": []string{"/bin/cat"}}) // back, replacing the built-in
+	e.save(map[string]any{"id": "sh", "name": "Shell", "command": []string{"/bin/sh"}})       // replaced in place
+
+	if got, want := e.catalogIDs(), []string{"cat", "sh", "exit", "aider"}; !slices.Equal(got, want) {
+		t.Fatalf("live order %v, want %v", got, want)
+	}
+	if a := e.catalogAgent("aider"); a["name"] != "Aider v2" {
+		t.Fatalf("aider: %v", a)
+	}
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 3 || len(ov.Hidden) != 0 {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+
+	again := e.restart()
+	if live, restarted := e.catalogList(), again.catalogList(); !reflect.DeepEqual(live, restarted) {
+		t.Fatalf("restart differs:\n live      %v\n restarted %v", live, restarted)
+	}
+	// Snapshots are never edited, so readers need no lock.
+	if got := snapshot.List(); len(got) != 3 || got[0].Name != "cat" {
+		t.Fatalf("snapshot taken before the edits changed: %+v", got)
+	}
+}
+
+func TestCatalogDeleteRestoresOrHides(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+
+	// The first edit ever is a hide: the file still holds "agents": [], not null.
+	if c := e.del("cat"); c != http.StatusNoContent {
+		t.Fatalf("hide: %d", c)
+	}
+	if raw := e.overlayFile(); !strings.Contains(raw, `"agents": []`) || strings.Contains(raw, "null") || !strings.Contains(raw, `"hidden"`) {
+		t.Fatalf("overlay after hiding: %s", raw)
+	}
+	if e.catalogAgent("cat") != nil {
+		t.Fatal("hidden agent still listed")
+	}
+	// Hiding does not stop a session that is already running.
+	if resp, out := e.do("GET", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK || out["session"].(map[string]any)["status"] != "running" {
+		t.Fatalf("running session after hide: %d %v", resp.StatusCode, out)
+	}
+
+	// Saving the ID again shows it again, replacing the built-in.
+	e.save(map[string]any{"id": "cat", "name": "Cat mk2", "command": []string{"/bin/cat"}})
+	if a := e.catalogAgent("cat"); a == nil || a["name"] != "Cat mk2" {
+		t.Fatalf("saved over the hidden built-in: %v", a)
+	}
+	if strings.Contains(e.overlayFile(), `"hidden"`) {
+		t.Fatalf("saved agent is still hidden: %s", e.overlayFile())
+	}
+
+	// Deleting the override brings the built-in back and leaves an empty list.
+	if c := e.del("cat"); c != http.StatusNoContent {
+		t.Fatalf("remove override: %d", c)
+	}
+	if a := e.catalogAgent("cat"); a == nil || a["name"] != "cat" {
+		t.Fatalf("built-in not restored: %v", a)
+	}
+	if raw := e.overlayFile(); !strings.Contains(raw, `"agents": []`) || strings.Contains(raw, "null") || strings.Contains(raw, `"hidden"`) {
+		t.Fatalf("overlay after removing the override: %s", raw)
+	}
+
+	// With no override left the next delete hides it, and then it is unknown.
+	if c := e.del("cat"); c != http.StatusNoContent || e.catalogAgent("cat") != nil {
+		t.Fatalf("hide again: %d", c)
+	}
+	for _, unknown := range []string{"cat", "no-such-agent"} {
+		resp, out := e.do("DELETE", "/api/catalog/"+unknown, adminToken, nil)
+		if resp.StatusCode != http.StatusNotFound || out["error"].(map[string]any)["code"] != "not_found" {
+			t.Fatalf("delete %s: %d %v", unknown, resp.StatusCode, out)
+		}
+	}
+}
+
+func TestCatalogEditingNeedsAStore(t *testing.T) {
+	e := newTestEnv(t, nil)
+	srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := e.serve(srv)
+	for _, r := range []struct {
+		method, path string
+		body         any
+	}{{"POST", "/api/catalog", agentBody("x")}, {"DELETE", "/api/catalog/cat", nil}} {
+		resp, out := ro.do(r.method, r.path, adminToken, r.body)
+		if resp.StatusCode != http.StatusServiceUnavailable || out["error"].(map[string]any)["code"] != "store_unavailable" {
+			t.Errorf("%s %s: %d %v", r.method, r.path, resp.StatusCode, out)
+		}
+	}
+	if ids := ro.catalogIDs(); !slices.Equal(ids, []string{"cat", "sh", "exit"}) {
+		t.Fatalf("read-only catalog: %v", ids)
+	}
+	if resp, out := ro.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"/bin/sh"}}); resp.StatusCode != http.StatusOK || out["found"] != true {
+		t.Fatalf("check needs no store: %d %v", resp.StatusCode, out)
+	}
+}
+
+// A catalog.json that cannot be used must stop startup: if the server ran with
+// the configured catalog alone, the next save would overwrite the file.
+func TestNewRefusesAnUnusableOverlay(t *testing.T) {
+	cases := []struct{ name, file, want string }{
+		{"not JSON", `{oops`, "parse catalog.json"},
+		{"empty file", ``, "empty document"},
+		{"unknown field", `{"agents": [], "bogus": true}`, `"bogus"`},
+		{"invalid agent", `{"agents": [{"id": "Bad Id", "name": "x", "command": ["x"]}]}`, "agents[0]"},
+		{"invalid signal", `{"agents": [{"id": "ok", "name": "x", "command": ["x"], "signal": {"kind": "smoke"}}]}`, "unknown kind"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			path := filepath.Join(e.srv.store.Dir(), "catalog.json")
+			if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, e.srv.store)
+			if err == nil || srv != nil {
+				t.Fatalf("New accepted the file: %v", err)
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q should name %s and contain %q", err, path, tc.want)
+			}
+			if b, _ := os.ReadFile(path); string(b) != tc.file {
+				t.Fatalf("New changed the file: %q", b)
+			}
+		})
+	}
+}
+
+func TestCatalogFailedSaveChangesNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.save(agentBody("kept"))
+	before := e.catalogIDs()
+
+	// The data directory disappears, so no save can succeed.
+	dir := e.srv.store.Dir()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	attempts := []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/api/catalog", agentBody("lost")},
+		{"DELETE", "/api/catalog/cat", nil},
+		{"DELETE", "/api/catalog/kept", nil},
+	}
+	for _, a := range attempts {
+		resp, out := e.do(a.method, a.path, adminToken, a.body)
+		apiErr, _ := out["error"].(map[string]any)
+		if resp.StatusCode != http.StatusInternalServerError || apiErr["code"] != "store_failed" || strings.Contains(fmt.Sprint(apiErr["message"]), dir) {
+			t.Errorf("%s %s: %d %v", a.method, a.path, resp.StatusCode, out)
+		}
+	}
+	if got := e.catalogIDs(); !slices.Equal(got, before) {
+		t.Fatalf("a failed save changed the catalog: %v, want %v", got, before)
+	}
+
+	// Once the directory is back, the next save writes what the server still
+	// holds plus the new agent, and nothing from the failed attempts.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.save(agentBody("back"))
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 2 || ov.Agents[0].ID != "kept" || ov.Agents[1].ID != "back" || len(ov.Hidden) != 0 {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+}
+
+func TestCatalogConcurrentEditsAreAllKept(t *testing.T) {
+	e := newTestEnv(t, nil)
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := range writers {
+		wg.Go(func() {
+			b, _ := json.Marshal(agentBody(fmt.Sprintf("agent-%d", i)))
+			req, _ := http.NewRequest("POST", e.http.URL+"/api/catalog", bytes.NewReader(b))
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			resp, err := e.client.Do(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errs <- fmt.Errorf("agent-%d: status %d", i, resp.StatusCode)
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	// Meanwhile readers see whole catalogs: no duplicates and no torn lists,
+	// and launches keep working.
+	launched := false
+	for reading := true; reading; {
+		select {
+		case <-done:
+			reading = false
+		default:
+		}
+		ids := e.catalogIDs()
+		if unique := slices.Compact(slices.Sorted(slices.Values(ids))); len(unique) != len(ids) || len(ids) < 3 {
+			t.Fatalf("inconsistent catalog: %v", ids)
+		}
+		if !launched {
+			e.createSession("cat")
+			launched = true
+		}
+	}
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != writers {
+		t.Fatalf("overlay keeps %d of %d agents: %v %v", len(ov.Agents), writers, ok, err)
+	}
+	if ids := e.catalogIDs(); len(ids) != 3+writers {
+		t.Fatalf("catalog lists %d agents, want %d: %v", len(ids), 3+writers, ids)
+	}
+}
+
+func TestCatalogSavedAgentsRun(t *testing.T) {
+	e := newTestEnv(t, nil)
+	body := agentBody("mycat")
+	body["env"] = map[string]string{"TOKEN": "s3cret"}
+	out := e.save(body)
+	// The response and the listing mask env values; the overlay keeps them so
+	// the agent still gets its real environment.
+	if env := out["agent"].(map[string]any)["env"].(map[string]any); env["TOKEN"] != "***" {
+		t.Fatalf("save response env: %v", env)
+	}
+	if env := e.catalogAgent("mycat")["env"].(map[string]any); env["TOKEN"] != "***" {
+		t.Fatalf("catalog env: %v", env)
+	}
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || ov.Agents[0].Env["TOKEN"] != "s3cret" {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+	e.createSession("mycat")
+
+	// A command that is missing on the server can still be saved (a host may
+	// have it); launching it here fails with the usual start_failed.
+	e.save(map[string]any{"id": "ghost", "name": "Ghost", "command": []string{"definitely-not-a-real-binary-xyz"}})
+	if _, out := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"definitely-not-a-real-binary-xyz"}}); out["found"] != false {
+		t.Fatalf("check: %v", out)
+	}
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "ghost"})
+	if resp.StatusCode != http.StatusBadGateway || out["error"].(map[string]any)["code"] != "start_failed" {
+		t.Fatalf("launch of a missing command: %d %v", resp.StatusCode, out)
+	}
+}
+
+// A hand-edited catalog.json may repeat an ID; the last entry wins at startup,
+// so a save has to replace every copy or a restart would bring an old one back.
+func TestCatalogSaveCollapsesDuplicateOverlayEntries(t *testing.T) {
+	e := newTestEnv(t, nil)
+	dup := `{"agents": [
+  {"id": "dup", "name": "first", "command": ["a"]},
+  {"id": "dup", "name": "second", "command": ["b"]}
+]}`
+	if err := os.WriteFile(filepath.Join(e.srv.store.Dir(), "catalog.json"), []byte(dup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e = e.restart()
+	if a := e.catalogAgent("dup"); a == nil || a["name"] != "second" {
+		t.Fatalf("startup: %v", a)
+	}
+	e.save(map[string]any{"id": "dup", "name": "third", "command": []string{"c"}})
+	if a := e.catalogAgent("dup"); a["name"] != "third" {
+		t.Fatalf("after save: %v", a)
+	}
+	if a := e.restart().catalogAgent("dup"); a["name"] != "third" {
+		t.Fatalf("after restart: %v", a)
+	}
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
 	}
 }

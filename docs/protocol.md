@@ -172,3 +172,39 @@ four requests may be in flight per client. `stat:true` returns only the header.
 
 The `fileView` server setting decides who may read: `view` (both roles, the
 default), `control` (controllers only) or `off`.
+
+## HTTP API
+
+Every `/api/...` route, with the credential it needs. Admin means
+`Authorization: Bearer <admin token>`; a share token is also accepted where the
+table says so. JSON request bodies are limited to 64 KiB and unknown fields are
+rejected. Errors are `{"error":{"code","message"}}`. The WebSocket routes,
+`GET /ws/sessions/{id}` and `GET /ws/host`, are described above.
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions` |
+| `GET /api/whoami` | admin | OS user running the server (the default display name) |
+| `GET /api/catalog` | admin | launchable agents; `env` values are masked as `***` |
+| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `400 invalid_agent` carries the validation message, `503 store_unavailable` when there is no data directory |
+| `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
+| `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
+| `GET /api/sessions` | admin | list sessions |
+| `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?}`, reply `201` with the session `Info` |
+| `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links` |
+| `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list |
+| `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers |
+| `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` |
+| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204` |
+| `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
+| `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
+| `GET /api/events` | admin | Server-Sent Events of session changes, see Attention |
+| `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited) |
+
+The catalog routes persist their changes as `catalog.json` in the data
+directory (`dataDir`): `{"agents": [...], "hidden": [...]}`. At startup that
+overlay is applied over the configured catalog, and the server refuses to start
+when the file cannot be parsed or an agent in it is invalid. Agents are held to
+these limits everywhere: `id` matches `^[a-z0-9-]{1,32}$`, `name` at most 60
+characters, `description` 200, `command` 1 to 32 elements of at most 4096 bytes
+each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern` 200 bytes.

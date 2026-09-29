@@ -190,6 +190,25 @@ an entry by ID:
 Commands are argv arrays and never pass through a shell. `allowArgs` lets the
 launch form append extra arguments. `disableDefaults: true` drops the built-ins.
 
+**Adding agents from the UI.** Admins can add, change and hide agents from the
+**Agents** page (**Add agent**) without editing the config file. The changes are
+saved as `catalog.json` in the data directory (`dataDir`) and layered over the
+configured catalog at startup: an agent with the ID of a built-in or configured
+one replaces it, and deleting that entry brings the original back. Hiding an
+agent removes it from the launch dialog; sessions already running are not
+affected. The config file is never written. The server refuses to start when
+`catalog.json` cannot be parsed or holds an invalid agent, rather than
+overwrite it. The form checks the command against the server's `PATH`, and an
+agent whose program is missing there can still be saved, for use with
+`conductor host`.
+
+Every agent, from the config file or the UI, is held to the same limits: the ID
+matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
+200, `command` has at most 32 elements of at most 4096 bytes each, `env` has at
+most 32 keys, `envPassthrough` (names of server environment variables the agent
+may inherit) at most 32 names, and a signal `pattern` (a regular expression) at
+most 200 bytes.
+
 ## Security model and limits
 
 - The admin token gates launching, listing, stopping and link management; share
