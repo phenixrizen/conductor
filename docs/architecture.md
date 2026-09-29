@@ -63,6 +63,7 @@ command.
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
 | `internal/store` | atomic JSON documents in the data directory |
+| `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
 | `internal/session` | ring buffer, fan-out hub, `Local` session, registry, bounded file reads |
