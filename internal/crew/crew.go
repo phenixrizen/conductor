@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // When a member starts in a run (Start.When).
@@ -132,8 +133,9 @@ func gitRefuses(name string) bool {
 
 // Validate checks c apart from its ID, which the store checks, and its agents,
 // which CheckAgents checks against a catalog: the name, goal, working
-// directory and options, the members' names, agent IDs, prompts, arguments
-// and start conditions, all within their limits, and the size of c as JSON,
+// directory and options, the members' names, agent IDs, prompts (with the
+// goal in them, as they are typed), arguments and start conditions, all
+// within their limits, and the size of c as JSON,
 // which counts the ID and the times. The first problem found is returned; it
 // matches ErrInvalid, and quotes at most 80 characters of a value.
 func (c Crew) Validate() error {
@@ -170,6 +172,9 @@ func (c Crew) Validate() error {
 	names := make([]string, 0, len(c.Members))
 	for _, m := range c.Members {
 		if err := m.Validate(); err != nil {
+			return err
+		}
+		if err := m.checkTypedPrompt(c.Goal); err != nil {
 			return err
 		}
 		if slices.Contains(names, m.Name) {
@@ -304,6 +309,28 @@ var goalRef = regexp.MustCompile(`\$(?:\{GOAL\}|GOAL\b)`)
 // goal. The goal goes in literally: nothing in it is expanded.
 func ExpandPrompt(prompt, goal string) string {
 	return goalRef.ReplaceAllLiteralString(prompt, goal)
+}
+
+// typedPromptLen is len(ExpandPrompt(prompt, goal)) + 1, the bytes typing
+// the prompt writes with its carriage return, counted without expanding it:
+// a goal of 2000 characters in 800 references would take megabytes.
+func typedPromptLen(prompt, goal string) int {
+	n := len(prompt) + 1
+	for _, ref := range goalRef.FindAllStringIndex(prompt, -1) {
+		n += len(goal) - (ref[1] - ref[0])
+	}
+	return n
+}
+
+// checkTypedPrompt checks that m's prompt, with goal in place of $GOAL and a
+// carriage return, fits what a session takes at once (session.Local.Type):
+// a member never fails to start for the size of its prompt. The error
+// matches ErrInvalid.
+func (m Member) checkTypedPrompt(goal string) error {
+	if n := typedPromptLen(m.Prompt, goal); n > proto.MaxInput {
+		return invalidf("member %s: the prompt with the goal in place of $GOAL is %d bytes, more than %d", quote(m.Name), n-1, proto.MaxInput-1)
+	}
+	return nil
 }
 
 // clone returns a copy of c that shares no slice with it.

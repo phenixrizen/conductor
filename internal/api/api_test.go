@@ -2975,9 +2975,10 @@ func TestPlainSessionHasNoCrewVariables(t *testing.T) {
 	}
 }
 
-// The run engine takes the server's activity: a handoff one member reports
-// through the events route is typed into the member it names, and the done
-// a member reports starts the members after it.
+// The run engine takes the server's activity and changes: a handoff one
+// member reports through the events route is typed into the member it names,
+// once that member's prompt is cleared when it waits on one, and the done a
+// member reports starts the members after it.
 func TestCrewHandoffReachesTheOtherMember(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.stopEverything(t)
@@ -3025,22 +3026,53 @@ func TestCrewHandoffReachesTheOtherMember(t *testing.T) {
 	}
 	d, _ := e.srv.registry.Get(testsID)
 	tests := d.(*session.Local)
-	deadline := time.Now().Add(5 * time.Second)
-	for !slices.ContainsFunc(tests.Activity(), func(a session.ActivityEntry) bool {
-		return a.Type == session.ActivityInput && a.ByName == "crew" && a.Message == "Handoff from lead: run the suite"
-	}) {
-		if time.Now().After(deadline) {
-			t.Fatalf("tests records %+v", tests.Activity())
+	waitTyped := func(text string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !slices.ContainsFunc(tests.Activity(), func(a session.ActivityEntry) bool {
+			return a.Type == session.ActivityInput && a.ByName == "crew" && a.Message == text
+		}) {
+			if time.Now().After(deadline) {
+				t.Fatalf("tests records %+v", tests.Activity())
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
+	waitTyped("Handoff from lead: run the suite")
 	c := dialViewer(t, e, testsID, adminToken)
 	c.hello(80, 24)
 	c.expectOutput("Handoff from lead: run the suite")
-	_, out = e.do("GET", "/api/runs/"+runID, adminToken, nil)
-	if log, _ := json.Marshal(out["run"].(map[string]any)["log"]); !strings.Contains(string(log), "handoff delivered from lead to tests") {
-		t.Fatalf("run log %s", log)
+	waitLog := func(text string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+			log, _ := json.Marshal(out["run"].(map[string]any)["log"])
+			if strings.Contains(string(log), text) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("run log %s", log)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
+	waitLog("handoff delivered from lead to tests")
+
+	// tests waits on a prompt: the next handoff waits for it, and goes once
+	// the agent clears the prompt, which records no entry.
+	testsAgent := e.agentToken(testsID)
+	if resp, out := e.do("POST", "/api/sessions/"+testsID+"/events", testsAgent, map[string]any{"type": "needs_input", "message": "Allow edit?"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("needs_input: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+leadID+"/events", agent, map[string]any{"type": "handoff", "to": "tests", "message": "and the docs"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("handoff: %d %v", resp.StatusCode, out)
+	}
+	waitLog("handoff queued from lead to tests: tests is waiting for input")
+	if resp, out := e.do("POST", "/api/sessions/"+testsID+"/events", testsAgent, map[string]any{"type": "clear"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("clear: %d %v", resp.StatusCode, out)
+	}
+	waitTyped("Handoff from lead: and the docs")
 
 	// lead is done: docs starts.
 	if m := memberNow("docs"); m["status"] != "pending" {

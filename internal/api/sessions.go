@@ -179,7 +179,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		FileDeny:        s.fileDeny,
 		Transport:       proto.TransportWS,
 		Log:             s.log,
-		OnChange:        s.events.publish,
+		OnChange:        s.localChange,
 		OnActivity:      s.localActivity,
 		Pattern:         pattern,
 	})
@@ -193,6 +193,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", proc.PID())
 	s.events.publish(local.Info())
 	return local, nil
+}
+
+// localChange is the OnChange hook of a server session: the change goes to
+// the event hub, and to the runs, whose waiting handoffs a member's change
+// may let go (a prompt cleared records no activity entry). The runs' hook
+// never waits.
+func (s *Server) localChange(info session.Info) {
+	s.events.publish(info)
+	s.runs.OnChange(info)
 }
 
 // localActivity is the OnActivity hook of a server session: it hands the

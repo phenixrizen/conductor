@@ -304,6 +304,28 @@ func TestExpandPrompt(t *testing.T) {
 	}
 }
 
+// A prompt is typed with the goal in place of $GOAL and a carriage return,
+// which must fit what a session takes at once (proto.MaxInput bytes): a
+// valid prompt and goal can reach megabytes with 800 references.
+func TestValidateRejectsAPromptTooLongToType(t *testing.T) {
+	c := validCrew("api", "API")
+	c.Goal = strings.Repeat("é", 2000) // 4000 bytes
+	c.Members[1].Prompt = strings.Repeat("$GOAL ", 8)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("8 references: %v", err)
+	}
+	c.Members[1].Prompt = strings.Repeat("${GOAL} ", 9)
+	if err := c.Validate(); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"tests"`) || !strings.Contains(err.Error(), "goal") {
+		t.Fatalf("9 references: %v", err)
+	}
+	// Counted as ExpandPrompt writes it.
+	for _, prompt := range []string{"", "no goal", "$GOAL", "${GOAL}$GOAL", "$GOALS $GOAL_2 ${GOALS}", strings.Repeat("$GOAL ", 800)} {
+		if got, want := typedPromptLen(prompt, c.Goal), len(ExpandPrompt(prompt, c.Goal))+1; got != want {
+			t.Errorf("typedPromptLen(%.20q) = %d, want %d", prompt, got, want)
+		}
+	}
+}
+
 // The field names are what the web client and docs/protocol.md use.
 func TestCrewJSON(t *testing.T) {
 	b, err := json.Marshal(validCrew("api", "API"))

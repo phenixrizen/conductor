@@ -219,9 +219,11 @@ to every link: the number of viewers currently attached through it.
 When a controller's input clears `needs_input`, the session records
 `lastAnswer{by, byName, at, message}` in its `Info` (the prompt that was
 answered and who answered it) and an `input` activity entry. What Conductor
-types itself (a crew member's prompt or a handoff) clears `needs_input` the
-same way and always records an `input` entry, `byName` `crew` and the text
-typed, less its line break, as `message`.
+types itself (a crew member's prompt or a handoff), at most 32 KiB with its
+line break as an `INPUT` frame, clears `needs_input` the same way and always
+records an `input` entry, `byName` `crew` and the text typed, less its line
+break, as `message`; a handoff is never typed while the session is
+`needs_input` (see Crew runs).
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
 run (see Crew runs), and no `crew` otherwise.
@@ -391,7 +393,7 @@ above.
 | `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
 | `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first |
 | `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}` and the run's `log`, whose entries Crew runs lists; `404` when unknown |
-| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch, and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
+| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32767 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch, and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
 | `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch, the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
 | `POST /api/runs/{run}/stop` | admin | stop every member's session; reply `{run}` with `stoppedAt`; the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
@@ -429,9 +431,11 @@ space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 `name` matching `^[a-z0-9][a-z0-9._-]{0,39}$`, unique in its crew and one git
 takes for a branch (no `..`, no `.` or `.lock` at the end), an `agentId`
 matching `^[a-z0-9-]{1,32}$` that the catalog has when the crew is saved or
-copied, a `prompt` of at most 4000 characters and at most 32 `args` of at most
-4096 bytes, 8 KiB in all; `start.when` is `immediately`, `after` or `manual`,
-`start.member`, set with `after` alone, names another member of the crew, and
+copied, a `prompt` of at most 4000 characters that, with the goal in place of
+`$GOAL` and `${GOAL}`, is at most 32767 bytes (it is typed with a carriage
+return, and a session takes at most 32 KiB at once), and at most 32 `args` of
+at most 4096 bytes, 8 KiB in all; `start.when` is `immediately`, `after` or
+`manual`, `start.member`, set with `after` alone, names another member of the crew, and
 following `start.member` from member to member never goes round in a cycle.
 The whole crew, as the server writes it with its `id` and times, is at most
 512 KiB of JSON. Create and update check the body first: a crew that breaks one
@@ -493,16 +497,22 @@ forgets the oldest with nothing running.
 A `handoff` event a member reports (see Events) goes to the member of its run
 that `to` names. When that member is `running` and not `needs_input`,
 Conductor types `Handoff from <member>: <message>` and a carriage return into
-its session, recorded as an `input` entry by `crew`, as a prompt is. While
-the member waits for input, or is still `starting`, the handoff waits for it:
-at most 10 wait per member, and one more drops the oldest. They are typed in
-order, one line each, once the member runs and no longer waits for input,
-looked at whenever its session records an entry and every 250 ms (a prompt
-cleared records none). A handoff to a name no member of the run has, or to a
-member with no session yet or whose session has ended, is only noted in the
-run log, and so is each waiting handoff dropped when its member's session ends
-or the run stops. A handoff from a session outside any run, or reported as
-its run stops, is an event like any other and nothing more.
+its session, recorded as an `input` entry by `crew`, as a prompt is; the line
+breaks and tabs the message keeps become spaces, so a handoff is one line.
+While the member waits for input, or is still `starting`, the handoff waits
+for it: at most 10 wait per member, and another drops the oldest. They are
+typed in order, one line each, once the member runs and no longer waits for
+input, looked at again whenever its session records an entry or changes (a
+prompt cleared records no entry, only a change) and when the member starts
+running. The session looks at `needs_input` in the same step in which it
+finds the prompt an input would answer, so a handoff never answers a prompt:
+one the session shows when a handoff is about to be typed sends the handoff
+back to the head of the queue, and one raised while it is written stays.
+A handoff to a name no member of the run has, to the member that reports it,
+or to a member with no session yet or whose session has ended, is only noted
+in the run log, and so is each waiting handoff dropped when its member's
+session ends or the run stops. A handoff from a session outside any run, or
+reported as its run stops, is an event like any other and nothing more.
 
 The run log is the run's own record beside its sessions' activity, oldest
 first; each entry is an activity entry of type `status` or `error` whose
@@ -518,14 +528,20 @@ first; each entry is an activity entry of type `status` or `error` whose
 | ended before its prompt | `status` | `<member> ended before its prompt was typed: <how it ended>` |
 | could not start | `error` | `<member> could not start: <why>` |
 | done | `status` | `<member> is done: starting <members>` |
-| handoff queued | `status` | `handoff queued from <a> to <b>: <b> is waiting for input`, or `: <b> has not had its prompt yet` |
+| handoff queued | `status` | `handoff queued from <a> to <b>: <b> is waiting for input`, or `: <b> has not had its prompt yet`; see below |
 | handoff delivered | `status` | `handoff delivered from <a> to <b>` |
-| handoff dropped | `error` | `handoff dropped from <a> to <b>: <why>`, where why is `10 wait already` (the oldest waiting is dropped), `<b> is not running`, `the run is stopped` or the error writing it |
+| handoff dropped | `error` | `handoff dropped from <a> to <b>: <why>`, where why is `10 already waiting` (the oldest waiting is dropped), `<b> is not running`, `the run is stopped` or the error writing it |
 | handoff to unknown member | `error` | `handoff to unknown member "<name>" from <a>` |
+| handoff to itself | `error` | `handoff to itself from <a>` |
 | handoff to a member that is not running | `error` | `handoff to a member that is not running, from <a> to <b>` |
 | exclude | `error` | `could not add .conductor/ to the repository's info/exclude: <why>`, at most once a run |
 | stopped | `status` | `stopped` |
 
 Every handoff a member reports while its run is not stopping is noted once as
-delivered, dropped, to an unknown member or to a member that is not running,
-and before that as queued when it has to wait.
+delivered, dropped, to an unknown member, to itself or to a member that is not
+running. A handoff that waits is noted as queued once, when it is found
+waiting rather than when it arrives: Conductor looks at a member's queue as
+handoffs arrive and as the member changes, and notes every handoff in it not
+noted yet when the member has not had its prompt, or is `needs_input` as the
+handoff at the head of the queue is about to be typed. A handoff dropped to
+make room before it was found waiting is noted as dropped only.

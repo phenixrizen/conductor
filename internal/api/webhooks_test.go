@@ -661,9 +661,10 @@ func TestWebhooksShareOneSinkAndOneBody(t *testing.T) {
 		config.Webhook{URL: b.URL, Events: []string{"attention"}, Secret: "s3cret", AllowPrivate: true},
 		config.Webhook{URL: c.URL, Events: []string{"done"}, AllowPrivate: true},
 	)
-	// One sink for the three webhooks, beside the runs' own.
-	if n := len(e.srv.events.sinks); n != 2 {
-		t.Fatalf("%d sinks for three webhooks and the runs, want 2", n)
+	// One sink for the three webhooks, beside the sinks a server without
+	// webhooks has.
+	if n := len(e.srv.events.sinks) - len(newTestEnv(t, nil).srv.events.sinks); n != 1 {
+		t.Fatalf("%d sinks for three webhooks", n)
 	}
 	id := e.createSession("cat")
 	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", e.agentToken(id), map[string]any{"type": "needs_input", "message": "approve?"}); resp.StatusCode != http.StatusAccepted {
