@@ -311,9 +311,19 @@ func ExpandPrompt(prompt, goal string) string {
 	return goalRef.ReplaceAllLiteralString(prompt, goal)
 }
 
-// typedPromptLen is len(ExpandPrompt(prompt, goal)) + 1, the bytes typing
-// the prompt writes with its carriage return, counted without expanding it:
-// a goal of 2000 characters in 800 references would take megabytes.
+// typedPrompt is the line a member's prompt types, less its carriage return:
+// the prompt with the goal in place of $GOAL (ExpandPrompt), made one line as
+// a handoff's message and a broadcast are, each line break, carriage return
+// and tab a space, so that an agent that submits at a line break takes the
+// whole prompt. The crew keeps the prompt as written.
+func typedPrompt(prompt, goal string) string {
+	return oneLine.Replace(ExpandPrompt(prompt, goal))
+}
+
+// typedPromptLen is len(typedPrompt(prompt, goal)) + 1, the bytes typing the
+// prompt writes with its carriage return, counted without expanding it: a
+// goal of 2000 characters in 800 references would take megabytes. Making it
+// one line changes no length, so the count is exact.
 func typedPromptLen(prompt, goal string) int {
 	n := len(prompt) + 1
 	for _, ref := range goalRef.FindAllStringIndex(prompt, -1) {
@@ -322,10 +332,10 @@ func typedPromptLen(prompt, goal string) int {
 	return n
 }
 
-// checkTypedPrompt checks that m's prompt, with goal in place of $GOAL and a
-// carriage return, fits what a session takes at once (session.Local.Type):
-// a member never fails to start for the size of its prompt. The error
-// matches ErrInvalid.
+// checkTypedPrompt checks that m's prompt, with goal in place of $GOAL, made
+// one line and with a carriage return (typedPrompt), fits what a session
+// takes at once (session.Local.Type): a member never fails to start for the
+// size of its prompt. The error matches ErrInvalid.
 func (m Member) checkTypedPrompt(goal string) error {
 	if n := typedPromptLen(m.Prompt, goal); n > proto.MaxInput {
 		return invalidf("member %s: the prompt with the goal in place of $GOAL is %d bytes, more than %d", quote(m.Name), n-1, proto.MaxInput-1)

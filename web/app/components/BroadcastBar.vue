@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { broadcastSummary } from '~/utils/crews'
+import { broadcastByName, broadcastSummary } from '~/utils/crews'
 
 /**
  * Types one line into the selected members of a run (POST
- * /api/runs/{run}/broadcast), recorded as input by the display name. The
- * server skips a member waiting on a prompt; the toast says who got the line
- * and who was skipped, and why.
+ * /api/runs/{run}/broadcast), recorded as input by the display name, or by
+ * the server's OS user when none is set (broadcastByName). The server skips a
+ * member waiting on a prompt; the toast says who got the line and who was
+ * skipped, and why.
  */
 const props = defineProps<{ runId: string; members: string[]; disabled?: boolean }>()
 
@@ -24,7 +25,8 @@ async function send() {
   if (!canSend.value) return
   sending.value = true
   try {
-    const r = await api.broadcastRun(props.runId, { text: text.value, members: [...props.members], byName: identity.name.value || undefined })
+    const byName = await broadcastByName(identity.name.value, api.whoami)
+    const r = await api.broadcastRun(props.runId, { text: text.value, members: [...props.members], byName })
     const s = broadcastSummary(r)
     toast.add({ title: s.title, description: s.description, color: s.color, icon: 'i-lucide-megaphone' })
     if (r.sent.length) text.value = ''

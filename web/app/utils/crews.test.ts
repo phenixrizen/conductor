@@ -3,6 +3,7 @@ import type { AgentInfo, CrewInfo, CrewMember, CrewStart, RunInfo, RunMember, Se
 import type { FeedEntry } from './events'
 import {
   argsFrom,
+  broadcastByName,
   broadcastSummary,
   crewFeed,
   crewKey,
@@ -309,6 +310,30 @@ describe('broadcastSummary', () => {
       description: 'Skipped x (not a member).',
       color: 'error',
     })
+  })
+})
+
+describe('broadcastByName', () => {
+  it('is the display name, without asking the server', async () => {
+    let asked = 0
+    const whoami = async () => {
+      asked++
+      return { user: 'nater' }
+    }
+    expect(await broadcastByName('  Nate  ', whoami)).toBe('Nate')
+    expect(asked).toBe(0)
+  })
+  it("falls back to the server's OS user, as the display name defaults to", async () => {
+    expect(await broadcastByName('', async () => ({ user: 'nater' }))).toBe('nater')
+    expect(await broadcastByName('   ', async () => ({ user: ' nater ' }))).toBe('nater')
+  })
+  it('is undefined, recorded as guest, only when both are empty', async () => {
+    expect(await broadcastByName('', async () => ({ user: '' }))).toBeUndefined()
+    expect(
+      await broadcastByName('', async () => {
+        throw new Error('401')
+      }),
+    ).toBeUndefined()
   })
 })
 

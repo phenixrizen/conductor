@@ -71,7 +71,7 @@ const (
 // the check every session's working directory passes.
 var worktreesDir = filepath.Join(".conductor", "worktrees")
 
-// Errors of the runs, beside ErrInvalid and ErrNotRepo.
+// Errors of the runs, beside ErrInvalid, ErrNotRepo and ErrNoGit.
 var (
 	ErrRunNotFound    = errors.New("no such run")
 	ErrMemberNotFound = errors.New("no such member in the run")
@@ -177,6 +177,10 @@ type run struct {
 	cancel context.CancelFunc
 	// stopping is set once the run begins to stop: no member starts after it.
 	stopping bool
+	// launching is set while Launch has not returned: evict leaves the run
+	// alone, so that a crew whose members all start later, which has nothing
+	// running once it is kept, is not forgotten before Launch answers with it.
+	launching bool
 	// starts counts the member starts in flight; a stop waits for them.
 	starts sync.WaitGroup
 	// deliveries counts the goroutines typing handoffs (deliver); a stop
@@ -212,10 +216,11 @@ func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool))
 }
 
 // Launch starts a run of c, whose Cwd the caller has resolved. With isolation
-// "worktree" it first checks that Cwd is in a git repository to make worktrees
-// of (ErrNotRepo), before anything is made. It starts the sessions of the
-// members that start immediately, each in a worktree of its own when the crew
-// has them, and returns once they exist: each member is starting, and its
+// "worktree" it first checks that git is on the server's PATH (ErrNoGit) and
+// that Cwd is in a git repository to make worktrees of (ErrNotRepo), before
+// anything is made. It starts the sessions of the members that start
+// immediately, each in a worktree of its own when the crew has them, and
+// returns once they exist: each member is starting, and its
 // prompt is typed once its session is ready (on the run's context, so a
 // client that goes away does not stop it). A member whose prompt cannot be
 // typed ends alone. When a member's session cannot be started, the ones
@@ -235,6 +240,9 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 	}
 	prefix := ""
 	if c.Isolation == IsolationWorktree {
+		if err := checkGit(); err != nil {
+			return nil, err
+		}
 		if !filepath.IsAbs(c.Cwd) {
 			return nil, invalidf("with worktrees, cwd must be an absolute path")
 		}
@@ -251,6 +259,7 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 		prefix = p
 	}
 	r := e.add(c, prefix)
+	defer e.launched(r)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
@@ -289,15 +298,21 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 		e.abort(r)
 		return nil, fmt.Errorf("member %s: %w", quote(m.def.Name), err)
 	}
-	out, _ := e.Get(r.id)
+	// The run is launching until Launch returns, so no other launch forgets it
+	// meanwhile; the check stays, should something else ever forget a run.
+	out, ok := e.Get(r.id)
+	if !ok {
+		return nil, ErrRunNotFound
+	}
 	return &out, nil
 }
 
-// add makes and keeps a run of c with every member pending.
+// add makes and keeps a run of c with every member pending, launching until
+// the caller calls launched.
 func (e *Engine) add(c Crew, prefix string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
-		startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel}
+		startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
 	immediate := 0
 	for _, m := range c.Members {
 		r.members = append(r.members, newMember(m))
@@ -315,6 +330,13 @@ func (e *Engine) add(c Crew, prefix string) *run {
 	e.order = append(e.order, r)
 	r.note(session.ActivityStatus, "launched %s: %d members, %d starting now", c.Name, len(c.Members), immediate)
 	return r
+}
+
+// launched marks r launched: from now on evict may forget it.
+func (e *Engine) launched(r *run) {
+	e.mu.Lock()
+	r.launching = false
+	e.mu.Unlock()
 }
 
 func newMember(m Member) *member {
@@ -423,12 +445,13 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 }
 
 // prompt waits for m's session to be ready and types m's prompt, the goal in
-// it, and m is running; a member without a prompt runs at once. A session
-// that ends first gets no prompt: m ends, with how its process ended. An
-// error means the start failed: ctx ended or the prompt could not be written.
+// it, as one line (typedPrompt), and m is running; a member without a prompt
+// runs at once. A session that ends first gets no prompt: m ends, with how its
+// process ended. An error means the start failed: ctx ended or the prompt
+// could not be written.
 func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.Local) error {
 	name := m.def.Name
-	text := ExpandPrompt(m.def.Prompt, r.goal)
+	text := typedPrompt(m.def.Prompt, r.goal)
 	hasPrompt := strings.TrimSpace(text) != ""
 	if hasPrompt {
 		err := e.await(ctx, local)
@@ -769,11 +792,12 @@ func (e *Engine) abort(r *run) {
 }
 
 // evict forgets the oldest runs with nothing running until there is room for
-// one more. A run with a member starting or a live session stays, so the
-// engine may hold more than maxRuns while they run. The caller holds e.mu.
+// one more. A run with a member starting or a live session stays, and so does
+// one being launched, so the engine may hold more than maxRuns while they run.
+// The caller holds e.mu.
 func (e *Engine) evict() {
 	for len(e.order) >= maxRuns {
-		i := slices.IndexFunc(e.order, e.idle)
+		i := slices.IndexFunc(e.order, func(r *run) bool { return !r.launching && e.idle(r) })
 		if i < 0 {
 			return
 		}

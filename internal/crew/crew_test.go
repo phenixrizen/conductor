@@ -318,10 +318,39 @@ func TestValidateRejectsAPromptTooLongToType(t *testing.T) {
 	if err := c.Validate(); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"tests"`) || !strings.Contains(err.Error(), "goal") {
 		t.Fatalf("9 references: %v", err)
 	}
-	// Counted as ExpandPrompt writes it.
-	for _, prompt := range []string{"", "no goal", "$GOAL", "${GOAL}$GOAL", "$GOALS $GOAL_2 ${GOALS}", strings.Repeat("$GOAL ", 800)} {
-		if got, want := typedPromptLen(prompt, c.Goal), len(ExpandPrompt(prompt, c.Goal))+1; got != want {
-			t.Errorf("typedPromptLen(%.20q) = %d, want %d", prompt, got, want)
+	// Counted as the line typed, one line, is written; making it one line
+	// changes no length, so the count is exact, line breaks and all.
+	for _, goal := range []string{c.Goal, "ship\n/v1/users\tnow"} {
+		for _, prompt := range []string{"", "no goal", "$GOAL", "${GOAL}$GOAL", "$GOALS $GOAL_2 ${GOALS}", strings.Repeat("$GOAL ", 800),
+			"Plan it.\nThen test $GOAL.", "a\r\nb\tc\n", strings.Repeat("$GOAL\n", 8)} {
+			if got, want := typedPromptLen(prompt, goal), len(typedPrompt(prompt, goal))+1; got != want {
+				t.Errorf("typedPromptLen(%.20q, %.10q) = %d, want %d", prompt, goal, got, want)
+			}
+		}
+	}
+	// The limit holds for a prompt of several lines as for one.
+	c.Members[1].Prompt = strings.Repeat("$GOAL\n", 8)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("8 references on 8 lines: %v", err)
+	}
+	c.Members[1].Prompt = strings.Repeat("$GOAL\n", 9)
+	if err := c.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("9 references on 9 lines: %v", err)
+	}
+}
+
+// A role prompt is typed as one line, as a handoff and a broadcast are: each
+// line break, carriage return and tab, in the prompt or in the goal, becomes a
+// space, so that an agent that submits at a line break takes the whole prompt.
+func TestTypedPromptIsOneLine(t *testing.T) {
+	for _, tc := range []struct{ prompt, goal, want string }{
+		{"a\nb\tc", "g", "a b c"},
+		{"Plan $GOAL.\r\nThen test it.\n", "ship\n/v1/users", "Plan ship /v1/users.  Then test it. "},
+		{"one line", "g", "one line"},
+		{"", "g", ""},
+	} {
+		if got := typedPrompt(tc.prompt, tc.goal); got != tc.want {
+			t.Errorf("typedPrompt(%q, %q) = %q, want %q", tc.prompt, tc.goal, got, tc.want)
 		}
 	}
 }

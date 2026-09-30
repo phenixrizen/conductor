@@ -392,7 +392,7 @@ its run, and on no other.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 512 KiB; `404` when unknown; `409 too_many_crews` |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
 | `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first |
 | `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}` and the run's `log`, whose entries Crew runs lists; `404` when unknown |
 | `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32767 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
@@ -442,9 +442,9 @@ space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 takes for a branch (no `..`, no `.` or `.lock` at the end), an `agentId`
 matching `^[a-z0-9-]{1,32}$` that the catalog has when the crew is saved or
 copied, a `prompt` of at most 4000 characters that, with the goal in place of
-`$GOAL` and `${GOAL}`, is at most 32767 bytes (it is typed with a carriage
-return, and a session takes at most 32 KiB at once), and at most 32 `args` of
-at most 4096 bytes, 8 KiB in all; `start.when` is `immediately`, `after` or
+`$GOAL` and `${GOAL}`, is at most 32767 bytes (it is typed as one line, which
+changes no length, with a carriage return, and a session takes at most 32 KiB
+at once), and at most 32 `args` of at most 4096 bytes, 8 KiB in all; `start.when` is `immediately`, `after` or
 `manual`, `start.member`, set with `after` alone, names another member of the crew, and
 following `start.member` from member to member never goes round in a cycle.
 The whole crew, as the server writes it with its `id` and times, is at most
@@ -484,11 +484,13 @@ ready for its prompt when its agent reports `needs_input` or `done`, or after
 one second without output that follows its first output and at least two seconds
 after its start, checked every 250 ms; after 60 seconds the prompt is typed
 anyway and the run log says so. The prompt, `$GOAL` and `${GOAL}` replaced by
-the goal, is typed with a carriage return; a `done` the member reports as its
-prompt is written counts for the members after it. A member whose process ends
-first gets no prompt: it is `ended` with its exit in `error`, and the run goes
-on; a member whose prompt cannot be typed ends alone, its session stopped, the
-reason in `error`. When a member's session cannot be created at launch, the ones
+the goal, is typed as one line, as a handoff and a broadcast are (each line
+break, carriage return and tab, in the prompt or in the goal, becomes a space;
+the crew keeps the prompt as written), with a carriage return at the end; a
+`done` the member reports as its prompt is written counts for the members
+after it. A member whose process ends first gets no prompt: it is `ended` with
+its exit in `error`, and the run goes on; a member whose prompt cannot be typed
+ends alone, its session stopped, the reason in `error`. When a member's session cannot be created at launch, the ones
 started are stopped and no run is kept; when the run is stopped while its
 sessions start, it stays, stopped. A member whose start fails in a run that goes
 on stays in the run, `ended`, and keeps its name: `POST /api/runs/{run}/members`
@@ -531,7 +533,8 @@ message has, its other control characters dropped and surrounding space
 trimmed; what is left must not be empty or over 4096 bytes (`400
 invalid_request`). It is typed with a carriage return and recorded as an
 `input` entry by `byName`, cleaned as a viewer's display name is (`guest` when
-empty). A member is skipped, and listed in `skipped` with the reason, when its
+empty; the web client sends the display name, or the server's user from
+`GET /api/whoami` when none is set). A member is skipped, and listed in `skipped` with the reason, when its
 session waits on a prompt (`needs_input`: as for a handoff, the session looks
 at its state in the same step in which it finds the prompt the text would
 answer, so a broadcast never answers a prompt), when it is not `running`
@@ -594,8 +597,9 @@ make room before it was found waiting is noted as dropped only.
 Limits of runs, beside those of crews above: a run has at most 12 members (an
 added one included), a log of at most 200 entries (the oldest goes first) and
 at most 100 links; the server keeps 100 runs, and a launch past that forgets
-the oldest with nothing running; at most 10 handoffs wait for a member; a
-broadcast is at most 4096 bytes once made one line; and whatever Conductor
+the oldest with nothing running, never one whose launch has not answered yet;
+at most 10 handoffs wait for a member; a broadcast is at most 4096 bytes once
+made one line; and whatever Conductor
 types into a session, a prompt, a handoff or a broadcast, is one write of at
 most 32 KiB with its carriage return. A launch, a start or an added member has
 2 minutes to make its worktrees and start its sessions, and a stop 30 seconds.

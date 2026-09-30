@@ -238,7 +238,7 @@ async function moveBy(key: number, delta: number) {
         :autoresize="focusedPrompt === m.key"
         :maxrows="12"
         maxlength="4000"
-        :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'Typed into the shell once it is ready (optional)' : 'What this agent does. $GOAL is the crew\'s goal.'"
+        :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'Typed into the shell as one line once it is ready (optional)' : 'What this agent does, typed into the agent as one line. $GOAL is the crew\'s goal.'"
         :aria-label="`Role prompt for ${who(m, i)}`"
         class="w-full"
         :ui="{ base: focusedPrompt === m.key ? 'resize-none' : 'resize-none overflow-hidden whitespace-nowrap text-ellipsis' }"
@@ -279,7 +279,7 @@ async function moveBy(key: number, delta: number) {
     <div v-if="!single" class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 border-t border-default">
       <UButton label="Add agent" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!agents.length || members.length >= 12" @click="emit('add')" />
       <UButton label="Add from a running session" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="members.length >= 12" @click="emit('addFromSession')" />
-      <span class="ml-auto text-xs text-muted">Prompts are typed into each agent once it's ready</span>
+      <span class="ml-auto text-xs text-muted">Prompts are typed into each agent as one line once it's ready</span>
     </div>
   </div>
 </template>

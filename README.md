@@ -350,7 +350,9 @@ server only for now (members are ordinary server sessions, under
 A member starts `immediately` at launch, `after <member>` once that member,
 with its own prompt typed, first reports it is done (idle), or `manual`, when
 you press **Start now** on its tile. A member's role prompt is typed into its
-terminal, with Enter, once the agent is ready for it: it reports that it waits
+terminal as one line (line breaks and tabs become spaces, as in a handoff or a
+broadcast; the crew keeps the prompt as you wrote it), with Enter, once the
+agent is ready for it: it reports that it waits
 for input or is done, or, at least two seconds after the start, its output has
 been quiet for a second. After 60 seconds the prompt is typed anyway and the
 run's log says so. Every member's process sees `CONDUCTOR_CREW` (the crew's id),
@@ -359,7 +361,8 @@ to the usual `CONDUCTOR_SESSION_ID` and notify variables.
 
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch
-answers `not_a_repo`). Each member gets its own checkout and branch:
+answers `not_a_repo`), and `git` must be on the server's `PATH` (otherwise it
+answers `launch_failed`: git is not installed on the server). Each member gets its own checkout and branch:
 
 ```
 git worktree add -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
@@ -388,7 +391,8 @@ and leaves the worktrees.
   all of them at once. A member that waits on a prompt is skipped, so the line
   cannot answer it by accident, as is one that is not running; the toast names
   who got the line and who was skipped, and why. Each line is recorded as an
-  input in the member's activity under your display name.
+  input in the member's activity under your display name, or the server's
+  user when you have not set one.
 - **Share crew** creates a run link with the **View** or **Control** role. It
   grants that role on the session of every member of the run, members added
   later included, and on no other session; the join page lists the members.

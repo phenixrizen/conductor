@@ -3040,6 +3040,25 @@ func TestCrewLaunchRefusals(t *testing.T) {
 	wantAPIError(t, "no store", resp, out, http.StatusServiceUnavailable, "store_unavailable", "")
 }
 
+// A server without git on its PATH cannot make worktrees: a launch with
+// isolation "worktree" says so, 500 launch_failed, not that the working
+// directory is no repository. Nothing starts and no run is kept.
+func TestCrewLaunchWithoutGit(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	b := e.runCrewBody("worktree")
+	id := e.sendCrew("POST", "/api/crews", b, http.StatusCreated)["id"].(string)
+	t.Setenv("PATH", t.TempDir())
+	resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, nil)
+	wantAPIError(t, "no git", resp, out, http.StatusInternalServerError, "launch_failed", "git is not installed on the server")
+	if n := e.srv.registry.Count(); n != 0 {
+		t.Fatalf("%d sessions started", n)
+	}
+	if _, out := e.do("GET", "/api/runs", adminToken, nil); len(out["runs"].([]any)) != 0 {
+		t.Fatalf("runs %v", out)
+	}
+}
+
 // A session launched on its own gets none of the crew's variables.
 func TestPlainSessionHasNoCrewVariables(t *testing.T) {
 	e := newTestEnv(t, nil)

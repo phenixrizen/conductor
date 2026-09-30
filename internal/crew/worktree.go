@@ -22,6 +22,18 @@ import (
 // a git working tree, or its HEAD is no commit to branch from.
 var ErrNotRepo = errors.New("not a git repository")
 
+// ErrNoGit says that worktrees cannot be made on this server: git is not on
+// its PATH. It is apart from ErrNotRepo, whatever the directory is.
+var ErrNoGit = errors.New("git is not installed on the server")
+
+// checkGit reports ErrNoGit when git is not on the server's PATH.
+func checkGit() error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return ErrNoGit
+	}
+	return nil
+}
+
 // repoError is an ErrNotRepo that says which of the two it is.
 type repoError struct{ msg string }
 
@@ -29,25 +41,30 @@ func (e *repoError) Error() string { return e.msg }
 func (e *repoError) Unwrap() error { return ErrNotRepo }
 
 var (
-	errNoGit    = &repoError{"the working directory is not in a git repository"}
-	errNoCommit = &repoError{"the working directory is a git repository without a commit: a worktree needs one to branch from"}
+	errNotInRepo = &repoError{"the working directory is not in a git repository"}
+	errNoCommit  = &repoError{"the working directory is a git repository without a commit: a worktree needs one to branch from"}
 )
 
 // inRepo checks that dir is in a git working tree: git -C dir rev-parse
-// --show-toplevel succeeds. The error matches ErrNotRepo.
+// --show-toplevel succeeds. The error is ErrNoGit when git is not on PATH,
+// and matches ErrNotRepo otherwise.
 func inRepo(ctx context.Context, dir string) error {
 	if _, err := git(ctx, dir, "rev-parse", "--show-toplevel"); err != nil {
-		if ctx.Err() != nil {
+		switch {
+		case ctx.Err() != nil:
 			return ctx.Err()
+		case errors.Is(err, exec.ErrNotFound):
+			return ErrNoGit
 		}
-		return errNoGit
+		return errNotInRepo
 	}
 	return nil
 }
 
 // CheckRepo reports whether worktrees can be made of repo, a directory in a
 // git working tree, its top or below it, whose HEAD is a commit. The error
-// matches ErrNotRepo otherwise, and says which of the two it is.
+// matches ErrNotRepo otherwise, and says which of the two it is; it is
+// ErrNoGit when git is not on PATH.
 func CheckRepo(ctx context.Context, repo string) error {
 	if err := inRepo(ctx, repo); err != nil {
 		return err
@@ -64,7 +81,7 @@ func CheckRepo(ctx context.Context, repo string) error {
 // AddWorktree adds a worktree of the repository repo is in at path, on a new
 // branch made from HEAD: git -C repo worktree add -b branch path HEAD. git
 // makes the parent directories of path. The error matches ErrNotRepo when
-// repo is in no git working tree.
+// repo is in no git working tree, and is ErrNoGit when git is not on PATH.
 func AddWorktree(ctx context.Context, repo, path, branch string) error {
 	if err := inRepo(ctx, repo); err != nil {
 		return err

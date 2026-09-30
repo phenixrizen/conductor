@@ -302,18 +302,60 @@ func TestLaunchTypesPromptsWhenReady(t *testing.T) {
 	}
 }
 
+// A role prompt of several lines is typed as one line, the goal in it
+// included, as a handoff and a broadcast are: each line break and tab a
+// space, one carriage return at the end. The crew's prompt stays as written.
+func TestAMultiLinePromptIsTypedAsOneLine(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	c := testCrew(immediate("lead", "a\nb\tc"), immediate("core", "Build $GOAL.\nTests first."))
+	c.Goal = "ship\n/v1/users"
+	run, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"lead": "a b c\r", "core": "Build ship /v1/users. Tests first.\r"} {
+		l, p := fl.member(name)
+		if got := waitTyped(t, p, 5*time.Second); got != want {
+			t.Errorf("%s was typed %q, want %q", name, got, want)
+		}
+		waitStatus(t, e, run.ID, name, MemberRunning, 5*time.Second)
+		if entries := crewEntries(l); len(entries) != 1 || entries[0].Message != strings.TrimSuffix(want, "\r") {
+			t.Errorf("%s records %+v", name, entries)
+		}
+	}
+	if c.Members[0].Prompt != "a\nb\tc" || c.Goal != "ship\n/v1/users" {
+		t.Fatalf("the crew changed: %+v", c)
+	}
+}
+
 // A member that starts after another starts when that one first reports
 // done once its prompt is typed, once: a done before its prompt, or a second
 // one, starts nothing.
 func TestAfterConditionStartsOnFirstDone(t *testing.T) {
 	e, fl := newEngine(t)
+	idle := make(chan struct{})
 	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
 		if member == "core" {
-			// Idle at start: done, before any prompt.
+			// Idle at start: done, before any prompt. SetAttention returns
+			// once the engine has taken the entry (OnActivity).
 			l.SetAttention(session.AttentionDone, "idle", session.SourceAPI)
+			close(idle)
 			return
 		}
 		printOnce(member, p, l)
+	}
+	// core's prompt waits until the engine has taken that done, so that the
+	// done comes before the prompt as the engine sees them.
+	e.await = func(ctx context.Context, l *session.Local) error {
+		if l.Info().Name == "core" {
+			select {
+			case <-idle:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return awaitReady(ctx, l)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "Test $GOAL.", "core")))
 	if err != nil {
@@ -338,16 +380,39 @@ func TestAfterConditionStartsOnFirstDone(t *testing.T) {
 		t.Fatalf("tests %+v", m)
 	}
 
-	// A second done starts nothing more.
+	// A second done starts nothing more. SetAttention hands its entry to the
+	// engine before it returns (Record calls OnActivity on the recording
+	// goroutine), and the engine reserves there the starts a done makes: once
+	// it has returned with the entry recorded, a start the done made would
+	// show as a member starting and as a second "core is done" in the run log.
 	core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
 	core.SetAttention(session.AttentionDone, "finished again", session.SourceAPI)
-	time.Sleep(300 * time.Millisecond)
+	if n := doneEntries(core, "finished again"); n != 1 {
+		t.Fatalf("core records the second done %d times", n)
+	}
+	if n := logCount(t, e, run.ID, "core is done"); n != 1 {
+		t.Fatalf("%d starts after core's dones, want 1", n)
+	}
+	for _, m := range memberStates(t, e, run.ID) {
+		if m.Status == MemberStarting || m.Status == MemberPending {
+			t.Fatalf("after the second done: %+v", m)
+		}
+	}
 	if names := fl.launched(); !slices.Equal(names, []string{"core", "tests"}) {
 		t.Fatalf("launched %v", names)
 	}
-	if got, _ := e.Get(run.ID); !logged(got, "core is done") {
-		t.Fatalf("log %+v", got.Log)
+}
+
+// doneEntries counts the done attention entries with message msg a session
+// records.
+func doneEntries(l *session.Local, msg string) int {
+	n := 0
+	for _, e := range l.Activity() {
+		if e.Type == session.ActivityAttention && strings.Contains(e.Message, msg) {
+			n++
+		}
 	}
+	return n
 }
 
 // A member whose process ends before it is ready gets no prompt: it shows
@@ -451,6 +516,28 @@ func TestLaunchNeedsARepositoryForWorktrees(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(c.Cwd); len(entries) != 0 || len(fl.launched()) != 0 || len(e.List()) != 0 {
 		t.Fatalf("made %v, launched %v, runs %v", entries, fl.launched(), e.List())
+	}
+}
+
+// With isolation "worktree" and no git on the server's PATH, the launch says
+// so (ErrNoGit), not that the directory is no repository, before anything is
+// made or started.
+func TestLaunchSaysWhenGitIsMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	e, fl := newEngine(t)
+	c := testCrew(immediate("lead", "Plan it."))
+	c.Isolation, c.Cwd = IsolationWorktree, t.TempDir()
+	_, err := e.Launch(t.Context(), c)
+	if !errors.Is(err, ErrNoGit) || errors.Is(err, ErrNotRepo) || err.Error() != "git is not installed on the server" {
+		t.Fatalf("Launch: %v", err)
+	}
+	if entries, _ := os.ReadDir(c.Cwd); len(entries) != 0 || len(fl.launched()) != 0 || len(e.List()) != 0 {
+		t.Fatalf("made %v, launched %v, runs %v", entries, fl.launched(), e.List())
+	}
+	// A crew without worktrees needs no git.
+	c.Isolation = IsolationNone
+	if _, err := e.Launch(t.Context(), c); err != nil {
+		t.Fatalf("Launch without worktrees: %v", err)
 	}
 }
 
@@ -721,7 +808,16 @@ func TestStopStopsEveryMember(t *testing.T) {
 	if err := e.Stop(t.Context(), run.ID); err != nil {
 		t.Fatalf("stopping again: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	// OnActivity has returned, and it reserves the starts a done makes before
+	// it does: tests would be starting, and the run log would say so.
+	if n := logCount(t, e, run.ID, "core is done"); n != 0 {
+		t.Fatalf("%d starts after core's done in a stopped run", n)
+	}
+	for _, name := range []string{"tests", "docs"} {
+		if m := memberState(t, e, run.ID, name); m.Status != MemberPending || m.SessionID != "" {
+			t.Fatalf("%s in a stopped run: %+v", name, m)
+		}
+	}
 	if names := fl.launched(); !slices.Equal(names, []string{"lead", "core"}) {
 		t.Fatalf("launched %v", names)
 	}
@@ -875,6 +971,37 @@ func TestOldRunsAreForgotten(t *testing.T) {
 	}
 	if !slices.Equal(forgotten, []string{first}) {
 		t.Fatalf("OnForget saw %v, want [%s]", forgotten, first)
+	}
+}
+
+// A run is never forgotten while it is being launched: a crew whose members
+// all start later has nothing running once it is kept, and a launch at the
+// cap that runs meanwhile forgets the oldest run that is not being launched,
+// so Launch never answers with a run it no longer has.
+func TestALaunchingRunIsNeverForgotten(t *testing.T) {
+	e, _ := newEngine(t)
+	var forgotten []string
+	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
+	// Launch keeps its run first (add), then starts what starts at once.
+	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), "")
+	var first string
+	for i := range maxRuns {
+		run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(run.Members) != 1 || run.ID == "" {
+			t.Fatalf("launch %d answered %+v", i, run)
+		}
+		if i == 0 {
+			first = run.ID
+		}
+	}
+	if _, ok := e.Get(launching.id); !ok {
+		t.Fatal("the run being launched was forgotten")
+	}
+	if !slices.Equal(forgotten, []string{first}) || len(e.List()) != maxRuns {
+		t.Fatalf("OnForget saw %v, want [%s]; %d runs kept", forgotten, first, len(e.List()))
 	}
 }
 

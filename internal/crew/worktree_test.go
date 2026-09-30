@@ -83,6 +83,19 @@ func TestAddWorktreeMakesTheBranchAndThePath(t *testing.T) {
 	}
 }
 
+// With no git on PATH, making a worktree says that git is missing
+// (ErrNoGit), not that the directory is no repository.
+func TestWithoutGitWorktreesSaySo(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	if err := CheckRepo(t.Context(), dir); !errors.Is(err, ErrNoGit) || errors.Is(err, ErrNotRepo) {
+		t.Fatalf("CheckRepo: %v", err)
+	}
+	if err := AddWorktree(t.Context(), dir, filepath.Join(dir, "wt"), "crew/run/lead"); !errors.Is(err, ErrNoGit) || errors.Is(err, ErrNotRepo) {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+}
+
 // A directory without a .git is no repository to make worktrees of, and
 // neither is a repository without a commit to branch from. Nothing is made.
 func TestAddWorktreeNeedsARepository(t *testing.T) {

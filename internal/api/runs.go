@@ -339,7 +339,8 @@ func (s *Server) writeRun(w http.ResponseWriter, status int, id string) {
 
 // runError answers an error of the run engine. A member's session that could
 // not be created answers as POST /api/sessions would, its message naming the
-// member; anything else unforeseen is 500 launch_failed.
+// member; git missing from the server's PATH (crew.ErrNoGit) is 500
+// launch_failed with its message, as is anything else unforeseen.
 func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 	var aerr *apiError
 	switch {
@@ -351,6 +352,9 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 	case errors.Is(err, crew.ErrNotRepo):
 		writeError(w, http.StatusConflict, "not_a_repo", err.Error())
+	case errors.Is(err, crew.ErrNoGit):
+		s.log.Warn("crew "+what+" failed: git is not on the server's PATH", "id", id)
+		writeError(w, http.StatusInternalServerError, "launch_failed", err.Error())
 	case errors.Is(err, crew.ErrMemberStarted):
 		writeError(w, http.StatusConflict, "member_started", err.Error())
 	case errors.Is(err, crew.ErrRunStopped):

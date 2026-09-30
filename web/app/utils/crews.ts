@@ -237,6 +237,20 @@ export function broadcastSummary(r: BroadcastResult): { title: string; descripti
 }
 
 /**
+ * The name a broadcast is recorded under: the display name, or else the server's OS user (`whoami`, GET /api/whoami), which the display
+ * name defaults to. Undefined, which the server records as `guest`, only when both are empty or the server cannot say.
+ */
+export async function broadcastByName(displayName: string, whoami: () => Promise<{ user: string }>): Promise<string | undefined> {
+  const name = displayName.trim()
+  if (name) return name
+  try {
+    return (await whoami()).user?.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * The run whose members the sidebar lists alone (its group variant): the run of a crew view (`/runs/<id>`), or of the member session a
  * page shows (`/sessions/<id>`), however that page was reached. Undefined everywhere else.
  */

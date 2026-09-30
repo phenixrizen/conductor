@@ -26,9 +26,12 @@ type handoff struct {
 	queued     bool
 }
 
-// oneLine makes a handoff's message one line: the session keeps line breaks
-// and tabs in a message, and a line break typed would end the line early.
-var oneLine = strings.NewReplacer("\n", " ", "\t", " ")
+// oneLine makes one line of what the engine types, a handoff's message or a
+// role prompt: the session keeps line breaks and tabs in a message, a crew
+// keeps them in a prompt as written, and a line break or a carriage return
+// typed would end the line early. Each becomes one space, so the line is as
+// long as the text.
+var oneLine = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")
 
 // handoffText is the line a handoff types, less its carriage return. The
 // message is at most session.MaxAttentionMessage bytes, as the session that

@@ -131,11 +131,14 @@ that order.
   cannot tell that dialog from the prompt, so the dialog may take the typed
   prompt. Launch a crew of `claude` members with worktrees in a repository
   Claude Code has not trusted and see whether the prompts land.
-- **Crews: multi-line role prompts.** A role prompt is typed with its line
-  breaks as written, and a carriage return at the end; a handoff or a broadcast
-  is made one line first, a prompt is not. An agent TUI may submit at the first
-  newline and take the rest as further input. Try a three-line prompt in each
-  agent that matters; bracketed paste is the deferred fix.
+- **Crews: long one-line role prompts.** A role prompt is typed as one line,
+  its line breaks and tabs made spaces as a handoff's or a broadcast's are,
+  with a carriage return at the end, so no agent takes the second line of a
+  prompt as a further message. What is left to check is whether each agent TUI
+  that matters takes a long single line (a paragraph of a few thousand
+  characters) as one message, rather than truncating it or treating a fast
+  burst of input as a paste; bracketed paste stays the deferred fix for agents
+  that need it.
 - **Crews: end to end.** In a git checkout under the allowed roots, create the
   crew `api-sweep` with worktree isolation and the members `lead` (`claude`,
   immediately), `core` (`claude`, immediately) and `tests` (`shell`, after
