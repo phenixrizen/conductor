@@ -64,6 +64,10 @@ type Catalog struct {
 
 var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
+// ValidID reports whether id has the shape every agent ID has, for packages
+// that keep agent IDs of their own, as crews do.
+func ValidID(id string) bool { return idPattern.MatchString(id) }
+
 // envNamePattern matches the environment variable names an agent may list in
 // envPassthrough. Lower case is allowed: proxy variables such as http_proxy,
 // https_proxy and no_proxy are lower case by convention.

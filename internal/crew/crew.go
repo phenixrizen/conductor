@@ -4,12 +4,14 @@
 package crew
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -33,6 +35,21 @@ const (
 	IsolationNone     = "none"     // every member works in Cwd
 	IsolationWorktree = "worktree" // every member gets a git worktree of Cwd
 )
+
+// ErrInvalid is matched (errors.Is) by every error that says a crew breaks a
+// rule: from Validate, CheckAgents and the store's checks. The API answers it
+// with 400 invalid_crew.
+var ErrInvalid = errors.New("invalid crew")
+
+// invalidError is a rule a crew breaks. Its message is the problem alone.
+type invalidError struct{ msg string }
+
+func (e *invalidError) Error() string { return e.msg }
+func (e *invalidError) Unwrap() error { return ErrInvalid }
+
+func invalidf(format string, args ...any) error {
+	return &invalidError{msg: fmt.Sprintf(format, args...)}
+}
 
 // Start says when a member starts in a run.
 type Start struct {
@@ -68,53 +85,69 @@ type Crew struct {
 
 // Limits enforced by Validate. The store adds one more: at most maxCrews crews.
 const (
-	maxName    = 60   // characters (runes) in a crew name
-	maxGoal    = 2000 // characters (runes)
-	maxCwd     = 4096 // bytes
-	maxMembers = 12
-	maxPrompt  = 4000 // characters (runes)
-	maxArgs    = 32   // entries in a member's args
-	maxArg     = 4096 // bytes in one entry
+	maxName      = 60   // characters (runes) in a crew name
+	maxGoal      = 2000 // characters (runes)
+	maxCwd       = 4096 // bytes
+	maxMembers   = 12
+	maxPrompt    = 4000    // characters (runes)
+	maxArgs      = 32      // entries in a member's args
+	maxArg       = 4096    // bytes in one entry
+	maxArgsBytes = 8 << 10 // bytes in all of a member's args
+	// maxEncoded bounds the crew as JSON. The limits above allow more, as a
+	// character can take six bytes there (\u0001).
+	maxEncoded = 512 << 10
 	// maxLinkTTL bounds ViewLinkTTLSeconds as POST /api/sessions/{id}/links
 	// bounds ttlSeconds.
 	maxLinkTTL = 365 * 24 * 3600
 )
 
 // memberNamePattern keeps member names short, lower case and free of path
-// separators: they become branch names and worktree paths.
+// separators: they become branch names and worktree paths. gitRefuses adds
+// what git refuses in a branch name that the pattern lets through.
 var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
+
+// gitRefuses reports whether git check-ref-format refuses a name that matches
+// memberNamePattern as a branch name.
+func gitRefuses(name string) bool {
+	return strings.Contains(name, "..") || strings.HasSuffix(name, ".") || strings.HasSuffix(name, ".lock")
+}
 
 // Validate checks c apart from its ID, which the store checks, and its agents,
 // which CheckAgents checks against a catalog: the name, goal, working
-// directory and options, and the members' names, prompts, arguments and start
-// conditions, all within their limits. The first problem found is returned.
+// directory and options, the members' names, agent IDs, prompts, arguments
+// and start conditions, all within their limits, and the size of c as JSON,
+// which counts the ID and the times. The first problem found is returned; it
+// matches ErrInvalid.
 func (c Crew) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
-		return errors.New("name must not be empty")
+		return invalidf("name must not be empty")
 	}
 	if utf8.RuneCountInString(c.Name) > maxName {
-		return fmt.Errorf("name must be at most %d characters", maxName)
+		return invalidf("name must be at most %d characters", maxName)
+	}
+	if strings.ContainsFunc(c.Name, unicode.IsControl) {
+		return invalidf("name must not contain control characters")
 	}
 	if utf8.RuneCountInString(c.Goal) > maxGoal {
-		return fmt.Errorf("goal must be at most %d characters", maxGoal)
+		return invalidf("goal must be at most %d characters", maxGoal)
 	}
 	if len(c.Cwd) > maxCwd {
-		return fmt.Errorf("cwd must be at most %d bytes", maxCwd)
+		return invalidf("cwd must be at most %d bytes", maxCwd)
 	}
 	if strings.ContainsRune(c.Cwd, 0) {
-		return errors.New("cwd contains NUL")
+		return invalidf("cwd contains NUL")
 	}
 	if c.Where != WhereServer && c.Where != WhereHost {
-		return fmt.Errorf("where %q must be %q or %q", c.Where, WhereServer, WhereHost)
+		return invalidf("where %q must be %q or %q", c.Where, WhereServer, WhereHost)
 	}
 	if c.Isolation != IsolationNone && c.Isolation != IsolationWorktree {
-		return fmt.Errorf("isolation %q must be %q or %q", c.Isolation, IsolationNone, IsolationWorktree)
+		return invalidf("isolation %q must be %q or %q", c.Isolation, IsolationNone, IsolationWorktree)
 	}
 	if c.ViewLinkTTLSeconds < 0 || c.ViewLinkTTLSeconds > maxLinkTTL {
-		return fmt.Errorf("viewLinkTtlSeconds must be between 0 and %d", maxLinkTTL)
+		return invalidf("viewLinkTtlSeconds must be between 0 and %d", maxLinkTTL)
 	}
 	if len(c.Members) > maxMembers {
-		return fmt.Errorf("too many members (at most %d)", maxMembers)
+		return invalidf("too many members (at most %d)", maxMembers)
 	}
 	names := make([]string, 0, len(c.Members))
 	for _, m := range c.Members {
@@ -122,19 +155,50 @@ func (c Crew) Validate() error {
 			return err
 		}
 		if slices.Contains(names, m.Name) {
-			return fmt.Errorf("member %q: the name is used twice", m.Name)
+			return invalidf("member %q: the name is used twice", m.Name)
 		}
 		names = append(names, m.Name)
 	}
+	if err := c.checkStarts(names); err != nil {
+		return err
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		return invalidf("cannot be written as JSON: %v", err)
+	}
+	if len(b) > maxEncoded {
+		return invalidf("the crew is %d bytes as JSON, more than %d (512 KiB)", len(b), maxEncoded)
+	}
+	return nil
+}
+
+// checkStarts checks the after conditions against the member names: each
+// names another member, and following them from any member ends at one that
+// does not start after another, so every member can start.
+func (c Crew) checkStarts(names []string) error {
+	after := make(map[string]string, len(c.Members)) // member -> the member it starts after
 	for _, m := range c.Members {
 		if m.Start.When != StartAfter {
 			continue
 		}
 		if m.Start.Member == m.Name {
-			return fmt.Errorf("member %q: cannot start after itself", m.Name)
+			return invalidf("member %q: cannot start after itself", m.Name)
 		}
 		if !slices.Contains(names, m.Start.Member) {
-			return fmt.Errorf("member %q: starts after %q, which is not a member of this crew", m.Name, m.Start.Member)
+			return invalidf("member %q: starts after %q, which is not a member of this crew", m.Name, m.Start.Member)
+		}
+		after[m.Name] = m.Start.Member
+	}
+	// A chain visits each member at most once before it ends, so at most
+	// len(c.Members) steps: a name seen twice is a cycle.
+	for _, m := range c.Members {
+		chain := []string{m.Name}
+		for next, ok := after[m.Name]; ok; next, ok = after[next] {
+			seen := slices.Contains(chain, next)
+			chain = append(chain, next)
+			if seen {
+				return invalidf("member %q: the start conditions go round in a cycle, so it never starts: %s", m.Name, strings.Join(chain, " after "))
+			}
 		}
 	}
 	return nil
@@ -144,47 +208,56 @@ func (c Crew) Validate() error {
 // the other members.
 func (m Member) validate() error {
 	if !memberNamePattern.MatchString(m.Name) {
-		return fmt.Errorf("member %q: name must match %s", m.Name, memberNamePattern)
+		return invalidf("member %q: name must match %s", m.Name, memberNamePattern)
 	}
-	if m.AgentID == "" {
-		return fmt.Errorf("member %q: agentId must not be empty", m.Name)
+	if gitRefuses(m.Name) {
+		return invalidf(`member %q: git refuses the name for a branch: no "..", and no "." or ".lock" at the end`, m.Name)
+	}
+	if !catalog.ValidID(m.AgentID) {
+		return invalidf("member %q: agentId %q is not an agent id (a-z, 0-9 and -, 1 to 32 of them)", m.Name, m.AgentID)
 	}
 	if utf8.RuneCountInString(m.Prompt) > maxPrompt {
-		return fmt.Errorf("member %q: prompt must be at most %d characters", m.Name, maxPrompt)
+		return invalidf("member %q: prompt must be at most %d characters", m.Name, maxPrompt)
 	}
 	if len(m.Args) > maxArgs {
-		return fmt.Errorf("member %q: too many args (at most %d)", m.Name, maxArgs)
+		return invalidf("member %q: too many args (at most %d)", m.Name, maxArgs)
 	}
+	total := 0
 	for i, a := range m.Args {
 		if strings.ContainsRune(a, 0) {
-			return fmt.Errorf("member %q: args[%d] contains NUL", m.Name, i)
+			return invalidf("member %q: args[%d] contains NUL", m.Name, i)
 		}
 		if len(a) > maxArg {
-			return fmt.Errorf("member %q: args[%d] is longer than %d bytes", m.Name, i, maxArg)
+			return invalidf("member %q: args[%d] is longer than %d bytes", m.Name, i, maxArg)
 		}
+		total += len(a)
+	}
+	if total > maxArgsBytes {
+		return invalidf("member %q: args must be at most %d bytes in all", m.Name, maxArgsBytes)
 	}
 	switch m.Start.When {
 	case StartAfter:
 		if m.Start.Member == "" {
-			return fmt.Errorf("member %q: start.member must name the member to start after", m.Name)
+			return invalidf("member %q: start.member must name the member to start after", m.Name)
 		}
 	case StartImmediately, StartManual:
 		if m.Start.Member != "" {
-			return fmt.Errorf("member %q: start.member is only set with start.when %q", m.Name, StartAfter)
+			return invalidf("member %q: start.member is only set with start.when %q", m.Name, StartAfter)
 		}
 	default:
-		return fmt.Errorf("member %q: start.when %q must be %q, %q or %q", m.Name, m.Start.When, StartImmediately, StartAfter, StartManual)
+		return invalidf("member %q: start.when %q must be %q, %q or %q", m.Name, m.Start.When, StartImmediately, StartAfter, StartManual)
 	}
 	return nil
 }
 
 // CheckAgents reports the first member whose agent cat does not list. It is
 // apart from Validate because the catalog changes: the API checks it when a
-// crew is saved or duplicated, and a launch checks it again.
+// crew is saved or duplicated, and a launch checks it again. The error
+// matches ErrInvalid.
 func (c Crew) CheckAgents(cat catalog.Catalog) error {
 	for _, m := range c.Members {
 		if _, ok := cat.Get(m.AgentID); !ok {
-			return fmt.Errorf("member %q: unknown agent %q", m.Name, m.AgentID)
+			return invalidf("member %q: unknown agent %q", m.Name, m.AgentID)
 		}
 	}
 	return nil

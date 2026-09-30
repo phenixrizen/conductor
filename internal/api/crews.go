@@ -7,6 +7,11 @@ import (
 	"github.com/phenixrizen/conductor/internal/crew"
 )
 
+// maxCrewBody bounds the body of a crew create or update. A crew is at most
+// 512 KiB as the server writes it (crew.Validate); a client may escape more
+// of it than the server does.
+const maxCrewBody = 1 << 20
+
 // crewInput is the body of POST /api/crews and PUT /api/crews/{id}: a crew
 // without what the server sets. A client that sends id, createdAt or updatedAt
 // is refused like one that sends any other unknown field.
@@ -110,25 +115,21 @@ func (s *Server) handleDuplicateCrew(w http.ResponseWriter, r *http.Request) {
 }
 
 // readCrew decodes the body of a create or an update into a crew and checks
-// it, its agents against the catalog included. When it reports false it has
-// answered the request.
+// its agents against the catalog. The store checks the rest, on the crew as it
+// saves it. When readCrew reports false it has answered the request.
 func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bool) {
 	if s.crews == nil {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return crew.Crew{}, false
 	}
 	var in crewInput
-	if err := decodeJSON(w, r, &in); err != nil {
+	if err := decodeJSONLimit(w, r, &in, maxCrewBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return crew.Crew{}, false
 	}
 	c := crew.Crew{
 		Name: in.Name, Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
 		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Members: in.Members,
-	}
-	if err := c.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
-		return crew.Crew{}, false
 	}
 	if err := c.CheckAgents(s.Catalog()); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
@@ -141,6 +142,8 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 // logged with its cause, which names the data directory; the reply does not.
 func (s *Server) crewStoreError(w http.ResponseWriter, id string, err error) {
 	switch {
+	case errors.Is(err, crew.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 	case errors.Is(err, crew.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "no such crew")
 	case errors.Is(err, crew.ErrTooManyCrews):

@@ -1,4 +1,5 @@
 import type { Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
+import { toCrewInput } from '~/utils/crews'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -141,18 +142,19 @@ export interface JoinInfo {
 /** When a crew member starts in a run. */
 export interface CrewStart {
   when: 'immediately' | 'after' | 'manual'
-  /** Only with `after`: the member whose first `done` starts this one. */
+  /** Only with `after`: the member whose first `done` starts this one. Following these never goes round in a cycle. */
   member?: string
 }
 
 /** One agent of a crew. */
 export interface CrewMember {
-  /** `^[a-z0-9][a-z0-9._-]{0,39}$`, unique in the crew: it becomes a branch and a worktree name. */
+  /** `^[a-z0-9][a-z0-9._-]{0,39}$` without `..` or a `.` or `.lock` at the end, unique in the crew: it becomes a branch and a worktree name. */
   name: string
+  /** A catalog agent id (`^[a-z0-9-]{1,32}$`) the catalog has when the crew is saved. */
   agentId: string
   /** Typed once the member is ready; `$GOAL` and `${GOAL}` stand for the crew's goal. At most 4000 characters. */
   prompt: string
-  /** At most 32, of at most 4096 bytes each. */
+  /** At most 32, of at most 4096 bytes each and 8 KiB in all. */
   args?: string[]
   start: CrewStart
 }
@@ -161,7 +163,7 @@ export interface CrewMember {
 export interface CrewInfo {
   /** Set by the server from the name when the crew is created; never changes. */
   id: string
-  /** At most 60 characters. */
+  /** At most 60 characters, no control characters; the server trims surrounding space. */
   name: string
   /** At most 2000 characters. */
   goal: string
@@ -172,7 +174,7 @@ export interface CrewInfo {
   openAfterLaunch: boolean
   /** Lifetime of the view link a launch creates; none when missing. */
   viewLinkTtlSeconds?: number
-  /** At most 12. */
+  /** At most 12. The whole crew is at most 512 KiB as JSON. */
   members: CrewMember[]
   createdAt: string
   updatedAt: string
@@ -208,13 +210,13 @@ export function useSessions() {
     listCrews: () => request<{ crews: CrewInfo[] }>('/api/crews').then((r) => r.crews ?? []),
     /**
      * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
-     * fields; its id and createdAt stay. 400 `invalid_crew` says what is wrong, an agent the catalog does not have included; 404 for an unknown
-     * id; 409 `too_many_crews` past 50.
+     * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a listed CrewInfo can be passed as it is. 400 `invalid_crew` says
+     * what is wrong, an agent the catalog does not have included; 404 for an unknown id; 409 `too_many_crews` past 50.
      */
     saveCrew: (crew: CrewInput, id?: string) =>
       (id === undefined
-        ? request<{ crew: CrewInfo }>('/api/crews', { method: 'POST', body: crew })
-        : request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: crew })
+        ? request<{ crew: CrewInfo }>('/api/crews', { method: 'POST', body: toCrewInput(crew) })
+        : request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: toCrewInput(crew) })
       ).then((r) => r.crew),
     deleteCrew: (id: string) => request<void>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */

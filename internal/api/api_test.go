@@ -2373,14 +2373,15 @@ func wantAPIError(t *testing.T, what string, resp *http.Response, out map[string
 func TestCrewsCRUD(t *testing.T) {
 	e := newTestEnv(t, nil)
 
-	// Create: the server derives the ID from the name and stamps the times.
-	created := e.sendCrew("POST", "/api/crews", e.crewBody("API sweep"), http.StatusCreated)
+	// Create: the server derives the ID from the name, trims the name and
+	// stamps the times, in UTC.
+	created := e.sendCrew("POST", "/api/crews", e.crewBody("  API sweep  "), http.StatusCreated)
 	if created["id"] != "api-sweep" || created["name"] != "API sweep" || created["goal"] != "ship /v1/users" || created["cwd"] != e.root ||
 		created["where"] != "server" || created["isolation"] != "worktree" || created["openAfterLaunch"] != true || created["viewLinkTtlSeconds"] != 28800.0 {
 		t.Fatalf("created %v", created)
 	}
 	createdAt, err := time.Parse(time.RFC3339Nano, fmt.Sprint(created["createdAt"]))
-	if err != nil || time.Since(createdAt) > time.Minute || created["updatedAt"] != created["createdAt"] {
+	if err != nil || time.Since(createdAt) > time.Minute || created["updatedAt"] != created["createdAt"] || !strings.HasSuffix(fmt.Sprint(created["createdAt"]), "Z") {
 		t.Fatalf("times %v %v: %v", created["createdAt"], created["updatedAt"], err)
 	}
 	wantMembers := []any{
@@ -2404,7 +2405,7 @@ func TestCrewsCRUD(t *testing.T) {
 	updated := e.sendCrew("PUT", "/api/crews/api-sweep", body, http.StatusOK)
 	updatedAt, err := time.Parse(time.RFC3339Nano, fmt.Sprint(updated["updatedAt"]))
 	if updated["id"] != "api-sweep" || updated["name"] != "Users sweep" || crewMember(updated, 0)["prompt"] != "New plan for $GOAL." ||
-		updated["createdAt"] != created["createdAt"] || err != nil || updatedAt.Before(createdAt) {
+		updated["createdAt"] != created["createdAt"] || err != nil || updatedAt.Before(createdAt) || !strings.HasSuffix(fmt.Sprint(updated["updatedAt"]), "Z") {
 		t.Fatalf("updated %v", updated)
 	}
 	if stored := e.storedCrew("api-sweep"); stored == nil || !reflect.DeepEqual(stored, updated) {
@@ -2497,11 +2498,21 @@ func TestCrewSaveRejectsInvalidCrews(t *testing.T) {
 			}
 		}), "invalid_crew", "at most 12"},
 		{"where elsewhere", with(func(b map[string]any) { b["where"] = "cloud" }), "invalid_crew", `"cloud"`},
+		{"args over 8 KiB in all", with(func(b map[string]any) {
+			crewMember(b, 0)["args"] = []any{strings.Repeat("a", 4096), strings.Repeat("b", 4096), "c"}
+		}), "invalid_crew", "8192 bytes"},
+		{"members starting after each other", with(func(b map[string]any) {
+			crewMember(b, 0)["start"] = map[string]any{"when": "after", "member": "tests"}
+		}), "invalid_crew", "cycle"},
+		{"member name git refuses", with(func(b map[string]any) {
+			crewMember(b, 1)["name"] = "tests.lock"
+		}), "invalid_crew", "git"},
+		{"name with a control character", with(func(b map[string]any) { b["name"] = "API\x1b[2Jsweep" }), "invalid_crew", "control"},
 		{"id sent by the client", with(func(b map[string]any) { b["id"] = "mine" }), "invalid_request", `"id"`},
 		{"createdAt sent by the client", with(func(b map[string]any) { b["createdAt"] = "2026-09-29T10:00:00Z" }), "invalid_request", `"createdAt"`},
 		{"unknown member field", with(func(b map[string]any) { crewMember(b, 0)["model"] = "x" }), "invalid_request", `"model"`},
 		{"no body", nil, "invalid_request", ""},
-		{"body over 64 KiB", with(func(b map[string]any) { b["goal"] = strings.Repeat("g", 70<<10) }), "invalid_request", "too large"},
+		{"body over 1 MiB", with(func(b map[string]any) { b["goal"] = strings.Repeat("g", 1<<20) }), "invalid_request", "too large"},
 	}
 	for _, tc := range cases {
 		for _, path := range []string{"POST /api/crews", "PUT /api/crews/kept"} {
@@ -2512,6 +2523,42 @@ func TestCrewSaveRejectsInvalidCrews(t *testing.T) {
 	}
 	if list := e.crews(); len(list) != 1 || !reflect.DeepEqual(list[0], kept) {
 		t.Fatalf("a refused save changed the crews: %v", list)
+	}
+}
+
+// The largest crew the limits allow goes through the crew routes, whose
+// bodies may reach 1 MiB where others stop at 64 KiB: twelve members, each
+// with a prompt of 4000 four-byte and control characters (JSON writes a
+// control character as six bytes) and 8 KiB of args, and a goal of 2000
+// four-byte characters.
+func TestCrewRoutesTakeTheLargestCrews(t *testing.T) {
+	e := newTestEnv(t, nil)
+	body := e.crewBody("Largest")
+	prompt := strings.Repeat("\U0001F600\x01", 2000)
+	var members []any
+	for i := range 12 {
+		members = append(members, map[string]any{
+			"name": fmt.Sprintf("m%02d", i), "agentId": "sh", "prompt": prompt,
+			"args":  []any{strings.Repeat("a", 4096), strings.Repeat("b", 4096)},
+			"start": map[string]any{"when": "manual"},
+		})
+	}
+	body["members"] = members
+	body["goal"] = strings.Repeat("\U0001F600", 2000)
+	if b, _ := json.Marshal(body); len(b) < 256<<10 {
+		t.Fatalf("the body is only %d bytes", len(b))
+	}
+	created := e.sendCrew("POST", "/api/crews", body, http.StatusCreated)
+	if created["goal"] != body["goal"] || crewMember(created, 11)["prompt"] != prompt {
+		t.Fatalf("the crew came back changed: goal %d bytes", len(fmt.Sprint(created["goal"])))
+	}
+	e.sendCrew("PUT", "/api/crews/largest", body, http.StatusOK)
+	// One byte more of args is one byte too many.
+	crewMember(body, 0)["args"] = []any{strings.Repeat("a", 4096), strings.Repeat("b", 4096), "c"}
+	resp, out := e.do("POST", "/api/crews", adminToken, body)
+	wantAPIError(t, "8 KiB and a byte of args", resp, out, http.StatusBadRequest, "invalid_crew", "8192 bytes")
+	if ids := e.crewIDs(); !slices.Equal(ids, []string{"largest"}) {
+		t.Fatalf("ids %v", ids)
 	}
 }
 

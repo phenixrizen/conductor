@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,42 @@ func newStore(t *testing.T) (*Store, *store.Store) {
 // clock makes s stamp every change with at.
 func clock(s *Store, at time.Time) { s.now = func() time.Time { return at } }
 
+// encodedSize is the length of c as JSON.
+func encodedSize(t *testing.T, c Crew) int {
+	t.Helper()
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(b)
+}
+
+// crewOfEncodedSize returns a valid crew whose JSON is exactly size bytes:
+// twelve members with prompts and args of "<", which JSON writes as six bytes
+// (\u003c), and a goal of "g" making up the rest.
+func crewOfEncodedSize(t *testing.T, id string, size int) Crew {
+	t.Helper()
+	c := validCrew(id, "Edge")
+	c.Goal = ""
+	c.Members = nil
+	for i := range 12 {
+		c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Prompt: strings.Repeat("<", 4000), Args: []string{""}, Start: Start{When: "manual"}})
+	}
+	lt := (size - encodedSize(t, c) - 1000) / 6 // leave about 1000 bytes to the goal
+	for i := range c.Members {
+		n := lt / 12
+		if i == 0 {
+			n += lt % 12
+		}
+		c.Members[i].Args[0] = strings.Repeat("<", n)
+	}
+	c.Goal = strings.Repeat("g", size-encodedSize(t, c))
+	if got := encodedSize(t, c); got != size || c.Validate() != nil {
+		t.Fatalf("crew of %d bytes: %v", got, c.Validate())
+	}
+	return c
+}
+
 func TestValidateRejectsBadMembers(t *testing.T) {
 	if err := validCrew("api", "API").Validate(); err != nil {
 		t.Fatalf("valid crew rejected: %v", err)
@@ -89,13 +126,40 @@ func TestValidateRejectsBadMembers(t *testing.T) {
 		{"no isolation", func(c *Crew) { c.Isolation = "" }, "isolation"},
 		{"negative view link TTL", func(c *Crew) { c.ViewLinkTTLSeconds = -1 }, "viewLinkTtlSeconds"},
 		{"view link TTL over a year", func(c *Crew) { c.ViewLinkTTLSeconds = 365*24*3600 + 1 }, "viewLinkTtlSeconds"},
+		// Names the member pattern lets through but git refuses as a branch name.
+		{"member name with two dots", func(c *Crew) { c.Members[1].Name = "a..b" }, "git"},
+		{"member name ending in .lock", func(c *Crew) { c.Members[1].Name = "tests.lock" }, "git"},
+		{"member name ending in a dot", func(c *Crew) { c.Members[1].Name = "tests." }, "git"},
+		{"two members starting after each other", func(c *Crew) { c.Members[0].Start = Start{When: "after", Member: "tests"} }, "cycle"},
+		{"three members starting after each other", func(c *Crew) {
+			c.Members[0].Start = Start{When: "after", Member: "review"}
+			c.Members = append(c.Members, Member{Name: "review", AgentID: "shell", Start: Start{When: "after", Member: "tests"}})
+		}, "cycle"},
+		{"a member starting after a cycle", func(c *Crew) {
+			c.Members[0].Start = Start{When: "after", Member: "tests"}
+			c.Members = append([]Member{{Name: "late", AgentID: "shell", Start: Start{When: "after", Member: "lead"}}}, c.Members...)
+		}, "cycle"},
+		{"args over 8 KiB in all", func(c *Crew) {
+			c.Members[1].Args = []string{strings.Repeat("a", 4096), strings.Repeat("a", 4096), "b"}
+		}, "8192 bytes"},
+		{"agentId that is no agent id", func(c *Crew) { c.Members[0].AgentID = "Bad Id" }, `"Bad Id"`},
+		{"agentId over 32 characters", func(c *Crew) { c.Members[0].AgentID = strings.Repeat("a", 33) }, "agentId"},
+		{"name with a tab", func(c *Crew) { c.Name = "API\tsweep" }, "control"},
+		{"name with an escape sequence", func(c *Crew) { c.Name = "API \x1b[31msweep" }, "control"},
+		{"crew over 512 KiB as JSON", func(c *Crew) {
+			// Within every other limit: 8 KiB of "<" per member is 48 KiB of JSON.
+			c.Members = nil
+			for i := range 12 {
+				c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Args: []string{strings.Repeat("<", 4096), strings.Repeat("<", 4096)}, Start: Start{When: "manual"}})
+			}
+		}, "as JSON"},
 	}
 	for _, tc := range cases {
 		c := validCrew("api", "API")
 		tc.change(&c)
 		err := c.Validate()
-		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: %v, want an error about %s", tc.name, err, tc.want)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want an ErrInvalid about %s", tc.name, err, tc.want)
 		}
 	}
 
@@ -115,7 +179,7 @@ func TestValidateRejectsBadMembers(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate needs no catalog, yet: %v", err)
 	}
-	if err := c.CheckAgents(cat); err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), `"tests"`) {
+	if err := c.CheckAgents(cat); err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), `"tests"`) || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown agent: %v", err)
 	}
 }
@@ -129,10 +193,44 @@ func TestValidateAcceptsCrewsAtTheLimits(t *testing.T) {
 	for i := range 12 {
 		c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%d", i), AgentID: "shell", Prompt: strings.Repeat("ö", 4000), Start: Start{When: "manual"}})
 	}
-	c.Members[0].Name = "a" + strings.Repeat("b._-", 9) + "cde" // 40 characters
-	c.Members[0].Args = slices.Repeat([]string{strings.Repeat("a", 4096)}, 32)
+	c.Members[0].Name = "a" + strings.Repeat("b._-", 9) + "cde"                        // 40 characters
+	c.Members[0].Args = slices.Repeat([]string{strings.Repeat("a", 256)}, 32)          // 32 entries, 8 KiB in all
+	c.Members[1].Args = []string{strings.Repeat("a", 4096), strings.Repeat("a", 4096)} // the longest entries, 8 KiB in all
 	c.Members[1].Start = Start{When: "after", Member: c.Members[0].Name}
 	c.Members[2].Start = Start{When: "immediately"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	// As JSON, up to 512 KiB.
+	if err := crewOfEncodedSize(t, "edge", 512<<10).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A chain of after conditions is not a cycle, however long and in whatever
+// order the members are listed.
+func TestValidateAcceptsChainsOfStarts(t *testing.T) {
+	c := validCrew("api", "API")
+	c.Members = []Member{
+		{Name: "d", AgentID: "shell", Start: Start{When: "after", Member: "c"}},
+		{Name: "a", AgentID: "shell", Start: Start{When: "immediately"}},
+		{Name: "c", AgentID: "shell", Start: Start{When: "after", Member: "b"}},
+		{Name: "n", AgentID: "shell", Start: Start{When: "after", Member: "m"}},
+		{Name: "b", AgentID: "shell", Start: Start{When: "after", Member: "a"}},
+		{Name: "m", AgentID: "shell", Start: Start{When: "manual"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	// Twelve members, each after the one before, listed last to first.
+	c.Members = nil
+	for i := 11; i >= 0; i-- {
+		start := Start{When: "after", Member: fmt.Sprintf("m%02d", i-1)}
+		if i == 0 {
+			start = Start{When: "immediately"}
+		}
+		c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Start: start})
+	}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -250,18 +348,18 @@ func TestCreateDerivesUniqueIDs(t *testing.T) {
 	s, st := newStore(t)
 	at := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	clock(s, at)
-	cases := []struct{ name, want string }{
-		{"API sweep", "api-sweep"},
-		{"API sweep", "api-sweep-2"},
-		{"  api   SWEEP!! ", "api-sweep-3"},
-		{"Claude (opus) -- v2", "claude-opus-v2"},
-		{"!!!", "crew"},
-		{"日本語", "crew-2"},
-		{strings.Repeat("x", 50), strings.Repeat("x", 40)},
-		{strings.Repeat("x", 50), strings.Repeat("x", 40) + "-2"},
+	cases := []struct{ name, want, stored string }{ // stored: the name as kept, when it differs
+		{"API sweep", "api-sweep", ""},
+		{"API sweep", "api-sweep-2", ""},
+		{"  api   SWEEP!! ", "api-sweep-3", "api   SWEEP!!"},
+		{"Claude (opus) -- v2", "claude-opus-v2", ""},
+		{"!!!", "crew", ""},
+		{"日本語", "crew-2", ""},
+		{strings.Repeat("x", 50), strings.Repeat("x", 40), ""},
+		{strings.Repeat("x", 50), strings.Repeat("x", 40) + "-2", ""},
 		// A 60-character name: its slug is cut at 40 characters, then loses
 		// the dash left at the end.
-		{strings.Repeat("abc ", 15), strings.Repeat("abc-", 9) + "abc"},
+		{strings.Repeat("abc ", 15), strings.Repeat("abc-", 9) + "abc", strings.Repeat("abc ", 14) + "abc"},
 	}
 	for _, tc := range cases {
 		in := validCrew("ignored", tc.name)
@@ -269,7 +367,7 @@ func TestCreateDerivesUniqueIDs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q: %v", tc.name, err)
 		}
-		want := validCrew(tc.want, tc.name)
+		want := validCrew(tc.want, cmp.Or(tc.stored, tc.name))
 		want.CreatedAt, want.UpdatedAt = at, at
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%q:\n got  %+v\n want %+v", tc.name, got, want)
@@ -434,22 +532,22 @@ func TestStoreHoldsAtMost50Crews(t *testing.T) {
 func TestStoreRefusesInvalidCrews(t *testing.T) {
 	s, st := newStore(t)
 	for _, id := range []string{"", "Bad", "-x", "x y", "x/y", strings.Repeat("a", 65)} {
-		if err := s.Put(validCrew(id, "x")); err == nil {
-			t.Errorf("id %q accepted", id)
+		if err := s.Put(validCrew(id, "x")); !errors.Is(err, ErrInvalid) {
+			t.Errorf("id %q: %v", id, err)
 		}
 	}
 	bad := validCrew("ok", "x")
 	bad.Members[0].Name = "Lead!"
-	if err := s.Put(bad); err == nil || !strings.Contains(err.Error(), "must match") {
+	if err := s.Put(bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must match") {
 		t.Fatalf("put: %v", err)
 	}
-	if _, err := s.Create(bad); err == nil || !strings.Contains(err.Error(), "must match") {
+	if _, err := s.Create(bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must match") {
 		t.Fatalf("create: %v", err)
 	}
 	if err := s.Put(validCrew("ok", "x")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Update("ok", bad); err == nil || !strings.Contains(err.Error(), "must match") {
+	if _, err := s.Update("ok", bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must match") {
 		t.Fatalf("update: %v", err)
 	}
 	if got, _ := s.Get("ok"); !reflect.DeepEqual(got, validCrew("ok", "x")) || len(s.List()) != 1 {
@@ -480,6 +578,8 @@ func TestNewStoreRefusesAMalformedFile(t *testing.T) {
 		{"unknown field", `{"crews": [], "bogus": true}`, `"bogus"`},
 		{"invalid crew", `{"crews": [` + crewJSON("ok") + `, {"id": "bad", "name": "x", "where": "server", "isolation": "none", "members": [{"name": "Lead!", "agentId": "a", "prompt": "", "start": {"when": "manual"}}]}]}`, "crews[1]"},
 		{"invalid id", `{"crews": [` + crewJSON("Bad Id") + `]}`, "crews[0]"},
+		{"invalid agent id", `{"crews": [{"id": "x", "name": "x", "where": "server", "isolation": "none", "members": [{"name": "lead", "agentId": "Bad Id", "prompt": "", "start": {"when": "manual"}}]}]}`, `agentId "Bad Id"`},
+		{"control character in a name", `{"crews": [{"id": "x", "name": "a\u0007b", "where": "server", "isolation": "none", "members": []}]}`, "control"},
 		{"id used twice", `{"crews": [` + crewJSON("x") + `, ` + crewJSON("x") + `]}`, "crews[1]"},
 		{"51 crews", `{"crews": [` + strings.Join(many, ", ") + `]}`, "at most 50"},
 	}
@@ -528,6 +628,59 @@ func TestNewStoreListsNoMembersAsEmpty(t *testing.T) {
 	}
 	if b, _ := json.Marshal(c); !strings.Contains(string(b), `"members":[]`) {
 		t.Fatalf("listed as %s", b)
+	}
+}
+
+// Names are kept without surrounding space, however they come in.
+func TestStoreTrimsTheName(t *testing.T) {
+	s, st := newStore(t)
+	c, err := s.Create(validCrew("", "  API sweep \n"))
+	if err != nil || c.Name != "API sweep" || c.ID != "api-sweep" {
+		t.Fatalf("create: %q %q %v", c.Name, c.ID, err)
+	}
+	if u, err := s.Update(c.ID, validCrew("", "\tRenamed  ")); err != nil || u.Name != "Renamed" {
+		t.Fatalf("update: %q %v", u.Name, err)
+	}
+	if err := s.Put(validCrew("put", " Put ")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get("put"); got.Name != "Put" {
+		t.Fatalf("put: %q", got.Name)
+	}
+	// Trimmed, then held to the limit: 60 characters between spaces fit.
+	if c, err := s.Create(validCrew("", " "+strings.Repeat("é", 60)+" ")); err != nil || c.Name != strings.Repeat("é", 60) {
+		t.Fatalf("60 characters between spaces: %q %v", c.Name, err)
+	}
+	if err := os.WriteFile(filepath.Join(st.Dir(), "crews.json"), []byte(`{"crews": [{"id": "hand", "name": "  Hand  ", "where": "server", "isolation": "none", "members": []}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := again.Get("hand"); got.Name != "Hand" {
+		t.Fatalf("loaded: %q", got.Name)
+	}
+}
+
+// The store checks a crew as it saves it, ID and times included, so a crew at
+// the encoded limit is not copied into one past it: that copy would stop the
+// next start.
+func TestDuplicateRefusesACopyOverTheEncodedLimit(t *testing.T) {
+	s, st := newStore(t)
+	edge := crewOfEncodedSize(t, "edge", 512<<10-9) // a copy is 10 bytes longer: " copy" and "-copy"
+	if err := s.Put(edge); err != nil {
+		t.Fatal(err)
+	}
+	clock(s, time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)) // times as long as edge's
+	if _, err := s.Duplicate("edge"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "as JSON") {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if n := len(s.List()); n != 1 {
+		t.Fatalf("%d crews", n)
+	}
+	if _, err := NewStore(st); err != nil {
+		t.Fatalf("the store no longer loads: %v", err)
 	}
 }
 

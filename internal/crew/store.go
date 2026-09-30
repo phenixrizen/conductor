@@ -42,6 +42,7 @@ type crewsDoc struct {
 }
 
 // Store holds the saved crews in memory and in crews.json. Every change is
+// checked in the form it is saved in (name trimmed, ID and times set), and
 // saved before it is made in memory, so a failed save changes nothing. Crews
 // go in and come out as copies: a caller can never change a stored crew.
 type Store struct {
@@ -71,13 +72,14 @@ func NewStore(st *store.Store) (*Store, error) {
 		return nil, fmt.Errorf("%s: %d crews, at most %d", path, len(doc.Crews), maxCrews)
 	}
 	for i, c := range doc.Crews {
+		c = c.canonical()
 		if err := c.validateWithID(); err != nil {
 			return nil, fmt.Errorf("%s: crews[%d]: %w", path, i, err)
 		}
 		if _, dup := s.crews[c.ID]; dup {
 			return nil, fmt.Errorf("%s: crews[%d]: id %q is used twice", path, i, c.ID)
 		}
-		s.crews[c.ID] = c.stored()
+		s.crews[c.ID] = c
 	}
 	return s, nil
 }
@@ -85,9 +87,21 @@ func NewStore(st *store.Store) (*Store, error) {
 // validateWithID is Validate plus the ID, which the store keys crews by.
 func (c Crew) validateWithID() error {
 	if !idPattern.MatchString(c.ID) {
-		return fmt.Errorf("id %q must match %s", c.ID, idPattern)
+		return invalidf("id %q must match %s", c.ID, idPattern)
 	}
 	return c.Validate()
+}
+
+// canonical returns the form of c the store checks and keeps: a copy sharing
+// no slice with c, its name without surrounding space, and its members listed
+// as [] rather than null when there are none.
+func (c Crew) canonical() Crew {
+	c = c.clone()
+	c.Name = strings.TrimSpace(c.Name)
+	if c.Members == nil {
+		c.Members = []Member{}
+	}
+	return c
 }
 
 // List returns every crew ordered by name, ignoring case, then by ID.
@@ -109,12 +123,10 @@ func (s *Store) Get(id string) (Crew, bool) {
 }
 
 // Put validates c and saves it under c.ID, adding it or replacing the crew
-// with that ID. It stores c as it is, times included; Create, Update and
-// Duplicate are the operations that set the ID and the times.
+// with that ID. It stores c as it is, times included, only its name trimmed;
+// Create, Update and Duplicate are the operations that set the ID and the
+// times.
 func (s *Store) Put(c Crew) error {
-	if err := c.validateWithID(); err != nil {
-		return err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.commit(c)
@@ -125,9 +137,6 @@ func (s *Store) Put(c Crew) error {
 // nothing is left), then -2, -3 and so on when a crew has it already.
 // CreatedAt and UpdatedAt are now. The ID and times c holds are ignored.
 func (s *Store) Create(c Crew) (Crew, error) {
-	if err := c.Validate(); err != nil {
-		return Crew{}, err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.crews) >= maxCrews {
@@ -145,9 +154,6 @@ func (s *Store) Create(c Crew) (Crew, error) {
 // Update replaces the crew with the given ID by c. The ID and CreatedAt stay
 // as they were, whatever c holds, and UpdatedAt is now.
 func (s *Store) Update(id string, c Crew) (Crew, error) {
-	if err := c.Validate(); err != nil {
-		return Crew{}, err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, ok := s.crews[id]
@@ -201,30 +207,25 @@ func (s *Store) Delete(id string) (bool, error) {
 	return true, nil
 }
 
-// commit adds c, or replaces the crew with its ID, and saves. A new crew past
-// maxCrews is refused, and when the save fails the crews stay as they were.
-// The caller holds s.mu and has validated c.
+// commit checks c as it will be saved, then adds it, or replaces the crew
+// with its ID, and saves. An invalid crew and a new crew past maxCrews are
+// refused, and when the save fails the crews stay as they were. The caller
+// holds s.mu.
 func (s *Store) commit(c Crew) error {
+	c = c.canonical()
+	if err := c.validateWithID(); err != nil {
+		return err
+	}
 	if _, exists := s.crews[c.ID]; !exists && len(s.crews) >= maxCrews {
 		return ErrTooManyCrews
 	}
 	next := maps.Clone(s.crews)
-	next[c.ID] = c.stored()
+	next[c.ID] = c
 	if err := s.save(next); err != nil {
 		return err
 	}
 	s.crews = next
 	return nil
-}
-
-// stored returns the copy of c the store keeps: it shares no slice with c, and
-// its members are listed as [] rather than null when there are none.
-func (c Crew) stored() Crew {
-	c = c.clone()
-	if c.Members == nil {
-		c.Members = []Member{}
-	}
-	return c
 }
 
 // save writes crews to crews.json, ordered as List orders them.
