@@ -1,7 +1,6 @@
 import type { SessionInfo } from './useSessions'
-import type { RoutedEvent } from './useEvents'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
-import { EVENT_INFO, markOf } from '~/utils/events'
+import { eventAlert, type RoutedEvent } from '~/utils/events'
 import type { SessionActivity } from '~/utils/protocol'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
@@ -100,12 +99,14 @@ export function useAttention() {
   }
 
   // Each change also settles the activity entries useEvents holds for the
-  // session change that carries their state.
+  // session change that carries their state; a snapshot also drops the holds
+  // and badges of sessions it no longer lists.
   function replaceAll(list: SessionInfo[]) {
     const next = new Map(list.map((s) => [s.id, s]))
     react(store.value.sessions, next)
     store.value.sessions = next
     bump()
+    events.retain(new Set(next.keys()))
     events.settle()
   }
 
@@ -136,12 +137,11 @@ export function useAttention() {
     chime()
   }
 
-  /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default. */
+  /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
   function reactToEvent(e: RoutedEvent) {
-    if (e.type === 'needs_input' || !events.routes.value[e.type].browser) return
-    const mark = markOf(e.type, e.entry)
-    const what = e.type === 'exit_nonzero' ? mark.label : e.type.replace('_', ' ')
-    notify(`${e.session?.name || e.sessionId}: ${what}`, mark.detail || EVENT_INFO[e.type].source, `conductor-${e.sessionId}-${e.type}`, e.sessionId)
+    const alert = eventAlert(e, events.routes.value)
+    if (!alert) return
+    notify(alert.title, alert.body, alert.tag, e.sessionId)
     chime()
   }
 
@@ -261,6 +261,7 @@ export function useAttention() {
       () => {
         store.value.sessions = new Map()
         bump()
+        events.reset()
         stream()
       },
     )

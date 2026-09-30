@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostCommand, shellQuote } from './hostCommand'
+import { hostAdapter, hostCommand, shellQuote } from './hostCommand'
 
 describe('hostCommand', () => {
   it('renders flags then the argv after --', () => {
@@ -35,5 +35,16 @@ describe('hostCommand', () => {
     )
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'] })).not.toContain('--agent')
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], adapter: '' })).not.toContain('--agent')
+  })
+})
+
+describe('hostAdapter', () => {
+  it('names the adapter only for the hook signal, as a launch from the server wires it', () => {
+    expect(hostAdapter({ adapter: 'claude', signal: { kind: 'hook' } })).toBe('claude')
+    expect(hostAdapter({ adapter: 'claude', signal: { kind: 'bell' } })).toBeUndefined()
+    expect(hostAdapter({ adapter: 'cursor', signal: { kind: 'pattern', pattern: '^› $' } })).toBeUndefined()
+    expect(hostAdapter({ adapter: 'claude' })).toBeUndefined()
+    expect(hostAdapter({ adapter: '', signal: { kind: 'hook' } })).toBeUndefined()
+    expect(hostAdapter({ signal: { kind: 'hook' } })).toBeUndefined()
   })
 })

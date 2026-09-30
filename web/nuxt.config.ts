@@ -5,6 +5,33 @@ export default defineNuxtConfig({
   ssr: false,
   modules: ['@nuxt/ui'],
   css: ['~/assets/css/main.css'],
+  // The workbench never fetches icons at runtime: every icon it shows is
+  // bundled from @iconify-json/lucide. The scan finds the names in the app's
+  // sources (.ts too: event icons are named in app/utils); the built-in
+  // catalog's icons come from the server (internal/catalog/defaults.go), so
+  // they are listed. A catalog icon outside the bundle shows nothing.
+  icon: {
+    provider: 'none',
+    clientBundle: {
+      scan: { globInclude: ['app/**/*.{vue,ts}'] },
+      icons: [
+        'lucide:sparkles',
+        'lucide:code-xml',
+        'lucide:rocket',
+        'lucide:github',
+        'lucide:mouse-pointer-2',
+        'lucide:braces',
+        'lucide:pi',
+        'lucide:pi-square',
+        'lucide:git-commit',
+        'lucide:feather',
+        'lucide:zap',
+        'lucide:cpu',
+        'lucide:terminal',
+      ],
+      sizeLimitKb: 256,
+    },
+  },
   devtools: { enabled: false },
   app: {
     head: {

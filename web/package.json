@@ -24,6 +24,7 @@
     "vue": "3.5.43"
   },
   "devDependencies": {
+    "@iconify-json/lucide": "1.2.137",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0",
     "vue-tsc": "^3.0.0"

@@ -1,3 +1,5 @@
+import type { AgentInfo } from '~/composables/useSessions'
+
 /** Single-quotes s for a POSIX shell, whatever it holds: an embedded quote becomes '\''. */
 function singleQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`
@@ -26,4 +28,13 @@ export function hostCommand(o: { server: string; token: string; name: string; ar
   if (o.pattern) parts.push('--signal-pattern', singleQuote(o.pattern))
   parts.push('--', ...o.argv.map(shellQuote))
   return parts.join(' ')
+}
+
+/**
+ * The hook adapter the "My machine" command names with --agent: the agent's,
+ * when its signal is hook, the only signal a launch from the server wires an
+ * adapter's hooks into.
+ */
+export function hostAdapter(agent: Pick<AgentInfo, 'adapter' | 'signal'>): string | undefined {
+  return agent.signal?.kind === 'hook' && agent.adapter ? agent.adapter : undefined
 }

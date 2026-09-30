@@ -1,7 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry, AttentionState } from '~/utils/protocol'
-import { DEFAULT_ROUTES, EVENT_INFO, EVENT_TYPES, EntryHold, appendRing, attentionSettled, entryIcon, eventDetail, eventTypeOf, linkableUrl, markOf, parseRoutes } from './events'
+import {
+  DEFAULT_ROUTES,
+  EVENT_INFO,
+  EVENT_TYPES,
+  EntryHold,
+  appendRing,
+  attentionSettled,
+  entryIcon,
+  eventAlert,
+  eventDetail,
+  eventTypeOf,
+  feedTime,
+  followJump,
+  linkableUrl,
+  markOf,
+  parseRoutes,
+  pruneMarks,
+  routeEntry,
+  type EventState,
+  type EventType,
+  type RouteRow,
+} from './events'
 
 function session(state: AttentionState, message?: string): SessionInfo {
   return {
@@ -249,5 +270,151 @@ describe('EntryHold', () => {
     expect(released).toEqual(['s1:attention:Approve?', 's1:progress:x'])
     vi.advanceTimersByTime(5000)
     expect(released).toHaveLength(2)
+  })
+})
+
+describe('EntryHold.retain and clear', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('releases what sessions outside a snapshot held and keeps the rest', () => {
+    const released: string[] = []
+    const hold = new EntryHold(() => undefined, (id, e) => released.push(`${id}:${e.message}`), 2000)
+    hold.push('gone', entry('attention', { message: 'Approve?' }))
+    hold.push('kept', entry('attention', { message: 'Pick one' }))
+    hold.retain((id) => id === 'kept')
+    expect(released).toEqual(['gone:Approve?'])
+    vi.advanceTimersByTime(2000)
+    expect(released).toEqual(['gone:Approve?', 'kept:Pick one'])
+  })
+
+  it('drops everything it holds, timers included, on clear', () => {
+    const released: string[] = []
+    const hold = new EntryHold(() => undefined, (id) => released.push(id), 2000)
+    hold.push('a', entry('attention', { message: 'Approve?' }))
+    hold.push('a', entry('progress', { message: 'x' }))
+    hold.clear()
+    vi.advanceTimersByTime(5000)
+    expect(released).toEqual([])
+    hold.push('a', entry('progress', { message: 'y' }))
+    expect(released).toEqual(['a'])
+  })
+})
+
+function routes(changes: Partial<Record<EventType, Partial<RouteRow>>> = {}): Record<EventType, RouteRow> {
+  const r = parseRoutes(null)
+  for (const [t, row] of Object.entries(changes)) r[t as EventType] = { ...r[t as EventType], ...row }
+  return r
+}
+
+const empty: EventState = { feed: [], marks: {} }
+
+describe('routeEntry', () => {
+  it('adds a feed line with its time, detail and link computed once', () => {
+    const { state, type } = routeEntry(empty, 's1', entry('artifact', { url: 'https://x/pr/1', message: 'PR 1' }), session(''), routes(), 7)
+    expect(type).toBe('artifact')
+    expect(state.feed).toHaveLength(1)
+    expect(state.feed[0]).toMatchObject({ sessionId: 's1', event: 'artifact', sessionName: 'api-sweep', seq: 7, detail: 'PR 1', link: 'https://x/pr/1', time: feedTime('2026-09-29T12:00:00Z') })
+    const bad = routeEntry(empty, 's1', entry('artifact', { url: 'javascript:alert(1)' }), undefined, routes(), 8)
+    expect(bad.state.feed[0]).toMatchObject({ link: null, sessionName: 's1' })
+  })
+
+  it('keeps a type out of the feed when its Feed route is off, and caps the ring', () => {
+    const off = routeEntry(empty, 's1', entry('tool_use', { tool: 'Bash' }), undefined, routes({ tool_use: { feed: false } }), 1)
+    expect(off.type).toBe('tool_use')
+    expect(off.state.feed).toBe(empty.feed)
+    let state = empty
+    for (let i = 0; i < 5; i++) state = routeEntry(state, 's1', entry('progress', { message: String(i) }), undefined, routes(), i, 3).state
+    expect(state.feed.map((e) => e.message)).toEqual(['2', '3', '4'])
+  })
+
+  it('sets the session badge for a type routed to Badge and leaves it alone otherwise', () => {
+    const denied = routeEntry(empty, 's1', entry('tool_denied', { tool: 'Bash' }), undefined, routes(), 1).state
+    expect(denied.marks.s1).toMatchObject({ type: 'tool_denied', label: 'denied', color: 'error' })
+    const progress = routeEntry(denied, 's1', entry('progress', { message: '4/7' }), undefined, routes(), 2).state
+    expect(progress.marks).toBe(denied.marks)
+    const done = routeEntry(progress, 's1', entry('attention', { message: 'done' }), undefined, routes(), 3).state
+    expect(done.marks.s1).toMatchObject({ type: 'done', label: 'done', color: 'success' })
+  })
+
+  it('clears the badge on working and needs_input, whatever their Badge route says', () => {
+    const marked = routeEntry(empty, 's1', entry('error', { message: 'boom' }), undefined, routes(), 1).state
+    const working = routeEntry(marked, 's1', entry('attention', { message: 'working' }), undefined, routes({ working: { badge: true } }), 2).state
+    expect(working.marks).toEqual({})
+    const again = routeEntry(marked, 's1', entry('attention', { message: 'needs_input' }), undefined, routes(), 3).state
+    expect(again.marks).toEqual({})
+  })
+
+  it('does nothing for an entry that is not an event', () => {
+    const r = routeEntry(empty, 's1', entry('join', { byName: 'Priya' }), undefined, routes(), 1)
+    expect(r.type).toBeNull()
+    expect(r.state).toBe(empty)
+  })
+})
+
+describe('pruneMarks', () => {
+  const marks = {
+    a: { type: 'done' as const, at: 't', label: 'done', color: 'success' as const, detail: '' },
+    b: { type: 'error' as const, at: 't', label: 'error', color: 'error' as const, detail: '' },
+  }
+  it('drops the badges of a type whose Badge route is off', () => {
+    expect(Object.keys(pruneMarks(marks, routes({ done: { badge: false } })))).toEqual(['b'])
+  })
+  it('drops the badges of sessions that are gone', () => {
+    expect(Object.keys(pruneMarks(marks, routes(), (id) => id === 'a'))).toEqual(['a'])
+  })
+  it('returns the same object when nothing goes', () => {
+    expect(pruneMarks(marks, routes())).toBe(marks)
+  })
+})
+
+describe('followJump', () => {
+  const ctx = { follow: true, routes: routes(), typing: false, holding: false, activeIds: ['a', 'b', 'c'], selected: 0 }
+  it('moves the carousel to the session of an event routed to Wall jump', () => {
+    expect(followJump({ type: 'handoff', sessionId: 'c' }, ctx)).toBe(2)
+  })
+  it('stays put while it holds on a session that needs input', () => {
+    expect(followJump({ type: 'handoff', sessionId: 'c' }, { ...ctx, holding: true })).toBeNull()
+  })
+  it('stays put while someone types, with follow off, or for a type not routed to Wall jump', () => {
+    expect(followJump({ type: 'handoff', sessionId: 'c' }, { ...ctx, typing: true })).toBeNull()
+    expect(followJump({ type: 'handoff', sessionId: 'c' }, { ...ctx, follow: false })).toBeNull()
+    expect(followJump({ type: 'progress', sessionId: 'c' }, ctx)).toBeNull()
+    expect(followJump({ type: 'progress', sessionId: 'c' }, { ...ctx, routes: routes({ progress: { wall: true } }) })).toBe(2)
+  })
+  it('leaves needs_input to the state-driven jump and ignores sessions it does not show', () => {
+    expect(followJump({ type: 'needs_input', sessionId: 'c' }, ctx)).toBeNull()
+    expect(followJump({ type: 'handoff', sessionId: 'zz' }, ctx)).toBeNull()
+    expect(followJump({ type: 'handoff', sessionId: 'a' }, ctx)).toBeNull()
+  })
+})
+
+describe('eventAlert', () => {
+  const s = session('')
+  it('alerts for a type routed to Browser, with a readable title and the detail', () => {
+    expect(eventAlert({ sessionId: 's1', session: s, type: 'artifact', entry: entry('artifact', { url: 'https://x/pr/1' }) }, routes())).toEqual({
+      title: 'api-sweep: artifact',
+      body: 'https://x/pr/1',
+      tag: 'conductor-s1-artifact',
+    })
+    expect(eventAlert({ sessionId: 's1', type: 'tool_denied', entry: entry('tool_denied', { tool: 'Bash', message: 'rm -rf /' }) }, routes())).toMatchObject({ title: 's1: tool denied', body: 'Bash: rm -rf /' })
+    expect(eventAlert({ sessionId: 's1', session: s, type: 'exit_nonzero', entry: entry('status', { message: 'exited (exit 3)' }) }, routes())).toMatchObject({ title: 'api-sweep: exit 3' })
+    expect(eventAlert({ sessionId: 's1', session: s, type: 'done', entry: entry('attention', { message: 'done' }) }, routes({ done: { browser: true } }))).toMatchObject({ title: 'api-sweep: done', body: EVENT_INFO.done.source })
+  })
+  it('stays quiet for a type not routed to Browser and for needs_input, which the session state alerts', () => {
+    expect(eventAlert({ sessionId: 's1', type: 'progress', entry: entry('progress') }, routes())).toBeNull()
+    expect(eventAlert({ sessionId: 's1', type: 'artifact', entry: entry('artifact') }, routes({ artifact: { browser: false } }))).toBeNull()
+    expect(eventAlert({ sessionId: 's1', type: 'needs_input', entry: entry('attention', { message: 'needs_input' }) }, routes())).toBeNull()
+  })
+})
+
+describe('feedTime', () => {
+  it('formats a time of day with seconds, and nothing for a bad time', () => {
+    expect(feedTime('2026-09-29T12:00:05Z')).toMatch(/^\d\d:\d\d:\d\d$/)
+    expect(feedTime('not a time')).toBe('')
   })
 })

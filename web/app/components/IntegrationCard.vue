@@ -7,6 +7,11 @@ const props = defineProps<{
   integration: Integration
   /** The machine the server runs on, as this browser reaches it: where an install writes. */
   host: string
+  /**
+   * Whether the server knows its user's home directory. Without one no
+   * adapter lists a place to install into, and none can be installed.
+   */
+  homeKnown: boolean
 }>()
 /** An install ran: the list is stale, even after a failure (files written before it stopped stay written). */
 const emit = defineEmits<{ changed: [] }>()
@@ -20,7 +25,7 @@ const wired = computed(() => props.integration.installed || props.integration.la
 // Open for an agent nothing wires yet, and opened when an install leaves the rest to do by hand.
 const snippetOpen = ref(!wired.value)
 
-const status = computed<{ label: string; color: 'success' | 'warning' | 'neutral'; variant: 'subtle' | 'outline' }>(() => {
+const status = computed<{ label: string; color: 'success' | 'neutral'; variant: 'subtle' | 'outline' }>(() => {
   const it = props.integration
   if (it.installed) {
     const n = it.events.length
@@ -28,8 +33,17 @@ const status = computed<{ label: string; color: 'success' | 'warning' | 'neutral
   }
   if (it.launchInjection) return { label: 'injected at launch', color: 'success', variant: 'outline' }
   if (it.experimental) return { label: 'experimental', color: 'neutral', variant: 'outline' }
-  return { label: `not configured on ${props.host}`, color: 'warning', variant: 'subtle' }
+  return { label: `not configured on ${props.host}`, color: 'neutral', variant: 'subtle' }
 })
+
+/** Why there is no Install button: a server without a home directory, or an agent with no file to install into. */
+const noInstall = computed(() => {
+  if (!props.homeKnown) return 'The server has no home directory to install into: paste the snippet.'
+  return props.integration.launchInjection ? 'Wired at launch by this server; anywhere else, paste the snippet.' : 'No file to install into: paste the snippet.'
+})
+
+// Paths are long and unbroken: let toast text wrap anywhere.
+const pathsUi = { description: 'whitespace-pre-line break-all' }
 
 async function install() {
   const it = props.integration
@@ -37,7 +51,7 @@ async function install() {
   try {
     const changed = await api.installIntegration(it.id)
     if (changed.length) {
-      toast.add({ title: `Installed ${it.name} hooks`, description: changed.map(shortCwd).join('\n'), icon: 'i-lucide-download', color: 'success', ui: { description: 'whitespace-pre-line break-all' } })
+      toast.add({ title: `Installed ${it.name} hooks`, description: changed.map(shortCwd).join('\n'), icon: 'i-lucide-download', color: 'success', ui: pathsUi })
     } else {
       toast.add({ title: 'Nothing to change', description: `${it.name} already has Conductor's hooks on ${props.host}.`, icon: 'i-lucide-check', color: 'neutral' })
     }
@@ -45,19 +59,16 @@ async function install() {
     // The server says what is left to do; the snippet on this card is how.
     const byHand = e instanceof ApiError && e.code === 'no_file_route'
     if (byHand) snippetOpen.value = true
-    toast.add({ title: byHand ? `${it.name}: finish by hand` : `Installing ${it.name} failed`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: byHand ? 'warning' : 'error' })
+    toast.add({
+      title: byHand ? `${it.name}: finish by hand` : `Installing ${it.name} failed`,
+      description: (e as Error).message,
+      icon: 'i-lucide-triangle-alert',
+      color: byHand ? 'warning' : 'error',
+      ui: pathsUi,
+    })
   } finally {
     installing.value = false
     emit('changed')
-  }
-}
-
-async function copy() {
-  try {
-    await navigator.clipboard.writeText(props.integration.snippet)
-    toast.add({ title: 'Snippet copied', description: props.integration.name, icon: 'i-lucide-clipboard-check', color: 'success' })
-  } catch {
-    toast.add({ title: 'Copy failed', description: 'Select the snippet and copy it by hand.', color: 'warning' })
   }
 }
 </script>
@@ -78,7 +89,7 @@ async function copy() {
 
     <div class="flex min-w-0 items-center gap-2 text-xs text-muted">
       <code v-if="integration.where" class="truncate" :title="integration.where">{{ shortCwd(integration.where) }}</code>
-      <span v-else>{{ integration.launchInjection ? 'Wired at launch by this server; anywhere else, paste the snippet.' : 'No file to install into: paste the snippet.' }}</span>
+      <span v-else data-no-install>{{ noInstall }}</span>
       <UButton
         v-if="integration.snippet"
         :label="snippetOpen ? 'Hide snippet' : 'Snippet'"
@@ -92,10 +103,7 @@ async function copy() {
       />
     </div>
 
-    <div v-if="snippetOpen && integration.snippet" class="relative rounded-md bg-forest-950 text-forest-100" data-snippet>
-      <pre class="max-h-64 overflow-auto p-3 pe-20 font-mono text-xs leading-relaxed select-text">{{ integration.snippet }}</pre>
-      <UButton label="Copy" icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" class="absolute top-1.5 end-1.5 text-active-300 hover:bg-forest-900 hover:text-active-200" @click="copy" />
-    </div>
+    <CodeBlock v-if="snippetOpen && integration.snippet" :text="integration.snippet" :name="integration.name" data-snippet />
 
     <div v-if="integration.where">
       <UButton

@@ -2,7 +2,7 @@
 import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { splitArgs } from '~/utils/argv'
-import { hostCommand } from '~/utils/hostCommand'
+import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ launched: [session: SessionInfo] }>()
@@ -50,8 +50,8 @@ const command = computed(() => {
     cwd: state.cwd.trim() || undefined,
     // An agent that shows its prompt on screen is noticed by the host the way the server notices it.
     pattern: signal?.kind === 'pattern' ? signal.pattern : undefined,
-    // Its hooks too: the server wires an adapter's hooks into a launch only for the hook signal.
-    adapter: signal?.kind === 'hook' ? selected.value.adapter || undefined : undefined,
+    // Its hooks too, for the signal a launch from the server wires them for.
+    adapter: hostAdapter(selected.value),
   })
 })
 

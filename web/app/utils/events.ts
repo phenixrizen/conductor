@@ -185,6 +185,140 @@ export function appendRing<T>(list: readonly T[], item: T, max: number): T[] {
   return out
 }
 
+/** Lines the live feed keeps, across sessions, in memory only. */
+export const FEED_SIZE = 500
+
+/** One line of the live feed, with what it shows worked out once, when it arrived. */
+export interface FeedEntry extends ActivityEntry {
+  sessionId: string
+  event: EventType
+  /** The session's name when the entry arrived: the line outlives the session. */
+  sessionName: string
+  seq: number
+  /** The time of day of `at`, as the feed shows it. */
+  time: string
+  /** eventDetail of the entry. */
+  detail: string
+  /** The URL when it may be rendered as a link (linkableUrl), else null. */
+  link: string | null
+}
+
+/**
+ * The badge a session carries for its newest event routed to Badge, until the
+ * session reports `working` or `needs_input` (whose amber dot follows the live
+ * state instead) or its page is opened.
+ */
+export interface EventMark {
+  type: EventType
+  at: string
+  label: string
+  color: EventColor
+  detail: string
+}
+
+/** What routing keeps: the feed, oldest first, and one badge per session. */
+export interface EventState {
+  feed: readonly FeedEntry[]
+  marks: Readonly<Record<string, EventMark>>
+}
+
+/** A typed event of a session, as listeners (browser alerts, the carousel's follow mode) receive it. */
+export interface RoutedEvent {
+  sessionId: string
+  session?: SessionInfo
+  type: EventType
+  entry: ActivityEntry
+}
+
+const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+
+/** The time of day of an ISO time, with seconds, as the feed shows it; empty for a bad time. */
+export function feedTime(at: string): string {
+  const d = new Date(at)
+  return Number.isNaN(d.getTime()) ? '' : timeOfDay.format(d)
+}
+
+function withoutMark(marks: Readonly<Record<string, EventMark>>, sessionId: string): Readonly<Record<string, EventMark>> {
+  if (!(sessionId in marks)) return marks
+  const next = { ...marks }
+  delete next[sessionId]
+  return next
+}
+
+/**
+ * Routes one activity entry of a session: its event type against the session
+ * as the store shows it, a feed line when its Feed route is on, and the
+ * session's badge, set when its Badge route is on and cleared by `working` and
+ * `needs_input` whatever theirs say. Returns the next state (the same objects
+ * where nothing changed) and the type, null for an entry that is not an event.
+ */
+export function routeEntry(
+  state: EventState,
+  sessionId: string,
+  entry: ActivityEntry,
+  session: SessionInfo | undefined,
+  routes: Record<EventType, RouteRow>,
+  seq: number,
+  max = FEED_SIZE,
+): { state: EventState; type: EventType | null } {
+  const type = eventTypeOf(entry, session)
+  if (!type) return { state, type: null }
+  const route = routes[type]
+  let { feed, marks } = state
+  if (route.feed) {
+    const line: FeedEntry = { ...entry, sessionId, event: type, sessionName: session?.name || sessionId, seq, time: feedTime(entry.at), detail: eventDetail(entry), link: linkableUrl(entry.url) }
+    feed = appendRing(feed, line, max)
+  }
+  if (type === 'working' || type === 'needs_input') marks = withoutMark(marks, sessionId)
+  else if (route.badge) marks = { ...marks, [sessionId]: { type, at: entry.at, ...markOf(type, entry) } }
+  return { state: { feed, marks }, type }
+}
+
+/**
+ * The badges left once the Badge route of their type is off, or their session
+ * is one `keep` rejects (gone from the store); the same object when none goes.
+ */
+export function pruneMarks(
+  marks: Readonly<Record<string, EventMark>>,
+  routes: Record<EventType, RouteRow>,
+  keep?: (sessionId: string) => boolean,
+): Readonly<Record<string, EventMark>> {
+  const gone = Object.keys(marks).filter((id) => !routes[marks[id]!.type].badge || (keep && !keep(id)))
+  if (!gone.length) return marks
+  const next = { ...marks }
+  for (const id of gone) delete next[id]
+  return next
+}
+
+/**
+ * Where the carousel's follow mode moves for an event: the index of its
+ * session among those shown, or null to stay. Only a type routed to Wall jump
+ * moves it, never needs_input (follow mode jumps for that from the session
+ * state), and never while follow mode is off, someone types, or it holds on a
+ * session that needs input.
+ */
+export function followJump(
+  e: Pick<RoutedEvent, 'type' | 'sessionId'>,
+  ctx: { follow: boolean; routes: Record<EventType, RouteRow>; typing: boolean; holding: boolean; activeIds: readonly string[]; selected: number },
+): number | null {
+  if (e.type === 'needs_input' || !ctx.follow || !ctx.routes[e.type].wall || ctx.typing || ctx.holding) return null
+  const i = ctx.activeIds.indexOf(e.sessionId)
+  return i >= 0 && i !== ctx.selected ? i : null
+}
+
+/**
+ * The browser alert for an event routed to Browser: a title naming the
+ * session and what happened, a body, and a tag per session and type so a
+ * burst replaces one notification. null when the type is not routed there,
+ * and for needs_input, which alerts from the session state.
+ */
+export function eventAlert(e: RoutedEvent, routes: Record<EventType, RouteRow>): { title: string; body: string; tag: string } | null {
+  if (e.type === 'needs_input' || !routes[e.type].browser) return null
+  const mark = markOf(e.type, e.entry)
+  const what = e.type === 'exit_nonzero' ? mark.label : e.type.replace('_', ' ')
+  return { title: `${e.session?.name || e.sessionId}: ${what}`, body: mark.detail || EVENT_INFO[e.type].source, tag: `conductor-${e.sessionId}-${e.type}` }
+}
+
 /** What an entry says beyond its type, for one line of the feed or a tooltip. The URL of an artifact is rendered on its own. */
 export function eventDetail(e: ActivityEntry): string {
   const msg = e.message ?? ''
@@ -284,6 +418,17 @@ export class EntryHold {
     clearTimeout(q.timer)
     this.held.delete(sessionId)
     for (const item of q.items) this.release(sessionId, item.entry)
+  }
+
+  /** A snapshot lists the sessions left: forget every other one. */
+  retain(keep: (sessionId: string) => boolean): void {
+    for (const id of [...this.held.keys()]) if (!keep(id)) this.forget(id)
+  }
+
+  /** Drops everything held, releasing nothing (another admin token, another view of the server). */
+  clear(): void {
+    for (const q of this.held.values()) clearTimeout(q.timer)
+    this.held.clear()
   }
 
   /**

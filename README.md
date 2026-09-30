@@ -109,15 +109,15 @@ turns a spare monitor into a status wall.
 `/carousel` rotates through the active sessions one at a time, full size and
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
-and pause controls are in the navbar. With **Follow input requests** on, the
-carousel jumps to any session that needs input and holds there for two
-intervals (at least 20 s) before rotating on; click **Holding** to release it
-sooner. The **Wall jump** column on the Events page picks what it follows:
-input requests and handoffs unless you change it, and any other event routed
-there moves the carousel to its session once, without holding. It never jumps
-away while you are typing. A film strip under the
-terminal shows every session with the rotation progress, and the footer says
-which session is next.
+and pause controls are in the navbar. With **Follow routed events** on, the
+carousel follows what the **Wall jump** column on the Events page routes to
+it, input requests and handoffs unless you change it. It jumps to a session
+that needs input and holds there for two intervals (at least 20 s) before
+rotating on; click **Holding** to release it sooner. Any other routed event
+moves it to its session once, without holding, and never while it holds on a
+session that needs input. It never jumps away while you are typing. A film
+strip under the terminal shows every session with the rotation progress, and
+the footer says which session is next.
 
 ## Sidebar and keyboard shortcuts
 
@@ -296,6 +296,8 @@ arguments). Add your own or override an entry by ID:
 
 Commands are argv arrays and never pass through a shell. `allowArgs` lets the
 launch form append extra arguments. `disableDefaults: true` drops the built-ins.
+`icon` names a Lucide icon (`i-lucide-…`). The workbench carries the icons it
+uses and fetches none at runtime, so a name outside that set shows no icon.
 
 **Adding agents from the UI.** Admins can add, change and hide agents from the
 **Agents** page (**Add agent**) without editing the config file. The changes are

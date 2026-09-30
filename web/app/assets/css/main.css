@@ -52,6 +52,31 @@
   --color-active-800: #1e4a30;
   --color-active-900: #183b27;
   --color-active-950: #0e2418;
+  /* Info and error: the brand's --conductor-info (#245D85) and
+     --conductor-error (#A1332F) at 500, the shade Nuxt UI uses in light mode
+     (400 in dark), with lighter and darker steps derived in OKLCH. */
+  --color-harbor-50: #f2f8fc;
+  --color-harbor-100: #e3eff8;
+  --color-harbor-200: #c9def0;
+  --color-harbor-300: #a3c6e2;
+  --color-harbor-400: #75a4ca;
+  --color-harbor-500: #245d85;
+  --color-harbor-600: #154c71;
+  --color-harbor-700: #063b5c;
+  --color-harbor-800: #012c47;
+  --color-harbor-900: #011f34;
+  --color-harbor-950: #00111f;
+  --color-brick-50: #fff4f2;
+  --color-brick-100: #ffe6e3;
+  --color-brick-200: #fecdc8;
+  --color-brick-300: #f6aaa2;
+  --color-brick-400: #e17e75;
+  --color-brick-500: #a1332f;
+  --color-brick-600: #8a2321;
+  --color-brick-700: #731515;
+  --color-brick-800: #5c060a;
+  --color-brick-900: #480104;
+  --color-brick-950: #2f0002;
 }
 
 :root {

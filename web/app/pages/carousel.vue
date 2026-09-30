@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
-import type { RoutedEvent } from '~/composables/useEvents'
 import { CAROUSEL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
+import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
 useHead({ title: 'Carousel' })
@@ -237,11 +237,18 @@ watch(
 )
 
 // Any other event the Events page routes to Wall jump moves the carousel to
-// its session, once, without a hold; never while someone is typing.
+// its session, once, without a hold of its own; never while someone is typing
+// or while follow mode holds on a session that needs input (followJump).
 function followEvent(e: RoutedEvent) {
-  if (e.type === 'needs_input' || !settings.value.follow || !events.routes.value[e.type].wall || typing.value) return
-  const target = active.value.findIndex((s) => s.id === e.sessionId)
-  if (target >= 0 && target !== selected.value) scrollTo(target)
+  const target = followJump(e, {
+    follow: settings.value.follow,
+    routes: events.routes.value,
+    typing: typing.value,
+    holding: holding.value,
+    activeIds: active.value.map((s) => s.id),
+    selected: selected.value,
+  })
+  if (target !== null) scrollTo(target)
 }
 let stopFollowing: (() => void) | undefined
 
@@ -341,7 +348,9 @@ onBeforeUnmount(() => {
           </div>
           <span class="hidden md:flex items-center gap-1.5 text-xs text-muted">Every <USelect v-model="settings.intervalMs" :items="intervalItems" size="xs" class="w-20 font-mono" :disabled="!settings.autoplay" /></span>
           <USwitch v-model="settings.autoplay" label="Auto-rotate" size="sm" class="hidden md:flex" />
-          <USwitch v-model="settings.follow" label="Follow input requests" size="sm" class="hidden lg:flex" />
+          <UTooltip text="Jump to sessions whose events are routed to Wall jump on the Events page: input requests and handoffs unless changed there">
+            <USwitch v-model="settings.follow" label="Follow routed events" size="sm" class="hidden lg:flex" />
+          </UTooltip>
           <UTooltip text="Toggle fullscreen" :kbds="['F']">
             <UButton :icon="fs.fullscreen.value ? 'i-lucide-minimize' : 'i-lucide-maximize'" color="neutral" variant="ghost" aria-label="Toggle fullscreen" @click="fs.toggle" />
           </UTooltip>
