@@ -29,6 +29,9 @@ type fakeProc struct {
 	cols   uint16
 	rows   uint16
 	resize chan [2]uint16
+	// onWrite, when set, runs in Write before the bytes arrive: what a
+	// process does as it is written to.
+	onWrite func()
 }
 
 func newFakeProc() *fakeProc {
@@ -38,6 +41,9 @@ func newFakeProc() *fakeProc {
 
 func (f *fakeProc) Read(b []byte) (int, error) { return f.out.Read(b) }
 func (f *fakeProc) Write(b []byte) (int, error) {
+	if f.onWrite != nil {
+		f.onWrite()
+	}
 	f.input <- append([]byte(nil), b...)
 	return len(b), nil
 }
@@ -1327,6 +1333,92 @@ func TestTypeWritesAndRecordsInput(t *testing.T) {
 	case got := <-p.input:
 		t.Fatalf("an ended session was written %q", got)
 	default:
+	}
+}
+
+// Type and TypeUnlessWaiting refuse text longer than an INPUT frame,
+// proto.MaxInput bytes with the carriage return, before writing anything.
+func TestTypeRefusesTextLongerThanAnInputFrame(t *testing.T) {
+	s, p := newLocalWith(t, Options{Log: slog.New(slog.DiscardHandler)})
+	long := strings.Repeat("x", proto.MaxInput) + "\r"
+	if err := s.Type(long, "crew"); !errors.Is(err, ErrTextTooLong) {
+		t.Fatalf("Type: %v", err)
+	}
+	if typed, err := s.TypeUnlessWaiting(long, "crew"); typed || !errors.Is(err, ErrTextTooLong) {
+		t.Fatalf("TypeUnlessWaiting: %v %v", typed, err)
+	}
+	select {
+	case got := <-p.input:
+		t.Fatalf("wrote %d bytes", len(got))
+	default:
+	}
+	if entries := inputEntries(s); len(entries) != 0 {
+		t.Fatalf("input entries %+v", entries)
+	}
+	fits := strings.Repeat("x", proto.MaxInput-1) + "\r"
+	if err := s.Type(fits, "crew"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-p.input; len(got) != proto.MaxInput {
+		t.Fatalf("wrote %d bytes", len(got))
+	}
+}
+
+// TypeUnlessWaiting types as Type does unless the session waits for input:
+// then it writes, records and changes nothing. The look and the prompt the
+// text would answer are one: a prompt raised as the text is written is not
+// answered by it.
+func TestTypeUnlessWaitingLeavesAPromptAlone(t *testing.T) {
+	var changes atomic.Int32
+	s, p := newLocalWith(t, Options{OnChange: func(Info) { changes.Add(1) }, Log: slog.New(slog.DiscardHandler)})
+
+	if typed, err := s.TypeUnlessWaiting("Handoff from lead: go\r", "crew"); err != nil || !typed {
+		t.Fatalf("not waiting: %v %v", typed, err)
+	}
+	if got := string(<-p.input); got != "Handoff from lead: go\r" {
+		t.Fatalf("wrote %q", got)
+	}
+	if entries := inputEntries(s); len(entries) != 1 || entries[0].ByName != "crew" || entries[0].Message != "Handoff from lead: go" {
+		t.Fatalf("input entries %+v", entries)
+	}
+
+	// Waiting: nothing happens.
+	s.SetAttention(AttentionNeedsInput, "Allow edit?", SourceAPI)
+	before, logged := changes.Load(), len(s.Activity())
+	if typed, err := s.TypeUnlessWaiting("Handoff from lead: more\r", "crew"); err != nil || typed {
+		t.Fatalf("waiting: %v %v", typed, err)
+	}
+	select {
+	case got := <-p.input:
+		t.Fatalf("wrote %q into a prompt", got)
+	default:
+	}
+	if info := s.Info(); info.Attention.State != AttentionNeedsInput || info.LastAnswer != nil || changes.Load() != before || len(s.Activity()) != logged {
+		t.Fatalf("waiting: %+v, %d changes, %d entries", info, changes.Load()-before, len(s.Activity())-logged)
+	}
+
+	// A finished turn is not waiting.
+	s.SetAttention(AttentionDone, "", SourceAPI)
+	if typed, err := s.TypeUnlessWaiting("x\r", "crew"); err != nil || !typed {
+		t.Fatalf("done: %v %v", typed, err)
+	}
+	<-p.input
+
+	// A prompt the process raises as it is written to stays up.
+	p.onWrite = func() { s.SetAttention(AttentionNeedsInput, "Allow write?", SourceAPI) }
+	if typed, err := s.TypeUnlessWaiting("y\r", "crew"); err != nil || !typed {
+		t.Fatalf("raised during the write: %v %v", typed, err)
+	}
+	<-p.input
+	p.onWrite = nil
+	if info := s.Info(); info.Attention.State != AttentionNeedsInput || info.Attention.Message != "Allow write?" || info.LastAnswer != nil {
+		t.Fatalf("the text answered a prompt raised as it was written: %+v", info)
+	}
+
+	p.exit()
+	<-s.Ended()
+	if typed, err := s.TypeUnlessWaiting("late\r", "crew"); typed || !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("ended: %v %v", typed, err)
 	}
 }
 

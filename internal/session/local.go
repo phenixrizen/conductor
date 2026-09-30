@@ -610,8 +610,13 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
-	return s.write(data, sub, "")
+	_, err := s.write(data, sub, "", false)
+	return err
 }
+
+// ErrTextTooLong refuses text to type longer than an INPUT frame may carry,
+// proto.MaxInput bytes: nothing was written.
+var ErrTextTooLong = fmt.Errorf("session: text to type is longer than %d bytes", proto.MaxInput)
 
 // Type writes text to the process as a controller typing it would, for what
 // Conductor types itself: a crew member's prompt. No subscription is behind
@@ -620,16 +625,35 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 // Unlike Input it always records an input entry, by byName and with the text,
 // less its trailing line break, as the message: what Conductor types is its
 // own, where a person's keystrokes are recorded only as the prompt they
-// answered. It returns ErrSessionEnded once the session has ended.
+// answered. Text longer than proto.MaxInput bytes, its line break included, is
+// refused with ErrTextTooLong. It returns ErrSessionEnded once the session has
+// ended.
 func (s *Local) Type(text, byName string) error {
-	return s.write([]byte(text), nil, CleanName(byName))
+	if len(text) > proto.MaxInput {
+		return ErrTextTooLong
+	}
+	_, err := s.write([]byte(text), nil, CleanName(byName), false)
+	return err
+}
+
+// TypeUnlessWaiting is Type for what must never answer a prompt, such as a
+// handoff between crew members: when the session is needs_input it writes,
+// records and changes nothing and returns typed false. The look at the state
+// is the one that finds the prompt the text would answer, so a prompt raised
+// after it, while the text is written, is not answered by the text either.
+func (s *Local) TypeUnlessWaiting(text, byName string) (typed bool, err error) {
+	if len(text) > proto.MaxInput {
+		return false, ErrTextTooLong
+	}
+	return s.write([]byte(text), nil, CleanName(byName), true)
 }
 
 // write writes data to the process, for sub, a controller's subscription, or,
 // with sub nil, for Type as byName. It answers the needs_input prompt that was
 // showing when it began, and records an input entry when it does, or always
-// for Type.
-func (s *Local) write(data []byte, sub *Subscription, byName string) error {
+// for Type. With unlessWaiting it writes nothing while that prompt shows, and
+// reports whether it wrote.
+func (s *Local) write(data []byte, sub *Subscription, byName string, unlessWaiting bool) (bool, error) {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	// The prompt this input answers is the one on the screen as it is typed.
@@ -637,12 +661,16 @@ func (s *Local) write(data []byte, sub *Subscription, byName string) error {
 	// may raise the next one meanwhile, and typing must not clear that one.
 	// Each attention change gets a new Since, which tells the prompts apart.
 	promptSince := s.info.Attention.Since
+	showing := s.info.Attention.State == AttentionNeedsInput
 	s.mu.Unlock()
 	if ended {
-		return ErrSessionEnded
+		return false, ErrSessionEnded
+	}
+	if unlessWaiting && showing {
+		return false, nil
 	}
 	if _, err := s.proc.Write(data); err != nil {
-		return err
+		return false, err
 	}
 	by := ""
 	if sub != nil {
@@ -676,7 +704,7 @@ func (s *Local) write(data []byte, sub *Subscription, byName string) error {
 	if waiting {
 		s.notifyChange()
 	}
-	return nil
+	return true, nil
 }
 
 // Resize applies the latest-controller-wins policy and broadcasts the result.
