@@ -651,9 +651,9 @@ func (s *Local) TypeUnlessWaiting(text, byName string) (typed bool, err error) {
 // write writes data to the process, for sub, a controller's subscription, or,
 // with sub nil, for Type as byName. It answers the needs_input prompt that was
 // showing when it began, and records an input entry when it does, or always
-// for Type. With unlessWaiting it writes nothing while that prompt shows, and
-// reports whether it wrote.
-func (s *Local) write(data []byte, sub *Subscription, byName string, unlessWaiting bool) (bool, error) {
+// for Type. With skipWhileWaiting it writes nothing while that prompt shows,
+// and reports whether it wrote.
+func (s *Local) write(data []byte, sub *Subscription, byName string, skipWhileWaiting bool) (bool, error) {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	// The prompt this input answers is the one on the screen as it is typed.
@@ -666,7 +666,7 @@ func (s *Local) write(data []byte, sub *Subscription, byName string, unlessWaiti
 	if ended {
 		return false, ErrSessionEnded
 	}
-	if unlessWaiting && showing {
+	if skipWhileWaiting && showing {
 		return false, nil
 	}
 	if _, err := s.proc.Write(data); err != nil {
