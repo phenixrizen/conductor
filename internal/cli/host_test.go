@@ -105,8 +105,8 @@ func TestHostSignalPatternReachesTheSession(t *testing.T) {
 }
 
 // registrationWatch is a host's stderr. registered is closed once the host has
-// printed the banner it prints after reading its registration reply, which the
-// server sends after listing the session.
+// printed hostingBanner, which it prints after reading its registration reply,
+// which the server sends after listing the session.
 type registrationWatch struct {
 	registered chan struct{}
 
@@ -123,7 +123,7 @@ func (w *registrationWatch) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n, err := w.buf.Write(p)
-	if !w.seen && strings.Contains(w.buf.String(), "conductor: hosting session ") {
+	if !w.seen && strings.Contains(w.buf.String(), hostingBanner) {
 		w.seen = true
 		close(w.registered)
 	}

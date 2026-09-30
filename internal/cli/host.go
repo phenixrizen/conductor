@@ -16,6 +16,10 @@ import (
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
+// hostingBanner starts the line the host prints on stderr once it has read the
+// server's registration reply; the session ID and its URL follow.
+const hostingBanner = "conductor: hosting session "
+
 func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -103,7 +107,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		Adapter:         *agentID,
 		Log:             log,
 		Registered: func(sessionID, base string) {
-			fmt.Fprintf(stderr, "conductor: hosting session %s at %s/sessions/%s\r\n", sessionID, base, sessionID)
+			fmt.Fprintf(stderr, "%s%s at %s/sessions/%s\r\n", hostingBanner, sessionID, base, sessionID)
 		},
 	}
 	if f, ok := stdin.(*os.File); ok {
