@@ -235,3 +235,24 @@ export function broadcastSummary(r: BroadcastResult): { title: string; descripti
   const color = !r.skipped.length ? 'success' : r.sent.length ? 'warning' : 'error'
   return { title: `Sent to ${r.sent.length} of ${total}`, description: parts.join(' '), color }
 }
+
+/** How long a launch's view link waits for its crew view to take it. */
+const VIEW_LINK_HOLD_MS = 60_000
+
+let heldViewLink: { runId: string; url: string; ttlSeconds: number; at: number } | null = null
+
+/**
+ * Hands the view link a launch returned to the crew view the launch opens, in memory only: the crew view takes it once (takeViewLink)
+ * and nothing keeps it after that.
+ */
+export function holdViewLink(runId: string, url: string, ttlSeconds: number, now = Date.now()) {
+  heldViewLink = { runId, url, ttlSeconds, at: now }
+}
+
+/** The view link held for this run, once; any call drops what is held, as does a minute nobody took it in. */
+export function takeViewLink(runId: string, now = Date.now()): { url: string; ttlSeconds: number } | null {
+  const held = heldViewLink
+  heldViewLink = null
+  if (!held || held.runId !== runId || now - held.at > VIEW_LINK_HOLD_MS) return null
+  return { url: held.url, ttlSeconds: held.ttlSeconds }
+}

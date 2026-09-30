@@ -7,6 +7,7 @@ import {
   crewFeed,
   crewKey,
   defaultCrew,
+  holdViewLink,
   memberNameError,
   memberNameFrom,
   memberStatus,
@@ -14,6 +15,7 @@ import {
   runCounts,
   startFrom,
   startValue,
+  takeViewLink,
   toCrewInput,
   toCrewMember,
   toDraft,
@@ -321,5 +323,21 @@ describe('toDraft and crewKey', () => {
     expect(crewKey(d)).not.toBe(crewKey(info))
     d.members[1]!.args = argsFrom('  ')
     expect(crewKey(d)).toBe(crewKey(info))
+  })
+})
+
+describe('holdViewLink and takeViewLink', () => {
+  it('hands a launch view link to its crew view once', () => {
+    holdViewLink('r1', 'https://x.test/join/t', 28800, 1000)
+    expect(takeViewLink('r1', 2000)).toEqual({ url: 'https://x.test/join/t', ttlSeconds: 28800 })
+    expect(takeViewLink('r1', 2000)).toBeNull()
+  })
+
+  it('drops it when another run asks, or when nobody took it within a minute', () => {
+    holdViewLink('r1', 'https://x.test/join/t', 28800, 1000)
+    expect(takeViewLink('r2', 1500)).toBeNull()
+    expect(takeViewLink('r1', 1500)).toBeNull()
+    holdViewLink('r1', 'https://x.test/join/t', 28800, 1000)
+    expect(takeViewLink('r1', 62_000)).toBeNull()
   })
 })

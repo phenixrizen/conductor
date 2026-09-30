@@ -101,6 +101,29 @@ func TestUpLaunchesAndPrintsRunURL(t *testing.T) {
 	noSecret(t, stdout, stderr)
 }
 
+// A crew with a view link: the launch reply carries it, and conductor up
+// prints its URL on a third line, as the server gave it. A URL that is not
+// http(s), or carries control characters, is not printed.
+func TestUpPrintsTheViewLink(t *testing.T) {
+	clearConductorEnv(t)
+	reply := `{"run":{"id":"r-1"},"viewLink":{"link":{"id":"l-1","runId":"r-1","role":"view"},"token":"v-tok","url":"https://conductor.example/join/v-tok"}}`
+	srv, _ := stubServer(t, http.StatusCreated, reply)
+	code, stdout, stderr, err := up(t, "crew-1", "--server", srv.URL, "--token", secretToken)
+	want := "run r-1\n" + srv.URL + "/runs/r-1\nview https://conductor.example/join/v-tok\n"
+	if code != 0 || err != nil || stdout != want || stderr != "" {
+		t.Fatalf("exit %d %v\nstdout:\n%q\nwant:\n%q\nstderr:\n%s", code, err, stdout, want, stderr)
+	}
+	noSecret(t, stdout, stderr)
+
+	for _, bad := range []string{`javascript:alert(1)`, `https://x.example/join/\u001b[31mred`, `/join/v-tok`} {
+		srv, _ := stubServer(t, http.StatusCreated, `{"run":{"id":"r-1"},"viewLink":{"token":"v-tok","url":"`+bad+`"}}`)
+		code, stdout, stderr, err := up(t, "crew-1", "--server", srv.URL, "--token", secretToken)
+		if code != 0 || err != nil || stdout != "run r-1\n"+srv.URL+"/runs/r-1\n" || !strings.Contains(stderr, "view link") {
+			t.Fatalf("%s: exit %d %v\nstdout:\n%q\nstderr:\n%s", bad, code, err, stdout, stderr)
+		}
+	}
+}
+
 // The server and the token come from the environment when no flag gives them,
 // and a flag after the crew reads as well as one before it.
 func TestUpEnvironmentAndFlagOrder(t *testing.T) {

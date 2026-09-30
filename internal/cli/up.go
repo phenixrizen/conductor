@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -31,7 +32,8 @@ var requestTimeout = 30 * time.Second
 
 const crewsUsage = `Usage:
   conductor up <crew-id> [--server URL] [--token T] [--open]
-      launch a saved crew as a run; prints the run and the URL of its page
+      launch a saved crew as a run; prints the run and the URL of its page,
+      and the crew's view link when it has one
   conductor crews [--server URL] [--token T]
       list the saved crews: id, name and members
 
@@ -100,6 +102,10 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 		Run struct {
 			ID string `json:"id"`
 		} `json:"run"`
+		// Only when the crew asks for a view link: its URL, the token in it.
+		ViewLink *struct {
+			URL string `json:"url"`
+		} `json:"viewLink"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/api/crews/"+url.PathEscape(rest[0])+"/launch", &reply); err != nil {
 		return 1, err
@@ -109,6 +115,13 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 	}
 	page := c.base + "/runs/" + url.PathEscape(reply.Run.ID)
 	fmt.Fprintf(stdout, "run %s\n%s\n", reply.Run.ID, page)
+	if reply.ViewLink != nil {
+		if printableURL(reply.ViewLink.URL) {
+			fmt.Fprintf(stdout, "view %s\n", reply.ViewLink.URL)
+		} else {
+			fmt.Fprintln(stderr, "conductor up: the reply's view link is not an http(s) URL; not printed")
+		}
+	}
 	if *open {
 		// The run is running whether or not a browser opens: a note, not a failure.
 		if err := openBrowser(page); err != nil {
@@ -116,6 +129,16 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 		}
 	}
 	return 0, nil
+}
+
+// printableURL reports whether a URL from a reply may be printed: http or
+// https with a host, and nothing a terminal would read as a control sequence.
+func printableURL(s string) bool {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // runCrews lists the saved crews, one per line.

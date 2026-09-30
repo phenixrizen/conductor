@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewFeed, memberStatus, runCounts } from '~/utils/crews'
+import { crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
 import { bestGrid } from '~/utils/wall'
 
 // The crew view: a tile for every member of one run, its activity and a
@@ -28,7 +28,8 @@ const now = ref(Date.now())
 let alive = true
 /** The run the sidebar shows the members of (layouts/default.vue). */
 const crewRun = useState<{ id: string; name: string } | null>('crewRun', () => null)
-const launchLink = useState<{ runId: string; url: string; ttlSeconds: number } | null>('crewLaunchLink', () => null)
+/** The view link of the launch that opened this page, shown once: it lives in this page alone and goes with it, or when dismissed. */
+const launchLink = ref(takeViewLink(String(route.params.run)))
 const copy = useCopy()
 
 useHead({ title: computed(() => run.value?.name || 'Crew') })
@@ -174,8 +175,6 @@ const gridStyle = computed(() =>
     : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
 )
 
-const showLaunchLink = computed(() => launchLink.value?.runId === runId.value)
-
 let poll: number | undefined
 let tick: number | undefined
 onMounted(() => {
@@ -191,8 +190,6 @@ onBeforeUnmount(() => {
   window.clearInterval(poll)
   window.clearInterval(tick)
   window.clearTimeout(reloadTimer)
-  // The view link of a launch is shown once.
-  if (showLaunchLink.value) launchLink.value = null
 })
 watch(() => admin.token.value, load)
 </script>
@@ -208,7 +205,7 @@ watch(() => admin.token.value, load)
       <div v-if="error" class="flex-none px-3 pt-3">
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
-      <div v-if="showLaunchLink" class="flex-none px-3 pt-3">
+      <div v-if="launchLink" class="flex-none px-3 pt-3">
         <UAlert
           color="neutral"
           variant="subtle"

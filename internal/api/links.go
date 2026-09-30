@@ -92,11 +92,16 @@ func writeLinkError(w http.ResponseWriter, err error, tooMany string) {
 // writeLink answers a link just created: 201 {link, token, url}, the token
 // shown this once and the URL the join page's.
 func (s *Server) writeLink(w http.ResponseWriter, link *share.Link, token string) {
-	writeJSON(w, http.StatusCreated, map[string]any{
+	writeJSON(w, http.StatusCreated, s.linkReply(link, token))
+}
+
+// linkReply is a link just created as a reply carries it: {link, token, url}.
+func (s *Server) linkReply(link *share.Link, token string) map[string]any {
+	return map[string]any{
 		"link":  link,
 		"token": token,
 		"url":   s.cfg.PublicURL + "/join/" + url.PathEscape(token),
-	})
+	}
 }
 
 // handleCreateRunLink creates a link to a crew run: its role on the session

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, runActive, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, runActive, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
 // The crews list and the editor of the selected crew. /crews/<id> selects a
-// crew (pages/crews/[id].vue renders this page); /crews shows a new draft, or
-// moves to the first crew. Drafts live in app state: an edit survives moving
-// to another crew or page until it is saved or discarded.
+// crew; /crews shows a new draft, or moves to the first crew. One page for
+// both, under one key, so moving between them never remounts it. Drafts live
+// in app state: an edit survives moving to another page until it is saved or
+// discarded.
 
+definePageMeta({ key: 'crews' })
 useHead({ title: 'Crews' })
 
 const route = useRoute()
@@ -24,18 +26,15 @@ const NEW = ''
 const crews = useState<CrewInfo[]>('crews', () => [])
 const agents = useState<AgentInfo[]>('crewAgents', () => [])
 const drafts = useState<Record<string, DraftCrew>>('crewDrafts', () => ({}))
-/** The view link of the last launch, which the run view shows once. */
-const launchLink = useState<{ runId: string; url: string; ttlSeconds: number } | null>('crewLaunchLink', () => null)
 const runs = ref<RunInfo[]>([])
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
-// App-wide: saving a new crew moves to its own page mid-launch, and that page must show the launch going on.
-const saving = useState<boolean>('crewSaving', () => false)
-const launching = useState<boolean>('crewLaunching', () => false)
+const saving = ref(false)
+const launching = ref(false)
 const now = ref(Date.now())
 
-const routeId = computed(() => (typeof route.params.id === 'string' ? route.params.id : undefined))
+const routeId = computed(() => (typeof route.params.id === 'string' && route.params.id ? route.params.id : undefined))
 const selectedKey = computed<string | undefined>(() => routeId.value ?? (drafts.value[NEW] ? NEW : undefined))
 const saved = computed(() => crews.value.find((c) => c.id === selectedKey.value))
 const draft = computed<DraftCrew | undefined>({
@@ -220,8 +219,26 @@ async function confirmDelete() {
 }
 
 /**
- * Saves what changed, launches the crew, makes its view link when the crew
- * asks for one, and opens the run view or says where it is.
+ * The view link a launch returned, while this page shows it: once, then it
+ * is gone. Its token is in no other state.
+ */
+const shownLink = ref<{ url: string; runId: string; name: string; hours: number } | null>(null)
+const shownOpen = computed({
+  get: () => !!shownLink.value,
+  set: (open: boolean) => {
+    if (!open) shownLink.value = null
+  },
+})
+const copy = useCopy()
+
+function hours(ttlSeconds: number): number {
+  return Math.round((ttlSeconds / 3600) * 10) / 10
+}
+
+/**
+ * Saves what changed and launches the crew. The server makes the crew's view
+ * link, if it asks for one, and returns it this once: the crew view shows it
+ * when the launch opens that, else a dialog here does.
  */
 async function launch() {
   const key = selectedKey.value
@@ -230,32 +247,28 @@ async function launch() {
   try {
     const c = isDirty(key) ? await save() : saved.value
     if (!c) return
-    let run: RunInfo
+    let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
-      run = await api.launchCrew(c.id)
+      launched = await api.launchCrew(c.id)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
       else fail('Launch failed', e)
       return
     }
+    const { run, viewLink } = launched
     runs.value = [run, ...runs.value.filter((r) => r.id !== run.id)]
-    let link: string | undefined
-    if (c.viewLinkTtlSeconds) {
-      try {
-        const res = await api.createRunLink(run.id, { role: 'view', label: 'launch', ttlSeconds: c.viewLinkTtlSeconds })
-        link = res.url
-        launchLink.value = { runId: run.id, url: res.url, ttlSeconds: c.viewLinkTtlSeconds }
-      } catch (e) {
-        fail('The view link could not be made', e)
-      }
-    }
+    const ttl = c.viewLinkTtlSeconds ?? 0
     if (c.openAfterLaunch) {
+      if (viewLink) holdViewLink(run.id, viewLink.url, ttl)
       await router.push(`/runs/${encodeURIComponent(run.id)}`)
+      return
+    }
+    if (viewLink) {
+      shownLink.value = { url: viewLink.url, runId: run.id, name: c.name, hours: hours(ttl) }
       return
     }
     toast.add({
       title: `${c.name} launched`,
-      description: link ? 'The view link is in the crew view, shown once.' : undefined,
       icon: 'i-lucide-play',
       color: 'success',
       actions: [{ label: 'Open crew view', icon: 'i-lucide-layout-grid', onClick: () => router.push(`/runs/${encodeURIComponent(run.id)}`) }],
@@ -372,6 +385,26 @@ watch(
           <div v-else-if="loading" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading crews…</div>
         </section>
       </div>
+
+      <UModal
+        v-model:open="shownOpen"
+        :title="`${shownLink?.name ?? 'The crew'} launched`"
+        :description="`Its view link lets anyone watch every agent of the run, view only, for ${shownLink?.hours ?? 0} h. It is shown this once: copy it now.`"
+        data-view-link
+      >
+        <template #body>
+          <div class="flex items-start gap-2.5 rounded-md bg-elevated px-3.5 py-3">
+            <code class="min-w-0 flex-1 break-all font-mono text-xs select-all" data-view-link-url>{{ shownLink?.url }}</code>
+            <UButton label="Copy" icon="i-lucide-clipboard" size="sm" class="flex-none" @click="shownLink && copy(shownLink.url, 'Link copied', 'Anyone with it can watch every member.')" />
+          </div>
+        </template>
+        <template #footer>
+          <div class="flex w-full justify-end gap-2">
+            <UButton label="Open crew view" icon="i-lucide-layout-grid" color="neutral" variant="outline" :to="shownLink ? `/runs/${encodeURIComponent(shownLink.runId)}` : undefined" @click="shownLink = null" />
+            <UButton label="Done" @click="shownLink = null" />
+          </div>
+        </template>
+      </UModal>
 
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>

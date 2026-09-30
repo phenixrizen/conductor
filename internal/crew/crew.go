@@ -96,7 +96,7 @@ type Crew struct {
 	Where              string    `json:"where"`     // server | host
 	Isolation          string    `json:"isolation"` // none | worktree
 	OpenAfterLaunch    bool      `json:"openAfterLaunch"`
-	ViewLinkTTLSeconds int64     `json:"viewLinkTtlSeconds,omitempty"`
+	ViewLinkTTLSeconds int64     `json:"viewLinkTtlSeconds,omitempty"` // a launch creates a view link that lasts this long; none when 0
 	Members            []Member  `json:"members"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`

@@ -2907,6 +2907,82 @@ func TestCrewRunLifecycle(t *testing.T) {
 	}
 }
 
+// A crew with a view link lifetime gets a view link at launch: a run link
+// whose token is in the launch reply and nowhere else (the run, its links,
+// the crews, the log). A crew without one gets none.
+func TestCrewLaunchViewLink(t *testing.T) {
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	e.stopEverything(t)
+
+	plain := e.launchCrew(t, "Plain", catMember("core", "immediately"))
+	if _, out := e.do("GET", "/api/runs/"+plain+"/links", adminToken, nil); len(out["links"].([]any)) != 0 {
+		t.Fatalf("a crew without a view link got links: %v", out)
+	}
+	resp, out := e.do("POST", "/api/crews/plain/launch", adminToken, nil)
+	if _, ok := out["viewLink"]; resp.StatusCode != http.StatusCreated || ok {
+		t.Fatalf("launch without a view link: %d %v", resp.StatusCode, out)
+	}
+
+	e.sendCrew("POST", "/api/crews", map[string]any{
+		"name": "Shared", "goal": "ship", "cwd": e.root, "where": "server", "isolation": "none", "viewLinkTtlSeconds": 3600,
+		"members": []any{catMember("core", "immediately")},
+	}, http.StatusCreated)
+	before := time.Now()
+	resp, out = e.do("POST", "/api/crews/shared/launch", adminToken, nil)
+	run, _ := out["run"].(map[string]any)
+	view, _ := out["viewLink"].(map[string]any)
+	if resp.StatusCode != http.StatusCreated || run == nil || view == nil {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	runID := run["id"].(string)
+	link, _ := view["link"].(map[string]any)
+	token, _ := view["token"].(string)
+	if token == "" || view["url"] != "http://example.test/join/"+token || link["runId"] != runID || link["sessionId"] != "" ||
+		link["role"] != "view" || link["label"] != "launch" || link["token"] != nil {
+		t.Fatalf("view link %v", view)
+	}
+	expires, err := time.Parse(time.RFC3339Nano, link["expiresAt"].(string))
+	if err != nil || expires.Before(before.Add(3599*time.Second)) || expires.After(time.Now().Add(3601*time.Second)) {
+		t.Fatalf("expires %v (%v)", link["expiresAt"], err)
+	}
+	// Noted in the run's log, which the reply already carries.
+	noted := func(r map[string]any) bool {
+		for _, entry := range r["log"].([]any) {
+			if entry := entry.(map[string]any); entry["type"] == "link" && entry["message"] == "link created: launch (view)" {
+				return true
+			}
+		}
+		return false
+	}
+	if !noted(run) {
+		t.Fatalf("the reply's run log has no link entry: %v", run["log"])
+	}
+
+	// The token opens the member's session as a viewer.
+	coreID := e.waitRunning(t, runID, "core")
+	c := dialViewer(t, e, coreID, token)
+	c.hello(80, 24)
+	if w := c.expectControl(proto.CtlWelcome); w["role"] != "view" {
+		t.Fatalf("welcome %v", w)
+	}
+
+	// Nowhere else.
+	for _, path := range []string{"/api/runs/" + runID, "/api/runs", "/api/runs/" + runID + "/links", "/api/crews", "/api/sessions"} {
+		resp, out := e.do("GET", path, adminToken, nil)
+		b, _ := json.Marshal(out)
+		if resp.StatusCode != http.StatusOK || strings.Contains(string(b), token) {
+			t.Errorf("GET %s: %d, carries the token: %v", path, resp.StatusCode, strings.Contains(string(b), token))
+		}
+		if path == "/api/runs/"+runID && !noted(out["run"].(map[string]any)) {
+			t.Errorf("the run log has no link entry: %v", out)
+		}
+	}
+	if strings.Contains(logs.String(), token) {
+		t.Error("the log carries the token")
+	}
+}
+
 // A launch that cannot go ahead is refused before any session starts.
 func TestCrewLaunchRefusals(t *testing.T) {
 	e := newTestEnv(t, nil)

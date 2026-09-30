@@ -341,12 +341,14 @@ A crew is a saved team of agents; launching one starts a run. From a shell:
 
 ```bash
 conductor crews                        # one line per saved crew: id, name, members
-conductor up <crew-id> [--open]        # launch a crew; prints the run and its URL
+conductor up <crew-id> [--open]        # launch a crew; prints the run, its URL and its view link
 ```
 
 Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default
 `http://localhost:8080`) with the admin token from `--token` (env
-`CONDUCTOR_ADMIN_TOKEN`). `--open` opens the run's page in your browser.
+`CONDUCTOR_ADMIN_TOKEN`). `--open` opens the run's page in your browser. A
+crew set to create a view link gets one at launch; `conductor up` prints it on
+a third line, `view <url>`, and nothing else shows its token again.
 
 ## Configuration
 

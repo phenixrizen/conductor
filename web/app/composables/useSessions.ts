@@ -295,8 +295,9 @@ export function useSessions() {
      * 400 `invalid_crew` (no members, a hosted crew, an agent the catalog lacks or one given arguments it does not take, a symlinked
      * `.conductor`), `invalid_cwd`; 409 `not_a_repo` for worktree isolation outside a git working tree or in one without a commit,
      * `run_stopped` when the run is stopped while it launches; a member's session errors as POST /api/sessions; 500 `launch_failed`.
+     * A crew with `viewLinkTtlSeconds` also gets a view link of the run, in `viewLink`: its token is in this reply only, to show once.
      */
-    launchCrew: (id: string) => request<{ run: RunInfo }>(`/api/crews/${encodeURIComponent(id)}/launch`, { method: 'POST' }).then((r) => r.run),
+    launchCrew: (id: string) => request<{ run: RunInfo; viewLink?: { link: ShareLink; token: string; url: string } }>(`/api/crews/${encodeURIComponent(id)}/launch`, { method: 'POST' }),
     /** Every run in the server's memory, newest first. */
     listRuns: () => request<{ runs: RunInfo[] }>('/api/runs').then((r) => r.runs ?? []),
     /** One run, with each worktree member's diff. */
