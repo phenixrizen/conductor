@@ -37,6 +37,8 @@ type Server struct {
 	// crews holds the saved crews, in crews.json in the data directory; nil
 	// when there is no store.
 	crews *crew.Store
+	// runs launches crews and keeps their runs, in memory.
+	runs *crew.Engine
 	// fileDeny lists the directories and files no file read may reach, even
 	// inside a session's working directory (see fileDeny).
 	fileDeny []string
@@ -100,6 +102,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home:     home,
 	}
 	s.events = newEventHub()
+	s.runs = crew.NewEngine(s, s.lookupLocal)
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	s.hosts = signal.NewHub(s.registry, log)
 	s.hosts.OnChange = s.events.publish
@@ -131,6 +134,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/crews/{id}", s.requireAdmin(s.handleUpdateCrew))
 	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.requireAdmin(s.handleDuplicateCrew))
+	mux.HandleFunc("POST /api/crews/{id}/launch", s.requireAdmin(s.handleLaunchCrew))
+	mux.HandleFunc("GET /api/runs", s.requireAdmin(s.handleListRuns))
+	mux.HandleFunc("GET /api/runs/{run}", s.requireAdmin(s.handleGetRun))
+	mux.HandleFunc("POST /api/runs/{run}/members", s.requireAdmin(s.handleAddRunMember))
+	mux.HandleFunc("POST /api/runs/{run}/members/{name}/start", s.requireAdmin(s.handleStartRunMember))
+	mux.HandleFunc("POST /api/runs/{run}/stop", s.requireAdmin(s.handleStopRun))
 	mux.HandleFunc("GET /api/integrations", s.requireAdmin(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.requireAdmin(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
@@ -280,11 +289,16 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 	}
 }
 
-// Shutdown stops the webhooks, then every session, and closes every viewer.
-// The webhooks go first: the entries the sessions record as they stop are not
-// sent.
+// Shutdown stops the webhooks, then the runs, so that no crew member starts
+// any more, then every session, and closes every viewer. The webhooks go
+// first: the entries the sessions record as they stop are not sent.
 func (s *Server) Shutdown(ctx context.Context) {
 	s.webhooks.close(ctx)
+	for _, run := range s.runs.List() {
+		if run.StoppedAt == nil {
+			_ = s.runs.Stop(ctx, run.ID)
+		}
+	}
 	s.registry.Each(func(d session.Driver) {
 		if local, ok := d.(*session.Local); ok {
 			_ = local.Stop(ctx)

@@ -8,9 +8,24 @@ import (
 )
 
 // apiError is the JSON error envelope: {"error":{"code":..,"message":..}}.
+// A function that answers for a handler also sets status, the HTTP status to
+// answer with; as an error (the crew launcher returns one) it is its message.
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	status  int
+}
+
+func (e *apiError) Error() string { return e.Message }
+
+// newAPIError is an apiError to answer with status.
+func newAPIError(status int, code, message string) *apiError {
+	return &apiError{Code: code, Message: message, status: status}
+}
+
+// writeAPIError answers with e.
+func writeAPIError(w http.ResponseWriter, e *apiError) {
+	writeError(w, e.status, e.Code, e.Message)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -64,7 +64,7 @@ command.
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
 | `internal/store` | atomic JSON documents in the data directory |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
-| `internal/crew` | saved crews in `dataDir/crews.json`: members, role prompts, start conditions, validation |
+| `internal/crew` | saved crews in `dataDir/crews.json`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness, prompts, start conditions |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
 | `internal/session` | ring buffer, fan-out hub, `Local` session, registry, bounded file reads |

@@ -1,5 +1,5 @@
-import type { Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
-import { toCrewInput } from '~/utils/crews'
+import type { ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
+import { toCrewInput, toCrewMember } from '~/utils/crews'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -21,6 +21,8 @@ export interface SessionInfo {
   hostUser?: string
   /** Git branch of the working directory when known. */
   branch?: string
+  /** The crew run the session is a member of; missing for a session launched on its own. */
+  crew?: { runId: string; crewId: string; member: string }
   attention?: Attention
   /** Who last answered a needs-input prompt (server-reported). */
   lastAnswer?: { by?: string; byName: string; at: string; message?: string }
@@ -183,6 +185,41 @@ export interface CrewInfo {
 /** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these three included. */
 export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt'>
 
+/** A member of a crew run, as the run routes report it. */
+export interface RunMember {
+  name: string
+  agentId: string
+  start: CrewStart
+  /** The member's session, once it has started. */
+  sessionId?: string
+  /** With worktree isolation, once it has started: its branch (`crew/<run>/<member>`) and worktree. */
+  branch?: string
+  worktree?: string
+  status: 'pending' | 'starting' | 'running' | 'ended'
+  startedAt?: string
+  endedAt?: string
+  /** Why it ended before it ran: it could not start, or its process ended before its prompt was typed. */
+  error?: string
+  /** GET /api/runs/{run} only: lines its branch adds and removes since it began (committed work, read at most every 10 s). */
+  diff?: { added: number; removed: number }
+}
+
+/** A launch of a crew. Runs live in the server's memory: a restart forgets them. */
+export interface RunInfo {
+  /** `<crew id>-<8 hex>`. */
+  id: string
+  crewId: string
+  name: string
+  goal: string
+  cwd: string
+  isolation: 'none' | 'worktree'
+  startedAt: string
+  stoppedAt?: string
+  members: RunMember[]
+  /** The run's own log, oldest first, at most 200 entries: launched, member started, prompt typed, stopped. */
+  log: ActivityEntry[]
+}
+
 export function useSessions() {
   const { request } = useApi()
 
@@ -222,6 +259,24 @@ export function useSessions() {
     /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */
     duplicateCrew: (id: string) =>
       request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
+    /**
+     * Launches a saved crew. Resolves once every member that starts immediately has its prompt typed (up to a minute each).
+     * 400 `invalid_crew` (no members, a hosted crew, an agent the catalog lacks or one given arguments it does not take), `invalid_cwd`;
+     * 409 `not_a_repo` for worktree isolation outside a git repository; a member's session errors as POST /api/sessions; 500 `launch_failed`.
+     */
+    launchCrew: (id: string) => request<{ run: RunInfo }>(`/api/crews/${encodeURIComponent(id)}/launch`, { method: 'POST' }).then((r) => r.run),
+    /** Every run in the server's memory, newest first. */
+    listRuns: () => request<{ runs: RunInfo[] }>('/api/runs').then((r) => r.runs ?? []),
+    /** One run, with each worktree member's diff. */
+    getRun: (id: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => r.run),
+    /** Adds a member mid-run; one that starts immediately has its prompt when this resolves. 400 `invalid_crew`, 409 `run_stopped`. */
+    addRunMember: (runId: string, member: CrewMember) =>
+      request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/members`, { method: 'POST', body: toCrewMember(member) }).then((r) => r.run),
+    /** Starts a pending member by hand, whatever its start condition. 409 `member_started` or `run_stopped`. */
+    startRunMember: (runId: string, name: string) =>
+      request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/start`, { method: 'POST' }).then((r) => r.run),
+    /** Stops every member's session; the worktrees stay. */
+    stopRun: (runId: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }).then((r) => r.run),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */

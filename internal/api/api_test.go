@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -2728,5 +2729,243 @@ func TestDevCORSAllowsPut(t *testing.T) {
 	methods := strings.Split(resp.Header.Get("Access-Control-Allow-Methods"), ", ")
 	if resp.StatusCode != http.StatusNoContent || !slices.Contains(methods, "PUT") {
 		t.Fatalf("preflight: %d %q", resp.StatusCode, methods)
+	}
+}
+
+// gitRepo makes e.root a git repository with one commit, and skips the test
+// when git is not installed. HOME is a temporary directory, so that no
+// configuration of the user running the tests applies.
+func (e *testEnv) gitRepo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(e.root, "README"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "README"}, {"-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"}} {
+		cmd := exec.Command("git", append([]string{"-C", e.root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// runCrewBody is a crew whose lead, an interactive sh, is typed a prompt that
+// prints the crew's variables, and whose other member starts by hand.
+func (e *testEnv) runCrewBody(isolation string) map[string]any {
+	return map[string]any{
+		"name": "API sweep", "goal": "ship /v1/users", "cwd": e.root, "where": "server", "isolation": isolation,
+		"openAfterLaunch": false,
+		"members": []any{
+			map[string]any{"name": "lead", "agentId": "sh", "args": []any{"-i"},
+				"prompt": `echo "C=$CONDUCTOR_CREW R=$CONDUCTOR_RUN M=$CONDUCTOR_MEMBER G=$GOAL T=${CONDUCTOR_NOTIFY_TOKEN:+set}"`,
+				"start":  map[string]any{"when": "immediately"}},
+			map[string]any{"name": "tests", "agentId": "sh", "args": []any{"-i"}, "prompt": "echo tests-here",
+				"start": map[string]any{"when": "manual"}},
+		},
+	}
+}
+
+// stopEverything stops every session of e's server when the test ends.
+func (e *testEnv) stopEverything(t *testing.T) {
+	t.Cleanup(func() {
+		e.srv.registry.Each(func(d session.Driver) { _ = d.Stop(context.Background()) })
+	})
+}
+
+// runMember returns a member of a run as a reply carries it.
+func runMember(t *testing.T, run map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, m := range run["members"].([]any) {
+		if m := m.(map[string]any); m["name"] == name {
+			return m
+		}
+	}
+	t.Fatalf("run has no member %q: %v", name, run)
+	return nil
+}
+
+// A crew launches as a run of ordinary server sessions: each member in a
+// worktree of its own, tagged with the run, with the crew's variables in its
+// environment, and its prompt typed once it is ready. The run routes list it,
+// report the members' diffs, start a member by hand, add one and stop it all.
+func TestCrewRunLifecycle(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	e.stopEverything(t)
+	e.sendCrew("POST", "/api/crews", e.runCrewBody("worktree"), http.StatusCreated)
+
+	resp, out := e.do("POST", "/api/crews/api-sweep/launch", adminToken, nil)
+	run, _ := out["run"].(map[string]any)
+	if resp.StatusCode != http.StatusCreated || run == nil {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	runID, _ := run["id"].(string)
+	lead := runMember(t, run, "lead")
+	wantPath := filepath.Join(e.root, ".conductor", "worktrees", runID, "lead")
+	if !strings.HasPrefix(runID, "api-sweep-") || run["crewId"] != "api-sweep" || lead["status"] != "running" ||
+		lead["worktree"] != wantPath || lead["branch"] != "crew/"+runID+"/lead" || runMember(t, run, "tests")["status"] != "pending" {
+		t.Fatalf("run %v", run)
+	}
+	leadID, _ := lead["sessionId"].(string)
+	_, got := e.do("GET", "/api/sessions/"+leadID, adminToken, nil)
+	info := got["session"].(map[string]any)
+	if !reflect.DeepEqual(info["crew"], map[string]any{"runId": runID, "crewId": "api-sweep", "member": "lead"}) ||
+		info["cwd"] != wantPath || info["branch"] != "crew/"+runID+"/lead" || info["name"] != "lead" {
+		t.Fatalf("lead's session %v", info)
+	}
+	c := dialViewer(t, e, leadID, adminToken)
+	c.hello(80, 24)
+	c.expectOutput("C=api-sweep R=" + runID + " M=lead G=ship /v1/users T=set")
+	if d, _ := e.srv.registry.Get(leadID); !slices.ContainsFunc(d.(*session.Local).Activity(), func(a session.ActivityEntry) bool {
+		return a.Type == session.ActivityInput && a.ByName == "crew"
+	}) {
+		t.Fatal("the prompt was not recorded as typed by the crew")
+	}
+
+	// Listed, and with diffs.
+	_, out = e.do("GET", "/api/runs", adminToken, nil)
+	if runs, _ := out["runs"].([]any); len(runs) != 1 || runs[0].(map[string]any)["id"] != runID {
+		t.Fatalf("runs %v", out)
+	}
+	resp, out = e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	if d := runMember(t, out["run"].(map[string]any), "lead")["diff"]; resp.StatusCode != http.StatusOK ||
+		!reflect.DeepEqual(d, map[string]any{"added": 0.0, "removed": 0.0}) {
+		t.Fatalf("get: %d %v", resp.StatusCode, out)
+	}
+
+	// Started by hand, then again: 409.
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members/tests/start", adminToken, nil)
+	if resp.StatusCode != http.StatusOK || runMember(t, out["run"].(map[string]any), "tests")["status"] != "running" {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members/tests/start", adminToken, nil)
+	wantAPIError(t, "start again", resp, out, http.StatusConflict, "member_started", "")
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members/ghost/start", adminToken, nil)
+	wantAPIError(t, "start a stranger", resp, out, http.StatusNotFound, "not_found", "")
+
+	// Added mid-run.
+	docs := map[string]any{"name": "docs", "agentId": "sh", "prompt": "", "start": map[string]any{"when": "manual"}}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, docs)
+	if resp.StatusCode != http.StatusCreated || runMember(t, out["run"].(map[string]any), "docs")["status"] != "pending" {
+		t.Fatalf("add: %d %v", resp.StatusCode, out)
+	}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, docs)
+	wantAPIError(t, "add the same name", resp, out, http.StatusBadRequest, "invalid_crew", `"docs"`)
+	nope := map[string]any{"name": "nope", "agentId": "nope", "prompt": "", "start": map[string]any{"when": "manual"}}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, nope)
+	wantAPIError(t, "add an unknown agent", resp, out, http.StatusBadRequest, "invalid_crew", `"nope"`)
+	withArgs := map[string]any{"name": "cats", "agentId": "cat", "args": []any{"-n"}, "prompt": "", "start": map[string]any{"when": "manual"}}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, withArgs)
+	wantAPIError(t, "add arguments to an agent that takes none", resp, out, http.StatusBadRequest, "invalid_crew", "arguments")
+
+	// Stopped: every session, and nothing starts any more.
+	resp, out = e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil)
+	if resp.StatusCode != http.StatusOK || out["run"].(map[string]any)["stoppedAt"] == nil {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	for _, name := range []string{"lead", "tests"} {
+		id := runMember(t, out["run"].(map[string]any), name)["sessionId"].(string)
+		if d, _ := e.srv.registry.Get(id); d.Info().Status != session.StatusStopped {
+			t.Errorf("%s: %v", name, d.Info().Status)
+		}
+	}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members/docs/start", adminToken, nil)
+	wantAPIError(t, "start in a stopped run", resp, out, http.StatusConflict, "run_stopped", "")
+	if _, err := os.Stat(filepath.Join(wantPath, "README")); err != nil {
+		t.Fatalf("the worktree went: %v", err)
+	}
+
+	for _, path := range []string{"/api/runs/nope", "/api/runs/nope/stop", "/api/runs/nope/members/lead/start"} {
+		method := "POST"
+		if path == "/api/runs/nope" {
+			method = "GET"
+		}
+		resp, out = e.do(method, path, adminToken, nil)
+		wantAPIError(t, path, resp, out, http.StatusNotFound, "not_found", "")
+	}
+	for _, r := range []struct{ method, path string }{
+		{"POST", "/api/crews/api-sweep/launch"}, {"GET", "/api/runs"}, {"GET", "/api/runs/" + runID},
+		{"POST", "/api/runs/" + runID + "/members"}, {"POST", "/api/runs/" + runID + "/members/docs/start"}, {"POST", "/api/runs/" + runID + "/stop"},
+	} {
+		for _, token := range []string{"", "wrong", "test-host-token"} {
+			if resp, _ := e.do(r.method, r.path, token, nil); resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s %s with %q: %d", r.method, r.path, token, resp.StatusCode)
+			}
+		}
+	}
+}
+
+// A launch that cannot go ahead is refused before any session starts.
+func TestCrewLaunchRefusals(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	resp, out := e.do("POST", "/api/crews/nope/launch", adminToken, nil)
+	wantAPIError(t, "unknown crew", resp, out, http.StatusNotFound, "not_found", "")
+
+	save := func(name string, change func(b map[string]any)) string {
+		b := e.runCrewBody("none")
+		b["name"] = name
+		change(b)
+		return e.sendCrew("POST", "/api/crews", b, http.StatusCreated)["id"].(string)
+	}
+	cases := []struct {
+		name, id  string
+		status    int
+		code, msg string
+	}{
+		{"no members", save("Empty", func(b map[string]any) { b["members"] = []any{} }), http.StatusBadRequest, "invalid_crew", "no members"},
+		{"on a host", save("Hosted", func(b map[string]any) { b["where"] = "host" }), http.StatusBadRequest, "invalid_crew", "host"},
+		{"arguments to cat", save("Cats", func(b map[string]any) { crewMember(b, 1)["agentId"] = "cat" }), http.StatusBadRequest, "invalid_crew", "arguments"},
+		{"worktrees without a repository", save("Trees", func(b map[string]any) { b["isolation"] = "worktree" }), http.StatusConflict, "not_a_repo", "git"},
+		{"a cwd outside the roots", save("Outside", func(b map[string]any) { b["cwd"] = t.TempDir() }), http.StatusBadRequest, "invalid_cwd", "allowed roots"},
+	}
+	hidden := save("Hidden", func(b map[string]any) {
+		crewMember(b, 1)["agentId"] = "cat"
+		delete(crewMember(b, 1), "args")
+	})
+	for _, tc := range cases {
+		resp, out := e.do("POST", "/api/crews/"+tc.id+"/launch", adminToken, nil)
+		wantAPIError(t, tc.name, resp, out, tc.status, tc.code, tc.msg)
+	}
+	// An agent the catalog no longer has.
+	if c := e.del("cat"); c != http.StatusNoContent {
+		t.Fatalf("hide cat: %d", c)
+	}
+	resp, out = e.do("POST", "/api/crews/"+hidden+"/launch", adminToken, nil)
+	wantAPIError(t, "a hidden agent", resp, out, http.StatusBadRequest, "invalid_crew", `"cat"`)
+	if n := e.srv.registry.Count(); n != 0 {
+		t.Fatalf("%d sessions started", n)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(e.root, ".conductor")); len(entries) != 0 {
+		t.Fatalf("made %v", entries)
+	}
+	if _, out := e.do("GET", "/api/runs", adminToken, nil); len(out["runs"].([]any)) != 0 {
+		t.Fatalf("runs %v", out)
+	}
+
+	// Without a data directory there are no crews to launch.
+	srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, out = e.serve(srv).do("POST", "/api/crews/api-sweep/launch", adminToken, nil)
+	wantAPIError(t, "no store", resp, out, http.StatusServiceUnavailable, "store_unavailable", "")
+}
+
+// A session launched on its own gets none of the crew's variables.
+func TestPlainSessionHasNoCrewVariables(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("sh")
+	c := dialViewer(t, e, id, adminToken)
+	c.hello(80, 24)
+	c.send(proto.Encode(proto.TypeInput, []byte("echo \"X=${CONDUCTOR_CREW-no}${CONDUCTOR_RUN-no}${CONDUCTOR_MEMBER-no}${GOAL-no}\"\n")))
+	c.expectOutput("X=nononono")
+	if _, got := e.do("GET", "/api/sessions/"+id, adminToken, nil); got["session"].(map[string]any)["crew"] != nil {
+		t.Fatalf("session %v", got["session"])
 	}
 }

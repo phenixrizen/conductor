@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CrewInfo, CrewMember } from '~/composables/useSessions'
-import { toCrewInput } from './crews'
+import { toCrewInput, toCrewMember } from './crews'
 
 const lead: CrewMember = { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'immediately' } }
 const tests: CrewMember = { name: 'tests', agentId: 'shell', prompt: '', start: { when: 'after', member: 'lead' } }
@@ -44,5 +44,12 @@ describe('toCrewInput', () => {
     expect(wire(toCrewInput({ ...info, members: [edited] })).members).toEqual([
       { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'manual' } },
     ])
+  })
+})
+
+describe('toCrewMember', () => {
+  it('keeps a member to the fields the server accepts, for adding it to a run', () => {
+    const withState = { ...tests, key: 7, start: { when: 'after' as const, member: 'lead', open: true } }
+    expect(wire(toCrewMember(withState))).toEqual({ name: 'tests', agentId: 'shell', prompt: '', start: { when: 'after', member: 'lead' } })
   })
 })

@@ -218,7 +218,13 @@ to every link: the number of viewers currently attached through it.
 
 When a controller's input clears `needs_input`, the session records
 `lastAnswer{by, byName, at, message}` in its `Info` (the prompt that was
-answered and who answered it) and an `input` activity entry.
+answered and who answered it) and an `input` activity entry. What Conductor
+types itself (a crew member's prompt) clears `needs_input` the same way and
+always records an `input` entry, `byName` `crew` and the text typed, less its
+line break, as `message`.
+
+Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
+run (see Crew runs), and no `crew` otherwise.
 
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
@@ -363,7 +369,7 @@ does the same for a hosted session.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <admin token>`; a share token is also accepted where the
 table says so. JSON request bodies are limited to 64 KiB (1 MiB on the crew
-routes) and unknown fields are rejected. Errors are
+routes, 128 KiB when adding a member to a run) and unknown fields are rejected. Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
 above.
@@ -382,6 +388,12 @@ above.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 512 KiB; `404` when unknown; `409 too_many_crews` |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once every member that starts immediately has its prompt typed or has ended; `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have or arguments to an agent that takes none; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is not the top of a git repository with a commit; a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
+| `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first |
+| `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}`; `404` when unknown |
+| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once a member that starts immediately has its prompt; `400 invalid_crew` for an invalid member, a name the run has, an `after` naming no member of the run, a 13th member or an agent as at launch; `409 run_stopped`; `404` when unknown |
+| `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its prompt is typed; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
+| `POST /api/runs/{run}/stop` | admin | stop every member's session; reply `{run}` with `stoppedAt`; the worktrees stay; stopping again changes nothing; `404` when unknown |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `snippet` and `changed` (files already written); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
@@ -428,3 +440,32 @@ agent the catalog does not have, the 50-crew limit (`409`) and an unknown `id`
 (`404`); an agent the catalog does not have is `400 invalid_crew` whatever else
 holds. An error message quotes at most 80 characters of a value, with `…` where
 it was cut.
+
+### Crew runs
+
+`POST /api/crews/{id}/launch` starts a run: every member becomes an ordinary
+server session, created as `POST /api/sessions` creates one (its `cwd` through
+the same check, its agent from the catalog, its hooks injected), named after
+the member and tagged with `crew`. Its process also receives `CONDUCTOR_CREW`,
+`CONDUCTOR_RUN`, `CONDUCTOR_MEMBER` and `GOAL`. A run's `id` is
+`<crew id>-<8 hex>`. Members that start `immediately` start at launch; an
+`after` member starts when the member it names first reports `done` once its
+own prompt is typed; a `manual` member waits for its start route. With `isolation:
+worktree` each member starts in `git -C <cwd> worktree add -b crew/<run>/<member>
+<cwd>/.conductor/worktrees/<run>/<member> HEAD`; Conductor never deletes a
+worktree or a branch. A member is ready for its prompt when its agent reports
+`needs_input` or `done`, or after one second without output that follows its
+first output and at least two seconds after its start, checked every 250 ms;
+after 60 seconds the prompt is typed anyway and the run log says so. The
+prompt, `$GOAL` and `${GOAL}` replaced by the goal, is typed with a carriage
+return. A member whose process ends first gets no prompt: it is `ended` with
+its exit in `error`, and the run goes on. When a member of a launch cannot be
+started, the ones started are stopped and no run is kept. A run is `{id,
+crewId, name, goal, cwd, isolation, startedAt, stoppedAt?, members, log}`, a
+member `{name, agentId, start, sessionId?, branch?, worktree?, status,
+startedAt?, endedAt?, error?, diff?}` with `status` `pending`, `starting`,
+`running` or `ended`; `diff` counts the lines committed on the member's branch
+since it began (`git diff --shortstat <base>...HEAD`, read at most every 10 s).
+`log` is the run's own, at most 200 activity entries. Runs live in memory: a
+server restart forgets them, and past 100 runs a launch forgets the oldest
+with nothing running.
