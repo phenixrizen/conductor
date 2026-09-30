@@ -61,6 +61,7 @@ func piAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, piSteps(hooksDir)...)
 		},
+		InstallsSkill: true,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, piExtension, piSteps("")...)
 		},

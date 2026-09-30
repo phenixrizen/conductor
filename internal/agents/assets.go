@@ -9,9 +9,11 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/user"
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -106,6 +108,41 @@ func AdoptBinary(hooksDir string) (string, error) {
 	}
 	remember(bin)
 	return bin, nil
+}
+
+// CheckHooksDir refuses a hooks dir that someone other than the user running
+// conductor could have written: one that user does not own, or one its group
+// or others may write to. conductor hooks copies the hooks it finds there into
+// the agents' own configs and adopts the binary it names (AdoptBinary), so a
+// hooks dir from elsewhere, such as the default ./conductor.d of a checkout,
+// would otherwise choose the commands the user's agents run. WriteAssets makes
+// it 0700. A hooks dir that does not exist passes: there is nothing in it to
+// take. It takes a system that says who owns a file, as Unix systems do;
+// elsewhere it passes.
+func CheckHooksDir(hooksDir string) error {
+	fi, err := os.Stat(hooksDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	owner, ok := fileOwner(fi)
+	if !ok {
+		return nil
+	}
+	const why = "conductor hooks takes the hooks it installs, and the binary they run, only from a directory of yours that no one else can write"
+	if uid := geteuid(); owner != uid {
+		who := strconv.Itoa(owner)
+		if u, err := user.LookupId(who); err == nil && u.Username != "" {
+			who = u.Username
+		}
+		return fmt.Errorf("%s belongs to %s: %s", hooksDir, who, why)
+	}
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		return fmt.Errorf("%s can be written by its group or by others (mode %04o): %s; chmod go-w it, or let conductor serve write it again", hooksDir, perm, why)
+	}
+	return nil
 }
 
 // ForgetBinary forgets the binary WriteAssets or AdoptBinary recorded, as in

@@ -3,19 +3,21 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
 
 	"github.com/phenixrizen/conductor/internal/agents"
 )
 
 // integration is one hook adapter as GET /api/integrations lists it: what
-// the agent can report, whether a launch wires its hooks in, whether they are
-// installed in the server user's home and where, and the snippet that wires
-// them by hand.
+// the agent can report, whether a launch wires its hooks in, whether its
+// install also brings the Conductor skill, whether they are installed in the
+// server user's home and where, and the snippet that wires them by hand.
 type integration struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Events          []string `json:"events"`
 	LaunchInjection bool     `json:"launchInjection"`
+	InstallsSkill   bool     `json:"installsSkill"`
 	Installed       bool     `json:"installed"`
 	Where           string   `json:"where"`
 	Snippet         string   `json:"snippet"`
@@ -33,9 +35,10 @@ type installError struct {
 }
 
 // handleIntegrations lists every adapter, in the order of agents.All, with
-// its install checked against the server user's home. Checking writes
-// nothing. An adapter with nothing to install reports installed false and
-// no place.
+// its install checked against the server user's home, and names the machine
+// the server runs on ("" when it cannot tell): that is where an install
+// writes. Checking writes nothing. An adapter with nothing to install reports
+// installed false and no place.
 func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	hooksDir := agents.HooksDir(s.cfg.DataDir)
 	all := agents.All()
@@ -46,6 +49,7 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 			Name:            a.Name,
 			Events:          a.Events,
 			LaunchInjection: a.Inject != nil,
+			InstallsSkill:   a.InstallsSkill,
 			Experimental:    a.Experimental,
 		}
 		if it.Events == nil {
@@ -59,7 +63,11 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, it)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"integrations": out})
+	host, err := os.Hostname()
+	if err != nil {
+		host = ""
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"integrations": out, "host": host})
 }
 
 // handleInstallIntegration installs an adapter's hooks into the server user's

@@ -5,7 +5,7 @@ import { shortCwd } from '~/utils/sessions'
 
 const props = defineProps<{
   integration: Integration
-  /** The machine the server runs on, as this browser reaches it: where an install writes. */
+  /** The machine the server runs on: where an install writes. */
   host: string
   /**
    * Whether the server knows its user's home directory. Without one no
@@ -44,6 +44,8 @@ const noInstall = computed(() => {
 
 // Paths are long and unbroken: let toast text wrap anywhere.
 const pathsUi = { description: 'whitespace-pre-line break-all' }
+// A message is prose with a path in it: wrap between words, and inside a word only when it cannot fit a line.
+const messageUi = { description: 'whitespace-pre-line [overflow-wrap:anywhere]' }
 
 async function install() {
   const it = props.integration
@@ -64,7 +66,7 @@ async function install() {
       description: (e as Error).message,
       icon: 'i-lucide-triangle-alert',
       color: byHand ? 'warning' : 'error',
-      ui: pathsUi,
+      ui: messageUi,
     })
   } finally {
     installing.value = false

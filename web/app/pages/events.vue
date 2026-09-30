@@ -10,6 +10,7 @@ const events = useEvents()
 const { httpBase } = useApiBase()
 
 const integrations = ref<Integration[]>([])
+const serverHost = ref('')
 const loading = ref(false)
 const error = ref('')
 
@@ -20,7 +21,9 @@ async function refresh() {
   }
   loading.value = true
   try {
-    integrations.value = await api.integrations()
+    const r = await api.integrations()
+    integrations.value = r.integrations
+    serverHost.value = r.host
     error.value = ''
   } catch (e) {
     error.value = (e as Error).message
@@ -42,8 +45,12 @@ watch(() => admin.token.value, refresh)
  */
 const homeKnown = computed(() => integrations.value.some((i) => i.where))
 
-/** The machine the server runs on, as this browser reaches it: where Install on this machine writes. */
+/**
+ * The machine the server runs on, where Install on this machine writes: the
+ * name the server gives itself, else the host this browser reaches it by.
+ */
 const host = computed(() => {
+  if (serverHost.value) return serverHost.value
   try {
     return new URL(httpBase.value || location.origin).hostname || 'this server'
   } catch {
@@ -52,8 +59,12 @@ const host = computed(() => {
 })
 
 // The skill has no install of its own: it comes with the hooks of the agents that read skills.
-const SKILL_READERS = ['claude', 'codex', 'pi', 'goose']
-const skillReaders = computed(() => integrations.value.filter((i) => SKILL_READERS.includes(i.id)))
+const skillReaders = computed(() => integrations.value.filter((i) => i.installsSkill))
+/** Their names as prose: "Claude Code, Codex, pi and Goose". */
+const skillReaderNames = computed(() => {
+  const names = skillReaders.value.map((i) => i.name)
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? 'the agents that read skills')
+})
 const skillCommands = [
   'conductor notify --event progress --message "4/7 handlers"',
   'conductor notify --event artifact --url https://github.com/acme/api/pull/212',
@@ -95,7 +106,7 @@ const skillCommands = [
             <p class="text-sm">Teaches agents to report progress, artifacts, blockers and handoffs to named crew members, not just “needs input”.</p>
             <CodeBlock :commands="skillCommands" />
             <p class="text-sm text-muted">
-              The skill installs together with the hooks of Claude Code, Codex, pi and Goose: <b class="text-default">Install on this machine</b> on their cards
+              The skill installs together with the hooks of {{ skillReaderNames }}: <b class="text-default">Install on this machine</b> on their cards
               puts it in their skills directory.
             </p>
             <div v-if="skillReaders.length" class="flex flex-wrap gap-1.5">

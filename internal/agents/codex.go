@@ -84,6 +84,7 @@ func codexAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, codexSteps(hooksDir)...)
 		},
+		InstallsSkill: true,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, codexConfig, codexSteps("")...)
 		},

@@ -170,8 +170,9 @@ export function useAttention() {
   let backoff = 1000
 
   async function stream() {
-    if (!admin.token.value) return
+    // The stream of the token before goes first, even with no token now: after "Forget token" it must not refill the store.
     abort?.abort()
+    if (!admin.token.value) return
     abort = new AbortController()
     const signal = abort.signal
     try {

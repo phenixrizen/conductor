@@ -181,10 +181,12 @@ developer preview, is always installed by hand, and a Codex `hooks.json` or a
 `SKILL.md` of your own is never overwritten. Both commands take the hooks, and
 the conductor binary they run, from `hooks/` in the data directory
 `--data-dir DIR` names, by default the one `conductor serve` uses without a
-config file; when no server wrote hooks there, they say so and use the binary
-you run. `--home DIR` names another home directory of yours. A home that
-belongs to another user is refused, because what Conductor wrote there would
-belong to you: install for that user as that user
+config file; when no server wrote hooks there, or the binary they name is
+gone, they say so and use the binary you run. They refuse a `hooks/` that is
+not yours or that its group or others may write to, since its commands would
+go into your agents' configs. `--home DIR` names another home directory of
+yours. A home that belongs to another user is refused, because what Conductor
+wrote there would belong to you: install for that user as that user
 (`sudo -u <user> conductor hooks install …`).
 
 **Agents without hooks.** Any tool that rings the terminal bell or emits an

@@ -27,6 +27,9 @@ type Adapter struct {
 	// what it leaves to the user comes back as an error wrapping ErrByHand.
 	// nil when the agent has no file route.
 	Install func(home, hooksDir string) ([]string, error)
+	// InstallsSkill is true for an agent that reads skills: its Install also
+	// copies the Conductor skill.
+	InstallsSkill bool
 	// Status is a dry run of Install on home: installed is true when Install
 	// would change nothing and leave nothing to do by hand, so an install
 	// that is partial or names another binary reads as not installed; where

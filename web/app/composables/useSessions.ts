@@ -92,6 +92,8 @@ export interface Integration {
   events: string[]
   /** A launch from this server wires the hooks in (flags or environment). */
   launchInjection: boolean
+  /** The agent reads skills: installing its hooks also puts the Conductor skill in its skills directory. */
+  installsSkill: boolean
   /** The hooks are in place as an install would leave them: false after an upgrade moved the binary, until installed again. */
   installed: boolean
   /** The install's main file; empty when there is no file to install into. */
@@ -100,6 +102,13 @@ export interface Integration {
   snippet: string
   /** The agent's hook interface is still changing (a developer preview). */
   experimental: boolean
+}
+
+/** GET /api/integrations: every hook adapter, and the machine the server runs on. */
+export interface Integrations {
+  integrations: Integration[]
+  /** The server's host name, where Install on this machine writes; empty when the server cannot tell. */
+  host: string
 }
 
 export interface ShareLink {
@@ -145,8 +154,9 @@ export function useSessions() {
       request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: argv } }),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
-    /** Every hook adapter, in a stable order, with its install checked in the server user's home. */
-    integrations: () => request<{ integrations: Integration[] }>('/api/integrations').then((r) => r.integrations ?? []),
+    /** Every hook adapter, in a stable order, with its install checked in the server user's home, and the server's host name. */
+    integrations: () =>
+      request<Partial<Integrations>>('/api/integrations').then((r): Integrations => ({ integrations: r.integrations ?? [], host: r.host ?? '' })),
     /**
      * Installs an adapter's hooks into the server user's home and returns the files it changed, [] when they were in place.
      * 400 `no_file_route`: nothing to install, or a step left to do by hand with the adapter's `snippet` (files changed before it stay changed);

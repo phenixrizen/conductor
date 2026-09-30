@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -34,19 +35,31 @@ func serverAssets(t *testing.T, data, bin string) {
 	}
 }
 
+// fakeBinary returns the path of a conductor binary that exists, for the
+// hooks dir of a server to name: install and status adopt only a binary they
+// find. It is never run.
+func fakeBinary(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "conductor")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
 // conductor hooks install puts an adapter's hooks into the home it is given,
 // copied from the hooks dir of the data dir it is given, and prints the files
 // it wrote; run again, it changes nothing and says so.
 func TestHooksInstallCLI(t *testing.T) {
 	clearConductorEnv(t)
-	home, data := t.TempDir(), t.TempDir()
-	serverAssets(t, data, "/opt/conductor")
+	home, data, bin := t.TempDir(), t.TempDir(), fakeBinary(t)
+	serverAssets(t, data, bin)
 	code, stdout, stderr, err := runHooksWith(t, "install", "copilot", "--home", home, "--data-dir", data)
 	file := filepath.Join(home, ".copilot", "hooks", "conductor.json")
 	if code != 0 || err != nil || !strings.Contains(stdout, file) {
 		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
 	}
-	if b, err := os.ReadFile(file); err != nil || !strings.Contains(string(b), `"/opt/conductor notify --copilot-hook"`) {
+	if b, err := os.ReadFile(file); err != nil || !strings.Contains(string(b), `"`+bin+` notify --copilot-hook"`) {
 		t.Fatalf("%s: %v\n%s", file, err, b)
 	}
 	code, stdout, _, err = runHooksWith(t, "install", "copilot", "--home", home, "--data-dir", data)
@@ -59,14 +72,14 @@ func TestHooksInstallCLI(t *testing.T) {
 // CONDUCTOR_DATA_DIR, else conductor.d in the current directory.
 func TestHooksInstallFindsTheDataDirLikeServe(t *testing.T) {
 	clearConductorEnv(t)
-	env := t.TempDir()
-	serverAssets(t, env, "/opt/from-env/conductor")
-	cwd := t.TempDir()
-	serverAssets(t, filepath.Join(cwd, "conductor.d"), "/opt/from-cwd/conductor")
+	env, fromEnv := t.TempDir(), fakeBinary(t)
+	serverAssets(t, env, fromEnv)
+	cwd, fromCwd := t.TempDir(), fakeBinary(t)
+	serverAssets(t, filepath.Join(cwd, "conductor.d"), fromCwd)
 	t.Chdir(cwd)
 	for _, tc := range []struct{ env, want string }{
-		{env, "/opt/from-env/conductor"},
-		{"", "/opt/from-cwd/conductor"},
+		{env, fromEnv},
+		{"", fromCwd},
 	} {
 		t.Setenv("CONDUCTOR_DATA_DIR", tc.env)
 		home := t.TempDir()
@@ -233,14 +246,14 @@ func TestSkillCommand(t *testing.T) {
 // installed, and installing again changes nothing.
 func TestHooksStatusAgreesWithInstall(t *testing.T) {
 	clearConductorEnv(t)
-	home, data := t.TempDir(), t.TempDir()
-	serverAssets(t, data, "/opt/other/conductor")
+	home, data, bin := t.TempDir(), t.TempDir(), fakeBinary(t)
+	serverAssets(t, data, bin)
 	file := filepath.Join(home, ".copilot", "hooks", "conductor.json")
 	code, stdout, stderr, err := runHooksWith(t, "install", "copilot", "--home", home, "--data-dir", data)
 	if code != 0 || err != nil || stderr != "" || !strings.Contains(stdout, file) {
 		t.Fatalf("install: exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
 	}
-	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"/opt/other/conductor notify --copilot-hook"`) {
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), `"`+bin+` notify --copilot-hook"`) {
 		t.Fatalf("%s:\n%s", file, b)
 	}
 	code, stdout, stderr, err = runHooksWith(t, "status", "--home", home, "--data-dir", data)
@@ -320,7 +333,7 @@ func TestHooksRefuseAHomeOfAnotherUser(t *testing.T) {
 	}
 	home := t.TempDir()
 	if err := os.Chown(home, 65534, 65534); err != nil {
-		t.Fatal(err)
+		t.Skipf("cannot make a directory another user's here: %v", err)
 	}
 	code, stdout, stderr, err := runHooksWith(t, "install", "all", "--home", home, "--data-dir", t.TempDir())
 	if code != 1 || err == nil || !strings.Contains(err.Error(), "sudo -u ") || strings.Contains(stdout, "wrote") {
@@ -331,5 +344,66 @@ func TestHooksRefuseAHomeOfAnotherUser(t *testing.T) {
 	}
 	if code, _, _, err := runHooksWith(t, "status", "--home", home, "--data-dir", t.TempDir()); code != 0 || err != nil {
 		t.Fatalf("status: exit %d %v", code, err)
+	}
+}
+
+// A hooks dir whose binary is gone (conductor moved or removed since the
+// server wrote it) is not adopted: install and status say so and use the
+// conductor that runs them, as for a data dir without hooks, and agree with
+// each other.
+func TestHooksAdoptOnlyABinaryThatExists(t *testing.T) {
+	clearConductorEnv(t)
+	home, data := t.TempDir(), t.TempDir()
+	gone := filepath.Join(t.TempDir(), "conductor")
+	serverAssets(t, data, gone)
+	t.Cleanup(agents.ForgetBinary())
+	bin, err := agents.Binary() // a process that recorded none: this binary
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"install", "copilot", "--home", home, "--data-dir", data},
+		{"status", "--home", home, "--data-dir", data},
+	} {
+		code, stdout, stderr, err := runHooksWith(t, args...)
+		if code != 0 || err != nil || !strings.Contains(stderr, gone) || !strings.Contains(stderr, "does not exist") || !strings.Contains(stderr, bin) {
+			t.Fatalf("%q: exit %d %v\nstdout:\n%s\nstderr:\n%s", args, code, err, stdout, stderr)
+		}
+		if args[0] == "status" && strings.Contains(statusRow(stdout, "copilot"), "not installed") {
+			t.Fatalf("status after install:\n%s", stdout)
+		}
+	}
+	b, _ := os.ReadFile(filepath.Join(home, ".copilot", "hooks", "conductor.json"))
+	if !strings.Contains(string(b), bin+" notify --copilot-hook") || strings.Contains(string(b), gone) {
+		t.Fatalf("installed:\n%s", b)
+	}
+}
+
+// install and status refuse a hooks dir that its group or others may write
+// to, naming it: the hook commands in it would go into the agents' configs.
+// Nothing is written.
+func TestHooksRefuseAHooksDirOthersMayWrite(t *testing.T) {
+	clearConductorEnv(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("the hooks dir is checked on Unix only")
+	}
+	home, data := t.TempDir(), t.TempDir()
+	serverAssets(t, data, fakeBinary(t))
+	hooks := filepath.Join(data, "hooks")
+	if err := os.Chmod(hooks, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"install", "copilot", "--home", home, "--data-dir", data},
+		{"install", "all", "--home", home, "--data-dir", data},
+		{"status", "--home", home, "--data-dir", data},
+	} {
+		code, stdout, stderr, err := runHooksWith(t, args...)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), hooks) || stdout != "" {
+			t.Fatalf("%q: exit %d %v\nstdout:\n%s\nstderr:\n%s", args, code, err, stdout, stderr)
+		}
+	}
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Fatalf("wrote %v", entries)
 	}
 }

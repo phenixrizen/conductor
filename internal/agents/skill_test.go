@@ -77,9 +77,10 @@ var skillFor = map[string]string{
 	"goose":  ".agents/skills/conductor/SKILL.md",
 }
 
-// Install copies the skill for the agents that read skills, and for no other.
-// It is part of the install: without it Status reads not installed, and
-// Install puts it back, from the hooks dir when a server wrote it there.
+// Install copies the skill for the agents that read skills, and for no other,
+// and InstallsSkill says which those are. It is part of the install: without
+// it Status reads not installed, and Install puts it back, from the hooks dir
+// when a server wrote it there.
 func TestInstallCopiesTheSkill(t *testing.T) {
 	useBin(t, "/opt/conductor")
 	hooks := t.TempDir()
@@ -87,6 +88,9 @@ func TestInstallCopiesTheSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range All() {
+		if _, reads := skillFor[a.ID]; a.InstallsSkill != reads {
+			t.Errorf("%s: InstallsSkill is %v", a.ID, a.InstallsSkill)
+		}
 		if a.Install == nil || a.ID == "dsh" {
 			continue
 		}

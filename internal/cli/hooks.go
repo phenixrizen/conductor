@@ -255,11 +255,16 @@ const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the 
 // adoptHooksDir adopts the binary that the hooks in the data directory
 // dataDir were written for, so that what install puts in place and what
 // status checks name the binary the server's hooks do, and returns that
-// hooks dir. When no server wrote hooks there, it says so and returns "":
-// the hooks are then made for this conductor.
+// hooks dir. It refuses a hooks dir someone else could have written
+// (agents.CheckHooksDir). When no server wrote hooks there, or the binary
+// they name is gone, it says so and returns "": the hooks are then made for
+// this conductor.
 func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
 	hooksDir := serveHooksDir(dataDir)
-	_, err := agents.AdoptBinary(hooksDir)
+	if err := agents.CheckHooksDir(hooksDir); err != nil {
+		return "", err
+	}
+	adopted, err := agents.AdoptBinary(hooksDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		bin, err := agents.Binary()
 		if err != nil {
@@ -270,6 +275,16 @@ func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
 	}
 	if err != nil {
 		return "", err
+	}
+	// Hooks that run a binary no longer there would fail in every agent.
+	if _, err := os.Stat(adopted); errors.Is(err, fs.ErrNotExist) {
+		agents.ForgetBinary()
+		bin, err := agents.Binary()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(stderr, "conductor hooks: the hooks in %s run %s, which does not exist; the hooks run this conductor, %s\n", hooksDir, adopted, bin)
+		return "", nil
 	}
 	return hooksDir, nil
 }

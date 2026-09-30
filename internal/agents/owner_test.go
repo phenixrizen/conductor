@@ -2,7 +2,9 @@ package agents
 
 import (
 	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -61,5 +63,49 @@ func TestInstallRefusesAHomeItDoesNotOwn(t *testing.T) {
 	geteuid = old
 	if err := CheckHome(home); err != nil {
 		t.Fatalf("a home of one's own: %v", err)
+	}
+}
+
+// conductor hooks takes the hooks it installs, and the binary they run, from
+// a hooks dir only when no one else could have written it: the user running
+// conductor owns it and neither its group nor others may write to it. A hooks
+// dir that does not exist holds nothing to take.
+func TestCheckHooksDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := CheckHooksDir(dir); err != nil {
+		t.Fatalf("a hooks dir of one's own: %v", err)
+	}
+	if err := CheckHooksDir(filepath.Join(dir, "missing")); err != nil {
+		t.Fatalf("no hooks dir: %v", err)
+	}
+	if fi, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	} else if _, ok := fileOwner(fi); !ok {
+		t.Skip("this platform does not report who owns a file")
+	}
+	for _, mode := range []fs.FileMode{0o700, 0o750, 0o755, 0o500} {
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckHooksDir(dir); err != nil {
+			t.Errorf("mode %o: %v", mode, err)
+		}
+	}
+	for _, mode := range []fs.FileMode{0o720, 0o702, 0o775, 0o777} {
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckHooksDir(dir); err == nil || !strings.Contains(err.Error(), dir) {
+			t.Errorf("mode %o: %v", mode, err)
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := geteuid
+	geteuid = func() int { return os.Geteuid() + 1 }
+	t.Cleanup(func() { geteuid = old })
+	if err := CheckHooksDir(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("a hooks dir of another user: %v", err)
 	}
 }

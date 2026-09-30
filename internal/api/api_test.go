@@ -1911,15 +1911,20 @@ func (e *testEnv) integrations() (map[string]map[string]any, []string) {
 }
 
 // GET /api/integrations lists every adapter with what it reports, whether it
-// is wired at launch and whether its hooks are installed in the server
-// user's home; POST /api/integrations/{id}/install puts them there, once.
-// An agent whose hooks cannot be installed from a file answers
+// is wired at launch, whether its install brings the Conductor skill and
+// whether its hooks are installed in the server user's home, and names the
+// machine the server runs on; POST /api/integrations/{id}/install puts them
+// there, once. An agent whose hooks cannot be installed from a file answers
 // no_file_route, with the snippet to do it by hand.
 func TestIntegrationsListAndInstall(t *testing.T) {
 	e := newTestEnv(t, nil)
 	home := t.TempDir()
 	e.srv.home = home
 
+	resp, out := e.do("GET", "/api/integrations", adminToken, nil)
+	if host, _ := os.Hostname(); resp.StatusCode != http.StatusOK || out["host"] != host {
+		t.Fatalf("host %v, want %q", out["host"], host)
+	}
 	list, ids := e.integrations()
 	var want []string
 	for _, a := range agents.All() {
@@ -1928,7 +1933,8 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 	if len(ids) != 12 || !slices.Equal(ids, want) {
 		t.Fatalf("integrations %v, want %v", ids, want)
 	}
-	fields := []string{"events", "experimental", "id", "installed", "launchInjection", "name", "snippet", "where"}
+	fields := []string{"events", "experimental", "id", "installed", "installsSkill", "launchInjection", "name", "snippet", "where"}
+	skillReaders := []string{"claude", "codex", "pi", "goose"}
 	for _, id := range ids {
 		it := list[id]
 		if keys := slices.Sorted(maps.Keys(it)); !slices.Equal(keys, fields) {
@@ -1937,6 +1943,9 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 		a, _ := agents.Get(id)
 		if it["name"] != a.Name || it["launchInjection"] != (a.Inject != nil) || it["experimental"] != a.Experimental || it["installed"] != false {
 			t.Errorf("%s: %v", id, it)
+		}
+		if it["installsSkill"] != slices.Contains(skillReaders, id) {
+			t.Errorf("%s: installsSkill %v", id, it["installsSkill"])
 		}
 		if events, _ := it["events"].([]any); len(events) != len(a.Events) || events[0] != a.Events[0] {
 			t.Errorf("%s: events %v, want %v", id, it["events"], a.Events)
@@ -1963,7 +1972,7 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 		t.Fatalf("dsh: %v", list["dsh"])
 	}
 
-	resp, out := e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
+	resp, out = e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
 	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out["changed"], []any{copilotFile}) {
 		t.Fatalf("install: %d %v", resp.StatusCode, out)
 	}

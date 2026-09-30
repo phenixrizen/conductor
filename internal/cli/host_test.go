@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
@@ -106,6 +107,9 @@ func TestHostSignalPatternReachesTheSession(t *testing.T) {
 // XDG_STATE_HOME and the session is launched with the adapter's flags.
 func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
 	clearConductorEnv(t)
+	// The host writes its hook assets, which records their binary for the
+	// whole process: forget it when the test ends.
+	t.Cleanup(agents.ForgetBinary())
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 	cfg := config.Defaults()
