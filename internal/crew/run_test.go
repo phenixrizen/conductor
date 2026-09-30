@@ -38,6 +38,10 @@ type fakeLauncher struct {
 	// onLaunch, when set, runs on a goroutine of its own once a member's
 	// session has started: what its process does.
 	onLaunch func(member string, p *sessiontest.FakeProc, l *session.Local)
+	// beforeActivity, when set, sees each entry a session hands on before the
+	// engine does, on the goroutine that recorded it: it may hold the entry
+	// back, as a goroutine the scheduler leaves waiting would.
+	beforeActivity func(sessionID string, e session.ActivityEntry)
 
 	mu     sync.Mutex
 	calls  []launchCall
@@ -89,6 +93,9 @@ func (f *fakeLauncher) Launch(ctx context.Context, agentID, name, cwd string, ar
 // activity is the sessions' OnActivity: the entry goes to the engine with the
 // state of an attention entry, read from the session as the server reads it.
 func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry) {
+	if f.beforeActivity != nil {
+		f.beforeActivity(sessionID, e)
+	}
 	var state session.AttentionState
 	if l, ok := f.lookup(sessionID); ok && e.Type == session.ActivityAttention {
 		state = l.Info().Attention.State
@@ -413,6 +420,64 @@ func doneEntries(l *session.Local, msg string) int {
 		}
 	}
 	return n
+}
+
+// A done that predates a member's prompt never starts the members after it,
+// however late its entry reaches the engine: core is idle (done) as it
+// starts, the engine sees that state and types core's prompt, and only then
+// is the entry of that done handed on. A done core reports once it has had
+// its prompt starts tests, once.
+func TestAfterConditionIgnoresADoneThatPredatesThePrompt(t *testing.T) {
+	e, fl := newEngine(t)
+	delivered := make(chan struct{})
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member == "core" {
+			// SetAttention returns once the engine has taken the entry.
+			l.SetAttention(session.AttentionDone, "idle", session.SourceAPI)
+			close(delivered)
+		}
+	}
+	prompt := make(chan string, 1)
+	fl.beforeActivity = func(_ string, entry session.ActivityEntry) {
+		if entry.Type != session.ActivityAttention || entry.Message != "idle" {
+			return
+		}
+		// Held back until core's prompt has been typed.
+		_, p := fl.member("core")
+		select {
+		case b := <-p.Input:
+			prompt <- string(b)
+		case <-time.After(10 * time.Second):
+			prompt <- ""
+		}
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := <-prompt; got != "Build it.\r" {
+		t.Fatalf("core was typed %q before its idle done was handed on", got)
+	}
+	<-delivered
+	if n := logCount(t, e, run.ID, "core is done"); n != 0 {
+		t.Fatalf("the idle done from before the prompt started the members after core (%d)", n)
+	}
+	if m := memberState(t, e, run.ID, "tests"); m.Status != MemberPending || m.SessionID != "" {
+		t.Fatalf("tests after the idle done: %+v", m)
+	}
+	waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+
+	// A done after the prompt starts tests, once.
+	core, _ := fl.member("core")
+	core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	core.SetAttention(session.AttentionDone, "turn finished", session.SourceAPI)
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+	if n := logCount(t, e, run.ID, "core is done"); n != 1 {
+		t.Fatalf("%d starts after core's done, want 1", n)
+	}
+	if names := fl.launched(); !slices.Equal(names, []string{"core", "tests"}) {
+		t.Fatalf("launched %v", names)
+	}
 }
 
 // A member whose process ends before it is ready gets no prompt: it shows

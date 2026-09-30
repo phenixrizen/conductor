@@ -274,7 +274,8 @@ report through the API paid its token before it changed anything (below), and
 the bell, an OSC notification and the screen pattern are the session's own
 observations, which spend none. A state that shows always has its entry, in
 the log, on the stream and at the webhooks, however many tool events came
-before it.
+before it. That entry's `at` is the change's `since`, taken as the state is
+set, so no one sees the state before the time its entry gives.
 
 Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
 <agent token>` (or the admin token) and the body `{type, message?, url?, to?,
@@ -488,12 +489,15 @@ the goal, is typed as one line, as a handoff and a broadcast are (each line
 break, carriage return and tab, in the prompt or in the goal, becomes a space;
 the crew keeps the prompt as written), with a carriage return at the end; a
 `done` the member reports as its prompt is written counts for the members
-after it. A member whose process ends first gets no prompt: it is `ended` with
-its exit in `error`, and the run goes on; a member whose prompt cannot be typed
-ends alone, its session stopped, the reason in `error`. When a member's session cannot be created at launch, the ones
-started are stopped and no run is kept; when the run is stopped while its
-sessions start, it stays, stopped. A member whose start fails in a run that goes
-on stays in the run, `ended`, and keeps its name: `POST /api/runs/{run}/members`
+after it, and one whose `attention` entry is stamped no later than the prompt
+was typed never does, however late the entry reaches the run: it is the idle
+state the prompt answered. A member whose process ends first gets no prompt: it
+is `ended` with its exit in `error`, and the run goes on; a member whose prompt
+cannot be typed ends alone, its session stopped, the reason in `error`. When a
+member's session cannot be created at launch, the ones started are stopped and
+no run is kept; when the run is stopped while its sessions start, it stays,
+stopped. A member whose start fails in a run that goes on stays in the run,
+`ended`, and keeps its name: `POST /api/runs/{run}/members`
 with that name is refused as a name used twice. A run is `{id, crewId, name,
 goal, cwd, isolation, startedAt, stoppedAt?, members, log}`, a member `{name,
 agentId, start, sessionId?, branch?, worktree?, status, startedAt?, endedAt?,

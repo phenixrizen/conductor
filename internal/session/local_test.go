@@ -1006,6 +1006,29 @@ func TestAttentionChangesAreRecordedWhateverTheBucketHolds(t *testing.T) {
 	}
 }
 
+// The attention entry of a change is stamped with the time of the change, the
+// Since of the attention it records, taken as the state is set: whoever sees
+// the state sees it no earlier than the entry's At, so an entry that reaches
+// OnActivity late still says when its state began (a crew's run engine tells
+// a done from before a member's prompt by it).
+func TestAttentionEntryIsStampedAtTheChange(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	check := func(what string) {
+		t.Helper()
+		entries := attentionEntries(s)
+		since := s.Info().Attention.Since
+		if len(entries) == 0 || since == nil || !entries[len(entries)-1].At.Equal(*since) {
+			t.Fatalf("%s: the entry %+v, the attention since %v", what, entries, since)
+		}
+	}
+	s.SetAttention(AttentionDone, "idle", SourceAPI)
+	check("SetAttention")
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "what next?", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	check("TrySetAttentionFull")
+}
+
 // A report from outside the session, an agent's or an admin's through the
 // API, pays for itself: TrySetAttentionFull spends one token before it changes
 // anything, whether or not the report changes anything, and the entry of a

@@ -379,7 +379,10 @@ const (
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
 // at the current state and the change share one critical section. The
 // attention entry of an applied change is recorded without asking the bucket
-// (recordOwn). An invalid state changes nothing and spends nothing.
+// (recordOwn), stamped with the change's Since, taken in that section: whoever
+// sees the new state sees it no earlier than the entry's At, however late the
+// entry reaches OnActivity. An invalid state changes nothing and spends
+// nothing.
 func (s *Local) setAttention(state AttentionState, message, source, kind string, options []Option, rules attentionRules) error {
 	if !state.Valid() {
 		return nil
@@ -421,7 +424,7 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 		if label == "" {
 			label = string(state)
 		}
-		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: label})
+		s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label})
 	}
 	s.notifyChange()
 	return nil

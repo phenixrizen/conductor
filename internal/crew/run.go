@@ -194,11 +194,14 @@ type member struct {
 	def   Member
 	state MemberState
 	base  string // the commit its worktree branched from, for DiffStat
-	// prompted is set as its prompt is typed (or at once without one): from
-	// then on the done it reports starts the members after it.
-	prompted bool
-	diff     *Diff
-	diffAt   time.Time // when diff was read; zero: never
+	// prompted is set as its prompt is typed (or at once without one), and
+	// promptedAt is when: a done whose entry is stamped after it starts the
+	// members after it (startAfter). One stamped before it, even if it
+	// reaches the engine later, is the idle state the prompt answered.
+	prompted   bool
+	promptedAt time.Time
+	diff       *Diff
+	diffAt     time.Time // when diff was read; zero: never
 	// handoffs wait to be typed into the member, oldest first, at most
 	// maxHandoffs (handoff.go). delivering is set, under e.mu, while a
 	// goroutine types them (deliver), and read without it by poke; wake makes
@@ -469,7 +472,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		// Prompted before the write: a done the agent reports as it takes the
 		// prompt, before Type returns, counts.
 		e.mu.Lock()
-		m.prompted = true
+		m.markPrompted()
 		e.mu.Unlock()
 		if err := local.Type(text+"\r", typedBy); err != nil {
 			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
@@ -480,7 +483,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		}
 	}
 	e.mu.Lock()
-	m.prompted = true
+	m.markPrompted()
 	m.state.Status = MemberRunning
 	if hasPrompt {
 		r.note(session.ActivityStatus, "typed %s's prompt", name)
@@ -488,6 +491,14 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 	e.mu.Unlock()
 	m.poke() // the handoffs waiting for its prompt may go
 	return nil
+}
+
+// markPrompted marks m prompted, now, unless it is already. The caller holds
+// e.mu.
+func (m *member) markPrompted() {
+	if !m.prompted {
+		m.prompted, m.promptedAt = true, time.Now().UTC()
+	}
 }
 
 // endsSoon reports whether l ends within a second: a write that failed as
@@ -577,7 +588,9 @@ func stopLocal(l *session.Local) {
 // entry of a session that is no member of a run costs no lock. An entry of a
 // member's session wakes the handoffs waiting for that member. The first done
 // a running member reports starts the pending members that start after it; a
-// done before its prompt was typed does not count. A handoff a member reports
+// done whose entry is stamped no later than its prompt was typed does not
+// count, however late it arrives: the session stamps an attention entry as
+// the state changes, so that done is the idle state the prompt answered. A handoff a member reports
 // goes to the member it names (handoff). It never waits: a start, and the
 // typing of a handoff, run on goroutines of their own.
 func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state session.AttentionState) {
@@ -601,7 +614,7 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	if isHandoff {
 		e.handoff(r, m, entry)
 	} else {
-		next = r.startAfter(m)
+		next = r.startAfter(m, entry.At)
 	}
 	e.mu.Unlock()
 	for _, m := range next {
@@ -611,10 +624,11 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 }
 
 // startAfter reserves the start of the pending members that start after
-// done, which reports done, when done is running, and returns them. The
-// caller holds e.mu and starts them.
-func (r *run) startAfter(done *member) []*member {
-	if !done.prompted || done.state.Status == MemberEnded {
+// done, which reports done in an entry stamped at, when done has had its
+// prompt before at and has not ended, and returns them. The caller holds e.mu
+// and starts them.
+func (r *run) startAfter(done *member, at time.Time) []*member {
+	if !done.prompted || !at.After(done.promptedAt) || done.state.Status == MemberEnded {
 		return nil
 	}
 	var next []*member
