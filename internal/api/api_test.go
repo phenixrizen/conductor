@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +41,12 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	t.Helper()
+	return newTestEnvLogging(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// newTestEnvLogging is newTestEnv with the server logging to log.
+func newTestEnvLogging(t *testing.T, mutate func(*config.Config), log *slog.Logger) *testEnv {
+	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.AdminToken = adminToken
@@ -67,7 +74,6 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +86,9 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	t.Cleanup(func() {
 		hs.Close()
 	})
+	// Webhooks are delivered by goroutines of their own: they stop before the
+	// endpoints a test started for them close.
+	t.Cleanup(func() { srv.webhooks.close(context.Background()) })
 	return &testEnv{t: t, srv: srv, http: hs, root: root, client: hs.Client()}
 }
 

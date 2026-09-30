@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Integration } from '~/composables/useSessions'
+import type { Integration, WebhookInfo } from '~/composables/useSessions'
 
 useHead({ title: 'Events' })
 
@@ -11,6 +11,7 @@ const { httpBase } = useApiBase()
 
 const integrations = ref<Integration[]>([])
 const serverHost = ref('')
+const webhooks = ref<WebhookInfo[]>([])
 const loading = ref(false)
 const error = ref('')
 
@@ -24,6 +25,7 @@ async function refresh() {
     const r = await api.integrations()
     integrations.value = r.integrations
     serverHost.value = r.host
+    webhooks.value = r.webhooks
     error.value = ''
   } catch (e) {
     error.value = (e as Error).message
@@ -124,7 +126,7 @@ const skillCommands = [
 
         <section class="flex min-w-0 flex-col gap-3" aria-labelledby="routing-heading">
           <h2 id="routing-heading" class="text-[11px] font-semibold uppercase tracking-wider text-muted">Routing</h2>
-          <RoutingMatrix :routes="events.routes.value" @update="events.setRoute" />
+          <RoutingMatrix :routes="events.routes.value" :webhooks="webhooks" @update="events.setRoute" />
           <EventFeed :entries="events.entries.value" />
         </section>
       </div>

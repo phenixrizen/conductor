@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -279,5 +280,41 @@ func TestEntryFromProtoLeavesAnUnreadableTimeZero(t *testing.T) {
 	want := time.Date(2026, 9, 29, 12, 0, 0, 123456789, time.UTC)
 	if e := EntryFromProto(proto.Activity{Type: ActivityProgress, At: "2026-09-29T07:00:00.123456789-05:00"}); !e.At.Equal(want) || e.At.Location() != time.UTC {
 		t.Fatalf("at read as %v, want %v in UTC", e.At, want)
+	}
+}
+
+// ExitCode reads the code of a process that exited on its own from the
+// message of its status entry, as the session writes it, and nothing else: a
+// process an admin stopped ends with a signal, which is not the agent
+// failing. It agrees with exitCode in web/app/utils/events.ts.
+func TestExitCode(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		code    int
+		ok      bool
+	}{
+		{"exited (exit 1)", 1, true},
+		{"exited (exit 0)", 0, true},
+		{"exited (exit 143)", 143, true},
+		{"exited (exit -1)", -1, true},
+		{"exited (exit 007)", 7, true},
+		{"exited (exit 99999999999999999999)", math.MaxInt, true},
+		{"stopped (exit 143)", 0, false},
+		{"stopped", 0, false},
+		{"exited", 0, false},
+		{"exited (exit )", 0, false},
+		{"exited (exit -)", 0, false},
+		{"exited (exit 1x)", 0, false},
+		{"exited (exit +1)", 0, false},
+		{"exited (exit ١)", 0, false},
+		{" exited (exit 1)", 0, false},
+		{"exited (exit 1) ", 0, false},
+		{"exited (exit 1", 0, false},
+		{"running", 0, false},
+		{"", 0, false},
+	} {
+		if code, ok := ExitCode(tc.message); code != tc.code || ok != tc.ok {
+			t.Errorf("ExitCode(%q) = %d, %v; want %d, %v", tc.message, code, ok, tc.code, tc.ok)
+		}
 	}
 }

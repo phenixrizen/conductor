@@ -19,6 +19,7 @@ import {
   parseRoutes,
   pruneMarks,
   routeEntry,
+  webhookHosts,
   type EventState,
   type EventType,
   type RouteRow,
@@ -416,5 +417,32 @@ describe('feedTime', () => {
   it('formats a time of day with seconds, and nothing for a bad time', () => {
     expect(feedTime('2026-09-29T12:00:05Z')).toMatch(/^\d\d:\d\d:\d\d$/)
     expect(feedTime('not a time')).toBe('')
+  })
+})
+
+describe('webhookHosts', () => {
+  const hooks = [
+    { url: 'https://hooks.example.com/conductor', events: ['needs_input', 'exit_nonzero', 'progress'] },
+    { url: 'http://10.0.0.7:9000/in', events: ['attention', 'status', 'progress'] },
+    { url: 'https://hooks.example.com/other', events: ['progress', 'join'] },
+  ]
+
+  it('names the hosts of the webhooks that get a type, once each, in order', () => {
+    expect(webhookHosts(hooks, 'progress')).toEqual(['10.0.0.7:9000', 'hooks.example.com'])
+    expect(webhookHosts(hooks, 'artifact')).toEqual([])
+    expect(webhookHosts(undefined, 'progress')).toEqual([])
+    expect(webhookHosts([], 'progress')).toEqual([])
+  })
+
+  it('counts a webhook that lists attention for each attention state, and one that lists status for exit_nonzero', () => {
+    expect(webhookHosts(hooks, 'needs_input')).toEqual(['10.0.0.7:9000', 'hooks.example.com'])
+    expect(webhookHosts(hooks, 'done')).toEqual(['10.0.0.7:9000'])
+    expect(webhookHosts(hooks, 'working')).toEqual(['10.0.0.7:9000'])
+    expect(webhookHosts(hooks, 'exit_nonzero')).toEqual(['10.0.0.7:9000', 'hooks.example.com'])
+    expect(webhookHosts([{ url: 'https://a.example', events: ['status'] }], 'error')).toEqual([])
+  })
+
+  it('shows a URL it cannot read as it is', () => {
+    expect(webhookHosts([{ url: 'not a url', events: ['error'] }], 'error')).toEqual(['not a url'])
   })
 })

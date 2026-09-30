@@ -181,3 +181,24 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// Sinks receive every activity entry, the session it belongs to, after the
+// clients have theirs, whether or not any client listens.
+func TestEventHubSinksGetEveryEntryAfterTheClients(t *testing.T) {
+	h := newEventHub()
+	type got struct {
+		id      string
+		e       session.ActivityEntry
+		clients int
+	}
+	var sunk []got
+	ch := h.subscribe()
+	h.addSink(func(id string, e session.ActivityEntry) { sunk = append(sunk, got{id, e, len(ch)}) })
+	e := session.ActivityEntry{Type: session.ActivityProgress, Message: "1/2"}
+	h.activity("s1", e)
+	h.unsubscribe(ch)
+	h.activity("s2", e)
+	if len(sunk) != 2 || sunk[0] != (got{"s1", e, 1}) || sunk[1] != (got{"s2", e, 1}) {
+		t.Fatalf("sunk %+v", sunk)
+	}
+}

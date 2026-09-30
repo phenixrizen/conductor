@@ -24,6 +24,15 @@ type integration struct {
 	Experimental    bool     `json:"experimental"`
 }
 
+// webhookInfo is a webhook of the config as GET /api/integrations lists it,
+// for the read-only column of the routing matrix: its URL without the user
+// info, query and fragment that may hold a token (config.Webhook.Endpoint),
+// and the event types it gets. Its secret is never shown.
+type webhookInfo struct {
+	URL    string   `json:"url"`
+	Events []string `json:"events"`
+}
+
 // installError is the error body of POST /api/integrations/{id}/install: the
 // code and message, the files the install changed before it stopped and,
 // when the rest is for the admin to do by hand, the snippet to do it with.
@@ -35,10 +44,10 @@ type installError struct {
 }
 
 // handleIntegrations lists every adapter, in the order of agents.All, with
-// its install checked against the server user's home, and names the machine
-// the server runs on ("" when it cannot tell): that is where an install
-// writes. Checking writes nothing. An adapter with nothing to install reports
-// installed false and no place.
+// its install checked against the server user's home, names the machine the
+// server runs on ("" when it cannot tell), which is where an install writes,
+// and lists the webhooks of the config. Checking writes nothing. An adapter
+// with nothing to install reports installed false and no place.
 func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	hooksDir := agents.HooksDir(s.cfg.DataDir)
 	all := agents.All()
@@ -67,7 +76,15 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		host = ""
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"integrations": out, "host": host})
+	hooks := make([]webhookInfo, 0, len(s.cfg.Webhooks))
+	for _, h := range s.cfg.Webhooks {
+		events := h.Events
+		if events == nil {
+			events = []string{}
+		}
+		hooks = append(hooks, webhookInfo{URL: h.Endpoint(), Events: events})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"integrations": out, "host": host, "webhooks": hooks})
 }
 
 // handleInstallIntegration installs an adapter's hooks into the server user's

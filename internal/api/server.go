@@ -28,6 +28,7 @@ type Server struct {
 	links    *share.Store
 	hosts    *signal.Hub
 	events   *eventHub
+	webhooks *webhookSender
 	limiter  *rateLimiter
 	log      *slog.Logger
 	web      http.Handler
@@ -88,6 +89,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home:     home,
 	}
 	s.events = newEventHub()
+	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	s.hosts = signal.NewHub(s.registry, log)
 	s.hosts.OnChange = s.events.publish
 	s.hosts.OnActivity = s.events.activity
@@ -262,8 +264,11 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 	}
 }
 
-// Shutdown stops every session and closes every viewer.
+// Shutdown stops the webhooks, then every session, and closes every viewer.
+// The webhooks go first: the entries the sessions record as they stop are not
+// sent.
 func (s *Server) Shutdown(ctx context.Context) {
+	s.webhooks.close(ctx)
 	s.registry.Each(func(d session.Driver) {
 		if local, ok := d.(*session.Local); ok {
 			_ = local.Stop(ctx)

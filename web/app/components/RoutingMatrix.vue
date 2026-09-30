@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { EVENT_INFO, EVENT_TYPES, type EventType, type RouteRow } from '~/utils/events'
+import type { WebhookInfo } from '~/composables/useSessions'
+import { EVENT_INFO, EVENT_TYPES, type EventType, type RouteRow, webhookHosts } from '~/utils/events'
 
 const props = defineProps<{
   routes: Record<EventType, RouteRow>
   /** Webhooks configured in conductor.json, shown read-only: the server sends them the events they list. */
-  webhooks?: { url: string; events: string[] }[]
+  webhooks?: WebhookInfo[]
 }>()
 const emit = defineEmits<{ update: [type: EventType, key: keyof RouteRow, value: boolean] }>()
 
 const WEBHOOK_HINT = 'configure webhooks in conductor.json'
+const WEBHOOK_COLUMN_HINT = 'What the server POSTs to the webhooks in conductor.json: set there, not here'
 
 const columns: Array<{ key: keyof RouteRow; label: string; hint: string }> = [
   { key: 'badge', label: 'Badge', hint: 'A badge on the session in the sidebar and on its wall tile' },
@@ -22,9 +24,15 @@ function fixed(t: EventType, key: keyof RouteRow): string | null {
   return t === 'working' && key === 'badge' ? 'clears the badge' : null
 }
 
-function webhooked(t: EventType): boolean {
-  return !!props.webhooks?.some((w) => w.events.includes(t))
-}
+/** Per event type, the hosts of the webhooks that get it: a checked cell names them. */
+const webhookRows = computed(() => {
+  const rows = {} as Record<EventType, { on: boolean; hint: string }>
+  for (const t of EVENT_TYPES) {
+    const hosts = webhookHosts(props.webhooks, t)
+    rows[t] = { on: hosts.length > 0, hint: hosts.length ? `POSTed to ${hosts.join(', ')}` : WEBHOOK_HINT }
+  }
+  return rows
+})
 </script>
 
 <template>
@@ -33,7 +41,7 @@ function webhooked(t: EventType): boolean {
       <thead class="bg-elevated/50 text-xs text-muted">
         <tr>
           <th scope="col" class="px-4 py-2.5 text-left font-medium">Event</th>
-          <th v-for="c in [...columns, { key: 'webhook', label: 'Webhook', hint: WEBHOOK_HINT }]" :key="c.key" scope="col" class="px-2 py-2.5 text-center font-medium whitespace-nowrap">
+          <th v-for="c in [...columns, { key: 'webhook', label: 'Webhook', hint: WEBHOOK_COLUMN_HINT }]" :key="c.key" scope="col" class="px-2 py-2.5 text-center font-medium whitespace-nowrap">
             <UPopover :content="{ side: 'top' }" arrow>
               <button type="button" class="cursor-help font-medium underline decoration-dotted underline-offset-4 hover:text-default" :data-hint="c.key">{{ c.label }}</button>
               <template #content>
@@ -61,9 +69,9 @@ function webhooked(t: EventType): boolean {
           </td>
           <td class="px-2 py-2">
             <div class="flex justify-center">
-              <UTooltip :text="WEBHOOK_HINT">
+              <UTooltip :text="webhookRows[t].hint">
                 <span class="inline-flex" data-webhook-cell>
-                  <UCheckbox :model-value="webhooked(t)" disabled class="pointer-events-none" :aria-label="`${t}: Webhook (${WEBHOOK_HINT})`" />
+                  <UCheckbox :model-value="webhookRows[t].on" disabled class="pointer-events-none" :aria-label="`${t}: Webhook (${webhookRows[t].hint})`" />
                 </span>
               </UTooltip>
             </div>

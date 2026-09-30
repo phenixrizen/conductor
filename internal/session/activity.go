@@ -2,6 +2,8 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +96,32 @@ func ValidEventType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// ExitCode returns the code of a process that exited on its own, read from
+// the message of its status entry, "exited (exit N)" as the session writes it
+// when the process ends. ok is false for any other message, "stopped (exit N)"
+// among them: a process an admin stopped ends with a signal, which is not the
+// agent failing. A code too large for an int reads as the nearest one. It
+// agrees with exitCode in web/app/utils/events.ts.
+func ExitCode(message string) (code int, ok bool) {
+	rest, found := strings.CutPrefix(message, string(StatusExited)+" (exit ")
+	if !found {
+		return 0, false
+	}
+	digits, found := strings.CutSuffix(rest, ")")
+	if !found {
+		return 0, false
+	}
+	unsigned := strings.TrimPrefix(digits, "-")
+	if unsigned == "" || strings.Trim(unsigned, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return 0, false
+	}
+	return n, true
 }
 
 // CleanEntry bounds the text of an entry that may come from outside the

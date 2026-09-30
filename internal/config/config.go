@@ -102,6 +102,9 @@ type Config struct {
 	CatalogPath string `json:"catalogPath"`
 	// DataDir is the writable directory for UI-managed state: catalog overlay, crews, generated hook assets.
 	DataDir string `json:"dataDir"`
+	// Webhooks are URLs the server POSTs activity entries to, by event type.
+	// Their secrets never appear in logs or API responses.
+	Webhooks []Webhook `json:"webhooks"`
 	// Dev relaxes origin checks for the Nuxt dev server on localhost:3000.
 	Dev bool `json:"dev"`
 
@@ -219,6 +222,13 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 		cfg.ExitedRetention = Duration(d)
 	}
+	if v := getenv("CONDUCTOR_WEBHOOKS"); v != "" {
+		hooks, err := parseWebhooks(v)
+		if err != nil {
+			return fmt.Errorf("CONDUCTOR_WEBHOOKS: %w", err)
+		}
+		cfg.Webhooks = hooks
+	}
 	if v := getenv("CONDUCTOR_ICE_SERVERS"); v != "" {
 		var servers []ICEServer
 		for _, u := range strings.Split(v, ",") {
@@ -291,6 +301,16 @@ func (c *Config) Validate() error {
 	for i, s := range c.ICEServers {
 		if len(s.URLs) == 0 {
 			errs = append(errs, fmt.Errorf("iceServers[%d]: urls must not be empty", i))
+		}
+	}
+	// Past the limit none is checked: each check may look a host up.
+	if len(c.Webhooks) > MaxWebhooks {
+		errs = append(errs, fmt.Errorf("webhooks: at most %d, got %d", MaxWebhooks, len(c.Webhooks)))
+	} else {
+		for i, w := range c.Webhooks {
+			if err := w.validate(); err != nil {
+				errs = append(errs, fmt.Errorf("webhooks[%d]: %w", i, err))
+			}
 		}
 	}
 	return errors.Join(errs...)

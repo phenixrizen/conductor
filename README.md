@@ -242,6 +242,84 @@ for Claude Code started elsewhere.
 
 </details>
 
+### Webhooks
+
+The server can also pass events on to other services. A webhook in the
+config is a URL the server POSTs to for every entry, from any session, of
+the event types the webhook lists. The **Events** page shows the webhooks,
+read-only, in the routing matrix's **Webhook** column.
+
+```json
+{
+  "webhooks": [
+    {
+      "url": "https://hooks.example.com/conductor",
+      "events": ["needs_input", "exit_nonzero", "artifact", "error"],
+      "secret": "a long random string"
+    }
+  ]
+}
+```
+
+`events` takes the Events page's names (`needs_input`, `done`, `working`,
+`tool_denied`, `progress`, `artifact`, `handoff`, `error`, `exit_nonzero`,
+`tool_use`) and the entry types (`attention`, which covers all three
+attention states, `status`, `join`, `leave`, `input` and `link`).
+`exit_nonzero` is a process that exited on its own with a non-zero code,
+never one an admin stopped. There are at most 16 webhooks, and a URL is
+`http` or `https` of at most 2048 bytes. `CONDUCTOR_WEBHOOKS` takes the same
+array as JSON and replaces the config file's.
+
+Each entry is one request, naming its session and carrying the entry as the
+Events feed streams it:
+
+```http
+POST /conductor HTTP/1.1
+Content-Type: application/json
+X-Conductor-Event: needs_input
+X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body, keyed with the secret>
+
+{"sessionId":"…","session":{"id":"…","name":"api-sweep","agentId":"claude"},"entry":{"at":"2026-09-29T12:00:00.123Z","type":"attention","message":"Claude needs your permission to use Bash"}}
+```
+
+`X-Conductor-Event` is the event type the webhook listed that the entry is:
+an attention entry is the attention state it records, the `status` entry of
+a failed process is `exit_nonzero`, and when a webhook lists both, the
+Events page's name wins. `X-Conductor-Signature` is sent only when the
+webhook has a `secret`. Check it against the body as received, before
+parsing it:
+
+```go
+func signed(body []byte, header, secret string) bool {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hmac.Equal([]byte(header), []byte("sha256="+hex.EncodeToString(mac.Sum(nil))))
+}
+```
+
+or by hand, with the body saved byte for byte in `body.json`:
+
+```bash
+echo "sha256=$(openssl dgst -sha256 -hmac "$SECRET" -r < body.json | cut -d' ' -f1)"
+```
+
+Each webhook has a queue of 256 entries, which drops its oldest when it is
+full, and delivers them one at a time, so a slow endpoint delays neither the
+sessions nor the other webhooks. A delivery is tried once, with 5 seconds to
+answer; redirects are not followed, and an answer other than 2xx is logged as
+a warning. The Events page and the API show a webhook's URL without its user
+info, query string and fragment, and never its secret; logs name a webhook
+by its place in the list and its host.
+
+**Private addresses.** A webhook may not reach the server itself or the
+network behind it. At startup the server resolves each webhook's host and
+refuses to start when it is, or resolves to, a loopback, link-local, private
+(unique-local in IPv6) or unspecified address, or does not resolve. Before
+every connection it resolves the host again and connects only to an address
+that passes, so a name pointed at such an address later (DNS rebinding)
+reaches nothing, and it never goes through a proxy. `"allowPrivate": true`
+lifts the rule for one webhook, for an endpoint on your own network.
+
 ## Configuration
 
 `conductor serve --config conductor.json` reads a JSON file; every field has a
@@ -262,6 +340,7 @@ for Claude Code started elsewhere.
 | `scrollbackBytes`, `maxSessions`, `maxViewersPerSession`, `exitedRetention`, `envPassthrough` | matching `CONDUCTOR_*` | see example | limits |
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `conductor.d` next to the config, else in the current directory | UI-managed state; must be writable, best outside `allowedRoots` |
+| `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 
 ### Upgrading
 

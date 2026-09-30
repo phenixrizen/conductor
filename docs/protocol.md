@@ -293,6 +293,22 @@ behind (its queue is three quarters full) misses entries and keeps its
 stream, with room left for the `session` and `removed` events it cannot do
 without. The session's own `activity` control messages replay the log.
 
+Webhooks: the server also POSTs every entry whose event type a configured
+webhook lists (README, Webhooks) to its URL, one entry a request, with the
+body `{"sessionId", "session": {"id", "name", "agentId"}, "entry": {…}}`, the
+entry as the stream above sends it. The headers are `Content-Type:
+application/json`, `X-Conductor-Event` and, for a webhook with a secret,
+`X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body>`.
+`X-Conductor-Event` is the type the webhook listed: an entry type, or the
+Events page's name for the entry, which wins when both are listed. An
+attention entry is the attention state it records: the state its session is
+in when the entry arrives if the session's message is the entry's (or, with
+no message, the entry names that state), else the state the entry's message
+names, else the session's state; a session with no attention state gives
+none. A `status` entry `exited (exit N)` with N other than 0 is
+`exit_nonzero`. Each webhook queues at most 256 entries and drops its oldest;
+a delivery is tried once, for at most 5 s, without following redirects.
+
 ## File reads
 
 `file_get` resolves `path` against the session working directory (`~` expands to
@@ -330,7 +346,7 @@ table says so. The WebSocket routes, `GET /ws/sessions/{id}` and
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
-| `GET /api/integrations` | admin | `{integrations, host}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, and the server's host name (`""` when it cannot tell); `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
+| `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `snippet` and `changed` (files already written); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?}`, reply `201` with the session `Info` |

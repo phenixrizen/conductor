@@ -1,4 +1,4 @@
-import type { SessionInfo } from '~/composables/useSessions'
+import type { SessionInfo, WebhookInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from '~/utils/protocol'
 
 /**
@@ -127,6 +127,28 @@ export function eventTypeOf(entry: ActivityEntry, session?: SessionInfo): EventT
  */
 export function attentionSettled(entry: ActivityEntry, session?: SessionInfo): boolean {
   return entry.type !== 'attention' || records(session, entry) || isState(entry.message)
+}
+
+/**
+ * The hosts of the webhooks the server sends events of type t to, sorted and
+ * each once: those that list t and, for an attention state or exit_nonzero,
+ * those that list the entry type it comes from (attention, status), which
+ * get every entry of that type.
+ */
+export function webhookHosts(webhooks: readonly WebhookInfo[] | undefined, t: EventType): string[] {
+  const from = isState(t) ? 'attention' : t === 'exit_nonzero' ? 'status' : null
+  const hosts = new Set<string>()
+  for (const w of webhooks ?? []) {
+    if (!w.events.includes(t) && !(from && w.events.includes(from))) continue
+    let host = w.url
+    try {
+      host = new URL(w.url).host || w.url
+    } catch {
+      /* shown as it is */
+    }
+    hosts.add(host)
+  }
+  return [...hosts].sort()
 }
 
 /** Longest URL an event carries, in bytes (the server's limit). */

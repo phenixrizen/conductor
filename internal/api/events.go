@@ -21,10 +21,13 @@ const (
 	activityQueueLimit = eventQueue - eventQueue/4
 )
 
-// eventHub fans session changes out to Server-Sent Events clients.
+// eventHub fans session changes out to Server-Sent Events clients, and
+// activity entries to its sinks as well.
 type eventHub struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
+	// sinks receive every activity entry after the clients: the webhooks.
+	sinks []func(sessionID string, e session.ActivityEntry)
 }
 
 func newEventHub() *eventHub { return &eventHub{clients: map[chan []byte]struct{}{}} }
@@ -69,27 +72,39 @@ type activityEvent struct {
 	session.ActivityEntry
 }
 
-// activity queues an activity entry of a session for every client. It is the
-// OnActivity hook of every session, so it runs on the goroutines that record,
-// concurrently and out of order (each entry says when it happened), and it
-// never waits: a client whose queue is past activityQueueLimit misses the
-// entry and keeps its stream.
-func (h *eventHub) activity(sessionID string, e session.ActivityEntry) {
-	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e})
-	if err != nil {
-		return
-	}
-	msg := []byte("event: activity\ndata: " + string(b) + "\n\n")
+// addSink makes f receive every activity entry, after the clients have it.
+// f runs where activity does, on the goroutine that recorded the entry: it
+// must never wait, and must be safe for concurrent use.
+func (h *eventHub) addSink(f func(sessionID string, e session.ActivityEntry)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch := range h.clients {
-		if len(ch) >= activityQueueLimit {
-			continue
+	h.sinks = append(h.sinks, f)
+}
+
+// activity queues an activity entry of a session for every client, then hands
+// it to every sink. It is the OnActivity hook of every session, so it runs on
+// the goroutines that record, concurrently and out of order (each entry says
+// when it happened), and it never waits: a client whose queue is past
+// activityQueueLimit misses the entry and keeps its stream.
+func (h *eventHub) activity(sessionID string, e session.ActivityEntry) {
+	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e})
+	h.mu.Lock()
+	if err == nil {
+		msg := []byte("event: activity\ndata: " + string(b) + "\n\n")
+		for ch := range h.clients {
+			if len(ch) >= activityQueueLimit {
+				continue
+			}
+			select {
+			case ch <- msg:
+			default:
+			}
 		}
-		select {
-		case ch <- msg:
-		default:
-		}
+	}
+	sinks := h.sinks
+	h.mu.Unlock()
+	for _, f := range sinks {
+		f(sessionID, e)
 	}
 }
 
