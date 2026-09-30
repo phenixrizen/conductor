@@ -222,9 +222,9 @@ answered and who answered it) and an `input` activity entry. What Conductor
 types itself (a crew member's prompt, a handoff or a broadcast), at most 32
 KiB with its line break as an `INPUT` frame, clears `needs_input` the same way
 and always records an `input` entry, `byName` `crew` (for a broadcast, the
-admin's display name) and the text typed, less its line break, as `message`;
-a handoff or a broadcast is never typed while the session is `needs_input`
-(see Crew runs).
+admin's display name) and the text typed, less its line break, as `message`,
+cut to the 500 bytes of Events (the terminal gets all of it); a handoff or a
+broadcast is never typed while the session is `needs_input` (see Crew runs).
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
 run (see Crew runs), and no `crew` otherwise.
@@ -427,9 +427,13 @@ each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern` 200 bytes tha
 does not match an empty line.
 
 The crew routes persist their changes as `crews.json` in the data directory:
-`{"crews": [...]}`. The server refuses to start when the file cannot be parsed
-or holds an invalid crew, an `id` twice or more than 50 crews. Crews are held to
-these limits: at most 50 crews; `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
+`{"crews": [...]}`. Without a data directory the listing is empty and every
+other crew route answers `503 store_unavailable`; a save that fails answers
+`500 store_failed` and changes nothing. The server refuses to start when the
+file cannot be parsed or holds an invalid crew, an `id` twice or more than 50
+crews. `openAfterLaunch` is for the workbench, which opens the crew view after
+a launch when it is set; the server stores it and does nothing else with it.
+Crews are held to these limits: at most 50 crews; `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
 not blank, at most 60 characters and without control characters (surrounding
 space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 `where` is `server` or `host` and `isolation` is `none` or `worktree`;
@@ -464,11 +468,11 @@ typed; a `manual` member waits for its start route. With `isolation: worktree`,
 `cwd` is the top of a git working tree or a directory in one, and each member
 gets `git -C <cwd> worktree add -b crew/<run>/<member>
 <cwd>/.conductor/worktrees/<run>/<member> HEAD`, a worktree of the whole
-repository, and starts in its directory that `cwd` is of the repository (`git
-rev-parse --show-prefix`), made when no commit has a file there. The first
-worktree also adds a `.conductor/` line, once, to the file `git -C <cwd>
-rev-parse --git-path info/exclude` names (making `info/` when it is missing), so
-that the worktrees stay out of the main checkout's `git status`. A `.conductor`
+repository, and starts in the directory of that worktree which `cwd` is of the
+repository (`git rev-parse --show-prefix`), made when no commit has a file
+there. The first worktree also adds a `.conductor/` line, once, to the file
+`git -C <cwd> rev-parse --git-path info/exclude` names (making `info/` when it
+is missing), so that the worktrees stay out of the main checkout's `git status`. A `.conductor`
 or `.conductor/worktrees` in `cwd` that is a symbolic link is refused before git
 runs, and so is a member whose directory in its worktree lies through a
 symbolic link that a commit holds, before anything is made through it.
@@ -586,3 +590,14 @@ handoffs arrive and as the member changes, and notes every handoff in it not
 noted yet when the member has not had its prompt, or is `needs_input` as the
 handoff at the head of the queue is about to be typed. A handoff dropped to
 make room before it was found waiting is noted as dropped only.
+
+Limits of runs, beside those of crews above: a run has at most 12 members (an
+added one included), a log of at most 200 entries (the oldest goes first) and
+at most 100 links; the server keeps 100 runs, and a launch past that forgets
+the oldest with nothing running; at most 10 handoffs wait for a member; a
+broadcast is at most 4096 bytes once made one line; and whatever Conductor
+types into a session, a prompt, a handoff or a broadcast, is one write of at
+most 32 KiB with its carriage return. A launch, a start or an added member has
+2 minutes to make its worktrees and start its sessions, and a stop 30 seconds.
+A member's diff is read at most every 10 s, four reads at a time, and a member
+not ready for its prompt gets it after 60 s.

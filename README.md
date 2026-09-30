@@ -337,7 +337,80 @@ your own network.
 
 ## Crews
 
-A crew is a saved team of agents; launching one starts a run. From a shell:
+A crew is a saved team of agents; launching one starts a **run**, with a
+session for each member as it starts. Build crews on the **Crews** page (**G**
+then **R**): a name, a shared goal, a working directory, and up to 12 members.
+Each member has a name, an agent from the catalog, optional extra arguments (for
+agents that take them), a role prompt and a start condition. The goal reaches the role prompts
+as `$GOAL` (or `${GOAL}`), which is replaced by the goal before the prompt is
+typed. Crews are saved as `crews.json` in the data directory and run on the
+server only for now (members are ordinary server sessions, under
+`allowedRoots`); the **My machine** option is disabled.
+
+A member starts `immediately` at launch, `after <member>` once that member,
+with its own prompt typed, first reports it is done (idle), or `manual`, when
+you press **Start now** on its tile. A member's role prompt is typed into its
+terminal, with Enter, once the agent is ready for it: it reports that it waits
+for input or is done, or, at least two seconds after the start, its output has
+been quiet for a second. After 60 seconds the prompt is typed anyway and the
+run's log says so. Every member's process sees `CONDUCTOR_CREW` (the crew's id),
+`CONDUCTOR_RUN` (the run's id), `CONDUCTOR_MEMBER` (its name) and `GOAL`, next
+to the usual `CONDUCTOR_SESSION_ID` and notify variables.
+
+**Worktrees.** With isolation set to *Git worktree per agent*, the working
+directory must be in a git repository that has a commit (otherwise the launch
+answers `not_a_repo`). Each member gets its own checkout and branch:
+
+```
+git worktree add -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
+```
+
+The run's id is the crew's id and eight hex digits. A member whose `cwd` is
+below the top of the repository starts in the same subdirectory of its
+worktree. The first worktree adds a `.conductor/` line to the repository's
+`.git/info/exclude`, so the worktrees stay out of `git status` without touching
+a tracked file. Conductor never deletes a worktree or a branch, not when the
+run stops and not when the crew is deleted: remove them yourself with `git
+worktree remove` and `git branch -d` once you have merged what you want. With
+*Shared working directory* every member works in the same directory.
+
+**The crew view.** `/runs/<id>` shows a live tile for every member, with its
+branch and a diff count (`+12 −3`), a feed of the members' events and the run's
+own log, and how many members need input. The diff counts the lines of tracked
+files the member's worktree adds and removes against the commit it began from,
+committed or not; untracked files are not counted, and the numbers refresh at
+most every 10 seconds. A member that has not started yet shows a placeholder,
+and a pending one offers **Start now**. The header has **Add agent** (a member
+joins the run), **Share crew** and **Stop all**; stopping ends every session
+and leaves the worktrees.
+
+- **Broadcast.** Tick the tiles of the members you want and type one line into
+  all of them at once. A member that waits on a prompt is skipped, so the line
+  cannot answer it by accident, as is one that is not running; the toast names
+  who got the line and who was skipped, and why. Each line is recorded as an
+  input in the member's activity under your display name.
+- **Share crew** creates a run link with the **View** or **Control** role. It
+  grants that role on the session of every member of the run, members added
+  later included, and on no other session; the join page lists the members.
+  Revoking it disconnects everyone who came in through it. A crew saved with
+  **Create a view link (8h)** gets a view-only link, labelled `launch`, when it
+  is launched. Its URL is shown once on the crew view and printed by `conductor
+  up`; nothing shows it again.
+
+**Handoffs.** A member passes work to another with an event, which the
+[Conductor skill](#events-and-hooks) teaches the agent to send:
+
+```bash
+"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to tests --message "/v1/users is ready"
+```
+
+Conductor types `Handoff from core: /v1/users is ready` into the member named
+by `--to`, on one line, as soon as that member is running and not waiting on a
+prompt. Up to 10 handoffs wait for a member; past that the oldest is dropped.
+A handoff to a name that is not in the run is noted in the run's log and
+nothing else happens.
+
+**From a shell.**
 
 ```bash
 conductor crews                        # one line per saved crew: id, name, members
@@ -346,9 +419,22 @@ conductor up <crew-id> [--open]        # launch a crew; prints the run, its URL 
 
 Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default
 `http://localhost:8080`) with the admin token from `--token` (env
-`CONDUCTOR_ADMIN_TOKEN`). `--open` opens the run's page in your browser. A
-crew set to create a view link gets one at launch; `conductor up` prints it on
-a third line, `view <url>`, and nothing else shows its token again.
+`CONDUCTOR_ADMIN_TOKEN`). `--open` opens the run's page in your browser.
+`conductor up` prints the run, the URL of its page and, for a crew set to create
+a view link, that link on a third line, `view <url>`.
+
+Limits:
+
+- 50 crews; 12 members a crew, and a run takes no more than that.
+- Name 60 characters, goal 2000, role prompt 4000; with the goal in it a prompt
+  is at most 32 KiB, the most a session takes in one write.
+- 32 extra arguments a member, 8 KiB in all; 512 KiB for a whole crew as saved;
+  request bodies of 1 MiB on the crew routes.
+- A broadcast line is at most 4096 bytes.
+- 10 handoffs waiting for a member; 200 entries in a run's log; 100 links for a
+  run.
+- Runs live in memory: the server keeps up to 100, and a restart forgets them
+  (the worktrees stay). Saved crews survive.
 
 ## Configuration
 

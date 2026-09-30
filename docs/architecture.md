@@ -54,6 +54,33 @@ channel with backpressure, or a relay sink that wraps frames in RELAY envelopes)
 The server never sees terminal bytes on the WebRTC path and never runs the
 command.
 
+## Crew runs
+
+A crew run is `internal/crew`'s `Engine`, and every member is an ordinary
+server session: the engine starts it through the `Launcher` interface, which
+`internal/api` implements with `createLocalSession`, the one path
+`POST /api/sessions` takes, so the working-directory check, the catalog
+lookup, the environment and the hook injection are the same as for any
+session. The session carries its run in `Info.crew`, and its process gets
+`CONDUCTOR_CREW`, `CONDUCTOR_RUN`, `CONDUCTOR_MEMBER` and `GOAL`. With
+worktree isolation the engine first runs `git worktree add` (argv, never a
+shell) and starts the member in its own worktree under
+`<cwd>/.conductor/worktrees`; it never removes one. A launch returns once the
+sessions exist; a goroutine per member, on the run's own context, then waits
+until the session is ready (its agent reports `needs_input` or `done`, or its
+output goes quiet) and types the role prompt with `Local.Type`. The engine
+listens through two hooks that never wait: a sink on the activity fan-out
+(`Engine.OnActivity`, beside the webhooks) sees every entry of every session,
+starts the `after` members when a member first reports `done` and takes a
+member's `handoff` events, and the session change hook (`Engine.OnChange`,
+chained after the SSE publish) wakes the handoffs queued for a member when it
+leaves `needs_input`: a prompt that is cleared records no entry, only a change.
+Handoffs and broadcasts are typed with `Local.TypeUnlessWaiting`, which looks
+at the attention state in the same step that finds the prompt a write would
+answer, so neither ever answers a prompt. Runs live in memory, as sessions do;
+run links are share-store links scoped to a run (`Link.RunID`), which the
+server resolves to the run's member sessions through `Engine.MemberOf`.
+
 ## Packages
 
 | Package | Responsibility |
@@ -87,7 +114,8 @@ command.
   share tokens.
 - Commands are argv arrays from the catalog; user-supplied extra arguments are
   appended element-wise only for agents that allow it. Server sessions get an
-  allowlisted environment; `CONDUCTOR_*` never reaches a child.
+  allowlisted environment; `CONDUCTOR_*` from the server's own environment never
+  reaches a child, and Conductor sets only the few a session needs itself.
 - Server session working directories must resolve under `allowedRoots` after
   symlink evaluation. File reads are confined to the session directory. In
   server sessions they never reach the data directory, the config file or the
@@ -99,7 +127,9 @@ command.
 
 ## Persistence
 
-Sessions and links remain in memory, while the data directory (`dataDir`) holds
-UI-managed state as JSON files. A server restart ends server sessions and
-forgets links. Hosted sessions survive a brief server outage through the host's
-reconnect-and-resume secret only while the server process is alive.
+Sessions, links and crew runs remain in memory, while the data directory
+(`dataDir`) holds UI-managed state as JSON files, saved crews included. A
+server restart ends server sessions and forgets links and runs (worktrees and
+their branches stay on disk). Hosted sessions survive a brief server outage
+through the host's reconnect-and-resume secret only while the server process is
+alive.

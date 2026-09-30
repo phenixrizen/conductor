@@ -12,6 +12,15 @@ Everything under Planned below shipped on the `workbench-redesign` branch.
 The list is kept as the description of what exists; see `docs/protocol.md`
 for the wire details.
 
+## Delivered (2026-09-30)
+
+- **Crews** (2a Crews, 2b Crew running). Saved teams of up to 12 agents with
+  role prompts, start conditions and optional per-member git worktrees, run
+  from the Crews page or `conductor up`; the crew view has tiles, handoffs,
+  broadcast, run links and stop-all. See the README (Crews) and
+  `docs/protocol.md` (Crew runs); hosted crews and worktree cleanup are below
+  under Future features.
+
 ## Planned
 
 ### Client only (no protocol change)
@@ -88,9 +97,7 @@ that order.
   with an adapter (table below). Any other catalog entry still works with
   bell/OSC, the new screen-pattern detector, or `conductor notify` called by
   hand. Gemini CLI is not added: it is superseded by Antigravity (`agy`).
-- **Crews** ship in full (2a and 2b): saved crews with named members, role
-  prompts, extra args, per-member git worktrees, start conditions, a crew
-  running view with tiles, feed, broadcast and stop-all, and `conductor up`.
+- **Crews** (2a and 2b) shipped in full on 2026-09-30; see Delivered above.
 
 ### Agent adapter matrix
 
@@ -117,6 +124,35 @@ that order.
 - The screen-pattern detector strips ANSI sequences and matches the last
   line after 500 ms of silence; TUIs that redraw continuously (spinners) may
   never go quiet. Ship it as opt-in per catalog entry.
+- **Crews: Claude Code's workspace-trust dialog.** A member in a fresh
+  worktree starts in a directory Claude Code has not seen, so it may open with
+  its "trust this folder" dialog. The run engine types the role prompt once the
+  session is ready (the agent waits for input, or its output has gone quiet) and
+  cannot tell that dialog from the prompt, so the dialog may take the typed
+  prompt. Launch a crew of `claude` members with worktrees in a repository
+  Claude Code has not trusted and see whether the prompts land.
+- **Crews: multi-line role prompts.** A role prompt is typed with its line
+  breaks as written, and a carriage return at the end; a handoff or a broadcast
+  is made one line first, a prompt is not. An agent TUI may submit at the first
+  newline and take the rest as further input. Try a three-line prompt in each
+  agent that matters; bracketed paste is the deferred fix.
+- **Crews: end to end.** In a git checkout under the allowed roots, create the
+  crew `api-sweep` with worktree isolation and the members `lead` (`claude`,
+  immediately), `core` (`claude`, immediately) and `tests` (`shell`, after
+  `core`), and launch it.
+  - `git worktree list` shows the new worktrees; the lead and core terminals
+    received their prompts; when core first reports done, the tests session
+    starts.
+  - From core's terminal run `conductor notify --event handoff --to tests
+    --message "/v1/users ready"`: the tests terminal shows `Handoff from core:
+    /v1/users ready`.
+  - Tick two tiles and broadcast a line: it lands in both. Flag one member as
+    needing input (`conductor notify --state needs_input` in its terminal) and
+    broadcast again: it is skipped and named in the toast.
+  - **Share crew**, open the link in a private window: every member tile is
+    there, read-only.
+  - `conductor up api-sweep` from a shell with `CONDUCTOR_ADMIN_TOKEN` set
+    prints the run URL.
 
 ## Open verification
 
@@ -149,6 +185,16 @@ Collected here so they are not lost. None of these block the planned work.
   an error; a control message takes or releases the keyboard; the People tab
   shows who holds it. Lives in `internal/session.Local` so server and host
   behave the same.
+- **Hosted crews.** Members that run on `conductor host` (a developer's
+  machine) instead of the server. The editor's **My machine** option is
+  disabled and the server refuses to launch a crew saved with `where: host`.
+  It needs the server to start sessions on a host, make worktrees there and
+  type into a hosted session (prompts, handoffs, broadcast); none of that
+  exists yet.
+- **Automatic worktree cleanup.** Conductor never deletes a worktree or a
+  branch, whether the run stops or the crew is deleted; they are removed by
+  hand (`git worktree remove`, `git branch -d`). Removing a stopped run's
+  worktrees and merged branches, after a confirmation, is future work.
 - **Runs (orchestration).** Mockup screen 1c. A run is a spec
   (`conductor.run.yaml`) of stages: plan, parallel build steps in per-step
   worktrees, verify, and a human merge gate with named approvers. Every step
