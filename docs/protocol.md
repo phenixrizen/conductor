@@ -200,10 +200,14 @@ skill runs its commands with. Only Conductor sets them: `CONDUCTOR_*` from the
 server's or the developer's environment and from an agent's `env` never reach
 a session. The token is stored
 hashed and only ever authorizes this route and `POST /api/sessions/{id}/events`
-for this one session. For a hosted
-session the state is also sent on to the host, and that counts against
-the same bucket as the events of that session (see Events): with none left the
-answer is `429 rate_limited` and the state does not change.
+for this one session. Each report, the agent's or the admin's, spends a token
+of the bucket the events of its session spend (see Events), on a server
+session and a hosted one alike: with none left the answer is
+`429 rate_limited` and the state does not change. For a hosted session the
+state is also sent on to the host. What a session sees for itself (the bell,
+an OSC notification, the screen pattern) spends no token, and a change of
+state a session applies always records its `attention` activity entry: a
+state that shows has its entry (see Events).
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
@@ -253,7 +257,13 @@ token bucket that refills continuously). An entry beyond that is not stored or
 broadcast; the session counts it and logs the first drop and every 100th at
 debug level. `join`, `leave`, `input`, `link` and `status` entries, which the
 session and the server produce themselves, skip the limit, so a chatty hook
-cannot crowd out the roster or the final `status` row.
+cannot crowd out the roster or the final `status` row. So does the
+`attention` entry of a change of attention state the session applied: a
+report through the API paid its token before it changed anything (below), and
+the bell, an OSC notification and the screen pattern are the session's own
+observations, which spend none. A state that shows always has its entry, in
+the log, on the stream and at the webhooks, however many tool events came
+before it.
 
 Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
 <agent token>` (or the admin token) and the body `{type, message?, url?, to?,
@@ -274,18 +284,23 @@ per-client limiter that the API's credential checks share: a client refused with
 `401` or `404` 20 times in quick succession (and 5 times a second after that) is
 answered `429` in place of the next refusal.
 
-A server session spends a token of its bucket on each event it records. A
-hosted session keeps no log on the server, but the server holds a bucket for
-it, of the same size (20 a second, 40 at once), and spends a token on every
-event and every attention word it sends on to the host, by this route or by
-`/attention`: the host's connection also carries its viewers' input, and closes
-when its queue is full, so a flood of reports must not reach it. With no token
-the answer is `429 rate_limited` and nothing is sent or changed. Only a report
-that goes to a connected host spends one, and the host's own reports do not.
-Otherwise the server sends the entry to the host (see Host control connection)
-and answers `202` once it is on its way. It cannot know whether the host's own
-bucket takes the entry, so an entry the host drops is dropped without a word to
-the caller; `409 host_disconnected` says that no host is connected.
+A server session spends a token of its bucket on each event it records and
+on each attention word, by this route or by `/attention`, before the word
+changes anything: with no token the answer is `429 rate_limited` and neither
+the state nor an entry is left behind. A hosted session keeps no log on the
+server, but the server holds a bucket for it, of the same size (20 a second,
+40 at once), and spends a token on every event and every attention word it
+sends on to the host, by this route or by `/attention`: the host's connection
+also carries its viewers' input, and closes when its queue is full, so a flood
+of reports must not reach it. With no token the answer is `429 rate_limited`
+and nothing is sent or changed. Only a report that goes to a connected host
+spends one, and the host's own reports do not. The host applies an attention
+word it is sent without a token of its own and records its entry, as a server
+session does. An event the server sends to the host (see Host control
+connection) is answered `202` once it is on its way. The server cannot know
+whether the host's own bucket takes it, so an event the host drops is dropped
+without a word to the caller; `409 host_disconnected` says that no host is
+connected.
 
 `conductor notify --event <type> [--message M] [--url U] [--to T] [--tool N]`
 sends an event from inside a session: it turns the `CONDUCTOR_NOTIFY_URL` of

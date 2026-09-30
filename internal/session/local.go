@@ -53,7 +53,8 @@ type Options struct {
 	// must not block. Because it runs after the lock is released, calls for
 	// different entries can overlap and arrive out of order: implementations
 	// must be safe for concurrent use. An entry the event bucket drops never
-	// reaches it.
+	// reaches it; the attention entry of an attention change the session
+	// applied always does.
 	OnActivity func(sessionID string, e ActivityEntry)
 	// Pattern, when set, is matched against the last line of the terminal
 	// after patternQuiet without output. A match marks the session needs_input
@@ -210,21 +211,39 @@ func (s *Local) markEnded(status Status) {
 }
 
 // Record appends an activity entry, broadcasts it to attached clients and
-// passes it to OnActivity. What an agent reports (attention and the six event
-// types) is limited to EventRatePerSecond entries a second on average and
-// EventBurst at once: beyond that Record does nothing else, counts the entry
-// in Dropped and returns false. join, leave, input, link and status entries
-// are the session's and the server's own; they skip the limit and spend no
-// tokens, so a chatty hook cannot starve the roster rows or the final status
-// row.
+// passes it to OnActivity. What an agent reports (the six event types) is
+// limited to EventRatePerSecond entries a second on average and EventBurst at
+// once: beyond that Record does nothing else, counts the entry in Dropped and
+// returns false. join, leave, input, link and status entries are the
+// session's and the server's own; they skip the limit and spend no tokens, so
+// a chatty hook cannot starve the roster rows or the final status row. The
+// attention entry of an attention change the session applies skips it too:
+// the session records that one itself (recordOwn). An attention entry handed
+// to Record comes from outside the session and is limited like an event,
+// although nothing records one that way today.
 func (s *Local) Record(e ActivityEntry) bool {
+	return s.record(e, bucketed(e.Type))
+}
+
+// recordOwn records an entry the session makes itself without asking the
+// event bucket, whatever its type. It records the attention entry of an
+// attention change the session has applied, which must not be dropped while
+// the state it records is showing: a report from outside paid its token
+// before the change (TrySetAttentionFull), and what the session observes
+// itself (the bell, OSC notifications, the screen pattern) is held to its own
+// pace and spends none.
+func (s *Local) recordOwn(e ActivityEntry) {
+	s.record(e, false)
+}
+
+// record is Record, with limited saying whether the entry spends a token of
+// the event bucket.
+func (s *Local) record(e ActivityEntry, limited bool) bool {
 	s.mu.Lock()
-	if bucketed(e.Type) && !s.events.Take(time.Now()) {
+	if limited && !s.events.Take(time.Now()) {
 		log := s.log
 		s.mu.Unlock()
-		if n := s.dropped.Add(1); n == 1 || n%100 == 0 {
-			log.Debug("activity dropped by the event rate limit", "type", e.Type, "dropped", n)
-		}
+		countDrop(&s.dropped, log, e.Type)
 		return false
 	}
 	// The ring write and the broadcast share one critical section, so a client
@@ -240,8 +259,17 @@ func (s *Local) Record(e ActivityEntry) bool {
 	return true
 }
 
-// Dropped counts the entries Record refused because the session's event
-// bucket was empty.
+// countDrop counts in dropped something of type typ that the event bucket
+// refused, an entry or a report, and logs the first and every 100th at debug
+// level, so that a flood does not become a log flood.
+func countDrop(dropped *atomic.Uint64, log *slog.Logger, typ string) {
+	if n := dropped.Add(1); n == 1 || n%100 == 0 {
+		log.Debug("activity dropped by the event rate limit", "type", typ, "dropped", n)
+	}
+}
+
+// Dropped counts what the session's event bucket refused: the entries Record
+// did not record and the reports TrySetAttentionFull did not apply.
 func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 
 // Activity returns the activity log, oldest first.
@@ -255,7 +283,8 @@ func (s *Local) notifyChange() {
 }
 
 // scanOutput looks for bell/OSC signals in a chunk of terminal output. A
-// burst of bells produces at most one change per 500 ms.
+// burst of bells produces at most one change per 500 ms. They are the
+// session's own observations and spend no token of the event bucket.
 func (s *Local) scanOutput(chunk []byte) {
 	for _, ev := range s.scanner.Scan(chunk) {
 		s.mu.Lock()
@@ -280,7 +309,7 @@ func (s *Local) scanOutput(chunk []byte) {
 // lock that sets the state: a report that lands between a look at the state and
 // the set would be overwritten.
 func (s *Local) firePattern(line string) {
-	s.setAttention(AttentionNeedsInput, promptMessage(line), SourcePattern, KindPrompt, nil, true)
+	s.setAttention(AttentionNeedsInput, promptMessage(line), SourcePattern, KindPrompt, nil, unlessWaiting)
 }
 
 // promptMessage is the attention message for the prompt on a line. A message
@@ -309,17 +338,47 @@ func (s *Local) SetAttention(state AttentionState, message, source string) {
 
 // SetAttentionFull records an attention change, broadcasts it to attached
 // clients and notifies OnChange. AttentionNone clears the signal along with
-// any kind and options. Unknown kinds are dropped rather than rejected.
+// any kind and options. Unknown kinds are dropped rather than rejected. It
+// asks the event bucket for nothing, and the attention entry of the change is
+// always recorded: it is for what the session observes itself and for a
+// report that has paid already, such as one the server sends on to a hosted
+// session's host once it has spent the token it keeps for that host. A report
+// from outside the session goes through TrySetAttentionFull.
 func (s *Local) SetAttentionFull(state AttentionState, message, source, kind string, options []Option) {
-	s.setAttention(state, message, source, kind, options, false)
+	s.setAttention(state, message, source, kind, options, 0)
 }
 
-// setAttention is SetAttentionFull. With unlessWaiting it changes nothing when
-// the session is needs_input already; the check and the change share one
-// critical section.
-func (s *Local) setAttention(state AttentionState, message, source, kind string, options []Option, unlessWaiting bool) {
+// TrySetAttentionFull is SetAttentionFull for a report from outside the
+// session, an agent's or an admin's through the API. The report spends a
+// token of the session's event bucket, the one Record spends on the events an
+// agent reports, before it changes anything and whether or not it changes
+// anything; the attention entry of the change it applies spends no second
+// one. With no token left it returns ErrRateLimited having changed nothing,
+// and the refusal counts in Dropped. The server spends a token of a bucket of
+// the same size before it sends a report on to a hosted session's host, so a
+// report is limited alike on both kinds of session.
+func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind string, options []Option) error {
+	return s.setAttention(state, message, source, kind, options, spendToken)
+}
+
+// attentionRules say how setAttention applies a change.
+type attentionRules uint8
+
+const (
+	// unlessWaiting changes nothing when the session is needs_input already.
+	unlessWaiting attentionRules = 1 << iota
+	// spendToken spends a token of the event bucket before anything changes,
+	// and refuses the change with ErrRateLimited when there is none.
+	spendToken
+)
+
+// setAttention is SetAttentionFull, applied as rules say. The token, the look
+// at the current state and the change share one critical section. The
+// attention entry of an applied change is recorded without asking the bucket
+// (recordOwn). An invalid state changes nothing and spends nothing.
+func (s *Local) setAttention(state AttentionState, message, source, kind string, options []Option, rules attentionRules) error {
 	if !state.Valid() {
-		return
+		return nil
 	}
 	message = CleanMessage(message)
 	if !ValidKind(kind) {
@@ -330,14 +389,20 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 		kind, options = "", nil
 	}
 	s.mu.Lock()
-	cur := s.info.Attention
-	if unlessWaiting && cur.State == AttentionNeedsInput {
+	if rules&spendToken != 0 && !s.events.Take(time.Now()) {
+		log := s.log
 		s.mu.Unlock()
-		return
+		countDrop(&s.dropped, log, ActivityAttention)
+		return ErrRateLimited
+	}
+	cur := s.info.Attention
+	if rules&unlessWaiting != 0 && cur.State == AttentionNeedsInput {
+		s.mu.Unlock()
+		return nil
 	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != AttentionNone {
@@ -352,9 +417,10 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 		if label == "" {
 			label = string(state)
 		}
-		s.Record(ActivityEntry{Type: ActivityAttention, Message: label})
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: label})
 	}
 	s.notifyChange()
+	return nil
 }
 
 func sameOptions(a, b []Option) bool {

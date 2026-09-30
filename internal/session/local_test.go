@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -881,6 +883,208 @@ func TestRecordSessionEntriesBypassTheBucket(t *testing.T) {
 		if stored[msg] || broadcast[msg] || hooked[msg] {
 			t.Errorf("%s: stored %v, broadcast %v, passed to OnActivity %v; want none", typ, stored[msg], broadcast[msg], hooked[msg])
 		}
+	}
+}
+
+// attentionEntries returns the attention entries in the session's log.
+func attentionEntries(s *Local) []ActivityEntry {
+	var out []ActivityEntry
+	for _, e := range s.Activity() {
+		if e.Type == ActivityAttention {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// attentionHook is an OnActivity hook that keeps the attention entries it is
+// passed.
+type attentionHook struct {
+	mu  sync.Mutex
+	got []ActivityEntry
+}
+
+func (h *attentionHook) hook(_ string, e ActivityEntry) {
+	if e.Type != ActivityAttention {
+		return
+	}
+	h.mu.Lock()
+	h.got = append(h.got, e)
+	h.mu.Unlock()
+}
+
+func (h *attentionHook) entries() []ActivityEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]ActivityEntry(nil), h.got...)
+}
+
+// wait returns the attention entries passed so far once there are at least
+// n, or fails the test after 3 s: the hook runs after the broadcast, on the
+// goroutine that recorded the entry.
+func (h *attentionHook) wait(t *testing.T, n int) []ActivityEntry {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if got := h.entries(); len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d attention entries passed to OnActivity, want %d", len(h.entries()), n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The session's own observations, the bell, an OSC notification and a prompt
+// the screen pattern finds, spend no token of the event bucket, and nor does
+// the attention entry of a change the session applies. So a hook that has
+// emptied the bucket with tool events cannot leave a badge showing
+// needs_input whose entry the activity log, the Events feed and the webhooks
+// never got. A host applies what the server forwards (SetAttentionFull: the
+// server spent a token of its own on it) the same way.
+func TestAttentionChangesAreRecordedWhateverTheBucketHolds(t *testing.T) {
+	cases := []struct {
+		name            string
+		pattern         *regexp.Regexp
+		apply           func(s *Local, p *fakeProc)
+		source, message string
+	}{
+		{"bell", nil, func(_ *Local, p *fakeProc) { p.outW.Write([]byte("\a")) }, SourceBell, "terminal bell"},
+		{"osc", nil, func(_ *Local, p *fakeProc) { p.outW.Write([]byte("\x1b]9;need approval\a")) }, SourceOSC, "need approval"},
+		{"pattern", regexp.MustCompile(`\? $`), func(_ *Local, p *fakeProc) { p.outW.Write([]byte("Allow Bash? ")) }, SourcePattern, "prompt: Allow Bash?"},
+		{"forwarded by the server", nil, func(s *Local, _ *fakeProc) {
+			s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil)
+		}, SourceAPI, "Allow Bash?"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var h attentionHook
+			s, p := newLocalWith(t, Options{Pattern: c.pattern, OnActivity: h.hook})
+			sink := newChanSink(false)
+			if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+				t.Fatal(err)
+			}
+			// A burst of tool events spends the bucket, which then stays empty
+			// however slowly the test runs.
+			for i := 0; i < EventBurst; i++ {
+				s.Record(ActivityEntry{Type: ActivityToolUse, Tool: "Bash"})
+			}
+			drainBucket(s)
+			if s.Record(ActivityEntry{Type: ActivityToolUse, Tool: "Bash"}) {
+				t.Fatal("a tool event got past an empty bucket")
+			}
+			dropped := s.Dropped()
+
+			c.apply(s, p)
+			att := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNeedsInput })
+			if att.Source != c.source || att.Message != c.message {
+				t.Fatalf("attention %+v", att)
+			}
+			if m := waitControl(sink, func(m map[string]any) bool {
+				return m["t"] == proto.CtlActivity && m["type"] == ActivityAttention
+			}); m == nil || m["message"] != c.message {
+				t.Fatalf("the attention entry was not broadcast: %v", m)
+			}
+			if got := attentionEntries(s); len(got) != 1 || got[0].Message != c.message {
+				t.Fatalf("the log holds the attention entries %+v, want the one for %q", got, c.message)
+			}
+			if got := h.wait(t, 1); len(got) != 1 || got[0].Message != c.message {
+				t.Fatalf("OnActivity got the attention entries %+v", got)
+			}
+			if got := s.Dropped(); got != dropped {
+				t.Fatalf("Dropped() went from %d to %d: the change asked the bucket for a token", dropped, got)
+			}
+		})
+	}
+}
+
+// A report from outside the session, an agent's or an admin's through the
+// API, pays for itself: TrySetAttentionFull spends one token before it changes
+// anything, whether or not the report changes anything, and the entry of a
+// change it applies spends no second one. With no token left the report is
+// refused whole (no state, no broadcast, no entry, no OnActivity, no
+// OnChange) and counted in Dropped.
+func TestTrySetAttentionFullSpendsOneTokenOrChangesNothing(t *testing.T) {
+	var h attentionHook
+	var changes atomic.Int32
+	s, _ := newLocalWith(t, Options{OnActivity: h.hook, OnChange: func(Info) { changes.Add(1) }})
+	sink := newChanSink(false)
+	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	// Two tokens, and none earned while the test runs.
+	s.mu.Lock()
+	s.events = EventBucket{tokens: 2, last: time.Now().Add(time.Hour)}
+	s.mu.Unlock()
+	left := func() float64 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.events.tokens
+	}
+
+	options := []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}}
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, options); err != nil {
+		t.Fatalf("a report with a token for it: %v", err)
+	}
+	if n := left(); n != 1 {
+		t.Fatalf("%v of 2 tokens left after one report, want 1", n)
+	}
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Message != "Allow Bash?" || att.Source != SourceAPI || att.Kind != KindPermission || len(att.Options) != 2 {
+		t.Fatalf("attention %+v", att)
+	}
+	if got := attentionEntries(s); len(got) != 1 || got[0].Message != "Allow Bash?" {
+		t.Fatalf("the log holds the attention entries %+v, want the report's one", got)
+	}
+	if got := h.wait(t, 1); len(got) != 1 {
+		t.Fatalf("OnActivity got %+v", got)
+	}
+
+	// The same report again changes nothing, and pays all the same.
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, options); err != nil {
+		t.Fatalf("a repeated report with a token for it: %v", err)
+	}
+	if n := left(); n != 0 {
+		t.Fatalf("%v tokens left after the repeated report, want 0", n)
+	}
+	if got := attentionEntries(s); len(got) != 1 {
+		t.Fatalf("a report that changed nothing left an entry: %+v", got)
+	}
+
+	// No token left: refused whole.
+	before, changed, dropped := s.Info().Attention, changes.Load(), s.Dropped()
+	if err := s.TrySetAttentionFull(AttentionWorking, "on it", SourceAPI, "", nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("a report with no token for it: %v, want ErrRateLimited", err)
+	}
+	if after := s.Info().Attention; after.State != before.State || after.Message != before.Message || after.Since != before.Since {
+		t.Fatalf("a refused report changed the attention from %+v to %+v", before, after)
+	}
+	if got := attentionEntries(s); len(got) != 1 {
+		t.Fatalf("a refused report left an entry: %+v", got)
+	}
+	if changes.Load() != changed {
+		t.Fatal("a refused report called OnChange")
+	}
+	if got := s.Dropped(); got != dropped+1 {
+		t.Fatalf("Dropped() = %d, want %d: the refusal counts", got, dropped+1)
+	}
+	// Frames arrive in the order they were queued: once an entry recorded after
+	// the refusal has arrived, whatever the refusal broadcast would have too.
+	s.Record(ActivityEntry{Type: ActivityLink, Message: "sentinel"})
+	if waitControl(sink, func(m map[string]any) bool { return m["message"] == "sentinel" }) == nil {
+		t.Fatal("sentinel not broadcast")
+	}
+	for i := 0; i < sink.count(); i++ {
+		if f, err := proto.Decode(sink.frame(i)); err == nil && f.Type == proto.TypeControl {
+			var m map[string]any
+			if json.Unmarshal(f.Payload, &m) == nil && (m["state"] == string(AttentionWorking) || m["message"] == "on it") {
+				t.Fatalf("the refused report was broadcast: %v", m)
+			}
+		}
+	}
+	if got := h.entries(); len(got) != 1 {
+		t.Fatalf("OnActivity got %+v after the refusal", got)
 	}
 }
 

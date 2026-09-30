@@ -91,8 +91,9 @@ func attentionState(word string) (state session.AttentionState, ok bool) {
 
 // eventType reports whether t is one of the six types of event an agent may
 // report. The entries a session records itself (join, leave, input, link,
-// status, attention) are not among them: they skip the session's rate bucket,
-// which is only safe while an agent cannot write them.
+// status, and the attention entry of a change it applied) are not among them:
+// they skip the session's rate bucket, which is only safe while an agent
+// cannot write them.
 func eventType(t string) bool {
 	switch t {
 	case session.ActivityProgress, session.ActivityArtifact, session.ActivityHandoff,
@@ -104,9 +105,12 @@ func eventType(t string) bool {
 
 // reportAttention checks an attention report and applies it to d: to a
 // server session directly, to a hosted one on the server and then on its host.
-// The attention route and the attention types of the events route share it, so
-// they cannot drift apart. It writes the response and returns false when the
-// report is refused.
+// Either way the report first spends a token of the session's bucket, a
+// server session's own or the one the server keeps for a hosted session's
+// host, and with none left it is refused with 429 rate_limited and nothing
+// changes. The attention route and the attention types of the events route
+// share it, so they cannot drift apart. It writes the response and returns
+// false when the report is refused.
 func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option) bool {
 	if len(message) > 4096 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "message too long")
@@ -126,10 +130,17 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 	}
 	switch drv := d.(type) {
 	case *session.Local:
-		drv.SetAttentionFull(state, message, source, kind, options)
+		if err := drv.TrySetAttentionFull(state, message, source, kind, options); err != nil {
+			if errors.Is(err, session.ErrRateLimited) {
+				writeSessionLimited(w)
+				return false
+			}
+			writeError(w, http.StatusInternalServerError, "internal", "the report could not be applied")
+			return false
+		}
 	case *signal.HostedSession:
 		if err := drv.SetAttentionFull(state, message, source, kind, options, true); err != nil {
-			if errors.Is(err, signal.ErrRateLimited) {
+			if errors.Is(err, session.ErrRateLimited) {
 				writeSessionLimited(w)
 				return false
 			}
@@ -140,9 +151,10 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 	return true
 }
 
-// writeSessionLimited answers a report the session's bucket has no token for:
-// a server session's own, or the one that protects a hosted session's host.
-// (The per-client limiter answers with the same code, for repeated failures.)
+// writeSessionLimited answers a report the session's bucket has no token for
+// (session.ErrRateLimited): a server session's own, or the one that protects a
+// hosted session's host. (The per-client limiter answers with the same code,
+// for repeated failures.)
 func writeSessionLimited(w http.ResponseWriter) {
 	writeError(w, http.StatusTooManyRequests, "rate_limited", "too many reports for this session")
 }
@@ -184,7 +196,8 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 // it and reports it back; the server cannot know whether the host's bucket
 // took it, so the answer is 202 once the event is on its way, 429 when the
 // server-side bucket for that host is empty, or 409 when the host is not
-// connected.
+// connected. An attention word spends a token of the same bucket on either
+// kind of session and is refused whole, with a 429, when there is none.
 func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.reportTarget(w, r)
 	if !ok {
@@ -230,7 +243,7 @@ func reportEvent(w http.ResponseWriter, d session.Driver, req eventRequest) bool
 		}
 	case *signal.HostedSession:
 		if err := drv.ForwardActivity(entry); err != nil {
-			if errors.Is(err, signal.ErrRateLimited) {
+			if errors.Is(err, session.ErrRateLimited) {
 				writeSessionLimited(w)
 				return false
 			}

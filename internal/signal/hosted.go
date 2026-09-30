@@ -19,11 +19,13 @@ import (
 
 // Errors reported to viewers and hosts.
 var (
-	ErrHostGone      = errors.New("signal: host disconnected")
-	ErrViewerGone    = errors.New("signal: viewer closed")
-	ErrSlowViewer    = errors.New("signal: slow viewer")
-	ErrSlowHost      = errors.New("signal: slow host")
-	ErrRateLimited   = errors.New("signal: too many reports for this session")
+	ErrHostGone   = errors.New("signal: host disconnected")
+	ErrViewerGone = errors.New("signal: viewer closed")
+	ErrSlowViewer = errors.New("signal: slow viewer")
+	ErrSlowHost   = errors.New("signal: slow host")
+	// ErrRateLimited is session.ErrRateLimited: a report is refused alike
+	// whichever kind of session it is for.
+	ErrRateLimited   = session.ErrRateLimited
 	ErrTooManyViewer = errors.New("signal: too many viewers")
 )
 

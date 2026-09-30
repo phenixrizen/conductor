@@ -63,22 +63,38 @@ const (
 
 // A session records EventRatePerSecond entries a second on average and
 // EventBurst at once (a token bucket, EventBucket), so a chatty hook cannot
-// flood its log. The server spends the same allowance, from a bucket of its
-// own, on the reports it forwards to a hosted session's host, so a flood of
-// them cannot fill the host's connection either. Entries the session and the
-// server produce themselves are exempt (see bucketed).
+// flood its log, and an attention report from outside the session spends a
+// token of the same bucket before it changes anything
+// (Local.TrySetAttentionFull). The server spends the same allowance, from a
+// bucket of its own, on the reports it forwards to a hosted session's host,
+// so a flood of them cannot fill the host's connection either. Entries the
+// session and the server produce themselves are exempt (see bucketed), and
+// so is the attention entry of a change the session has applied.
 const (
 	EventRatePerSecond = 20
 	EventBurst         = 40
 )
 
-// bucketed reports whether entries of type t count against a session's event
-// bucket. join, leave, input, link and status entries are produced by the
-// session and the server themselves, at the pace of people and of the
-// process, and must never wait behind an agent's reports: a chatty hook may
-// not starve the roster rows or the final status row. attention and the six
-// event types come from what an agent says or does, and so does any type not
-// listed here.
+// ErrRateLimited refuses a report from outside a session whose event bucket
+// has no token for it: nothing was applied or sent. It is returned for a
+// server session's own bucket (Local.TrySetAttentionFull) and for the one the
+// server keeps for a hosted session's host; the API answers it with 429
+// rate_limited.
+var ErrRateLimited = errors.New("session: too many reports for this session")
+
+// bucketed reports whether an entry of type t that is handed to Local.Record
+// counts against the session's event bucket. join, leave, input, link and
+// status entries are produced by the session and the server themselves, at
+// the pace of people and of the process, and must never wait behind an
+// agent's reports: a chatty hook may not starve the roster rows or the final
+// status row. The six event types come from what an agent says or does, and
+// so does any type not listed here. attention is bucketed for an entry handed
+// to Record from outside the session, although nothing records one that way
+// today: the attention entry of a change the session applies does not pass
+// here (Local.recordOwn). The report that made the change has paid for it
+// already (Local.TrySetAttentionFull), or the change is the session's own
+// observation (the bell, an OSC notification, the screen pattern), which
+// spends no token.
 func bucketed(t string) bool {
 	switch t {
 	case ActivityJoin, ActivityLeave, ActivityInput, ActivityLink, ActivityStatus:

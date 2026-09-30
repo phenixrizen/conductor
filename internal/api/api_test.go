@@ -1688,6 +1688,141 @@ func TestEventsRouteAnswersRateLimitedWhenTheBucketIsEmpty(t *testing.T) {
 	}
 }
 
+// A server session's attention words spend the token a hosted session's do
+// (TestAttentionWordsAreLimitedOnBothRoutesForAHostedSession): through either
+// route, a word the bucket has no token for is refused whole with a 429, and
+// leaves neither its state nor its entry behind. Every word accepted leaves
+// exactly one entry.
+func TestAttentionWordsAreLimitedOnBothRoutesForAServerSession(t *testing.T) {
+	routes := []struct {
+		name, suffix, field string
+		ok                  int
+	}{
+		{"attention route", "/attention", "state", http.StatusOK},
+		{"events route", "/events", "type", http.StatusAccepted},
+	}
+	for _, r := range routes {
+		t.Run(r.name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			id := e.createSession("cat")
+			d, _ := e.srv.registry.Get(id)
+			local := d.(*session.Local)
+			agent := e.agentToken(id)
+			path := "/api/sessions/" + id + r.suffix
+			states := []string{"working", "done"}
+
+			accepted := 0
+			var refused map[string]any
+			for i := 0; i < 5*session.EventBurst; i++ {
+				resp, out := e.do("POST", path, agent, map[string]any{r.field: states[i%2], "message": fmt.Sprint("n", i)})
+				if resp.StatusCode == http.StatusTooManyRequests {
+					refused = out
+					break
+				}
+				if resp.StatusCode != r.ok {
+					t.Fatalf("word %d: %d %v", i, resp.StatusCode, out)
+				}
+				accepted++
+			}
+			if errorCode(refused) != "rate_limited" {
+				t.Fatalf("%d attention words in a row were never refused as rate_limited: %v", accepted, refused)
+			}
+			if accepted < session.EventBurst || accepted > session.EventBurst+session.EventRatePerSecond {
+				t.Fatalf("accepted %d attention words before the first 429, want about %d", accepted, session.EventBurst)
+			}
+			if att := d.Info().Attention; att.Message != fmt.Sprint("n", accepted-1) {
+				t.Fatalf("attention %+v: the refused word must not be applied", att)
+			}
+			n := 0
+			for _, en := range local.Activity() {
+				if en.Type != session.ActivityAttention {
+					continue
+				}
+				if en.Message == fmt.Sprint("n", accepted) {
+					t.Fatalf("the refused word left its entry %+v", en)
+				}
+				n++
+			}
+			if n != accepted {
+				t.Fatalf("%d attention entries for %d accepted words, want one each", n, accepted)
+			}
+		})
+	}
+}
+
+// Claude Code with tool events on spends the burst on a fast subagent, then
+// asks for permission. The report is refused whole, with a 429 on either
+// route, until the bucket has a token for it; then its state and its entry
+// arrive together, in the session's log and on the admin stream, which feeds
+// the Events page and the webhooks. A badge never shows a prompt they missed.
+func TestAToolBurstCannotHideThePromptAfterIt(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	d, _ := e.srv.registry.Get(id)
+	local := d.(*session.Local)
+	agent := e.agentToken(id)
+	events := e.sse(t)
+	base := "/api/sessions/" + id
+
+	burst := func() {
+		t.Helper()
+		for i := 0; ; i++ {
+			resp, out := e.do("POST", base+"/events", agent, map[string]any{"type": "tool_use", "tool": "Bash"})
+			if resp.StatusCode == http.StatusTooManyRequests {
+				return
+			}
+			if resp.StatusCode != http.StatusAccepted || i > 5*session.EventBurst {
+				t.Fatalf("tool event %d: %d %v", i, resp.StatusCode, out)
+			}
+		}
+	}
+	for _, r := range []struct{ suffix, field string }{{"/attention", "state"}, {"/events", "type"}} {
+		burst()
+		resp, out := e.do("POST", base+r.suffix, agent, map[string]any{r.field: "needs_input", "message": "refused via " + r.suffix, "kind": "permission"})
+		if resp.StatusCode != http.StatusTooManyRequests || errorCode(out) != "rate_limited" {
+			t.Fatalf("needs_input via %s after a burst: %d %v, want 429 rate_limited", r.suffix, resp.StatusCode, out)
+		}
+		if att := d.Info().Attention; att.State != session.AttentionNone {
+			t.Fatalf("a report refused via %s left %+v", r.suffix, att)
+		}
+		for _, en := range local.Activity() {
+			if en.Type == session.ActivityAttention {
+				t.Fatalf("a report refused via %s left the entry %+v", r.suffix, en)
+			}
+		}
+	}
+
+	// The bucket earns a token every 50 ms.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, out := e.do("POST", base+"/attention", agent, map[string]any{"state": "needs_input", "message": "Allow Bash?", "kind": "permission"})
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || time.Now().After(deadline) {
+			t.Fatalf("needs_input once the bucket refills: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if att := d.Info().Attention; att.State != session.AttentionNeedsInput || att.Message != "Allow Bash?" || att.Kind != session.KindPermission {
+		t.Fatalf("attention %+v", att)
+	}
+	var entries []session.ActivityEntry
+	for _, en := range local.Activity() {
+		if en.Type == session.ActivityAttention {
+			entries = append(entries, en)
+		}
+	}
+	if len(entries) != 1 || entries[0].Message != "Allow Bash?" {
+		t.Fatalf("attention entries %+v, want the accepted report's alone", entries)
+	}
+	// The first attention entry on the stream is the accepted one: the refused
+	// reports sent none.
+	if got := activityPayload(t, e.waitEvent(t, events, isActivity("attention", id))); got["message"] != "Allow Bash?" {
+		t.Fatalf("the admin stream's first attention entry is %v", got)
+	}
+}
+
 func TestEventsRouteAuthentication(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id, other := e.createSession("cat"), e.createSession("cat")

@@ -181,12 +181,16 @@ export function useSessions() {
     revokeLink: (id: string, linkId: string) =>
       request<void>(`/api/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     join: (token: string) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token }),
+    /**
+     * Sets a session's attention state as the admin. 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, which its
+     * events share, is used up: nothing changed.
+     */
     setAttention: (id: string, state: 'needs_input' | 'working' | 'done' | 'clear', message?: string) =>
       request<{ attention: Attention }>(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: 'POST', body: { state, message } }),
     /**
      * Reports an event for a session. 202 means recorded, or on its way to the host of a hosted session (the host's own limit may still drop it).
-     * 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, is used up (its own log for a server session; for a hosted
-     * session what the server sends on to the host, attention words included), or that this client has been refused too often.
+     * 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, is used up (events and attention words alike: a server
+     * session's own, or for a hosted session what the server sends on to the host), or that this client has been refused too often.
      * 409 `host_disconnected` means a hosted session has no host connected.
      */
     sendEvent: (id: string, body: EventInput) =>
