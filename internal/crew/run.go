@@ -78,7 +78,9 @@ var (
 	errNotReady = errors.New("not ready")
 )
 
-// Diff is what a member's branch adds and removes since it began, in lines.
+// Diff is what a member's worktree adds and removes against the commit it
+// began from, in lines: tracked changes against the base, uncommitted
+// included (DiffStat).
 type Diff struct {
 	Added   int `json:"added"`
 	Removed int `json:"removed"`
@@ -100,7 +102,8 @@ type MemberState struct {
 	// Err says why a member ended before it ran: it could not start, or its
 	// process ended before its prompt was typed.
 	Err string `json:"error,omitempty"`
-	// Diff is set by GetWithDiffs for a member with a worktree.
+	// Diff is set by GetWithDiffs for a member with a worktree: tracked
+	// changes against the base, uncommitted included.
 	Diff *Diff `json:"diff,omitempty"`
 }
 
@@ -159,6 +162,8 @@ type run struct {
 	stopping bool
 	// starts counts the member starts in flight; a stop waits for them.
 	starts sync.WaitGroup
+	// excludeNoted is set once the log says info/exclude could not be written.
+	excludeNoted bool
 }
 
 type member struct {
@@ -191,7 +196,9 @@ func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool))
 // the run is stopped meanwhile, it stays, stopped, and Launch returns
 // ErrRunStopped. A crew with no members, one that runs on a host, one
 // without a valid ID or, with worktrees, one whose <cwd>/.conductor or
-// <cwd>/.conductor/worktrees is a symbolic link is not launched (ErrInvalid).
+// <cwd>/.conductor/worktrees is a symbolic link is not launched (ErrInvalid),
+// and neither is a member whose directory in its worktree lies through a
+// symbolic link.
 func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 	if err := c.validateWithID(); err != nil {
 		return nil, err
@@ -336,9 +343,13 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 		err := excludeWorktrees(ctx, r.cwd)
 		e.excludeMu.Unlock()
 		if err != nil {
-			// The worktrees work without it; git status shows them.
+			// The worktrees work without it; git status shows them. The run
+			// log says so once.
 			e.mu.Lock()
-			r.note(session.ActivityError, "could not add %s to the repository's info/exclude: %v", excludeLine, err)
+			if !r.excludeNoted {
+				r.excludeNoted = true
+				r.note(session.ActivityError, "could not add %s to the repository's info/exclude: %v", excludeLine, err)
+			}
 			e.mu.Unlock()
 		}
 		if err := AddWorktree(ctx, r.cwd, path, branch); err != nil {
@@ -352,7 +363,11 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 		}
 		e.mu.Unlock()
 		cwd = filepath.Join(path, r.prefix)
-		// A directory no commit has a file in is not in the worktree.
+		// A directory no commit has a file in is not in the worktree; one
+		// that a commit makes a symbolic link would be made where it points.
+		if err := checkNoLinks(path, r.prefix); err != nil {
+			return nil, err
+		}
 		if err := os.MkdirAll(cwd, 0o755); err != nil {
 			return nil, err
 		}

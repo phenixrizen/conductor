@@ -920,6 +920,69 @@ func TestLaunchRefusesWorktreesThroughASymlink(t *testing.T) {
 	}
 }
 
+// A directory on the way to a member's directory in its worktree that is a
+// symbolic link, as a commit may hold one, is refused (ErrInvalid) before
+// anything is made through it.
+func TestLaunchRefusesASymlinkOnTheWayToTheMembersDirectory(t *testing.T) {
+	repo := newRepo(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "scratch")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, repo, "a link out")
+	// The main checkout has a directory where the commit has the link.
+	if err := os.Remove(filepath.Join(repo, "scratch")); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(repo, "scratch", "notes")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e, fl := newEngine(t)
+	c := testCrew(immediate("lead", "Plan it."))
+	c.Isolation, c.Cwd = IsolationWorktree, cwd
+	if _, err := e.Launch(t.Context(), c); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Launch: %v", err)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 || len(fl.launched()) != 0 || len(e.List()) != 0 {
+		t.Fatalf("made %v outside, launched %v", entries, fl.launched())
+	}
+}
+
+// When the repository's info/exclude cannot be written, the worktrees work
+// without it and the run log says so once, not once per member.
+func TestAnExcludeFailureIsNotedOncePerRun(t *testing.T) {
+	repo := newRepo(t)
+	exclude := filepath.Join(repo, ".git", "info", "exclude")
+	if err := os.RemoveAll(exclude); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(exclude, 0o755); err != nil { // not a file: it cannot be read or written
+		t.Fatal(err)
+	}
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	c := testCrew(immediate("lead", "Plan it."), immediate("core", "Build it."), manual("tests", ""))
+	c.Isolation, c.Cwd = IsolationWorktree, repo
+	run, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartMember(t.Context(), run.ID, "tests"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.Get(run.ID)
+	n := 0
+	for _, entry := range got.Log {
+		if strings.Contains(entry.Message, "info/exclude") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d notes of the exclude failure: %+v", n, got.Log)
+	}
+}
+
 // A member whose prompt cannot be typed ends alone; the run and the other
 // members go on.
 func TestAPromptFailureEndsOnlyThatMember(t *testing.T) {

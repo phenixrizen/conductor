@@ -74,15 +74,16 @@ func AddWorktree(ctx context.Context, repo, path, branch string) error {
 }
 
 // DiffStat counts the lines a worktree adds and removes against base, the
-// commit it started from: git -C worktree diff --shortstat base. Commits on
-// its branch and uncommitted changes to tracked files count; untracked files
-// do not, and a member that merges another branch into its own counts that
+// commit it started from: git -C worktree diff --shortstat base --, the "--"
+// so that a file named like base does not make it a path. Commits on its
+// branch and uncommitted changes to tracked files count; untracked files do
+// not, and a member that merges another branch into its own counts that
 // branch's changes too. The engine keeps what it reads for 10 s.
 func DiffStat(ctx context.Context, worktree, base string) (added, removed int, err error) {
 	if base == "" || strings.HasPrefix(base, "-") {
 		return 0, 0, fmt.Errorf("git diff: invalid base %q", base)
 	}
-	out, err := git(ctx, worktree, "diff", "--shortstat", base)
+	out, err := git(ctx, worktree, "diff", "--shortstat", base, "--")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -178,6 +179,31 @@ func checkWorktreesDir(cwd string) error {
 	for _, dir := range []string{".conductor", worktreesDir} {
 		if fi, err := os.Lstat(filepath.Join(cwd, dir)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			return invalidf("%s in the working directory is a symbolic link: worktrees must stay inside the working directory", dir)
+		}
+	}
+	return nil
+}
+
+// checkNoLinks refuses a symbolic link on the way from root to root/rel, rel
+// a relative path: a commit may hold one, and a directory made through it
+// would be made wherever it points. It stops at the first part that does not
+// exist, which MkdirAll makes as a directory. The error matches ErrInvalid.
+func checkNoLinks(root, rel string) error {
+	path := ""
+	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(rel)), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		path = filepath.Join(path, part)
+		fi, err := os.Lstat(filepath.Join(root, path))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return invalidf("%s in the member's worktree is a symbolic link: the member's directory must stay inside the worktree", quote(filepath.ToSlash(path)))
 		}
 	}
 	return nil

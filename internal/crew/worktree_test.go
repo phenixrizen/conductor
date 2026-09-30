@@ -164,6 +164,25 @@ func TestDiffStatCountsTheBranchChanges(t *testing.T) {
 	}
 }
 
+// A file in the worktree named like the base commit does not make git read
+// the base as a path.
+func TestDiffStatWithAFileNamedLikeTheBase(t *testing.T) {
+	repo := newRepo(t)
+	path := filepath.Join(repo, ".conductor", "worktrees", "run", "core")
+	if err := AddWorktree(t.Context(), repo, path, "crew/run/core"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := headCommit(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(path, base), "x\n")
+	writeFile(t, filepath.Join(path, "README"), "one\ntwo\nthree\nfour\n")
+	if added, removed, err := DiffStat(t.Context(), path, base); err != nil || added != 1 || removed != 0 {
+		t.Fatalf("with a file named %s: +%d -%d %v", base, added, removed, err)
+	}
+}
+
 func TestParseShortstat(t *testing.T) {
 	for _, tc := range []struct {
 		in             string
