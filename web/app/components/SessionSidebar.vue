@@ -2,6 +2,9 @@
 import type { SessionInfo } from '~/composables/useSessions'
 import { filterSessions, groupSessions, relativeTime, sessionMeta } from '~/utils/sessions'
 
+/** With `runId`, only the sessions of that crew run, under a header naming it (`runName`) with a link back to its crew view. */
+const props = defineProps<{ runId?: string; runName?: string }>()
+
 const attention = useAttention()
 const events = useEvents()
 const route = useRoute()
@@ -12,10 +15,11 @@ const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput
 const now = ref(Date.now())
 let tick: number | undefined
 
-const groups = computed(() => groupSessions(filterSessions(attention.sessions.value, query.value)))
+const shown = computed(() => (props.runId ? attention.sessions.value.filter((s) => s.crew?.runId === props.runId) : attention.sessions.value))
+const groups = computed(() => groupSessions(filterSessions(shown.value, query.value)))
 /** The amber dot on a session needing input follows the Events page's Badge route for needs_input; the group and its text stay. */
 const needsDot = computed(() => events.routes.value.needs_input.badge)
-const empty = computed(() => attention.sessions.value.length === 0)
+const empty = computed(() => shown.value.length === 0)
 
 function active(id: string) {
   return route.path === `/sessions/${id}`
@@ -48,7 +52,16 @@ onBeforeUnmount(() => window.clearInterval(tick))
     </div>
 
     <div class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3.5" data-session-list>
-      <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
+      <div v-if="runId" class="flex flex-col gap-0.5 rounded-md bg-elevated/60 px-2.5 py-2" data-sidebar-run>
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Crew</span>
+        <NuxtLink :to="`/runs/${encodeURIComponent(runId)}`" class="flex items-center gap-1.5 text-sm font-semibold text-highlighted hover:underline" :aria-current="route.path === `/runs/${runId}` ? 'page' : undefined">
+          <UIcon name="i-lucide-layout-grid" class="size-4 flex-none text-muted" />
+          <span class="truncate">{{ runName || runId }}</span>
+        </NuxtLink>
+        <span v-if="route.path !== `/runs/${runId}`" class="text-xs text-muted">Only this crew's members are listed.</span>
+      </div>
+      <p v-if="empty && runId" class="px-2 py-4 text-xs text-muted leading-relaxed">No member of this crew has a session yet.</p>
+      <p v-else-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
       <section v-if="groups.needs.length" class="flex flex-col gap-0.5">
         <h3 class="flex items-center gap-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-warning">

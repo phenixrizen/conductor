@@ -149,8 +149,8 @@ export interface JoinRunMember {
 }
 
 export interface JoinInfo {
-  /** The session a session link opens. A run link's reply has `run` in its place. */
-  session: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'>
+  /** The session a session link opens; missing for a run link, whose reply has `run` in its place. */
+  session?: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'>
   /** The run a run link opens, with every member in the run's order. */
   run?: { id: string; name: string; members: JoinRunMember[] }
   role: Role

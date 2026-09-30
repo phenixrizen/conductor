@@ -18,13 +18,43 @@ function saveName() {
   nameOpen.value = false
 }
 const router = useRouter()
+const route = useRoute()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
+
+// The sidebar's group variant: on a crew view (/runs/<id>), and on the page
+// of a member session opened from it, the sidebar lists only that run's
+// members. Anywhere else it lists every session, and forgets the run.
+const crewRun = useState<{ id: string; name: string } | null>('crewRun', () => null)
+const runRoute = computed(() => (route.path.startsWith('/runs/') && typeof route.params.run === 'string' ? route.params.run : undefined))
+const sidebarRun = computed(() => {
+  if (runRoute.value) return runRoute.value
+  const c = crewRun.value
+  if (!c || !route.path.startsWith('/sessions/')) return undefined
+  const s = attention.sessions.value.find((x) => x.id === route.params.id)
+  return s?.crew?.runId === c.id ? c.id : undefined
+})
+watch(
+  () => route.path,
+  () => {
+    if (runRoute.value) {
+      if (crewRun.value?.id !== runRoute.value) crewRun.value = { id: runRoute.value, name: '' }
+    } else if (!sidebarRun.value) crewRun.value = null
+  },
+  { immediate: true },
+)
 
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
   { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
-  // The "New" tag is for this release only.
+  // The "New" tags are for this release only.
+  {
+    label: 'Crews',
+    icon: 'i-lucide-users',
+    to: '/crews',
+    active: route.path.startsWith('/crews') || !!runRoute.value,
+    badge: { label: 'New', color: 'primary', variant: 'subtle' },
+  },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events', badge: { label: 'New', color: 'primary', variant: 'subtle' } },
 ])
 
@@ -45,6 +75,7 @@ defineShortcuts({
   'g-c': () => router.push('/carousel'),
   'g-a': () => router.push('/agents'),
   'g-e': () => router.push('/events'),
+  'g-r': () => router.push('/crews'),
   alt_b: { ...inTerminal, handler: () => sidebar.toggle() },
   alt_h: { ...inTerminal, handler: () => shortcuts.show() },
   alt_n: { ...inTerminal, handler: () => launch.show() },
@@ -53,6 +84,7 @@ defineShortcuts({
   alt_c: { ...inTerminal, handler: () => router.push('/carousel') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
   alt_e: { ...inTerminal, handler: () => router.push('/events') },
+  alt_r: { ...inTerminal, handler: () => router.push('/crews') },
 })
 </script>
 
@@ -78,7 +110,7 @@ defineShortcuts({
       </template>
 
       <template #default>
-        <SessionSidebar ref="list" />
+        <SessionSidebar ref="list" :run-id="sidebarRun" :run-name="sidebarRun && crewRun?.id === sidebarRun ? crewRun.name : undefined" />
       </template>
 
       <template #footer>
