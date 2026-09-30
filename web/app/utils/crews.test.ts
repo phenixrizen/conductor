@@ -13,6 +13,7 @@ import {
   memberStatus,
   runActive,
   runCounts,
+  sidebarRunFor,
   startFrom,
   startValue,
   takeViewLink,
@@ -323,6 +324,26 @@ describe('toDraft and crewKey', () => {
     expect(crewKey(d)).not.toBe(crewKey(info))
     d.members[1]!.args = argsFrom('  ')
     expect(crewKey(d)).toBe(crewKey(info))
+  })
+})
+
+describe('sidebarRunFor', () => {
+  const tag = { runId: 'api-sweep-1a2b3c4d', crewId: 'api-sweep', member: 'core' }
+  const live = [session({ id: 's1', crew: tag }), session({ id: 's2' })]
+
+  it('is the run of a crew view', () => {
+    expect(sidebarRunFor('/runs/api-sweep-1a2b3c4d', live)).toBe('api-sweep-1a2b3c4d')
+    expect(sidebarRunFor('/runs/a%20b', [])).toBe('a b')
+  })
+
+  it('is the run of a member session however it was reached', () => {
+    expect(sidebarRunFor('/sessions/s1', live)).toBe('api-sweep-1a2b3c4d')
+  })
+
+  it('is nothing for a session outside a crew, one the store lacks, and every other page', () => {
+    expect(sidebarRunFor('/sessions/s2', live)).toBeUndefined()
+    expect(sidebarRunFor('/sessions/nope', live)).toBeUndefined()
+    for (const p of ['/', '/wall', '/crews', '/crews/api-sweep', '/runs/', '/runs/x/y', '/sessions/s1/files']) expect(sidebarRunFor(p, live), p).toBeUndefined()
   })
 })
 

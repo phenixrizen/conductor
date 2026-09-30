@@ -24,10 +24,8 @@ const run = ref<RunInfo | null>(null)
 const error = ref('')
 const gone = ref(false)
 const now = ref(Date.now())
-/** False once the page is left. */
-let alive = true
-/** The run the sidebar shows the members of (layouts/default.vue). */
-const crewRun = useState<{ id: string; name: string } | null>('crewRun', () => null)
+/** Run names by id, for the sidebar's header (layouts/default.vue). */
+const runNames = useState<Record<string, string>>('crewRunNames', () => ({}))
 /** The view link of the launch that opened this page, shown once: it lives in this page alone and goes with it, or when dismissed. */
 const launchLink = ref(takeViewLink(String(route.params.run)))
 const copy = useCopy()
@@ -42,12 +40,11 @@ async function load() {
   const id = runId.value
   try {
     const r = await api.getRun(id)
-    // A read that lands after leaving this run must not name it in the sidebar again.
-    if (!alive || id !== runId.value) return
+    if (id !== runId.value) return
     run.value = r
     error.value = ''
     gone.value = false
-    crewRun.value = { id: r.id, name: r.name }
+    if (runNames.value[r.id] !== r.name) runNames.value = { ...runNames.value, [r.id]: r.name }
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) gone.value = true
     else error.value = (e as Error).message
@@ -186,7 +183,6 @@ onMounted(() => {
   tick = window.setInterval(() => (now.value = Date.now()), 30000)
 })
 onBeforeUnmount(() => {
-  alive = false
   window.clearInterval(poll)
   window.clearInterval(tick)
   window.clearTimeout(reloadTimer)

@@ -236,6 +236,23 @@ export function broadcastSummary(r: BroadcastResult): { title: string; descripti
   return { title: `Sent to ${r.sent.length} of ${total}`, description: parts.join(' '), color }
 }
 
+/**
+ * The run whose members the sidebar lists alone (its group variant): the run of a crew view (`/runs/<id>`), or of the member session a
+ * page shows (`/sessions/<id>`), however that page was reached. Undefined everywhere else.
+ */
+export function sidebarRunFor(path: string, sessions: readonly SessionInfo[]): string | undefined {
+  const m = /^\/(runs|sessions)\/([^/]+)\/?$/.exec(path)
+  if (!m) return undefined
+  let id: string
+  try {
+    id = decodeURIComponent(m[2]!)
+  } catch {
+    return undefined
+  }
+  if (m[1] === 'runs') return id
+  return sessions.find((s) => s.id === id)?.crew?.runId
+}
+
 /** How long a launch's view link waits for its crew view to take it. */
 const VIEW_LINK_HOLD_MS = 60_000
 

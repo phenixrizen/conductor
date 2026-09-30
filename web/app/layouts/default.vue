@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
+import { sidebarRunFor } from '~/utils/crews'
 
 const { hasToken, clear } = useAdminToken()
 const showToken = ref(false)
@@ -22,26 +23,35 @@ const route = useRoute()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
 // The sidebar's group variant: on a crew view (/runs/<id>), and on the page
-// of a member session opened from it, the sidebar lists only that run's
-// members. Anywhere else it lists every session, and forgets the run.
-const crewRun = useState<{ id: string; name: string } | null>('crewRun', () => null)
-const runRoute = computed(() => (route.path.startsWith('/runs/') && typeof route.params.run === 'string' ? route.params.run : undefined))
-const sidebarRun = computed(() => {
-  if (runRoute.value) return runRoute.value
-  const c = crewRun.value
-  if (!c || !route.path.startsWith('/sessions/')) return undefined
-  const s = attention.sessions.value.find((x) => x.id === route.params.id)
-  return s?.crew?.runId === c.id ? c.id : undefined
-})
+// of any member session of a run however it was reached, the sidebar lists
+// only that run's members. The run's name comes from a cache the crew view
+// fills; for a member session opened elsewhere it is read once per run, and
+// the crew's id stands in until then (or if that fails).
+const api = useSessions()
+const sidebarRun = computed(() => sidebarRunFor(route.path, attention.sessions.value))
+const runRoute = computed(() => route.path.startsWith('/runs/'))
+const runNames = useState<Record<string, string>>('crewRunNames', () => ({}))
+const askedNames = new Set<string>()
 watch(
-  () => route.path,
-  () => {
-    if (runRoute.value) {
-      if (crewRun.value?.id !== runRoute.value) crewRun.value = { id: runRoute.value, name: '' }
-    } else if (!sidebarRun.value) crewRun.value = null
+  sidebarRun,
+  async (id) => {
+    // The crew view reads its run itself.
+    if (!id || runRoute.value || runNames.value[id] || askedNames.has(id)) return
+    askedNames.add(id)
+    try {
+      const r = await api.getRun(id)
+      runNames.value = { ...runNames.value, [r.id]: r.name }
+    } catch {
+      /* the crew id stands in */
+    }
   },
   { immediate: true },
 )
+const sidebarRunName = computed(() => {
+  const id = sidebarRun.value
+  if (!id) return undefined
+  return runNames.value[id] || attention.sessions.value.find((s) => s.crew?.runId === id)?.crew?.crewId
+})
 
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
@@ -52,7 +62,7 @@ const nav = computed<NavigationMenuItem[]>(() => [
     label: 'Crews',
     icon: 'i-lucide-users',
     to: '/crews',
-    active: route.path.startsWith('/crews') || !!runRoute.value,
+    active: route.path.startsWith('/crews') || runRoute.value,
     badge: { label: 'New', color: 'primary', variant: 'subtle' },
   },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events', badge: { label: 'New', color: 'primary', variant: 'subtle' } },
@@ -110,7 +120,7 @@ defineShortcuts({
       </template>
 
       <template #default>
-        <SessionSidebar ref="list" :run-id="sidebarRun" :run-name="sidebarRun && crewRun?.id === sidebarRun ? crewRun.name : undefined" />
+        <SessionSidebar ref="list" :run-id="sidebarRun" :run-name="sidebarRunName" />
       </template>
 
       <template #footer>
