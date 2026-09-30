@@ -125,7 +125,10 @@ export interface Integrations {
 
 export interface ShareLink {
   id: string
+  /** The session a session link opens; empty for a run link. */
   sessionId: string
+  /** The crew run a run link opens: its role on the session of every member of the run, a member added later included. */
+  runId?: string
   label?: string
   role: Role
   createdAt: string
@@ -135,10 +138,32 @@ export interface ShareLink {
   active?: number
 }
 
+/** A member of a run as the join page sees it. */
+export interface JoinRunMember {
+  name: string
+  /** Its session, only while that runs; `agentId` and `status` are then the session's. */
+  sessionId?: string
+  agentId: string
+  /** Without a session: its state in the run (`pending`, `starting` until its session exists, `ended`). */
+  status: 'pending' | 'starting' | 'running' | 'ended'
+}
+
 export interface JoinInfo {
+  /** The session a session link opens. A run link's reply has `run` in its place. */
   session: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'>
+  /** The run a run link opens, with every member in the run's order. */
+  run?: { id: string; name: string; members: JoinRunMember[] }
   role: Role
   label?: string
+}
+
+/** Why a broadcast skipped a member: waiting on a prompt, not running (no session yet, its prompt not typed yet, or ended), or not a member. */
+export type BroadcastSkipReason = 'needs_input' | 'not_running' | 'unknown'
+
+/** Reply of POST /api/runs/{run}/broadcast, both lists in the order asked. */
+export interface BroadcastResult {
+  sent: string[]
+  skipped: { member: string; reason: BroadcastSkipReason }[]
 }
 
 /** When a crew member starts in a run. */
@@ -287,6 +312,21 @@ export function useSessions() {
       request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/start`, { method: 'POST' }).then((r) => r.run),
     /** Stops every member's session; the worktrees stay. */
     stopRun: (runId: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }).then((r) => r.run),
+    /**
+     * Types `text` and a carriage return into the named members, or every member when `members` is empty or missing, recorded as input by
+     * `byName`. Line breaks and tabs become spaces and other control characters go; 400 `invalid_request` when nothing is left or it is over
+     * 4096 bytes. A member waiting on a prompt is skipped, never typed into.
+     */
+    broadcastRun: (runId: string, body: { text: string; members?: string[]; byName?: string }) =>
+      request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
+    /** A run's share links, each with the viewers attached through it to the sessions of its members. */
+    listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
+    /** Creates a run link: its role on the session of every member of the run, those added later included. The token is shown this once. */
+    createRunLink: (runId: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
+      request<{ link: ShareLink; token: string; url: string }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
+    /** Revokes a run link, closing every viewer attached through it. */
+    revokeRunLink: (runId: string, linkId: string) =>
+      request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */

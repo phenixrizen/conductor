@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -23,6 +27,16 @@ const (
 	// at the crew limits, a prompt of 4000 characters and 8 KiB of arguments,
 	// takes up to about 72 KiB of JSON.
 	maxMemberBody = 128 << 10
+	// maxBroadcast bounds the text of a broadcast, in bytes, once made one
+	// line (broadcastLine).
+	maxBroadcast = 4096
+)
+
+// Why a broadcast skips a member (broadcastSkip.Reason).
+const (
+	skipNeedsInput = "needs_input" // its session waits on a prompt, which the text must not answer
+	skipNotRunning = "not_running" // it is not running: no session yet, its prompt not typed yet, or ended
+	skipUnknown    = "unknown"     // no member of the run has the name
 )
 
 // Launch starts the session of a crew member through createLocalSession, the
@@ -175,6 +189,116 @@ func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("run stopped", "run", id)
 	s.writeRun(w, http.StatusOK, id)
+}
+
+// broadcastRequest is the body of POST /api/runs/{run}/broadcast: the text to
+// type, the members to type it into (every member when empty) and the display
+// name of the admin who sends it.
+type broadcastRequest struct {
+	Text    string   `json:"text"`
+	Members []string `json:"members"`
+	ByName  string   `json:"byName"`
+}
+
+// broadcastSkip is a member a broadcast was not typed into, and why.
+type broadcastSkip struct {
+	Member string `json:"member"`
+	Reason string `json:"reason"`
+}
+
+// broadcastLine is the line a broadcast types, less its carriage return: the
+// text with its line breaks and tabs made spaces, as a handoff's message is,
+// so that it is one line, without its other control characters, trimmed. A
+// handoff's message has had its control characters dropped by the session
+// that recorded it; a broadcast's text comes as the client sent it.
+func broadcastLine(text string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		switch {
+		case r == '\r' || r == '\n' || r == '\t':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, text))
+}
+
+// handleBroadcast types a line into the members of a run a request names, or
+// into every member: 200 {sent, skipped}, both in the order asked, a name
+// given twice typed once. It is typed with a carriage return, as
+// Local.TypeUnlessWaiting types, recorded as input by the admin's display
+// name. A member whose session waits on a prompt is skipped (needs_input), as
+// is one not running (not_running) and a name no member has (unknown).
+func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
+	var req broadcastRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	line := broadcastLine(req.Text)
+	switch {
+	case line == "":
+		writeError(w, http.StatusBadRequest, "invalid_request", "text is empty")
+		return
+	case len(line) > maxBroadcast || len(line)+1 > proto.MaxInput:
+		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("text is longer than %d bytes", maxBroadcast))
+		return
+	}
+	run, ok := s.runs.Get(r.PathValue("run"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "no such run")
+		return
+	}
+	names := req.Members
+	if len(names) == 0 {
+		for _, m := range run.Members {
+			names = append(names, m.Name)
+		}
+	}
+	byName := session.CleanName(req.ByName)
+	sent, skipped := []string{}, []broadcastSkip{}
+	seen := map[string]bool{}
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if reason := s.broadcastTo(run, name, line+"\r", byName); reason != "" {
+			skipped = append(skipped, broadcastSkip{Member: name, Reason: reason})
+		} else {
+			sent = append(sent, name)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "skipped": skipped})
+}
+
+// broadcastTo types text into the member of run with the given name, unless
+// its session waits on a prompt, and returns why it did not, or "".
+func (s *Server) broadcastTo(run crew.Run, name, text, byName string) string {
+	i := slices.IndexFunc(run.Members, func(m crew.MemberState) bool { return m.Name == name })
+	if i < 0 {
+		return skipUnknown
+	}
+	m := run.Members[i]
+	if m.Status != crew.MemberRunning {
+		return skipNotRunning
+	}
+	local, ok := s.lookupLocal(m.SessionID)
+	if !ok {
+		return skipNotRunning
+	}
+	typed, err := local.TypeUnlessWaiting(text, byName)
+	switch {
+	case err != nil:
+		// It ended, or the write failed as its process went.
+		if !errors.Is(err, session.ErrSessionEnded) {
+			s.log.Warn("broadcast: could not type into a member", "run", run.ID, "member", name, "err", err)
+		}
+		return skipNotRunning
+	case !typed:
+		return skipNeedsInput
+	}
+	return ""
 }
 
 // writeRun answers the run with the given ID, or 404 when it is gone.

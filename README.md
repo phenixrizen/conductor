@@ -421,7 +421,9 @@ must name a known `adapter`, if it names one.
 - The admin token gates launching, listing, stopping, link management and
   editing the agent catalog; share tokens grant one role on one session; host
   tokens only allow registering hosted sessions. Tokens are compared in
-  constant time and stored hashed.
+  constant time and stored hashed. A crew run's link grants its role on every
+  member session of that run, members added to the run later included, and
+  on no other session.
 - Editing the catalog is as powerful as the server user. An admin can add or
   replace any agent, built-in and configured ones included, with any argv and
   env, and it runs as the user running `conductor serve`; `disableDefaults` or

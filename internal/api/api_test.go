@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
@@ -3082,4 +3084,348 @@ func TestCrewHandoffReachesTheOtherMember(t *testing.T) {
 		t.Fatalf("done: %d %v", resp.StatusCode, out)
 	}
 	waitRunning("docs")
+}
+
+// catMember is a crew member that runs cat and has no prompt: it runs as soon
+// as its session starts.
+func catMember(name, when string) map[string]any {
+	return map[string]any{"name": name, "agentId": "cat", "prompt": "", "start": map[string]any{"when": when}}
+}
+
+// launchCrew saves a crew of members working in e's root, without worktrees,
+// launches it and returns the run's ID.
+func (e *testEnv) launchCrew(t *testing.T, name string, members ...any) string {
+	t.Helper()
+	id := e.sendCrew("POST", "/api/crews", map[string]any{
+		"name": name, "goal": "ship", "cwd": e.root, "where": "server", "isolation": "none", "members": members,
+	}, http.StatusCreated)["id"].(string)
+	resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	return out["run"].(map[string]any)["id"].(string)
+}
+
+// waitRunning waits until a member of a run is running, as GET /api/runs/{run}
+// reports it, and returns the ID of its session.
+func (e *testEnv) waitRunning(t *testing.T, runID, name string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+		m := runMember(t, out["run"].(map[string]any), name)
+		if m["status"] == "running" {
+			return m["sessionId"].(string)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s is %v", name, m)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// local returns the server session with the given ID.
+func (e *testEnv) local(id string) *session.Local {
+	e.t.Helper()
+	d, _ := e.srv.registry.Get(id)
+	l, ok := d.(*session.Local)
+	if !ok {
+		e.t.Fatalf("session %s is not a server session", id)
+	}
+	return l
+}
+
+// inputsBy returns the messages of the input entries l records by byName.
+func inputsBy(l *session.Local, byName string) []string {
+	var out []string
+	for _, a := range l.Activity() {
+		if a.Type == session.ActivityInput && a.ByName == byName {
+			out = append(out, a.Message)
+		}
+	}
+	return out
+}
+
+// outputUntil reads until the accumulated OUTPUT/SCROLLBACK contains needle
+// and returns what it read.
+func (w *wsClient) outputUntil(needle string) string {
+	w.t.Helper()
+	var acc []byte
+	for !bytes.Contains(acc, []byte(needle)) {
+		f, err := w.read()
+		if err != nil {
+			w.t.Fatalf("waiting for output %q: %v (have %q)", needle, err, acc)
+		}
+		if f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback {
+			acc = append(acc, f.Payload...)
+		}
+	}
+	return string(acc)
+}
+
+// A broadcast types its text and a carriage return into the members it names,
+// recorded as input by the admin's name; a member waiting on a prompt is
+// skipped and named, and nothing is typed into it.
+func TestBroadcastSkipsWaitingMembers(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"), catMember("web", "immediately"))
+	coreID, webID := e.waitRunning(t, runID, "core"), e.waitRunning(t, runID, "web")
+	if resp, out := e.do("POST", "/api/sessions/"+webID+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "Allow edit?"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("needs_input: %d %v", resp.StatusCode, out)
+	}
+
+	resp, out := e.do("POST", "/api/runs/"+runID+"/broadcast", adminToken, map[string]any{"text": "run the suite", "members": []any{"core", "web"}, "byName": "jd"})
+	want := map[string]any{"sent": []any{"core"}, "skipped": []any{map[string]any{"member": "web", "reason": "needs_input"}}}
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out, want) {
+		t.Fatalf("broadcast: %d %v", resp.StatusCode, out)
+	}
+	core := dialViewer(t, e, coreID, adminToken)
+	core.hello(80, 24)
+	core.expectOutput("run the suite\r\n")
+	if got := inputsBy(e.local(coreID), "jd"); !reflect.DeepEqual(got, []string{"run the suite"}) {
+		t.Fatalf("core records %q", got)
+	}
+
+	// web still waits, and got nothing: what an admin types after the
+	// broadcast comes first.
+	web := e.local(webID)
+	if st := web.Info().Attention.State; st != session.AttentionNeedsInput || len(inputsBy(web, "jd")) != 0 {
+		t.Fatalf("web is %q and records %q", st, inputsBy(web, "jd"))
+	}
+	wc := dialViewer(t, e, webID, adminToken)
+	wc.hello(80, 24)
+	wc.send(proto.Encode(proto.TypeInput, []byte("marker\r")))
+	if got := wc.outputUntil("marker"); strings.Contains(got, "run the suite") {
+		t.Fatalf("web was typed into: %q", got)
+	}
+}
+
+// A broadcast to no member in particular goes to every member, in the run's
+// order; a name no member has is skipped as unknown, and a member with no
+// session, or whose session has ended, as not running. The text is made one
+// line, bounded to 4096 bytes.
+func TestBroadcastReasonsAndLimits(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"), catMember("web", "immediately"), catMember("docs", "manual"))
+	coreID, webID := e.waitRunning(t, runID, "core"), e.waitRunning(t, runID, "web")
+	if resp, _ := e.do("DELETE", "/api/sessions/"+webID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop web: %d", resp.StatusCode)
+	}
+	e.waitEnded(webID)
+	broadcast := func(body map[string]any) (*http.Response, map[string]any) {
+		t.Helper()
+		return e.do("POST", "/api/runs/"+runID+"/broadcast", adminToken, body)
+	}
+
+	resp, out := broadcast(map[string]any{"text": " line one\nline two\ttabbed\r\nbell\x07\x1b ", "byName": "  jd\x07 "})
+	want := map[string]any{"sent": []any{"core"}, "skipped": []any{
+		map[string]any{"member": "web", "reason": "not_running"},
+		map[string]any{"member": "docs", "reason": "not_running"},
+	}}
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out, want) {
+		t.Fatalf("to everyone: %d %v", resp.StatusCode, out)
+	}
+	core := dialViewer(t, e, coreID, adminToken)
+	core.hello(80, 24)
+	core.expectOutput("line one line two tabbed  bell\r\n")
+	if got := inputsBy(e.local(coreID), "jd"); !reflect.DeepEqual(got, []string{"line one line two tabbed  bell"}) {
+		t.Fatalf("core records %q", got)
+	}
+
+	resp, out = broadcast(map[string]any{"text": "again", "members": []any{"ghost", "core", "core", "docs"}, "byName": "jd"})
+	want = map[string]any{"sent": []any{"core"}, "skipped": []any{
+		map[string]any{"member": "ghost", "reason": "unknown"},
+		map[string]any{"member": "docs", "reason": "not_running"},
+	}}
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out, want) {
+		t.Fatalf("named: %d %v", resp.StatusCode, out)
+	}
+	if got := inputsBy(e.local(coreID), "jd"); !reflect.DeepEqual(got, []string{"line one line two tabbed  bell", "again"}) {
+		t.Fatalf("core records %q", got)
+	}
+
+	// 4096 bytes once made one line, and not one more.
+	resp, out = broadcast(map[string]any{"text": "\n" + strings.Repeat("x", 4096) + "\t", "members": []any{"docs"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("4096 bytes: %d %v", resp.StatusCode, out)
+	}
+	resp, out = broadcast(map[string]any{"text": strings.Repeat("x", 4097), "members": []any{"core"}})
+	wantAPIError(t, "4097 bytes", resp, out, http.StatusBadRequest, "invalid_request", "4096")
+	resp, out = broadcast(map[string]any{"text": " \r\n\t\x07 "})
+	wantAPIError(t, "blank", resp, out, http.StatusBadRequest, "invalid_request", "")
+	resp, out = broadcast(map[string]any{"text": "hi", "to": "core"})
+	wantAPIError(t, "unknown field", resp, out, http.StatusBadRequest, "invalid_request", "")
+	if got := inputsBy(e.local(coreID), "jd"); len(got) != 2 {
+		t.Fatalf("a refused broadcast was typed: %q", got)
+	}
+	resp, out = e.do("POST", "/api/runs/nope/broadcast", adminToken, map[string]any{"text": "hi"})
+	wantAPIError(t, "unknown run", resp, out, http.StatusNotFound, "not_found", "")
+
+	_, lo := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "control"})
+	for _, token := range []string{"", "wrong", "test-host-token", lo["token"].(string)} {
+		if resp, _ := e.do("POST", "/api/runs/"+runID+"/broadcast", token, map[string]any{"text": "hi"}); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("broadcast with %q: %d", token, resp.StatusCode)
+		}
+	}
+}
+
+// A run link grants its role on the session of every member of its run, one
+// added later included, and on no other session. Revoked, it closes the
+// viewers attached through it and opens nothing more.
+func TestRunLinkGrantsViewOnEveryMember(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"), catMember("web", "immediately"))
+	coreID, webID := e.waitRunning(t, runID, "core"), e.waitRunning(t, runID, "web")
+	outside := e.createSession("cat")
+
+	resp, out := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "admin"})
+	wantAPIError(t, "bad role", resp, out, http.StatusBadRequest, "invalid_role", "")
+	resp, out = e.do("POST", "/api/runs/nope/links", adminToken, map[string]any{"role": "view"})
+	wantAPIError(t, "unknown run", resp, out, http.StatusNotFound, "not_found", "")
+	resp, out = e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "standup", "ttlSeconds": 3600})
+	link, _ := out["link"].(map[string]any)
+	token, _ := out["token"].(string)
+	if resp.StatusCode != http.StatusCreated || link["runId"] != runID || link["sessionId"] != "" || link["role"] != "view" ||
+		link["expiresAt"] == nil || out["url"] != "http://example.test/join/"+token {
+		t.Fatalf("create: %d %v", resp.StatusCode, out)
+	}
+	linkID := link["id"].(string)
+
+	attach := func(id string) *wsClient {
+		t.Helper()
+		c := dialViewer(t, e, id, token)
+		c.hello(80, 24)
+		if w := c.expectControl(proto.CtlWelcome); w["role"] != "view" || w["sessionId"] != id {
+			t.Fatalf("welcome on %s: %v", id, w)
+		}
+		c.expectControl(proto.CtlReady)
+		return c
+	}
+	viewers := []*wsClient{attach(coreID), attach(webID)}
+	dialViewer(t, e, outside, token).expectClose(proto.CloseUnauthorized)
+
+	// A member added later is covered.
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, catMember("docs", "immediately"))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("add: %d %v", resp.StatusCode, out)
+	}
+	viewers = append(viewers, attach(runMember(t, out["run"].(map[string]any), "docs")["sessionId"].(string)))
+
+	// Listed with the viewers attached through it, never with its token; not
+	// listed for a session.
+	resp, out = e.do("GET", "/api/runs/"+runID+"/links", adminToken, nil)
+	links, _ := out["links"].([]any)
+	if resp.StatusCode != http.StatusOK || len(links) != 1 {
+		t.Fatalf("list: %d %v", resp.StatusCode, out)
+	}
+	if l := links[0].(map[string]any); l["id"] != linkID || l["runId"] != runID || l["label"] != "standup" || l["active"] != 3.0 || l["token"] != nil {
+		t.Fatalf("listed %v", l)
+	}
+	if _, out := e.do("GET", "/api/sessions/"+coreID+"/links", adminToken, nil); len(out["links"].([]any)) != 0 {
+		t.Fatalf("session links %v", out)
+	}
+	resp, out = e.do("GET", "/api/runs/nope/links", adminToken, nil)
+	wantAPIError(t, "list an unknown run", resp, out, http.StatusNotFound, "not_found", "")
+
+	// Revoked only through its run.
+	for _, path := range []string{"/api/runs/other/links/" + linkID, "/api/sessions/" + coreID + "/links/" + linkID, "/api/runs/" + runID + "/links/nope"} {
+		resp, out := e.do("DELETE", path, adminToken, nil)
+		wantAPIError(t, "revoke "+path, resp, out, http.StatusNotFound, "not_found", "")
+	}
+	for _, r := range []struct{ method, path string }{
+		{"GET", "/api/runs/" + runID + "/links"}, {"POST", "/api/runs/" + runID + "/links"}, {"DELETE", "/api/runs/" + runID + "/links/" + linkID},
+	} {
+		for _, tok := range []string{"", "wrong", "test-host-token", token} {
+			if resp, _ := e.do(r.method, r.path, tok, map[string]any{"role": "view"}); resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s %s with %q: %d", r.method, r.path, tok, resp.StatusCode)
+			}
+		}
+	}
+	// The viewers read as a browser does, so that each answers its close.
+	closed := make(chan websocket.StatusCode, len(viewers))
+	for _, c := range viewers {
+		go func() {
+			for {
+				if _, err := c.read(); err != nil {
+					closed <- websocket.CloseStatus(err)
+					return
+				}
+			}
+		}()
+	}
+	if resp, _ := e.do("DELETE", "/api/runs/"+runID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	for range viewers {
+		if code := <-closed; code != proto.CloseForbidden {
+			t.Errorf("a viewer closed with %d", code)
+		}
+	}
+	dialViewer(t, e, coreID, token).expectClose(proto.CloseUnauthorized)
+	if _, out := e.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["links"].([]any)[0].(map[string]any)["revoked"] != true {
+		t.Fatalf("after revoke %v", out)
+	}
+}
+
+// GET /api/join/{token} answers a run link with its run: every member, with
+// its session only while that session runs. The link reads the session and
+// the files of a member, and of no other session.
+func TestRunLinkJoinSessionAndFiles(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	if err := os.WriteFile(filepath.Join(e.root, "notes.md"), []byte("# hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"), catMember("web", "immediately"), catMember("docs", "manual"))
+	coreID, webID := e.waitRunning(t, runID, "core"), e.waitRunning(t, runID, "web")
+	if resp, _ := e.do("DELETE", "/api/sessions/"+webID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop web: %d", resp.StatusCode)
+	}
+	e.waitEnded(webID)
+	outside := e.createSession("cat")
+	_, lo := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "control", "label": "pairing"})
+	token := lo["token"].(string)
+
+	resp, out := e.do("GET", "/api/join/"+token, "", nil)
+	want := map[string]any{
+		"run": map[string]any{"id": runID, "name": "Squad", "members": []any{
+			map[string]any{"name": "core", "sessionId": coreID, "agentId": "cat", "status": "running"},
+			map[string]any{"name": "web", "agentId": "cat", "status": "ended"},
+			map[string]any{"name": "docs", "agentId": "cat", "status": "pending"},
+		}},
+		"role": "control", "label": "pairing",
+	}
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out, want) {
+		t.Fatalf("join: %d %v", resp.StatusCode, out)
+	}
+
+	resp, out = e.do("GET", "/api/sessions/"+coreID, token, nil)
+	if resp.StatusCode != http.StatusOK || out["role"] != "control" || out["links"] != nil {
+		t.Fatalf("member session: %d %v", resp.StatusCode, out)
+	}
+	for _, path := range []string{"/api/sessions/" + outside, "/api/sessions"} {
+		if resp, _ := e.do("GET", path, token, nil); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET %s: %d", path, resp.StatusCode)
+		}
+	}
+	if status, body, _ := e.getFile(coreID, token, "notes.md", "raw"); status != http.StatusOK || body != "# hi\n" {
+		t.Fatalf("member file: %d %q", status, body)
+	}
+	if status, _, _ := e.getFile(outside, token, "notes.md", "raw"); status != http.StatusUnauthorized {
+		t.Fatalf("outside file: %d", status)
+	}
+	c := dialViewer(t, e, coreID, token)
+	c.hello(80, 24)
+	if w := c.expectControl(proto.CtlWelcome); w["role"] != "control" {
+		t.Fatalf("welcome %v", w)
+	}
+	c.c.Close(websocket.StatusNormalClosure, "")
+
+	linkID := lo["link"].(map[string]any)["id"].(string)
+	e.do("DELETE", "/api/runs/"+runID+"/links/"+linkID, adminToken, nil)
+	resp, out = e.do("GET", "/api/join/"+token, "", nil)
+	wantAPIError(t, "join after revoke", resp, out, http.StatusNotFound, "revoked", "")
 }

@@ -9,10 +9,13 @@ import (
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
-// Link is a share link record. The token itself is never stored.
+// Link is a share link record. The token itself is never stored. A link is
+// either a session's (SessionID) or a crew run's (RunID, SessionID empty): a
+// run link grants its role on the session of every member of the run.
 type Link struct {
 	ID        string       `json:"id"`
 	SessionID string       `json:"sessionId"`
+	RunID     string       `json:"runId,omitempty"`
 	Label     string       `json:"label,omitempty"`
 	Role      session.Role `json:"role"`
 	CreatedAt time.Time    `json:"createdAt"`
@@ -31,7 +34,7 @@ var (
 	ErrTooManyLinks = errors.New("share: too many links for session")
 )
 
-// MaxLinksPerSession bounds link creation.
+// MaxLinksPerSession bounds link creation, for each session and for each run.
 const MaxLinksPerSession = 100
 
 // Store is an in-memory link index.
@@ -40,19 +43,37 @@ type Store struct {
 	byHash    map[Hash]*Link
 	byID      map[string]*Link
 	bySession map[string]map[string]*Link
+	byRun     map[string]map[string]*Link
 	now       func() time.Time
 
-	// OnRevoke is invoked after a link is revoked so live viewers can be closed.
+	// OnRevoke is invoked after a session's link is revoked so live viewers
+	// can be closed.
 	OnRevoke func(sessionID, linkID string)
+	// OnRevokeRun is OnRevoke for a run's link.
+	OnRevokeRun func(runID, linkID string)
 }
 
 // NewStore creates an empty store.
 func NewStore() *Store {
-	return &Store{byHash: map[Hash]*Link{}, byID: map[string]*Link{}, bySession: map[string]map[string]*Link{}, now: func() time.Time { return time.Now().UTC() }}
+	return &Store{byHash: map[Hash]*Link{}, byID: map[string]*Link{}, bySession: map[string]map[string]*Link{},
+		byRun: map[string]map[string]*Link{}, now: func() time.Time { return time.Now().UTC() }}
 }
 
-// Create issues a new link and returns the record plus the plaintext token.
+// Create issues a new link to a session and returns the record plus the
+// plaintext token.
 func (s *Store) Create(sessionID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	return s.create(&Link{SessionID: sessionID}, s.bySession, sessionID, role, label, ttl)
+}
+
+// CreateRunLink issues a new link to a crew run and returns the record plus
+// the plaintext token.
+func (s *Store) CreateRunLink(runID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	return s.create(&Link{RunID: runID}, s.byRun, runID, role, label, ttl)
+}
+
+// create completes link, whose scope is set, and indexes it in scopes under
+// key: at most MaxLinksPerSession links per key.
+func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
 	if !role.Valid() {
 		return nil, "", ErrInvalidRole
 	}
@@ -60,22 +81,22 @@ func (s *Store) Create(sessionID string, role session.Role, label string, ttl ti
 		label = label[:120]
 	}
 	tok, hash := NewToken()
-	link := &Link{ID: session.NewID(), SessionID: sessionID, Label: label, Role: role, CreatedAt: s.now(), hash: hash}
+	link.ID, link.Label, link.Role, link.CreatedAt, link.hash = session.NewID(), label, role, s.now(), hash
 	if ttl > 0 {
 		exp := link.CreatedAt.Add(ttl)
 		link.ExpiresAt = &exp
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.bySession[sessionID]) >= MaxLinksPerSession {
+	if len(scopes[key]) >= MaxLinksPerSession {
 		return nil, "", ErrTooManyLinks
 	}
 	s.byHash[hash] = link
 	s.byID[link.ID] = link
-	if s.bySession[sessionID] == nil {
-		s.bySession[sessionID] = map[string]*Link{}
+	if scopes[key] == nil {
+		scopes[key] = map[string]*Link{}
 	}
-	s.bySession[sessionID][link.ID] = link
+	scopes[key][link.ID] = link
 	return copyLink(link), tok, nil
 }
 
@@ -108,29 +129,58 @@ func (s *Store) Get(linkID string) (*Link, bool) {
 	return copyLink(l), true
 }
 
-// Revoke marks a link unusable and notifies OnRevoke. It returns false when
-// the link does not belong to sessionID.
+// Revoke marks a session's link unusable and notifies OnRevoke. It returns
+// false when the link does not belong to sessionID.
 func (s *Store) Revoke(sessionID, linkID string) bool {
+	return s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {
+		if s.OnRevoke != nil {
+			s.OnRevoke(sessionID, linkID)
+		}
+	})
+}
+
+// RevokeRun marks a run's link unusable and notifies OnRevokeRun. It returns
+// false when the link does not belong to runID.
+func (s *Store) RevokeRun(runID, linkID string) bool {
+	return s.revoke(linkID, func(l *Link) bool { return l.RunID != "" && l.RunID == runID }, func() {
+		if s.OnRevokeRun != nil {
+			s.OnRevokeRun(runID, linkID)
+		}
+	})
+}
+
+// revoke marks the link with linkID revoked when owned says it is the
+// caller's, and calls notify, outside the lock, the first time.
+func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) bool {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
-	if !ok || link.SessionID != sessionID {
+	if !ok || !owned(link) {
 		s.mu.Unlock()
 		return false
 	}
 	already := link.Revoked
 	link.Revoked = true
 	s.mu.Unlock()
-	if !already && s.OnRevoke != nil {
-		s.OnRevoke(sessionID, linkID)
+	if !already {
+		notify()
 	}
 	return true
 }
 
 // ListBySession returns links for a session, newest first.
 func (s *Store) ListBySession(sessionID string) []*Link {
+	return s.list(s.bySession, sessionID)
+}
+
+// ListByRun returns links for a run, newest first.
+func (s *Store) ListByRun(runID string) []*Link {
+	return s.list(s.byRun, runID)
+}
+
+func (s *Store) list(scopes map[string]map[string]*Link, key string) []*Link {
 	s.mu.RLock()
-	out := make([]*Link, 0, len(s.bySession[sessionID]))
-	for _, l := range s.bySession[sessionID] {
+	out := make([]*Link, 0, len(scopes[key]))
+	for _, l := range scopes[key] {
 		out = append(out, copyLink(l))
 	}
 	s.mu.RUnlock()

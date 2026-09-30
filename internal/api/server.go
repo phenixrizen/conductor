@@ -39,6 +39,9 @@ type Server struct {
 	crews *crew.Store
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
+	// runOf answers the run a session is a member of, for run links (see
+	// principal.role). It takes no lock of the engine.
+	runOf func(sessionID string) (runID string, ok bool)
 	// fileDeny lists the directories and files no file read may reach, even
 	// inside a session's working directory (see fileDeny).
 	fileDeny []string
@@ -103,6 +106,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.events = newEventHub()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
+	s.runOf = func(sessionID string) (string, bool) {
+		runID, _, ok := s.runs.MemberOf(sessionID)
+		return runID, ok
+	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
 	// it, and its handoff is typed into the member it names. OnActivity never
@@ -120,6 +127,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if d, ok := s.registry.Get(sessionID); ok {
 			d.DisconnectLink(linkID)
 		}
+	}
+	// A run link's viewers may be on any session that was a member of its
+	// run, the run forgotten meanwhile included: every session is asked, all
+	// at once, since each close waits for its viewer's reply.
+	s.links.OnRevokeRun = func(runID, linkID string) {
+		var wg sync.WaitGroup
+		s.registry.Each(func(d session.Driver) {
+			wg.Go(func() { d.DisconnectLink(linkID) })
+		})
+		wg.Wait()
 	}
 	return s, nil
 }
@@ -145,6 +162,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/members", s.requireAdmin(s.handleAddRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/start", s.requireAdmin(s.handleStartRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/stop", s.requireAdmin(s.handleStopRun))
+	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.requireAdmin(s.handleBroadcast))
+	mux.HandleFunc("GET /api/runs/{run}/links", s.requireAdmin(s.handleListRunLinks))
+	mux.HandleFunc("POST /api/runs/{run}/links", s.requireAdmin(s.handleCreateRunLink))
+	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.requireAdmin(s.handleRevokeRunLink))
 	mux.HandleFunc("GET /api/integrations", s.requireAdmin(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.requireAdmin(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))

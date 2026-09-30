@@ -78,3 +78,79 @@ func TestEqualConstantTime(t *testing.T) {
 		t.Fatal("Equal misbehaves")
 	}
 }
+
+// A run link belongs to its run alone: listed, revoked and capped by the run,
+// never by a session, with its own revoke hook.
+func TestRunLinks(t *testing.T) {
+	s := NewStore()
+	var sessionRevokes, runRevokes []string
+	s.OnRevoke = func(sessionID, linkID string) { sessionRevokes = append(sessionRevokes, sessionID+"/"+linkID) }
+	s.OnRevokeRun = func(runID, linkID string) { runRevokes = append(runRevokes, runID+"/"+linkID) }
+	if _, _, err := s.CreateRunLink("run", "admin", "", 0); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("role: %v", err)
+	}
+	link, tok, err := s.CreateRunLink("run", session.RoleView, "standup", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.RunID != "run" || link.SessionID != "" || link.Label != "standup" || link.ExpiresAt == nil {
+		t.Fatalf("link %+v", link)
+	}
+	got, err := s.Resolve(tok)
+	if err != nil || got.ID != link.ID || got.RunID != "run" || got.SessionID != "" {
+		t.Fatalf("resolve: %+v %v", got, err)
+	}
+	if l := s.ListByRun("run"); len(l) != 1 || l[0].ID != link.ID {
+		t.Fatalf("list by run %+v", l)
+	}
+	if l := s.ListBySession(""); len(l) != 0 {
+		t.Fatalf("a run link is listed by session: %+v", l)
+	}
+	if s.Revoke("", link.ID) || s.Revoke("run", link.ID) {
+		t.Fatal("a run link is revoked as a session's")
+	}
+	if s.RevokeRun("other", link.ID) {
+		t.Fatal("revoke must check run ownership")
+	}
+	sl, _, _ := s.Create("sess", session.RoleView, "", 0)
+	if s.RevokeRun("", sl.ID) || s.RevokeRun("sess", sl.ID) {
+		t.Fatal("a session link is revoked as a run's")
+	}
+	if !s.RevokeRun("run", link.ID) {
+		t.Fatal("revoke run failed")
+	}
+	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("after revoke: %v", err)
+	}
+	s.RevokeRun("run", link.ID)
+	if len(runRevokes) != 1 || runRevokes[0] != "run/"+link.ID || len(sessionRevokes) != 0 {
+		t.Fatalf("hooks: run %v session %v", runRevokes, sessionRevokes)
+	}
+	if l := s.ListByRun("run"); len(l) != 1 || !l[0].Revoked {
+		t.Fatalf("list after revoke %+v", l)
+	}
+	// Deleting a session leaves the run links alone.
+	s.DeleteSession("")
+	if _, ok := s.Get(link.ID); !ok {
+		t.Fatal("a session's delete dropped a run link")
+	}
+}
+
+// The per-scope cap applies to each run as it does to each session.
+func TestRunLinksAreCappedPerRun(t *testing.T) {
+	s := NewStore()
+	for i := range MaxLinksPerSession {
+		if _, _, err := s.CreateRunLink("run", session.RoleView, "", 0); err != nil {
+			t.Fatalf("link %d: %v", i, err)
+		}
+	}
+	if _, _, err := s.CreateRunLink("run", session.RoleView, "", 0); !errors.Is(err, ErrTooManyLinks) {
+		t.Fatalf("past the cap: %v", err)
+	}
+	if _, _, err := s.CreateRunLink("other", session.RoleView, "", 0); err != nil {
+		t.Fatalf("another run: %v", err)
+	}
+	if _, _, err := s.Create("run", session.RoleView, "", 0); err != nil {
+		t.Fatalf("a session named like the run: %v", err)
+	}
+}

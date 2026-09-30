@@ -219,11 +219,12 @@ to every link: the number of viewers currently attached through it.
 When a controller's input clears `needs_input`, the session records
 `lastAnswer{by, byName, at, message}` in its `Info` (the prompt that was
 answered and who answered it) and an `input` activity entry. What Conductor
-types itself (a crew member's prompt or a handoff), at most 32 KiB with its
-line break as an `INPUT` frame, clears `needs_input` the same way and always
-records an `input` entry, `byName` `crew` and the text typed, less its line
-break, as `message`; a handoff is never typed while the session is
-`needs_input` (see Crew runs).
+types itself (a crew member's prompt, a handoff or a broadcast), at most 32
+KiB with its line break as an `INPUT` frame, clears `needs_input` the same way
+and always records an `input` entry, `byName` `crew` (for a broadcast, the
+admin's display name) and the text typed, less its line break, as `message`;
+a handoff or a broadcast is never typed while the session is `needs_input`
+(see Crew runs).
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
 run (see Crew runs), and no `crew` otherwise.
@@ -374,7 +375,8 @@ table says so. JSON request bodies are limited to 64 KiB (1 MiB on the crew
 routes, 128 KiB when adding a member to a run) and unknown fields are rejected. Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
-above.
+above. A run link's token is a share token on the session of every member of
+its run, and on no other.
 
 | Route | Auth | Purpose |
 |---|---|---|
@@ -396,6 +398,10 @@ above.
 | `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32767 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch, and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
 | `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch, the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
 | `POST /api/runs/{run}/stop` | admin | stop every member's session; reply `{run}` with `stoppedAt`; the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
+| `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running` or `unknown` (see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
+| `GET /api/runs/{run}/links` | admin | `{links}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; `404` when unknown |
+| `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` as for a session link; it grants its role on the session of every member of the run, a member added later included (see Crew runs); `409 too_many_links` past 100 links for the run; `404` when unknown |
+| `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `snippet` and `changed` (files already written); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
@@ -409,7 +415,7 @@ above.
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
 | `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`) and of activity entries (`activity`), see Attention and Events |
-| `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited) |
+| `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone` |
 
 The catalog routes persist their changes as `catalog.json` in the data
 directory (`dataDir`): `{"agents": [...], "hidden": [...]}`. At startup that
@@ -513,6 +519,31 @@ or to a member with no session yet or whose session has ended, is only noted
 in the run log, and so is each waiting handoff dropped when its member's
 session ends or the run stops. A handoff from a session outside any run, or
 reported as its run stops, is an event like any other and nothing more.
+
+`POST /api/runs/{run}/broadcast` types a line into the members of the run
+that `members` names, a name given twice once, or into every member when it
+is empty. The text has its line breaks and tabs made spaces, as a handoff's
+message has, its other control characters dropped and surrounding space
+trimmed; what is left must not be empty or over 4096 bytes (`400
+invalid_request`). It is typed with a carriage return and recorded as an
+`input` entry by `byName`, cleaned as a viewer's display name is (`guest` when
+empty). A member is skipped, and listed in `skipped` with the reason, when its
+session waits on a prompt (`needs_input`: as for a handoff, the session looks
+at its state in the same step in which it finds the prompt the text would
+answer, so a broadcast never answers a prompt), when it is not `running`
+(`not_running`: `pending`, `starting` with its prompt not typed yet, or
+`ended`), or when no member of the run has the name (`unknown`). `sent` and `skipped` keep the
+order of `members`, or of the run.
+
+A run link (`POST /api/runs/{run}/links`) grants its role on the session of
+every member of the run, one added later included, and on no other session:
+the viewer WebSocket, `GET /api/sessions/{id}` and the file route take its
+token as they take a session link's for its session, and `GET
+/api/join/{token}` answers the run and its members. A run link is listed,
+capped at 100 and revoked through its run alone; revoking it closes the
+viewers attached through it on every session. Once the server forgets the run
+(past 100 runs), the link opens nothing and the join route answers `404
+run_gone`; a restart forgets links and runs alike.
 
 The run log is the run's own record beside its sessions' activity, oldest
 first; each entry is an activity entry of type `status` or `error` whose
