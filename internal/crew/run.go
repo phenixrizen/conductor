@@ -148,6 +148,11 @@ type Engine struct {
 	mu    sync.Mutex
 	runs  map[string]*run
 	order []*run // oldest first
+
+	// OnForget is called with the ID of each run the engine forgets: past
+	// maxRuns, or after a launch that failed. It runs under mu, so it must
+	// not call the engine or wait. Set it before the first launch.
+	OnForget func(runID string)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -793,7 +798,8 @@ func (e *Engine) idle(r *run) bool {
 	return true
 }
 
-// forget drops r and the index of its sessions. The caller holds e.mu.
+// forget drops r and the index of its sessions, and tells OnForget. The
+// caller holds e.mu.
 func (e *Engine) forget(r *run) {
 	delete(e.runs, r.id)
 	e.order = slices.DeleteFunc(e.order, func(o *run) bool { return o == r })
@@ -803,6 +809,20 @@ func (e *Engine) forget(r *run) {
 		}
 	}
 	r.cancel()
+	if e.OnForget != nil {
+		e.OnForget(r.id)
+	}
+}
+
+// Note adds an entry of type typ with msg to the log of the run with the
+// given ID, cleaned and bounded as the run's own entries; a run the engine
+// does not have takes none.
+func (e *Engine) Note(runID, typ, msg string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r, ok := e.runs[runID]; ok {
+		r.note(typ, "%s", msg)
+	}
 }
 
 // MemberOf reports the run and the member a session belongs to.

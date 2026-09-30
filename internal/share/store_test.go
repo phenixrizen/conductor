@@ -2,6 +2,8 @@ package share
 
 import (
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,5 +154,68 @@ func TestRunLinksAreCappedPerRun(t *testing.T) {
 	}
 	if _, _, err := s.Create("run", session.RoleView, "", 0); err != nil {
 		t.Fatalf("a session named like the run: %v", err)
+	}
+}
+
+// DeleteRun forgets every link of a run and returns the IDs of those not
+// revoked, whose viewers may still be attached; other runs' links and
+// sessions' links stay.
+func TestDeleteRun(t *testing.T) {
+	s := NewStore()
+	live, liveTok, _ := s.CreateRunLink("run", session.RoleView, "", 0)
+	revoked, revokedTok, _ := s.CreateRunLink("run", session.RoleControl, "", 0)
+	s.RevokeRun("run", revoked.ID)
+	other, otherTok, _ := s.CreateRunLink("other", session.RoleView, "", 0)
+	sl, sessTok, _ := s.Create("run", session.RoleView, "", 0)
+
+	if ids := s.DeleteRun("run"); !slices.Equal(ids, []string{live.ID}) {
+		t.Fatalf("deleted %v, want [%s]", ids, live.ID)
+	}
+	for _, tok := range []string{liveTok, revokedTok} {
+		if _, err := s.Resolve(tok); !errors.Is(err, ErrUnknownToken) {
+			t.Fatalf("after delete: %v", err)
+		}
+	}
+	if _, ok := s.Get(live.ID); ok {
+		t.Fatal("the link is still found by ID")
+	}
+	if l := s.ListByRun("run"); len(l) != 0 {
+		t.Fatalf("still listed %+v", l)
+	}
+	if got, err := s.Resolve(otherTok); err != nil || got.ID != other.ID {
+		t.Fatalf("another run's link: %+v %v", got, err)
+	}
+	if got, err := s.Resolve(sessTok); err != nil || got.ID != sl.ID {
+		t.Fatalf("a session's link: %+v %v", got, err)
+	}
+	if ids := s.DeleteRun("run"); len(ids) != 0 {
+		t.Fatalf("deleted again %v", ids)
+	}
+}
+
+// Resolve reads a link under the store's lock, so it may run while the link
+// is revoked (go test -race).
+func TestResolveWhileRevoking(t *testing.T) {
+	s := NewStore()
+	link, tok, _ := s.CreateRunLink("run", session.RoleView, "", 0)
+	sl, sessTok, _ := s.Create("sess", session.RoleView, "", 0)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 200 {
+				_, _ = s.Resolve(tok)
+				_, _ = s.Resolve(sessTok)
+			}
+		})
+	}
+	wg.Go(func() {
+		for range 200 {
+			s.RevokeRun("run", link.ID)
+			s.Revoke("sess", sl.ID)
+		}
+	})
+	wg.Wait()
+	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("after revoke: %v", err)
 	}
 }

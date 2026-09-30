@@ -391,6 +391,8 @@ func TestEarlyExitDropsPrompt(t *testing.T) {
 func TestLaunchFailureStopsStartedMembers(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.onLaunch = printOnce
+	var forgotten []string
+	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
 	limit := errors.New("session limit reached")
 	fl.fail["core"] = limit
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it."), immediate("web", "Style it."), manual("tests", "")))
@@ -412,6 +414,9 @@ func TestLaunchFailureStopsStartedMembers(t *testing.T) {
 	}
 	if _, _, ok := e.MemberOf(lead.Info().ID); ok {
 		t.Fatal("the stopped session still belongs to a run")
+	}
+	if len(forgotten) != 1 || !strings.HasPrefix(forgotten[0], "api-sweep-") {
+		t.Fatalf("OnForget saw %v", forgotten)
 	}
 }
 
@@ -847,6 +852,8 @@ func TestRunLogKeepsTheNewest(t *testing.T) {
 // run that has nothing running.
 func TestOldRunsAreForgotten(t *testing.T) {
 	e, _ := newEngine(t)
+	var forgotten []string
+	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
 	var first, second string
 	for i := range maxRuns + 1 {
 		run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))
@@ -865,6 +872,32 @@ func TestOldRunsAreForgotten(t *testing.T) {
 	}
 	if _, ok := e.Get(second); !ok || len(e.List()) != maxRuns {
 		t.Fatalf("%d runs kept", len(e.List()))
+	}
+	if !slices.Equal(forgotten, []string{first}) {
+		t.Fatalf("OnForget saw %v, want [%s]", forgotten, first)
+	}
+}
+
+// Note adds an entry to a run's log, cleaned and bounded as the run's own;
+// a run the engine does not have takes none.
+func TestNoteAddsToTheRunLog(t *testing.T) {
+	e, _ := newEngine(t)
+	run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Note(run.ID, session.ActivityLink, "link created: standup\x07 (view)")
+	e.Note("nope", session.ActivityLink, "lost")
+	got, _ := e.Get(run.ID)
+	last := got.Log[len(got.Log)-1]
+	if last.Type != session.ActivityLink || last.Message != "link created: standup (view)" || last.At.IsZero() {
+		t.Fatalf("last entry %+v", last)
+	}
+	for range maxRunLog {
+		e.Note(run.ID, session.ActivityLink, "again")
+	}
+	if got, _ := e.Get(run.ID); len(got.Log) != maxRunLog {
+		t.Fatalf("%d entries", len(got.Log))
 	}
 }
 

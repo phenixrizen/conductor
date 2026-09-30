@@ -110,6 +110,15 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		runID, _, ok := s.runs.MemberOf(sessionID)
 		return runID, ok
 	}
+	// A run the engine forgets takes its links: under the engine's lock only
+	// the share store's maps change (the store never calls the engine); the
+	// viewers attached through them are closed as on a revoke, on a goroutine
+	// of their own.
+	s.runs.OnForget = func(runID string) {
+		if live := s.links.DeleteRun(runID); len(live) > 0 {
+			go s.disconnectLinks(live)
+		}
+	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
 	// it, and its handoff is typed into the member it names. OnActivity never
@@ -128,17 +137,25 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			d.DisconnectLink(linkID)
 		}
 	}
-	// A run link's viewers may be on any session that was a member of its
-	// run, the run forgotten meanwhile included: every session is asked, all
-	// at once, since each close waits for its viewer's reply.
-	s.links.OnRevokeRun = func(runID, linkID string) {
-		var wg sync.WaitGroup
-		s.registry.Each(func(d session.Driver) {
-			wg.Go(func() { d.DisconnectLink(linkID) })
-		})
-		wg.Wait()
-	}
+	s.links.OnRevokeRun = func(runID, linkID string) { s.disconnectLinks([]string{linkID}) }
 	return s, nil
+}
+
+// disconnectLinks closes the viewers attached through any of linkIDs, run
+// links, and returns once they are closed. Their viewers may be on any session
+// that was a member of the run, the run forgotten meanwhile included: every
+// session is asked, all at once, since each close waits for its viewer's
+// reply.
+func (s *Server) disconnectLinks(linkIDs []string) {
+	var wg sync.WaitGroup
+	s.registry.Each(func(d session.Driver) {
+		wg.Go(func() {
+			for _, id := range linkIDs {
+				d.DisconnectLink(id)
+			}
+		})
+	})
+	wg.Wait()
 }
 
 // Handler returns the routed handler with middleware applied.

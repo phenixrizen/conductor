@@ -532,8 +532,10 @@ session waits on a prompt (`needs_input`: as for a handoff, the session looks
 at its state in the same step in which it finds the prompt the text would
 answer, so a broadcast never answers a prompt), when it is not `running`
 (`not_running`: `pending`, `starting` with its prompt not typed yet, or
-`ended`), or when no member of the run has the name (`unknown`). `sent` and `skipped` keep the
-order of `members`, or of the run.
+`ended`), or when no member of the run has the name (`unknown`). A write to a
+member's process that fails, as it does when the process has just exited, is
+reported as `not_running` too; the server logs it, without the text. `sent`
+and `skipped` keep the order of `members`, or of the run.
 
 A run link (`POST /api/runs/{run}/links`) grants its role on the session of
 every member of the run, one added later included, and on no other session:
@@ -541,13 +543,18 @@ the viewer WebSocket, `GET /api/sessions/{id}` and the file route take its
 token as they take a session link's for its session, and `GET
 /api/join/{token}` answers the run and its members. A run link is listed,
 capped at 100 and revoked through its run alone; revoking it closes the
-viewers attached through it on every session. Once the server forgets the run
-(past 100 runs), the link opens nothing and the join route answers `404
-run_gone`; a restart forgets links and runs alike.
+viewers attached through it on every session (`4403`). Creating and revoking
+one are noted in the run log. When the server forgets the run (past 100 runs,
+the oldest with nothing running), its links go with it, as a session's go with
+the session: they open nothing, the join route answers `404 invalid_link`, and
+the viewers still attached through them, to the ended sessions of its members,
+are closed with `4403` as on a revoke. The join route answers `404 run_gone`
+only when the run is forgotten as the link is being resolved. A restart
+forgets links and runs alike.
 
 The run log is the run's own record beside its sessions' activity, oldest
-first; each entry is an activity entry of type `status` or `error` whose
-`message` is one of these:
+first; each entry is an activity entry of type `status`, `error` or `link`
+whose `message` is one of these:
 
 | Entry | `type` | `message` |
 |---|---|---|
@@ -567,6 +574,8 @@ first; each entry is an activity entry of type `status` or `error` whose
 | handoff to a member that is not running | `error` | `handoff to a member that is not running, from <a> to <b>` |
 | exclude | `error` | `could not add .conductor/ to the repository's info/exclude: <why>`, at most once a run |
 | stopped | `status` | `stopped` |
+| link created | `link` | `link created: <label> (<role>)`, the label `unlabelled` when there is none, as for a session's link |
+| link revoked | `link` | `link revoked: <label>`, likewise |
 
 Every handoff a member reports while its run is not stopping is noted once as
 delivered, dropped, to an unknown member, to itself or to a member that is not

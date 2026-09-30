@@ -100,12 +100,13 @@ func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key strin
 	return copyLink(link), tok, nil
 }
 
-// Resolve returns the live link for a presented token.
+// Resolve returns the live link for a presented token. It reads the link
+// under the lock, as a revoke writes it.
 func (s *Store) Resolve(tok string) (*Link, error) {
 	h := HashToken(tok)
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	link, ok := s.byHash[h]
-	s.mu.RUnlock()
 	if !ok {
 		return nil, ErrUnknownToken
 	}
@@ -197,6 +198,24 @@ func (s *Store) DeleteSession(sessionID string) {
 		delete(s.byID, id)
 	}
 	delete(s.bySession, sessionID)
+}
+
+// DeleteRun forgets every link of a run, as DeleteSession does a session's,
+// and returns the IDs of those that were not revoked: viewers may still be
+// attached through them.
+func (s *Store) DeleteRun(runID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var live []string
+	for id, l := range s.byRun[runID] {
+		if !l.Revoked {
+			live = append(live, id)
+		}
+		delete(s.byHash, l.hash)
+		delete(s.byID, id)
+	}
+	delete(s.byRun, runID)
+	return live
 }
 
 func copyLink(l *Link) *Link {

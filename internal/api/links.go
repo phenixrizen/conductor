@@ -116,6 +116,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		writeLinkError(w, err, "too many links for this run")
 		return
 	}
+	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
 	s.writeLink(w, link, token)
 }
 
@@ -148,12 +149,18 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRevokeRunLink revokes a run's link, which closes every viewer
-// attached through it.
+// attached through it, and notes it in the run's log.
 func (s *Server) handleRevokeRunLink(w http.ResponseWriter, r *http.Request) {
-	if !s.links.RevokeRun(r.PathValue("run"), r.PathValue("linkId")) {
+	id, linkID := r.PathValue("run"), r.PathValue("linkId")
+	label := ""
+	if l, ok := s.links.Get(linkID); ok {
+		label = l.Label
+	}
+	if !s.links.RevokeRun(id, linkID) {
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}
+	s.runs.Note(id, session.ActivityLink, "link revoked: "+linkLabelOr(label))
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -246,7 +246,7 @@ export interface RunInfo {
   startedAt: string
   stoppedAt?: string
   members: RunMember[]
-  /** The run's own log, oldest first, at most 200 entries: launched, member started, prompt typed, stopped. */
+  /** The run's own log, oldest first, at most 200 entries: launched, member started, prompt typed, run links created and revoked, stopped. */
   log: ActivityEntry[]
 }
 

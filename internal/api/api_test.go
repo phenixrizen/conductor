@@ -3005,21 +3005,7 @@ func TestCrewHandoffReachesTheOtherMember(t *testing.T) {
 		_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
 		return runMember(t, out["run"].(map[string]any), name)
 	}
-	waitRunning := func(name string) string {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			m := memberNow(name)
-			if m["status"] == "running" {
-				return m["sessionId"].(string)
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s is %v", name, m)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	leadID, testsID := waitRunning("lead"), waitRunning("tests")
+	leadID, testsID := e.waitRunning(t, runID, "lead"), e.waitRunning(t, runID, "tests")
 	agent := e.agentToken(leadID)
 
 	resp, out = e.do("POST", "/api/sessions/"+leadID+"/events", agent, map[string]any{"type": "handoff", "to": "tests", "message": "run the suite"})
@@ -3083,7 +3069,7 @@ func TestCrewHandoffReachesTheOtherMember(t *testing.T) {
 	if resp, out := e.do("POST", "/api/sessions/"+leadID+"/events", agent, map[string]any{"type": "done"}); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("done: %d %v", resp.StatusCode, out)
 	}
-	waitRunning("docs")
+	e.waitRunning(t, runID, "docs")
 }
 
 // catMember is a crew member that runs cat and has no prompt: it runs as soon
@@ -3367,6 +3353,76 @@ func TestRunLinkGrantsViewOnEveryMember(t *testing.T) {
 	dialViewer(t, e, coreID, token).expectClose(proto.CloseUnauthorized)
 	if _, out := e.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["links"].([]any)[0].(map[string]any)["revoked"] != true {
 		t.Fatalf("after revoke %v", out)
+	}
+	// The run log has the link created and revoked, and never its token.
+	wantRunLog(t, e, runID, token, "link created: standup (view)", "link revoked: standup")
+}
+
+// wantRunLog requires the log of a run to have a link entry with each of
+// messages, and nowhere the text never.
+func wantRunLog(t *testing.T, e *testEnv, runID, never string, messages ...string) {
+	t.Helper()
+	_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	log, _ := out["run"].(map[string]any)["log"].([]any)
+	raw, _ := json.Marshal(log)
+	if strings.Contains(string(raw), never) {
+		t.Fatalf("the run log has %q: %s", never, raw)
+	}
+	for _, msg := range messages {
+		if !slices.ContainsFunc(log, func(a any) bool {
+			entry := a.(map[string]any)
+			return entry["type"] == session.ActivityLink && entry["message"] == msg
+		}) {
+			t.Errorf("the run log has no link entry %q: %s", msg, raw)
+		}
+	}
+}
+
+// A run the engine forgets, past its 100 runs, takes its links with it: they
+// open nothing any more, the join page no longer knows them, and the viewers
+// attached through them are closed as on a revoke. A session's own link to a
+// member's session stays.
+func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"))
+	coreID := e.waitRunning(t, runID, "core")
+	_, lo := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+	token := lo["token"].(string)
+	_, so := e.do("POST", "/api/sessions/"+coreID+"/links", adminToken, map[string]any{"role": "view"})
+	sessionToken := so["token"].(string)
+	wantRunLog(t, e, runID, token, "link created: unlabelled (view)")
+
+	viewer := dialViewer(t, e, coreID, token)
+	viewer.hello(80, 24)
+	viewer.expectControl(proto.CtlReady)
+	// Stopped, the run has nothing running: the first to go.
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	viewer.expectControl(proto.CtlStatus)
+
+	idle := e.sendCrew("POST", "/api/crews", map[string]any{
+		"name": "Idle", "goal": "wait", "cwd": e.root, "where": "server", "isolation": "none",
+		"members": []any{catMember("lead", "manual")},
+	}, http.StatusCreated)["id"].(string)
+	for i := range 100 {
+		if resp, out := e.do("POST", "/api/crews/"+idle+"/launch", adminToken, nil); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("launch %d: %d %v", i, resp.StatusCode, out)
+		}
+	}
+	resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	wantAPIError(t, "the forgotten run", resp, out, http.StatusNotFound, "not_found", "")
+
+	viewer.expectClose(proto.CloseForbidden)
+	resp, out = e.do("GET", "/api/join/"+token, "", nil)
+	wantAPIError(t, "join", resp, out, http.StatusNotFound, "invalid_link", "")
+	dialViewer(t, e, coreID, token).expectClose(proto.CloseUnauthorized)
+	if resp, _ := e.do("GET", "/api/sessions/"+coreID, token, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the member's session: %d", resp.StatusCode)
+	}
+	if resp, out := e.do("GET", "/api/join/"+sessionToken, "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the session's own link: %d %v", resp.StatusCode, out)
 	}
 }
 
