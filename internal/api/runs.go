@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	// runTimeout bounds a launch or a member start, which waits up to a
-	// minute for each member to be ready. It runs to its end when the client
-	// goes away: the run is the server's, and GET /api/runs finds it.
+	// runTimeout bounds a launch or a member start: making the worktrees and
+	// starting the sessions. It runs to its end when the client goes away:
+	// the run is the server's, and GET /api/runs finds it. The prompts are
+	// typed afterwards, on the run's own context.
 	runTimeout = 2 * time.Minute
 	// maxMemberBody bounds the body of POST /api/runs/{run}/members: a member
 	// at the crew limits, a prompt of 4000 characters and 8 KiB of arguments,
@@ -68,8 +69,9 @@ func runContext(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), runTimeout)
 }
 
-// handleLaunchCrew launches a saved crew as a run: 201 {run} once every
-// member that starts immediately has its prompt.
+// handleLaunchCrew launches a saved crew as a run: 201 {run} once the session
+// of every member that starts immediately exists; each prompt is typed once
+// its session is ready.
 func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 	if s.crews == nil {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
@@ -120,7 +122,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAddRunMember adds a member to a run: 201 {run}. A member that starts
-// immediately has its prompt by then.
+// immediately has its session by then.
 func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
 	var m crew.Member
 	if err := decodeJSONLimit(w, r, &m, maxMemberBody); err != nil {
@@ -142,8 +144,7 @@ func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
 		s.runError(w, "add member", id, err)
 		return
 	}
-	run, _ := s.runs.Get(id)
-	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
+	s.writeRun(w, http.StatusCreated, id)
 }
 
 // handleStartRunMember starts a pending member by hand: 200 {run}.
@@ -155,22 +156,35 @@ func (s *Server) handleStartRunMember(w http.ResponseWriter, r *http.Request) {
 		s.runError(w, "start member", id, err)
 		return
 	}
-	run, _ := s.runs.Get(id)
-	writeJSON(w, http.StatusOK, map[string]any{"run": run})
+	s.writeRun(w, http.StatusOK, id)
 }
 
-// handleStopRun stops every member of a run: 200 {run}. The worktrees stay.
+// handleStopRun stops every member of a run: 200 {run}, marked stopped. The
+// worktrees stay. A session that did not stop cleanly is logged; the run is
+// stopped all the same.
 func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
 	defer cancel()
-	if err := s.runs.Stop(ctx, id); err != nil {
-		s.runError(w, "stop", id, err)
+	switch err := s.runs.Stop(ctx, id); {
+	case errors.Is(err, crew.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "no such run")
 		return
+	case err != nil:
+		s.log.Warn("run stop: a session did not stop cleanly", "run", id, "err", err)
 	}
 	s.log.Info("run stopped", "run", id)
-	run, _ := s.runs.Get(id)
-	writeJSON(w, http.StatusOK, map[string]any{"run": run})
+	s.writeRun(w, http.StatusOK, id)
+}
+
+// writeRun answers the run with the given ID, or 404 when it is gone.
+func (s *Server) writeRun(w http.ResponseWriter, status int, id string) {
+	run, ok := s.runs.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "no such run")
+		return
+	}
+	writeJSON(w, status, map[string]any{"run": run})
 }
 
 // runError answers an error of the run engine. A member's session that could

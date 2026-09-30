@@ -388,12 +388,12 @@ above.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 512 KiB; `404` when unknown; `409 too_many_crews` |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once every member that starts immediately has its prompt typed or has ended; `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have or arguments to an agent that takes none; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is not the top of a git repository with a commit; a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
 | `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first |
-| `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}`; `404` when unknown |
-| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once a member that starts immediately has its prompt; `400 invalid_crew` for an invalid member, a name the run has, an `after` naming no member of the run, a 13th member or an agent as at launch; `409 run_stopped`; `404` when unknown |
-| `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its prompt is typed; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
-| `POST /api/runs/{run}/stop` | admin | stop every member's session; reply `{run}` with `stoppedAt`; the worktrees stay; stopping again changes nothing; `404` when unknown |
+| `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}` (see Crew runs); `404` when unknown |
+| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch, and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
+| `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch, the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
+| `POST /api/runs/{run}/stop` | admin | stop every member's session; reply `{run}` with `stoppedAt`; the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `snippet` and `changed` (files already written); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
@@ -445,27 +445,45 @@ it was cut.
 
 `POST /api/crews/{id}/launch` starts a run: every member becomes an ordinary
 server session, created as `POST /api/sessions` creates one (its `cwd` through
-the same check, its agent from the catalog, its hooks injected), named after
-the member and tagged with `crew`. Its process also receives `CONDUCTOR_CREW`,
-`CONDUCTOR_RUN`, `CONDUCTOR_MEMBER` and `GOAL`. A run's `id` is
-`<crew id>-<8 hex>`. Members that start `immediately` start at launch; an
-`after` member starts when the member it names first reports `done` once its
-own prompt is typed; a `manual` member waits for its start route. With `isolation:
-worktree` each member starts in `git -C <cwd> worktree add -b crew/<run>/<member>
-<cwd>/.conductor/worktrees/<run>/<member> HEAD`; Conductor never deletes a
-worktree or a branch. A member is ready for its prompt when its agent reports
-`needs_input` or `done`, or after one second without output that follows its
-first output and at least two seconds after its start, checked every 250 ms;
-after 60 seconds the prompt is typed anyway and the run log says so. The
-prompt, `$GOAL` and `${GOAL}` replaced by the goal, is typed with a carriage
-return. A member whose process ends first gets no prompt: it is `ended` with
-its exit in `error`, and the run goes on. When a member of a launch cannot be
-started, the ones started are stopped and no run is kept. A run is `{id,
-crewId, name, goal, cwd, isolation, startedAt, stoppedAt?, members, log}`, a
-member `{name, agentId, start, sessionId?, branch?, worktree?, status,
-startedAt?, endedAt?, error?, diff?}` with `status` `pending`, `starting`,
-`running` or `ended`; `diff` counts the lines committed on the member's branch
-since it began (`git diff --shortstat <base>...HEAD`, read at most every 10 s).
-`log` is the run's own, at most 200 activity entries. Runs live in memory: a
-server restart forgets them, and past 100 runs a launch forgets the oldest
-with nothing running.
+the same check, its agent from the catalog, its hooks injected), named after the
+member and tagged with `crew`. Its process also receives `CONDUCTOR_CREW`,
+`CONDUCTOR_RUN`, `CONDUCTOR_MEMBER` and `GOAL`. A run's `id` is `<crew id>-<8
+hex>`. Members that start `immediately` start at launch; an `after` member
+starts when the member it names first reports `done` once its own prompt is
+typed; a `manual` member waits for its start route. With `isolation: worktree`,
+`cwd` is the top of a git working tree or a directory in one, and each member
+gets `git -C <cwd> worktree add -b crew/<run>/<member>
+<cwd>/.conductor/worktrees/<run>/<member> HEAD`, a worktree of the whole
+repository, and starts in its directory that `cwd` is of the repository (`git
+rev-parse --show-prefix`), made when no commit has a file there. The first
+worktree also adds a `.conductor/` line, once, to the file `git -C <cwd>
+rev-parse --git-path info/exclude` names (making `info/` when it is missing), so
+that the worktrees stay out of the main checkout's `git status`. A `.conductor`
+or `.conductor/worktrees` in `cwd` that is a symbolic link is refused before git
+runs. Conductor never deletes a worktree or a branch.
+
+A launch, a start or an added member answers once the member's session exists;
+the member is `starting` until its prompt is typed, then `running`. A member is
+ready for its prompt when its agent reports `needs_input` or `done`, or after
+one second without output that follows its first output and at least two seconds
+after its start, checked every 250 ms; after 60 seconds the prompt is typed
+anyway and the run log says so. The prompt, `$GOAL` and `${GOAL}` replaced by
+the goal, is typed with a carriage return; a `done` the member reports as its
+prompt is written counts for the members after it. A member whose process ends
+first gets no prompt: it is `ended` with its exit in `error`, and the run goes
+on; a member whose prompt cannot be typed ends alone, its session stopped, the
+reason in `error`. When a member's session cannot be created at launch, the ones
+started are stopped and no run is kept; when the run is stopped while its
+sessions start, it stays, stopped. A member whose start fails in a run that goes
+on stays in the run, `ended`, and keeps its name: `POST /api/runs/{run}/members`
+with that name is refused as a name used twice. A run is `{id, crewId, name,
+goal, cwd, isolation, startedAt, stoppedAt?, members, log}`, a member `{name,
+agentId, start, sessionId?, branch?, worktree?, status, startedAt?, endedAt?,
+error?, diff?}` with `status` `pending`, `starting`, `running` or `ended`;
+`diff` counts the lines of tracked files the member's worktree adds and removes
+against the commit it began from, committed or not (`git diff --shortstat
+<base>`, read at most every 10 s, the last value kept when a read fails);
+untracked files do not count, and a branch merged into the member's (main, say)
+counts with it. `log` is the run's own, at most 200 activity entries. Runs live
+in memory: a server restart forgets them, and past 100 runs a launch forgets the
+oldest with nothing running.

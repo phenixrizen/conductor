@@ -42,6 +42,7 @@ type fakeLauncher struct {
 	mu     sync.Mutex
 	calls  []launchCall
 	fail   map[string]error // member name -> the error its launch returns
+	block  map[string]bool  // member name -> its launch waits for ctx to end
 	procs  map[string]*sessiontest.FakeProc
 	locals map[string]*session.Local // by member name, the latest
 	byID   map[string]*session.Local // by session ID
@@ -63,10 +64,14 @@ func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 func (f *fakeLauncher) Launch(ctx context.Context, agentID, name, cwd string, args []string, env map[string]string, ref session.CrewRef) (*session.Local, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, launchCall{agentID, name, cwd, slices.Clone(args), maps.Clone(env), ref})
-	err := f.fail[name]
+	err, block := f.fail[name], f.block[name]
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: agentID, Cwd: cwd, Crew: &ref, Cols: 80, Rows: 24}
@@ -221,9 +226,10 @@ func logged(r Run, text string) bool {
 	return slices.ContainsFunc(r.Log, func(e session.ActivityEntry) bool { return strings.Contains(e.Message, text) })
 }
 
-// Two members start at once. Each process prints and goes quiet; once it has
-// been quiet for a second, and two have passed, the member's prompt is typed
-// with the goal in it and an Enter, and recorded as typed by the crew.
+// Two members start at once. Launch returns once their sessions exist; each
+// process prints and goes quiet, and once it has been quiet for a second, and
+// two have passed, the member's prompt is typed with the goal in it and an
+// Enter, recorded as typed by the crew, and the member is running.
 func TestLaunchTypesPromptsWhenReady(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.onLaunch = printOnce
@@ -236,15 +242,24 @@ func TestLaunchTypesPromptsWhenReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if took := time.Since(began); took < readyMin {
-		t.Fatalf("Launch returned after %v, before the %v a quiet member is given", took, readyMin)
+	if took := time.Since(began); took >= readyMin {
+		t.Fatalf("Launch waited %v, for the prompts", took)
+	}
+	for _, m := range run.Members {
+		if m.Status != MemberStarting || m.SessionID == "" {
+			t.Fatalf("at launch: %+v", m)
+		}
 	}
 	want := map[string]string{"lead": "Own the plan for ship /v1/users.\r", "core": "Build ship /v1/users in Go.\r"}
 	for name, prompt := range want {
 		l, p := fl.member(name)
-		if got := typed(p); !slices.Equal(got, []string{prompt}) {
+		if got := waitTyped(t, p, 10*time.Second); got != prompt {
 			t.Errorf("%s was typed %q, want %q", name, got, prompt)
 		}
+		if took := time.Since(began); took < readyMin {
+			t.Errorf("%s was typed after %v, before the %v a quiet member is given", name, took, readyMin)
+		}
+		waitStatus(t, e, run.ID, name, MemberRunning, 5*time.Second)
 		entries := crewEntries(l)
 		if len(entries) != 1 || entries[0].Message != strings.TrimSuffix(prompt, "\r") {
 			t.Errorf("%s records %+v", name, entries)
@@ -255,7 +270,7 @@ func TestLaunchTypesPromptsWhenReady(t *testing.T) {
 		run.Cwd != "/work" || run.Isolation != IsolationNone || run.StartedAt.IsZero() || run.StoppedAt != nil || len(run.Members) != 2 {
 		t.Fatalf("run %+v", run)
 	}
-	for _, m := range run.Members {
+	for _, m := range memberStates(t, e, run.ID) {
 		l, _ := fl.member(m.Name)
 		if m.Status != MemberRunning || m.SessionID != l.Info().ID || m.Started == nil || m.Ended != nil || m.Err != "" || m.Branch != "" || m.Worktree != "" {
 			t.Errorf("member %+v", m)
@@ -303,7 +318,8 @@ func TestAfterConditionStartsOnFirstDone(t *testing.T) {
 	if names := fl.launched(); !slices.Equal(names, []string{"core"}) {
 		t.Fatalf("launched %v", names)
 	}
-	if m := run.Members[1]; m.Name != "tests" || m.Status != MemberPending || m.SessionID != "" || m.Started != nil {
+	waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+	if m := memberState(t, e, run.ID, "tests"); m.Status != MemberPending || m.SessionID != "" || m.Started != nil {
 		t.Fatalf("tests before core is done: %+v", m)
 	}
 	core, _ := fl.member("core")
@@ -344,11 +360,12 @@ func TestEarlyExitDropsPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an early exit failed the launch: %v", err)
 	}
+	waitStatus(t, e, run.ID, "core", MemberRunning, 10*time.Second)
 	_, lead := fl.member("lead")
 	if got := typed(lead); len(got) != 0 {
 		t.Fatalf("lead was typed %q", got)
 	}
-	m := memberState(t, e, run.ID, "lead")
+	m := waitStatus(t, e, run.ID, "lead", MemberEnded, 5*time.Second)
 	if m.Status != MemberEnded || m.Ended == nil || !strings.Contains(m.Err, "exited (exit 7)") || !strings.Contains(m.Err, "prompt") {
 		t.Fatalf("lead %+v", m)
 	}
@@ -401,7 +418,9 @@ func TestLaunchRefusesCrewsThatCannotRun(t *testing.T) {
 	hosted := testCrew(immediate("lead", ""))
 	hosted.Where = WhereHost
 	invalid := testCrew(immediate("Lead!", ""))
-	for name, c := range map[string]Crew{"no members": testCrew(), "on a host": hosted, "invalid": invalid} {
+	badID := testCrew(immediate("lead", ""))
+	badID.ID = "../escape"
+	for name, c := range map[string]Crew{"no members": testCrew(), "on a host": hosted, "invalid": invalid, "an id that is none": badID} {
 		if _, err := e.Launch(t.Context(), c); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -466,6 +485,12 @@ func TestLaunchMakesAWorktreePerMember(t *testing.T) {
 		}
 		return got.Members[0].Diff
 	}
+	// A read cut short by its request is read again by the next.
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got, ok := e.GetWithDiffs(cancelled, run.ID); !ok || got.Members[0].Diff != nil {
+		t.Fatalf("a cancelled read: %v %+v", ok, got.Members[0])
+	}
 	if d := diff(); d == nil || *d != (Diff{}) {
 		t.Fatalf("diff before any commit: %+v", d)
 	}
@@ -480,6 +505,22 @@ func TestLaunchMakesAWorktreePerMember(t *testing.T) {
 	}
 	if r, _ := e.Get(run.ID); r.Members[0].Diff != nil {
 		t.Fatalf("Get carries a diff: %+v", r.Members[0])
+	}
+	// A read that fails keeps what was read before.
+	moved := path + ".away"
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	tick(diffTTL)
+	if d := diff(); d == nil || *d != (Diff{Added: 2}) {
+		t.Fatalf("diff after a failed read: %+v", d)
+	}
+	if err := os.Rename(moved, path); err != nil {
+		t.Fatal(err)
+	}
+	// The worktrees are kept out of the repository's own status.
+	if status := runGit(t, repo, "status", "--porcelain"); status != "" {
+		t.Fatalf("git status in the main checkout:\n%s", status)
 	}
 
 	// A member started later gets its worktree then.
@@ -499,6 +540,20 @@ func TestLaunchMakesAWorktreePerMember(t *testing.T) {
 			t.Fatalf("worktree %s: %v", p, err)
 		}
 	}
+	// A second launch excludes .conductor/ no second time.
+	again, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, again.ID, "lead", MemberRunning, 5*time.Second)
+	exclude, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+	lines := strings.Split(string(exclude), "\n")
+	if n := len(slices.DeleteFunc(lines, func(l string) bool { return l != ".conductor/" })); err != nil || n != 1 {
+		t.Fatalf("info/exclude holds .conductor/ %d times (%v):\n%s", n, err, exclude)
+	}
+	if status := runGit(t, repo, "status", "--porcelain"); status != "" {
+		t.Fatalf("git status in the main checkout:\n%s", status)
+	}
 }
 
 // A member that starts by hand starts when asked, once; asking for a member
@@ -516,7 +571,7 @@ func TestStartMemberStartsAPendingMember(t *testing.T) {
 	if err := e.StartMember(t.Context(), run.ID, "tests"); err != nil {
 		t.Fatal(err)
 	}
-	m := memberState(t, e, run.ID, "tests")
+	m := waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
 	_, p := fl.member("tests")
 	if m.Status != MemberRunning || m.SessionID == "" || !slices.Equal(typed(p), []string{"Test it.\r"}) {
 		t.Fatalf("tests %+v", m)
@@ -553,7 +608,7 @@ func TestAddMemberJoinsARun(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, p := fl.member("core")
-	if m := memberState(t, e, run.ID, "core"); m.Status != MemberRunning || !slices.Equal(typed(p), []string{"Build ship /v1/users.\r"}) {
+	if m := waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second); !slices.Equal(typed(p), []string{"Build ship /v1/users.\r"}) {
 		t.Fatalf("core %+v", m)
 	}
 	if err := e.AddMember(t.Context(), run.ID, after("tests", "Test it.", "core")); err != nil {
@@ -659,24 +714,16 @@ func TestStopEndsAStartInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started := make(chan error, 1)
-	go func() { started <- e.StartMember(context.Background(), run.ID, "lead") }()
-	waitStatus(t, e, run.ID, "lead", MemberStarting, 5*time.Second)
-	deadline := time.Now().Add(5 * time.Second)
-	for len(fl.launched()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// StartMember returns once the session exists; the member then waits.
+	if err := e.StartMember(t.Context(), run.ID, "lead"); err != nil {
+		t.Fatal(err)
+	}
+	if m := memberState(t, e, run.ID, "lead"); m.Status != MemberStarting || m.SessionID == "" {
+		t.Fatalf("lead %+v", m)
 	}
 	began := time.Now()
 	if err := e.Stop(t.Context(), run.ID); err != nil {
 		t.Fatal(err)
-	}
-	select {
-	case err := <-started:
-		if !errors.Is(err, ErrRunStopped) {
-			t.Fatalf("StartMember: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("StartMember still waits after Stop")
 	}
 	if took := time.Since(began); took > 2*time.Second {
 		t.Fatalf("Stop took %v", took)
@@ -699,6 +746,7 @@ func TestNotReadyAfterTheCapTypesAnyway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
 	_, p := fl.member("lead")
 	if got := typed(p); !slices.Equal(got, []string{"Plan it.\r"}) {
 		t.Fatalf("lead was typed %q", got)
@@ -720,7 +768,7 @@ func TestAMemberWithoutAPromptRunsAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, p := fl.member("logs")
-	if m := run.Members[0]; m.Status != MemberRunning || len(typed(p)) != 0 {
+	if m := waitStatus(t, e, run.ID, "logs", MemberRunning, time.Second); len(typed(p)) != 0 {
 		t.Fatalf("logs %+v", m)
 	}
 }
@@ -795,5 +843,199 @@ func TestOldRunsAreForgotten(t *testing.T) {
 	}
 	if _, ok := e.Get(second); !ok || len(e.List()) != maxRuns {
 		t.Fatalf("%d runs kept", len(e.List()))
+	}
+}
+
+// A crew whose working directory is inside a repository works in that
+// directory of its worktrees, which live under it.
+func TestLaunchFromADirectoryInARepository(t *testing.T) {
+	repo := newRepo(t)
+	sub := filepath.Join(repo, "services", "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(sub, "main.go"), "package main\n")
+	commitAll(t, repo, "api")
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	c := testCrew(immediate("lead", "Plan it."))
+	c.Isolation, c.Cwd = IsolationWorktree, sub
+	run, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(sub, ".conductor", "worktrees", run.ID, "lead")
+	if m := run.Members[0]; m.Worktree != worktree || fl.calls[0].cwd != filepath.Join(worktree, "services", "api") {
+		t.Fatalf("lead %+v, launched in %s", m, fl.calls[0].cwd)
+	}
+	if _, err := os.Stat(filepath.Join(fl.calls[0].cwd, "main.go")); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	if status := runGit(t, repo, "status", "--porcelain"); status != "" {
+		t.Fatalf("git status in the main checkout:\n%s", status)
+	}
+
+	// A directory no commit has a file in is made in the worktree.
+	empty := filepath.Join(repo, "scratch", "notes")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c.Cwd = empty
+	run, err = e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(empty, ".conductor", "worktrees", run.ID, "lead", "scratch", "notes")
+	if cwd := fl.calls[1].cwd; cwd != want {
+		t.Fatalf("launched in %s, want %s", cwd, want)
+	}
+	if fi, err := os.Stat(want); err != nil || !fi.IsDir() {
+		t.Fatalf("the member's directory: %v", err)
+	}
+}
+
+// Worktrees stay inside the working directory: a .conductor or
+// .conductor/worktrees that is a symbolic link is refused (ErrInvalid) before
+// git runs.
+func TestLaunchRefusesWorktreesThroughASymlink(t *testing.T) {
+	for _, link := range []string{".conductor", filepath.Join(".conductor", "worktrees")} {
+		repo := newRepo(t)
+		outside := t.TempDir()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, link)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(repo, link)); err != nil {
+			t.Fatal(err)
+		}
+		e, fl := newEngine(t)
+		c := testCrew(immediate("lead", "Plan it."))
+		c.Isolation, c.Cwd = IsolationWorktree, repo
+		if _, err := e.Launch(t.Context(), c); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if entries, _ := os.ReadDir(outside); len(entries) != 0 || len(fl.launched()) != 0 || len(e.List()) != 0 {
+			t.Fatalf("%s: made %v, launched %v", link, entries, fl.launched())
+		}
+	}
+}
+
+// A member whose prompt cannot be typed ends alone; the run and the other
+// members go on.
+func TestAPromptFailureEndsOnlyThatMember(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	boom := errors.New("boom")
+	e.await = func(ctx context.Context, l *session.Local) error {
+		if l.Info().Crew.Member == "lead" {
+			return boom
+		}
+		return awaitReady(ctx, l)
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := waitStatus(t, e, run.ID, "lead", MemberEnded, 5*time.Second)
+	if !strings.Contains(m.Err, "boom") {
+		t.Fatalf("lead %+v", m)
+	}
+	lead, p := fl.member("lead")
+	select {
+	case <-lead.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("lead's session still runs")
+	}
+	if !p.Stopped() || lead.Info().Status != session.StatusStopped || len(typed(p)) != 0 {
+		t.Fatalf("lead %+v", lead.Info())
+	}
+	waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+	if got, _ := e.Get(run.ID); got.StoppedAt != nil || !logged(got, "lead could not start") {
+		t.Fatalf("run %+v", got)
+	}
+}
+
+// A process that exits as its prompt is written ends its member as an early
+// exit, not as a failure to write.
+func TestAnExitAsThePromptIsTypedIsAnEarlyExit(t *testing.T) {
+	e, fl := newEngine(t)
+	e.await = func(_ context.Context, l *session.Local) error {
+		_, p := fl.member(l.Info().Crew.Member)
+		p.End(3)
+		return nil
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := waitStatus(t, e, run.ID, "lead", MemberEnded, 5*time.Second)
+	if !strings.Contains(m.Err, "exited (exit 3) before its prompt") {
+		t.Fatalf("lead %+v", m)
+	}
+}
+
+// A done the agent reports as its prompt is being written counts.
+func TestADoneAsThePromptIsTypedCounts(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member != "core" {
+			return
+		}
+		l.SetAttention(session.AttentionNeedsInput, "what next?", session.SourceAPI)
+		<-p.Input // the prompt: done at once
+		l.SetAttention(session.AttentionDone, "finished", session.SourceAPI)
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+}
+
+// A Stop while Launch starts the sessions keeps the run, stopped: Launch
+// says the run is stopped, and nothing is left running.
+func TestStopDuringLaunchKeepsTheRun(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.block = map[string]bool{"core": true}
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Launch(context.Background(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it."), immediate("web", "Style it.")))
+		done <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Contains(fl.launched(), "core") && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	runs := e.List()
+	if len(runs) != 1 {
+		t.Fatalf("runs %+v", runs)
+	}
+	if err := e.Stop(t.Context(), runs[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRunStopped) {
+			t.Fatalf("Launch: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Launch still runs after Stop")
+	}
+	got, ok := e.Get(runs[0].ID)
+	if !ok || got.StoppedAt == nil {
+		t.Fatalf("run %v %+v", ok, got)
+	}
+	lead, p := fl.member("lead")
+	if !p.Stopped() || lead.Info().Status != session.StatusStopped {
+		t.Fatalf("lead %+v", lead.Info())
+	}
+	if m := memberState(t, e, got.ID, "lead"); m.Status != MemberEnded {
+		t.Fatalf("lead %+v", m)
+	}
+	if m := memberState(t, e, got.ID, "web"); m.Status != MemberPending {
+		t.Fatalf("web %+v", m)
+	}
+	if names := fl.launched(); !slices.Equal(names, []string{"lead", "core"}) {
+		t.Fatalf("launched %v", names)
 	}
 }

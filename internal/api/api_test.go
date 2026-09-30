@@ -2807,7 +2807,8 @@ func TestCrewRunLifecycle(t *testing.T) {
 	runID, _ := run["id"].(string)
 	lead := runMember(t, run, "lead")
 	wantPath := filepath.Join(e.root, ".conductor", "worktrees", runID, "lead")
-	if !strings.HasPrefix(runID, "api-sweep-") || run["crewId"] != "api-sweep" || lead["status"] != "running" ||
+	// The launch answers once the sessions exist; the prompts come as they are ready.
+	if !strings.HasPrefix(runID, "api-sweep-") || run["crewId"] != "api-sweep" || lead["status"] != "starting" ||
 		lead["worktree"] != wantPath || lead["branch"] != "crew/"+runID+"/lead" || runMember(t, run, "tests")["status"] != "pending" {
 		t.Fatalf("run %v", run)
 	}
@@ -2821,6 +2822,10 @@ func TestCrewRunLifecycle(t *testing.T) {
 	c := dialViewer(t, e, leadID, adminToken)
 	c.hello(80, 24)
 	c.expectOutput("C=api-sweep R=" + runID + " M=lead G=ship /v1/users T=set")
+	// The worktrees stay out of the repository's status.
+	if out, err := exec.Command("git", "-C", e.root, "status", "--porcelain").CombinedOutput(); err != nil || len(out) != 0 {
+		t.Fatalf("git status: %v\n%s", err, out)
+	}
 	if d, _ := e.srv.registry.Get(leadID); !slices.ContainsFunc(d.(*session.Local).Activity(), func(a session.ActivityEntry) bool {
 		return a.Type == session.ActivityInput && a.ByName == "crew"
 	}) {
@@ -2840,7 +2845,7 @@ func TestCrewRunLifecycle(t *testing.T) {
 
 	// Started by hand, then again: 409.
 	resp, out = e.do("POST", "/api/runs/"+runID+"/members/tests/start", adminToken, nil)
-	if resp.StatusCode != http.StatusOK || runMember(t, out["run"].(map[string]any), "tests")["status"] != "running" {
+	if resp.StatusCode != http.StatusOK || runMember(t, out["run"].(map[string]any), "tests")["status"] != "starting" {
 		t.Fatalf("start: %d %v", resp.StatusCode, out)
 	}
 	resp, out = e.do("POST", "/api/runs/"+runID+"/members/tests/start", adminToken, nil)

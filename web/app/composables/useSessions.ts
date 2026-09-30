@@ -195,12 +195,17 @@ export interface RunMember {
   /** With worktree isolation, once it has started: its branch (`crew/<run>/<member>`) and worktree. */
   branch?: string
   worktree?: string
+  /** `starting` once its session exists, until its prompt is typed; `running` after. */
   status: 'pending' | 'starting' | 'running' | 'ended'
   startedAt?: string
   endedAt?: string
   /** Why it ended before it ran: it could not start, or its process ended before its prompt was typed. */
   error?: string
-  /** GET /api/runs/{run} only: lines its branch adds and removes since it began (committed work, read at most every 10 s). */
+  /**
+   * GET /api/runs/{run} only: lines of tracked files its worktree adds and removes against the commit it began from,
+   * committed or not (`git diff --shortstat <base>`; untracked files do not count, a branch merged into its own does).
+   * Read at most every 10 s; the last value stays when a read fails.
+   */
   diff?: { added: number; removed: number }
 }
 
@@ -260,19 +265,24 @@ export function useSessions() {
     duplicateCrew: (id: string) =>
       request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
     /**
-     * Launches a saved crew. Resolves once every member that starts immediately has its prompt typed (up to a minute each).
-     * 400 `invalid_crew` (no members, a hosted crew, an agent the catalog lacks or one given arguments it does not take), `invalid_cwd`;
-     * 409 `not_a_repo` for worktree isolation outside a git repository; a member's session errors as POST /api/sessions; 500 `launch_failed`.
+     * Launches a saved crew. Resolves once the session of every member that starts immediately exists (the member `starting`);
+     * each prompt is typed once its session is ready, and a member whose prompt cannot be typed ends alone.
+     * 400 `invalid_crew` (no members, a hosted crew, an agent the catalog lacks or one given arguments it does not take, a symlinked
+     * `.conductor`), `invalid_cwd`; 409 `not_a_repo` for worktree isolation outside a git working tree or in one without a commit,
+     * `run_stopped` when the run is stopped while it launches; a member's session errors as POST /api/sessions; 500 `launch_failed`.
      */
     launchCrew: (id: string) => request<{ run: RunInfo }>(`/api/crews/${encodeURIComponent(id)}/launch`, { method: 'POST' }).then((r) => r.run),
     /** Every run in the server's memory, newest first. */
     listRuns: () => request<{ runs: RunInfo[] }>('/api/runs').then((r) => r.runs ?? []),
     /** One run, with each worktree member's diff. */
     getRun: (id: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => r.run),
-    /** Adds a member mid-run; one that starts immediately has its prompt when this resolves. 400 `invalid_crew`, 409 `run_stopped`. */
+    /**
+     * Adds a member mid-run; one that starts immediately has its session when this resolves. 400 `invalid_crew` (a name the run has,
+     * one whose start failed included), 409 `run_stopped`; a session that cannot be created leaves the member in the run, ended.
+     */
     addRunMember: (runId: string, member: CrewMember) =>
       request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/members`, { method: 'POST', body: toCrewMember(member) }).then((r) => r.run),
-    /** Starts a pending member by hand, whatever its start condition. 409 `member_started` or `run_stopped`. */
+    /** Starts a pending member by hand, whatever its start condition; resolves once its session exists. 409 `member_started` or `run_stopped`. */
     startRunMember: (runId: string, name: string) =>
       request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/start`, { method: 'POST' }).then((r) => r.run),
     /** Stops every member's session; the worktrees stay. */

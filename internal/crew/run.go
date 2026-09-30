@@ -1,10 +1,10 @@
 package crew
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -59,6 +59,8 @@ const (
 	typedBy = "crew"
 	// stopTimeout bounds the stop of what a failed start leaves running.
 	stopTimeout = 15 * time.Second
+	// diffReaders bounds the DiffStat reads GetWithDiffs runs at once.
+	diffReaders = 4
 )
 
 // worktreesDir is where a run's worktrees go under the crew's working
@@ -127,6 +129,9 @@ type Engine struct {
 	await func(ctx context.Context, l *session.Local) error
 	// now is the clock of the diff cache.
 	now func() time.Time
+	// excludeMu keeps two launches from writing a repository's info/exclude
+	// at once.
+	excludeMu sync.Mutex
 
 	mu        sync.Mutex
 	runs      map[string]*run
@@ -139,10 +144,13 @@ type memberRef struct{ run, member string }
 // run is a launch of a crew. Engine.mu guards what changes after it is made.
 type run struct {
 	id, crewID, name, goal, cwd, isolation string
-	startedAt                              time.Time
-	stoppedAt                              *time.Time
-	members                                []*member
-	log                                    []session.ActivityEntry
+	// prefix is where cwd lies in its repository, with worktrees: a member
+	// works in <worktree>/<prefix>.
+	prefix    string
+	startedAt time.Time
+	stoppedAt *time.Time
+	members   []*member
+	log       []session.ActivityEntry
 
 	// ctx ends when the run stops; every member start runs under it.
 	ctx    context.Context
@@ -154,11 +162,14 @@ type run struct {
 }
 
 type member struct {
-	def    Member
-	state  MemberState
-	base   string // the commit its worktree branched from, for DiffStat
-	diff   *Diff
-	diffAt time.Time // when diff was read; zero: never
+	def   Member
+	state MemberState
+	base  string // the commit its worktree branched from, for DiffStat
+	// prompted is set as its prompt is typed (or at once without one): from
+	// then on the done it reports starts the members after it.
+	prompted bool
+	diff     *Diff
+	diffAt   time.Time // when diff was read; zero: never
 }
 
 // NewEngine returns an engine that starts member sessions with l and finds
@@ -169,30 +180,43 @@ func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool))
 }
 
 // Launch starts a run of c, whose Cwd the caller has resolved. With isolation
-// "worktree" it first checks that Cwd is a repository to make worktrees of
-// (ErrNotRepo), before anything is made. It starts the members that start
-// immediately, each in a worktree of its own when the crew has them, and
-// types their prompts once they are ready. It returns once all of them have
-// their prompt, or have ended before it (the run goes on). When one cannot be
-// started, the ones started are stopped, no run is kept, and the error names
-// the member. A crew with no members or one that runs on a host is not
-// launched (ErrInvalid).
+// "worktree" it first checks that Cwd is in a git repository to make worktrees
+// of (ErrNotRepo), before anything is made. It starts the sessions of the
+// members that start immediately, each in a worktree of its own when the crew
+// has them, and returns once they exist: each member is starting, and its
+// prompt is typed once its session is ready (on the run's context, so a
+// client that goes away does not stop it). A member whose prompt cannot be
+// typed ends alone. When a member's session cannot be started, the ones
+// started are stopped, no run is kept, and the error names the member; when
+// the run is stopped meanwhile, it stays, stopped, and Launch returns
+// ErrRunStopped. A crew with no members, one that runs on a host, one
+// without a valid ID or, with worktrees, one whose <cwd>/.conductor or
+// <cwd>/.conductor/worktrees is a symbolic link is not launched (ErrInvalid).
 func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
-	if err := c.Validate(); err != nil {
+	if err := c.validateWithID(); err != nil {
 		return nil, err
 	}
 	if err := c.Launchable(); err != nil {
 		return nil, err
 	}
+	prefix := ""
 	if c.Isolation == IsolationWorktree {
 		if !filepath.IsAbs(c.Cwd) {
 			return nil, invalidf("with worktrees, cwd must be an absolute path")
 		}
+		if err := checkWorktreesDir(c.Cwd); err != nil {
+			return nil, err
+		}
 		if err := CheckRepo(ctx, c.Cwd); err != nil {
 			return nil, err
 		}
+		p, err := repoPrefix(ctx, c.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		prefix = p
 	}
-	r := e.add(c)
+	r := e.add(c, prefix)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
@@ -205,46 +229,40 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 		}
 	}
 	e.mu.Unlock()
-	results := make(chan error, len(starts))
 	for i, m := range starts {
 		local, err := e.launch(ctx, r, m)
-		if err != nil {
+		if err == nil {
+			go e.finish(r, m, local) // takes over the start
+			continue
+		}
+		if errors.Is(err, ErrRunStopped) || r.ctx.Err() != nil {
+			// Stopped meanwhile: the run stays, stopped, and so does what
+			// had started. The members not begun were never started.
+			e.fail(r, m, ErrRunStopped)
+			e.mu.Lock()
+			for _, rest := range starts[i+1:] {
+				rest.state.Status = MemberPending
+			}
+			e.mu.Unlock()
 			for range starts[i:] {
 				r.starts.Done()
 			}
-			e.abort(r)
-			return nil, fmt.Errorf("member %s: %w", quote(m.def.Name), err)
-		}
-		go func() {
-			defer r.starts.Done()
-			if err := e.prompt(ctx, r, m, local); err != nil {
-				results <- fmt.Errorf("member %s: %w", quote(m.def.Name), err)
-				return
-			}
-			results <- nil
-		}()
-	}
-	var failed error
-	for range starts {
-		if err := <-results; err != nil && failed == nil {
-			failed = err
-		}
-	}
-	if failed != nil {
-		if r.ctx.Err() != nil {
 			return nil, ErrRunStopped
 		}
+		for range starts[i:] {
+			r.starts.Done()
+		}
 		e.abort(r)
-		return nil, failed
+		return nil, fmt.Errorf("member %s: %w", quote(m.def.Name), err)
 	}
 	out, _ := e.Get(r.id)
 	return &out, nil
 }
 
 // add makes and keeps a run of c with every member pending.
-func (e *Engine) add(c Crew) *run {
+func (e *Engine) add(c Crew, prefix string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &run{crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation,
+	r := &run{crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
 		startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel}
 	immediate := 0
 	for _, m := range c.Members {
@@ -256,7 +274,7 @@ func (e *Engine) add(c Crew) *run {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for r.id == "" || e.runs[r.id] != nil {
-		r.id = cmp.Or(c.ID, "run") + "-" + session.NewID()[:8]
+		r.id = c.ID + "-" + session.NewID()[:8]
 	}
 	e.evict()
 	e.runs[r.id] = r
@@ -302,13 +320,27 @@ func (r *run) note(typ, format string, args ...any) {
 	r.log = append(r.log, entry)
 }
 
-// launch makes m's worktree, when r has them, and starts m's session.
+// launch makes m's worktree, when r has them, and starts m's session, in
+// the worktree's directory that r's cwd is of its repository, which it makes
+// when no commit has a file there.
 func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local, error) {
 	name := m.def.Name
 	cwd := r.cwd
 	if r.isolation == IsolationWorktree {
 		path := filepath.Join(r.cwd, worktreesDir, r.id, name)
 		branch := "crew/" + r.id + "/" + name
+		if err := checkWorktreesDir(r.cwd); err != nil {
+			return nil, err
+		}
+		e.excludeMu.Lock()
+		err := excludeWorktrees(ctx, r.cwd)
+		e.excludeMu.Unlock()
+		if err != nil {
+			// The worktrees work without it; git status shows them.
+			e.mu.Lock()
+			r.note(session.ActivityError, "could not add %s to the repository's info/exclude: %v", excludeLine, err)
+			e.mu.Unlock()
+		}
 		if err := AddWorktree(ctx, r.cwd, path, branch); err != nil {
 			return nil, err
 		}
@@ -319,7 +351,11 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 			m.base = base
 		}
 		e.mu.Unlock()
-		cwd = path
+		cwd = filepath.Join(path, r.prefix)
+		// A directory no commit has a file in is not in the worktree.
+		if err := os.MkdirAll(cwd, 0o755); err != nil {
+			return nil, err
+		}
 	}
 	ref := session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}
 	local, err := e.launcher.Launch(ctx, m.def.AgentID, name, cwd, slices.Clone(m.def.Args), map[string]string{"GOAL": r.goal}, ref)
@@ -364,8 +400,13 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		case err != nil:
 			return err
 		}
+		// Prompted before the write: a done the agent reports as it takes the
+		// prompt, before Type returns, counts.
+		e.mu.Lock()
+		m.prompted = true
+		e.mu.Unlock()
 		if err := local.Type(text+"\r", typedBy); err != nil {
-			if errors.Is(err, session.ErrSessionEnded) {
+			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
 				e.endedEarly(r, m, local)
 				return nil
 			}
@@ -373,12 +414,24 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		}
 	}
 	e.mu.Lock()
+	m.prompted = true
 	m.state.Status = MemberRunning
 	if hasPrompt {
 		r.note(session.ActivityStatus, "typed %s's prompt", name)
 	}
 	e.mu.Unlock()
 	return nil
+}
+
+// endsSoon reports whether l ends within a second: a write that failed as
+// its process exited, before the session saw it end.
+func endsSoon(l *session.Local) bool {
+	select {
+	case <-l.Ended():
+		return true
+	case <-time.After(time.Second):
+		return false
+	}
 }
 
 // endedEarly ends m, whose process ended before its prompt was typed.
@@ -401,27 +454,38 @@ func (e *Engine) endedEarly(r *run, m *member, local *session.Local) {
 }
 
 // start runs m's start, which the caller has reserved: its worktree and
-// session, then its prompt. It ends the start in r.starts. When it fails m
-// ends with the reason, and a session it had is stopped.
+// session, and returns once the session exists; its prompt is typed on the
+// run's context once the session is ready (finish). When the session cannot
+// be started, m ends with the reason.
 func (e *Engine) start(ctx context.Context, r *run, m *member) error {
-	defer r.starts.Done()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
 	local, err := e.launch(ctx, r, m)
 	if err == nil {
-		if err = e.prompt(ctx, r, m, local); err != nil {
-			stopLocal(local)
-		}
-	}
-	if err == nil {
+		go e.finish(r, m, local) // takes over the start
 		return nil
 	}
+	r.starts.Done()
 	if r.ctx.Err() != nil {
 		err = ErrRunStopped
 	}
 	e.fail(r, m, err)
 	return fmt.Errorf("member %s: %w", quote(m.def.Name), err)
+}
+
+// finish types m's prompt once its session is ready, on the run's context,
+// and ends m's start. When that fails m ends alone, with the reason, and then
+// its session is stopped: a session seen ended has its member's reason.
+func (e *Engine) finish(r *run, m *member, local *session.Local) {
+	defer r.starts.Done()
+	if err := e.prompt(r.ctx, r, m, local); err != nil {
+		if r.ctx.Err() != nil {
+			err = ErrRunStopped
+		}
+		e.fail(r, m, err)
+		stopLocal(local)
+	}
 }
 
 // fail ends m, which could not start.
@@ -457,7 +521,7 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 		e.mu.Unlock()
 		return
 	}
-	if done := r.member(ref.member); done == nil || done.state.Status != MemberRunning {
+	if done := r.member(ref.member); done == nil || !done.prompted || done.state.Status == MemberEnded {
 		e.mu.Unlock()
 		return
 	}
@@ -480,7 +544,8 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 }
 
 // StartMember starts a pending member of a run by hand, whatever its start
-// condition, and returns once its prompt is typed or it failed.
+// condition, and returns once its session exists or could not be started;
+// its prompt is typed once the session is ready.
 func (e *Engine) StartMember(ctx context.Context, runID, name string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
@@ -508,8 +573,9 @@ func (e *Engine) StartMember(ctx context.Context, runID, name string) error {
 // AddMember adds m to a run, held to the rules of a crew: a valid member, a
 // name no member has, an after condition naming a member of the run, at most
 // 12 members (ErrInvalid). A member that starts immediately starts, and
-// AddMember returns once its prompt is typed or it failed (it stays in the
-// run, ended); one that starts after another waits for that one's next done.
+// AddMember returns once its session exists or could not be started (the
+// member stays in the run, ended, its name taken); one that starts after
+// another waits for that one's next done.
 func (e *Engine) AddMember(ctx context.Context, runID string, m Member) error {
 	if err := m.Validate(); err != nil {
 		return err
@@ -709,12 +775,15 @@ func (e *Engine) List() []Run {
 }
 
 // GetWithDiffs is Get with the diff of every member that has a worktree: the
-// lines its branch adds and removes since it began (DiffStat), read again
-// once what was read is diffTTL old.
+// lines its worktree adds and removes since it began (DiffStat), read again,
+// at most diffReaders at once, once what was read is diffTTL old. A read that
+// fails keeps the diff read before; one that ctx cuts short is not waited
+// out: the next call reads again.
 func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 	type read struct {
 		m              *member
 		worktree, base string
+		prevAt         time.Time
 	}
 	e.mu.Lock()
 	r, ok := e.runs[runID]
@@ -726,20 +795,33 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 	var reads []read
 	for _, m := range r.members {
 		if m.base != "" && (m.diffAt.IsZero() || now.Sub(m.diffAt) >= diffTTL) {
+			reads = append(reads, read{m, m.state.Worktree, m.base, m.diffAt})
 			m.diffAt = now // one reader at a time
-			reads = append(reads, read{m, m.state.Worktree, m.base})
 		}
 	}
 	e.mu.Unlock()
+	// A read that fails keeps what was read before; one that its request cut
+	// short leaves the next request to read again.
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, diffReaders)
 	for _, rd := range reads {
-		added, removed, err := DiffStat(ctx, rd.worktree, rd.base)
-		e.mu.Lock()
-		rd.m.diff = nil
-		if err == nil {
-			rd.m.diff = &Diff{Added: added, Removed: removed}
-		}
-		e.mu.Unlock()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			added, removed, err := DiffStat(ctx, rd.worktree, rd.base)
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			switch {
+			case err == nil:
+				rd.m.diff = &Diff{Added: added, Removed: removed}
+			case ctx.Err() != nil && rd.m.diffAt.Equal(now):
+				rd.m.diffAt = rd.prevAt
+			}
+		}()
 	}
+	wg.Wait()
 	e.mu.Lock()
 	out := r.snapshot(true)
 	e.mu.Unlock()
@@ -764,12 +846,14 @@ func (r *run) snapshot(withDiffs bool) Run {
 	return out
 }
 
-// refresh shows as ended the members of out whose session has ended or is
-// gone from the server. It looks the sessions up: the caller does not hold e.mu.
+// refresh shows as ended the running members of out whose session has ended
+// or is gone from the server. A member still starting is left to its start,
+// which ends it with the reason. It looks the sessions up: the caller does
+// not hold e.mu.
 func (e *Engine) refresh(out *Run) {
 	for i := range out.Members {
 		m := &out.Members[i]
-		if m.SessionID == "" || m.Status == MemberEnded {
+		if m.SessionID == "" || m.Status != MemberRunning {
 			continue
 		}
 		l, ok := e.lookup(m.SessionID)

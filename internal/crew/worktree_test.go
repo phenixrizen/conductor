@@ -104,14 +104,32 @@ func TestAddWorktreeNeedsARepository(t *testing.T) {
 	if err := CheckRepo(t.Context(), empty); !errors.Is(err, ErrNotRepo) || !strings.Contains(err.Error(), "commit") {
 		t.Fatalf("CheckRepo of a repository without a commit: %v", err)
 	}
-	if err := CheckRepo(t.Context(), newRepo(t)); err != nil {
+	repo := newRepo(t)
+	if err := CheckRepo(t.Context(), repo); err != nil {
 		t.Fatalf("CheckRepo of a repository: %v", err)
+	}
+	// A directory inside a repository is one too, and worktrees of the
+	// repository are made from it.
+	sub := filepath.Join(repo, "services", "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRepo(t.Context(), sub); err != nil {
+		t.Fatalf("CheckRepo of a directory in a repository: %v", err)
+	}
+	subPath := filepath.Join(sub, ".conductor", "worktrees", "run", "lead")
+	if err := AddWorktree(t.Context(), sub, subPath, "crew/run/lead"); err != nil {
+		t.Fatalf("AddWorktree from a directory in a repository: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(subPath, "README")); err != nil {
+		t.Fatalf("the worktree holds the whole repository: %v", err)
 	}
 }
 
-// DiffStat counts the lines the branch adds and removes since base, the
-// commit it started from: commits on the branch count, commits made on the
-// main branch since do not.
+// DiffStat counts the lines the worktree adds and removes since base, the
+// commit it started from: commits on the branch and uncommitted changes to
+// tracked files count; untracked files and commits made on the main branch
+// since do not.
 func TestDiffStatCountsTheBranchChanges(t *testing.T) {
 	repo := newRepo(t)
 	path := filepath.Join(repo, ".conductor", "worktrees", "run", "core")
@@ -134,6 +152,12 @@ func TestDiffStatCountsTheBranchChanges(t *testing.T) {
 	commitAll(t, repo, "main moves on")
 	if added, removed, err := DiffStat(t.Context(), path, base); err != nil || added != 6 || removed != 1 {
 		t.Fatalf("after a commit on the branch: +%d -%d %v", added, removed, err)
+	}
+	// Work not committed yet counts; a file git does not track does not.
+	writeFile(t, filepath.Join(path, "users.go"), "a\nb\n")
+	writeFile(t, filepath.Join(path, "scratch.txt"), "1\n2\n3\n4\n")
+	if added, removed, err := DiffStat(t.Context(), path, base); err != nil || added != 5 || removed != 1 {
+		t.Fatalf("with an uncommitted edit and an untracked file: +%d -%d %v", added, removed, err)
 	}
 	if _, _, err := DiffStat(t.Context(), path, "-p"); err == nil {
 		t.Fatal("a base that reads as an option was run")
@@ -158,5 +182,45 @@ func TestParseShortstat(t *testing.T) {
 		if added != tc.added || removed != tc.removed || (err != nil) != tc.wantErr {
 			t.Errorf("parseShortstat(%q) = +%d -%d %v", tc.in, added, removed, err)
 		}
+	}
+}
+
+// excludeWorktrees adds an unanchored .conductor/ to the file git names for
+// info/exclude, making info/ when it is missing, once, after what is there,
+// from the top of the repository or a directory in it.
+func TestExcludeWorktreesAddsTheLineOnce(t *testing.T) {
+	repo := newRepo(t)
+	if err := os.RemoveAll(filepath.Join(repo, ".git", "info")); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(repo, "services", "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exclude := filepath.Join(repo, ".git", "info", "exclude")
+	for _, dir := range []string{repo, sub, repo} {
+		if err := excludeWorktrees(t.Context(), dir); err != nil {
+			t.Fatalf("from %s: %v", dir, err)
+		}
+	}
+	if b, err := os.ReadFile(exclude); err != nil || string(b) != ".conductor/\n" {
+		t.Fatalf("info/exclude %q %v", b, err)
+	}
+	// A file without a final line break keeps its last line whole.
+	writeFile(t, exclude, "*.log")
+	if err := excludeWorktrees(t.Context(), sub); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(exclude); string(b) != "*.log\n.conductor/\n" {
+		t.Fatalf("info/exclude %q", b)
+	}
+	for _, dir := range []string{filepath.Join(repo, ".conductor", "worktrees", "run", "lead"), filepath.Join(sub, ".conductor", "x")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "file"), "x\n")
+	}
+	if status := runGit(t, repo, "status", "--porcelain"); status != "" {
+		t.Fatalf("git status:\n%s", status)
 	}
 }

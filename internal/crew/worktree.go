@@ -18,9 +18,8 @@ import (
 // the crew's working directory, on a branch of its own. git runs with argv,
 // never through a shell. Conductor never removes a worktree or a branch.
 
-// ErrNotRepo says that worktrees cannot be made of a directory: it is not the
-// top of a git working tree (it has no .git), or its HEAD is no commit to
-// branch from.
+// ErrNotRepo says that worktrees cannot be made of a directory: it is not in
+// a git working tree, or its HEAD is no commit to branch from.
 var ErrNotRepo = errors.New("not a git repository")
 
 // repoError is an ErrNotRepo that says which of the two it is.
@@ -30,22 +29,28 @@ func (e *repoError) Error() string { return e.msg }
 func (e *repoError) Unwrap() error { return ErrNotRepo }
 
 var (
-	errNoGit    = &repoError{"the working directory is not a git repository (it has no .git)"}
+	errNoGit    = &repoError{"the working directory is not in a git repository"}
 	errNoCommit = &repoError{"the working directory is a git repository without a commit: a worktree needs one to branch from"}
 )
 
-// hasGit reports whether dir holds a .git: a directory, or the file of a
-// linked worktree or a submodule.
-func hasGit(dir string) bool {
-	_, err := os.Lstat(filepath.Join(dir, ".git"))
-	return err == nil
+// inRepo checks that dir is in a git working tree: git -C dir rev-parse
+// --show-toplevel succeeds. The error matches ErrNotRepo.
+func inRepo(ctx context.Context, dir string) error {
+	if _, err := git(ctx, dir, "rev-parse", "--show-toplevel"); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errNoGit
+	}
+	return nil
 }
 
-// CheckRepo reports whether worktrees can be made of repo: it must hold a
-// .git and its HEAD must be a commit. The error matches ErrNotRepo otherwise.
+// CheckRepo reports whether worktrees can be made of repo, a directory in a
+// git working tree, its top or below it, whose HEAD is a commit. The error
+// matches ErrNotRepo otherwise, and says which of the two it is.
 func CheckRepo(ctx context.Context, repo string) error {
-	if !hasGit(repo) {
-		return errNoGit
+	if err := inRepo(ctx, repo); err != nil {
+		return err
 	}
 	if _, err := headCommit(ctx, repo); err != nil {
 		if ctx.Err() != nil {
@@ -56,25 +61,28 @@ func CheckRepo(ctx context.Context, repo string) error {
 	return nil
 }
 
-// AddWorktree adds a worktree of repo at path on a new branch made from HEAD:
-// git -C repo worktree add -b branch path HEAD. git makes the parent
-// directories of path. The error matches ErrNotRepo when repo has no .git.
+// AddWorktree adds a worktree of the repository repo is in at path, on a new
+// branch made from HEAD: git -C repo worktree add -b branch path HEAD. git
+// makes the parent directories of path. The error matches ErrNotRepo when
+// repo is in no git working tree.
 func AddWorktree(ctx context.Context, repo, path, branch string) error {
-	if !hasGit(repo) {
-		return errNoGit
+	if err := inRepo(ctx, repo); err != nil {
+		return err
 	}
 	_, err := git(ctx, repo, "worktree", "add", "-b", branch, path, "HEAD")
 	return err
 }
 
-// DiffStat counts the lines a worktree's branch adds and removes since base,
-// the commit it started from: git -C worktree diff --shortstat base...HEAD.
-// What is not committed does not count. The engine keeps what it reads for 10 s.
+// DiffStat counts the lines a worktree adds and removes against base, the
+// commit it started from: git -C worktree diff --shortstat base. Commits on
+// its branch and uncommitted changes to tracked files count; untracked files
+// do not, and a member that merges another branch into its own counts that
+// branch's changes too. The engine keeps what it reads for 10 s.
 func DiffStat(ctx context.Context, worktree, base string) (added, removed int, err error) {
 	if base == "" || strings.HasPrefix(base, "-") {
 		return 0, 0, fmt.Errorf("git diff: invalid base %q", base)
 	}
-	out, err := git(ctx, worktree, "diff", "--shortstat", base+"...HEAD")
+	out, err := git(ctx, worktree, "diff", "--shortstat", base)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -106,6 +114,73 @@ func parseShortstat(s string) (added, removed int, err error) {
 		}
 	}
 	return added, removed, nil
+}
+
+// repoPrefix is where dir lies in its working tree, "" at its top, else a
+// relative path ending in a slash: git -C dir rev-parse --show-prefix.
+func repoPrefix(ctx context.Context, dir string) (string, error) {
+	out, err := git(ctx, dir, "rev-parse", "--show-prefix")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// excludeLine keeps the worktrees out of the repository's own status: git
+// ignores a .conductor directory at any depth.
+const excludeLine = ".conductor/"
+
+// excludeWorktrees adds excludeLine to the repository's info/exclude, the
+// file git -C dir rev-parse --git-path info/exclude names (in the common git
+// directory for a linked worktree or a submodule), making info/ when it is
+// missing. A file that has the line already is left as it is. The caller
+// keeps two from running at once.
+func excludeWorktrees(ctx context.Context, dir string) error {
+	out, err := git(ctx, dir, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	path := strings.TrimSpace(out)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if strings.TrimSpace(line) == excludeLine {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	add := excludeLine + "\n"
+	if len(b) > 0 && !bytes.HasSuffix(b, []byte("\n")) {
+		add = "\n" + add
+	}
+	if _, err := f.WriteString(add); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// checkWorktreesDir refuses a <cwd>/.conductor or <cwd>/.conductor/worktrees
+// that is a symbolic link, which would put the worktrees outside cwd. The
+// error matches ErrInvalid.
+func checkWorktreesDir(cwd string) error {
+	for _, dir := range []string{".conductor", worktreesDir} {
+		if fi, err := os.Lstat(filepath.Join(cwd, dir)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return invalidf("%s in the working directory is a symbolic link: worktrees must stay inside the working directory", dir)
+		}
+	}
+	return nil
 }
 
 // headCommit returns the commit HEAD names in dir.
