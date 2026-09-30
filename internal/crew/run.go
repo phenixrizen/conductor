@@ -19,7 +19,9 @@ import (
 // (session.Info.Crew). A member starts when its start condition says: at
 // once, once the member it waits for first reports done after its prompt,
 // or when asked. Once its session is ready its role prompt is typed into it.
-// Runs live in memory, as sessions do: a server restart forgets them.
+// A handoff a member reports is typed into the member it names, once that one
+// does not wait for input. Runs live in memory, as sessions do: a server
+// restart forgets them.
 
 // Launcher starts the session of a crew member. The API server implements it
 // on the path POST /api/sessions takes, so a member's session is launched
@@ -61,6 +63,13 @@ const (
 	stopTimeout = 15 * time.Second
 	// diffReaders bounds the DiffStat reads GetWithDiffs runs at once.
 	diffReaders = 4
+	// maxHandoffs bounds the handoffs waiting for a member: one more drops
+	// the oldest.
+	maxHandoffs = 10
+	// handoffPoll is how often the handoffs waiting for a member look whether
+	// it still waits for input, besides every entry its session records: a
+	// prompt cleared records none.
+	handoffPoll = readyPoll
 )
 
 // worktreesDir is where a run's worktrees go under the crew's working
@@ -119,7 +128,8 @@ type Run struct {
 	StoppedAt *time.Time    `json:"stoppedAt,omitempty"`
 	Members   []MemberState `json:"members"`
 	// Log is the run's own log, oldest first: launched, member started,
-	// prompt typed, stopped. At most maxRunLog entries.
+	// prompt typed, handoff queued, delivered or dropped, stopped, and the
+	// rest docs/protocol.md lists. At most maxRunLog entries.
 	Log []session.ActivityEntry `json:"log"`
 }
 
@@ -162,6 +172,9 @@ type run struct {
 	stopping bool
 	// starts counts the member starts in flight; a stop waits for them.
 	starts sync.WaitGroup
+	// deliveries counts the goroutines typing handoffs (deliver); a stop
+	// waits for them.
+	deliveries sync.WaitGroup
 	// excludeNoted is set once the log says info/exclude could not be written.
 	excludeNoted bool
 }
@@ -175,7 +188,17 @@ type member struct {
 	prompted bool
 	diff     *Diff
 	diffAt   time.Time // when diff was read; zero: never
+	// handoffs wait to be typed into the member, oldest first, at most
+	// maxHandoffs. delivering is set while a goroutine types them (deliver),
+	// and wake makes it look again at once.
+	handoffs   []handoff
+	delivering bool
+	wake       chan struct{}
 }
+
+// handoff is a handoff waiting to be typed into a member: from names the
+// member that reported it, text is the line typed, less its carriage return.
+type handoff struct{ from, text string }
 
 // NewEngine returns an engine that starts member sessions with l and finds
 // them again with lookup (the server's registry).
@@ -292,7 +315,8 @@ func (e *Engine) add(c Crew, prefix string) *run {
 
 func newMember(m Member) *member {
 	m.Args = slices.Clone(m.Args)
-	return &member{def: m, state: MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending}}
+	return &member{def: m, state: MemberState{Name: m.Name, AgentID: m.AgentID, Start: m.Start, Status: MemberPending},
+		wake: make(chan struct{}, 1)}
 }
 
 // member returns the member of r with the given name. The caller holds e.mu.
@@ -521,14 +545,13 @@ func stopLocal(l *session.Local) {
 }
 
 // OnActivity takes the activity of every session, as the server's activity
-// fan-out hands it with, for an attention entry, the state it records. The
+// fan-out hands it with, for an attention entry, the state it records. An
+// entry of a member's session wakes the handoffs waiting for that member. The
 // first done a running member reports starts the pending members that start
-// after it; a done before its prompt was typed does not count. It never
-// waits: a start runs on a goroutine of its own.
+// after it; a done before its prompt was typed does not count. A handoff a
+// member reports goes to the member it names (handoff). It never waits: a
+// start, and the typing of a handoff, run on goroutines of their own.
 func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state session.AttentionState) {
-	if entry.Type != session.ActivityAttention || state != session.AttentionDone {
-		return
-	}
 	e.mu.Lock()
 	ref, ok := e.bySession[sessionID]
 	r := e.runs[ref.run]
@@ -536,25 +559,180 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 		e.mu.Unlock()
 		return
 	}
-	if done := r.member(ref.member); done == nil || !done.prompted || done.state.Status == MemberEnded {
+	m := r.member(ref.member)
+	if m == nil {
 		e.mu.Unlock()
 		return
 	}
+	m.poke()
 	var next []*member
-	var names []string
-	for _, m := range r.members {
-		if m.def.Start.When == StartAfter && m.def.Start.Member == ref.member && r.reserve(m) {
-			next = append(next, m)
-			names = append(names, m.def.Name)
-		}
-	}
-	if len(next) > 0 {
-		r.note(session.ActivityStatus, "%s is done: starting %s", ref.member, strings.Join(names, ", "))
+	switch {
+	case entry.Type == session.ActivityHandoff:
+		e.handoff(r, m, entry)
+	case entry.Type == session.ActivityAttention && state == session.AttentionDone:
+		next = r.startAfter(m)
 	}
 	e.mu.Unlock()
 	for _, m := range next {
 		// The outcome is in m's state and the run log.
 		go func() { _ = e.start(r.ctx, r, m) }()
+	}
+}
+
+// startAfter reserves the start of the pending members that start after
+// done, which reports done, when done is running, and returns them. The
+// caller holds e.mu and starts them.
+func (r *run) startAfter(done *member) []*member {
+	if !done.prompted || done.state.Status == MemberEnded {
+		return nil
+	}
+	var next []*member
+	var names []string
+	for _, m := range r.members {
+		if m.def.Start.When == StartAfter && m.def.Start.Member == done.def.Name && r.reserve(m) {
+			next = append(next, m)
+			names = append(names, m.def.Name)
+		}
+	}
+	if len(next) > 0 {
+		r.note(session.ActivityStatus, "%s is done: starting %s", done.def.Name, strings.Join(names, ", "))
+	}
+	return next
+}
+
+// poke wakes the goroutine typing m's handoffs, if one runs. The caller holds
+// e.mu.
+func (m *member) poke() {
+	if !m.delivering {
+		return
+	}
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
+// handoff takes a handoff that from, a member of r, reports in entry: it
+// waits for the member entry.To names, and is typed into it as "Handoff from
+// <from>: <message>" and a carriage return once that member runs and does not
+// wait for input (deliver). At most maxHandoffs wait for a member: one more
+// drops the oldest. A handoff to a name no member of r has, or to a member
+// with no session or whose session has ended, is only noted. A stopping run
+// takes none. The caller holds e.mu; it reads the target's session, which
+// never calls into the engine while it holds its lock.
+func (e *Engine) handoff(r *run, from *member, entry session.ActivityEntry) {
+	if r.stopping {
+		return
+	}
+	to := r.member(entry.To)
+	if to == nil {
+		r.note(session.ActivityError, "handoff to unknown member %s from %s", quote(entry.To), from.def.Name)
+		return
+	}
+	var local *session.Local
+	if to.state.SessionID != "" && to.state.Status != MemberEnded {
+		if l, ok := e.lookup(to.state.SessionID); ok && !l.Info().Status.Ended() {
+			local = l
+		}
+	}
+	if local == nil {
+		r.note(session.ActivityError, "handoff to a member that is not running, from %s to %s", from.def.Name, to.def.Name)
+		return
+	}
+	if len(to.handoffs) >= maxHandoffs {
+		r.note(session.ActivityError, "handoff dropped from %s to %s: %d wait already", to.handoffs[0].from, to.def.Name, maxHandoffs)
+		to.handoffs = slices.Delete(to.handoffs, 0, 1)
+	}
+	to.handoffs = append(to.handoffs, handoff{from: from.def.Name, text: handoffText(from.def.Name, entry.Message)})
+	switch {
+	case to.state.Status != MemberRunning:
+		r.note(session.ActivityStatus, "handoff queued from %s to %s: %s has not had its prompt yet", from.def.Name, to.def.Name, to.def.Name)
+	case local.Info().Attention.State == session.AttentionNeedsInput:
+		r.note(session.ActivityStatus, "handoff queued from %s to %s: %s is waiting for input", from.def.Name, to.def.Name, to.def.Name)
+	}
+	if to.delivering {
+		to.poke()
+		return
+	}
+	to.delivering = true
+	r.deliveries.Add(1)
+	go e.deliver(r, to, local)
+}
+
+// handoffText is the line a handoff types, less its carriage return. The
+// message is at most session.MaxAttentionMessage bytes, as the session that
+// recorded it cleaned it, so the line fits what a session takes as input.
+func handoffText(from, message string) string {
+	return strings.TrimSpace("Handoff from " + from + ": " + message)
+}
+
+// deliver types the handoffs waiting for m into l, its session, in order and
+// each with a carriage return, one at a time while m runs and l does not wait
+// for input. It looks again whenever l records an entry (poke) and every
+// handoffPoll, since a prompt answered by a person records an entry but one
+// cleared does not. It ends once none waits; when the run stops, or l or m
+// ends, the handoffs left are dropped, each noted. It never holds e.mu while
+// it types.
+func (e *Engine) deliver(r *run, m *member, l *session.Local) {
+	defer r.deliveries.Done()
+	tick := time.NewTicker(handoffPoll)
+	defer tick.Stop()
+	for {
+		e.mu.Lock()
+		if len(m.handoffs) == 0 {
+			m.delivering = false
+			e.mu.Unlock()
+			return
+		}
+		why := ""
+		switch {
+		case r.ctx.Err() != nil:
+			why = "the run is stopped"
+		case m.state.Status == MemberEnded || isClosed(l.Ended()):
+			why = m.def.Name + " is not running"
+		}
+		if why != "" {
+			for _, h := range m.handoffs {
+				r.note(session.ActivityError, "handoff dropped from %s to %s: %s", h.from, m.def.Name, why)
+			}
+			m.handoffs, m.delivering = nil, false
+			e.mu.Unlock()
+			return
+		}
+		var h handoff
+		ready := m.state.Status == MemberRunning && l.Info().Attention.State != session.AttentionNeedsInput
+		if ready {
+			h = m.handoffs[0]
+			m.handoffs = slices.Delete(m.handoffs, 0, 1)
+		}
+		e.mu.Unlock()
+		if !ready {
+			select {
+			case <-r.ctx.Done():
+			case <-l.Ended():
+			case <-m.wake:
+			case <-tick.C:
+			}
+			continue
+		}
+		err := l.Type(h.text+"\r", typedBy)
+		e.mu.Lock()
+		if err != nil {
+			r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, m.def.Name, err)
+		} else {
+			r.note(session.ActivityStatus, "handoff delivered from %s to %s", h.from, m.def.Name)
+		}
+		e.mu.Unlock()
+	}
+}
+
+// isClosed reports whether c is closed, without waiting.
+func isClosed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -636,8 +814,9 @@ func (r *run) admit(m Member) error {
 }
 
 // Stop stops a run: no member starts any more, the starts in flight end,
-// every member's session is stopped and the run is marked stopped. The
-// worktrees stay. Stopping a stopped run again changes nothing.
+// every member's session is stopped, the handoffs waiting are dropped and the
+// run is marked stopped. The worktrees stay. Stopping a stopped run again
+// changes nothing.
 func (e *Engine) Stop(ctx context.Context, runID string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
@@ -653,7 +832,7 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	r.stopping = true
 	e.mu.Unlock()
 	r.cancel()
-	waitStarts(ctx, &r.starts)
+	waitFor(ctx, &r.starts)
 	e.mu.Lock()
 	var ids []string
 	for _, m := range r.members {
@@ -676,6 +855,8 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 		}()
 	}
 	wg.Wait()
+	// The handoffs left are dropped; one being typed ends with its session.
+	waitFor(ctx, &r.deliveries)
 	e.mu.Lock()
 	if r.stoppedAt == nil {
 		now := time.Now().UTC()
@@ -686,8 +867,8 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	return errors.Join(errs...)
 }
 
-// waitStarts waits for the starts in flight, or for ctx.
-func waitStarts(ctx context.Context, wg *sync.WaitGroup) {
+// waitFor waits for wg, the starts or the deliveries in flight, or for ctx.
+func waitFor(ctx context.Context, wg *sync.WaitGroup) {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()

@@ -104,6 +104,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.events = newEventHub()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
+	// The runs take every entry too: a member's done starts the members after
+	// it, and its handoff is typed into the member it names. OnActivity never
+	// waits, as a sink must not.
+	s.events.addSink(s.runs.OnActivity)
 	s.hosts = signal.NewHub(s.registry, log)
 	s.hosts.OnChange = s.events.publish
 	s.hosts.OnActivity = s.events.activity

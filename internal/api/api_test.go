@@ -2974,3 +2974,80 @@ func TestPlainSessionHasNoCrewVariables(t *testing.T) {
 		t.Fatalf("session %v", got["session"])
 	}
 }
+
+// The run engine takes the server's activity: a handoff one member reports
+// through the events route is typed into the member it names, and the done
+// a member reports starts the members after it.
+func TestCrewHandoffReachesTheOtherMember(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	member := func(name string, start map[string]any) map[string]any {
+		return map[string]any{"name": name, "agentId": "cat", "prompt": "", "start": start}
+	}
+	e.sendCrew("POST", "/api/crews", map[string]any{
+		"name": "Relay", "goal": "ship", "cwd": e.root, "where": "server", "isolation": "none",
+		"members": []any{
+			member("lead", map[string]any{"when": "immediately"}),
+			member("tests", map[string]any{"when": "immediately"}),
+			member("docs", map[string]any{"when": "after", "member": "lead"}),
+		},
+	}, http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/relay/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	runID := out["run"].(map[string]any)["id"].(string)
+	// memberNow reads a member of the run as GET /api/runs/{run} reports it.
+	memberNow := func(name string) map[string]any {
+		_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+		return runMember(t, out["run"].(map[string]any), name)
+	}
+	waitRunning := func(name string) string {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			m := memberNow(name)
+			if m["status"] == "running" {
+				return m["sessionId"].(string)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s is %v", name, m)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	leadID, testsID := waitRunning("lead"), waitRunning("tests")
+	agent := e.agentToken(leadID)
+
+	resp, out = e.do("POST", "/api/sessions/"+leadID+"/events", agent, map[string]any{"type": "handoff", "to": "tests", "message": "run the suite"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("handoff: %d %v", resp.StatusCode, out)
+	}
+	d, _ := e.srv.registry.Get(testsID)
+	tests := d.(*session.Local)
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.ContainsFunc(tests.Activity(), func(a session.ActivityEntry) bool {
+		return a.Type == session.ActivityInput && a.ByName == "crew" && a.Message == "Handoff from lead: run the suite"
+	}) {
+		if time.Now().After(deadline) {
+			t.Fatalf("tests records %+v", tests.Activity())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	c := dialViewer(t, e, testsID, adminToken)
+	c.hello(80, 24)
+	c.expectOutput("Handoff from lead: run the suite")
+	_, out = e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	if log, _ := json.Marshal(out["run"].(map[string]any)["log"]); !strings.Contains(string(log), "handoff delivered from lead to tests") {
+		t.Fatalf("run log %s", log)
+	}
+
+	// lead is done: docs starts.
+	if m := memberNow("docs"); m["status"] != "pending" {
+		t.Fatalf("docs before lead is done: %v", m)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+leadID+"/events", agent, map[string]any{"type": "done"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("done: %d %v", resp.StatusCode, out)
+	}
+	waitRunning("docs")
+}

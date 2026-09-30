@@ -1102,3 +1102,243 @@ func TestStopDuringLaunchKeepsTheRun(t *testing.T) {
 		t.Fatalf("launched %v", names)
 	}
 }
+
+// handoffEntry is the entry of a handoff an agent reports.
+func handoffEntry(to, message string) session.ActivityEntry {
+	return session.ActivityEntry{Type: session.ActivityHandoff, ByName: "agent", To: to, Message: message}
+}
+
+// logCount counts the entries of a run's log whose message holds text.
+func logCount(t *testing.T, e *Engine, runID, text string) int {
+	t.Helper()
+	r, ok := e.Get(runID)
+	if !ok {
+		t.Fatalf("run %s not found", runID)
+	}
+	n := 0
+	for _, entry := range r.Log {
+		if strings.Contains(entry.Message, text) {
+			n++
+		}
+	}
+	return n
+}
+
+// waitLogged waits until a run's log holds n entries with text.
+func waitLogged(t *testing.T, e *Engine, runID, text string, n int, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		got := logCount(t, e, runID, text)
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			r, _ := e.Get(runID)
+			t.Fatalf("%d log entries with %q after %v, want %d: %+v", got, text, d, n, r.Log)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// nothingTyped checks that nothing is written to a process for d.
+func nothingTyped(t *testing.T, p *sessiontest.FakeProc, d time.Duration) {
+	t.Helper()
+	select {
+	case b := <-p.Input:
+		t.Fatalf("typed %q", b)
+	case <-time.After(d):
+	}
+}
+
+// runningPair launches lead and tests, both ready at once, and returns the
+// run once both are running, with their prompts read.
+func runningPair(t *testing.T, e *Engine, fl *fakeLauncher, more ...Member) Run {
+	t.Helper()
+	fl.onLaunch = askAtOnce
+	run, err := e.Launch(t.Context(), testCrew(append([]Member{immediate("lead", "Plan it."), immediate("tests", "Test it.")}, more...)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lead", "tests"} {
+		waitStatus(t, e, run.ID, name, MemberRunning, 5*time.Second)
+		_, p := fl.member(name)
+		typed(p)
+	}
+	return *run
+}
+
+// A handoff one member reports is typed into the member it names, as its own
+// line, when that member is not waiting for input; while it waits, the
+// handoffs queue and are typed in order once it no longer waits.
+func TestHandoffTypedOrQueued(t *testing.T) {
+	e, fl := newEngine(t)
+	run := runningPair(t, e, fl)
+	lead, _ := fl.member("lead")
+	tests, p := fl.member("tests")
+
+	lead.Record(handoffEntry("tests", "the handlers are in"))
+	if got := waitTyped(t, p, 5*time.Second); got != "Handoff from lead: the handlers are in\r" {
+		t.Fatalf("typed %q", got)
+	}
+	waitLogged(t, e, run.ID, "handoff delivered from lead to tests", 1, 5*time.Second)
+	if entries := crewEntries(tests); len(entries) != 2 || entries[1].Message != "Handoff from lead: the handlers are in" {
+		t.Fatalf("tests records %+v", entries)
+	}
+
+	// Waiting on a permission prompt: nothing is typed into it.
+	tests.SetAttention(session.AttentionNeedsInput, "Allow edit?", session.SourceAPI)
+	lead.Record(handoffEntry("tests", "first"))
+	lead.Record(handoffEntry("tests", "second"))
+	waitLogged(t, e, run.ID, "handoff queued from lead to tests", 2, 5*time.Second)
+	nothingTyped(t, p, 3*handoffPoll)
+	if st := tests.Info().Attention.State; st != session.AttentionNeedsInput {
+		t.Fatalf("tests is %q", st)
+	}
+	// Another prompt is still a prompt.
+	tests.SetAttention(session.AttentionNeedsInput, "Allow write?", session.SourceAPI)
+	nothingTyped(t, p, 3*handoffPoll)
+
+	// Cleared, which records no entry: both are typed, in order.
+	tests.SetAttention(session.AttentionNone, "", session.SourceAPI)
+	for _, want := range []string{"Handoff from lead: first\r", "Handoff from lead: second\r"} {
+		if got := waitTyped(t, p, 5*time.Second); got != want {
+			t.Fatalf("typed %q, want %q", got, want)
+		}
+	}
+	waitLogged(t, e, run.ID, "handoff delivered from lead to tests", 3, 5*time.Second)
+}
+
+// At most maxHandoffs wait for a member: an 11th drops the oldest, and the
+// run log says so.
+func TestHandoffQueueBounded(t *testing.T) {
+	e, fl := newEngine(t)
+	run := runningPair(t, e, fl)
+	lead, _ := fl.member("lead")
+	tests, p := fl.member("tests")
+	tests.SetAttention(session.AttentionNeedsInput, "Allow edit?", session.SourceAPI)
+	for i := 1; i <= 12; i++ {
+		lead.Record(handoffEntry("tests", fmt.Sprintf("part %d", i)))
+	}
+	waitLogged(t, e, run.ID, "handoff queued from lead to tests", 12, 5*time.Second)
+	if n := logCount(t, e, run.ID, "handoff dropped from lead to tests"); n != 2 {
+		t.Fatalf("%d handoffs dropped, want 2", n)
+	}
+	nothingTyped(t, p, 2*handoffPoll)
+	tests.SetAttention(session.AttentionNone, "", session.SourceAPI)
+	for i := 3; i <= 12; i++ {
+		if got, want := waitTyped(t, p, 5*time.Second), fmt.Sprintf("Handoff from lead: part %d\r", i); got != want {
+			t.Fatalf("typed %q, want %q", got, want)
+		}
+	}
+	waitLogged(t, e, run.ID, "handoff delivered from lead to tests", 10, 5*time.Second)
+	nothingTyped(t, p, 2*handoffPoll)
+}
+
+// A handoff to a name no member has is noted in the run log and typed
+// nowhere; one from a session outside any run is ignored.
+func TestHandoffUnknownMemberLogged(t *testing.T) {
+	e, fl := newEngine(t)
+	run := runningPair(t, e, fl)
+	lead, pl := fl.member("lead")
+	_, pt := fl.member("tests")
+	lead.Record(handoffEntry("ghost", "over to you"))
+	waitLogged(t, e, run.ID, `handoff to unknown member "ghost" from lead`, 1, 5*time.Second)
+	nothingTyped(t, pt, 2*handoffPoll)
+	if got := typed(pl); len(got) != 0 {
+		t.Fatalf("lead was typed %q", got)
+	}
+
+	before, _ := e.Get(run.ID)
+	e.OnActivity("not-a-member", handoffEntry("tests", "hello"), "")
+	nothingTyped(t, pt, 2*handoffPoll)
+	if after, _ := e.Get(run.ID); len(after.Log) != len(before.Log) {
+		t.Fatalf("a stranger's handoff was noted: %+v", after.Log[len(before.Log):])
+	}
+}
+
+// A handoff to a member with no session yet, or whose session has ended, is
+// noted as to a member that is not running; so are the handoffs waiting for a
+// member whose session ends.
+func TestHandoffToAMemberThatIsNotRunning(t *testing.T) {
+	e, fl := newEngine(t)
+	run := runningPair(t, e, fl, manual("docs", ""))
+	lead, _ := fl.member("lead")
+	tests, p := fl.member("tests")
+	lead.Record(handoffEntry("docs", "write it up"))
+	waitLogged(t, e, run.ID, "handoff to a member that is not running, from lead to docs", 1, 5*time.Second)
+
+	tests.SetAttention(session.AttentionNeedsInput, "Allow edit?", session.SourceAPI)
+	lead.Record(handoffEntry("tests", "one"))
+	lead.Record(handoffEntry("tests", "two"))
+	waitLogged(t, e, run.ID, "handoff queued from lead to tests", 2, 5*time.Second)
+	p.End(0)
+	waitLogged(t, e, run.ID, "handoff dropped from lead to tests: tests is not running", 2, 5*time.Second)
+	lead.Record(handoffEntry("tests", "three"))
+	waitLogged(t, e, run.ID, "handoff to a member that is not running, from lead to tests", 1, 5*time.Second)
+	if n := logCount(t, e, run.ID, "handoff delivered"); n != 0 {
+		t.Fatalf("%d handoffs delivered", n)
+	}
+}
+
+// A member still waiting for its prompt gets its handoffs after it: the
+// prompt is typed first.
+func TestHandoffWaitsForThePrompt(t *testing.T) {
+	e, fl := newEngine(t)
+	release := make(chan struct{})
+	e.await = func(ctx context.Context, l *session.Local) error {
+		if l.Info().Crew.Member == "tests" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("tests", "Test it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	lead, _ := fl.member("lead")
+	_, p := fl.member("tests")
+	lead.Record(handoffEntry("tests", "the handlers are in"))
+	waitLogged(t, e, run.ID, "handoff queued from lead to tests: tests has not had its prompt yet", 1, 5*time.Second)
+	nothingTyped(t, p, 2*handoffPoll)
+	close(release)
+	for _, want := range []string{"Test it.\r", "Handoff from lead: the handlers are in\r"} {
+		if got := waitTyped(t, p, 5*time.Second); got != want {
+			t.Fatalf("typed %q, want %q", got, want)
+		}
+	}
+}
+
+// Stopping a run drops the handoffs waiting in it, each noted before the run
+// is noted stopped, and nothing is typed afterwards.
+func TestHandoffsDropWhenTheRunStops(t *testing.T) {
+	e, fl := newEngine(t)
+	run := runningPair(t, e, fl)
+	lead, _ := fl.member("lead")
+	tests, p := fl.member("tests")
+	tests.SetAttention(session.AttentionNeedsInput, "Allow edit?", session.SourceAPI)
+	lead.Record(handoffEntry("tests", "one"))
+	lead.Record(handoffEntry("tests", "two"))
+	waitLogged(t, e, run.ID, "handoff queued from lead to tests", 2, 5*time.Second)
+	if err := e.Stop(t.Context(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.Get(run.ID)
+	last := got.Log[len(got.Log)-1]
+	if last.Message != "stopped" || logCount(t, e, run.ID, "handoff dropped from lead to tests: the run is stopped") != 2 {
+		t.Fatalf("log %+v", got.Log)
+	}
+	if n := len(typed(p)); n != 0 {
+		t.Fatalf("%d writes after the stop", n)
+	}
+	// A handoff reported as the run stops is ignored.
+	e.OnActivity(lead.Info().ID, handoffEntry("tests", "late"), "")
+	if after, _ := e.Get(run.ID); len(after.Log) != len(got.Log) {
+		t.Fatalf("noted after the stop: %+v", after.Log[len(got.Log):])
+	}
+}

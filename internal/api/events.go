@@ -26,7 +26,8 @@ const (
 type eventHub struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
-	// sinks receive every activity entry after the clients: the webhooks.
+	// sinks receive every activity entry after the clients: the webhooks and
+	// the crew runs.
 	sinks []activitySink
 }
 
