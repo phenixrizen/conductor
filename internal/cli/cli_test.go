@@ -379,31 +379,34 @@ func TestHooksAdoptOnlyABinaryThatExists(t *testing.T) {
 	}
 }
 
-// install and status refuse a hooks dir that its group or others may write
-// to, naming it: the hook commands in it would go into the agents' configs.
-// Nothing is written.
+// install and status refuse a hooks dir that is not 0700, as conductor serve
+// writes it, naming it: the hook commands in it would go into the agents'
+// configs. A directory others may write to is refused, and so is one of a
+// checkout, which others may read (0755). Nothing is written.
 func TestHooksRefuseAHooksDirOthersMayWrite(t *testing.T) {
 	clearConductorEnv(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("the hooks dir is checked on Unix only")
 	}
-	home, data := t.TempDir(), t.TempDir()
-	serverAssets(t, data, fakeBinary(t))
-	hooks := filepath.Join(data, "hooks")
-	if err := os.Chmod(hooks, 0o775); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{
-		{"install", "copilot", "--home", home, "--data-dir", data},
-		{"install", "all", "--home", home, "--data-dir", data},
-		{"status", "--home", home, "--data-dir", data},
-	} {
-		code, stdout, stderr, err := runHooksWith(t, args...)
-		if code != 1 || err == nil || !strings.Contains(err.Error(), hooks) || stdout != "" {
-			t.Fatalf("%q: exit %d %v\nstdout:\n%s\nstderr:\n%s", args, code, err, stdout, stderr)
+	for _, mode := range []os.FileMode{0o775, 0o755} {
+		home, data := t.TempDir(), t.TempDir()
+		serverAssets(t, data, fakeBinary(t))
+		hooks := filepath.Join(data, "hooks")
+		if err := os.Chmod(hooks, mode); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if entries, _ := os.ReadDir(home); len(entries) != 0 {
-		t.Fatalf("wrote %v", entries)
+		for _, args := range [][]string{
+			{"install", "copilot", "--home", home, "--data-dir", data},
+			{"install", "all", "--home", home, "--data-dir", data},
+			{"status", "--home", home, "--data-dir", data},
+		} {
+			code, stdout, stderr, err := runHooksWith(t, args...)
+			if code != 1 || err == nil || !strings.Contains(err.Error(), hooks) || !strings.Contains(err.Error(), "chmod 700") || stdout != "" {
+				t.Fatalf("mode %o, %q: exit %d %v\nstdout:\n%s\nstderr:\n%s", mode, args, code, err, stdout, stderr)
+			}
+		}
+		if entries, _ := os.ReadDir(home); len(entries) != 0 {
+			t.Fatalf("mode %o: wrote %v", mode, entries)
+		}
 	}
 }

@@ -457,16 +457,34 @@ func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttenti
 // session calls it on the goroutine that recorded the entry, so it never waits
 // for the connection. Entries recorded while the connection is down are lost
 // to the stream; the session log has them.
+//
+// With an attention entry goes the state the session is in now: the session
+// records the entry right after it sets the state, on this goroutine, so that
+// is the state the entry records. The server may hear of the entry before it
+// hears of the change (onLocalChange sends that on another path), and types
+// the entry by the state it carries.
 func (a *agent) onLocalActivity(_ string, e session.ActivityEntry) {
-	a.activity.push(e)
+	var state session.AttentionState
+	if e.Type == session.ActivityAttention {
+		a.mu.Lock()
+		local := a.local
+		a.mu.Unlock()
+		if local != nil {
+			state = local.Info().Attention.State
+		}
+	}
+	a.activity.push(e, state)
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)
 	}
 }
 
-// sendActivity delivers one entry on the control connection.
-func (a *agent) sendActivity(e session.ActivityEntry) {
-	a.send(hostActivityMsg(a.sessionID(), e))
+// sendActivity delivers one entry, and the attention state it records, on the
+// control connection.
+func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState) {
+	m := hostActivityMsg(a.sessionID(), e)
+	m.State = string(state)
+	a.send(m)
 }
 
 // settle gives the control connection a moment to deliver what the session

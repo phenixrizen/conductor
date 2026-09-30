@@ -25,7 +25,7 @@ func entryMessage(msg string) session.ActivityEntry {
 func TestActivityForwarderSendsInOrder(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
-	f := newActivityForwarder(func(e session.ActivityEntry) {
+	f := newActivityForwarder(func(e session.ActivityEntry, _ session.AttentionState) {
 		mu.Lock()
 		got = append(got, e.Message)
 		mu.Unlock()
@@ -35,7 +35,7 @@ func TestActivityForwarderSendsInOrder(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		msg := strings.Repeat("x", i)
 		want = append(want, msg)
-		if !f.push(entryMessage(msg)) {
+		if !f.push(entryMessage(msg), "") {
 			t.Fatalf("entry %d refused", i)
 		}
 	}
@@ -62,7 +62,7 @@ func waitIdle(t *testing.T, f *activityForwarder) {
 // the process: a connection that takes seconds to write must not hold it.
 func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 	release := make(chan struct{})
-	f := newActivityForwarder(func(session.ActivityEntry) { <-release }, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { <-release }, discardLog)
 	go f.run(t.Context())
 	defer close(release)
 
@@ -70,7 +70,7 @@ func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 	go func() {
 		n := 0
 		for i := 0; i < 3*activityQueue; i++ {
-			if f.push(entryMessage("n")) {
+			if f.push(entryMessage("n"), "") {
 				n++
 			}
 		}
@@ -93,7 +93,7 @@ func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 	var sent sync.WaitGroup
 	sent.Add(800)
-	f := newActivityForwarder(func(session.ActivityEntry) { sent.Done() }, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { sent.Done() }, discardLog)
 	go f.run(t.Context())
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
@@ -101,7 +101,7 @@ func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				for !f.push(entryMessage("n")) { // the queue holds 256; the sender drains it
+				for !f.push(entryMessage("n"), "") { // the queue holds 256; the sender drains it
 					time.Sleep(time.Millisecond)
 				}
 			}
@@ -119,7 +119,7 @@ func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 }
 
 func TestActivityForwarderStopsWithItsContext(t *testing.T) {
-	f := newActivityForwarder(func(session.ActivityEntry) {}, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) {}, discardLog)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { f.run(ctx); close(done) }()
@@ -157,7 +157,10 @@ func activityTestAgent(t *testing.T, delayStatus time.Duration) (*agent, chan an
 			a.onLocalActivity(id, e)
 		}
 	}
-	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: hook})
+	local := session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: hook})
+	a.mu.Lock()
+	a.local = local
+	a.mu.Unlock()
 	return a, out
 }
 
@@ -409,7 +412,7 @@ func TestSettleDoesNotWaitOnceCancelled(t *testing.T) {
 	release := make(chan struct{})
 	a.sendHook = func(any) { <-release }
 	defer close(release)
-	a.activity.push(entryMessage("stuck")) // the forwarder takes it and stalls in send: never idle
+	a.activity.push(entryMessage("stuck"), "") // the forwarder takes it and stalls in send: never idle
 	// a.flushed is nil, as it is when watchStatus returned on the cancel.
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -418,5 +421,48 @@ func TestSettleDoesNotWaitOnceCancelled(t *testing.T) {
 	a.settle(ctx)
 	if took := time.Since(start); took > 500*time.Millisecond {
 		t.Fatalf("settle took %v after the host was cancelled", took)
+	}
+}
+
+// An attention entry goes to the server with the attention state it records,
+// the one the session is in when it records the entry; other entries carry
+// none.
+func TestHostSendsTheStateAnAttentionEntryRecords(t *testing.T) {
+	a, out := activityTestAgent(t, 0)
+	a.local.SetAttentionFull(session.AttentionNeedsInput, "approve?", session.SourceAPI, session.KindPermission, nil)
+	if m := nextHostActivity(t, out); m.Entry.Type != session.ActivityAttention || m.Entry.Message != "approve?" || m.State != string(session.AttentionNeedsInput) {
+		t.Fatalf("attention entry %+v", m)
+	}
+	a.local.SetAttention(session.AttentionDone, "", session.SourceAPI)
+	if m := nextHostActivity(t, out); m.Entry.Type != session.ActivityAttention || m.Entry.Message != "done" || m.State != string(session.AttentionDone) {
+		t.Fatalf("attention entry without a message %+v", m)
+	}
+	a.local.Record(session.ActivityEntry{Type: session.ActivityProgress, Message: "1/2"})
+	if m := nextHostActivity(t, out); m.Entry.Type != session.ActivityProgress || m.State != "" {
+		t.Fatalf("progress entry %+v", m)
+	}
+}
+
+// The state is read on the goroutine that records the entry, not when the
+// connection gets to send it: a change made in between belongs to the next
+// entry, not to the one waiting.
+func TestHostTakesTheStateWhenTheEntryIsRecorded(t *testing.T) {
+	a, out := activityTestAgent(t, 0)
+	release := make(chan struct{})
+	a.sendHook = func(v any) {
+		if _, ok := v.(proto.HostActivityMsg); ok {
+			<-release
+		}
+		out <- v
+	}
+	a.local.SetAttentionFull(session.AttentionNeedsInput, "approve?", session.SourceAPI, "", nil)
+	a.local.SetAttentionFull(session.AttentionWorking, "compiling", session.SourceAPI, "", nil)
+	close(release)
+	first, second := nextHostActivity(t, out), nextHostActivity(t, out)
+	if first.Entry.Message != "approve?" || first.State != string(session.AttentionNeedsInput) {
+		t.Fatalf("first entry %+v", first)
+	}
+	if second.Entry.Message != "compiling" || second.State != string(session.AttentionWorking) {
+		t.Fatalf("second entry %+v", second)
 	}
 }

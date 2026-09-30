@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -134,16 +135,18 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 
 // activityRecorder collects what a Hub hands to OnActivity.
 type activityRecorder struct {
-	mu  sync.Mutex
-	ids []string
-	got []session.ActivityEntry
+	mu     sync.Mutex
+	ids    []string
+	got    []session.ActivityEntry
+	states []session.AttentionState
 }
 
-func (r *activityRecorder) hook(id string, e session.ActivityEntry) {
+func (r *activityRecorder) hook(id string, e session.ActivityEntry, state session.AttentionState) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ids = append(r.ids, id)
 	r.got = append(r.got, e)
+	r.states = append(r.states, state)
 }
 
 func (r *activityRecorder) entries() []session.ActivityEntry {
@@ -162,7 +165,7 @@ func TestHostActivityReachesTheHubHook(t *testing.T) {
 	hs.HostActivity(proto.Activity{
 		T: proto.CtlActivity, At: at.Format(time.RFC3339Nano), Type: session.ActivityArtifact, By: "0123456789abcdef", ByName: "agent",
 		Message: "PR opened", URL: "https://github.com/x/y/pull/1", To: "review", Tool: "gh",
-	})
+	}, "")
 	got := rec.entries()
 	if len(got) != 1 || rec.ids[0] != hs.Info().ID {
 		t.Fatalf("hook saw %v for %v, want one entry for %s", got, rec.ids, hs.Info().ID)
@@ -183,7 +186,7 @@ func TestHostActivityIsAttributedToTheConnectionsSession(t *testing.T) {
 	rec := &activityRecorder{}
 	hub.OnActivity = rec.hook
 	hs, _ := register(t, hub)
-	hs.HostActivity(proto.Activity{At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityProgress, Message: "1/7"})
+	hs.HostActivity(proto.Activity{At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityProgress, Message: "1/7"}, "")
 	if len(rec.ids) != 1 || rec.ids[0] != hs.Info().ID {
 		t.Fatalf("attributed to %v, want %s", rec.ids, hs.Info().ID)
 	}
@@ -195,7 +198,7 @@ func TestHostActivityDropsTypesItDoesNotKnow(t *testing.T) {
 	hub.OnActivity = rec.hook
 	hs, _ := register(t, hub)
 	for _, typ := range []string{"", "bogus", "clear", "needs_input", "PROGRESS", strings.Repeat("x", 100000)} {
-		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: typ, Message: "m"})
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: typ, Message: "m"}, "")
 	}
 	if got := rec.entries(); len(got) != 0 {
 		t.Fatalf("unknown types reached the hook: %+v", got)
@@ -205,7 +208,7 @@ func TestHostActivityDropsTypesItDoesNotKnow(t *testing.T) {
 		session.ActivityAttention, session.ActivityInput, session.ActivityJoin, session.ActivityLeave, session.ActivityLink, session.ActivityStatus,
 		session.ActivityProgress, session.ActivityArtifact, session.ActivityHandoff, session.ActivityToolUse, session.ActivityToolDenied, session.ActivityError,
 	} {
-		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: typ})
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: typ}, "")
 	}
 	if got := rec.entries(); len(got) != 12 {
 		t.Fatalf("%d of 12 known types reached the hook", len(got))
@@ -225,7 +228,7 @@ func TestHostActivityIsCleanedBeforeItIsFannedOut(t *testing.T) {
 		URL:     "https://x/" + strings.Repeat("u", 5000),
 		To:      strings.Repeat("t", 100),
 		Tool:    strings.Repeat("k", 500),
-	})
+	}, "")
 	got := rec.entries()
 	if len(got) != 1 {
 		t.Fatalf("entries %+v", got)
@@ -258,7 +261,7 @@ func TestHostActivityStampsAMissingOrUnreadableTime(t *testing.T) {
 	hs, _ := register(t, hub)
 	before := time.Now()
 	for _, at := range []string{"", "yesterday", "0000-00-00T00:00:00Z"} {
-		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: at, Type: session.ActivityProgress})
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: at, Type: session.ActivityProgress}, "")
 	}
 	got := rec.entries()
 	if len(got) != 3 {
@@ -274,7 +277,7 @@ func TestHostActivityStampsAMissingOrUnreadableTime(t *testing.T) {
 func TestHostActivityWithoutAHookIsIgnored(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	hs, _ := register(t, hub)
-	hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityProgress})
+	hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityProgress}, "")
 }
 
 // The hook may be slow to reach and is called from every host's read loop:
@@ -290,7 +293,7 @@ func TestHostActivityIsSafeFromManyGoroutines(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityToolUse, Tool: "Bash"})
+				hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityToolUse, Tool: "Bash"}, "")
 			}
 		}()
 	}
@@ -396,7 +399,7 @@ func TestActivityMessageRoundTrip(t *testing.T) {
 	if back := session.EntryFromProto(m.Entry); back != in {
 		t.Fatalf("session.EntryFromProto gave %+v, want %+v", back, in)
 	}
-	dst.HostActivity(m.Entry)
+	dst.HostActivity(m.Entry, m.State)
 	if got := rec.entries(); len(got) != 1 || got[0] != in {
 		t.Fatalf("round trip gave %+v, want %+v", got, in)
 	}
@@ -417,7 +420,11 @@ func TestActivityMessagesFitTheHostMessageLimit(t *testing.T) {
 	}
 	toServer := hostActivityMsg(worst)
 	toServer.SessionID = session.NewID() // the host names its session; the server does not
-	for name, msg := range map[string]proto.HostActivityMsg{"host to server": toServer, "server to host": hostActivityMsg(worst)} {
+	// The host sends the attention state an attention entry records with it:
+	// needs_input is the longest.
+	withState := toServer
+	withState.State = string(session.AttentionNeedsInput)
+	for name, msg := range map[string]proto.HostActivityMsg{"host to server": toServer, "host to server, with a state": withState, "server to host": hostActivityMsg(worst)} {
 		b, err := json.Marshal(msg)
 		if err != nil {
 			t.Fatal(err)
@@ -677,5 +684,39 @@ func TestViewerPumpWritesFramesAsTheyArrive(t *testing.T) {
 	}
 	if sink.written() != 2 || !sink.closed {
 		t.Fatalf("written %d, closed %v", sink.written(), sink.closed)
+	}
+}
+
+// The host sends, with an attention entry, the attention state the entry
+// records, and the hub's hook gets it with the entry. The host is not trusted
+// with it: a state that is not needs_input, working or done, or one sent with
+// another type of entry, is dropped and the entry kept.
+func TestHostActivityCarriesTheAttentionStateOfAnAttentionEntry(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	at := time.Now().Format(time.RFC3339Nano)
+	for _, tc := range []struct {
+		typ, state string
+		want       session.AttentionState
+	}{
+		{session.ActivityAttention, "needs_input", session.AttentionNeedsInput},
+		{session.ActivityAttention, "working", session.AttentionWorking},
+		{session.ActivityAttention, "done", session.AttentionDone},
+		{session.ActivityAttention, "", ""},
+		{session.ActivityAttention, "clear", ""},
+		{session.ActivityAttention, "NEEDS_INPUT", ""},
+		{session.ActivityAttention, strings.Repeat("x", 10000), ""},
+		{session.ActivityProgress, "needs_input", ""},
+		{session.ActivityStatus, "done", ""},
+	} {
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: at, Type: tc.typ, Message: "m"}, tc.state)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	want := []session.AttentionState{"needs_input", "working", "done", "", "", "", "", "", ""}
+	if len(rec.got) != len(want) || !slices.Equal(rec.states, want) {
+		t.Fatalf("the hook got %d entries with states %q, want %q", len(rec.got), rec.states, want)
 	}
 }

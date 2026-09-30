@@ -151,10 +151,16 @@ type HostAttentionMsg struct {
 // server omits it. Entry is bounded by session.CleanEntry so that it fits one
 // CONTROL frame (MaxControl); the envelope adds a few dozen bytes, far below
 // MaxHostMessage.
+//
+// State goes host to server only, with an attention entry: the attention
+// state the host's session was in when it recorded the entry (needs_input,
+// working or done), which is the state the entry records. The server keeps it
+// only on an attention entry and only as one of those three.
 type HostActivityMsg struct {
 	T         string   `json:"t"`
 	SessionID string   `json:"sessionId,omitempty"`
 	Entry     Activity `json:"entry"`
+	State     string   `json:"state,omitempty"`
 }
 
 // HostStopMsg asks the host to stop its process.

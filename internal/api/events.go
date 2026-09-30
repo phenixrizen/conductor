@@ -27,8 +27,13 @@ type eventHub struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
 	// sinks receive every activity entry after the clients: the webhooks.
-	sinks []func(sessionID string, e session.ActivityEntry)
+	sinks []activitySink
 }
+
+// activitySink receives an activity entry of a session and, for an attention
+// entry, the attention state it records: the state the session was in when it
+// recorded the entry, "" when that is not known.
+type activitySink func(sessionID string, e session.ActivityEntry, state session.AttentionState)
 
 func newEventHub() *eventHub { return &eventHub{clients: map[chan []byte]struct{}{}} }
 
@@ -75,18 +80,21 @@ type activityEvent struct {
 // addSink makes f receive every activity entry, after the clients have it.
 // f runs where activity does, on the goroutine that recorded the entry: it
 // must never wait, and must be safe for concurrent use.
-func (h *eventHub) addSink(f func(sessionID string, e session.ActivityEntry)) {
+func (h *eventHub) addSink(f activitySink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.sinks = append(h.sinks, f)
 }
 
 // activity queues an activity entry of a session for every client, then hands
-// it to every sink. It is the OnActivity hook of every session, so it runs on
-// the goroutines that record, concurrently and out of order (each entry says
-// when it happened), and it never waits: a client whose queue is past
-// activityQueueLimit misses the entry and keeps its stream.
-func (h *eventHub) activity(sessionID string, e session.ActivityEntry) {
+// it to every sink with state, the attention state an attention entry
+// records ("" when it is not known); the clients get the entry alone. It is
+// the OnActivity hook of every hosted session (a server session's is
+// Server.localActivity, which calls it), so it runs on the goroutines that
+// record, concurrently and out of order (each entry says when it happened),
+// and it never waits: a client whose queue is past activityQueueLimit misses
+// the entry and keeps its stream.
+func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
 	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e})
 	h.mu.Lock()
 	if err == nil {
@@ -104,7 +112,7 @@ func (h *eventHub) activity(sessionID string, e session.ActivityEntry) {
 	sinks := h.sinks
 	h.mu.Unlock()
 	for _, f := range sinks {
-		f(sessionID, e)
+		f(sessionID, e, state)
 	}
 }
 

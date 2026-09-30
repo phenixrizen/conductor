@@ -14,7 +14,7 @@ func TestEventHubActivityFormat(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	at := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
-	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityArtifact, ByName: "agent", Message: "PR", URL: "https://x/1"})
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityArtifact, ByName: "agent", Message: "PR", URL: "https://x/1"}, "")
 	want := "event: activity\n" +
 		`data: {"sessionId":"s1","at":"2026-09-29T12:00:00Z","type":"artifact","byName":"agent","message":"PR","url":"https://x/1"}` + "\n\n"
 	select {
@@ -32,7 +32,7 @@ func TestEventHubActivityFormat(t *testing.T) {
 func TestEventHubActivityStaysOneMessage(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
-	h.activity("s1", session.ActivityEntry{Type: session.ActivityError, Message: "a\nb\r\nc d\n\ndata: forged\nevent: session"})
+	h.activity("s1", session.ActivityEntry{Type: session.ActivityError, Message: "a\nb\r\nc d\n\ndata: forged\nevent: session"}, "")
 	msg := string(<-ch)
 	if strings.Count(msg, "\n") != 3 || !strings.HasSuffix(msg, "\n\n") || !strings.HasPrefix(msg, "event: activity\ndata: {") {
 		t.Fatalf("message is not one event: %q", msg)
@@ -49,7 +49,7 @@ func TestEventHubActivityNeverBlocksOrEvictsAClientThatStoppedReading(t *testing
 	go func() {
 		defer close(done)
 		for i := 0; i < 20*eventQueue; i++ {
-			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress, Message: "n"})
+			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress, Message: "n"}, "")
 		}
 	}()
 	select {
@@ -91,12 +91,12 @@ func TestEventHubActivityResumesOnceTheClientCatchesUp(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
 	for i := 0; i < 2*eventQueue; i++ {
-		h.activity("s", session.ActivityEntry{Type: session.ActivityProgress})
+		h.activity("s", session.ActivityEntry{Type: session.ActivityProgress}, "")
 	}
 	for len(ch) > 0 {
 		<-ch
 	}
-	h.activity("s", session.ActivityEntry{Type: session.ActivityError, Message: "after"})
+	h.activity("s", session.ActivityEntry{Type: session.ActivityError, Message: "after"}, "")
 	select {
 	case msg := <-ch:
 		if !strings.Contains(string(msg), `"message":"after"`) {
@@ -121,7 +121,7 @@ func TestEventHubActivityReachesEveryClientThatReads(t *testing.T) {
 	const batches, perBatch = 10, 100
 	for b := 1; b <= batches; b++ {
 		for i := 0; i < perBatch; i++ {
-			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress})
+			h.activity("s", session.ActivityEntry{Type: session.ActivityProgress}, "")
 		}
 		deadline := time.Now().Add(5 * time.Second)
 		for got.Load() < int64(b*perBatch) && time.Now().Before(deadline) {
@@ -169,7 +169,7 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer producers.Done()
 			for i := 0; i < 300; i++ {
-				h.activity("s", session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"})
+				h.activity("s", session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"}, "")
 				if i%50 == 0 {
 					h.publish(session.Info{ID: "s"})
 					h.removed("s")
@@ -182,23 +182,30 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 	wg.Wait()
 }
 
-// Sinks receive every activity entry, the session it belongs to, after the
-// clients have theirs, whether or not any client listens.
+// Sinks receive every activity entry, the session it belongs to and the
+// attention state it was handed with, after the clients have the entry, whether
+// or not any client listens. Clients get the entry alone.
 func TestEventHubSinksGetEveryEntryAfterTheClients(t *testing.T) {
 	h := newEventHub()
 	type got struct {
 		id      string
 		e       session.ActivityEntry
+		state   session.AttentionState
 		clients int
 	}
 	var sunk []got
 	ch := h.subscribe()
-	h.addSink(func(id string, e session.ActivityEntry) { sunk = append(sunk, got{id, e, len(ch)}) })
-	e := session.ActivityEntry{Type: session.ActivityProgress, Message: "1/2"}
-	h.activity("s1", e)
+	h.addSink(func(id string, e session.ActivityEntry, state session.AttentionState) {
+		sunk = append(sunk, got{id, e, state, len(ch)})
+	})
+	e := session.ActivityEntry{At: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), Type: session.ActivityAttention, Message: "approve?"}
+	h.activity("s1", e, session.AttentionNeedsInput)
+	if msg := string(<-ch); strings.Contains(msg, "needs_input") || !strings.Contains(msg, `"message":"approve?"`) {
+		t.Fatalf("a client was sent %q", msg)
+	}
 	h.unsubscribe(ch)
-	h.activity("s2", e)
-	if len(sunk) != 2 || sunk[0] != (got{"s1", e, 1}) || sunk[1] != (got{"s2", e, 1}) {
+	h.activity("s2", e, "")
+	if len(sunk) != 2 || sunk[0] != (got{"s1", e, session.AttentionNeedsInput, 1}) || sunk[1] != (got{"s2", e, "", 0}) {
 		t.Fatalf("sunk %+v", sunk)
 	}
 }

@@ -183,10 +183,11 @@ the conductor binary they run, from `hooks/` in the data directory
 `--data-dir DIR` names, by default the one `conductor serve` uses without a
 config file; when no server wrote hooks there, or the binary they name is
 gone, they say so and use the binary you run. They refuse a `hooks/` that is
-not yours or that its group or others may write to, since its commands would
-go into your agents' configs. `--home DIR` names another home directory of
-yours. A home that belongs to another user is refused, because what Conductor
-wrote there would belong to you: install for that user as that user
+not yours or not 0700, as `conductor serve` writes it (the 0755 `conductor.d`
+of a checkout is refused too), since its commands would go into your agents'
+configs. `--home DIR` names another home directory of yours. A home that
+belongs to another user is refused, because what Conductor wrote there would
+belong to you: install for that user as that user
 (`sudo -u <user> conductor hooks install …`).
 
 **Agents without hooks.** Any tool that rings the terminal bell or emits an
@@ -307,18 +308,32 @@ Each webhook has a queue of 256 entries, which drops its oldest when it is
 full, and delivers them one at a time, so a slow endpoint delays neither the
 sessions nor the other webhooks. A delivery is tried once, with 5 seconds to
 answer; redirects are not followed, and an answer other than 2xx is logged as
-a warning. The Events page and the API show a webhook's URL without its user
-info, query string and fragment, and never its secret; logs name a webhook
-by its place in the list and its host.
+a warning. When the server shuts down it stops the webhooks first, so the
+`stopped` statuses of the sessions it stops then are not delivered. User info
+in a URL (`https://user:password@host/…`) is sent as `Authorization: Basic`,
+as Go's HTTP client does. The Events page and `GET /api/integrations` show a
+webhook's URL without its user info, query string and fragment, and never its
+secret, but with its path: for a service that puts its credential in the path
+(Slack, Discord), admins see it there. Logs name a webhook by its place in the
+list and its host.
 
-**Private addresses.** A webhook may not reach the server itself or the
-network behind it. At startup the server resolves each webhook's host and
-refuses to start when it is, or resolves to, a loopback, link-local, private
-(unique-local in IPv6) or unspecified address, or does not resolve. Before
-every connection it resolves the host again and connects only to an address
-that passes, so a name pointed at such an address later (DNS rebinding)
-reaches nothing, and it never goes through a proxy. `"allowPrivate": true`
-lifts the rule for one webhook, for an endpoint on your own network.
+**Private addresses.** A webhook may not point at a loopback, link-local,
+private (unique-local in IPv6), shared (CGNAT, `100.64.0.0/10`, where some
+clouds keep their metadata service) or unspecified address, nor at a
+deprecated IPv4-compatible IPv6 address (`::a.b.c.d`); a NAT64 address
+(`64:ff9b::/96`, or a /96 in `64:ff9b:1::/48`) counts as the IPv4 address it
+reaches. That keeps webhooks away from the services of the server's machine
+and network that are not published; it does not refuse the server's own
+public address. At startup the server looks up the webhooks' hosts, all at
+once and for at most 2 seconds, and refuses to start when one resolves to
+such an address; a host that does not resolve in time is only logged as a
+warning, since DNS may be down while the server starts. Before every
+connection it looks the host up again and connects only to the addresses that
+pass, trying the next one when an address does not answer (and the other
+address family in parallel), so a name pointed at a private address later
+(DNS rebinding) reaches nothing; it never goes through a proxy.
+`"allowPrivate": true` lifts the rule for one webhook, for an endpoint on
+your own network.
 
 ## Configuration
 

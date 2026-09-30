@@ -44,6 +44,9 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, err
 	}
+	for _, w := range cfg.Warnings() {
+		log.Warn(w)
+	}
 	cfg.ResolveDataDir(*configPath)
 	if *listen != "" {
 		cfg.Listen = *listen

@@ -97,7 +97,7 @@ Host → server: `register{proto, host{name,version,user?}, session{name,agentId
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`,
-`activity{sessionId,entry}`.
+`activity{sessionId,entry,state?}`.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
@@ -111,20 +111,29 @@ server, it carries every entry the host's session records, so that
 `GET /api/events` shows a hosted session like a server one. The host queues
 them (at most 256 waiting; a burst past that is dropped, and so is anything
 recorded while the connection is down, for the session log has it all) and
-sends them in order. The server takes the session from the connection and
-ignores `sessionId`, drops an entry whose `type` it does not know instead of
-closing the connection, cuts every field to the limits of Events (a `by` over
-64 bytes is dropped), stamps the time of receipt on an entry without a
-readable `at`, and never sends the entry back. Server to host, it carries an
-event that an agent reported through `POST /api/sessions/{id}/events` for the
-hosted session: the server has no activity log for it, so the host records it
-(its own event limit applies) and reports it back like any other entry. The
-server sends at most 20 of these a second, 40 at once, together with the
-`attention` messages it forwards (see Events). Both
+sends them in order. With an `attention` entry the host sends `state`
+(`needs_input`, `working` or `done`): the attention state its session was in
+when it recorded the entry, read on the goroutine that recorded it, which is
+the state the entry records. The host sends a change of state in its own
+`attention` message on another path, so the server may receive the entry
+first; `state` is how it types the entry for webhooks all the same (see
+Events). The server takes the session from the connection and ignores
+`sessionId`, drops an entry whose `type` it does not know instead of closing
+the connection, cuts every field to the limits of Events (a `by` over 64 bytes
+is dropped), keeps `state` only on an `attention` entry and only as one of the
+three states (it ignores anything else), stamps the time of receipt on an
+entry without a readable `at`, and never sends the entry back. Server to
+host, it carries an event that an agent reported through
+`POST /api/sessions/{id}/events` for the hosted session: the server has no
+activity log for it, so the host records it (its own event limit applies)
+and reports it back like any other entry. The server sends at most 20 of
+these a second, 40 at once, together with the
+`attention` messages it forwards (see Events); it never sends `state`. Both
 directions are text frames under the host-message limit (64 KiB): `entry`
-is bounded so that it fits one 8 KiB CONTROL frame, and the envelope adds
-under 100 bytes. A peer that does not know `activity` ignores it, so a hosted
-session of an older host produces no events.
+is bounded so that it fits one 8 KiB CONTROL frame, and the envelope,
+`state` included, adds under 100 bytes. A peer that does not know `activity`
+ignores it, so a hosted session of an older host produces no events; one that
+does not know `state` ignores that field.
 
 The host registers before it starts the process so the session ID can be
 placed in the agent's environment.
@@ -301,13 +310,15 @@ application/json`, `X-Conductor-Event` and, for a webhook with a secret,
 `X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body>`.
 `X-Conductor-Event` is the type the webhook listed: an entry type, or the
 Events page's name for the entry, which wins when both are listed. An
-attention entry is the attention state it records: the state its session is
-in when the entry arrives if the session's message is the entry's (or, with
-no message, the entry names that state), else the state the entry's message
-names, else the session's state; a session with no attention state gives
-none. A `status` entry `exited (exit N)` with N other than 0 is
-`exit_nonzero`. Each webhook queues at most 256 entries and drops its oldest;
-a delivery is tried once, for at most 5 s, without following redirects.
+attention entry is the attention state it records, the state its session was
+in when it recorded the entry: a server session's is read then, a hosted
+session's comes with the entry (`state` of the host's `activity` message).
+An entry that comes without one, from an older host, is the state it names as
+its message, if it names one (as it does for a report without a message), and
+otherwise only an `attention` entry. A `status` entry
+`exited (exit N)` with N other than 0 is `exit_nonzero`. Each webhook queues
+at most 256 entries and drops its oldest; a delivery is tried once, for at
+most 5 s, without following redirects.
 
 ## File reads
 

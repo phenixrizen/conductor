@@ -26,11 +26,13 @@ type Hub struct {
 	// OnChange is called after a hosted session's Info changes.
 	OnChange func(session.Info)
 	// OnActivity is called with a hosted session's ID and each activity entry
-	// its host reports, after the entry has been checked and cleaned. It runs
-	// on the goroutine that reads the host's connection, so it must not block;
-	// calls for different hosts overlap, so it must be safe for concurrent
-	// use. Set it, like OnChange, before the first host registers.
-	OnActivity func(sessionID string, e session.ActivityEntry)
+	// its host reports, after the entry has been checked and cleaned, and,
+	// for an attention entry, the attention state the host says it records
+	// ("" when the host sent none it may send). It runs on the goroutine that
+	// reads the host's connection, so it must not block; calls for different
+	// hosts overlap, so it must be safe for concurrent use. Set it, like
+	// OnChange, before the first host registers.
+	OnActivity func(sessionID string, e session.ActivityEntry, state session.AttentionState)
 }
 
 // NewHub creates a hub that registers hosted sessions in registry.

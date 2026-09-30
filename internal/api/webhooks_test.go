@@ -16,15 +16,17 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -255,77 +257,78 @@ func TestWebhookListsAttentionStatesAndExitNonZero(t *testing.T) {
 }
 
 // eventTypeOf types an entry as the Events page does (eventTypeOf in
-// web/app/utils/events.ts, whose cases these are): an attention entry is the
-// state it records, the one its session is in when it arrives unless the
-// entry names another; a status entry is exit_nonzero for a process that
-// exited on its own with a non-zero code; the six event types are themselves.
+// web/app/utils/events.ts): an attention entry is the state it records, a
+// status entry is exit_nonzero for a process that exited on its own with a
+// non-zero code, the six event types are themselves. The state an attention
+// entry records comes with it, read when the session recorded the entry; the
+// entry names it itself when the report had no message, and nothing else
+// types it.
 func TestWebhookEventTypeOfFollowsTheEventsPage(t *testing.T) {
 	entry := func(typ, message string) session.ActivityEntry {
 		return session.ActivityEntry{Type: typ, Message: message}
 	}
-	att := func(state session.AttentionState, message string) session.Attention {
-		return session.Attention{State: state, Message: message}
-	}
 	for _, tc := range []struct {
-		e    session.ActivityEntry
-		att  session.Attention
-		want string
+		e     session.ActivityEntry
+		state session.AttentionState
+		want  string
 	}{
-		{entry("attention", "Claude needs your permission to use Bash"), att("needs_input", ""), "needs_input"},
-		{entry("attention", "All tests pass"), att("done", "All tests pass"), "done"},
-		{entry("attention", "working"), att("", ""), "working"},
-		{entry("attention", "done"), att("", ""), "done"},
-		{entry("attention", "needs_input"), att("working", "compiling"), "needs_input"},
-		{entry("attention", "done"), att("needs_input", "done"), "needs_input"},
-		{entry("attention", "Waiting"), att("", ""), ""},
-		{entry("status", "exited (exit 1)"), att("", ""), "exit_nonzero"},
-		{entry("status", "exited (exit -1)"), att("", ""), "exit_nonzero"},
-		{entry("status", "exited (exit 0)"), att("", ""), ""},
-		{entry("status", "exited"), att("", ""), ""},
-		{entry("status", "stopped (exit 143)"), att("", ""), ""},
-		{entry("status", "running"), att("", ""), ""},
-		{entry("progress", ""), att("", ""), "progress"},
-		{entry("artifact", ""), att("", ""), "artifact"},
-		{entry("handoff", ""), att("", ""), "handoff"},
-		{entry("tool_use", ""), att("", ""), "tool_use"},
-		{entry("tool_denied", ""), att("", ""), "tool_denied"},
-		{entry("error", ""), att("", ""), "error"},
-		{entry("join", "x"), att("", ""), ""},
-		{entry("leave", "x"), att("", ""), ""},
-		{entry("input", "x"), att("", ""), ""},
-		{entry("link", "x"), att("", ""), ""},
+		{entry("attention", "Claude needs your permission to use Bash"), "needs_input", "needs_input"},
+		{entry("attention", "All tests pass"), "done", "done"},
+		{entry("attention", "compiling"), "working", "working"},
+		{entry("attention", "working"), "", "working"},
+		{entry("attention", "done"), "", "done"},
+		{entry("attention", "needs_input"), "", "needs_input"},
+		{entry("attention", "done"), "needs_input", "needs_input"},
+		{entry("attention", "Waiting"), "", ""},
+		{entry("attention", "Waiting"), "clear", ""},
+		{entry("status", "exited (exit 1)"), "", "exit_nonzero"},
+		{entry("status", "exited (exit -1)"), "", "exit_nonzero"},
+		{entry("status", "exited (exit 0)"), "", ""},
+		{entry("status", "exited"), "", ""},
+		{entry("status", "stopped (exit 143)"), "", ""},
+		{entry("status", "running"), "", ""},
+		{entry("progress", ""), "", "progress"},
+		{entry("artifact", ""), "", "artifact"},
+		{entry("handoff", ""), "", "handoff"},
+		{entry("tool_use", ""), "", "tool_use"},
+		{entry("tool_denied", ""), "", "tool_denied"},
+		{entry("error", ""), "", "error"},
+		{entry("progress", ""), "needs_input", "progress"},
+		{entry("join", "x"), "", ""},
+		{entry("leave", "x"), "", ""},
+		{entry("input", "x"), "", ""},
+		{entry("link", "x"), "", ""},
 	} {
-		if got := eventTypeOf(tc.e, tc.att); got != tc.want {
-			t.Errorf("%s %q with %+v: %q, want %q", tc.e.Type, tc.e.Message, tc.att, got, tc.want)
+		if got := eventTypeOf(tc.e, tc.state); got != tc.want {
+			t.Errorf("%s %q with state %q: %q, want %q", tc.e.Type, tc.e.Message, tc.state, got, tc.want)
 		}
 	}
 	// A webhook that lists both an entry's own type and the one it is typed
 	// as hears of it once, by the more specific name.
-	lists := func(events ...string) map[string]bool {
-		m := map[string]bool{}
+	lists := func(events ...string) *webhook {
+		w := &webhook{events: map[string]bool{}}
 		for _, ev := range events {
-			m[ev] = true
+			w.events[ev] = true
 		}
-		return m
+		return w
 	}
 	for _, tc := range []struct {
-		events []string
-		e      session.ActivityEntry
-		att    session.Attention
-		want   string
+		events   []string
+		typ, own string
+		want     string
 	}{
-		{[]string{"attention", "needs_input"}, entry("attention", "approve?"), att("needs_input", "approve?"), "needs_input"},
-		{[]string{"attention", "done"}, entry("attention", "approve?"), att("needs_input", "approve?"), "attention"},
-		{[]string{"done"}, entry("attention", "approve?"), att("needs_input", "approve?"), ""},
-		{[]string{"status", "exit_nonzero"}, entry("status", "exited (exit 2)"), att("", ""), "exit_nonzero"},
-		{[]string{"status", "exit_nonzero"}, entry("status", "exited (exit 0)"), att("", ""), "status"},
-		{[]string{"exit_nonzero"}, entry("status", "stopped (exit 143)"), att("", ""), ""},
-		{[]string{"progress"}, entry("progress", "1/2"), att("", ""), "progress"},
-		{[]string{"progress"}, entry("tool_use", ""), att("", ""), ""},
-		{[]string{"join"}, entry("join", "ann"), att("", ""), "join"},
+		{[]string{"attention", "needs_input"}, "needs_input", "attention", "needs_input"},
+		{[]string{"attention", "done"}, "needs_input", "attention", "attention"},
+		{[]string{"done"}, "needs_input", "attention", ""},
+		{[]string{"status", "exit_nonzero"}, "exit_nonzero", "status", "exit_nonzero"},
+		{[]string{"status", "exit_nonzero"}, "", "status", "status"},
+		{[]string{"exit_nonzero"}, "", "status", ""},
+		{[]string{"progress"}, "progress", "progress", "progress"},
+		{[]string{"progress"}, "tool_use", "tool_use", ""},
+		{[]string{"join"}, "", "join", "join"},
 	} {
-		if got := webhookEvent(lists(tc.events...), tc.e, tc.att); got != tc.want {
-			t.Errorf("%v gets %s %q: %q, want %q", tc.events, tc.e.Type, tc.e.Message, got, tc.want)
+		if got := lists(tc.events...).eventFor(tc.typ, tc.own); got != tc.want {
+			t.Errorf("%v gets %s typed %q: %q, want %q", tc.events, tc.own, tc.typ, got, tc.want)
 		}
 	}
 }
@@ -341,36 +344,95 @@ func TestWebhookRefusesAHostThatRebindsToAPrivateAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rebound atomic.Bool
+	// At validation the name is public; when the server dials, it is not.
 	old := config.LookupWebhookHost
 	config.LookupWebhookHost = func(_ context.Context, host string) ([]netip.Addr, error) {
 		if host != "rebind.test" {
 			return nil, errors.New("no such host")
 		}
-		if rebound.Load() {
-			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
-		}
 		return []netip.Addr{netip.MustParseAddr("93.184.215.14")}, nil
 	}
 	t.Cleanup(func() { config.LookupWebhookHost = old })
+	dns := newFakeDNS(t)
+	dns.set("rebind.test", "127.0.0.1")
+	useResolver(t, dns.resolver())
 	url := "http://rebind.test:" + port + "/hook"
 	e, logs := newWebhookEnv(t,
 		config.Webhook{URL: url, Events: []string{"progress"}},
 		config.Webhook{URL: url, Events: []string{"progress"}, AllowPrivate: true},
 	)
-	rebound.Store(true)
 	id := e.createSession("cat")
 	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", e.agentToken(id), map[string]any{"type": "progress", "message": "1/2"}); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("%d %v", resp.StatusCode, out)
 	}
-	logs.wait(t, "127.0.0.1, a loopback address")
-	if !strings.Contains(logs.String(), "webhook=0") {
-		t.Fatalf("the refusal does not name the webhook:\n%s", logs)
+	logs.wait(t, "127.0.0.1 is a loopback address")
+	if lines := strings.Count(logs.String(), `msg="webhook delivery failed" webhook=0 `); lines != 1 || strings.Contains(logs.String(), `msg="webhook delivery failed" webhook=1 `) {
+		t.Fatalf("the refusal is not the first webhook's, once:\n%s", logs)
 	}
 	if d := rcv.next(t); d.message(t) != "1/2" {
 		t.Fatalf("delivered %s", d.body)
 	}
 	rcv.none(t, 300*time.Millisecond)
+}
+
+// When the first address of a host does not answer, the next one gets its
+// turn within the 5 seconds a delivery has: the server dials as the standard
+// dialer does, which gives each address a share of the time, and does not
+// spend it all on the first.
+func TestWebhookDialsTheNextAddressWhenOneHangs(t *testing.T) {
+	rcv := newReceiver(t, nil)
+	_, portText, err := net.SplitHostPort(rcv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portText)
+	blackhole(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), uint16(port)))
+	dns := newFakeDNS(t)
+	dns.set("eyeballs.test", "127.0.0.2", "127.0.0.1")
+	useResolver(t, dns.resolver())
+	e, logs := newWebhookEnv(t, config.Webhook{URL: "http://eyeballs.test:" + portText + "/hook", Events: []string{"artifact"}, AllowPrivate: true})
+	start := time.Now()
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"}, "")
+	d := rcv.next(t)
+	took := time.Since(start)
+	if d.header.Get("X-Conductor-Event") != "artifact" {
+		t.Fatalf("delivered %s", d.body)
+	}
+	// The first address was tried, and given up in time for the second.
+	if took < time.Second || took >= webhookTimeout {
+		t.Fatalf("delivered after %v", took)
+	}
+	if strings.Contains(logs.String(), "webhook delivery failed") {
+		t.Fatalf("log:\n%s", logs)
+	}
+}
+
+// blackhole makes connections to addr hang: a socket listens there with no
+// room in its accept queue, and Linux drops the handshake of every connection
+// past the one that fills it.
+func blackhole(t *testing.T, addr netip.AddrPort) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("a full accept queue drops connections only on Linux")
+	}
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: int(addr.Port()), Addr: addr.Addr().As4()}); err != nil {
+		t.Skipf("cannot listen on %s: %v", addr, err)
+	}
+	if err := syscall.Listen(fd, 0); err != nil {
+		t.Fatal(err)
+	}
+	if filler, err := net.DialTimeout("tcp", addr.String(), time.Second); err == nil {
+		t.Cleanup(func() { filler.Close() })
+	}
+	if probe, err := net.DialTimeout("tcp", addr.String(), 300*time.Millisecond); err == nil {
+		probe.Close()
+		t.Skip("this system answers connections past a full accept queue")
+	}
 }
 
 // One slow endpoint holds up neither the session nor the other webhooks: the
@@ -402,19 +464,19 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 		return session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: message}
 	}
 
-	e.srv.events.activity(id, progress("0"))
+	e.srv.events.activity(id, progress("0"), "")
 	select {
 	case <-stalled:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the slow endpoint was never called")
 	}
-	// The delivery of 0 hangs. 300 more entries arrive, far faster than the
-	// endpoint answers: 256 wait, the 44 oldest are dropped.
+	// The delivery of 0 hangs. 456 more entries arrive, far faster than the
+	// endpoint answers: 256 wait, the 200 oldest are dropped.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 1; i <= 300; i++ {
-			e.srv.events.activity(id, progress(strconv.Itoa(i)))
+		for i := 1; i <= 456; i++ {
+			e.srv.events.activity(id, progress(strconv.Itoa(i)), "")
 		}
 	}()
 	select {
@@ -423,15 +485,22 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 		t.Fatal("recording waited for the webhook")
 	}
 	hook := e.srv.webhooks.hooks[0]
-	if queued, dropped := hook.stats(); queued != webhookQueue || dropped != 44 {
+	if queued, dropped := hook.stats(); queued != webhookQueue || dropped != 200 {
 		t.Fatalf("queued %d, dropped %d", queued, dropped)
 	}
-	if n := strings.Count(logs.String(), "dropped the oldest"); n != 1 {
-		t.Fatalf("logged %d drops, want the first only:\n%s", n, logs)
+	// The first drop and every 100th are logged.
+	var counts []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "dropped the oldest") {
+			counts = append(counts, line[strings.LastIndex(line, "dropped=")+len("dropped="):])
+		}
+	}
+	if !slices.Equal(counts, []string{"1", "100", "200"}) {
+		t.Fatalf("logged the drops %q, want the 1st, 100th and 200th:\n%s", counts, logs)
 	}
 
 	// Another webhook delivers meanwhile.
-	e.srv.events.activity(id, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityError, Message: "boom"})
+	e.srv.events.activity(id, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityError, Message: "boom"}, "")
 	if d := fast.next(t); d.message(t) != "boom" {
 		t.Fatalf("the other webhook got %s", d.body)
 	}
@@ -446,8 +515,8 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("three events took %v while the endpoint hung", took)
 	}
-	if _, dropped := hook.stats(); dropped != 47 {
-		t.Fatalf("dropped %d, want 47", dropped)
+	if _, dropped := hook.stats(); dropped != 203 {
+		t.Fatalf("dropped %d, want 203", dropped)
 	}
 
 	releaseOnce.Do(func() { close(release) })
@@ -456,7 +525,7 @@ func TestWebhookQueueDropsTheOldestAndNeverDelaysTheSession(t *testing.T) {
 		got = append(got, slow.next(t).message(t))
 	}
 	want := []string{"0"}
-	for i := 48; i <= 300; i++ {
+	for i := 204; i <= 456; i++ {
 		want = append(want, strconv.Itoa(i))
 	}
 	want = append(want, "api-1", "api-2", "api-3")
@@ -475,7 +544,7 @@ func TestWebhookDoesNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, target.URL+"/elsewhere", http.StatusTemporaryRedirect)
 	})
 	e, logs := newWebhookEnv(t, config.Webhook{URL: redirect.URL + "/hook?token=t0k3n", Events: []string{"handoff"}, AllowPrivate: true})
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityHandoff, To: "tests"})
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityHandoff, To: "tests"}, "")
 	if d := redirect.next(t); d.path != "/hook" {
 		t.Fatalf("request %s", d.path)
 	}
@@ -510,7 +579,7 @@ func TestWebhookDeliveriesStopWithTheServer(t *testing.T) {
 		close(abandoned)
 	})
 	e, _ := newWebhookEnv(t, config.Webhook{URL: rcv.URL, Events: []string{"artifact"}, AllowPrivate: true})
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"})
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/1"}, "")
 	rcv.next(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -534,7 +603,7 @@ func TestWebhookDeliveriesStopWithTheServer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the webhook goroutines did not end")
 	}
-	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/2"})
+	e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityArtifact, URL: "https://x/2"}, "")
 	rcv.none(t, 300*time.Millisecond)
 	if queued, _ := e.srv.webhooks.hooks[0].stats(); queued != 0 {
 		t.Fatalf("queued %d after shutdown", queued)
@@ -581,4 +650,83 @@ func TestIntegrationsListTheWebhooks(t *testing.T) {
 	if hooks, ok := list["webhooks"].([]any); !ok || len(hooks) != 0 {
 		t.Fatalf("without webhooks: %v", list["webhooks"])
 	}
+}
+
+// The webhooks share one sink: an entry is typed, its session looked up and
+// its body built once, and every webhook that wants it gets the same body.
+func TestWebhooksShareOneSinkAndOneBody(t *testing.T) {
+	a, b, c := newReceiver(t, nil), newReceiver(t, nil), newReceiver(t, nil)
+	e, _ := newWebhookEnv(t,
+		config.Webhook{URL: a.URL, Events: []string{"needs_input"}, AllowPrivate: true},
+		config.Webhook{URL: b.URL, Events: []string{"attention"}, Secret: "s3cret", AllowPrivate: true},
+		config.Webhook{URL: c.URL, Events: []string{"done"}, AllowPrivate: true},
+	)
+	if n := len(e.srv.events.sinks); n != 1 {
+		t.Fatalf("%d sinks for three webhooks", n)
+	}
+	id := e.createSession("cat")
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", e.agentToken(id), map[string]any{"type": "needs_input", "message": "approve?"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	da, db := a.next(t), b.next(t)
+	if da.header.Get("X-Conductor-Event") != "needs_input" || db.header.Get("X-Conductor-Event") != "attention" || !bytes.Equal(da.body, db.body) {
+		t.Fatalf("a got %s %s\nb got %s %s", da.header.Get("X-Conductor-Event"), da.body, db.header.Get("X-Conductor-Event"), db.body)
+	}
+	if db.header.Get("X-Conductor-Signature") != signature("s3cret", db.body) {
+		t.Fatal("the shared body is not what b's signature signs")
+	}
+	c.none(t, 300*time.Millisecond)
+}
+
+// A hosted session's host sends the attention state an attention entry
+// records with the entry, and the entry may arrive before the attention
+// message that changes the session: the webhooks type it by the state it
+// carries, not by the session's state before. A state that is not one of the
+// three, or that comes with another type of entry, is ignored, and the
+// session's state is never used instead: an entry without one is typed only
+// by the state it names.
+func TestWebhookTypesAHostedAttentionEntryByTheStateItCarries(t *testing.T) {
+	rcv := newReceiver(t, nil)
+	e, _ := newWebhookEnv(t, config.Webhook{URL: rcv.URL, Events: []string{"needs_input", "working", "attention", "progress"}, AllowPrivate: true})
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	attention := func(state, message string) {
+		host.send(proto.HostAttentionMsg{T: proto.HostAttention, SessionID: host.sessionID, State: state, Message: message, Source: session.SourceAPI})
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if d, ok := e.srv.registry.Get(host.sessionID); ok && d.Info().Attention.State == session.AttentionState(state) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the hosted session never showed %s", state)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	entry := func(typ, message, state string) {
+		m := hostActivity(typ, func(a *proto.Activity) { a.Message = message })
+		m.State = state
+		host.send(m)
+	}
+	check := func(event, message string) {
+		t.Helper()
+		d := rcv.next(t)
+		if got := d.header.Get("X-Conductor-Event"); got != event || d.message(t) != message {
+			t.Fatalf("got %s %q, want %s %q", got, d.message(t), event, message)
+		}
+	}
+	attention("working", "compiling")
+	// The report that it needs input: its entry first, the change after.
+	entry(session.ActivityAttention, "approve?", "needs_input")
+	check("needs_input", "approve?")
+	attention("needs_input", "approve?")
+	// The session needs input; neither entry is typed by that.
+	entry(session.ActivityAttention, "Waiting", "clear")
+	check("attention", "Waiting")
+	entry(session.ActivityAttention, "Waiting", "")
+	check("attention", "Waiting")
+	entry(session.ActivityProgress, "1/2", "working")
+	check("progress", "1/2")
+	entry(session.ActivityAttention, "working", "")
+	check("working", "working")
+	rcv.none(t, 300*time.Millisecond)
 }

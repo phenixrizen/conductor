@@ -67,11 +67,15 @@ func TestInstallRefusesAHomeItDoesNotOwn(t *testing.T) {
 }
 
 // conductor hooks takes the hooks it installs, and the binary they run, from
-// a hooks dir only when no one else could have written it: the user running
-// conductor owns it and neither its group nor others may write to it. A hooks
-// dir that does not exist holds nothing to take.
+// a hooks dir only when it is as conductor serve writes it: the user running
+// conductor owns it and its group and others have no permission on it at all
+// (0700). A checkout's directory, 0755, is refused with the rest. A hooks dir
+// that does not exist holds nothing to take.
 func TestCheckHooksDir(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil { // as WriteAssets makes it
+		t.Fatal(err)
+	}
 	if err := CheckHooksDir(dir); err != nil {
 		t.Fatalf("a hooks dir of one's own: %v", err)
 	}
@@ -83,7 +87,7 @@ func TestCheckHooksDir(t *testing.T) {
 	} else if _, ok := fileOwner(fi); !ok {
 		t.Skip("this platform does not report who owns a file")
 	}
-	for _, mode := range []fs.FileMode{0o700, 0o750, 0o755, 0o500} {
+	for _, mode := range []fs.FileMode{0o700, 0o500} {
 		if err := os.Chmod(dir, mode); err != nil {
 			t.Fatal(err)
 		}
@@ -91,11 +95,11 @@ func TestCheckHooksDir(t *testing.T) {
 			t.Errorf("mode %o: %v", mode, err)
 		}
 	}
-	for _, mode := range []fs.FileMode{0o720, 0o702, 0o775, 0o777} {
+	for _, mode := range []fs.FileMode{0o755, 0o750, 0o705, 0o710, 0o701, 0o740, 0o704, 0o720, 0o702, 0o775, 0o777} {
 		if err := os.Chmod(dir, mode); err != nil {
 			t.Fatal(err)
 		}
-		if err := CheckHooksDir(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		if err := CheckHooksDir(dir); err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "chmod 700") {
 			t.Errorf("mode %o: %v", mode, err)
 		}
 	}

@@ -114,6 +114,9 @@ type Config struct {
 	// was none. It is not a config key: the decoder ignores it, so a "path" key
 	// in the file is rejected as unknown.
 	Path string `json:"-"`
+
+	// warnings are what the last Validate found worth saying but not wrong.
+	warnings []string
 }
 
 // Defaults returns the configuration used when nothing is specified.
@@ -241,9 +244,11 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	return nil
 }
 
-// Validate checks bounds and normalizes paths.
+// Validate checks bounds and normalizes paths. What it finds worth saying
+// but not wrong, it keeps for Warnings.
 func (c *Config) Validate() error {
 	var errs []error
+	c.warnings = nil
 	if c.Listen == "" {
 		errs = append(errs, errors.New("listen must not be empty"))
 	}
@@ -303,18 +308,15 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("iceServers[%d]: urls must not be empty", i))
 		}
 	}
-	// Past the limit none is checked: each check may look a host up.
-	if len(c.Webhooks) > MaxWebhooks {
-		errs = append(errs, fmt.Errorf("webhooks: at most %d, got %d", MaxWebhooks, len(c.Webhooks)))
-	} else {
-		for i, w := range c.Webhooks {
-			if err := w.validate(); err != nil {
-				errs = append(errs, fmt.Errorf("webhooks[%d]: %w", i, err))
-			}
-		}
-	}
+	hookErrs, warnings := c.validateWebhooks()
+	errs = append(errs, hookErrs...)
+	c.warnings = warnings
 	return errors.Join(errs...)
 }
+
+// Warnings are what the last Validate found worth saying but not wrong: a
+// webhook host that did not resolve. conductor serve logs them.
+func (c *Config) Warnings() []string { return c.warnings }
 
 // ResolveDataDir fills DataDir from the config file location when unset:
 // <dir of configPath>/conductor.d, or ./conductor.d without a config file. The

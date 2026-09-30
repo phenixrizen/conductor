@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/phenixrizen/conductor/internal/config"
 )
 
 // syncBuffer collects what the server logs while the test reads it.
@@ -216,5 +219,38 @@ func TestServeNamesTheConductorOnPATH(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(data, "hooks", "claude.json"))
 	if err != nil || !strings.Contains(string(b), `"`+filepath.Join(bin, "conductor")+` notify --claude-hook"`) {
 		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+}
+
+// A webhook host that does not resolve while the server starts is not a
+// reason to refuse to start: the server logs a warning and checks the host
+// again before every delivery. A host that resolves to a private address
+// still refuses the start.
+func TestServeWarnsAboutAWebhookHostThatDoesNotResolve(t *testing.T) {
+	clearConductorEnv(t)
+	old := config.LookupWebhookHost
+	config.LookupWebhookHost = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "internal.example" {
+			return []netip.Addr{netip.MustParseAddr("10.0.0.7")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	t.Cleanup(func() { config.LookupWebhookHost = old })
+	dir := t.TempDir()
+	body := fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q,
+		"webhooks": [{"url": "https://nowhere.example/hook?token=t0k3n", "events": ["error"], "secret": "s3cret"}]}`, dir, dir, filepath.Join(t.TempDir(), "data"))
+	logs := serveUntilListening(t, "--config", writeServeConfig(t, t.TempDir(), body))
+	if lines := logLines(logs, "level=WARN", "webhooks[0]", "nowhere.example did not resolve"); len(lines) != 1 {
+		t.Fatalf("no warning about the webhook host:\n%s", logs)
+	}
+	if strings.Contains(logs, "t0k3n") || strings.Contains(logs, "s3cret") {
+		t.Fatalf("the log holds the query or the secret:\n%s", logs)
+	}
+
+	private := strings.Replace(body, "nowhere.example", "internal.example", 1)
+	var stderr bytes.Buffer
+	code, err := runServe(t.Context(), []string{"--listen", "127.0.0.1:0", "--config", writeServeConfig(t, t.TempDir(), private)}, io.Discard, &stderr)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "10.0.0.7 is a private address") {
+		t.Fatalf("a private webhook host: exit %d %v\n%s", code, err, stderr.String())
 	}
 }

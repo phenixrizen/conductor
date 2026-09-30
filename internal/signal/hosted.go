@@ -529,13 +529,16 @@ func (h *HostedSession) ForwardActivity(e session.ActivityEntry) error {
 	return nil
 }
 
-// HostActivity takes an activity entry the host reports and hands it to the
-// hub's OnActivity. The host is not trusted with it: an entry of a type this
+// HostActivity takes an activity entry the host reports, with the attention
+// state the host says an attention entry records, and hands them to the hub's
+// OnActivity. The host is not trusted with them: an entry of a type this
 // server does not know is dropped (a newer host may have more), the text is
 // cut to its limits, and a missing or unreadable time becomes the time of
-// receipt. It is attributed to this session whatever session the host named.
-// HostActivity does not send the entry back to the host.
-func (h *HostedSession) HostActivity(a proto.Activity) {
+// receipt; the state is kept only with an attention entry and only when it is
+// needs_input, working or done. The entry is attributed to this session
+// whatever session the host named. HostActivity does not send the entry back
+// to the host.
+func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	if !session.ValidEventType(a.Type) {
 		return
 	}
@@ -546,11 +549,18 @@ func (h *HostedSession) HostActivity(a proto.Activity) {
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
+	var recorded session.AttentionState
+	if e.Type == session.ActivityAttention {
+		switch s := session.AttentionState(state); s {
+		case session.AttentionNeedsInput, session.AttentionWorking, session.AttentionDone:
+			recorded = s
+		}
+	}
 	h.mu.Lock()
 	id := h.info.ID
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {
-		h.hub.OnActivity(id, e)
+		h.hub.OnActivity(id, e, recorded)
 	}
 }
 

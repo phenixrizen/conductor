@@ -19,23 +19,32 @@ const activityQueue = 256
 // queue is bounded: past it entries are dropped, which costs the admin stream
 // a line and nothing else, because the session keeps its own log.
 type activityForwarder struct {
-	queue   chan session.ActivityEntry
-	send    func(session.ActivityEntry)
+	queue   chan forwarded
+	send    func(session.ActivityEntry, session.AttentionState)
 	log     *slog.Logger
 	pending atomic.Int64 // entries queued or being sent
 	dropped atomic.Uint64
 }
 
-func newActivityForwarder(send func(session.ActivityEntry), log *slog.Logger) *activityForwarder {
-	return &activityForwarder{queue: make(chan session.ActivityEntry, activityQueue), send: send, log: log}
+// forwarded is an entry waiting for the connection, with the attention state
+// it records when it is an attention entry: the hook reads it when the entry
+// is recorded, for by the time the entry is sent the session may be in
+// another.
+type forwarded struct {
+	entry session.ActivityEntry
+	state session.AttentionState
 }
 
-// push queues e without waiting. It reports false, and drops e, when the
-// queue is full.
-func (f *activityForwarder) push(e session.ActivityEntry) bool {
+func newActivityForwarder(send func(session.ActivityEntry, session.AttentionState), log *slog.Logger) *activityForwarder {
+	return &activityForwarder{queue: make(chan forwarded, activityQueue), send: send, log: log}
+}
+
+// push queues e, with the attention state it records, without waiting. It
+// reports false, and drops e, when the queue is full.
+func (f *activityForwarder) push(e session.ActivityEntry, state session.AttentionState) bool {
 	f.pending.Add(1) // before the entry is visible, so idle never misses it
 	select {
-	case f.queue <- e:
+	case f.queue <- forwarded{e, state}:
 		return true
 	default:
 	}
@@ -52,8 +61,8 @@ func (f *activityForwarder) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case e := <-f.queue:
-			f.send(e)
+		case q := <-f.queue:
+			f.send(q.entry, q.state)
 			f.pending.Add(-1)
 		}
 	}

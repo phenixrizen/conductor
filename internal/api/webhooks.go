@@ -12,8 +12,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/config"
@@ -22,9 +24,10 @@ import (
 
 // Webhooks: the server POSTs the activity entries of every session to the
 // webhooks of its config (config.Webhook) that list their event type, one
-// entry a request. Each webhook has a queue and a goroutine of its own that
-// delivers from it in order, so a slow or dead endpoint holds up neither the
-// sessions, whose goroutines only queue, nor the other webhooks.
+// entry a request. One sink types each entry and builds its body once, and
+// each webhook has a queue and a goroutine of its own that delivers from it in
+// order, so a slow or dead endpoint holds up neither the sessions, whose
+// goroutines only queue, nor the other webhooks.
 
 const (
 	// webhookQueue bounds the deliveries waiting for one webhook: a full
@@ -37,6 +40,10 @@ const (
 	// can carry the next delivery.
 	webhookDrain = 64 << 10
 )
+
+// webhookResolver resolves webhook hosts when the server dials them; nil is
+// the default resolver. Tests point it at a DNS server of their own.
+var webhookResolver *net.Resolver
 
 // webhookPayload is the body of a delivery: the session an entry belongs to
 // and the entry, as the admin event stream sends it.
@@ -54,7 +61,8 @@ type webhookSession struct {
 	AgentID string `json:"agentId"`
 }
 
-// webhookDelivery is a request waiting in a webhook's queue.
+// webhookDelivery is a request waiting in a webhook's queue. Webhooks that
+// get the same entry share its body.
 type webhookDelivery struct {
 	event string // X-Conductor-Event
 	body  []byte
@@ -62,18 +70,19 @@ type webhookDelivery struct {
 
 // webhookSender runs the webhooks of the config.
 type webhookSender struct {
-	hooks  []*webhook
-	ctx    context.Context // done once the sender is closed
-	cancel context.CancelFunc
-	wg     sync.WaitGroup // the delivering goroutines
+	hooks    []*webhook
+	registry *session.Registry
+	ctx      context.Context // done once the sender is closed
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup // the delivering goroutines
 }
 
-// startWebhooks makes every webhook of hooks, as Validate has checked them, a
-// sink of events and starts its goroutine. The session an entry belongs to is
-// read from registry. close stops them.
+// startWebhooks starts a goroutine for every webhook of hooks, as Validate
+// has checked them, and makes the sender a sink of events. The session an
+// entry belongs to is read from registry. close stops them.
 func startWebhooks(hooks []config.Webhook, events *eventHub, registry *session.Registry, log *slog.Logger) *webhookSender {
 	ctx, cancel := context.WithCancel(context.Background())
-	ws := &webhookSender{ctx: ctx, cancel: cancel}
+	ws := &webhookSender{registry: registry, ctx: ctx, cancel: cancel}
 	for i, h := range hooks {
 		u, err := url.Parse(h.URL)
 		if err != nil {
@@ -82,27 +91,28 @@ func startWebhooks(hooks []config.Webhook, events *eventHub, registry *session.R
 			continue
 		}
 		w := &webhook{
-			index:    i,
-			url:      h.URL,
-			host:     u.Host,
-			events:   map[string]bool{},
-			secret:   []byte(h.Secret),
-			client:   webhookClient(h.AllowPrivate),
-			registry: registry,
-			log:      log,
-			ctx:      ctx,
-			wake:     make(chan struct{}, 1),
+			index:  i,
+			url:    h.URL,
+			host:   u.Host,
+			events: map[string]bool{},
+			secret: []byte(h.Secret),
+			client: webhookClient(h.AllowPrivate),
+			log:    log,
+			ctx:    ctx,
+			wake:   make(chan struct{}, 1),
 		}
 		for _, t := range h.Events {
 			w.events[t] = true
 		}
 		ws.hooks = append(ws.hooks, w)
-		events.addSink(w.offer)
 		ws.wg.Add(1)
 		go func() {
 			defer ws.wg.Done()
 			w.run()
 		}()
+	}
+	if len(ws.hooks) > 0 {
+		events.addSink(ws.offer)
 	}
 	return ws
 }
@@ -126,93 +136,59 @@ func (ws *webhookSender) close(ctx context.Context) {
 	}
 }
 
-// webhook delivers to one URL.
-type webhook struct {
-	index    int    // its place among the config's webhooks, which logs name it by
-	url      string // as configured, and never logged: its query may hold a token
-	host     string // host[:port], which logs name it by
-	events   map[string]bool
-	secret   []byte
-	client   *http.Client
-	registry *session.Registry
-	log      *slog.Logger
-	ctx      context.Context // done once the sender is closed
-
-	mu      sync.Mutex
-	queue   [webhookQueue]webhookDelivery // a ring: n deliveries from head
-	head, n int
-	dropped uint64
-	wake    chan struct{} // something was queued
-}
-
-// offer is the webhook's activity sink: it queues e when the webhook lists
-// its event type (webhookEvent). It runs on the goroutine that recorded e, so
-// it never waits: it reads the session's attention, which types an attention
-// entry, and its name for the body, and queues. For a server session the
-// attention it reads is the one the entry records: Local records the entry
-// right after it sets the state, on the same goroutine. The host of a hosted
-// session sends the change and the entry on separate paths, and the entry may
-// come first; the state read is then the one before, unless the entry names
-// its state (recordedState).
-func (w *webhook) offer(sessionID string, e session.ActivityEntry) {
-	if w.ctx.Err() != nil || !w.mayList(e.Type) {
+// offer is the webhooks' activity sink. It types e once (eventTypeOf) and
+// queues it for every webhook that lists that type or e's own, with one body
+// for all of them, built for the first. It runs on the goroutine that
+// recorded e, so it never waits: it looks the session up, for the body, only
+// once a webhook wants the entry, and queues.
+func (ws *webhookSender) offer(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+	if ws.ctx.Err() != nil {
 		return
 	}
-	var info session.Info
-	if d, ok := w.registry.Get(sessionID); ok {
-		info = d.Info()
+	typ := eventTypeOf(e, state)
+	var body []byte
+	for _, w := range ws.hooks {
+		event := w.eventFor(typ, e.Type)
+		if event == "" {
+			continue
+		}
+		if body == nil {
+			var info session.Info
+			if d, ok := ws.registry.Get(sessionID); ok {
+				info = d.Info()
+			}
+			b, err := json.Marshal(webhookPayload{
+				SessionID: sessionID,
+				Session:   webhookSession{ID: sessionID, Name: info.Name, AgentID: info.AgentID},
+				Entry:     e,
+			})
+			if err != nil {
+				return
+			}
+			body = b
+		}
+		w.push(webhookDelivery{event: event, body: body})
 	}
-	event := webhookEvent(w.events, e, info.Attention)
-	if event == "" {
-		return
-	}
-	body, err := json.Marshal(webhookPayload{
-		SessionID: sessionID,
-		Session:   webhookSession{ID: sessionID, Name: info.Name, AgentID: info.AgentID},
-		Entry:     e,
-	})
-	if err != nil {
-		return
-	}
-	w.push(webhookDelivery{event: event, body: body})
-}
-
-// mayList reports whether an entry of type t can be of an event type the
-// webhook lists, which spares looking up the session of every other entry.
-func (w *webhook) mayList(t string) bool {
-	switch t {
-	case session.ActivityAttention:
-		return w.events[t] || w.events[string(session.AttentionNeedsInput)] || w.events[string(session.AttentionWorking)] || w.events[string(session.AttentionDone)]
-	case session.ActivityStatus:
-		return w.events[t] || w.events[config.EventExitNonZero]
-	}
-	return w.events[t]
-}
-
-// webhookEvent is the event type under which e reaches a webhook that lists
-// events, "" when it lists none that e is: the type the Events page gives e
-// (eventTypeOf) or else e's own. When a webhook lists both, the Events page's,
-// which says more, names it.
-func webhookEvent(events map[string]bool, e session.ActivityEntry, att session.Attention) string {
-	if t := eventTypeOf(e, att); t != "" && events[t] {
-		return t
-	}
-	if events[e.Type] {
-		return e.Type
-	}
-	return ""
 }
 
 // eventTypeOf is the event type the Events page gives an entry, as
 // eventTypeOf in web/app/utils/events.ts does, or "" for an entry that is
 // none: an attention entry is the attention state it records, a status entry
-// of a process that exited on its own with a non-zero code is
-// exit_nonzero, and the six event types are themselves. att is the
-// attention of the entry's session when the entry arrived.
-func eventTypeOf(e session.ActivityEntry, att session.Attention) string {
+// of a process that exited on its own with a non-zero code is exit_nonzero,
+// and the six event types are themselves. For an attention entry state is
+// the state its session was in when it recorded the entry, "" when that is
+// not known; the entry names its state itself when the report had no
+// message. (The browser reads the state from the session later, and holds an
+// attention entry until the session shows it.)
+func eventTypeOf(e session.ActivityEntry, state session.AttentionState) string {
 	switch e.Type {
 	case session.ActivityAttention:
-		return string(recordedState(e, att))
+		if isAttentionState(state) {
+			return string(state)
+		}
+		if named := session.AttentionState(e.Message); isAttentionState(named) {
+			return string(named)
+		}
 	case session.ActivityStatus:
 		if code, ok := session.ExitCode(e.Message); ok && code != 0 {
 			return config.EventExitNonZero
@@ -224,29 +200,40 @@ func eventTypeOf(e session.ActivityEntry, att session.Attention) string {
 	return ""
 }
 
-// recordedState is the attention state an attention entry records. The
-// session logs the report's message, or the state itself for a report without
-// one. It is the session's state when the session's attention is the one the
-// entry records (the same message, or no message and the entry naming the
-// state); else the state the entry names; else the state the session is in.
-// A session whose attention is cleared gives none.
-func recordedState(e session.ActivityEntry, att session.Attention) session.AttentionState {
-	inState := isAttentionState(att.State)
-	if inState && (att.Message != "" && att.Message == e.Message || att.Message == "" && e.Message == string(att.State)) {
-		return att.State
-	}
-	if named := session.AttentionState(e.Message); isAttentionState(named) {
-		return named
-	}
-	if inState {
-		return att.State
-	}
-	return session.AttentionNone
-}
-
 // isAttentionState reports whether s is a state an attention entry records.
 func isAttentionState(s session.AttentionState) bool {
 	return s == session.AttentionNeedsInput || s == session.AttentionWorking || s == session.AttentionDone
+}
+
+// webhook delivers to one URL.
+type webhook struct {
+	index  int    // its place among the config's webhooks, which logs name it by
+	url    string // as configured, and never logged: its query may hold a token
+	host   string // host[:port], which logs name it by
+	events map[string]bool
+	secret []byte
+	client *http.Client
+	log    *slog.Logger
+	ctx    context.Context // done once the sender is closed
+
+	mu      sync.Mutex
+	queue   [webhookQueue]webhookDelivery // a ring: n deliveries from head
+	head, n int
+	dropped uint64
+	wake    chan struct{} // something was queued
+}
+
+// eventFor is the event type under which an entry of type own, which the
+// Events page types typ ("" for none), reaches the webhook, "" when it lists
+// neither: typ when the webhook lists it, which says more, else own.
+func (w *webhook) eventFor(typ, own string) string {
+	if typ != "" && w.events[typ] {
+		return typ
+	}
+	if w.events[own] {
+		return own
+	}
+	return ""
 }
 
 // push queues d, dropping the oldest delivery when the queue is full. The
@@ -357,33 +344,28 @@ func withoutURL(err error) error {
 
 // webhookClient makes one attempt at the URL it is given: a delivery has
 // webhookTimeout, and a redirect is the answer, not somewhere else to send
-// the entry. It never uses a proxy, and it dials only addresses that pass
-// config.WebhookAddrs, looked up again for every connection: the address
-// check sees where every request goes, and a name that resolves elsewhere
-// since the config was checked (DNS rebinding) reaches no private address.
+// the entry. It never uses a proxy, so that the address rule sees where every
+// request goes. It dials as the standard dialer does, looking the host up for
+// every connection and, when the host has several addresses, giving each a
+// share of the time (and the other address family a head start), and unless
+// allowPrivate it refuses, in Control, every address config.CheckWebhookAddr
+// refuses, just before connecting to it: a name that resolves elsewhere since
+// the config was checked (DNS rebinding) reaches no private address, and the
+// dial goes on to the host's next address.
 func webhookClient(allowPrivate bool) *http.Client {
-	dialer := &net.Dialer{Timeout: webhookTimeout}
+	dialer := &net.Dialer{Timeout: webhookTimeout, Resolver: webhookResolver}
+	if !allowPrivate {
+		dialer.Control = func(_, address string, _ syscall.RawConn) error {
+			ap, err := netip.ParseAddrPort(address)
+			if err != nil {
+				return err
+			}
+			return config.CheckWebhookAddr(ap.Addr())
+		}
+	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = nil
-	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		addrs, err := config.WebhookAddrs(ctx, host, allowPrivate)
-		if err != nil {
-			return nil, err
-		}
-		var errs []error
-		for _, a := range addrs {
-			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
-			if err == nil {
-				return conn, nil
-			}
-			errs = append(errs, err)
-		}
-		return nil, errors.Join(errs...)
-	}
+	tr.DialContext = dialer.DialContext
 	return &http.Client{
 		Transport: tr,
 		Timeout:   webhookTimeout,

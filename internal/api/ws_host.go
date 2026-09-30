@@ -200,9 +200,10 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
 			return false
 		}
 		// The session is the connection's, whatever m.SessionID says; the
-		// entry is checked and cleaned by HostActivity, and one of a type this
-		// server does not know (a newer host's) is dropped, not fatal.
-		hs.HostActivity(m.Entry)
+		// entry and its state are checked and cleaned by HostActivity, and an
+		// entry of a type this server does not know (a newer host's) is
+		// dropped, not fatal.
+		hs.HostActivity(m.Entry, m.State)
 	case proto.HostRegister:
 		return false
 	default:
