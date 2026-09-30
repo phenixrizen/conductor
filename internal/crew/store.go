@@ -87,7 +87,7 @@ func NewStore(st *store.Store) (*Store, error) {
 // validateWithID is Validate plus the ID, which the store keys crews by.
 func (c Crew) validateWithID() error {
 	if !idPattern.MatchString(c.ID) {
-		return invalidf("id %q must match %s", c.ID, idPattern)
+		return invalidf("id %s must match %s", quote(c.ID), idPattern)
 	}
 	return c.Validate()
 }

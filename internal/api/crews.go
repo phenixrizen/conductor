@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/phenixrizen/conductor/internal/crew"
 )
@@ -115,8 +116,12 @@ func (s *Server) handleDuplicateCrew(w http.ResponseWriter, r *http.Request) {
 }
 
 // readCrew decodes the body of a create or an update into a crew and checks
-// its agents against the catalog. The store checks the rest, on the crew as it
-// saves it. When readCrew reports false it has answered the request.
+// it: first its rules, on the name trimmed as the store saves it, then its
+// agents against the catalog. So a crew that breaks a rule is refused for it
+// (400) before the store looks at the crew limit (409) or at the id of an
+// update (404), and an unknown agent is 400 whatever else holds. The store
+// checks the crew again as it saves it, with its id and times. When readCrew
+// reports false it has answered the request.
 func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bool) {
 	if s.crews == nil {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
@@ -130,6 +135,12 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 	c := crew.Crew{
 		Name: in.Name, Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
 		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Members: in.Members,
+	}
+	trimmed := c
+	trimmed.Name = strings.TrimSpace(c.Name)
+	if err := trimmed.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
+		return crew.Crew{}, false
 	}
 	if err := c.CheckAgents(s.Catalog()); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())

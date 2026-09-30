@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -49,6 +50,23 @@ func (e *invalidError) Unwrap() error { return ErrInvalid }
 
 func invalidf(format string, args ...any) error {
 	return &invalidError{msg: fmt.Sprintf(format, args...)}
+}
+
+// maxQuoted is how many characters of a value an error message quotes.
+const maxQuoted = 80
+
+// quote quotes a value for an error message as %q does, cut to maxQuoted
+// characters with "…" where it was cut: whatever a client sends, an error
+// never sends it back whole.
+func quote(s string) string {
+	n := 0
+	for i := range s {
+		if n == maxQuoted {
+			return strconv.Quote(s[:i] + "…")
+		}
+		n++
+	}
+	return strconv.Quote(s)
 }
 
 // Start says when a member starts in a run.
@@ -117,7 +135,7 @@ func gitRefuses(name string) bool {
 // directory and options, the members' names, agent IDs, prompts, arguments
 // and start conditions, all within their limits, and the size of c as JSON,
 // which counts the ID and the times. The first problem found is returned; it
-// matches ErrInvalid.
+// matches ErrInvalid, and quotes at most 80 characters of a value.
 func (c Crew) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
 		return invalidf("name must not be empty")
@@ -138,10 +156,10 @@ func (c Crew) Validate() error {
 		return invalidf("cwd contains NUL")
 	}
 	if c.Where != WhereServer && c.Where != WhereHost {
-		return invalidf("where %q must be %q or %q", c.Where, WhereServer, WhereHost)
+		return invalidf("where %s must be %q or %q", quote(c.Where), WhereServer, WhereHost)
 	}
 	if c.Isolation != IsolationNone && c.Isolation != IsolationWorktree {
-		return invalidf("isolation %q must be %q or %q", c.Isolation, IsolationNone, IsolationWorktree)
+		return invalidf("isolation %s must be %q or %q", quote(c.Isolation), IsolationNone, IsolationWorktree)
 	}
 	if c.ViewLinkTTLSeconds < 0 || c.ViewLinkTTLSeconds > maxLinkTTL {
 		return invalidf("viewLinkTtlSeconds must be between 0 and %d", maxLinkTTL)
@@ -155,7 +173,7 @@ func (c Crew) Validate() error {
 			return err
 		}
 		if slices.Contains(names, m.Name) {
-			return invalidf("member %q: the name is used twice", m.Name)
+			return invalidf("member %s: the name is used twice", quote(m.Name))
 		}
 		names = append(names, m.Name)
 	}
@@ -182,10 +200,10 @@ func (c Crew) checkStarts(names []string) error {
 			continue
 		}
 		if m.Start.Member == m.Name {
-			return invalidf("member %q: cannot start after itself", m.Name)
+			return invalidf("member %s: cannot start after itself", quote(m.Name))
 		}
 		if !slices.Contains(names, m.Start.Member) {
-			return invalidf("member %q: starts after %q, which is not a member of this crew", m.Name, m.Start.Member)
+			return invalidf("member %s: starts after %s, which is not a member of this crew", quote(m.Name), quote(m.Start.Member))
 		}
 		after[m.Name] = m.Start.Member
 	}
@@ -197,7 +215,7 @@ func (c Crew) checkStarts(names []string) error {
 			seen := slices.Contains(chain, next)
 			chain = append(chain, next)
 			if seen {
-				return invalidf("member %q: the start conditions go round in a cycle, so it never starts: %s", m.Name, strings.Join(chain, " after "))
+				return invalidf("member %s: the start conditions go round in a cycle, so it never starts: %s", quote(m.Name), strings.Join(chain, " after "))
 			}
 		}
 	}
@@ -208,44 +226,44 @@ func (c Crew) checkStarts(names []string) error {
 // the other members.
 func (m Member) validate() error {
 	if !memberNamePattern.MatchString(m.Name) {
-		return invalidf("member %q: name must match %s", m.Name, memberNamePattern)
+		return invalidf("member %s: name must match %s", quote(m.Name), memberNamePattern)
 	}
 	if gitRefuses(m.Name) {
-		return invalidf(`member %q: git refuses the name for a branch: no "..", and no "." or ".lock" at the end`, m.Name)
+		return invalidf(`member %s: git refuses the name for a branch: no "..", and no "." or ".lock" at the end`, quote(m.Name))
 	}
 	if !catalog.ValidID(m.AgentID) {
-		return invalidf("member %q: agentId %q is not an agent id (a-z, 0-9 and -, 1 to 32 of them)", m.Name, m.AgentID)
+		return invalidf("member %s: agentId %s is not an agent id (a-z, 0-9 and -, 1 to 32 of them)", quote(m.Name), quote(m.AgentID))
 	}
 	if utf8.RuneCountInString(m.Prompt) > maxPrompt {
-		return invalidf("member %q: prompt must be at most %d characters", m.Name, maxPrompt)
+		return invalidf("member %s: prompt must be at most %d characters", quote(m.Name), maxPrompt)
 	}
 	if len(m.Args) > maxArgs {
-		return invalidf("member %q: too many args (at most %d)", m.Name, maxArgs)
+		return invalidf("member %s: too many args (at most %d)", quote(m.Name), maxArgs)
 	}
 	total := 0
 	for i, a := range m.Args {
 		if strings.ContainsRune(a, 0) {
-			return invalidf("member %q: args[%d] contains NUL", m.Name, i)
+			return invalidf("member %s: args[%d] contains NUL", quote(m.Name), i)
 		}
 		if len(a) > maxArg {
-			return invalidf("member %q: args[%d] is longer than %d bytes", m.Name, i, maxArg)
+			return invalidf("member %s: args[%d] is longer than %d bytes", quote(m.Name), i, maxArg)
 		}
 		total += len(a)
 	}
 	if total > maxArgsBytes {
-		return invalidf("member %q: args must be at most %d bytes in all", m.Name, maxArgsBytes)
+		return invalidf("member %s: args must be at most %d bytes in all", quote(m.Name), maxArgsBytes)
 	}
 	switch m.Start.When {
 	case StartAfter:
 		if m.Start.Member == "" {
-			return invalidf("member %q: start.member must name the member to start after", m.Name)
+			return invalidf("member %s: start.member must name the member to start after", quote(m.Name))
 		}
 	case StartImmediately, StartManual:
 		if m.Start.Member != "" {
-			return invalidf("member %q: start.member is only set with start.when %q", m.Name, StartAfter)
+			return invalidf("member %s: start.member is only set with start.when %q", quote(m.Name), StartAfter)
 		}
 	default:
-		return invalidf("member %q: start.when %q must be %q, %q or %q", m.Name, m.Start.When, StartImmediately, StartAfter, StartManual)
+		return invalidf("member %s: start.when %s must be %q, %q or %q", quote(m.Name), quote(m.Start.When), StartImmediately, StartAfter, StartManual)
 	}
 	return nil
 }
@@ -257,7 +275,7 @@ func (m Member) validate() error {
 func (c Crew) CheckAgents(cat catalog.Catalog) error {
 	for _, m := range c.Members {
 		if _, ok := cat.Get(m.AgentID); !ok {
-			return invalidf("member %q: unknown agent %q", m.Name, m.AgentID)
+			return invalidf("member %s: unknown agent %s", quote(m.Name), quote(m.AgentID))
 		}
 	}
 	return nil

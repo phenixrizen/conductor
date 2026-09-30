@@ -184,6 +184,53 @@ func TestValidateRejectsBadMembers(t *testing.T) {
 	}
 }
 
+// A value a validation message quotes is cut to 80 characters, so that an
+// error does not send back whatever a client sent, however long.
+func TestValidationMessagesQuoteAtMost80Characters(t *testing.T) {
+	huge := strings.Repeat("x", 900<<10)
+	cut := `"` + strings.Repeat("x", 80) + `…"`
+	for name, change := range map[string]func(*Crew){
+		"where":        func(c *Crew) { c.Where = huge },
+		"isolation":    func(c *Crew) { c.Isolation = huge },
+		"member name":  func(c *Crew) { c.Members[0].Name = huge },
+		"agentId":      func(c *Crew) { c.Members[0].AgentID = huge },
+		"start.when":   func(c *Crew) { c.Members[0].Start.When = huge },
+		"start.member": func(c *Crew) { c.Members[1].Start.Member = huge },
+	} {
+		c := validCrew("api", "API")
+		change(&c)
+		err := c.Validate()
+		if err == nil || !errors.Is(err, ErrInvalid) || len(err.Error()) > 300 || !strings.Contains(err.Error(), cut) {
+			t.Errorf("%s: %.400v", name, err)
+		}
+	}
+	// CheckAgents, asked about an agent Validate refuses, quotes it alike.
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{{ID: "shell", Name: "Shell", Command: []string{"/bin/sh"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := validCrew("api", "API")
+	c.Members[0].AgentID = huge
+	if err := c.CheckAgents(cat); err == nil || len(err.Error()) > 300 || !strings.Contains(err.Error(), cut) {
+		t.Errorf("CheckAgents: %.400v", err)
+	}
+	// Characters, not bytes; a short value is quoted whole.
+	c = validCrew("api", "API")
+	c.Where = strings.Repeat("é", 81)
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `"`+strings.Repeat("é", 80)+`…"`) {
+		t.Errorf("81 characters: %v", err)
+	}
+	c.Where = strings.Repeat("é", 80)
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `"`+strings.Repeat("é", 80)+`"`) {
+		t.Errorf("80 characters: %v", err)
+	}
+	// So does the store, about an id.
+	st, _ := newStore(t)
+	if err := st.Put(validCrew(strings.Repeat("Z", 1000), "API")); err == nil || len(err.Error()) > 300 || !strings.Contains(err.Error(), `"`+strings.Repeat("Z", 80)+`…"`) {
+		t.Errorf("Put: %.400v", err)
+	}
+}
+
 func TestValidateAcceptsCrewsAtTheLimits(t *testing.T) {
 	c := validCrew("api", strings.Repeat("é", 60))
 	c.Goal = strings.Repeat("ü", 2000) // runes, not bytes

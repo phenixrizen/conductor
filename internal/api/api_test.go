@@ -2526,6 +2526,52 @@ func TestCrewSaveRejectsInvalidCrews(t *testing.T) {
 	}
 }
 
+// A value quoted in an error comes back cut short, however long it was sent.
+// A crew that breaks a rule is refused for that before its agents are looked
+// up, before the 50-crew limit and before its id is; an agent the catalog
+// does not have is 400 whatever else holds.
+func TestCrewErrorsQuoteShortAndComeInOrder(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.sendCrew("POST", "/api/crews", e.crewBody("Kept"), http.StatusCreated)
+	message := func(out map[string]any) string {
+		apiErr, _ := out["error"].(map[string]any)
+		msg, _ := apiErr["message"].(string)
+		return msg
+	}
+	huge := e.crewBody("Huge")
+	crewMember(huge, 1)["agentId"] = strings.Repeat("a", 900<<10)
+	invalid := e.crewBody("Invalid")
+	crewMember(invalid, 0)["name"] = "Lead!"
+	unknown := e.crewBody("Unknown")
+	crewMember(unknown, 1)["agentId"] = "nope"
+	both := e.crewBody("Both")
+	crewMember(both, 0)["name"] = "Lead!"
+	crewMember(both, 1)["agentId"] = "nope"
+	for _, path := range []string{"POST /api/crews", "PUT /api/crews/kept", "PUT /api/crews/missing"} {
+		method, route, _ := strings.Cut(path, " ")
+		resp, out := e.do(method, route, adminToken, huge)
+		wantAPIError(t, "a 900 KiB agentId ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", "agentId")
+		if msg := message(out); len(msg) > 300 {
+			t.Errorf("%s: a message of %d bytes", path, len(msg))
+		}
+		resp, out = e.do(method, route, adminToken, both)
+		wantAPIError(t, "a rule broken and an unknown agent ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", "must match")
+		resp, out = e.do(method, route, adminToken, invalid)
+		wantAPIError(t, "a rule broken ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", "must match")
+		resp, out = e.do(method, route, adminToken, unknown)
+		wantAPIError(t, "an unknown agent ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", `"nope"`)
+	}
+	for i := len(e.crews()); i < 50; i++ {
+		e.sendCrew("POST", "/api/crews", e.crewBody(fmt.Sprintf("Crew %02d", i)), http.StatusCreated)
+	}
+	resp, out := e.do("POST", "/api/crews", adminToken, invalid)
+	wantAPIError(t, "a rule broken at 50 crews", resp, out, http.StatusBadRequest, "invalid_crew", "must match")
+	resp, out = e.do("POST", "/api/crews", adminToken, unknown)
+	wantAPIError(t, "an unknown agent at 50 crews", resp, out, http.StatusBadRequest, "invalid_crew", `"nope"`)
+	resp, out = e.do("POST", "/api/crews", adminToken, e.crewBody("Valid"))
+	wantAPIError(t, "a valid crew at 50 crews", resp, out, http.StatusConflict, "too_many_crews", "50")
+}
+
 // The largest crew the limits allow goes through the crew routes, whose
 // bodies may reach 1 MiB where others stop at 64 KiB: twelve members, each
 // with a prompt of 4000 four-byte and control characters (JSON writes a

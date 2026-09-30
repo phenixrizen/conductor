@@ -422,4 +422,9 @@ copied, a `prompt` of at most 4000 characters and at most 32 `args` of at most
 `start.member`, set with `after` alone, names another member of the crew, and
 following `start.member` from member to member never goes round in a cycle.
 The whole crew, as the server writes it with its `id` and times, is at most
-512 KiB of JSON.
+512 KiB of JSON. Create and update check the body first: a crew that breaks one
+of these rules is refused with `400 invalid_crew` for that rule, ahead of an
+agent the catalog does not have, the 50-crew limit (`409`) and an unknown `id`
+(`404`); an agent the catalog does not have is `400 invalid_crew` whatever else
+holds. An error message quotes at most 80 characters of a value, with `…` where
+it was cut.
