@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -77,10 +78,12 @@ type Local struct {
 	hub  *Hub
 	log  *slog.Logger
 
-	mu   sync.Mutex // guards info and events, and orders ring writes against attaches
+	mu   sync.Mutex // guards info, events and lastOutput, and orders ring writes against attaches
 	info Info
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
+	// lastOutput is when the pump last read output; zero until it has.
+	lastOutput time.Time
 
 	activity       activityRing
 	events         EventBucket // guarded by mu
@@ -146,6 +149,7 @@ func (s *Local) pump() {
 			s.mu.Lock()
 			s.ring.Write(chunk)
 			s.hub.Broadcast(proto.Encode(proto.TypeOutput, chunk))
+			s.lastOutput = time.Now()
 			s.mu.Unlock()
 			s.scanOutput(chunk)
 			if s.pattern != nil {
@@ -486,6 +490,14 @@ func (s *Local) Info() Info {
 	return info
 }
 
+// LastOutputAt is when the process last wrote output, zero until it has. A
+// crew run reads it to tell when a member's terminal has gone quiet.
+func (s *Local) LastOutputAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastOutput
+}
+
 // AttachOptions describe a client joining a session.
 type AttachOptions struct {
 	ID        string // empty: generated
@@ -598,6 +610,26 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
+	return s.write(data, sub, "")
+}
+
+// Type writes text to the process as a controller typing it would, for what
+// Conductor types itself: a crew member's prompt. No subscription is behind
+// it. Like Input it answers the needs_input prompt that was showing when it
+// began, recording lastAnswer by byName, which is cleaned as a display name.
+// Unlike Input it always records an input entry, by byName and with the text,
+// less its trailing line break, as the message: what Conductor types is its
+// own, where a person's keystrokes are recorded only as the prompt they
+// answered. It returns ErrSessionEnded once the session has ended.
+func (s *Local) Type(text, byName string) error {
+	return s.write([]byte(text), nil, CleanName(byName))
+}
+
+// write writes data to the process, for sub, a controller's subscription, or,
+// with sub nil, for Type as byName. It answers the needs_input prompt that was
+// showing when it began, and records an input entry when it does, or always
+// for Type.
+func (s *Local) write(data []byte, sub *Subscription, byName string) error {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	// The prompt this input answers is the one on the screen as it is typed.
@@ -609,8 +641,12 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if ended {
 		return ErrSessionEnded
 	}
-	_, err := s.proc.Write(data)
-	if err == nil {
+	if _, err := s.proc.Write(data); err != nil {
+		return err
+	}
+	by := ""
+	if sub != nil {
+		by, byName = sub.ID, sub.Name
 		// Presence: stamp the typist and refresh the roster at most every 2 s.
 		now := time.Now().UnixMilli()
 		if prev := sub.lastInput.Swap(now); now-prev > 2000 {
@@ -618,24 +654,29 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			s.hub.Broadcast(s.viewersFrame())
 			s.mu.Unlock()
 		}
-		// First reply wins: the check, the answer record and the clear all
-		// happen in one critical section so two concurrent typists cannot
-		// both claim the prompt.
-		s.mu.Lock()
-		waiting := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Since == promptSince
-		question := s.info.Attention.Message
-		if waiting {
-			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: time.Now().UTC(), Message: question}
-			s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
-			s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
-		}
-		s.mu.Unlock()
-		if waiting {
-			s.Record(ActivityEntry{Type: ActivityInput, By: sub.ID, ByName: sub.Name, Message: question})
-			s.notifyChange()
-		}
 	}
-	return err
+	// First reply wins: the check, the answer record and the clear all happen
+	// in one critical section so two concurrent typists cannot both claim the
+	// prompt.
+	s.mu.Lock()
+	waiting := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Since == promptSince
+	question := s.info.Attention.Message
+	if waiting {
+		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
+		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+	}
+	s.mu.Unlock()
+	switch {
+	case sub == nil:
+		s.Record(ActivityEntry{Type: ActivityInput, ByName: byName, Message: strings.TrimRight(string(data), "\r\n")})
+	case waiting:
+		s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: question})
+	}
+	if waiting {
+		s.notifyChange()
+	}
+	return nil
 }
 
 // Resize applies the latest-controller-wins policy and broadcasts the result.

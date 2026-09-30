@@ -56,12 +56,23 @@ type Info struct {
 	// HostUser is the OS user running `conductor host` (hosted sessions).
 	HostUser string `json:"hostUser,omitempty"`
 	// Branch is the git branch of Cwd when it is inside a repository.
-	Branch    string    `json:"branch,omitempty"`
+	Branch string `json:"branch,omitempty"`
+	// Crew names the crew run the session is a member of; nil for a session
+	// launched on its own.
+	Crew      *CrewRef  `json:"crew,omitempty"`
 	Attention Attention `json:"attention"`
 	// LastAnswer is who most recently cleared a needs-input prompt by typing.
 	LastAnswer *Answer    `json:"lastAnswer,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	EndedAt    *time.Time `json:"endedAt,omitempty"`
+}
+
+// CrewRef ties a server session to the crew run it is a member of: the run,
+// the saved crew it was launched from and the member's name in it.
+type CrewRef struct {
+	RunID  string `json:"runId"`
+	CrewID string `json:"crewId"`
+	Member string `json:"member"`
 }
 
 // Driver is the minimal interface the registry and API need from any session

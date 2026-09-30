@@ -1242,3 +1242,121 @@ func TestConcurrentAnswersRecordExactlyOne(t *testing.T) {
 		}
 	}
 }
+
+// inputEntries returns the input entries of the activity log, oldest first.
+func inputEntries(s *Local) []ActivityEntry {
+	var out []ActivityEntry
+	for _, e := range s.Activity() {
+		if e.Type == ActivityInput {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// Type is typing with no subscription behind it, what Conductor types itself
+// (a crew member's prompt): it writes the text, answers the prompt that was
+// showing like a controller's input, and records an input entry by the name
+// it is given, with the text, whether or not it answered anything.
+func TestTypeWritesAndRecordsInput(t *testing.T) {
+	var changes atomic.Int32
+	s, p := newLocalWith(t, Options{OnChange: func(Info) { changes.Add(1) }})
+
+	// Nothing is waiting: the text goes in and an entry records it.
+	if err := s.Type("Own the plan for /v1/users.\r", "crew"); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(<-p.input); got != "Own the plan for /v1/users.\r" {
+		t.Fatalf("wrote %q", got)
+	}
+	entries := inputEntries(s)
+	if len(entries) != 1 || entries[0].ByName != "crew" || entries[0].By != "" || entries[0].Message != "Own the plan for /v1/users." {
+		t.Fatalf("input entries %+v", entries)
+	}
+	if info := s.Info(); info.LastAnswer != nil || changes.Load() != 0 {
+		t.Fatalf("nothing was answered, yet lastAnswer %+v and %d changes", info.LastAnswer, changes.Load())
+	}
+
+	// A prompt is showing: typing answers it, as a controller's input does.
+	s.SetAttention(AttentionNeedsInput, "Apply edit?", SourceAPI)
+	before := changes.Load()
+	if err := s.Type("1", "crew"); err != nil {
+		t.Fatal(err)
+	}
+	<-p.input
+	info := s.Info()
+	if info.Attention.State != AttentionNone || info.Attention.Source != SourceInput {
+		t.Fatalf("the prompt is still showing: %+v", info.Attention)
+	}
+	if a := info.LastAnswer; a == nil || a.ByName != "crew" || a.By != "" || a.Message != "Apply edit?" || a.At.IsZero() {
+		t.Fatalf("lastAnswer %+v", info.LastAnswer)
+	}
+	if changes.Load() == before {
+		t.Fatal("answering the prompt did not notify OnChange")
+	}
+	if entries := inputEntries(s); len(entries) != 2 || entries[1].Message != "1" || entries[1].ByName != "crew" {
+		t.Fatalf("input entries %+v", entries)
+	}
+
+	// Typing clears needs_input only: a finished turn stays done.
+	s.SetAttention(AttentionDone, "", SourceAPI)
+	if err := s.Type("x", "crew"); err != nil {
+		t.Fatal(err)
+	}
+	<-p.input
+	if state := s.Info().Attention.State; state != AttentionDone {
+		t.Fatalf("typing changed done to %q", state)
+	}
+
+	// The name is a display name: cleaned like one.
+	if err := s.Type("y", " cr\x1bew "); err != nil {
+		t.Fatal(err)
+	}
+	<-p.input
+	if entries := inputEntries(s); entries[len(entries)-1].ByName != "crew" {
+		t.Fatalf("name %q", entries[len(entries)-1].ByName)
+	}
+
+	// An ended session takes nothing.
+	p.exit()
+	<-s.Ended()
+	if err := s.Type("late\r", "crew"); !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("typing into an ended session: %v", err)
+	}
+	select {
+	case got := <-p.input:
+		t.Fatalf("an ended session was written %q", got)
+	default:
+	}
+}
+
+// LastOutputAt is when the process last wrote output: zero before it has.
+func TestLastOutputAtFollowsTheOutput(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	if at := s.LastOutputAt(); !at.IsZero() {
+		t.Fatalf("no output yet, but LastOutputAt %v", at)
+	}
+	waitAfter := func(after time.Time) time.Time {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if at := s.LastOutputAt(); at.After(after) {
+				return at
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("LastOutputAt stayed at %v", s.LastOutputAt())
+		return time.Time{}
+	}
+	before := time.Now()
+	p.outW.Write([]byte("hello"))
+	first := waitAfter(before.Add(-time.Nanosecond))
+	if first.Before(before) || first.After(time.Now()) {
+		t.Fatalf("LastOutputAt %v, output written after %v", first, before)
+	}
+	time.Sleep(20 * time.Millisecond)
+	p.outW.Write([]byte(" again"))
+	if second := waitAfter(first); second.Sub(first) < 20*time.Millisecond {
+		t.Fatalf("second output at %v, first at %v", second, first)
+	}
+}
