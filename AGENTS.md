@@ -72,6 +72,7 @@ reported limitation, not a pass.
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
 | shiki | 4.4.3 |
+| @iconify-json/lucide (icon client bundle) | 1.2.137 |
 
 Upgrade deliberately and update this table.
 
