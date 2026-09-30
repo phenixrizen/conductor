@@ -335,6 +335,19 @@ address family in parallel), so a name pointed at a private address later
 `"allowPrivate": true` lifts the rule for one webhook, for an endpoint on
 your own network.
 
+## Crews
+
+A crew is a saved team of agents; launching one starts a run. From a shell:
+
+```bash
+conductor crews                        # one line per saved crew: id, name, members
+conductor up <crew-id> [--open]        # launch a crew; prints the run and its URL
+```
+
+Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default
+`http://localhost:8080`) with the admin token from `--token` (env
+`CONDUCTOR_ADMIN_TOKEN`). `--open` opens the run's page in your browser.
+
 ## Configuration
 
 `conductor serve --config conductor.json` reads a JSON file; every field has a

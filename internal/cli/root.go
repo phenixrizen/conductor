@@ -17,6 +17,10 @@ Usage:
   conductor host [flags] -- <command...>
                                host a local terminal session
   conductor notify [flags]     report "needs input" from inside a session
+  conductor up <crew-id> [--server URL] [--token T] [--open]
+                               launch a saved crew as a run and print its URL
+  conductor crews [--server URL] [--token T]
+                               list the saved crews
   conductor hooks install <adapter>|all [--home DIR] [--data-dir DIR]
                                put Conductor's hooks into an agent's own config
   conductor hooks status       show which agents have Conductor's hooks
@@ -39,6 +43,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":
 		return runNotify(ctx, args[1:], stdin, stdout, stderr)
+	case "up":
+		return runUp(ctx, args[1:], stdout, stderr)
+	case "crews":
+		return runCrews(ctx, args[1:], stdout, stderr)
 	case "hooks":
 		return runHooks(ctx, args[1:], stdout, stderr)
 	case "skill":
