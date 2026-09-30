@@ -203,12 +203,13 @@ a session. The token is stored
 hashed and only ever authorizes this route and `POST /api/sessions/{id}/events`
 for this one session. Each report, the agent's or the admin's, spends a token
 of the bucket the events of its session spend (see Events), on a server
-session and a hosted one alike: with none left the answer is
-`429 rate_limited` and the state does not change. For a hosted session the
-state is also sent on to the host. What a session sees for itself (the bell,
-an OSC notification, the screen pattern) spends no token, and a change of
-state a session applies always records its `attention` activity entry: a
-state that shows has its entry (see Events).
+session and on a hosted session whose host is connected: with none left the
+answer is `429 rate_limited` and the state does not change. For a hosted
+session the state is also sent on to the host; while no host is connected
+the report is applied on the server without a token. What a session sees for
+itself (the bell, an OSC notification, the screen pattern) spends no token,
+and a change of state a session applies always records its `attention`
+activity entry: a state that shows has its entry (see Events).
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for

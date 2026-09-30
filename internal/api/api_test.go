@@ -1776,19 +1776,44 @@ func TestAToolBurstCannotHideThePromptAfterIt(t *testing.T) {
 			}
 		}
 	}
-	for _, r := range []struct{ suffix, field string }{{"/attention", "state"}, {"/events", "type"}} {
-		burst()
-		resp, out := e.do("POST", base+r.suffix, agent, map[string]any{r.field: "needs_input", "message": "refused via " + r.suffix, "kind": "permission"})
-		if resp.StatusCode != http.StatusTooManyRequests || errorCode(out) != "rate_limited" {
-			t.Fatalf("needs_input via %s after a burst: %d %v, want 429 rate_limited", r.suffix, resp.StatusCode, out)
-		}
-		if att := d.Info().Attention; att.State != session.AttentionNone {
-			t.Fatalf("a report refused via %s left %+v", r.suffix, att)
-		}
+	attentionEntries := func() []session.ActivityEntry {
+		var entries []session.ActivityEntry
 		for _, en := range local.Activity() {
 			if en.Type == session.ActivityAttention {
-				t.Fatalf("a report refused via %s left the entry %+v", r.suffix, en)
+				entries = append(entries, en)
 			}
+		}
+		return entries
+	}
+	// The bucket refills continuously, so the report that follows a burst may
+	// find the token the round trip earned. Either answer keeps the invariant
+	// this test guards: a refused report changes nothing, and an accepted one
+	// applies its state and records its entry together. A state without its
+	// entry is the failure.
+	var applied []string
+	for _, r := range []struct{ suffix, field string }{{"/attention", "state"}, {"/events", "type"}} {
+		burst()
+		message := "via " + r.suffix
+		before := len(applied)
+		resp, out := e.do("POST", base+r.suffix, agent, map[string]any{r.field: "needs_input", "message": message, "kind": "permission"})
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
+			if errorCode(out) != "rate_limited" {
+				t.Fatalf("needs_input via %s after a burst: %d %v, want rate_limited", r.suffix, resp.StatusCode, out)
+			}
+			if att := d.Info().Attention; att.Message == message {
+				t.Fatalf("a report refused via %s was applied: %+v", r.suffix, att)
+			}
+		case http.StatusOK, http.StatusAccepted:
+			applied = append(applied, message)
+			if att := d.Info().Attention; att.State != session.AttentionNeedsInput || att.Message != message || att.Kind != session.KindPermission {
+				t.Fatalf("a report accepted via %s did not apply: %+v", r.suffix, att)
+			}
+		default:
+			t.Fatalf("needs_input via %s after a burst: %d %v", r.suffix, resp.StatusCode, out)
+		}
+		if entries := attentionEntries(); len(entries) != len(applied) || (len(applied) > before && entries[len(entries)-1].Message != message) {
+			t.Fatalf("after the report via %s the attention entries are %+v, want one per applied report %v", r.suffix, entries, applied)
 		}
 	}
 
@@ -1804,22 +1829,25 @@ func TestAToolBurstCannotHideThePromptAfterIt(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	applied = append(applied, "Allow Bash?")
 	if att := d.Info().Attention; att.State != session.AttentionNeedsInput || att.Message != "Allow Bash?" || att.Kind != session.KindPermission {
 		t.Fatalf("attention %+v", att)
 	}
-	var entries []session.ActivityEntry
-	for _, en := range local.Activity() {
-		if en.Type == session.ActivityAttention {
-			entries = append(entries, en)
+	entries := attentionEntries()
+	if len(entries) != len(applied) {
+		t.Fatalf("attention entries %+v, want one per applied report %v", entries, applied)
+	}
+	for i, en := range entries {
+		if en.Message != applied[i] {
+			t.Fatalf("attention entry %d is %+v, want %q", i, en, applied[i])
 		}
 	}
-	if len(entries) != 1 || entries[0].Message != "Allow Bash?" {
-		t.Fatalf("attention entries %+v, want the accepted report's alone", entries)
-	}
-	// The first attention entry on the stream is the accepted one: the refused
-	// reports sent none.
-	if got := activityPayload(t, e.waitEvent(t, events, isActivity("attention", id))); got["message"] != "Allow Bash?" {
-		t.Fatalf("the admin stream's first attention entry is %v", got)
+	// The stream carries exactly the applied reports, in order: the refused
+	// ones sent none.
+	for _, want := range applied {
+		if got := activityPayload(t, e.waitEvent(t, events, isActivity("attention", id))); got["message"] != want {
+			t.Fatalf("the admin stream's next attention entry is %v, want %q", got, want)
+		}
 	}
 }
 

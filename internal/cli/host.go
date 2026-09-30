@@ -23,7 +23,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	token := fs.String("token", "", "host token (env CONDUCTOR_HOST_TOKEN)")
 	name := fs.String("name", "", "session name shown in the UI")
 	hostName := fs.String("host-name", "", "machine label (default: hostname)")
-	agentID := fs.String("agent", "", "agent id shown in the UI (default: command name); an adapter's id (claude, codex, pi, aider, …) also wires Conductor's hooks into the command at launch")
+	agentID := fs.String("agent", "", "agent id shown in the UI (default: command name); the id of an adapter with a launch route (claude, codex, pi, aider) also wires Conductor's hooks into the command at launch; other adapters install by hand (conductor hooks install)")
 	cwd := fs.String("cwd", "", "working directory for the command (default: current)")
 	relayOnly := fs.Bool("relay-only", false, "never use WebRTC; relay through the server")
 	noLocal := fs.Bool("no-local", false, "do not attach this terminal to the session")
