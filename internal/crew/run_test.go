@@ -863,7 +863,7 @@ func TestStopStopsEveryMember(t *testing.T) {
 	}
 	stoppedAt := *got.StoppedAt
 	core, _ := fl.member("core")
-	e.OnActivity(core.Info().ID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done"}, session.AttentionDone)
+	e.OnActivity(core.Info().ID, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
 	if err := e.StartMember(t.Context(), run.ID, "docs"); !errors.Is(err, ErrRunStopped) {
 		t.Fatalf("starting a member of a stopped run: %v", err)
 	}
