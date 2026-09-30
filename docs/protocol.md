@@ -376,6 +376,11 @@ table says so. The WebSocket routes, `GET /ws/sessions/{id}` and
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
+| `GET /api/crews` | admin | `{crews}`: the saved crews ordered by name (ignoring case), each `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, members, createdAt, updatedAt}`, a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `[]` when there is no data directory |
+| `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt` and `updatedAt`, which the server sets and rejects like any unknown field; the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; reply `201 {crew}`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `409 too_many_crews` past 50 crews; `503 store_unavailable` when there is no data directory |
+| `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown |
+| `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
+| `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog; `404` when unknown; `409 too_many_crews` |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `snippet` and `changed` (files already written); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
@@ -399,3 +404,16 @@ these limits everywhere: `id` matches `^[a-z0-9-]{1,32}$`, `name` at most 60
 characters, `description` 200, `command` 1 to 32 elements of at most 4096 bytes
 each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern` 200 bytes that
 does not match an empty line.
+
+The crew routes persist their changes as `crews.json` in the data directory:
+`{"crews": [...]}`. The server refuses to start when the file cannot be parsed
+or holds an invalid crew, an `id` twice or more than 50 crews. Crews are held to
+these limits: at most 50 crews; `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
+not blank and at most 60 characters, `goal` at most 2000, `cwd` at most 4096
+bytes; `where` is `server` or `host` and `isolation` is `none` or `worktree`;
+`viewLinkTtlSeconds` 0 to 31536000 (a year); at most 12 members, each with a
+`name` matching `^[a-z0-9][a-z0-9._-]{0,39}$` and unique in its crew, an
+`agentId` the catalog has when the crew is saved or copied, a `prompt` of at
+most 4000 characters and at most 32 `args` of at most 4096 bytes; `start.when`
+is `immediately`, `after` or `manual`, and `start.member`, set with `after`
+alone, names another member of the crew.

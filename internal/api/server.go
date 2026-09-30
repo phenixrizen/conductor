@@ -14,6 +14,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/crew"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
 	"github.com/phenixrizen/conductor/internal/signal"
@@ -33,6 +34,9 @@ type Server struct {
 	log      *slog.Logger
 	web      http.Handler
 	store    *store.Store
+	// crews holds the saved crews, in crews.json in the data directory; nil
+	// when there is no store.
+	crews *crew.Store
 	// fileDeny lists the directories and files no file read may reach, even
 	// inside a session's working directory (see fileDeny).
 	fileDeny []string
@@ -56,10 +60,10 @@ type Server struct {
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
-// catalog.json overlay it is applied on top. A corrupt or invalid overlay is an
-// error, so that startup fails instead of a later save overwriting the file.
-// web serves the embedded SPA and may be nil. st persists UI-managed state in
-// the data directory and may be nil when there is none.
+// catalog.json overlay it is applied on top. A corrupt or invalid overlay, or
+// crews.json, is an error, so that startup fails instead of a later save
+// overwriting the file. web serves the embedded SPA and may be nil. st persists
+// UI-managed state in the data directory and may be nil when there is none.
 func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
@@ -68,6 +72,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	effective, overlay, err := loadCatalog(st, base)
 	if err != nil {
 		return nil, err
+	}
+	var crews *crew.Store
+	if st != nil {
+		if crews, err = crew.NewStore(st); err != nil {
+			return nil, err
+		}
 	}
 	// A home that is not an absolute path (HOME=relative) is no home.
 	home, err := os.UserHomeDir()
@@ -85,6 +95,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		log:      log,
 		web:      web,
 		store:    st,
+		crews:    crews,
 		fileDeny: fileDeny(cfg, st),
 		home:     home,
 	}
@@ -115,6 +126,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/catalog/check", s.requireAdmin(s.handleCheckCommand))
 	mux.HandleFunc("DELETE /api/catalog/{id}", s.requireAdmin(s.handleDeleteAgent))
 	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.requireAdmin(s.handleUnhideAgent))
+	mux.HandleFunc("GET /api/crews", s.requireAdmin(s.handleListCrews))
+	mux.HandleFunc("POST /api/crews", s.requireAdmin(s.handleCreateCrew))
+	mux.HandleFunc("PUT /api/crews/{id}", s.requireAdmin(s.handleUpdateCrew))
+	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))
+	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.requireAdmin(s.handleDuplicateCrew))
 	mux.HandleFunc("GET /api/integrations", s.requireAdmin(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.requireAdmin(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
@@ -162,7 +178,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			if origin != "" && isDevOrigin(origin) {
 				h.Set("Access-Control-Allow-Origin", origin)
 				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-				h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 				h.Set("Vary", "Origin")
 				if r.Method == http.MethodOptions {
 					w.WriteHeader(http.StatusNoContent)

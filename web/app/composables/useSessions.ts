@@ -138,6 +138,49 @@ export interface JoinInfo {
   label?: string
 }
 
+/** When a crew member starts in a run. */
+export interface CrewStart {
+  when: 'immediately' | 'after' | 'manual'
+  /** Only with `after`: the member whose first `done` starts this one. */
+  member?: string
+}
+
+/** One agent of a crew. */
+export interface CrewMember {
+  /** `^[a-z0-9][a-z0-9._-]{0,39}$`, unique in the crew: it becomes a branch and a worktree name. */
+  name: string
+  agentId: string
+  /** Typed once the member is ready; `$GOAL` and `${GOAL}` stand for the crew's goal. At most 4000 characters. */
+  prompt: string
+  /** At most 32, of at most 4096 bytes each. */
+  args?: string[]
+  start: CrewStart
+}
+
+/** A saved crew, as GET /api/crews lists it. */
+export interface CrewInfo {
+  /** Set by the server from the name when the crew is created; never changes. */
+  id: string
+  /** At most 60 characters. */
+  name: string
+  /** At most 2000 characters. */
+  goal: string
+  cwd: string
+  where: 'server' | 'host'
+  /** `worktree`: every member gets a git worktree of `cwd`. */
+  isolation: 'none' | 'worktree'
+  openAfterLaunch: boolean
+  /** Lifetime of the view link a launch creates; none when missing. */
+  viewLinkTtlSeconds?: number
+  /** At most 12. */
+  members: CrewMember[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these three included. */
+export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt'>
+
 export function useSessions() {
   const { request } = useApi()
 
@@ -161,6 +204,22 @@ export function useSessions() {
     /** Whether the program (argv[0]) resolves on the server. Nothing is run. */
     checkCommand: (argv: string[]) =>
       request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: argv } }),
+    /** The saved crews, ordered by name. */
+    listCrews: () => request<{ crews: CrewInfo[] }>('/api/crews').then((r) => r.crews ?? []),
+    /**
+     * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
+     * fields; its id and createdAt stay. 400 `invalid_crew` says what is wrong, an agent the catalog does not have included; 404 for an unknown
+     * id; 409 `too_many_crews` past 50.
+     */
+    saveCrew: (crew: CrewInput, id?: string) =>
+      (id === undefined
+        ? request<{ crew: CrewInfo }>('/api/crews', { method: 'POST', body: crew })
+        : request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: crew })
+      ).then((r) => r.crew),
+    deleteCrew: (id: string) => request<void>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */
+    duplicateCrew: (id: string) =>
+      request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */

@@ -2283,3 +2283,357 @@ func TestIntegrationsWithoutAKnownHome(t *testing.T) {
 		t.Fatalf("install: %d %v", resp.StatusCode, out)
 	}
 }
+
+// crewBody is a crew as the web client sends it: two members of the test
+// catalog, the second starting once the first is done.
+func (e *testEnv) crewBody(name string) map[string]any {
+	return map[string]any{
+		"name": name, "goal": "ship /v1/users", "cwd": e.root, "where": "server", "isolation": "worktree",
+		"openAfterLaunch": true, "viewLinkTtlSeconds": 28800,
+		"members": []any{
+			map[string]any{"name": "lead", "agentId": "sh", "prompt": "Own the plan for $GOAL.", "args": []any{"-i"}, "start": map[string]any{"when": "immediately"}},
+			map[string]any{"name": "tests", "agentId": "cat", "prompt": "Write the tests.", "start": map[string]any{"when": "after", "member": "lead"}},
+		},
+	}
+}
+
+// crewMember returns member i of a crew, as sent or as received.
+func crewMember(c map[string]any, i int) map[string]any {
+	return c["members"].([]any)[i].(map[string]any)
+}
+
+// crews returns the crews GET /api/crews lists, in order.
+func (e *testEnv) crews() []map[string]any {
+	e.t.Helper()
+	resp, out := e.do("GET", "/api/crews", adminToken, nil)
+	raw, ok := out["crews"].([]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		e.t.Fatalf("crews: %d %v", resp.StatusCode, out)
+	}
+	list := []map[string]any{}
+	for _, c := range raw {
+		list = append(list, c.(map[string]any))
+	}
+	return list
+}
+
+// crewIDs returns the IDs GET /api/crews lists, in order.
+func (e *testEnv) crewIDs() []string {
+	e.t.Helper()
+	ids := []string{}
+	for _, c := range e.crews() {
+		ids = append(ids, c["id"].(string))
+	}
+	return ids
+}
+
+// sendCrew sends body to a crew route as the admin, requires status, and
+// returns the crew in the reply.
+func (e *testEnv) sendCrew(method, path string, body any, status int) map[string]any {
+	e.t.Helper()
+	resp, out := e.do(method, path, adminToken, body)
+	c, _ := out["crew"].(map[string]any)
+	if resp.StatusCode != status || c == nil {
+		e.t.Fatalf("%s %s: %d %v", method, path, resp.StatusCode, out)
+	}
+	return c
+}
+
+// storedCrew returns the crew with the given ID as crews.json in the data
+// directory holds it, or nil.
+func (e *testEnv) storedCrew(id string) map[string]any {
+	e.t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.srv.store.Dir(), "crews.json"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var doc map[string][]map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		e.t.Fatalf("crews.json: %v %s", err, b)
+	}
+	for _, c := range doc["crews"] {
+		if c["id"] == id {
+			return c
+		}
+	}
+	return nil
+}
+
+// wantAPIError requires an error reply with status and code whose message
+// contains msg.
+func wantAPIError(t *testing.T, what string, resp *http.Response, out map[string]any, status int, code, msg string) {
+	t.Helper()
+	apiErr, _ := out["error"].(map[string]any)
+	message, _ := apiErr["message"].(string)
+	if resp.StatusCode != status || apiErr["code"] != code || !strings.Contains(message, msg) {
+		t.Errorf("%s: %d %v, want %d %s with %q", what, resp.StatusCode, out, status, code, msg)
+	}
+}
+
+func TestCrewsCRUD(t *testing.T) {
+	e := newTestEnv(t, nil)
+
+	// Create: the server derives the ID from the name and stamps the times.
+	created := e.sendCrew("POST", "/api/crews", e.crewBody("API sweep"), http.StatusCreated)
+	if created["id"] != "api-sweep" || created["name"] != "API sweep" || created["goal"] != "ship /v1/users" || created["cwd"] != e.root ||
+		created["where"] != "server" || created["isolation"] != "worktree" || created["openAfterLaunch"] != true || created["viewLinkTtlSeconds"] != 28800.0 {
+		t.Fatalf("created %v", created)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, fmt.Sprint(created["createdAt"]))
+	if err != nil || time.Since(createdAt) > time.Minute || created["updatedAt"] != created["createdAt"] {
+		t.Fatalf("times %v %v: %v", created["createdAt"], created["updatedAt"], err)
+	}
+	wantMembers := []any{
+		map[string]any{"name": "lead", "agentId": "sh", "prompt": "Own the plan for $GOAL.", "args": []any{"-i"}, "start": map[string]any{"when": "immediately"}},
+		map[string]any{"name": "tests", "agentId": "cat", "prompt": "Write the tests.", "start": map[string]any{"when": "after", "member": "lead"}},
+	}
+	if !reflect.DeepEqual(created["members"], wantMembers) {
+		t.Fatalf("members %v", created["members"])
+	}
+	if again := e.sendCrew("POST", "/api/crews", e.crewBody("API sweep"), http.StatusCreated); again["id"] != "api-sweep-2" {
+		t.Fatalf("same name again: %v", again["id"])
+	}
+	if list := e.crews(); len(list) != 2 || !reflect.DeepEqual(list[0], created) || list[1]["id"] != "api-sweep-2" {
+		t.Fatalf("list %v", list)
+	}
+
+	// Update the lead's prompt and rename the crew: the ID and the creation
+	// time stay.
+	body := e.crewBody("Users sweep")
+	crewMember(body, 0)["prompt"] = "New plan for $GOAL."
+	updated := e.sendCrew("PUT", "/api/crews/api-sweep", body, http.StatusOK)
+	updatedAt, err := time.Parse(time.RFC3339Nano, fmt.Sprint(updated["updatedAt"]))
+	if updated["id"] != "api-sweep" || updated["name"] != "Users sweep" || crewMember(updated, 0)["prompt"] != "New plan for $GOAL." ||
+		updated["createdAt"] != created["createdAt"] || err != nil || updatedAt.Before(createdAt) {
+		t.Fatalf("updated %v", updated)
+	}
+	if stored := e.storedCrew("api-sweep"); stored == nil || !reflect.DeepEqual(stored, updated) {
+		t.Fatalf("crews.json holds %v", stored)
+	}
+
+	// Duplicate: a new crew under <id>-copy.
+	dup := e.sendCrew("POST", "/api/crews/api-sweep/duplicate", nil, http.StatusCreated)
+	if dup["id"] != "api-sweep-copy" || dup["name"] != "Users sweep copy" || !reflect.DeepEqual(dup["members"], updated["members"]) || dup["cwd"] != e.root {
+		t.Fatalf("duplicate %v", dup)
+	}
+	if ids := e.crewIDs(); !slices.Equal(ids, []string{"api-sweep-2", "api-sweep", "api-sweep-copy"}) { // by name
+		t.Fatalf("ids %v", ids)
+	}
+
+	// Delete.
+	if resp, _ := e.do("DELETE", "/api/crews/api-sweep-copy", adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	if e.storedCrew("api-sweep-copy") != nil {
+		t.Fatal("deleted crew still in crews.json")
+	}
+	resp, out := e.do("DELETE", "/api/crews/api-sweep-copy", adminToken, nil)
+	wantAPIError(t, "delete again", resp, out, http.StatusNotFound, "not_found", "")
+	resp, out = e.do("PUT", "/api/crews/nope", adminToken, e.crewBody("Nope"))
+	wantAPIError(t, "update an unknown crew", resp, out, http.StatusNotFound, "not_found", "")
+	resp, out = e.do("POST", "/api/crews/nope/duplicate", adminToken, nil)
+	wantAPIError(t, "duplicate an unknown crew", resp, out, http.StatusNotFound, "not_found", "")
+
+	// Invalid crews are refused with the reason.
+	bad := e.crewBody("Bad")
+	crewMember(bad, 0)["name"] = "Lead!"
+	resp, out = e.do("POST", "/api/crews", adminToken, bad)
+	wantAPIError(t, "member name Lead!", resp, out, http.StatusBadRequest, "invalid_crew", `"Lead!"`)
+	unknown := e.crewBody("Unknown")
+	crewMember(unknown, 1)["agentId"] = "nope"
+	resp, out = e.do("PUT", "/api/crews/api-sweep", adminToken, unknown)
+	wantAPIError(t, "unknown agent", resp, out, http.StatusBadRequest, "invalid_crew", `"nope"`)
+
+	// Nobody but the admin reaches a crew route.
+	for _, r := range []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", "/api/crews", nil},
+		{"POST", "/api/crews", e.crewBody("Intruder")},
+		{"PUT", "/api/crews/api-sweep", e.crewBody("Intruder")},
+		{"DELETE", "/api/crews/api-sweep", nil},
+		{"POST", "/api/crews/api-sweep/duplicate", nil},
+	} {
+		for _, token := range []string{"", "wrong", "test-host-token"} {
+			if resp, _ := e.do(r.method, r.path, token, r.body); resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s %s with token %q: %d", r.method, r.path, token, resp.StatusCode)
+			}
+		}
+	}
+
+	// A restarted server lists the same crews, unchanged by what was refused.
+	live := e.crews()
+	if ids := e.crewIDs(); !slices.Equal(ids, []string{"api-sweep-2", "api-sweep"}) || !reflect.DeepEqual(live[1], updated) {
+		t.Fatalf("after the refusals: %v", live)
+	}
+	if restarted := e.restart().crews(); !reflect.DeepEqual(live, restarted) {
+		t.Fatalf("restart differs:\n live      %v\n restarted %v", live, restarted)
+	}
+}
+
+func TestCrewSaveRejectsInvalidCrews(t *testing.T) {
+	e := newTestEnv(t, nil)
+	kept := e.sendCrew("POST", "/api/crews", e.crewBody("Kept"), http.StatusCreated)
+	with := func(change func(b map[string]any)) map[string]any {
+		b := e.crewBody("Crew")
+		change(b)
+		return b
+	}
+	cases := []struct {
+		name string
+		body any
+		code string
+		msg  string // part of the message
+	}{
+		{"member name Lead!", with(func(b map[string]any) { crewMember(b, 0)["name"] = "Lead!" }), "invalid_crew", "must match"},
+		{"unknown agent", with(func(b map[string]any) { crewMember(b, 1)["agentId"] = "nope" }), "invalid_crew", `"nope"`},
+		{"after a missing member", with(func(b map[string]any) {
+			crewMember(b, 1)["start"] = map[string]any{"when": "after", "member": "ghost"}
+		}), "invalid_crew", `"ghost"`},
+		{"13 members", with(func(b map[string]any) {
+			for i := 2; i < 13; i++ {
+				b["members"] = append(b["members"].([]any), map[string]any{"name": fmt.Sprintf("m%d", i), "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}})
+			}
+		}), "invalid_crew", "at most 12"},
+		{"where elsewhere", with(func(b map[string]any) { b["where"] = "cloud" }), "invalid_crew", `"cloud"`},
+		{"id sent by the client", with(func(b map[string]any) { b["id"] = "mine" }), "invalid_request", `"id"`},
+		{"createdAt sent by the client", with(func(b map[string]any) { b["createdAt"] = "2026-09-29T10:00:00Z" }), "invalid_request", `"createdAt"`},
+		{"unknown member field", with(func(b map[string]any) { crewMember(b, 0)["model"] = "x" }), "invalid_request", `"model"`},
+		{"no body", nil, "invalid_request", ""},
+		{"body over 64 KiB", with(func(b map[string]any) { b["goal"] = strings.Repeat("g", 70<<10) }), "invalid_request", "too large"},
+	}
+	for _, tc := range cases {
+		for _, path := range []string{"POST /api/crews", "PUT /api/crews/kept"} {
+			method, route, _ := strings.Cut(path, " ")
+			resp, out := e.do(method, route, adminToken, tc.body)
+			wantAPIError(t, tc.name+" ("+path+")", resp, out, http.StatusBadRequest, tc.code, tc.msg)
+		}
+	}
+	if list := e.crews(); len(list) != 1 || !reflect.DeepEqual(list[0], kept) {
+		t.Fatalf("a refused save changed the crews: %v", list)
+	}
+}
+
+// The agents a crew names must be in the catalog when it is saved or copied.
+func TestCrewRoutesCheckTheAgents(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.sendCrew("POST", "/api/crews", e.crewBody("API sweep"), http.StatusCreated)
+	// The tests member runs cat, which the catalog then hides.
+	if c := e.del("cat"); c != http.StatusNoContent {
+		t.Fatalf("hide cat: %d", c)
+	}
+	for _, r := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/api/crews", e.crewBody("Another")},
+		{"PUT", "/api/crews/api-sweep", e.crewBody("API sweep")},
+		{"POST", "/api/crews/api-sweep/duplicate", nil},
+	} {
+		resp, out := e.do(r.method, r.path, adminToken, r.body)
+		wantAPIError(t, r.method+" "+r.path, resp, out, http.StatusBadRequest, "invalid_crew", `"cat"`)
+	}
+	if ids := e.crewIDs(); !slices.Equal(ids, []string{"api-sweep"}) {
+		t.Fatalf("ids %v", ids)
+	}
+}
+
+func TestCrewRoutesNeedAStore(t *testing.T) {
+	e := newTestEnv(t, nil)
+	srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := e.serve(srv)
+	for _, r := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/api/crews", e.crewBody("Crew")},
+		{"PUT", "/api/crews/crew", e.crewBody("Crew")},
+		{"DELETE", "/api/crews/crew", nil},
+		{"POST", "/api/crews/crew/duplicate", nil},
+	} {
+		resp, out := ro.do(r.method, r.path, adminToken, r.body)
+		wantAPIError(t, r.method+" "+r.path, resp, out, http.StatusServiceUnavailable, "store_unavailable", "")
+	}
+	if list := ro.crews(); len(list) != 0 {
+		t.Fatalf("crews without a store: %v", list)
+	}
+}
+
+func TestCrewRoutesStopAt50Crews(t *testing.T) {
+	e := newTestEnv(t, nil)
+	for i := range 50 {
+		e.sendCrew("POST", "/api/crews", e.crewBody(fmt.Sprintf("Crew %02d", i)), http.StatusCreated)
+	}
+	resp, out := e.do("POST", "/api/crews", adminToken, e.crewBody("One too many"))
+	wantAPIError(t, "create", resp, out, http.StatusConflict, "too_many_crews", "50")
+	resp, out = e.do("POST", "/api/crews/crew-00/duplicate", adminToken, nil)
+	wantAPIError(t, "duplicate", resp, out, http.StatusConflict, "too_many_crews", "50")
+	e.sendCrew("PUT", "/api/crews/crew-00", e.crewBody("Crew 00 again"), http.StatusOK)
+	if n := len(e.crews()); n != 50 {
+		t.Fatalf("%d crews", n)
+	}
+}
+
+func TestCrewFailedSaveChangesNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.sendCrew("POST", "/api/crews", e.crewBody("Kept"), http.StatusCreated)
+	before := e.crews()
+	// The data directory disappears, so no save can succeed.
+	dir := e.srv.store.Dir()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/api/crews", e.crewBody("Lost")},
+		{"PUT", "/api/crews/kept", e.crewBody("Changed")},
+		{"POST", "/api/crews/kept/duplicate", nil},
+		{"DELETE", "/api/crews/kept", nil},
+	} {
+		resp, out := e.do(r.method, r.path, adminToken, r.body)
+		wantAPIError(t, r.method+" "+r.path, resp, out, http.StatusInternalServerError, "store_failed", "")
+		if strings.Contains(fmt.Sprint(out), dir) {
+			t.Errorf("%s %s names the data directory: %v", r.method, r.path, out)
+		}
+	}
+	if after := e.crews(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("a failed save changed the crews:\n before %v\n after  %v", before, after)
+	}
+}
+
+// A crews.json that cannot be used stops startup, as a bad catalog.json does.
+func TestNewRefusesAMalformedCrewsFile(t *testing.T) {
+	e := newTestEnv(t, nil)
+	path := filepath.Join(e.srv.store.Dir(), "crews.json")
+	if err := os.WriteFile(path, []byte(`{"crews": [{"id": "x", "bogus": 1}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(e.srv.cfg, e.srv.base, e.srv.log, nil, e.srv.store)
+	if err == nil || srv != nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), `"bogus"`) {
+		t.Fatalf("New: %v", err)
+	}
+}
+
+// PUT is the crews' first route of its kind: a dev UI on another origin
+// (NUXT_PUBLIC_API_BASE) must be allowed to send it.
+func TestDevCORSAllowsPut(t *testing.T) {
+	e := newTestEnv(t, nil) // Dev is on
+	req, _ := http.NewRequest("OPTIONS", e.http.URL+"/api/crews/x", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	methods := strings.Split(resp.Header.Get("Access-Control-Allow-Methods"), ", ")
+	if resp.StatusCode != http.StatusNoContent || !slices.Contains(methods, "PUT") {
+		t.Fatalf("preflight: %d %q", resp.StatusCode, methods)
+	}
+}
