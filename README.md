@@ -365,7 +365,7 @@ answers `not_a_repo`). Each member gets its own checkout and branch:
 git worktree add -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
 ```
 
-The run's id is the crew's id and eight hex digits. A member whose `cwd` is
+The run's id is the crew's id and eight hex digits. A crew whose `cwd` is
 below the top of the repository starts in the same subdirectory of its
 worktree. The first worktree adds a `.conductor/` line to the repository's
 `.git/info/exclude`, so the worktrees stay out of `git status` without touching
@@ -407,7 +407,8 @@ and leaves the worktrees.
 Conductor types `Handoff from core: /v1/users is ready` into the member named
 by `--to`, on one line, as soon as that member is running and not waiting on a
 prompt. Up to 10 handoffs wait for a member; past that the oldest is dropped.
-A handoff to a name that is not in the run is noted in the run's log and
+A handoff to a name that is not in the run, or to a member that has not
+started, is noted in the run's log and
 nothing else happens.
 
 **From a shell.**

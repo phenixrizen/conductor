@@ -85,7 +85,7 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
 
 | Package | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `version` |
+| `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `version` |
 | `internal/cli` | flag parsing only |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
@@ -108,7 +108,8 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
   editing the agent catalog, which is as powerful as the server user: a saved
   agent's argv and env run as that user.
 - Share links carry their own 256-bit token; only its SHA-256 is stored. A link
-  grants `view` or `control` on exactly one session and can be revoked, which
+  grants `view` or `control` on exactly one session, or, for a run link, on
+  every member session of its run, and can be revoked, which
   disconnects its viewers immediately.
 - Host tokens allow registering hosted sessions. A host never receives admin or
   share tokens.
