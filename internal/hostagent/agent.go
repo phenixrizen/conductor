@@ -58,9 +58,11 @@ type Options struct {
 	// session.Options.Pattern.
 	Pattern *regexp.Regexp
 	// Adapter names the hook adapter of the command (`conductor host --agent`).
-	// When it is one, the hook assets are written to HooksDir and the command
-	// is started with the adapter's flags and environment, as the server
-	// starts an agent whose signal is "hook". Any other name changes nothing.
+	// When it is one with a launch route, the hook assets are written to
+	// HooksDir and the command is started with the adapter's flags and
+	// environment, as the server starts an agent whose signal is "hook". An
+	// adapter without one (its agent reads hooks only from its own config)
+	// and any other name change nothing and write nothing.
 	Adapter string
 	// HooksDir is where the host writes the hook assets; empty means
 	// agents.HostHooksDir().
@@ -280,10 +282,19 @@ func currentUser() string {
 // adapter opts.Adapter names, after writing the hook assets its flags point
 // at. The host has no catalog, so the adapter is taken to report through
 // hooks, without tool events. A name that is no adapter's leaves the command
-// as it is and writes nothing. Hooks are a convenience: when they cannot be
-// written, the host says so and runs the command as it is.
+// as it is and writes nothing, and so does an adapter without a launch route,
+// whose agent reads Conductor's hooks only from its own config: nothing the
+// host starts would read the assets, so the host says so at info level and
+// names the command that puts the hooks where the agent reads them. Hooks are
+// a convenience: when they cannot be written, the host says so and runs the
+// command as it is.
 func injectHooks(opts Options) ([]string, map[string]string) {
-	if _, ok := agents.Get(opts.Adapter); !ok {
+	a, ok := agents.Get(opts.Adapter)
+	if !ok {
+		return opts.Argv, nil
+	}
+	if a.Inject == nil {
+		opts.Log.Info("hosting without Conductor's hooks at launch: this agent reads them only from its own config", "adapter", a.ID, "install", "conductor hooks install "+a.ID)
 		return opts.Argv, nil
 	}
 	dir := opts.HooksDir

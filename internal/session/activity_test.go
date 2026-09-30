@@ -161,6 +161,26 @@ func TestCleanEntryLeavesRoomForTheTimestamp(t *testing.T) {
 	}
 }
 
+// CleanID holds an id from outside the session to one line: control
+// characters and surrounding space go, and an id still longer than its limit
+// is dropped, not cut, since a cut id would name someone else.
+func TestCleanID(t *testing.T) {
+	for in, want := range map[string]string{
+		"0123456789abcdef":               "0123456789abcdef",
+		" 01234567\x0089abcdef\n":        "0123456789abcdef",
+		"\x1b[31m":                       "[31m",
+		"\x00\x07\t ":                    "",
+		strings.Repeat("b", 17):          "",
+		"\x7f" + strings.Repeat("b", 16): strings.Repeat("b", 16),
+		strings.Repeat("é", 9):           "", // 9 characters, 18 bytes
+		"":                               "",
+	} {
+		if got := CleanID(in, 16); got != want {
+			t.Errorf("CleanID(%q, 16) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestActivityRingCleansEntries(t *testing.T) {
 	var r activityRing
 	e := r.Add(ActivityEntry{Type: ActivityArtifact, URL: strings.Repeat("u", 3000), To: strings.Repeat("t", 100), Tool: strings.Repeat("x", 200)})

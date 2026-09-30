@@ -81,6 +81,14 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		if len(with) > 0 {
 			return misuse, fmt.Errorf("--event cannot be combined with %s", strings.Join(with, " or "))
 		}
+	} else if fields := eventFieldsGiven(fs); len(fields) > 0 {
+		// A state, or what a payload maps to, carries none of them: they would
+		// be dropped without a word.
+		verb := "goes"
+		if len(fields) > 1 {
+			verb = "go"
+		}
+		return misuse, fmt.Errorf("%s only %s with --event: conductor notify --event E [--message M] [--url U] [--to T] [--tool N]", joinFlags(fields), verb)
 	}
 	url, token, err := notify.FromEnv(os.Getenv)
 	if err != nil {
@@ -134,6 +142,30 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return 1, err
 	}
 	return 0, nil
+}
+
+// eventFieldsGiven returns the flags that describe an event (--url, --to,
+// --tool) given on the command line, in the order of the usage, even with an
+// empty value.
+func eventFieldsGiven(fs *flag.FlagSet) []string {
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	var out []string
+	for _, name := range []string{"url", "to", "tool"} {
+		if given[name] {
+			out = append(out, "--"+name)
+		}
+	}
+	return out
+}
+
+// joinFlags lists flags as prose: "--url", "--url and --to", "--url, --to and
+// --tool".
+func joinFlags(flags []string) string {
+	if len(flags) < 2 {
+		return strings.Join(flags, "")
+	}
+	return strings.Join(flags[:len(flags)-1], ", ") + " and " + flags[len(flags)-1]
 }
 
 // payloadFlags are the flags that make the command map an agent's payload.

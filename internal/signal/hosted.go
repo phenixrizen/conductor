@@ -497,7 +497,7 @@ func (h *HostedSession) viewer(id string) *Viewer {
 // --- activity ---
 
 // maxEntryBy bounds the subscriber id of an entry a host reports: ids are 16
-// characters, and session.CleanEntry leaves By alone.
+// characters, and session.CleanEntry leaves By alone (see session.CleanID).
 const maxEntryBy = 64
 
 // ForwardActivity sends an event that an agent reported through the API to
@@ -535,7 +535,8 @@ func (h *HostedSession) ForwardActivity(e session.ActivityEntry) error {
 // state the host says an attention entry records, and hands them to the hub's
 // OnActivity. The host is not trusted with them: an entry of a type this
 // server does not know is dropped (a newer host may have more), the text is
-// cut to its limits, and a missing or unreadable time becomes the time of
+// cut to its limits, By included (a By still over maxEntryBy bytes once
+// cleaned is dropped), and a missing or unreadable time becomes the time of
 // receipt; the state is kept only with an attention entry and only when it is
 // needs_input, working or done. The entry is attributed to this session
 // whatever session the host named. HostActivity does not send the entry back
@@ -545,9 +546,7 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 		return
 	}
 	e := session.CleanEntry(session.EntryFromProto(a))
-	if len(e.By) > maxEntryBy {
-		e.By = ""
-	}
+	e.By = session.CleanID(e.By, maxEntryBy)
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}

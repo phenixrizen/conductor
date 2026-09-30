@@ -186,6 +186,57 @@ func TestHostWithoutAnAdapterInjectsNothing(t *testing.T) {
 	}
 }
 
+// An adapter without a launch route reads Conductor's hooks only from its
+// own config: --agent copilot hosts the command as it is, as the server
+// launches it, and writes no hook assets, since nothing it starts would read
+// them. The host says so at info level and names the command that puts the
+// hooks where the agent reads them.
+func TestHostWritesNoHooksForAnAdapterWithoutALaunchRoute(t *testing.T) {
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	var logs logBuffer
+	wrote, command := hostProbe(t, "copilot", hooks, &logs)
+	if wrote != "ARGS[] N=[] B=["+binary(t)+"]" || len(command) != 4 {
+		t.Fatalf("the command saw %q, server lists %q", wrote, command)
+	}
+	if _, err := os.Stat(hooks); !os.IsNotExist(err) {
+		t.Fatalf("hooks dir: %v", err)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=INFO") || !strings.Contains(out, "adapter=copilot") || !strings.Contains(out, "conductor hooks install copilot") {
+		t.Fatalf("host log:\n%s", out)
+	}
+}
+
+// Every adapter without a launch route is treated alike.
+func TestInjectHooksWritesNothingForAdaptersWithoutALaunchRoute(t *testing.T) {
+	var ids []string
+	for _, a := range agents.All() {
+		if a.Inject == nil {
+			ids = append(ids, a.ID)
+		}
+	}
+	if !slices.Contains(ids, "copilot") {
+		t.Fatalf("adapters without a launch route %v: copilot has one now, and the test above needs another", ids)
+	}
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			t.Cleanup(agents.ForgetBinary())
+			hooks := filepath.Join(t.TempDir(), "hooks")
+			var logs logBuffer
+			argv := []string{"/bin/cat"}
+			got, env := injectHooks(Options{Argv: argv, Adapter: id, HooksDir: hooks, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+			if !slices.Equal(got, argv) || env != nil {
+				t.Fatalf("command %q, env %v: want the command as it is", got, env)
+			}
+			if _, err := os.Stat(hooks); !os.IsNotExist(err) {
+				t.Fatalf("hooks dir: %v", err)
+			}
+			if out := logs.String(); !strings.Contains(out, "level=INFO") || !strings.Contains(out, "conductor hooks install "+id) {
+				t.Fatalf("host log:\n%s", out)
+			}
+		})
+	}
+}
+
 // Hooks are a convenience: when the host cannot write them it says so and
 // hosts the command as it is.
 func TestHostRunsWithoutHooksItCannotWrite(t *testing.T) {

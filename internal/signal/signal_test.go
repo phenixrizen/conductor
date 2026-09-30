@@ -252,6 +252,36 @@ func TestHostActivityIsCleanedBeforeItIsFannedOut(t *testing.T) {
 	}
 }
 
+// CleanEntry leaves By to the session that sets it, and a host is not trusted
+// with it: it loses control characters and surrounding space as every other
+// field does, and one still over 64 bytes is dropped rather than cut, since a
+// cut id would name someone else.
+func TestHostActivityCleansTheSubscriberID(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	rec := &activityRecorder{}
+	hub.OnActivity = rec.hook
+	hs, _ := register(t, hub)
+	cases := []struct{ by, want string }{
+		{" 0123456789\x00abcdef\x1b\n", "0123456789abcdef"},
+		{"\x07" + strings.Repeat("b", maxEntryBy), strings.Repeat("b", maxEntryBy)},
+		{strings.Repeat("b", maxEntryBy+1), ""},
+		{strings.Repeat("é", maxEntryBy/2+1), ""}, // 33 characters, 66 bytes
+		{"\x00\x1b\t", ""},
+	}
+	for _, c := range cases {
+		hs.HostActivity(proto.Activity{T: proto.CtlActivity, At: time.Now().Format(time.RFC3339Nano), Type: session.ActivityJoin, By: c.by, ByName: "Ada"}, "")
+	}
+	got := rec.entries()
+	if len(got) != len(cases) {
+		t.Fatalf("%d entries reached the hook, want %d", len(got), len(cases))
+	}
+	for i, c := range cases {
+		if got[i].By != c.want {
+			t.Errorf("by %q reached the hook as %q, want %q", c.by, got[i].By, c.want)
+		}
+	}
+}
+
 // Entries are stamped when the host sends them; one without a usable time
 // gets the moment the server saw it.
 func TestHostActivityStampsAMissingOrUnreadableTime(t *testing.T) {

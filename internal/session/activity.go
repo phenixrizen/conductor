@@ -153,7 +153,8 @@ func ExitCode(message string) (code int, ok bool) {
 // host's connection, so that URL is dropped and the rest of the entry kept.
 // The guarantee assumes what CleanEntry leaves alone: Type and By are short
 // and set by trusted code (an Activity* constant or a type checked with
-// ValidEventType, and a subscriber ID), so it holds without bounding them.
+// ValidEventType, and a subscriber ID), so it holds without bounding them. A
+// By from outside the session goes through CleanID.
 func CleanEntry(e ActivityEntry) ActivityEntry {
 	e.ByName = oneLine(e.ByName, proto.MaxNameLen)
 	e.Message = CleanMessage(e.Message)
@@ -172,6 +173,19 @@ func dropControl(r rune) rune {
 		return -1
 	}
 	return r
+}
+
+// CleanID holds an id that comes from outside the session, such as the By of
+// an entry a host reports, to what CleanEntry holds a single-line field to:
+// control characters and surrounding space are dropped. An id still longer
+// than max bytes is dropped whole rather than cut, since a cut id would name
+// someone else.
+func CleanID(id string, max int) string {
+	id = strings.TrimSpace(strings.Map(dropControl, id))
+	if len(id) > max {
+		return ""
+	}
+	return id
 }
 
 // oneLine drops control characters and surrounding space and keeps at most n

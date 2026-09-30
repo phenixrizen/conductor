@@ -134,6 +134,44 @@ func TestNotifyEventRefusesAnExplicitState(t *testing.T) {
 	}
 }
 
+// --url, --to and --tool say more about an event: without --event nothing
+// would carry them, and dropping them without a word would hide the mistake.
+// Outside a hook that is exit 2; a hook's command line exits 1, as ever.
+func TestNotifyEventFieldsNeedAnEvent(t *testing.T) {
+	ns := startNotifyServer(t)
+	for _, c := range []struct {
+		args  []string
+		code  int
+		flags []string
+	}{
+		{[]string{"--url", "https://example.com/pull/1"}, 2, []string{"--url"}},
+		{[]string{"--state", "done", "--to", "review"}, 2, []string{"--to"}},
+		{[]string{"--message", "m", "--tool=Bash"}, 2, []string{"--tool"}},
+		{[]string{"--url", "", "--state", "working"}, 2, []string{"--url"}}, // given, if empty
+		{[]string{"--tool", "t", "--to", "x", "--url", "u"}, 2, []string{"--url", "--to", "--tool"}},
+		{[]string{"--claude-hook", "--tool", "Bash"}, 1, []string{"--tool"}},
+		{[]string{"--codex", "--url", "u", "{}"}, 1, []string{"--url"}},
+	} {
+		code, _, err := runNotifyWith(t, `{"hook_event_name":"Stop"}`, c.args...)
+		if code != c.code || err == nil || !strings.Contains(err.Error(), "--event") {
+			t.Errorf("%v: exit %d, err %v; want exit %d and an error naming --event", c.args, code, err, c.code)
+			continue
+		}
+		for _, f := range c.flags {
+			if !strings.Contains(err.Error(), f) {
+				t.Errorf("%v: the error %q does not name %s", c.args, err, f)
+			}
+		}
+	}
+	if ns.calls != 0 {
+		t.Fatalf("%d requests were sent", ns.calls)
+	}
+	// With --event they are what the event says.
+	if code, stderr, err := runNotifyWith(t, "", "--event", "tool_use", "--tool", "Bash"); code != 0 || err != nil {
+		t.Fatalf("--event with --tool: exit %d %v %q", code, err, stderr)
+	}
+}
+
 // Outside a session the command stays a silent no-op, --event or not.
 func TestNotifyEventOutsideASessionIsSilent(t *testing.T) {
 	t.Setenv("CONDUCTOR_NOTIFY_URL", "")

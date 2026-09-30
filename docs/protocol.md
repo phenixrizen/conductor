@@ -119,11 +119,12 @@ the state the entry records. The host sends a change of state in its own
 first; `state` is how it types the entry for webhooks all the same (see
 Events). The server takes the session from the connection and ignores
 `sessionId`, drops an entry whose `type` it does not know instead of closing
-the connection, cuts every field to the limits of Events (a `by` over 64 bytes
-is dropped), keeps `state` only on an `attention` entry and only as one of the
-three states (it ignores anything else), stamps the time of receipt on an
-entry without a readable `at`, and never sends the entry back. Server to
-host, it carries an event that an agent reported through
+the connection, cuts every field to the limits of Events (`by` too: it loses
+its control characters and surrounding space, and one still over 64 bytes is
+dropped rather than cut), keeps `state` only on an `attention` entry and only
+as one of the three states (it ignores anything else), stamps the time of
+receipt on an entry without a readable `at`, and never sends the entry back.
+Server to host, it carries an event that an agent reported through
 `POST /api/sessions/{id}/events` for the hosted session: the server has no
 activity log for it, so the host records it (its own event limit applies)
 and reports it back like any other entry. The server sends at most 20 of
@@ -305,7 +306,9 @@ connected.
 `conductor notify --event <type> [--message M] [--url U] [--to T] [--tool N]`
 sends an event from inside a session: it turns the `CONDUCTOR_NOTIFY_URL` of
 the session (`…/attention`) into `…/events`. `--event` cannot be combined with
-`--state`, `--claude-hook` or `--codex`.
+`--state`, `--codex` or a `--<agent>-hook` flag, and `--url`, `--to` and
+`--tool` are refused without it: nothing else carries them. A mistake exits 2,
+or 1 in a hook's command line, where 2 would block the agent.
 
 Streaming: every entry a session records, whether an agent reported it or the
 session made it, reaches admins as an `activity` event on `GET /api/events`,

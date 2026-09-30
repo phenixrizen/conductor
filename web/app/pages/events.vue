@@ -67,10 +67,11 @@ const skillReaderNames = computed(() => {
   const names = skillReaders.value.map((i) => i.name)
   return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? 'the agents that read skills')
 })
+// The notify commands as the skill writes them: the binary the session names in CONDUCTOR_BIN, else the conductor on PATH.
 const skillCommands = [
-  'conductor notify --event progress --message "4/7 handlers"',
-  'conductor notify --event artifact --url https://github.com/acme/api/pull/212',
-  'conductor notify --event handoff --to tests --message "/v1/users done"',
+  '"${CONDUCTOR_BIN:-conductor}" notify --event progress --message "4/7 handlers"',
+  '"${CONDUCTOR_BIN:-conductor}" notify --event artifact --url https://github.com/acme/api/pull/212',
+  '"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to tests --message "/v1/users done"',
   'conductor skill',
 ]
 </script>
@@ -107,6 +108,10 @@ const skillCommands = [
             </div>
             <p class="text-sm">Teaches agents to report progress, artifacts, blockers and handoffs to named crew members, not just “needs input”.</p>
             <CodeBlock :commands="skillCommands" />
+            <p class="text-sm text-muted">
+              The notify commands run <code>CONDUCTOR_BIN</code>, the conductor binary every session's hooks run, and fall back to the
+              <code>conductor</code> on the <code>PATH</code> where it is unset.
+            </p>
             <p class="text-sm text-muted">
               The skill installs together with the hooks of {{ skillReaderNames }}: <b class="text-default">Install on this machine</b> on their cards
               puts it in their skills directory.

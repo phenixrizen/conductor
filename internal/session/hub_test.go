@@ -142,7 +142,12 @@ func TestHubDrainedWaitsForQueuedAndInFlightFrames(t *testing.T) {
 		t.Fatal("a hub with nothing sent is drained")
 	}
 	h.Broadcast([]byte{1, 'a'})
-	time.Sleep(20 * time.Millisecond) // the frame is taken off the queue and blocks in WriteFrame
+	// The sleep lets the subscription take the frame off its queue and block
+	// in WriteFrame, so that the check below usually sees the frame in flight.
+	// Nothing depends on it: unsent counts a frame from send until WriteFrame
+	// returns, so Drained is false whether the frame is still queued or
+	// already being written, and a slow scheduler cannot make the check fail.
+	time.Sleep(20 * time.Millisecond)
 	if h.Drained() {
 		t.Fatal("drained with a frame being written")
 	}
