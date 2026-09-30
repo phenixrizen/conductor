@@ -50,6 +50,8 @@ const command = computed(() => {
     cwd: state.cwd.trim() || undefined,
     // An agent that shows its prompt on screen is noticed by the host the way the server notices it.
     pattern: signal?.kind === 'pattern' ? signal.pattern : undefined,
+    // Its hooks too: the server wires an adapter's hooks into a launch only for the hook signal.
+    adapter: signal?.kind === 'hook' ? selected.value.adapter || undefined : undefined,
   })
 })
 

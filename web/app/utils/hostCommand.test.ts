@@ -29,4 +29,11 @@ describe('hostCommand', () => {
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'] })).not.toContain('--signal-pattern')
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], pattern: '' })).not.toContain('--signal-pattern')
   })
+  it('names the agent\'s hook adapter with --agent so the host wires its hooks, and omits it without one', () => {
+    expect(hostCommand({ server: 'http://x', token: 't', name: 'fix', argv: ['claude', '--model', 'opus'], cwd: '/srv/app', adapter: 'claude' })).toBe(
+      'conductor host --server http://x --token t --name fix --cwd /srv/app --agent claude -- claude --model opus',
+    )
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'] })).not.toContain('--agent')
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], adapter: '' })).not.toContain('--agent')
+  })
 })

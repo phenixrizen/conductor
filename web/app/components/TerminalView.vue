@@ -200,7 +200,7 @@ function handleControl(msg: ControlMessage) {
       emit('viewers', { count: msg.count, list: msg.list })
       break
     case 'activity':
-      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message })
+      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message, url: msg.url, to: msg.to, tool: msg.tool })
       break
     case 'error':
       if (msg.code === 'read_only') notice.value = 'This link is view-only'
