@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,6 +104,38 @@ func TestHostSignalPatternReachesTheSession(t *testing.T) {
 	}
 }
 
+// registrationWatch is a host's stderr. registered is closed once the host has
+// printed the banner it prints after reading its registration reply, which the
+// server sends after listing the session.
+type registrationWatch struct {
+	registered chan struct{}
+
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	seen bool
+}
+
+func newRegistrationWatch() *registrationWatch {
+	return &registrationWatch{registered: make(chan struct{})}
+}
+
+func (w *registrationWatch) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.buf.Write(p)
+	if !w.seen && strings.Contains(w.buf.String(), "conductor: hosting session ") {
+		w.seen = true
+		close(w.registered)
+	}
+	return n, err
+}
+
+func (w *registrationWatch) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
 // --agent picks the adapter: the hooks go to the host's hooks dir under
 // XDG_STATE_HOME and the session is launched with the adapter's flags.
 func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
@@ -129,36 +162,36 @@ func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	stderr := newRegistrationWatch()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		var stderr bytes.Buffer
 		args := []string{"--server", hs.URL, "--token", "host-token", "--no-local", "--relay-only", "--name", "hooked",
 			"--agent", "claude", "--", "/bin/cat"}
-		if code, err := runHost(ctx, args, strings.NewReader(""), &bytes.Buffer{}, &stderr); err != nil {
-			t.Errorf("host: exit %d, %v, %s", code, err, stderr.String())
+		if code, err := runHost(ctx, args, strings.NewReader(""), &bytes.Buffer{}, stderr); err != nil {
+			t.Errorf("host: exit %d, %v, %s", code, err, stderr)
 		}
 	}()
+	// The server lists the session before it sends the registration reply, so
+	// the listing alone does not say the host is registered: cancelled before
+	// it reads the reply, the host fails. Its banner comes after the reply.
+	select {
+	case <-stderr.registered:
+	case <-done:
+		t.Fatalf("the host stopped before it registered: %s", stderr)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the hosted session never registered: %+v %s", srv.Registry().List(), stderr)
+	}
 	settings := filepath.Join(state, "conductor", "hooks", "claude.json")
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var command []string
-		var agentID string
-		for _, info := range srv.Registry().List() {
-			if info.Name == "hooked" {
-				command, agentID = info.Command, info.AgentID
-			}
+	var command []string
+	var agentID string
+	for _, info := range srv.Registry().List() {
+		if info.Name == "hooked" {
+			command, agentID = info.Command, info.AgentID
 		}
-		if command != nil {
-			if !slices.Equal(command, []string{"/bin/cat", "--settings", settings}) || agentID != "claude" {
-				t.Fatalf("server lists %q for agent %q", command, agentID)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the hosted session never registered: %+v", srv.Registry().List())
-		}
-		time.Sleep(20 * time.Millisecond)
+	}
+	if !slices.Equal(command, []string{"/bin/cat", "--settings", settings}) || agentID != "claude" {
+		t.Fatalf("server lists %q for agent %q", command, agentID)
 	}
 	if b, err := os.ReadFile(settings); err != nil || !strings.Contains(string(b), "notify --claude-hook") {
 		t.Fatalf("asset: %v %s", err, b)
