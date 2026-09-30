@@ -1,0 +1,274 @@
+<script setup lang="ts">
+import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import { ApiError } from '~/composables/useApi'
+import { crewFeed, memberStatus, runCounts } from '~/utils/crews'
+import { bestGrid } from '~/utils/wall'
+
+// The crew view: a tile for every member of one run, its activity and a
+// broadcast bar. Sessions come from the live store (useAttention); the run
+// itself, for member states, branches and diff stats, is read on arrival,
+// when a member's session starts or ends, and every 10 s while this page is
+// open: the diff stats are nowhere else.
+
+const route = useRoute()
+const router = useRouter()
+const api = useSessions()
+const admin = useAdminToken()
+const live = useAttention()
+const events = useEvents()
+const toast = useToast()
+const { create } = useTerminalTransport()
+
+const runId = computed(() => String(route.params.run))
+const run = ref<RunInfo | null>(null)
+const error = ref('')
+const gone = ref(false)
+const now = ref(Date.now())
+/** False once the page is left. */
+let alive = true
+/** The run the sidebar shows the members of (layouts/default.vue). */
+const crewRun = useState<{ id: string; name: string } | null>('crewRun', () => null)
+const launchLink = useState<{ runId: string; url: string; ttlSeconds: number } | null>('crewLaunchLink', () => null)
+const copy = useCopy()
+
+useHead({ title: computed(() => run.value?.name || 'Crew') })
+
+async function load() {
+  if (!admin.hasToken.value) {
+    admin.needsToken.value = true
+    return
+  }
+  const id = runId.value
+  try {
+    const r = await api.getRun(id)
+    // A read that lands after leaving this run must not name it in the sidebar again.
+    if (!alive || id !== runId.value) return
+    run.value = r
+    error.value = ''
+    gone.value = false
+    crewRun.value = { id: r.id, name: r.name }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) gone.value = true
+    else error.value = (e as Error).message
+  }
+}
+
+function changed(r: RunInfo) {
+  run.value = r
+  load()
+}
+
+/** The run's sessions in the live store. */
+const sessions = computed(() => live.sessions.value.filter((s) => s.crew?.runId === runId.value))
+
+// Read the run again when one of its sessions appears, changes status or goes.
+const sessionsKey = computed(() => sessions.value.map((s) => `${s.id}:${s.status}`).join(','))
+let reloadTimer: number | undefined
+watch(sessionsKey, () => {
+  window.clearTimeout(reloadTimer)
+  reloadTimer = window.setTimeout(load, 300)
+})
+
+interface Tile {
+  name: string
+  member?: RunMember
+  session?: SessionInfo
+}
+
+/** One tile per member in the run's order, then any session of the run the last read did not know yet. */
+const tiles = computed<Tile[]>(() => {
+  const out: Tile[] = []
+  const seen = new Set<string>()
+  for (const m of run.value?.members ?? []) {
+    const s = sessions.value.find((x) => (m.sessionId ? x.id === m.sessionId : x.crew?.member === m.name))
+    if (s) seen.add(s.id)
+    out.push({ name: m.name, member: m, session: s })
+  }
+  for (const s of sessions.value) if (!seen.has(s.id)) out.push({ name: s.crew?.member ?? s.name, session: s })
+  return out
+})
+
+const counts = computed(() => (run.value ? runCounts(run.value, live.sessions.value) : { needs: 0, running: 0 }))
+
+// Broadcast selection, by member name.
+const selected = ref<Set<string>>(new Set())
+function toggle(name: string, on: boolean | 'indeterminate') {
+  const next = new Set(selected.value)
+  if (on === true) next.add(name)
+  else next.delete(name)
+  selected.value = next
+}
+const selectedNames = computed(() => tiles.value.map((t) => t.name).filter((n) => selected.value.has(n)))
+
+watch(runId, () => {
+  run.value = null
+  selected.value = new Set()
+  load()
+})
+
+// Activity: the members' events in the live feed and the run's own log.
+const memberOf = computed(() => {
+  const m = new Map<string, string>()
+  for (const s of sessions.value) m.set(s.id, s.crew?.member ?? s.name)
+  for (const x of run.value?.members ?? []) if (x.sessionId) m.set(x.sessionId, x.name)
+  return m
+})
+const feed = computed(() => crewFeed(events.entries.value, run.value?.log ?? [], memberOf.value))
+
+function transportFor(s: SessionInfo) {
+  return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
+}
+
+function footer(t: Tile): { where: string; diff: string } {
+  const m = t.member
+  const where = m?.branch || t.session?.branch || (run.value?.isolation === 'worktree' ? '' : 'shared cwd')
+  const diff = m?.diff ? `+${m.diff.added} −${m.diff.removed}` : ''
+  return { where, diff }
+}
+
+function pendingLabel(t: Tile): string {
+  const m = t.member
+  if (!m) return ''
+  const st = run.value ? memberStatus(run.value, m, live.sessions.value) : m.status
+  if (st === 'ended') return m.error ? `ended: ${m.error}` : 'ended'
+  if (st === 'starting') return 'starting…'
+  if (m.start.when === 'after') return `starts once ${m.start.member} is idle`
+  if (m.start.when === 'manual') return 'starts by hand'
+  return 'waiting to start'
+}
+
+const starting = ref('')
+async function startMember(name: string) {
+  starting.value = name
+  try {
+    changed(await api.startRunMember(runId.value, name))
+  } catch (e) {
+    toast.add({ title: `${name} did not start`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    starting.value = ''
+  }
+}
+
+// Grid: every tile and the activity card fit on screen, as on the wall; on
+// a narrow screen they stack and the page scrolls.
+const grid = useTemplateRef<HTMLDivElement>('grid')
+const box = ref({ w: 0, h: 0 })
+watch(
+  grid,
+  (el, _prev, onCleanup) => {
+    if (!el) return
+    const observer = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect
+      if (r) box.value = { w: r.width, h: r.height }
+    })
+    observer.observe(el)
+    onCleanup(() => observer.disconnect())
+  },
+  { immediate: true },
+)
+const narrow = computed(() => box.value.w > 0 && box.value.w < 640)
+const layout = computed(() => bestGrid(tiles.value.length + 1, box.value.w, box.value.h, 12, 1.4))
+const gridStyle = computed(() =>
+  narrow.value
+    ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' }
+    : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
+)
+
+const showLaunchLink = computed(() => launchLink.value?.runId === runId.value)
+
+let poll: number | undefined
+let tick: number | undefined
+onMounted(() => {
+  live.start()
+  load()
+  poll = window.setInterval(() => {
+    if (document.visibilityState === 'visible') load()
+  }, 10000)
+  tick = window.setInterval(() => (now.value = Date.now()), 30000)
+})
+onBeforeUnmount(() => {
+  alive = false
+  window.clearInterval(poll)
+  window.clearInterval(tick)
+  window.clearTimeout(reloadTimer)
+  // The view link of a launch is shown once.
+  if (showLaunchLink.value) launchLink.value = null
+})
+watch(() => admin.token.value, load)
+</script>
+
+<template>
+  <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
+    <template #header>
+      <CrewRunHeader :run="run" :run-id="runId" :counts="counts" :now="now" @changed="changed" />
+    </template>
+
+    <template #body>
+      <!-- Padding around, not margins on, the full-width alerts: margins would overflow the body. -->
+      <div v-if="error" class="flex-none px-3 pt-3">
+        <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
+      </div>
+      <div v-if="showLaunchLink" class="flex-none px-3 pt-3">
+        <UAlert
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-link"
+          :title="`View link, valid ${Math.round((launchLink!.ttlSeconds / 3600) * 10) / 10} h. Shown once: copy it now.`"
+          :actions="[{ label: 'Copy link', icon: 'i-lucide-clipboard', onClick: () => copy(launchLink!.url, 'Link copied', 'Anyone with it can watch every member.') }]"
+          close
+          :ui="{ description: 'font-mono text-xs break-all select-all' }"
+          :description="launchLink!.url"
+          data-launch-link
+          @update:open="launchLink = null"
+        />
+      </div>
+
+      <div v-if="gone" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted">
+        <UIcon name="i-lucide-search-x" class="size-8" />
+        <p class="text-sm">No run has the id <code>{{ runId }}</code>. The server forgets runs when it restarts.</p>
+        <UButton label="Crews" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/crews" />
+      </div>
+
+      <template v-else>
+        <div ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
+          <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>
+            <template v-for="t in tiles" :key="t.session?.id ?? `m-${t.name}`">
+              <SessionTile v-if="t.session" :session="t.session" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">
+                <template #leading>
+                  <UCheckbox :model-value="selected.has(t.name)" :aria-label="`Select ${t.name} for the broadcast`" @update:model-value="toggle(t.name, $event)" />
+                </template>
+                <template #footer>
+                  <span class="truncate" data-branch>{{ footer(t).where }}</span>
+                  <span class="ml-auto flex-none" data-diff>{{ footer(t).diff }}</span>
+                </template>
+              </SessionTile>
+              <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="t.name">
+                <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
+                  <SessionAvatar :agent-id="t.member?.agentId ?? ''" dashed />
+                  <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
+                </div>
+                <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
+                  <span>{{ pendingLabel(t) }}</span>
+                  <UButton
+                    v-if="t.member?.status === 'pending' && !run?.stoppedAt"
+                    label="Start now"
+                    icon="i-lucide-play"
+                    size="xs"
+                    color="neutral"
+                    variant="outline"
+                    :loading="starting === t.name"
+                    @click="startMember(t.name)"
+                  />
+                </div>
+              </div>
+            </template>
+            <CrewFeed :items="feed" />
+          </div>
+        </div>
+        <div class="flex-none px-3 pb-3">
+          <BroadcastBar :run-id="runId" :members="selectedNames" :disabled="!run || !!run.stoppedAt" />
+        </div>
+      </template>
+    </template>
+  </UDashboardPanel>
+</template>

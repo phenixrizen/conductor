@@ -2,10 +2,22 @@
 import type { ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
 
-const props = defineProps<{ sessionId: string; sessionName?: string }>()
+/** A session's links, or with `runId` a crew run's: those open every member of the run, one added later included. */
+const props = defineProps<{ sessionId?: string; runId?: string; sessionName?: string }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const api = useSessions()
+const routes = {
+  list: () => (props.runId ? api.listRunLinks(props.runId) : api.links(props.sessionId ?? '')),
+  create: (body: { role: Role; label?: string; ttlSeconds?: number }) => (props.runId ? api.createRunLink(props.runId, body) : api.createLink(props.sessionId ?? '', body)),
+  revoke: (linkId: string) => (props.runId ? api.revokeRunLink(props.runId, linkId) : api.revokeLink(props.sessionId ?? '', linkId)),
+}
+const title = computed(() => (props.sessionName ? `Share ${props.sessionName}` : props.runId ? 'Share this crew' : 'Share this session'))
+const description = computed(() =>
+  props.runId
+    ? 'Anyone with the link joins every agent of the crew, one added later too, with the role you pick. Revoking disconnects them.'
+    : 'Anyone with the link joins with the role you pick. Revoking disconnects them.',
+)
 const toast = useToast()
 const links = ref<ShareLink[]>([])
 const loading = ref(false)
@@ -31,7 +43,7 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    links.value = await api.links(props.sessionId)
+    links.value = await routes.list()
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -50,7 +62,7 @@ async function create() {
   creating.value = true
   error.value = ''
   try {
-    const res = await api.createLink(props.sessionId, { role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
+    const res = await routes.create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
     created.value = { url: res.url, role: res.link.role, label: res.link.label }
     form.label = ''
     await refresh()
@@ -73,7 +85,7 @@ async function copy(url: string) {
 
 async function revoke(link: ShareLink) {
   try {
-    await api.revokeLink(props.sessionId, link.id)
+    await routes.revoke(link.id)
     toast.add({ title: 'Link revoked', description: 'Viewers using it were disconnected.', icon: 'i-lucide-ban', color: 'neutral' })
     if (created.value && links.value.find((l) => l.id === link.id)) created.value = null
     await refresh()
@@ -98,7 +110,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="sessionName ? `Share ${sessionName}` : 'Share this session'" description="Anyone with the link joins with the role you pick. Revoking disconnects them." :ui="{ content: 'max-w-lg' }">
+  <UModal v-model:open="open" :title="title" :description="description" :ui="{ content: 'max-w-lg' }">
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
