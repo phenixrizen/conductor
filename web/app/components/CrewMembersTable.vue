@@ -40,6 +40,11 @@ function agentsFor(m: DraftMember) {
   return [...agentItems.value, { label: `${m.agentId} (not in the catalog)`, value: m.agentId, icon: 'i-lucide-circle-help' }]
 }
 
+/** A row's member in labels: its name, or its place while it has none. */
+function who(m: DraftMember, i: number): string {
+  return m.name || `member ${i + 1}`
+}
+
 function taken(m: DraftMember): string[] {
   return [...props.others, ...members.value.filter((x) => x.key !== m.key).map((x) => x.name)]
 }
@@ -132,6 +137,21 @@ function onDragEnd() {
   armed.value = null
 }
 
+// Releasing the pointer anywhere but on the handle, or the browser cancelling
+// it, disarms the row. A drag that has begun cancels the pointer itself, and
+// dragend then disarms.
+function disarm() {
+  if (dragging.value === null) armed.value = null
+}
+onMounted(() => {
+  document.addEventListener('pointerup', disarm)
+  document.addEventListener('pointercancel', disarm)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerup', disarm)
+  document.removeEventListener('pointercancel', disarm)
+})
+
 /** ↑ and ↓ on a handle move its row; the handle keeps the focus. */
 async function moveBy(key: number, delta: number) {
   const from = members.value.findIndex((m) => m.key === key)
@@ -171,9 +191,10 @@ async function moveBy(key: number, delta: number) {
           type="button"
           class="cursor-grab text-dimmed hover:text-default rounded-xs outline-none focus-visible:ring-2 focus-visible:ring-primary"
           :data-handle="m.key"
-          :aria-label="`Move ${m.name || 'this member'}: drag, or press the up and down arrows`"
+          :aria-label="`Move ${who(m, i)}: drag, or press the up and down arrows`"
           @pointerdown="armed = m.key"
           @pointerup="armed = null"
+          @pointercancel="disarm"
           @keydown.up.prevent="moveBy(m.key, -1)"
           @keydown.down.prevent="moveBy(m.key, 1)"
         >
@@ -191,7 +212,7 @@ async function moveBy(key: number, delta: number) {
           :color="nameError(m) ? 'error' : undefined"
           :highlight="!!nameError(m)"
           :aria-invalid="!!nameError(m)"
-          aria-label="Member name"
+          :aria-label="`Name of ${who(m, i)}`"
           :ui="{ base: 'font-mono font-medium' }"
           class="w-full"
           @update:model-value="rename(m.key, String($event))"
@@ -205,7 +226,7 @@ async function moveBy(key: number, delta: number) {
         :items="agentsFor(m)"
         :icon="agentOf(m.agentId)?.icon || 'i-lucide-terminal'"
         placeholder="Agent"
-        aria-label="Agent"
+        :aria-label="`Agent for ${who(m, i)}`"
         class="w-full"
         @update:model-value="setAgent(m.key, String($event))"
       />
@@ -218,7 +239,7 @@ async function moveBy(key: number, delta: number) {
         :maxrows="12"
         maxlength="4000"
         :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'Typed into the shell once it is ready (optional)' : 'What this agent does. $GOAL is the crew\'s goal.'"
-        aria-label="Role prompt"
+        :aria-label="`Role prompt for ${who(m, i)}`"
         class="w-full"
         :ui="{ base: focusedPrompt === m.key ? 'resize-none' : 'resize-none overflow-hidden whitespace-nowrap text-ellipsis' }"
         @update:model-value="update(m.key, { prompt: String($event) })"
@@ -235,7 +256,7 @@ async function moveBy(key: number, delta: number) {
               :disabled="agentOf(m.agentId)?.allowArgs === false"
               autocapitalize="off"
               spellcheck="false"
-              aria-label="Extra arguments"
+              :aria-label="`Extra arguments for ${who(m, i)}`"
               :ui="{ base: 'font-mono text-xs' }"
               class="w-full"
               @update:model-value="setArgs(m.key, String($event))"
@@ -244,11 +265,11 @@ async function moveBy(key: number, delta: number) {
         </UTooltip>
       </div>
 
-      <USelect :class="cell.start" :model-value="startValue(m.start)" :items="startItems(m)" aria-label="Starts" class="w-full" @update:model-value="update(m.key, { start: startFrom(String($event)) })" />
+      <USelect :class="cell.start" :model-value="startValue(m.start)" :items="startItems(m)" :aria-label="`When ${who(m, i)} starts`" class="w-full" @update:model-value="update(m.key, { start: startFrom(String($event)) })" />
 
       <div :class="cell.remove" class="flex h-8 items-center justify-end">
         <UTooltip v-if="!single" text="Remove">
-          <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Remove ${m.name || 'this member'}`" @click="remove(m.key)" />
+          <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Remove ${who(m, i)}`" @click="remove(m.key)" />
         </UTooltip>
       </div>
     </div>

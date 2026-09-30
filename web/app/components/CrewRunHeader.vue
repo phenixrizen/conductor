@@ -95,10 +95,11 @@ async function stopAll() {
       <span class="truncate">{{ run?.name || 'Crew' }}</span>
     </template>
     <template #trailing>
-      <div v-if="run" class="ml-2 hidden items-center gap-1.5 sm:flex">
-        <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" />
-        <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" />
-        <span class="ml-1 truncate font-mono text-xs text-muted">{{ uptime }}</span>
+      <!-- On a phone only the members needing input stay: they are what to act on. -->
+      <div v-if="run" class="ml-2 flex min-w-0 items-center gap-1.5">
+        <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
+        <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="hidden flex-none sm:inline-flex" />
+        <span class="ml-1 hidden truncate font-mono text-xs text-muted sm:inline">{{ uptime }}</span>
       </div>
     </template>
     <template #right>

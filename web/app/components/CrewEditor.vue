@@ -69,6 +69,21 @@ function addFrom(s: SessionInfo) {
   pickOpen.value = false
 }
 
+// Runs on: the arrow keys move the focus between the two options, and
+// choose Server on the way; My machine takes the focus (its tooltip says why)
+// but cannot be chosen.
+const whereGroup = useTemplateRef<HTMLElement>('whereGroup')
+function onWhereKey(e: KeyboardEvent) {
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]
+  if (!step || !whereGroup.value) return
+  e.preventDefault()
+  const options = [...whereGroup.value.querySelectorAll<HTMLElement>('[role="radio"]')]
+  const at = options.indexOf(document.activeElement as HTMLElement)
+  const next = options[(at + step + options.length) % options.length]
+  next?.focus()
+  if (next && next.getAttribute('aria-disabled') !== 'true') next.click()
+}
+
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => emit('delete') }]])
 </script>
 
@@ -114,10 +129,31 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
         <UFormField label="Working directory" hint="allowed root" name="cwd">
           <UInput :model-value="crew.cwd" placeholder="server default" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" @update:model-value="set('cwd', String($event))" />
         </UFormField>
-        <div class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm" role="radiogroup" aria-label="Runs on">
-          <button type="button" role="radio" :aria-checked="crew.where === 'server'" class="rounded py-1.5 transition-colors" :class="crew.where === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="set('where', 'server')">Server</button>
+        <!-- One tab stop (the option chosen); the arrow keys move between the options. -->
+        <div ref="whereGroup" class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm" role="radiogroup" aria-label="Runs on" @keydown="onWhereKey">
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="crew.where === 'server'"
+            :tabindex="crew.where === 'host' ? -1 : 0"
+            class="rounded py-1.5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            :class="crew.where === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'"
+            @click="set('where', 'server')"
+          >
+            Server
+          </button>
           <UTooltip text="hosted crews come later">
-            <button type="button" role="radio" :aria-checked="crew.where === 'host'" aria-disabled="true" class="rounded py-1.5 cursor-not-allowed" :class="crew.where === 'host' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-dimmed'">My machine</button>
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="crew.where === 'host'"
+              aria-disabled="true"
+              :tabindex="crew.where === 'host' ? 0 : -1"
+              class="rounded py-1.5 cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              :class="crew.where === 'host' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-dimmed'"
+            >
+              My machine
+            </button>
           </UTooltip>
         </div>
       </div>

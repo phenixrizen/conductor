@@ -116,9 +116,13 @@ function status(key: string): { label: string; color: 'warning' | 'success' | 'n
   return { label: 'Ready', color: 'neutral' }
 }
 
-function meta(c: DraftCrew | CrewInfo, id?: string): string {
+/** The list's meta in two parts: the working directory, which may be cut short, and the rest, which may not. */
+function meta(c: DraftCrew | CrewInfo, id?: string): { cwd: string; rest: string } {
   const last = id ? runsOf(id)[0] : undefined
-  return `${shortCwd(c.cwd) || 'server default'} · ${c.isolation === 'worktree' ? 'worktrees' : 'shared cwd'} · last run ${last ? relativeTime(last.startedAt, now.value) : 'never'}`
+  return {
+    cwd: shortCwd(c.cwd) || 'server default',
+    rest: `${c.isolation === 'worktree' ? 'worktrees' : 'shared cwd'} · last run ${last ? relativeTime(last.startedAt, now.value) : 'never'}`,
+  }
 }
 
 function agentOf(id: string) {
@@ -351,7 +355,11 @@ watch(
                 <SessionAvatar v-else :agent-id="m.agentId" />
               </template>
             </span>
-            <span class="truncate font-mono text-[11px] text-muted" :title="meta(item.crew, item.key || undefined)">{{ meta(item.crew, item.key || undefined) }}</span>
+            <!-- The directory is cut short on its own line; what follows always shows whole. -->
+            <span class="flex min-w-0 flex-col font-mono text-[11px] text-muted" data-crew-meta>
+              <span class="truncate" :title="meta(item.crew, item.key || undefined).cwd">{{ meta(item.crew, item.key || undefined).cwd }}</span>
+              <span>{{ meta(item.crew, item.key || undefined).rest }}</span>
+            </span>
           </NuxtLink>
           <p v-if="loaded && !list.length" class="px-1 text-sm text-muted">No crews yet.</p>
         </nav>

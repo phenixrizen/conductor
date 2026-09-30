@@ -2,15 +2,29 @@
 import type { ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
 
-/** A session's links, or with `runId` a crew run's: those open every member of the run, one added later included. */
-const props = defineProps<{ sessionId?: string; runId?: string; sessionName?: string }>()
+/** A session's links, or a crew run's: those open every member of the run, one added later included. Exactly one of the two is given. */
+type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
+const props = defineProps<Target & { sessionName?: string }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const api = useSessions()
-const routes = {
-  list: () => (props.runId ? api.listRunLinks(props.runId) : api.links(props.sessionId ?? '')),
-  create: (body: { role: Role; label?: string; ttlSeconds?: number }) => (props.runId ? api.createRunLink(props.runId, body) : api.createLink(props.sessionId ?? '', body)),
-  revoke: (linkId: string) => (props.runId ? api.revokeRunLink(props.runId, linkId) : api.revokeLink(props.sessionId ?? '', linkId)),
+
+/** The link routes of whichever the modal shares. */
+function routes() {
+  if (props.runId !== undefined) {
+    const run = props.runId
+    return {
+      list: () => api.listRunLinks(run),
+      create: (body: { role: Role; label?: string; ttlSeconds?: number }) => api.createRunLink(run, body),
+      revoke: (linkId: string) => api.revokeRunLink(run, linkId),
+    }
+  }
+  const id = props.sessionId
+  return {
+    list: () => api.links(id),
+    create: (body: { role: Role; label?: string; ttlSeconds?: number }) => api.createLink(id, body),
+    revoke: (linkId: string) => api.revokeLink(id, linkId),
+  }
 }
 const title = computed(() => (props.sessionName ? `Share ${props.sessionName}` : props.runId ? 'Share this crew' : 'Share this session'))
 const description = computed(() =>
@@ -43,7 +57,7 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    links.value = await routes.list()
+    links.value = await routes().list()
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -62,7 +76,7 @@ async function create() {
   creating.value = true
   error.value = ''
   try {
-    const res = await routes.create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
+    const res = await routes().create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
     created.value = { url: res.url, role: res.link.role, label: res.link.label }
     form.label = ''
     await refresh()
@@ -85,7 +99,7 @@ async function copy(url: string) {
 
 async function revoke(link: ShareLink) {
   try {
-    await routes.revoke(link.id)
+    await routes().revoke(link.id)
     toast.add({ title: 'Link revoked', description: 'Viewers using it were disconnected.', icon: 'i-lucide-ban', color: 'neutral' })
     if (created.value && links.value.find((l) => l.id === link.id)) created.value = null
     await refresh()

@@ -129,7 +129,8 @@ function pendingLabel(t: Tile): string {
   if (!m) return ''
   const st = run.value ? memberStatus(run.value, m, live.sessions.value) : m.status
   if (st === 'ended') return m.error ? `ended: ${m.error}` : 'ended'
-  if (st === 'starting') return 'starting…'
+  // Started, and its session not in the live store yet.
+  if (st !== 'pending') return 'starting…'
   if (m.start.when === 'after') return `starts once ${m.start.member} is idle`
   if (m.start.when === 'manual') return 'starts by hand'
   return 'waiting to start'
