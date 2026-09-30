@@ -169,7 +169,7 @@ func (c Crew) Validate() error {
 	}
 	names := make([]string, 0, len(c.Members))
 	for _, m := range c.Members {
-		if err := m.validate(); err != nil {
+		if err := m.Validate(); err != nil {
 			return err
 		}
 		if slices.Contains(names, m.Name) {
@@ -222,9 +222,11 @@ func (c Crew) checkStarts(names []string) error {
 	return nil
 }
 
-// validate checks what m can be checked for alone; Validate checks it against
-// the other members.
-func (m Member) validate() error {
+// Validate checks what m can be checked for alone: its name, agent ID,
+// prompt, arguments and start condition, within their limits. Crew.Validate
+// checks it against the other members, and a run against its members when m
+// joins it. The error matches ErrInvalid.
+func (m Member) Validate() error {
 	if !memberNamePattern.MatchString(m.Name) {
 		return invalidf("member %s: name must match %s", quote(m.Name), memberNamePattern)
 	}
@@ -264,6 +266,19 @@ func (m Member) validate() error {
 		}
 	default:
 		return invalidf("member %s: start.when %s must be %q, %q or %q", quote(m.Name), quote(m.Start.When), StartImmediately, StartAfter, StartManual)
+	}
+	return nil
+}
+
+// Launchable reports why c cannot be launched as it is: it has no members, or
+// it runs on a host, which the server cannot launch a session on. The error
+// matches ErrInvalid.
+func (c Crew) Launchable() error {
+	if len(c.Members) == 0 {
+		return invalidf("the crew has no members")
+	}
+	if c.Where != WhereServer {
+		return invalidf("the crew runs on a host: only a crew that runs on the server can be launched")
 	}
 	return nil
 }
