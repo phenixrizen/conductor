@@ -44,6 +44,17 @@ watch(inspector, (v) => {
   }
 })
 
+// Opening a session takes its event badge away, and one arriving while it is
+// open never stays.
+const events = useEvents()
+watch(
+  [id, () => events.marks.value[id.value]],
+  ([sid, mark]) => {
+    if (mark) events.clearMark(sid)
+  },
+  { immediate: true },
+)
+
 // The live store is the source of truth for attention (it is what the sidebar
 // shows); the terminal's own attention message arrives a moment earlier.
 const stored = computed(() => live.sessions.value.find((s) => s.id === id.value))

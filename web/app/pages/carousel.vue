@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
+import type { RoutedEvent } from '~/composables/useEvents'
 import { CAROUSEL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { relativeTime, shortCwd } from '~/utils/sessions'
@@ -7,6 +8,7 @@ import { relativeTime, shortCwd } from '~/utils/sessions'
 useHead({ title: 'Carousel' })
 
 const attention = useAttention()
+const events = useEvents()
 const admin = useAdminToken()
 const { create } = useTerminalTransport()
 const fs = useFullscreenToggle()
@@ -48,6 +50,9 @@ const intervalItems = [
 
 const active = computed(() => attention.sessions.value.filter(isActive))
 const waiting = computed(() => attention.needsInput.value.filter(isActive))
+// Follow mode follows input requests while the Events page routes needs_input
+// to Wall jump; other events routed there jump too (followEvent below).
+const followInput = computed(() => settings.value.follow && events.routes.value.needs_input.wall)
 interface AutoplayPlugin {
   play: () => void
   stop: () => void
@@ -88,7 +93,7 @@ function terminalRef(id: string) {
 const now = ref(Date.now())
 const holdUntil = ref(0)
 const holdMs = computed(() => Math.max(2 * settings.value.intervalMs, 20000))
-const holding = computed(() => settings.value.follow && waiting.value.length > 0 && now.value < holdUntil.value)
+const holding = computed(() => followInput.value && waiting.value.length > 0 && now.value < holdUntil.value)
 const holdLeft = computed(() => Math.max(0, Math.ceil((holdUntil.value - now.value) / 1000)))
 const holdingId = computed(() => (holding.value && current.value?.attention?.state === 'needs_input' ? current.value.id : undefined))
 function releaseHold() {
@@ -202,7 +207,7 @@ const jumpedAt = ref<string | null>(null)
 const seenPrompts = new Map<string, string>() // session id → attention.since already jumped to
 let cycleTimer: number | undefined
 watch(
-  [waiting, () => settings.value.follow],
+  [waiting, followInput],
   ([list, follow]) => {
     window.clearInterval(cycleTimer)
     if (!follow || !list.length) {
@@ -231,11 +236,20 @@ watch(
   { immediate: true },
 )
 
+// Any other event the Events page routes to Wall jump moves the carousel to
+// its session, once, without a hold; never while someone is typing.
+function followEvent(e: RoutedEvent) {
+  if (e.type === 'needs_input' || !settings.value.follow || !events.routes.value[e.type].wall || typing.value) return
+  const target = active.value.findIndex((s) => s.id === e.sessionId)
+  if (target >= 0 && target !== selected.value) scrollTo(target)
+}
+let stopFollowing: (() => void) | undefined
+
 // "Next up" follows the same order follow mode uses: waiting sessions first.
 const nextUp = computed<{ session: SessionInfo; waiting: boolean } | null>(() => {
   const n = active.value.length
   if (n < 2) return null
-  if (settings.value.follow && waiting.value.length) {
+  if (followInput.value && waiting.value.length) {
     const others = waiting.value.filter((s) => s.id !== current.value?.id)
     if (others.length) return { session: others[0]!, waiting: true }
   }
@@ -285,6 +299,7 @@ function near(index: number) {
 onMounted(() => {
   if (!admin.hasToken.value) admin.needsToken.value = true
   attention.start()
+  stopFollowing = events.onEvent(followEvent)
   tick = window.setInterval(() => (now.value = Date.now()), 1000)
   progressTimer = window.setInterval(() => {
     progress.value = rotating.value ? Math.min(1, (Date.now() - lastTick) / settings.value.intervalMs) : 0
@@ -295,6 +310,7 @@ function onEscape(e: KeyboardEvent) {
   if (e.key === 'Escape') leaveTerminal()
 }
 onBeforeUnmount(() => {
+  stopFollowing?.()
   window.clearInterval(cycleTimer)
   window.clearInterval(tick)
   window.clearInterval(progressTimer)

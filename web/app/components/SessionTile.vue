@@ -10,9 +10,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [] }>()
 
+const events = useEvents()
 const needsInput = computed(() => props.session.attention?.state === 'needs_input')
 const status = computed(() => {
-  if (needsInput.value) return { label: 'Needs input', cls: 'text-warning', dot: 'bg-warning' }
+  // The amber dot follows the Events page's Badge route for needs_input; the label stays.
+  if (needsInput.value) return { label: 'Needs input', cls: 'text-warning', dot: events.routes.value.needs_input.badge ? 'bg-warning' : '' }
   if (props.session.status === 'running') return { label: 'Running', cls: 'text-success', dot: 'bg-success' }
   return { label: props.session.status.replace('_', ' '), cls: 'text-muted', dot: 'bg-neutral-400' }
 })
@@ -34,7 +36,8 @@ const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${prop
     <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs shrink-0">
       <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(props.session.agentId) }}</span>
       <span class="font-semibold truncate flex-1 text-[13px]">{{ props.session.name }}</span>
-      <span class="flex items-center gap-1.5 text-[11.5px]" :class="status.cls"><span class="size-[7px] rounded-full" :class="status.dot" aria-hidden="true" />{{ status.label }}</span>
+      <EventMarkBadge :session-id="props.session.id" />
+      <span class="flex items-center gap-1.5 text-[11.5px]" :class="status.cls"><span v-if="status.dot" class="size-[7px] rounded-full" :class="status.dot" aria-hidden="true" />{{ status.label }}</span>
     </div>
     <div class="flex-1 min-h-0 pointer-events-none">
       <TerminalView :create-transport="props.createTransport" read-only fit="scale" compact :auto-focus="false" />

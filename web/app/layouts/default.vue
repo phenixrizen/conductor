@@ -24,6 +24,8 @@ const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
   { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
+  // The "New" tag is for this release only.
+  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events', badge: { label: 'New', color: 'primary', variant: 'subtle' } },
 ])
 
 function toggleTheme() {
@@ -42,6 +44,7 @@ defineShortcuts({
   'g-w': () => router.push('/wall'),
   'g-c': () => router.push('/carousel'),
   'g-a': () => router.push('/agents'),
+  'g-e': () => router.push('/events'),
   alt_b: { ...inTerminal, handler: () => sidebar.toggle() },
   alt_h: { ...inTerminal, handler: () => shortcuts.show() },
   alt_n: { ...inTerminal, handler: () => launch.show() },
@@ -49,6 +52,7 @@ defineShortcuts({
   alt_w: { ...inTerminal, handler: () => router.push('/wall') },
   alt_c: { ...inTerminal, handler: () => router.push('/carousel') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
+  alt_e: { ...inTerminal, handler: () => router.push('/events') },
 })
 </script>
 
@@ -86,7 +90,7 @@ defineShortcuts({
             </UTooltip>
             <template #content>
               <div class="p-3 flex flex-col gap-3 w-64">
-                <p class="text-xs text-muted">When a session needs input:</p>
+                <p class="text-xs text-muted">When a session needs input, and for events routed to Browser on the Events page:</p>
                 <USwitch :model-value="alerts.settings.value.notifications" label="Browser notification" :description="alerts.permission.value === 'denied' ? 'Blocked by the browser' : undefined" :disabled="alerts.permission.value === 'denied' || alerts.permission.value === 'unsupported'" @update:model-value="alerts.setNotifications" />
                 <USwitch :model-value="alerts.settings.value.chime" label="Chime" @update:model-value="alerts.setChime" />
                 <p class="text-xs text-muted">The tab title and favicon always show the count.</p>

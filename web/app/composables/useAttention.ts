@@ -1,8 +1,14 @@
 import type { SessionInfo } from './useSessions'
+import type { RoutedEvent } from './useEvents'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
+import { EVENT_INFO, markOf } from '~/utils/events'
 import type { SessionActivity } from '~/utils/protocol'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
+/** Shortest gap between two chimes, so a burst of routed events plays one. */
+const CHIME_GAP_MS = 1500
+let lastChime = 0
+let stopEvents: (() => void) | undefined
 
 export interface AttentionSettings {
   notifications: boolean
@@ -59,14 +65,20 @@ interface AttentionStore {
   error: string
 }
 
+/** The live session store behind useAttention, for readers that must not start it (useEvents). */
+export function useAttentionStore() {
+  return useState<AttentionStore>('attentionStore', () => ({ sessions: new Map(), connected: false, started: false, error: '' }))
+}
+
 /**
  * Live session state for the whole app: one streaming fetch of
  * /api/events (admin token in the Authorization header, never in the URL)
  * with polling as a fallback. Drives badges, counters, the tab title, the
- * favicon, browser notifications and the chime.
+ * favicon, browser notifications and the chime, as the Events page routes
+ * them, and hands every activity entry to useEvents.
  */
 export function useAttention() {
-  const store = useState<AttentionStore>('attentionStore', () => ({ sessions: new Map(), connected: false, started: false, error: '' }))
+  const store = useAttentionStore()
   const version = useState<number>('attentionVersion', () => 0)
   const admin = useAdminToken()
   const { httpBase } = useApiBase()
@@ -87,11 +99,14 @@ export function useAttention() {
     version.value++
   }
 
+  // Each change also settles the activity entries useEvents holds for the
+  // session change that carries their state.
   function replaceAll(list: SessionInfo[]) {
     const next = new Map(list.map((s) => [s.id, s]))
     react(store.value.sessions, next)
     store.value.sessions = next
     bump()
+    events.settle()
   }
 
   function upsert(s: SessionInfo) {
@@ -99,32 +114,55 @@ export function useAttention() {
     store.value.sessions.set(s.id, s)
     react(prev, store.value.sessions)
     bump()
+    events.settle(s.id)
   }
 
   function remove(id: string) {
     store.value.sessions.delete(id)
     bump()
+    events.forget(id)
   }
 
+  /**
+   * Alerts for sessions that newly need input, when the Events page routes
+   * needs_input to Browser. They come from the session state, so each prompt
+   * alerts once.
+   */
   function react(prev: Map<string, SessionInfo>, next: Map<string, SessionInfo>) {
     if (!import.meta.client) return
     const fresh = newlyNeedingInput(prev, next)
-    if (!fresh.length) return
-    if (settings.value.notifications && 'Notification' in window && Notification.permission === 'granted') {
-      for (const s of fresh) {
-        try {
-          const n = new Notification(`${s.name} needs input`, { body: s.attention?.message || 'The agent is waiting for you.', tag: `conductor-${s.id}` })
-          n.onclick = () => {
-            window.focus()
-            navigateTo(`/sessions/${s.id}`)
-            n.close()
-          }
-        } catch {
-          /* notification blocked */
-        }
+    if (!fresh.length || !events.routes.value.needs_input.browser) return
+    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id)
+    chime()
+  }
+
+  /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default. */
+  function reactToEvent(e: RoutedEvent) {
+    if (e.type === 'needs_input' || !events.routes.value[e.type].browser) return
+    const mark = markOf(e.type, e.entry)
+    const what = e.type === 'exit_nonzero' ? mark.label : e.type.replace('_', ' ')
+    notify(`${e.session?.name || e.sessionId}: ${what}`, mark.detail || EVENT_INFO[e.type].source, `conductor-${e.sessionId}-${e.type}`, e.sessionId)
+    chime()
+  }
+
+  function notify(title: string, body: string, tag: string, sessionId: string) {
+    if (!settings.value.notifications || !('Notification' in window) || Notification.permission !== 'granted') return
+    try {
+      const n = new Notification(title, { body, tag })
+      n.onclick = () => {
+        window.focus()
+        navigateTo(`/sessions/${sessionId}`)
+        n.close()
       }
+    } catch {
+      /* notification blocked */
     }
-    if (settings.value.chime) playChime()
+  }
+
+  function chime() {
+    if (!settings.value.chime || Date.now() - lastChime < CHIME_GAP_MS) return
+    lastChime = Date.now()
+    playChime()
   }
 
   let abort: AbortController | undefined
@@ -212,6 +250,8 @@ export function useAttention() {
   function start() {
     if (!import.meta.client || store.value.started) return
     store.value.started = true
+    stopEvents?.()
+    stopEvents = events.onEvent(reactToEvent)
     stream()
     pollTimer = window.setInterval(() => {
       if (!store.value.connected && document.visibilityState === 'visible') poll()
@@ -228,6 +268,8 @@ export function useAttention() {
 
   function stop() {
     abort?.abort()
+    stopEvents?.()
+    stopEvents = undefined
     window.clearInterval(pollTimer)
     store.value.started = false
     store.value.connected = false

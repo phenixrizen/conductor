@@ -14,7 +14,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'KeyA', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'KeyA', 'KeyE', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -27,6 +27,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'W'], label: 'Go to the Wall (Alt+W in a terminal)' },
     { keys: ['G', 'C'], label: 'Go to the Carousel (Alt+C in a terminal)' },
     { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
+    { keys: ['G', 'E'], label: 'Go to Events (Alt+E in a terminal)' },
   ],
 }
 

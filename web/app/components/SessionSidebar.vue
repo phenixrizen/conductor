@@ -3,6 +3,7 @@ import type { SessionInfo } from '~/composables/useSessions'
 import { filterSessions, groupSessions, relativeTime, sessionMeta } from '~/utils/sessions'
 
 const attention = useAttention()
+const events = useEvents()
 const route = useRoute()
 const launch = useLaunchModal()
 
@@ -12,6 +13,8 @@ const now = ref(Date.now())
 let tick: number | undefined
 
 const groups = computed(() => groupSessions(filterSessions(attention.sessions.value, query.value)))
+/** The amber dot on a session needing input follows the Events page's Badge route for needs_input; the group and its text stay. */
+const needsDot = computed(() => events.routes.value.needs_input.badge)
 const empty = computed(() => attention.sessions.value.length === 0)
 
 function active(id: string) {
@@ -62,7 +65,8 @@ onBeforeUnmount(() => window.clearInterval(tick))
           <div class="min-w-0 flex-1 flex flex-col gap-0.5">
             <div class="flex items-center gap-1.5">
               <span class="truncate text-sm font-semibold">{{ s.name }}</span>
-              <span class="ml-auto size-2 rounded-full bg-warning flex-none" aria-hidden="true" />
+              <EventMarkBadge :session-id="s.id" />
+              <span v-if="needsDot" class="ml-auto size-2 rounded-full bg-warning flex-none" aria-hidden="true" />
             </div>
             <span class="truncate text-xs">{{ s.attention?.message || 'Waiting for input' }}</span>
             <span class="truncate font-mono text-[11px] text-muted">{{ sessionMeta(s, now) }}</span>
@@ -81,7 +85,10 @@ onBeforeUnmount(() => window.clearInterval(tick))
         >
           <SessionAvatar :agent-id="s.agentId" />
           <div class="min-w-0 flex-1 flex flex-col">
-            <span class="truncate text-sm font-medium">{{ s.name }}</span>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="truncate text-sm font-medium">{{ s.name }}</span>
+              <EventMarkBadge :session-id="s.id" />
+            </div>
             <span class="truncate font-mono text-[11px] text-muted">{{ sessionMeta(s, now) }}</span>
           </div>
           <span class="size-2 rounded-full flex-none" :class="s.status === 'running' ? 'bg-success' : 'bg-neutral-400'" aria-hidden="true" />
@@ -99,7 +106,10 @@ onBeforeUnmount(() => window.clearInterval(tick))
         >
           <SessionAvatar :agent-id="s.agentId" dashed />
           <div class="min-w-0 flex-1 flex flex-col">
-            <span class="truncate text-sm font-medium">{{ s.name }}</span>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="truncate text-sm font-medium">{{ s.name }}</span>
+              <EventMarkBadge :session-id="s.id" />
+            </div>
             <span class="truncate font-mono text-[11px] text-muted">{{ exitLabel(s) }}</span>
           </div>
         </NuxtLink>

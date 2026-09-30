@@ -112,7 +112,10 @@ is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow input requests** on, the
 carousel jumps to any session that needs input and holds there for two
 intervals (at least 20 s) before rotating on; click **Holding** to release it
-sooner. It never jumps away while you are typing. A film strip under the
+sooner. The **Wall jump** column on the Events page picks what it follows:
+input requests and handoffs unless you change it, and any other event routed
+there moves the carousel to its session once, without holding. It never jumps
+away while you are typing. A film strip under the
 terminal shows every session with the rotation progress, and the footer says
 which session is next.
 
@@ -140,6 +143,14 @@ raise a browser notification, and appear in the wall queue. Claude Code
 permission requests arrive with their options, so **Yes / Always / No** buttons
 appear wherever the prompt is shown. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
+
+**Routing.** The Events page's matrix sets, per event type and per browser,
+what an event does: a labelled badge on its session in the sidebar and on its
+wall tile (until the session reports `working` or `needs_input`, or you open
+it), a browser notification with the chime (as switched on under the sidebar's
+alerts), a carousel jump while it follows, and a line in the live feed, which
+keeps the last 500 events in memory. Routes are saved in the browser. An
+artifact's URL becomes a link only when it is `http(s)`.
 
 **Wired at launch.** Conductor has a hook adapter for every built-in agent but
 the shell. At startup `conductor serve` writes the hook files into `hooks/` in
