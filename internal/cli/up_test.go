@@ -383,3 +383,14 @@ func TestRunDispatchesUpAndCrews(t *testing.T) {
 		t.Fatalf("up: exit %d %v", code, err)
 	}
 }
+
+func TestClientDropsUserinfoFromTheServerURL(t *testing.T) {
+	server, token := "http://user:pw@example.test/", "tok"
+	c, err := apiFlags{server: &server, token: &token}.client()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.base != "http://example.test" || strings.Contains(c.base, "pw") {
+		t.Fatalf("base %q keeps the userinfo", c.base)
+	}
+}

@@ -192,12 +192,15 @@ func (f apiFlags) client() (*apiClient, error) {
 	if token == "" {
 		return nil, errors.New("an admin token is required (--token or CONDUCTOR_ADMIN_TOKEN)")
 	}
-	return &apiClient{base: server, host: u.Host, token: token}, nil
+	// Userinfo in the URL is never used (the token travels in a header) and
+	// must not be printed or handed to a browser with the run URL.
+	u.User = nil
+	return &apiClient{base: strings.TrimRight(u.String(), "/"), host: u.Host, token: token}, nil
 }
 
 // apiClient talks to the admin API of one server.
 type apiClient struct {
-	base  string // the server URL as given, without a trailing slash
+	base  string // the server URL as given, without userinfo or a trailing slash
 	host  string // the server's host, which is all an error says of the server
 	token string // sent in the Authorization header and nowhere else
 }
@@ -219,12 +222,12 @@ func (c *apiClient) do(ctx context.Context, method, path string, out any) error 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return c.transportError(ctx, err)
+		return c.transportError(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReply+1))
 	if err != nil {
-		return c.transportError(ctx, err)
+		return c.transportError(err)
 	}
 	if len(body) > maxReply {
 		return fmt.Errorf("the reply from %s is larger than 1 MiB", c.host)
@@ -260,7 +263,7 @@ func (c *apiClient) statusError(status string, body []byte) error {
 
 // transportError describes a failure to get a reply. The net/http error
 // carries the request URL, so only its cause is kept.
-func (c *apiClient) transportError(ctx context.Context, err error) error {
+func (c *apiClient) transportError(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		err = ue.Err
