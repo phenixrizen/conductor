@@ -335,9 +335,13 @@ list and its host.
 **Private addresses.** A webhook may not point at a loopback, link-local,
 private (unique-local in IPv6), shared (CGNAT, `100.64.0.0/10`, where some
 clouds keep their metadata service) or unspecified address, nor at a
-deprecated IPv4-compatible IPv6 address (`::a.b.c.d`); a NAT64 address
-(`64:ff9b::/96`, or a /96 in `64:ff9b:1::/48`) counts as the IPv4 address it
-reaches. That keeps webhooks away from the services of the server's machine
+deprecated IPv4-compatible IPv6 address (`::a.b.c.d`); an IPv6 address that
+carries an IPv4 address counts as the IPv4 address it reaches: NAT64
+(`64:ff9b::/96`, or a /96 in `64:ff9b:1::/48`), 6to4 (`2002::/16`), Teredo
+(`2001::/32`, its server and its client) and SIIT (`::ffff:0:a.b.c.d`). An
+address of `64:ff9b:1::/48` in the form a shorter NAT64 prefix gives is
+refused, since the IPv4 address it reaches cannot be told; `allowPrivate` sends
+to it. That keeps webhooks away from the services of the server's machine
 and network that are not published; it does not refuse the server's own
 public address. At startup the server looks up the webhooks' hosts, all at
 once and for at most 2 seconds, and refuses to start when one resolves to

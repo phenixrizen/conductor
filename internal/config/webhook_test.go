@@ -130,6 +130,22 @@ func TestCheckWebhookAddr(t *testing.T) {
 		"::7f00:1":                "::7f00:1 is an IPv4-compatible address (deprecated)",
 		"64:ff9b::a9fe:a9fe":      "64:ff9b::a9fe:a9fe reaches 169.254.169.254 through NAT64, which is a link-local address",
 		"64:ff9b:1:ffff::808:808": "",
+		// 6to4 (2002::/16): the IPv4 address in bits 16 to 47.
+		"2002:a00:1::1":   "2002:a00:1::1 reaches 10.0.0.1 through 6to4, which is a private address",
+		"2002:808:808::1": "",
+		// Teredo (2001::/32): the server's IPv4 address in bits 32 to 63, the
+		// client's inverted in the last 32; either one counts.
+		"2001:0:4136:e378:8000:63bf:f5ff:fffe": "reaches 10.0.0.1 through Teredo, which is a private address",
+		"2001:0:7f00:1::f7f7:f7f7":             "reaches 127.0.0.1 through Teredo, which is a loopback address",
+		"2001:0:4136:e378:8000:63bf:f7f7:f7f7": "",
+		// SIIT, IPv4-translated (::ffff:0:a.b.c.d).
+		"::ffff:0:a00:1":   "::ffff:0:a00:1 reaches 10.0.0.1 through SIIT, which is a private address",
+		"::ffff:0:808:808": "",
+		// 64:ff9b:1::/48 in the form a prefix shorter than /96 gives (u
+		// octet zero, the last three bytes zero): its IPv4 address cannot be
+		// told. Read as a /96 the first would reach 1.0.0.0, a public address.
+		"64:ff9b:1:0:a:0:100:0": "a NAT64 prefix shorter than /96",
+		"64:ff9b:1:a00:0:100::": "a NAT64 prefix shorter than /96",
 	} {
 		err := CheckWebhookAddr(netip.MustParseAddr(addr))
 		switch {
