@@ -88,12 +88,20 @@ func TestTodoAppStartsLeadThenBuildersThenTester(t *testing.T) {
 // every member that starts after another begins by merging its branch, the
 // run being in the member's environment as CONDUCTOR_RUN, which the agent's
 // shell expands (ExpandPrompt expands only $GOAL). Every prompt is one line.
-func TestEveryAfterMemberMergesItsPredecessorsBranch(t *testing.T) {
+func TestExampleMembersMergeTheBranchTheyStartAfter(t *testing.T) {
 	afters := 0
 	for _, c := range Examples("/w", time.Now()) {
 		for _, m := range c.Members {
 			if strings.ContainsAny(m.Prompt, "\r\n\t") {
 				t.Errorf("%s/%s: the prompt is not one line", c.ID, m.Name)
+			}
+			// The goal goes in where the prompt puts its own punctuation after
+			// it: a goal that ended in a period would type "tests.. Plan".
+			typed := typedPrompt(m.Prompt, c.Goal)
+			for _, p := range []string{"..", ".:", ".,"} {
+				if strings.Contains(typed, p) {
+					t.Errorf("%s/%s: the typed prompt has %q: %s", c.ID, m.Name, p, typed)
+				}
 			}
 			if m.Start.When != StartAfter {
 				continue
