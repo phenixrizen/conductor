@@ -159,7 +159,8 @@ is `hook` gets them when the server launches it, with nothing written to the
 agent's own config: Claude Code through `--settings`, Codex through
 `-c notify=…`, pi through `--extension`, aider through its notification
 environment variables. `conductor host --agent <id> -- <command>` does the same
-on your machine.
+on your machine, with the hook files in `~/.conductor/hooks` (an older
+`~/.local/state/conductor/hooks` is kept while it exists).
 
 **Installed on demand.** The other agents read hooks only from their own
 config, and so do the agents above when something other than Conductor starts
@@ -180,15 +181,17 @@ cannot do from a file it prints with the snippet instead: DeepSeek Harness, a
 developer preview, is always installed by hand, and a Codex `hooks.json` or a
 `SKILL.md` of your own is never overwritten. Both commands take the hooks, and
 the conductor binary they run, from `hooks/` in the data directory
-`--data-dir DIR` names, by default the one `conductor serve` uses without a
-config file; when no server wrote hooks there, or the binary they name is
-gone, they say so and use the binary you run. They refuse a `hooks/` that is
-not yours or not 0700, as `conductor serve` writes it (the 0755 `conductor.d`
-of a checkout is refused too), since its commands would go into your agents'
-configs. `--home DIR` names another home directory of yours. A home that
-belongs to another user is refused, because what Conductor wrote there would
-belong to you: install for that user as that user
-(`sudo -u <user> conductor hooks install …`).
+`--data-dir DIR` names, by default the one `conductor serve` uses without
+`dataDir`: `CONDUCTOR_DATA_DIR`, else `~/.conductor` (or an older
+`./conductor.d` while `~/.conductor` holds no server data); when no server
+wrote hooks there, or the binary they name is gone, they say so and use the
+binary you run. They refuse a `hooks/` that is not yours or not 0700, as
+`conductor serve` writes it (so a `conductor.d/hooks` that a checkout made 0755
+is refused too, should an older `./conductor.d` still be the data directory),
+since its commands would go into your agents' configs. `--home DIR` names
+another home directory of yours. A home that belongs to another user is
+refused, because what Conductor wrote there would belong to you: install for
+that user as that user (`sudo -u <user> conductor hooks install …`).
 
 **Agents without hooks.** Any tool that rings the terminal bell or emits an
 OSC 9 / OSC 777 notification is detected with no configuration at all. A
@@ -460,22 +463,27 @@ Limits:
 | `fileView` | `CONDUCTOR_FILE_VIEW` | `view` | who may read session files |
 | `scrollbackBytes`, `maxSessions`, `maxViewersPerSession`, `exitedRetention`, `envPassthrough` | matching `CONDUCTOR_*` | see example | limits |
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
-| `dataDir` | `CONDUCTOR_DATA_DIR` | `conductor.d` next to the config, else in the current directory | UI-managed state; must be writable, best outside `allowedRoots` |
+| `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 
 ### Upgrading
 
-The server now keeps UI-managed state, such as agents added on the **Agents**
-page, in a data directory, and must be able to create and write it at startup.
-Unless `dataDir` or `CONDUCTOR_DATA_DIR` says otherwise, that is `conductor.d`
-next to the config file, or in the current directory when there is none. If
-the config lives somewhere the server user cannot write, such as `/etc`,
-`conductor serve` now refuses to start with `data directory … is not usable`:
-set `dataDir` in the config, or `CONDUCTOR_DATA_DIR`, to a writable directory
-outside `allowedRoots`, for example `/var/lib/conductor`. The Docker image
-already uses `/var/lib/conductor`, declared as a volume. At startup the server
-logs the directory it uses, and warns when it overlaps an allowed root: agents
-working there can read and commit its secrets.
+The server keeps UI-managed state (agents added on the **Agents** page, crews,
+the hook files) in a data directory that it must be able to create and write
+at startup. Unless `dataDir` or `CONDUCTOR_DATA_DIR` says otherwise, that is
+`~/.conductor` in the home of the user running `conductor serve`. Earlier
+versions used `conductor.d` next to the config file, or in the current
+directory without one. A server that finds that old directory, and no server
+data in `~/.conductor` (`catalog.json`, `crews/` or `crews.json`; the `hooks/`
+that `conductor host` writes there does not count), keeps using it and logs a
+warning naming both paths. To move it, stop the server, move the files in it
+into `~/.conductor` (`hooks/` need not move: the server writes it at every
+start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
+to it. A directory the server cannot create stops it with
+`data directory … is not usable`. The Docker image sets
+`CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the
+server logs the directory it uses, and warns when it overlaps an allowed root:
+agents working there can read and commit its secrets.
 
 ### Agent catalog
 

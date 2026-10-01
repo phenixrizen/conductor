@@ -3,7 +3,6 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/store"
 )
 
 // FileView controls which share-link roles may read files from a session's
@@ -146,9 +146,7 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
-		dec := json.NewDecoder(bytes.NewReader(b))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(cfg); err != nil {
+		if err := store.DecodeStrict(b, cfg); err != nil {
 			return nil, fmt.Errorf("parse config %s: %w", path, err)
 		}
 		cfg.Path = path
@@ -318,23 +316,74 @@ func (c *Config) Validate() error {
 // webhook host that did not resolve. conductor serve logs them.
 func (c *Config) Warnings() []string { return c.warnings }
 
-// ResolveDataDir fills DataDir from the config file location when unset:
-// <dir of configPath>/conductor.d, or ./conductor.d without a config file. The
-// result is always absolute (a relative value is taken relative to the current
-// directory, like allowedRoots and defaultCwd) because agent processes started
-// in other working directories are handed paths under it. If the working
-// directory cannot be determined the chosen value is kept as it is.
-func (c *Config) ResolveDataDir(configPath string) {
+// ResolveDataDir fills DataDir when neither dataDir nor CONDUCTOR_DATA_DIR set
+// it: ~/.conductor, in the home of the user running conductor serve, never
+// next to the config file or in the working directory. An older Conductor
+// chose conductor.d next to the config file, or in the working directory
+// without one. While ~/.conductor holds no server data (holdsServerData) and
+// that directory exists, it is kept, and notice says so, naming both and how
+// to move. conductor host writes ~/.conductor/hooks for itself, so hooks/
+// alone does not end the rule. With no value set and no home directory, the
+// error names the settings that choose one.
+//
+// The result is absolute: agent processes started in other working
+// directories are handed paths under it. A value that was set is made
+// absolute relative to the current directory, like allowedRoots and
+// defaultCwd, and is kept as it is when the working directory cannot be
+// determined.
+func (c *Config) ResolveDataDir(configPath string) (notice string, err error) {
 	if c.DataDir == "" {
-		base := "."
-		if configPath != "" {
-			base = filepath.Dir(configPath)
+		home, herr := os.UserHomeDir()
+		if herr != nil || !filepath.IsAbs(home) {
+			return "", errors.New("the data directory defaults to ~/.conductor, but the home directory is unknown: set dataDir in the config, or CONDUCTOR_DATA_DIR")
 		}
-		c.DataDir = filepath.Join(base, "conductor.d")
+		def := filepath.Join(home, ".conductor")
+		c.DataDir = def
+		if !holdsServerData(def) {
+			if old, aerr := filepath.Abs(legacyDataDir(configPath)); aerr == nil && isDir(old) {
+				c.DataDir = old
+				notice = fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now %s, which holds no server data yet (catalog.json, crews/ or crews.json). To move it, stop the server, move the files in %s into %s (hooks/ need not move: the server writes it at every start) and start it again; to keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old, def, old, def)
+			}
+		}
 	}
-	if abs, err := filepath.Abs(c.DataDir); err == nil {
+	if abs, aerr := filepath.Abs(c.DataDir); aerr == nil {
 		c.DataDir = abs
 	}
+	return notice, nil
+}
+
+// serverData names what only a server writes in its data directory: the
+// Agents page's overlay and the crews, in the layout of this version and of
+// the one before. conductor host writes hooks/ into ~/.conductor too, so
+// hooks/ is not among them.
+var serverData = []string{"catalog.json", "crews", "crews.json"}
+
+// holdsServerData reports whether dir holds anything in serverData, as a
+// file, a directory or a link.
+func holdsServerData(dir string) bool {
+	for _, name := range serverData {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// legacyDataDir is where an older Conductor put the data directory by
+// default: conductor.d next to the config file, or in the working directory
+// without one.
+func legacyDataDir(configPath string) string {
+	base := "."
+	if configPath != "" {
+		base = filepath.Dir(configPath)
+	}
+	return filepath.Join(base, "conductor.d")
+}
+
+// isDir reports whether p is a directory, following links.
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // LoadCatalog merges the inline catalog and the optional catalog file.

@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -477,5 +479,21 @@ func TestAgentJSONShape(t *testing.T) {
 	}
 	if !reflect.DeepEqual(back, overlay) {
 		t.Fatalf("round trip differs:\n got %+v\nwant %+v", back, overlay)
+	}
+}
+
+func TestReadFileRejectsTrailingData(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"agents":[]} x`, "after the JSON value"},
+		{`{"agents":[]}{"agents":[]}`, "more than one JSON value"},
+		{"", "empty document"},
+	} {
+		path := filepath.Join(t.TempDir(), "agents.json")
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadFile(path); err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), path) {
+			t.Errorf("%q: %v", tc.body, err)
+		}
 	}
 }

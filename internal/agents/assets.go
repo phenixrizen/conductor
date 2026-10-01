@@ -255,18 +255,41 @@ func HooksDir(dataDir string) string {
 	return filepath.Join(dataDir, "hooks")
 }
 
-// HostHooksDir is where `conductor host` keeps the hook assets it injects:
-// $XDG_STATE_HOME/conductor/hooks, or ~/.local/state/conductor/hooks when
-// XDG_STATE_HOME is unset or, against the XDG spec, not absolute.
-func HostHooksDir() (string, error) {
-	if state := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(state) {
-		return filepath.Join(state, "conductor", "hooks"), nil
-	}
+// HostHooksDir is where conductor host keeps the hook assets it injects:
+// hooks in ~/.conductor, the data directory conductor serve uses by default.
+// An older Conductor kept them in $XDG_STATE_HOME/conductor/hooks, or in
+// ~/.local/state/conductor/hooks when XDG_STATE_HOME is unset or, against the
+// XDG spec, not absolute. While ~/.conductor/hooks does not exist and that
+// directory does, it is kept, and legacy is true. conductor serve does not
+// count a ~/.conductor that holds only hooks/ as its data
+// (config.ResolveDataDir), so what the host writes here never moves a
+// server's data directory.
+func HostHooksDir() (dir string, legacy bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return filepath.Join(home, ".local", "state", "conductor", "hooks"), nil
+	if !filepath.IsAbs(home) {
+		return "", false, fmt.Errorf("the home directory %q is not an absolute path", home)
+	}
+	def := filepath.Join(home, ".conductor", "hooks")
+	if dirExists(def) {
+		return def, false, nil
+	}
+	old := filepath.Join(home, ".local", "state", "conductor", "hooks")
+	if state := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(state) {
+		old = filepath.Join(state, "conductor", "hooks")
+	}
+	if dirExists(old) {
+		return old, true, nil
+	}
+	return def, false, nil
+}
+
+// dirExists reports whether p is a directory, following links.
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // render puts bin in place of the placeholder in the asset rel, escaped for

@@ -1,12 +1,9 @@
 package config
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"net/url"
@@ -14,6 +11,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/store"
 )
 
 // Webhook is a URL the server POSTs activity entries to: the entries of every
@@ -228,16 +226,12 @@ func addrRange(a netip.Addr) string {
 }
 
 // parseWebhooks reads the value of CONDUCTOR_WEBHOOKS: a JSON array of
-// webhooks, as the config file holds them, and nothing after it.
+// webhooks, as the config file holds them, and nothing after it
+// (store.DecodeStrict, as for the config file itself).
 func parseWebhooks(v string) ([]Webhook, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(v)))
-	dec.DisallowUnknownFields()
 	var hooks []Webhook
-	if err := dec.Decode(&hooks); err != nil {
+	if err := store.DecodeStrict([]byte(v), &hooks); err != nil {
 		return nil, err
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("more after the JSON array")
 	}
 	return hooks, nil
 }

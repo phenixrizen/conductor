@@ -905,6 +905,14 @@ func (e *testEnv) serve(srv *Server) *testEnv {
 	return &testEnv{t: e.t, srv: srv, http: hs, root: e.root, client: hs.Client()}
 }
 
+// setCatalog replaces the server's catalog as an edit publishes one: under
+// the lock its readers take.
+func (e *testEnv) setCatalog(cat catalog.Catalog) {
+	e.srv.catalogMu.Lock()
+	e.srv.catalog = cat
+	e.srv.catalogMu.Unlock()
+}
+
 // restart starts a second server over the same store and configured catalog,
 // the way `conductor serve` comes up again after a restart.
 func (e *testEnv) restart() *testEnv {
@@ -1422,6 +1430,51 @@ func TestCatalogConcurrentEditsAreAllKept(t *testing.T) {
 	if ids := e.catalogIDs(); len(ids) != 3+writers {
 		t.Fatalf("catalog lists %d agents, want %d: %v", len(ids), 3+writers, ids)
 	}
+}
+
+// Readers and launches take the catalog lock only for the snapshot: an edit
+// writing catalog.json (it holds the editor lock across the fsync) makes none
+// of them wait.
+func TestCatalogReadersDoNotWaitForAnEdit(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.srv.catalogEditMu.Lock() // an edit in the middle of its write
+	defer e.srv.catalogEditMu.Unlock()
+	statuses := make(chan int, 2)
+	go func() {
+		for _, r := range []struct {
+			method, path string
+			body         any
+		}{
+			{"GET", "/api/catalog", nil},
+			{"POST", "/api/sessions", map[string]any{"agentId": "cat"}},
+		} {
+			var rd io.Reader
+			if r.body != nil {
+				b, _ := json.Marshal(r.body)
+				rd = bytes.NewReader(b)
+			}
+			req, _ := http.NewRequest(r.method, e.http.URL+r.path, rd)
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			resp, err := e.client.Do(req)
+			if err != nil {
+				statuses <- 0
+				continue
+			}
+			resp.Body.Close()
+			statuses <- resp.StatusCode
+		}
+	}()
+	for _, want := range []int{http.StatusOK, http.StatusCreated} {
+		select {
+		case got := <-statuses:
+			if got != want {
+				t.Fatalf("status %d, want %d", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a reader waited for the editor lock")
+		}
+	}
+	e.stopEverything(t)
 }
 
 func TestCatalogSavedAgentsRun(t *testing.T) {

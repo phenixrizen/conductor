@@ -143,6 +143,32 @@ func TestResolveDataDirDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// home gives the test a home directory of its own.
+	home := func(t *testing.T) string {
+		t.Helper()
+		h := t.TempDir()
+		t.Setenv("HOME", h)
+		return h
+	}
+	resolve := func(t *testing.T, cfg *Config, configPath string) string {
+		t.Helper()
+		notice, err := cfg.ResolveDataDir(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Agent processes started in other working directories are handed
+		// paths under it.
+		if !filepath.IsAbs(cfg.DataDir) {
+			t.Fatalf("DataDir %q is not absolute", cfg.DataDir)
+		}
+		return notice
+	}
+	mkdir := func(t *testing.T, p string) {
+		t.Helper()
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	writeConfig := func(t *testing.T, body string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "conductor.json")
@@ -151,56 +177,153 @@ func TestResolveDataDirDefaults(t *testing.T) {
 		}
 		return path
 	}
-	// wantDataDir insists on an absolute result: the path is handed to agent
-	// processes that start in other working directories.
-	wantDataDir := func(t *testing.T, got, want string) {
-		t.Helper()
-		if !filepath.IsAbs(got) {
-			t.Fatalf("DataDir %q is not absolute", got)
-		}
-		if got != want {
-			t.Fatalf("DataDir = %q, want %q", got, want)
-		}
-	}
 
-	for _, tc := range []struct{ name, configPath, want string }{
-		{"no config file", "", filepath.Join(cwd, "conductor.d")},
-		{"absolute config path", "/etc/x/conductor.json", filepath.Join("/etc/x", "conductor.d")},
-		{"relative config path", "conf/conductor.json", filepath.Join(cwd, "conf", "conductor.d")},
-		{"config file in the current directory", "conductor.json", filepath.Join(cwd, "conductor.d")},
-	} {
-		t.Run("derived from "+tc.name, func(t *testing.T) {
+	t.Run("unset, it is ~/.conductor wherever the config is", func(t *testing.T) {
+		h := home(t)
+		t.Chdir(t.TempDir())
+		for _, configPath := range []string{"", "/etc/x/conductor.json", "conf/conductor.json"} {
 			cfg := Defaults()
-			cfg.ResolveDataDir(tc.configPath)
-			wantDataDir(t, cfg.DataDir, tc.want)
-		})
-	}
+			if notice := resolve(t, cfg, configPath); notice != "" || cfg.DataDir != filepath.Join(h, ".conductor") {
+				t.Fatalf("config %q: DataDir %q, notice %q", configPath, cfg.DataDir, notice)
+			}
+		}
+	})
+
+	t.Run("an old ./conductor.d is kept while ~/.conductor does not exist", func(t *testing.T) {
+		h := home(t)
+		dir := t.TempDir()
+		t.Chdir(dir)
+		old := filepath.Join(dir, "conductor.d")
+		mkdir(t, old)
+		cfg := Defaults()
+		notice := resolve(t, cfg, "")
+		if cfg.DataDir != old {
+			t.Fatalf("DataDir %q, want the old %q", cfg.DataDir, old)
+		}
+		for _, want := range []string{old, filepath.Join(h, ".conductor"), "dataDir", "CONDUCTOR_DATA_DIR"} {
+			if !strings.Contains(notice, want) {
+				t.Errorf("notice %q does not mention %q", notice, want)
+			}
+		}
+	})
+
+	t.Run("an old conductor.d next to the config file is kept", func(t *testing.T) {
+		home(t)
+		t.Chdir(t.TempDir())
+		dir := t.TempDir()
+		old := filepath.Join(dir, "conductor.d")
+		mkdir(t, old)
+		cfg := Defaults()
+		if notice := resolve(t, cfg, filepath.Join(dir, "conductor.json")); cfg.DataDir != old || notice == "" {
+			t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+		}
+	})
+
+	// conductor host writes ~/.conductor/hooks for itself. That is no data of
+	// a server's: an upgraded server keeps its old directory, and says so,
+	// until the operator moves it.
+	t.Run("host created ~/.conductor/hooks, legacy conductor.d present: legacy kept with the notice", func(t *testing.T) {
+		h := home(t)
+		dir := t.TempDir()
+		t.Chdir(dir)
+		old := filepath.Join(dir, "conductor.d")
+		mkdir(t, old)
+		mkdir(t, filepath.Join(h, ".conductor", "hooks"))
+		cfg := Defaults()
+		notice := resolve(t, cfg, "")
+		if cfg.DataDir != old {
+			t.Fatalf("DataDir %q, want the old %q", cfg.DataDir, old)
+		}
+		for _, want := range []string{old, filepath.Join(h, ".conductor"), "dataDir", "CONDUCTOR_DATA_DIR"} {
+			if !strings.Contains(notice, want) {
+				t.Errorf("notice %q does not mention %q", notice, want)
+			}
+		}
+		// Without an old directory, that ~/.conductor is the data directory.
+		if err := os.Remove(old); err != nil {
+			t.Fatal(err)
+		}
+		cfg = Defaults()
+		if notice := resolve(t, cfg, ""); cfg.DataDir != filepath.Join(h, ".conductor") || notice != "" {
+			t.Fatalf("without the old directory: DataDir %q, notice %q", cfg.DataDir, notice)
+		}
+	})
+
+	t.Run("~/.conductor wins once it holds server data", func(t *testing.T) {
+		for _, data := range []string{"catalog.json", "crews", "crews.json"} {
+			t.Run(data, func(t *testing.T) {
+				h := home(t)
+				dir := t.TempDir()
+				t.Chdir(dir)
+				mkdir(t, filepath.Join(dir, "conductor.d"))
+				def := filepath.Join(h, ".conductor")
+				mkdir(t, filepath.Join(def, "hooks"))
+				if data == "crews" {
+					mkdir(t, filepath.Join(def, data))
+				} else if err := os.WriteFile(filepath.Join(def, data), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg := Defaults()
+				if notice := resolve(t, cfg, ""); cfg.DataDir != def || notice != "" {
+					t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+				}
+			})
+		}
+	})
+
+	t.Run("a file called conductor.d is no old data directory", func(t *testing.T) {
+		h := home(t)
+		dir := t.TempDir()
+		t.Chdir(dir)
+		if err := os.WriteFile(filepath.Join(dir, "conductor.d"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := Defaults()
+		if notice := resolve(t, cfg, ""); cfg.DataDir != filepath.Join(h, ".conductor") || notice != "" {
+			t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+		}
+	})
+
+	t.Run("without a home directory the error names the settings", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		cfg := Defaults()
+		_, err := cfg.ResolveDataDir("")
+		if err == nil || !strings.Contains(err.Error(), "dataDir") || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") {
+			t.Fatalf("no home: %v", err)
+		}
+	})
 
 	t.Run("an absolute value from the config file is kept", func(t *testing.T) {
+		home(t)
 		t.Setenv("CONDUCTOR_DATA_DIR", "")
 		path := writeConfig(t, `{"dataDir":"/srv/from-file"}`)
 		cfg, err := Load(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg.ResolveDataDir(path)
-		wantDataDir(t, cfg.DataDir, "/srv/from-file")
+		if notice := resolve(t, cfg, path); cfg.DataDir != "/srv/from-file" || notice != "" {
+			t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+		}
 	})
 
 	t.Run("a relative value from the config file is made absolute", func(t *testing.T) {
+		home(t)
 		t.Setenv("CONDUCTOR_DATA_DIR", "")
 		path := writeConfig(t, `{"dataDir":"state/data"}`)
 		cfg, err := Load(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg.ResolveDataDir(path)
+		resolve(t, cfg, path)
 		// Relative to the current directory like allowedRoots and defaultCwd,
 		// not to the config file.
-		wantDataDir(t, cfg.DataDir, filepath.Join(cwd, "state", "data"))
+		if cfg.DataDir != filepath.Join(cwd, "state", "data") {
+			t.Fatalf("DataDir %q", cfg.DataDir)
+		}
 	})
 
-	t.Run("the environment override wins and is kept", func(t *testing.T) {
+	t.Run("CONDUCTOR_DATA_DIR wins and is kept", func(t *testing.T) {
+		home(t)
 		t.Setenv("CONDUCTOR_DATA_DIR", "/srv/from-env")
 		path := writeConfig(t, `{"dataDir":"/srv/from-file"}`)
 		for _, configPath := range []string{path, ""} {
@@ -208,30 +331,29 @@ func TestResolveDataDirDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.DataDir != "/srv/from-env" {
-				t.Fatalf("after Load DataDir = %q, want the env value", cfg.DataDir)
+			if notice := resolve(t, cfg, configPath); cfg.DataDir != "/srv/from-env" || notice != "" {
+				t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
 			}
-			cfg.ResolveDataDir(configPath)
-			wantDataDir(t, cfg.DataDir, "/srv/from-env")
 		}
 	})
 
-	t.Run("a relative environment value is made absolute", func(t *testing.T) {
+	t.Run("a relative CONDUCTOR_DATA_DIR is made absolute", func(t *testing.T) {
+		home(t)
 		t.Setenv("CONDUCTOR_DATA_DIR", "rel/dir")
-		path := writeConfig(t, `{"dataDir":"/srv/from-file"}`)
-		for _, configPath := range []string{path, ""} {
-			cfg, err := Load(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.ResolveDataDir(configPath)
-			wantDataDir(t, cfg.DataDir, filepath.Join(cwd, "rel", "dir"))
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolve(t, cfg, ""); cfg.DataDir != filepath.Join(cwd, "rel", "dir") {
+			t.Fatalf("DataDir %q", cfg.DataDir)
 		}
 	})
 
-	// The one case that stays relative on purpose: filepath.Abs needs the working
-	// directory, and without it the chosen value is better than an empty one.
-	t.Run("the chosen value is kept when the working directory is gone", func(t *testing.T) {
+	// A value that was set stays relative when the working directory is gone:
+	// filepath.Abs needs it, and the chosen value beats an empty one. The
+	// default comes from the home directory and is absolute regardless.
+	t.Run("the working directory is gone", func(t *testing.T) {
+		h := home(t)
 		gone := t.TempDir()
 		t.Chdir(gone)
 		if err := os.Remove(gone); err != nil {
@@ -242,14 +364,12 @@ func TestResolveDataDirDefaults(t *testing.T) {
 		}
 		cfg := Defaults()
 		cfg.DataDir = "rel/dir"
-		cfg.ResolveDataDir("")
-		if cfg.DataDir != "rel/dir" {
-			t.Fatalf("explicit value: DataDir = %q, want it unchanged", cfg.DataDir)
+		if _, err := cfg.ResolveDataDir(""); err != nil || cfg.DataDir != "rel/dir" {
+			t.Fatalf("explicit value: DataDir %q %v", cfg.DataDir, err)
 		}
 		cfg = Defaults()
-		cfg.ResolveDataDir("")
-		if cfg.DataDir != "conductor.d" {
-			t.Fatalf("derived value: DataDir = %q, want conductor.d", cfg.DataDir)
+		if _, err := cfg.ResolveDataDir(""); err != nil || cfg.DataDir != filepath.Join(h, ".conductor") {
+			t.Fatalf("default: DataDir %q %v", cfg.DataDir, err)
 		}
 	})
 }
@@ -311,5 +431,23 @@ func TestDataDirOverlap(t *testing.T) {
 				t.Fatalf("DataDirOverlap() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// The config file is held to what the store holds its files to: one JSON
+// value and nothing after it.
+func TestLoadRejectsTrailingDataAndEmptyFiles(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"listen":":9000"} oops`, "after the JSON value"},
+		{`{"listen":":9000"}{"listen":":9001"}`, "more than one JSON value"},
+		{"", "empty document"},
+	} {
+		path := filepath.Join(t.TempDir(), "c.json")
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), path) {
+			t.Errorf("%q: %v, want an error naming %s and saying %q", tc.body, err, path, tc.want)
+		}
 	}
 }

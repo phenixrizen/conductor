@@ -76,10 +76,11 @@ that order.
 ### Decisions
 
 - **Persistence.** A writable data directory (`dataDir`, env
-  `CONDUCTOR_DATA_DIR`, default `conductor.d` next to the config file) holds
-  `catalog.json` (agents added or hidden from the UI), `crews.json`, generated
-  hook assets under `hooks/` and the Conductor skill. The config file stays
-  read-only; the data directory overlays it.
+  `CONDUCTOR_DATA_DIR`, default `~/.conductor` since round 3, `conductor.d`
+  next to the config file before) holds `catalog.json` (agents added or hidden
+  from the UI), `crews.json`, generated hook assets under `hooks/` and the
+  Conductor skill. The config file stays read-only; the data directory
+  overlays it.
 - **Hook wiring.** Inject at launch wherever the agent's CLI allows it
   (Claude Code `--settings`, Codex `-c`, pi `--extension`, aider env vars,
   OpenCode `OPENCODE_CONFIG_DIR`); everything else gets an explicit

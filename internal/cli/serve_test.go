@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -45,6 +46,9 @@ func clearConductorEnv(t *testing.T) {
 			t.Setenv(k, "")
 		}
 	}
+	// A home of the test's own: nothing a test starts reads or writes the
+	// user's ~/.conductor.
+	t.Setenv("HOME", t.TempDir())
 }
 
 // writeServeConfig writes body as conductor.json in dir and returns its path.
@@ -129,27 +133,25 @@ func TestServeLogsTheDataDirectory(t *testing.T) {
 	}
 }
 
-// Without dataDir the directory is conductor.d next to the config file, which
-// here is also the allowed root: agents work there, so the server says so.
+// Without dataDir the directory is ~/.conductor. Here the home is the
+// allowed root: agents work there, so the server says so.
 func TestServeWarnsWhenTheDataDirOverlapsAnAllowedRoot(t *testing.T) {
 	clearConductorEnv(t)
-	dir := t.TempDir()
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, dir, dir))
+	home := os.Getenv("HOME")
+	cfg := writeServeConfig(t, t.TempDir(), fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, home, home))
 	logs := serveUntilListening(t, "--config", cfg)
-	data := filepath.Join(dir, "conductor.d")
-	if lines := logLines(logs, "level=WARN", "dataDir="+data, "allowedRoot="+dir); len(lines) != 1 {
-		t.Fatalf("no warning that %s is inside the allowed root %s:\n%s", data, dir, logs)
+	data := filepath.Join(home, ".conductor")
+	if lines := logLines(logs, "level=WARN", "dataDir="+data, "allowedRoot="+home); len(lines) != 1 {
+		t.Fatalf("no warning that %s is inside the allowed root %s:\n%s", data, home, logs)
 	}
 }
 
-// An upgraded server whose config sits in a directory it cannot write derives
-// a data directory it cannot create. It refuses to start and says which
-// settings choose another directory.
+// A data directory that cannot be made stops the server, which says which
+// settings choose another.
 func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 	clearConductorEnv(t)
-	dir := t.TempDir()
-	cfg := writeServeConfig(t, dir, `{"adminToken": "t"}`)
-	data := filepath.Join(dir, "conductor.d")
+	cfg := writeServeConfig(t, t.TempDir(), `{"adminToken": "t"}`)
+	data := filepath.Join(os.Getenv("HOME"), ".conductor")
 	// A file where the directory should be defeats MkdirAll even for root.
 	if err := os.WriteFile(data, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -164,8 +166,55 @@ func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
 	}
-	if strings.Contains(logs.String(), "conductor serving") {
-		t.Fatalf("serve listened anyway:\n%s", logs.String())
+}
+
+// An upgraded server whose data directory an older Conductor put next to the
+// config keeps using it while ~/.conductor holds no server data, and says
+// once, at warn, where it is, where the default is and how to move.
+func TestServeKeepsAnOldDataDirectoryWithANotice(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work, old := filepath.Join(dir, "work"), filepath.Join(dir, "conductor.d")
+	for _, d := range []string{work, old} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
+	logs := serveUntilListening(t, "--config", cfg)
+	def := filepath.Join(os.Getenv("HOME"), ".conductor")
+	if lines := logLines(logs, "level=WARN", old, def); len(lines) != 1 {
+		t.Fatalf("no notice naming %s and %s:\n%s", old, def, logs)
+	}
+	if lines := logLines(logs, "conductor serving", "dataDir="+old); len(lines) != 1 {
+		t.Fatalf("the server does not use %s:\n%s", old, logs)
+	}
+	if _, err := os.Stat(def); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("%s was made: %v", def, err)
+	}
+}
+
+// Without dataDir and without an old directory the server makes ~/.conductor,
+// 0700, names it on its serving line and warns about nothing it holds. (The
+// test binary embeds no web UI, which is a warning of its own.)
+func TestServeUsesTheHomeDataDirectory(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
+	logs := serveUntilListening(t, "--config", cfg)
+	data := filepath.Join(os.Getenv("HOME"), ".conductor")
+	if lines := logLines(logs, "conductor serving", "dataDir="+data); len(lines) != 1 {
+		t.Fatalf("the serving line does not name %s:\n%s", data, logs)
+	}
+	if fi, err := os.Stat(data); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("%s: %v %v", data, fi, err)
+	}
+	if lines := logLines(logs, "level=WARN", ".conductor"); len(lines) != 0 {
+		t.Fatalf("unexpected data directory warnings: %v", lines)
 	}
 }
 

@@ -47,7 +47,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	for _, w := range cfg.Warnings() {
 		log.Warn(w)
 	}
-	cfg.ResolveDataDir(*configPath)
+	notice, err := cfg.ResolveDataDir(*configPath)
+	if err != nil {
+		return 1, err
+	}
+	if notice != "" {
+		log.Warn(notice)
+	}
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
@@ -77,7 +83,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		return 1, fmt.Errorf("write the hook assets to %s: %w", agents.HooksDir(cfg.DataDir), err)
 	}
 	if root := cfg.DataDirOverlap(); root != "" {
-		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; set dataDir or CONDUCTOR_DATA_DIR to a directory outside allowedRoots", "dataDir", cfg.DataDir, "allowedRoot", root)
+		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them", "dataDir", cfg.DataDir, "allowedRoot", root)
 	}
 
 	ui := web.Handler()

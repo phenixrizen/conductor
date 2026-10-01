@@ -250,7 +250,7 @@ func homeOf(dir string) (string, error) {
 	return home, nil
 }
 
-const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the hooks and names the binary they run (default: CONDUCTOR_DATA_DIR, else conductor.d in the current directory)"
+const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the hooks and names the binary they run (default: CONDUCTOR_DATA_DIR, else ~/.conductor, or ./conductor.d where an older conductor left one and ~/.conductor holds no server data)"
 
 // adoptHooksDir adopts the binary that the hooks in the data directory
 // dataDir were written for, so that what install puts in place and what
@@ -260,7 +260,10 @@ const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the 
 // they name is gone, it says so and returns "": the hooks are then made for
 // this conductor.
 func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
-	hooksDir := serveHooksDir(dataDir)
+	hooksDir, err := serveHooksDir(dataDir)
+	if err != nil {
+		return "", err
+	}
 	if err := agents.CheckHooksDir(hooksDir); err != nil {
 		return "", err
 	}
@@ -290,15 +293,18 @@ func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
 }
 
 // serveHooksDir is the hooks dir of the data directory dataDir or, when it is
-// empty, of the one conductor serve uses without a config file:
-// CONDUCTOR_DATA_DIR, else conductor.d in the current directory.
-func serveHooksDir(dataDir string) string {
+// empty, of the one conductor serve uses without dataDir in its config:
+// CONDUCTOR_DATA_DIR, else ~/.conductor (or an older ./conductor.d while
+// ~/.conductor holds no server data).
+func serveHooksDir(dataDir string) (string, error) {
 	cfg := config.Config{DataDir: dataDir}
 	if cfg.DataDir == "" {
 		cfg.DataDir = os.Getenv("CONDUCTOR_DATA_DIR")
 	}
-	cfg.ResolveDataDir("")
-	return agents.HooksDir(cfg.DataDir)
+	if _, err := cfg.ResolveDataDir(""); err != nil {
+		return "", err
+	}
+	return agents.HooksDir(cfg.DataDir), nil
 }
 
 // adapterIDs lists the adapters' IDs, comma separated.

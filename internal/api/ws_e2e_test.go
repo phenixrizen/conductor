@@ -236,7 +236,7 @@ func TestAttentionViaAgentTokenBellAndEvents(t *testing.T) {
 	cat, _ := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
 		{ID: "env", Name: "env", Command: []string{"/bin/sh", "-c", "echo TOKEN=$CONDUCTOR_NOTIFY_TOKEN URL=$CONDUCTOR_NOTIFY_URL; exec /bin/cat"}},
 	}})
-	e.srv.catalog = cat
+	e.setCatalog(cat)
 	id := e.createSession("env")
 
 	// Events stream: subscribe before the changes.

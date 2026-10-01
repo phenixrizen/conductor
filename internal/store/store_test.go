@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,14 +63,55 @@ func TestSaveRejectsBadNames(t *testing.T) {
 	}
 }
 
+// A directory the server user cannot write is refused at Open, not at the
+// first save: the write probe catches it.
+func TestOpenRefusesADirectoryItCannotWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a directory of mode 0500")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	if _, err := Open(dir); err == nil || !strings.Contains(err.Error(), "is not writable") {
+		t.Fatalf("Open of a 0500 directory: %v", err)
+	}
+}
+
 func TestConcurrentSavesLeaveValidJSON(t *testing.T) {
 	s, _ := Open(t.TempDir())
+	if err := s.Save("c.json", doc{N: -1}); err != nil {
+		t.Fatal(err)
+	}
+	// A reader the whole time: it never finds the file torn or missing.
+	stop := make(chan struct{})
+	readErr := make(chan error, 1)
+	go func() {
+		defer close(readErr)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var d doc
+			if ok, err := s.Load("c.json", &d); !ok || err != nil {
+				readErr <- fmt.Errorf("load during the saves: ok=%v err=%v", ok, err)
+				return
+			}
+		}
+	}()
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(i int) { defer wg.Done(); _ = s.Save("c.json", doc{N: i}) }(i)
 	}
 	wg.Wait()
+	close(stop)
+	if err := <-readErr; err != nil {
+		t.Fatal(err)
+	}
 	b, err := os.ReadFile(filepath.Join(s.Dir(), "c.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -98,8 +141,16 @@ func TestFailedSaveKeepsPreviousDocument(t *testing.T) {
 	if err := s.Save("c.json", doc{N: 1}); err != nil {
 		t.Fatal(err)
 	}
+	// An encode error stops the save before anything is written.
 	if err := s.Save("c.json", make(chan int)); err == nil {
 		t.Fatal("expected an encode error")
+	}
+	// A rename that fails stops it after the temp file is written in full.
+	refused := errors.New("rename refused")
+	rename = func(string, string) error { return refused }
+	t.Cleanup(func() { rename = os.Rename })
+	if err := s.Save("c.json", doc{N: 2}); !errors.Is(err, refused) {
+		t.Fatalf("Save with a failing rename: %v", err)
 	}
 	var d doc
 	if ok, err := s.Load("c.json", &d); !ok || err != nil || d.N != 1 {
@@ -107,6 +158,25 @@ func TestFailedSaveKeepsPreviousDocument(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(filepath.Join(s.Dir(), "*.tmp")); len(left) != 0 {
 		t.Fatalf("temp files left behind: %v", left)
+	}
+}
+
+// Patterns and snippets are written as typed: <, > and & are not escaped, so
+// a hand-edited catalog.json reads like what the Agents page shows.
+func TestSaveWritesPatternsAsTyped(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	type sig struct {
+		Pattern string `json:"pattern"`
+	}
+	if err := s.Save("c.json", sig{Pattern: `^<a & b>$`}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(s.Dir(), "c.json"))
+	if want := "{\n  \"pattern\": \"^<a & b>$\"\n}\n"; string(b) != want {
+		t.Fatalf("file %q, want %q", b, want)
+	}
+	if enc, err := Encode(sig{Pattern: `^<a & b>$`}); err != nil || string(enc) != string(b) {
+		t.Fatalf("Encode %q %v, want what Save wrote", enc, err)
 	}
 }
 

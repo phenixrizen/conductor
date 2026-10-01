@@ -300,7 +300,10 @@ func injectHooks(opts Options) ([]string, map[string]string) {
 	dir := opts.HooksDir
 	bin, err := agents.BinaryPath()
 	if err == nil && dir == "" {
-		dir, err = agents.HostHooksDir()
+		var legacy bool
+		if dir, legacy, err = agents.HostHooksDir(); err == nil && legacy {
+			opts.Log.Info("the hook assets stay in the directory an older Conductor used; the default is now ~/.conductor/hooks, where they go once this one is removed", "dir", dir)
+		}
 	}
 	if err == nil {
 		err = agents.WriteAssets(dir, bin)

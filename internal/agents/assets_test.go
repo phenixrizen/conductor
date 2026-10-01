@@ -324,19 +324,76 @@ func TestHooksDirs(t *testing.T) {
 	if got := HooksDir(""); got != "" {
 		t.Fatalf("HooksDir without a data dir = %q", got)
 	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_STATE_HOME", "/srv/state")
-	if got, err := HostHooksDir(); err != nil || got != "/srv/state/conductor/hooks" {
-		t.Fatalf("with XDG_STATE_HOME: %q %v", got, err)
+	host := func(t *testing.T) (string, bool) {
+		t.Helper()
+		dir, legacy, err := HostHooksDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dir, legacy
 	}
-	// The spec says to ignore a relative XDG path; so does an empty one.
-	for _, v := range []string{"", "state"} {
-		t.Setenv("XDG_STATE_HOME", v)
-		if got, err := HostHooksDir(); err != nil || got != filepath.Join(home, ".local", "state", "conductor", "hooks") {
-			t.Fatalf("XDG_STATE_HOME=%q: %q %v", v, got, err)
+	mkdir := func(t *testing.T, p string) {
+		t.Helper()
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
 		}
 	}
+	t.Run("the default is ~/.conductor/hooks", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_STATE_HOME", t.TempDir()) // no old directory in it
+		if dir, legacy := host(t); dir != filepath.Join(home, ".conductor", "hooks") || legacy {
+			t.Fatalf("%q legacy=%v", dir, legacy)
+		}
+	})
+	t.Run("an old directory under XDG_STATE_HOME is kept", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		state := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", state)
+		old := filepath.Join(state, "conductor", "hooks")
+		mkdir(t, old)
+		if dir, legacy := host(t); dir != old || !legacy {
+			t.Fatalf("%q legacy=%v, want %q", dir, legacy, old)
+		}
+	})
+	// The XDG spec says to ignore a relative XDG path; so does an empty one.
+	for _, xdg := range []string{"", "state"} {
+		t.Run("an old ~/.local/state directory is kept, XDG_STATE_HOME="+xdg, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_STATE_HOME", xdg)
+			old := filepath.Join(home, ".local", "state", "conductor", "hooks")
+			mkdir(t, old)
+			if dir, legacy := host(t); dir != old || !legacy {
+				t.Fatalf("%q legacy=%v, want %q", dir, legacy, old)
+			}
+		})
+	}
+	t.Run("~/.conductor/hooks wins once it exists", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_STATE_HOME", "")
+		mkdir(t, filepath.Join(home, ".local", "state", "conductor", "hooks"))
+		mkdir(t, filepath.Join(home, ".conductor", "hooks"))
+		if dir, legacy := host(t); dir != filepath.Join(home, ".conductor", "hooks") || legacy {
+			t.Fatalf("%q legacy=%v", dir, legacy)
+		}
+	})
+	// The host's directory is its own. A server's old ./conductor.d, which
+	// the server keeps by the legacy rule, is not where the host writes, and
+	// the host's ~/.conductor/hooks does not end that rule
+	// (config.ResolveDataDir, TestResolveDataDirDefaults).
+	t.Run("a server's old ./conductor.d is not the host's", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_STATE_HOME", "")
+		cwd := t.TempDir()
+		mkdir(t, filepath.Join(cwd, "conductor.d", "hooks"))
+		t.Chdir(cwd)
+		if dir, legacy := host(t); dir != filepath.Join(home, ".conductor", "hooks") || legacy {
+			t.Fatalf("%q legacy=%v", dir, legacy)
+		}
+	})
 }
 
 func TestShellQuote(t *testing.T) {

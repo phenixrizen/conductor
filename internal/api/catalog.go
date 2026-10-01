@@ -44,37 +44,46 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
-	// The stored agent is read under the lock the save holds, so no other save
-	// can change it in between.
-	stored, _ := s.catalog.Get(a.ID)
-	if err := restoreMaskedEnv(&a, stored); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
+	saved, aerr := s.saveAgent(a)
+	if aerr != nil {
+		writeAPIError(w, aerr)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent": saved.Redacted()})
+}
+
+// saveAgent adds a to the overlay, or replaces the entry with its ID, and
+// returns it as the catalog now lists it. It holds catalogEditMu from reading
+// the stored agent to publishing the result; readers and launches wait for
+// none of it.
+func (s *Server) saveAgent(a catalog.Agent) (catalog.Agent, *apiError) {
+	s.catalogEditMu.Lock()
+	defer s.catalogEditMu.Unlock()
+	// The stored agent is read under the editor lock, so no other save can
+	// change it in between.
+	stored, _ := s.Catalog().Get(a.ID)
+	if err := restoreMaskedEnv(&a, stored); err != nil {
+		return catalog.Agent{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	// Check a by itself, so the message is about this agent and not an index
 	// into the overlay.
 	var probe catalog.Catalog
 	if err := probe.Upsert(a); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
-		return
+		return catalog.Agent{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	if err := checkAdapter(a); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
-		return
+		return catalog.Agent{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	ov := s.overlay
 	ov.Agents = upsertAgent(ov.Agents, a)
 	ov.Hidden = withoutID(ov.Hidden, a.ID)
 	if err := s.commitOverlay(ov); err != nil {
 		s.log.Error("catalog save failed", "agent", a.ID, "err", err)
-		writeError(w, http.StatusInternalServerError, "store_failed", "could not save the catalog")
-		return
+		return catalog.Agent{}, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
 	}
 	s.log.Info("catalog agent saved", "agent", a.ID)
-	saved, _ := s.catalog.Get(a.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"agent": saved.Redacted()})
+	saved, _ := s.Catalog().Get(a.ID)
+	return saved, nil
 }
 
 // handleDeleteAgent removes the overlay entry with the given ID, which restores
@@ -85,12 +94,21 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	id := r.PathValue("id")
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
+	if aerr := s.deleteAgent(r.PathValue("id")); aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteAgent removes the overlay entry with the given ID, or hides an agent
+// that has none, under catalogEditMu.
+func (s *Server) deleteAgent(id string) *apiError {
+	s.catalogEditMu.Lock()
+	defer s.catalogEditMu.Unlock()
 	ov := s.overlay
 	inOverlay := slices.ContainsFunc(ov.Agents, func(a catalog.Agent) bool { return a.ID == id })
-	_, listed := s.catalog.Get(id)
+	_, listed := s.Catalog().Get(id)
 	action := "removed"
 	switch {
 	case inOverlay:
@@ -99,16 +117,14 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		ov.Hidden = append(slices.Clone(ov.Hidden), id)
 		action = "hidden"
 	default:
-		writeError(w, http.StatusNotFound, "not_found", "no such agent")
-		return
+		return newAPIError(http.StatusNotFound, "not_found", "no such agent")
 	}
 	if err := s.commitOverlay(ov); err != nil {
 		s.log.Error("catalog save failed", "agent", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "store_failed", "could not save the catalog")
-		return
+		return newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
 	}
 	s.log.Info("catalog agent changed", "agent", id, "action", action)
-	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // handleUnhideAgent takes an ID off the overlay's hidden list, which brings
@@ -120,26 +136,35 @@ func (s *Server) handleUnhideAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	id := r.PathValue("id")
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
+	a, found, aerr := s.unhideAgent(r.PathValue("id"))
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	out := map[string]any{}
+	if found {
+		out["agent"] = a.Redacted()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// unhideAgent takes id off the hidden list under catalogEditMu and returns the
+// agent it brings back, if one has that ID.
+func (s *Server) unhideAgent(id string) (catalog.Agent, bool, *apiError) {
+	s.catalogEditMu.Lock()
+	defer s.catalogEditMu.Unlock()
 	ov := s.overlay
 	if !slices.Contains(ov.Hidden, id) {
-		writeError(w, http.StatusNotFound, "not_found", "no hidden agent with that id")
-		return
+		return catalog.Agent{}, false, newAPIError(http.StatusNotFound, "not_found", "no hidden agent with that id")
 	}
 	ov.Hidden = withoutID(ov.Hidden, id)
 	if err := s.commitOverlay(ov); err != nil {
 		s.log.Error("catalog save failed", "agent", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "store_failed", "could not save the catalog")
-		return
+		return catalog.Agent{}, false, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
 	}
 	s.log.Info("catalog agent changed", "agent", id, "action", "unhidden")
-	out := map[string]any{}
-	if a, ok := s.catalog.Get(id); ok {
-		out["agent"] = a.Redacted()
-	}
-	writeJSON(w, http.StatusOK, out)
+	a, ok := s.Catalog().Get(id)
+	return a, ok, nil
 }
 
 // checkCommandRequest is the body of POST /api/catalog/check.
@@ -210,11 +235,12 @@ func restoreMaskedEnv(a *catalog.Agent, stored catalog.Agent) error {
 }
 
 // commitOverlay makes ov the current overlay. It builds the catalog ov yields
-// from the configured one, writes ov to catalog.json and only then publishes
-// both, so a failure leaves the running catalog and the file as they were.
-// Deriving the catalog from base and the overlay, as a restart does, keeps the
-// two identical. Agents is saved as [] rather than null. The caller holds
-// catalogMu.
+// from the configured one and writes ov to catalog.json without catalogMu.
+// Only then does it publish both, under catalogMu for that instant, so a
+// failure leaves the running catalog and the file as they were. Deriving the
+// catalog from base and the overlay, as a restart does, keeps the two
+// identical. Agents is saved as [] rather than null. The caller holds
+// catalogEditMu.
 func (s *Server) commitOverlay(ov catalog.Overlay) error {
 	next := s.base.Clone()
 	if err := next.ApplyOverlay(ov); err != nil {
@@ -226,7 +252,9 @@ func (s *Server) commitOverlay(ov catalog.Overlay) error {
 	if err := s.store.Save(catalogFile, ov); err != nil {
 		return fmt.Errorf("save %s: %w", catalogFile, err)
 	}
+	s.catalogMu.Lock()
 	s.overlay, s.catalog = ov, next
+	s.catalogMu.Unlock()
 	return nil
 }
 

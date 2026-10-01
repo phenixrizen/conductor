@@ -69,7 +69,9 @@ func TestHooksInstallCLI(t *testing.T) {
 }
 
 // Without --data-dir the data dir is the one conductor serve would use:
-// CONDUCTOR_DATA_DIR, else conductor.d in the current directory.
+// CONDUCTOR_DATA_DIR, else ~/.conductor, or an old conductor.d in the current
+// directory while ~/.conductor holds no server data, as in the new home
+// runHooksWith gives every run.
 func TestHooksInstallFindsTheDataDirLikeServe(t *testing.T) {
 	clearConductorEnv(t)
 	env, fromEnv := t.TempDir(), fakeBinary(t)
@@ -91,6 +93,38 @@ func TestHooksInstallFindsTheDataDirLikeServe(t *testing.T) {
 			t.Fatalf("CONDUCTOR_DATA_DIR=%q: installed\n%s", tc.env, b)
 		}
 	}
+}
+
+// conductor hooks takes the hooks from the data directory conductor serve
+// would use: an old ./conductor.d while ~/.conductor holds only hooks/ (which
+// conductor host writes there too), and ~/.conductor once it holds a
+// server's data.
+func TestHooksInstallTakesTheHomeDataDir(t *testing.T) {
+	clearConductorEnv(t)
+	t.Cleanup(agents.ForgetBinary())
+	home := os.Getenv("HOME")
+	fromHome := fakeBinary(t)
+	serverAssets(t, filepath.Join(home, ".conductor"), fromHome)
+	cwd, fromCwd := t.TempDir(), fakeBinary(t)
+	serverAssets(t, filepath.Join(cwd, "conductor.d"), fromCwd)
+	t.Chdir(cwd)
+	install := func(want string) {
+		t.Helper()
+		target := t.TempDir()
+		var out, errOut bytes.Buffer
+		if code, err := runHooks(t.Context(), []string{"install", "copilot", "--home", target}, &out, &errOut); code != 0 || err != nil {
+			t.Fatalf("exit %d %v\n%s%s", code, err, &out, &errOut)
+		}
+		b, _ := os.ReadFile(filepath.Join(target, ".copilot", "hooks", "conductor.json"))
+		if !strings.Contains(string(b), `"`+want+` notify --copilot-hook"`) {
+			t.Fatalf("installed, want %s:\n%s", want, b)
+		}
+	}
+	install(fromCwd) // ~/.conductor holds hooks/ only
+	if err := os.WriteFile(filepath.Join(home, ".conductor", "catalog.json"), []byte(`{"agents": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	install(fromHome)
 }
 
 // install all installs every adapter that has a file to install, with the

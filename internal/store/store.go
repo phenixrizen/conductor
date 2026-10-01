@@ -49,12 +49,12 @@ func (s *Store) Dir() string { return s.dir }
 // Load decodes the document called name into v. It reports false, with no
 // error, only when the document does not exist yet.
 //
-// Decoding is strict, like every other reader of external JSON here: an unknown
-// field, an empty file or anything after the JSON value is an error, so a typo
-// in a hand-edited file is caught instead of silently dropped. A load error is
-// a real error: callers must surface it and never treat the document as empty,
-// or their next Save would overwrite what is on disk. v may be partly filled
-// after an error.
+// Decoding is strict (DecodeStrict), as it is for the config file and the
+// catalog file: an unknown field, an empty file or anything after the JSON
+// value is an error, so a typo in a hand-edited file is caught instead of
+// silently dropped. A load error is a real error: callers must surface it and
+// never treat the document as empty, or their next Save would overwrite what
+// is on disk. v may be partly filled after an error.
 func (s *Store) Load(name string, v any) (bool, error) {
 	if !namePattern.MatchString(name) {
 		return false, fmt.Errorf("store: bad name %q", name)
@@ -66,16 +66,18 @@ func (s *Store) Load(name string, v any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := decodeStrict(b, v); err != nil {
+	if err := DecodeStrict(b, v); err != nil {
 		return false, fmt.Errorf("store: parse %s: %w", name, err)
 	}
 	return true, nil
 }
 
-// decodeStrict decodes exactly one JSON value from b into v. Unknown fields are
-// errors, and so is anything but whitespace after the value: unlike
-// json.Unmarshal, Decoder.Decode stops after the first value and would accept it.
-func decodeStrict(b []byte, v any) error {
+// DecodeStrict decodes exactly one JSON value from b into v. Unknown fields
+// are errors, and so are an empty b and anything but whitespace after the
+// value: unlike json.Unmarshal, Decoder.Decode stops after the first value
+// and would accept the rest. Every reader of a JSON file Conductor is given
+// decodes with it: the store, the config file and the catalog file.
+func DecodeStrict(b []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
@@ -95,14 +97,32 @@ func decodeStrict(b []byte, v any) error {
 	}
 }
 
-// Save writes v as indented JSON to a temp file in the data directory and
+// rename is os.Rename: the last step of a save. A test replaces it to make a
+// save fail after the temp file is written.
+var rename = os.Rename
+
+// Encode is v as Save writes it: indented with two spaces, ending in a
+// newline, with <, > and & as they are, so patterns and snippets stay
+// hand-editable.
+func Encode(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Save writes v as Encode writes it to a temp file in the data directory and
 // renames it over name (mode 0600), so a crash leaves either the old or the new
 // document, never a partial one.
 func (s *Store) Save(name string, v any) error {
 	if !namePattern.MatchString(name) {
 		return fmt.Errorf("store: bad name %q", name)
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
+	b, err := Encode(v)
 	if err != nil {
 		return err
 	}
@@ -114,7 +134,7 @@ func (s *Store) Save(name string, v any) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
+	if _, err := tmp.Write(b); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -129,5 +149,5 @@ func (s *Store) Save(name string, v any) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), final)
+	return rename(tmp.Name(), final)
 }

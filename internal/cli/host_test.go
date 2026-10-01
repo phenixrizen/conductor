@@ -136,8 +136,9 @@ func (w *registrationWatch) String() string {
 	return w.buf.String()
 }
 
-// --agent picks the adapter: the hooks go to the host's hooks dir under
-// XDG_STATE_HOME and the session is launched with the adapter's flags.
+// --agent picks the adapter: the hooks go to the host's hooks dir,
+// ~/.conductor/hooks (XDG_STATE_HOME holds no older one, so it is ignored),
+// and the session is launched with the adapter's flags.
 func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
 	clearConductorEnv(t)
 	// The host writes its hook assets, which records their binary for the
@@ -182,7 +183,7 @@ func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the hosted session never registered: %+v %s", srv.Registry().List(), stderr)
 	}
-	settings := filepath.Join(state, "conductor", "hooks", "claude.json")
+	settings := filepath.Join(os.Getenv("HOME"), ".conductor", "hooks", "claude.json")
 	var command []string
 	var agentID string
 	for _, info := range srv.Registry().List() {

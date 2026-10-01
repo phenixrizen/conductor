@@ -13,6 +13,7 @@
   "relayTimeoutMs": 8000,
   "envPassthrough": [],
   "fileView": "view",
+  "dataDir": "",
   "catalog": {
     "disableDefaults": false,
     "agents": [

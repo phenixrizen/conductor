@@ -3,8 +3,6 @@
 package catalog
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -13,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/phenixrizen/conductor/internal/store"
 )
 
 // Agent describes one launchable command.
@@ -85,16 +85,15 @@ const (
 	maxSignalPattern  = 200  // bytes in a signal pattern
 )
 
-// ReadFile parses a catalog file, rejecting unknown fields.
+// ReadFile parses a catalog file: one JSON value, no unknown field, nothing
+// after it (store.DecodeStrict).
 func ReadFile(path string) (File, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return File{}, fmt.Errorf("read catalog: %w", err)
 	}
 	var f File
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
+	if err := store.DecodeStrict(b, &f); err != nil {
 		return File{}, fmt.Errorf("parse catalog %s: %w", path, err)
 	}
 	return f, nil

@@ -50,13 +50,18 @@ type Server struct {
 	// when it is unknown.
 	home string
 
-	// catalogMu guards overlay and catalog. catalog is the effective catalog,
-	// base with overlay applied. It is replaced as a whole and never edited in
-	// place, so a copy taken under the lock (see Catalog) is a stable snapshot.
-	// Editing holds the lock from reading overlay to publishing the new catalog,
-	// so two admins cannot lose each other's change.
+	// catalogEditMu serialises the catalog's editors. An edit holds it from
+	// reading overlay to publishing the new catalog, across the write and
+	// fsync of catalog.json, so two admins cannot lose each other's change.
+	// Readers never take it.
+	catalogEditMu sync.Mutex
+	// catalogMu guards overlay and catalog for the instant they are read or
+	// swapped. catalog is the effective catalog, base with overlay applied;
+	// it is replaced as a whole and never edited in place, so a copy taken
+	// under the lock (see Catalog) is a stable snapshot. An editor also holds
+	// catalogEditMu, so it may read overlay without this lock.
 	catalogMu sync.Mutex
-	base      catalog.Catalog // the configured catalog, before the overlay
+	base      catalog.Catalog // the configured catalog, before the overlay; never changed after New
 	overlay   catalog.Overlay // the UI-managed layer, as saved in catalog.json
 	catalog   catalog.Catalog
 
