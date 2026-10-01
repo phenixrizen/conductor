@@ -31,6 +31,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	listen := fs.String("listen", "", "listen address (overrides config)")
 	dev := fs.Bool("dev", false, "allow the Nuxt dev server origin and CORS from localhost")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
+	examples := fs.Bool("examples", false, "seed the example crews once (env CONDUCTOR_EXAMPLES=1); a crew whose id exists is left alone")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -62,6 +63,9 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	}
 	if *dev {
 		cfg.Dev = true
+	}
+	if *examples {
+		cfg.Examples = true
 	}
 	if cfg.AdminToken == "" {
 		tok, _ := share.NewToken()
@@ -100,6 +104,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	srv, err := api.New(cfg, cat, log, ui, st)
 	if err != nil {
 		return 1, err
+	}
+	if cfg.Examples {
+		added, skipped, err := srv.SeedExampleCrews()
+		if err != nil {
+			return 1, fmt.Errorf("seed the example crews: %w", err)
+		}
+		log.Info("example crews", "added", added, "skipped", skipped)
 	}
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),

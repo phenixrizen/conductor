@@ -393,6 +393,7 @@ func TestCrewRoutesNeedAStore(t *testing.T) {
 		{"POST", "/api/crews/crew/duplicate", nil},
 		{"GET", "/api/crews/crew", nil},
 		{"POST", "/api/crews/crew/launch", nil},
+		{"POST", "/api/crews/examples", nil},
 	} {
 		resp, out := ro.do(r.method, r.path, adminToken, r.body)
 		wantAPIError(t, r.method+" "+r.path, resp, out, http.StatusServiceUnavailable, "store_unavailable", "")
@@ -1514,4 +1515,49 @@ func TestLaunchRefusesAnAgentNotInstalled(t *testing.T) {
 	runID := out["run"].(map[string]any)["id"].(string)
 	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, map[string]any{"name": "late", "agentId": "ghost", "prompt": "", "start": map[string]any{"when": "manual"}})
 	wantAPIError(t, "add member", resp, out, http.StatusBadRequest, "invalid_crew", `member "late": agent "ghost" is not installed on the server`)
+}
+
+// POST /api/crews/examples seeds the examples once, one file each, with the
+// server's default working directory: a second call adds nothing, an edit
+// survives it, a deleted example comes back, and the list pages them with the
+// rest.
+func TestSeedExamplesOnce(t *testing.T) {
+	e := newTestEnv(t, nil)
+	if resp, _ := e.do("POST", "/api/crews/examples", "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous: %d", resp.StatusCode)
+	}
+	resp, out := e.do("POST", "/api/crews/examples", adminToken, nil)
+	if resp.StatusCode != http.StatusOK || len(out["added"].([]any)) != 4 || len(out["skipped"].([]any)) != 0 {
+		t.Fatalf("first seed: %d %v", resp.StatusCode, out)
+	}
+	if ids := e.crewIDs(); !slices.Equal(ids, []string{"example-dependency-upgrade", "example-docs-writer", "example-test-fixer", "example-todo-app"}) {
+		t.Fatalf("listed by name: %v", ids)
+	}
+	c := e.crew("example-todo-app")
+	if c["cwd"] != e.root || c["isolation"] != "worktree" || len(c["members"].([]any)) != 4 || e.storedCrew("example-todo-app") == nil {
+		t.Fatalf("todo app: %v", c)
+	}
+	if m := crewMember(c, 3); m["name"] != "tester" || m["agentId"] != "codex" || m["start"].(map[string]any)["member"] != "cli" {
+		t.Fatalf("tester: %v", m)
+	}
+	// Edit it as the editor would, then seed again: the edit stays.
+	for _, k := range []string{"id", "createdAt", "updatedAt"} {
+		delete(c, k)
+	}
+	c["goal"] = "edited"
+	// The test catalog has neither claude nor codex: save it with its own agents.
+	for i := range c["members"].([]any) {
+		crewMember(c, i)["agentId"] = "cat"
+	}
+	e.sendCrew("PUT", "/api/crews/example-todo-app", c, http.StatusOK)
+	if resp, _ := e.do("DELETE", "/api/crews/example-docs-writer", adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	_, out = e.do("POST", "/api/crews/examples", adminToken, nil)
+	if added := out["added"].([]any); len(added) != 1 || added[0] != "example-docs-writer" || len(out["skipped"].([]any)) != 3 {
+		t.Fatalf("second seed: %v", out)
+	}
+	if got := e.crew("example-todo-app"); got["goal"] != "edited" {
+		t.Fatalf("the edit was lost: %v", got)
+	}
 }

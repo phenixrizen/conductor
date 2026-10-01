@@ -718,3 +718,26 @@ func TestLoadCatalogChecksTheAdapter(t *testing.T) {
 		t.Fatalf("both: %v", err)
 	}
 }
+
+// CONDUCTOR_EXAMPLES turns the example-crew seeding on; it is not a config-file key.
+func TestExamplesComesFromTheEnvironmentOnly(t *testing.T) {
+	for _, v := range []string{"1", "true"} {
+		t.Setenv("CONDUCTOR_EXAMPLES", v)
+		if cfg, err := Load(""); err != nil || !cfg.Examples {
+			t.Fatalf("CONDUCTOR_EXAMPLES=%s: %+v %v", v, cfg, err)
+		}
+	}
+	for _, v := range []string{"", "0", "yes"} {
+		t.Setenv("CONDUCTOR_EXAMPLES", v)
+		if cfg, err := Load(""); err != nil || cfg.Examples {
+			t.Fatalf("CONDUCTOR_EXAMPLES=%q: %+v %v", v, cfg, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "c.json")
+	if err := os.WriteFile(path, []byte(`{"examples": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "examples") {
+		t.Fatalf("a config file with examples should be rejected as an unknown field: %v", err)
+	}
+}

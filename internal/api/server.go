@@ -233,6 +233,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews", s.requireAdmin(s.handleListCrews))
 	mux.HandleFunc("GET /api/crews/{id}", s.requireAdmin(s.handleGetCrew))
 	mux.HandleFunc("POST /api/crews", s.requireAdmin(s.handleCreateCrew))
+	mux.HandleFunc("POST /api/crews/examples", s.requireAdmin(s.handleSeedExamples))
 	mux.HandleFunc("PUT /api/crews/{id}", s.requireAdmin(s.handleUpdateCrew))
 	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.requireAdmin(s.handleDuplicateCrew))

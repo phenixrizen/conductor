@@ -379,3 +379,36 @@ func TestServeWarnsAboutAWebhookHostThatDoesNotResolve(t *testing.T) {
 		t.Fatalf("a private webhook host: exit %d %v\n%s", code, err, stderr.String())
 	}
 }
+
+// --examples (or CONDUCTOR_EXAMPLES=1) seeds the four example crews into the
+// data directory once, one file each: the second start adds nothing and says
+// so, and without either nothing is seeded.
+func TestServeSeedsTheExamplesOnce(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	logs := serveUntilListening(t, "--config", cfg, "--examples")
+	if lines := logLines(logs, "example crews", `added="[example-todo-app example-test-fixer example-docs-writer example-dependency-upgrade]"`, "skipped=[]"); len(lines) != 1 {
+		t.Fatalf("first start:\n%s", logs)
+	}
+	for _, id := range []string{"example-todo-app", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"} {
+		if _, err := os.Stat(filepath.Join(data, "crews", id+".json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CONDUCTOR_EXAMPLES", "1")
+	logs = serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "example crews", "added=[]"); len(lines) != 1 {
+		t.Fatalf("second start:\n%s", logs)
+	}
+	t.Setenv("CONDUCTOR_EXAMPLES", "")
+	logs = serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "example crews"); len(lines) != 0 {
+		t.Fatalf("without the flag nothing is seeded:\n%s", logs)
+	}
+}

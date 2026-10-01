@@ -184,6 +184,32 @@ async function newCrew() {
   router.push('/crews')
 }
 
+const seeding = ref(false)
+
+/**
+ * Seeds the example crews and opens the first one; what already existed is left as it is. The button shows on the empty page only, which
+ * is page 1 with a total of 0 (refresh steps back from a page past the end), so reading the list again lists the examples there.
+ */
+async function loadExamples() {
+  seeding.value = true
+  try {
+    const r = await api.loadExampleCrews()
+    await refresh()
+    toast.add({
+      title: r.added.length ? `${r.added.length} example ${r.added.length === 1 ? 'crew' : 'crews'} added` : 'The examples are here already',
+      description: 'Edit or delete them like any crew.',
+      icon: 'i-lucide-package-open',
+      color: 'success',
+    })
+    const first = r.added[0] ?? r.skipped[0]
+    if (first) await router.push(`/crews/${encodeURIComponent(first)}`)
+  } catch (e) {
+    fail('Loading the examples failed', e)
+  } finally {
+    seeding.value = false
+  }
+}
+
 function fail(title: string, e: unknown) {
   toast.add({ title, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
 }
@@ -467,8 +493,12 @@ watch(routeId, loadSelected)
             v-else-if="loaded && !list.length"
             icon="i-lucide-users"
             title="No crews yet"
-            description="A crew is a saved team of agents: each with a role prompt, its own git worktree and a start condition. Launch it here or with conductor up <crew>."
-            :actions="[{ label: 'New crew', icon: 'i-lucide-plus', onClick: newCrew }]"
+            description="A crew is a saved team of agents: each with a role prompt, its own git worktree and a start condition. Launch it here or with conductor up <crew>. The examples show four shapes of crew; they are ordinary crews once loaded."
+            :actions="[
+              { label: 'New crew', icon: 'i-lucide-plus', onClick: newCrew },
+              { label: 'Load the examples', icon: 'i-lucide-package-open', color: 'neutral', variant: 'outline', loading: seeding, onClick: loadExamples },
+            ]"
+            data-crews-empty
           />
           <div v-else-if="loading" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading crews…</div>
         </section>

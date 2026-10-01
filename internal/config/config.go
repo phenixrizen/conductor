@@ -112,6 +112,10 @@ type Config struct {
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
+	// Examples seeds the example crews once at startup: CONDUCTOR_EXAMPLES=1
+	// (or true), or conductor serve --examples. Not a config-file key: the
+	// decoder ignores it, so an "examples" key in the file is rejected.
+	Examples bool `json:"-"`
 	// Path is the absolute path of the config file Load read, or "" when there
 	// was none. It is not a config key: the decoder ignores it, so a "path" key
 	// in the file is rejected as unknown.
@@ -207,6 +211,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	}
 	if v := getenv("CONDUCTOR_DEV"); v == "1" || v == "true" {
 		cfg.Dev = true
+	}
+	if v := getenv("CONDUCTOR_EXAMPLES"); v == "1" || v == "true" {
+		cfg.Examples = true
 	}
 	for key, dst := range map[string]*int{
 		"CONDUCTOR_SCROLLBACK_BYTES":        &cfg.ScrollbackBytes,

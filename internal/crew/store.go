@@ -349,6 +349,35 @@ func (s *Store) Delete(id string) (bool, error) {
 	return true, nil
 }
 
+// Seed saves the crews of list whose ids have no file in the crews
+// directory, and returns the ids it added and the ids it skipped, each in
+// list's order. A file with the id, usable or not (taken), is left alone
+// whatever it holds: seeding twice changes nothing, a crew edited after a
+// seed stays as the editor left it, and a file the store cannot read is
+// never overwritten. The first crew that cannot be saved stops the seed,
+// naming it; the ones saved before it stay.
+func (s *Store) Seed(list []Crew) (added, skipped []string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken, err := s.taken()
+	if err != nil {
+		return nil, nil, err
+	}
+	added, skipped = []string{}, []string{}
+	for _, c := range list {
+		if taken[c.ID] {
+			skipped = append(skipped, c.ID)
+			continue
+		}
+		if err := s.commit(c); err != nil {
+			return added, skipped, fmt.Errorf("seed %s: %w", c.ID, err)
+		}
+		taken[c.ID] = true
+		added = append(added, c.ID)
+	}
+	return added, skipped, nil
+}
+
 // commit checks c as it will be saved, then writes its file and drops the
 // summary the list cached for it. An invalid crew is refused, and a failed
 // write (ErrWrite) leaves the file as it was. The caller holds s.mu.

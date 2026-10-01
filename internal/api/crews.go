@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/crew"
 )
@@ -228,4 +229,34 @@ func (s *Server) crewStoreError(w http.ResponseWriter, id string, err error) {
 		s.log.Error("crew read failed", "crew", id, "err", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "could not read the crews")
 	}
+}
+
+// SeedExampleCrews saves the example crews (crew.Examples) whose ids have no
+// file in the crews directory, with the server's default working directory,
+// and returns what it added and what it skipped. conductor serve --examples
+// and POST /api/crews/examples both come here.
+func (s *Server) SeedExampleCrews() (added, skipped []string, err error) {
+	if s.crews == nil {
+		return nil, nil, errors.New("no data directory is configured")
+	}
+	return s.crews.Seed(crew.Examples(s.cfg.DefaultCwd, time.Now().UTC()))
+}
+
+// handleSeedExamples answers POST /api/crews/examples with {added, skipped}.
+// The examples' agents, the claude and codex built-ins, are not checked
+// against the catalog: a catalog that hides them still gets the examples,
+// the editor shows the agent as not in the catalog, and the launch refuses
+// it.
+func (s *Server) handleSeedExamples(w http.ResponseWriter, r *http.Request) {
+	if s.crews == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
+		return
+	}
+	added, skipped, err := s.SeedExampleCrews()
+	if err != nil {
+		s.crewStoreError(w, "examples", err)
+		return
+	}
+	s.log.Info("example crews seeded", "added", added, "skipped", skipped)
+	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped})
 }

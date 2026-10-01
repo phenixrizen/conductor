@@ -344,6 +344,11 @@ export function useSessions() {
     duplicateCrew: (id: string) =>
       request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
     /**
+     * Seeds the four example crews, as `conductor serve --examples` does: each is saved unless a file with its id exists, which is left
+     * alone. Returns the ids added and skipped, in the examples' order. 503 `store_unavailable` without a data directory.
+     */
+    loadExampleCrews: () => request<{ added: string[]; skipped: string[] }>('/api/crews/examples', { method: 'POST' }),
+    /**
      * Launches a saved crew. Resolves once the session of every member that starts immediately exists (the member `starting`);
      * each prompt is typed once its session is ready, and a member whose prompt cannot be typed ends alone.
      * 400 `invalid_crew` (no members, a hosted crew, an agent the catalog lacks or one given arguments it does not take, a symlinked
