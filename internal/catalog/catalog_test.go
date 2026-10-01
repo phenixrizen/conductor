@@ -713,14 +713,16 @@ func TestBuiltInIconsAreInTheWorkbenchBundle(t *testing.T) {
 // site is an optional https URL with a host and no user info, at most 200 bytes.
 func TestSiteValidation(t *testing.T) {
 	base := Agent{ID: "x", Name: "X", Command: []string{"x"}}
-	for _, ok := range []string{"", "https://example.com", "https://example.com/docs/cli?x=1"} {
+	for _, ok := range []string{"", "https://example.com", "https://example.com/docs/cli?x=1", "https://example.com:8443/x", "https://example.com:65535"} {
 		a := base
 		a.Site = ok
 		if err := validate(a); err != nil {
 			t.Fatalf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"http://example.com", "example.com", "https://", "https://user:pw@example.com", "https://example.com/" + strings.Repeat("a", 200), "javascript:alert(1)", "https://exa mple.com"} {
+	for _, bad := range []string{"http://example.com", "example.com", "https://", "https://user:pw@example.com", "https://example.com/" + strings.Repeat("a", 200), "javascript:alert(1)", "https://exa mple.com",
+		// What a browser's URL parser refuses too: no host name, a port out of range, a no-break space in the host.
+		"https://:443", "https://example.com:99999", "https://example.com:0", "https://exa\u00a0mple.com"} {
 		a := base
 		a.Site = bad
 		if err := validate(a); err == nil || !strings.Contains(err.Error(), "site") {

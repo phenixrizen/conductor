@@ -10,7 +10,9 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/store"
@@ -267,17 +269,29 @@ func cut(s string) string {
 	return s
 }
 
-// validateSite accepts an https URL with a host and no user info, at most
-// maxSite bytes, so that the Agents page can link to it as it is.
+// validateSite accepts an https URL with a host name, a port in range if any,
+// no user info and no white space (a no-break space included), at most maxSite
+// bytes, so that the Agents page can link to it as it is and a browser parses
+// it as the server does.
 func validateSite(site string) error {
 	if len(site) > maxSite {
 		return fmt.Errorf("must be at most %d bytes", maxSite)
 	}
 	u, err := url.Parse(site)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.ContainsAny(site, " \t\r\n") {
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.ContainsFunc(site, unicode.IsSpace) || !validPort(u.Port()) {
 		return errors.New("must be an https:// URL with a host")
 	}
 	return nil
+}
+
+// validPort reports whether port, as url.URL.Port gives it, is absent or a
+// TCP port from 1 to 65535.
+func validPort(port string) bool {
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
 }
 
 // validateSignal checks a signal's kind and pattern. Its errors carry no agent

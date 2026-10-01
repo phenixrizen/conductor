@@ -84,11 +84,11 @@ func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(prog
 	return nil
 }
 
-// installed reports whether a program resolves on this server (lookups:
-// cached 30 s), for checkLaunch.
+// installed reports whether a session of program could start on this server
+// (lookups: cached 30 s; a relative path with a separator counts, since it
+// resolves against the session's directory), for checkLaunch.
 func (s *Server) installed(program string) bool {
-	_, ok := s.lookups.found(program)
-	return ok
+	return s.lookups.installed(program)
 }
 
 // runContext is the context of a launch or a start: the request's values,

@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { isAvailable, notInstalled } from '~/utils/agents'
+import { isAvailable, notInstalled, notInstalledTitle } from '~/utils/agents'
 import { removalOf, removalText } from '~/utils/catalog'
 
 useHead({ title: 'Agents' })
@@ -147,7 +147,7 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
               <p v-if="a.description" class="text-sm text-muted">{{ a.description }}</p>
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
-                <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value)" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
+                <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value)" :title="notInstalledTitle(a.command[0] ?? '')" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
                 <UBadge :label="signalBadge(a).label" :title="signalBadge(a).title" color="neutral" variant="subtle" size="sm" />
                 <UBadge v-if="a.allowArgs" label="accepts args" color="neutral" variant="subtle" size="sm" />
                 <UBadge v-if="a.cwd" :label="a.cwd" color="neutral" variant="subtle" size="sm" />

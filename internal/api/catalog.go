@@ -37,7 +37,7 @@ func entry(a catalog.Agent, cat, base catalog.Catalog, lookups *lookupCache) cat
 		e.Replaces = base.Source(a.ID)
 	}
 	if len(a.Command) > 0 {
-		_, e.Available = lookups.found(a.Command[0])
+		e.Available = lookups.installed(a.Command[0])
 	}
 	return e
 }
@@ -60,6 +60,15 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	cat, hidden := s.catalog, uniqueIDs(s.overlay.Hidden)
 	s.catalogMu.Unlock()
 	list := cat.List()
+	// The programs not looked up lately are looked up together first, so
+	// the entries below find every answer kept.
+	programs := make([]string, 0, len(list))
+	for _, a := range list {
+		if len(a.Command) > 0 {
+			programs = append(programs, a.Command[0])
+		}
+	}
+	s.lookups.warm(programs)
 	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
 		out = append(out, entry(a, cat, s.base, s.lookups))
@@ -88,38 +97,49 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // saveAgent adds a to the overlay, or replaces the entry with its ID, and
-// returns it as the catalog now lists it. It holds catalogEditMu from reading
-// the stored agent to building the reply, so the reply is this save's and no
-// later edit's; readers and launches wait for none of it.
+// returns it as the catalog now lists it. The reply is built from the catalog
+// this save published (storeAgent), so it is this save's and no later edit's;
+// its program is looked up after catalogEditMu is released.
 func (s *Server) saveAgent(a catalog.Agent) (catalogEntry, *apiError) {
+	saved, cat, aerr := s.storeAgent(a)
+	if aerr != nil {
+		return catalogEntry{}, aerr
+	}
+	return entry(saved, cat, s.base, s.lookups), nil
+}
+
+// storeAgent is saveAgent's edit. It holds catalogEditMu from reading the
+// stored agent to publishing the catalog, and returns the agent as that
+// catalog lists it, and the catalog; readers and launches wait for none of it.
+func (s *Server) storeAgent(a catalog.Agent) (catalog.Agent, catalog.Catalog, *apiError) {
 	s.catalogEditMu.Lock()
 	defer s.catalogEditMu.Unlock()
 	// The overlay is read under the editor lock, so no other save can change
 	// it in between.
 	base, _ := s.base.Get(a.ID)
 	if err := keepMaskedEnv(&a, savedAgent(s.overlay.Agents, a.ID), base); err != nil {
-		return catalogEntry{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	// Check a by itself, so the message is about this agent and not an index
 	// into the overlay.
 	var probe catalog.Catalog
 	if err := probe.Upsert(a); err != nil {
-		return catalogEntry{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	if err := checkAdapter(a); err != nil {
-		return catalogEntry{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	ov := s.overlay
 	ov.Agents = upsertAgent(ov.Agents, a)
 	ov.Hidden = withoutID(ov.Hidden, a.ID)
 	if err := s.commitOverlay(ov); err != nil {
 		s.log.Error("catalog save failed", "agent", a.ID, "err", err)
-		return catalogEntry{}, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
 	}
 	s.log.Info("catalog agent saved", "agent", a.ID)
 	cat := s.Catalog()
 	saved, _ := cat.Get(a.ID)
-	return entry(saved, cat, s.base, s.lookups), nil
+	return saved, cat, nil
 }
 
 // handleDeleteAgent removes the overlay entry with the given ID, which restores
@@ -184,25 +204,36 @@ func (s *Server) handleUnhideAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// unhideAgent takes id off the hidden list under catalogEditMu and returns the
-// agent it brings back, if one has that ID, as the reply shows it, built
-// before the lock is released.
+// unhideAgent takes id off the hidden list and returns the agent it brings
+// back, if one has that ID, as the reply shows it: built from the catalog the
+// change published (unhide), its program looked up after catalogEditMu is
+// released.
 func (s *Server) unhideAgent(id string) (catalogEntry, bool, *apiError) {
+	a, cat, ok, aerr := s.unhide(id)
+	if aerr != nil {
+		return catalogEntry{}, false, aerr
+	}
+	return entry(a, cat, s.base, s.lookups), ok, nil
+}
+
+// unhide is unhideAgent's edit, under catalogEditMu: it returns the agent the
+// published catalog has under id, whether it has one, and the catalog.
+func (s *Server) unhide(id string) (catalog.Agent, catalog.Catalog, bool, *apiError) {
 	s.catalogEditMu.Lock()
 	defer s.catalogEditMu.Unlock()
 	ov := s.overlay
 	if !slices.Contains(ov.Hidden, id) {
-		return catalogEntry{}, false, newAPIError(http.StatusNotFound, "not_found", "no hidden agent with that id")
+		return catalog.Agent{}, catalog.Catalog{}, false, newAPIError(http.StatusNotFound, "not_found", "no hidden agent with that id")
 	}
 	ov.Hidden = withoutID(ov.Hidden, id)
 	if err := s.commitOverlay(ov); err != nil {
 		s.log.Error("catalog save failed", "agent", id, "err", err)
-		return catalogEntry{}, false, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
+		return catalog.Agent{}, catalog.Catalog{}, false, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
 	}
 	s.log.Info("catalog agent changed", "agent", id, "action", "unhidden")
 	cat := s.Catalog()
 	a, ok := cat.Get(id)
-	return entry(a, cat, s.base, s.lookups), ok, nil
+	return a, cat, ok, nil
 }
 
 // checkCommandRequest is the body of POST /api/catalog/check.

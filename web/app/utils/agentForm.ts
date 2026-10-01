@@ -60,13 +60,13 @@ export function commandOf(f: Pick<AgentForm, 'command' | 'pendingCommand'>): str
   return [...f.command, ...splitArgs(f.pendingCommand)]
 }
 
-/** The server's rule for an agent's site (validateSite in internal/catalog), in words: '' when empty or an https URL with a host and no user info. */
+/** The server's rule for an agent's site (validateSite in internal/catalog), in words: '' when empty or an https URL with a host, a port from 1 to 65535 if any, and no user info. */
 export function siteError(site: string): string {
   const s = site.trim()
   if (!s) return ''
   try {
     const u = new URL(s)
-    if (u.protocol === 'https:' && u.hostname && !u.username && !u.password && s.length <= 200 && !/\s/.test(s)) return ''
+    if (u.protocol === 'https:' && u.hostname && u.port !== '0' && !u.username && !u.password && s.length <= 200 && !/\s/.test(s)) return ''
   } catch {
     /* not a URL */
   }

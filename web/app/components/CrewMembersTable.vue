@@ -33,6 +33,12 @@ const cols = 'grid-cols-[1rem_minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-
 /** The agent select: an agent not installed on the server (`host` names it) is marked, never disabled. */
 const agentItems = computed(() => props.agents.map((a) => agentItem(a, props.host)))
 
+/** The select's own icon: its agent's, or the mark of an agent not installed on the server. */
+function selectIcon(id: string): string {
+  const a = agentOf(id)
+  return a ? agentItem(a, props.host).icon : agentIcon(undefined)
+}
+
 function agentOf(id: string): AgentInfo | undefined {
   return props.agents.find((a) => a.id === id)
 }
@@ -227,7 +233,8 @@ async function moveBy(key: number, delta: number) {
         :class="cell.agent"
         :model-value="m.agentId"
         :items="agentsFor(m)"
-        :icon="agentIcon(agentOf(m.agentId)?.icon)"
+        :icon="selectIcon(m.agentId)"
+        :ui="{ content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
         placeholder="Agent"
         :aria-label="`Agent for ${who(m, i)}`"
         class="w-full"

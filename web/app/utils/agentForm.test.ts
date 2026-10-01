@@ -125,7 +125,8 @@ describe('the site field', () => {
   it('accepts an empty or https site and refuses the rest, as the server does', () => {
     expect(siteError('')).toBe('')
     expect(siteError('https://example.com/x')).toBe('')
-    for (const bad of ['http://example.com', 'example.com', 'https://user:pw@example.com', 'javascript:alert(1)', `https://example.com/${'a'.repeat(200)}`]) {
+    expect(siteError('https://example.com:8443/x')).toBe('')
+    for (const bad of ['http://example.com', 'example.com', 'https://user:pw@example.com', 'javascript:alert(1)', `https://example.com/${'a'.repeat(200)}`, 'https://:443', 'https://example.com:99999', 'https://example.com:0', 'https://exa\u00a0mple.com']) {
       expect(siteError(bad)).toBe('An https:// address, or nothing')
     }
     const f = formFromAgent(keyed, counter())
