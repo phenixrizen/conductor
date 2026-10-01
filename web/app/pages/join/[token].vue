@@ -50,7 +50,7 @@ const current = computed<{ id: string; name: string; agentId: string; kind: Sess
   return m?.sessionId ? { id: m.sessionId, name: m.name, agentId: m.agentId, kind: 'server' } : null
 })
 
-/** What each member's tile last heard from its session, by member name: kept while a member is open in full, for the tiles on the way back. */
+/** What each member's tile last heard from its session, by member name: kept while a member is open in full, for the tiles on the way back (backToCrew). */
 const tileState = ref<Record<string, { status?: string; attention?: string }>>({})
 /**
  * What the full view hears of the member open in it goes to that member's tile too, so Back shows the truth: a tile that joins again is
@@ -118,6 +118,14 @@ function openMember(m: JoinRunMember, heard?: { status?: string; attention?: str
 }
 
 function backToCrew() {
+  // The tiles keep their status. Of their attention only the open member's
+  // stays, which the full view kept true: another member's prompt may have
+  // been answered meanwhile, and a tile that joins again is told of a prompt
+  // only while one is live, so a live one comes back as its tile reattaches.
+  const open = focus.value?.name
+  const next: Record<string, { status?: string; attention?: string }> = {}
+  for (const [name, heard] of Object.entries(tileState.value)) next[name] = name === open ? { ...heard } : { status: heard.status }
+  tileState.value = next
   focus.value = null
   // Members may have started or ended meanwhile.
   fetchInfo()
