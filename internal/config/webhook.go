@@ -186,9 +186,9 @@ var (
 // not published. An IPv4 address written as IPv6 counts as the IPv4 one. An
 // IPv6 address that carries IPv4 addresses for a transition mechanism (NAT64,
 // 6to4, Teredo, SIIT) counts as each one it carries. An address of
-// 64:ff9b:1::/48 is judged as a /96 NAT64 prefix; one in the form that a
-// shorter prefix gives is refused, since the IPv4 address it reaches cannot be
-// told. The server applies it to every address of a webhook's host when it
+// 64:ff9b:1::/48 is read as a /96 NAT64 prefix; one in the form that a shorter
+// prefix gives (u octet zero and the last three bytes zero), or with a u octet
+// that is not zero, which no NAT64 prefix gives, is refused. The server applies it to every address of a webhook's host when it
 // validates its config, and to every address it is about to connect to,
 // looked up again for each connection, so a name that resolves elsewhere by
 // then (DNS rebinding) reaches no such address either.
@@ -214,23 +214,35 @@ func CheckWebhookAddr(a netip.Addr) error {
 	return nil
 }
 
-// errShorterNAT64 is an address of 64:ff9b:1::/48 that a NAT64 prefix shorter
-// than /96 may have made. RFC 6052 puts the IPv4 address elsewhere for those,
-// and they leave bits 64 to 71 (the u octet) zero, and the bytes after the
-// IPv4 address zero.
-var errShorterNAT64 = errors.New("is in 64:ff9b:1::/48 in the form a NAT64 prefix shorter than /96 gives, so the IPv4 address it reaches cannot be told (only /96 prefixes are judged)")
+// Refusals of an address of 64:ff9b:1::/48, which is read as a /96 NAT64
+// prefix otherwise. errShorterNAT64 is the form a prefix shorter than /96 may
+// have made: RFC 6052 puts the IPv4 address elsewhere for those, leaving bits
+// 64 to 71 (the u octet) zero and the bytes after the IPv4 address zero.
+// errNAT64UOctet is an address whose u octet is not zero, which no RFC 6052
+// form has, so it may be anything and no IPv4 address can be read from it.
+var (
+	errShorterNAT64 = errors.New("is in 64:ff9b:1::/48 in the form a NAT64 prefix shorter than /96 gives, so the IPv4 address it reaches cannot be told (only /96 prefixes are judged)")
+	errNAT64UOctet  = errors.New("is not a NAT64 address: it is in 64:ff9b:1::/48 but its u octet (bits 64 to 71) is not zero, which no NAT64 prefix gives")
+)
 
 // embeddedIPv4 returns the IPv4 addresses that a, an IPv6 address without a
 // zone, reaches through a transition mechanism, and that mechanism's name:
 // NAT64 (64:ff9b::/96, or a /96 in 64:ff9b:1::/48), 6to4 (2002::/16), Teredo
 // (2001::/32, its server and its client) or SIIT (::ffff:0:a.b.c.d). via is ""
-// for an address that embeds none.
+// for an address that embeds none, and err refuses an address of
+// 64:ff9b:1::/48 that is not read as a /96 (errShorterNAT64, errNAT64UOctet).
 func embeddedIPv4(a netip.Addr) (via string, v4 []netip.Addr, err error) {
 	b := a.As16()
 	at := func(i int) netip.Addr { return netip.AddrFrom4([4]byte(b[i : i+4])) }
 	switch {
 	case nat64LocalUse.Contains(a):
-		if b[8] == 0 && b[13] == 0 && b[14] == 0 && b[15] == 0 {
+		// Read as a /96 unless it is in a form that a shorter prefix gives (u
+		// octet zero, the last three bytes zero), or has a u octet that no
+		// prefix gives: both are refused.
+		switch {
+		case b[8] != 0:
+			return "", nil, errNAT64UOctet
+		case b[13] == 0 && b[14] == 0 && b[15] == 0:
 			return "", nil, errShorterNAT64
 		}
 		return "NAT64", []netip.Addr{at(12)}, nil

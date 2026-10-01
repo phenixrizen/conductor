@@ -62,9 +62,9 @@ func TestWebhookToLoopbackNeedsAllowPrivate(t *testing.T) {
 
 // The rule covers loopback, link-local, private and unique-local, shared
 // (CGNAT) and unspecified addresses, IPv4 and IPv6, IPv4 written as IPv6 too,
-// and the deprecated IPv4-compatible form; a NAT64 address is judged by the
-// IPv4 address it reaches. Every other address passes. An address in the URL
-// is not looked up.
+// and the deprecated IPv4-compatible form; a NAT64, 6to4, Teredo or SIIT
+// address is judged by the IPv4 address it reaches (every one it carries).
+// Every other address passes. An address in the URL is not looked up.
 func TestWebhookAddressRule(t *testing.T) {
 	calls := fakeLookup(t, nil)
 	for host, kind := range map[string]string{
@@ -113,6 +113,10 @@ func TestWebhookAddressRule(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "10.0.0.1 through NAT64") {
 		t.Fatalf("a NAT64 address does not name the IPv4 address it reaches: %v", err)
 	}
+	err = withWebhooks(Webhook{URL: "http://[2002:a00:1::1]/hook", Events: []string{"error"}}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "10.0.0.1 through 6to4") || !strings.Contains(err.Error(), "allowPrivate") {
+		t.Fatalf("a 6to4 address does not name the IPv4 address it reaches: %v", err)
+	}
 }
 
 // CheckWebhookAddr is the rule for one address, as the server applies it to
@@ -143,9 +147,17 @@ func TestCheckWebhookAddr(t *testing.T) {
 		"::ffff:0:808:808": "",
 		// 64:ff9b:1::/48 in the form a prefix shorter than /96 gives (u
 		// octet zero, the last three bytes zero): its IPv4 address cannot be
-		// told. Read as a /96 the first would reach 1.0.0.0, a public address.
+		// told. Read as a /96 the first would reach 1.0.0.0, a public address,
+		// so it is refused for the form alone. The second reads as 0.0.0.0 under
+		// /96 and was refused already (as unspecified), so it pins the message.
 		"64:ff9b:1:0:a:0:100:0": "a NAT64 prefix shorter than /96",
 		"64:ff9b:1:a00:0:100::": "a NAT64 prefix shorter than /96",
+		// A non-zero u octet (byte 8) is in no RFC 6052 form: refused outright,
+		// whatever the /96 reading. The first reads as 1.0.0.0 under /96 but as
+		// 10.0.0.1 from bytes 9 to 12, which is where a /64 prefix puts it; the
+		// second reads as 8.8.8.8.
+		"64:ff9b:1:0:ff0a:0:100:0":   "u octet",
+		"64:ff9b:1:0:ff00:0:808:808": "u octet",
 	} {
 		err := CheckWebhookAddr(netip.MustParseAddr(addr))
 		switch {

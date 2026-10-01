@@ -339,18 +339,19 @@ deprecated IPv4-compatible IPv6 address (`::a.b.c.d`); an IPv6 address that
 carries an IPv4 address counts as the IPv4 address it reaches: NAT64
 (`64:ff9b::/96`, or a /96 in `64:ff9b:1::/48`), 6to4 (`2002::/16`), Teredo
 (`2001::/32`, its server and its client) and SIIT (`::ffff:0:a.b.c.d`). An
-address of `64:ff9b:1::/48` in the form a shorter NAT64 prefix gives is
-refused, since the IPv4 address it reaches cannot be told; `allowPrivate` sends
-to it. That keeps webhooks away from the services of the server's machine
-and network that are not published; it does not refuse the server's own
-public address. At startup the server looks up the webhooks' hosts, all at
-once and for at most 2 seconds, and refuses to start when one resolves to
-such an address; a host that does not resolve in time is only logged as a
-warning, since DNS may be down while the server starts. Before every
-connection it looks the host up again and connects only to the addresses that
-pass, trying the next one when an address does not answer (and the other
-address family in parallel), so a name pointed at a private address later
-(DNS rebinding) reaches nothing; it never goes through a proxy.
+address of `64:ff9b:1::/48` is read as a /96; one in the form a shorter NAT64
+prefix gives (u octet zero and the last three bytes zero), or with a non-zero
+u octet, is refused; `allowPrivate` sends to it. That keeps webhooks away from
+the services of the server's machine and network that are not published; it
+does not refuse the server's own public address. At startup the server looks
+up the webhooks' hosts, all at once and for at most 2 seconds, and refuses to
+start when one resolves to such an address; a host that does not resolve in
+time is only logged as a warning, since DNS may be down while the server
+starts. Before every connection it looks the host up again and connects only
+to the addresses that pass, trying the next one when an address does not
+answer (and the other address family in parallel), so a name pointed at a
+private address later (DNS rebinding) reaches nothing; it never goes through
+a proxy.
 `"allowPrivate": true` lifts the rule for one webhook, for an endpoint on
 your own network.
 
