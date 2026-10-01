@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { AGENT_ID_PATTERN, MASK, agentPayload, commandOf, formErrors, formFromAgent, signalOut, siteError } from './agentForm'
+import { AGENT_ID_PATTERN, MASK, agentPayload, commandCheck, commandOf, formErrors, formFromAgent, signalOut, siteError } from './agentForm'
 import { slugId } from './argv'
 
 function counter() {
@@ -131,5 +131,21 @@ describe('the site field', () => {
     }
     const f = formFromAgent(keyed, counter())
     expect(formErrors({ ...f, site: 'http://example.com' }).site).toBe('An https:// address, or nothing')
+  })
+})
+
+describe('commandCheck', () => {
+  it('says where a found program is, falling back to the program sent', () => {
+    expect(commandCheck({ found: true, path: '/usr/bin/aider' }, 'aider')).toEqual({ state: 'found', path: '/usr/bin/aider' })
+    expect(commandCheck({ found: true }, 'aider')).toEqual({ state: 'found', path: 'aider' })
+  })
+  it('says not found only when the server judged it', () => {
+    expect(commandCheck({ found: false }, 'ghost')).toEqual({ state: 'missing' })
+  })
+  it('leaves a relative program to the launch, as the catalog counts it available', () => {
+    expect(commandCheck({ found: false, unknown: 'relative' }, './agent.sh')).toEqual({ state: 'atLaunch' })
+  })
+  it('says a lookup that took too long was not judged', () => {
+    expect(commandCheck({ found: false, unknown: 'timeout' }, 'aider')).toEqual({ state: 'slow' })
   })
 })

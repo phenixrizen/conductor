@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentInput, AgentSignal } from '~/composables/useSessions'
+import type { AgentInfo, AgentInput, AgentSignal, CommandCheckReply } from '~/composables/useSessions'
 import { hasOpenQuote, splitArgs } from './argv'
 
 /** What GET /api/catalog shows in place of every stored env value (catalog.RedactedValue). Sent back, it keeps the stored value. */
@@ -138,4 +138,19 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
     adapter: prev?.adapter,
     signal: signalOut(f.signal, f.pattern, prev?.signal),
   }
+}
+
+/**
+ * The add-agent form's line under the command, from POST /api/catalog/check:
+ * found and where, not found, or not judged on the server (`atLaunch`: a
+ * relative program, resolved at launch in the session's directory; `slow`: a
+ * lookup that took too long), which the catalog lists as available.
+ */
+export type CommandCheck = { state: 'idle' | 'pending' | 'missing' | 'failed' | 'atLaunch' | 'slow' } | { state: 'found'; path: string }
+
+export function commandCheck(r: CommandCheckReply, program: string): CommandCheck {
+  if (r.found) return { state: 'found', path: r.path ?? program }
+  if (r.unknown === 'relative') return { state: 'atLaunch' }
+  if (r.unknown) return { state: 'slow' }
+  return { state: 'missing' }
 }

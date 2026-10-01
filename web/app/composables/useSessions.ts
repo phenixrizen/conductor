@@ -287,6 +287,18 @@ export interface PathEntry {
   path: string
   git: PathGit
 }
+/**
+ * What POST /api/catalog/check says of a program: found, and where, or not.
+ * `unknown` says the server did not judge it, as GET /api/catalog's
+ * `available` counts it installed: `relative` for a relative path with a
+ * separator (resolved at launch in the session's directory), `timeout` for a
+ * lookup that did not answer within 2 s.
+ */
+export interface CommandCheckReply {
+  found: boolean
+  path?: string
+  unknown?: 'relative' | 'timeout'
+}
 export interface PathsReply {
   dir: string
   entries: PathEntry[]
@@ -322,7 +334,7 @@ export function useSessions() {
       request<{ agent?: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}/unhide`, { method: 'POST' }).then((r) => r.agent),
     /** Whether the program resolves on the server. Only the program is sent; nothing is run. */
     checkCommand: (program: string) =>
-      request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: [program] } }),
+      request<CommandCheckReply>('/api/catalog/check', { method: 'POST', body: { command: [program] } }),
     /** One page of the saved crews' summaries, ordered by name, and how many there are in all. `limit` is 1 to 500. */
     listCrews: (offset = 0, limit = 100) =>
       request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),

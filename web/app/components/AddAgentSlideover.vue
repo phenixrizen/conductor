@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { agentPayload, commandOf, formErrors, formFromAgent, type AgentForm, type Field, type SignalKind } from '~/utils/agentForm'
+import { agentPayload, commandCheck, commandOf, formErrors, formFromAgent, type AgentForm, type CommandCheck, type Field, type SignalKind } from '~/utils/agentForm'
 import { slugId } from '~/utils/argv'
 
 /**
@@ -77,8 +77,7 @@ const idHint = computed(() => (idLocked.value ? 'fixed once saved' : idTouched.v
 const replacing = computed(() => !idLocked.value && !!form.id && !!props.takenIds?.includes(form.id))
 
 // Whether the program resolves on the server. Informational: saving never waits for it.
-type Check = { state: 'idle' | 'pending' | 'missing' | 'failed' } | { state: 'found'; path: string }
-const check = ref<Check>({ state: 'idle' })
+const check = ref<CommandCheck>({ state: 'idle' })
 let checkTimer: ReturnType<typeof setTimeout> | undefined
 let checkSeq = 0
 
@@ -94,7 +93,7 @@ function scheduleCheck() {
   checkTimer = setTimeout(async () => {
     try {
       const r = await api.checkCommand(program)
-      if (seq === checkSeq) check.value = r.found ? { state: 'found', path: r.path ?? program } : { state: 'missing' }
+      if (seq === checkSeq) check.value = commandCheck(r, program)
     } catch {
       if (seq === checkSeq) check.value = { state: 'failed' }
     }
@@ -211,6 +210,8 @@ async function testLaunch() {
             <span v-if="check.state === 'pending'" class="flex items-center gap-1.5"><UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin" />Checking the server…</span>
             <span v-else-if="check.state === 'found'" class="flex items-center gap-1.5 text-success"><UIcon name="i-lucide-check" class="size-3.5 flex-none" />Found on the server: <code class="font-mono">{{ check.path }}</code></span>
             <span v-else-if="check.state === 'missing'" class="flex items-center gap-1.5 text-warning"><UIcon name="i-lucide-triangle-alert" class="size-3.5 flex-none" />Not found on the server; hosts may still have it</span>
+            <span v-else-if="check.state === 'atLaunch'" class="flex items-center gap-1.5"><UIcon name="i-lucide-folder" class="size-3.5 flex-none" />Resolved at launch in the session's directory</span>
+            <span v-else-if="check.state === 'slow'" class="flex items-center gap-1.5"><UIcon name="i-lucide-clock" class="size-3.5 flex-none" />The server took too long to look; a launch will tell</span>
             <span v-else-if="check.state === 'failed'">Could not check the server.</span>
             <span v-else>Press Enter or Space after each argument. Quote to keep spaces.</span>
           </template>
@@ -222,7 +223,7 @@ async function testLaunch() {
 
         <UFormField label="Website" name="site" hint="optional, https" :error="shown.site">
           <UInput v-model="form.site" type="url" placeholder="https://" maxlength="200" autocapitalize="off" spellcheck="false" class="w-full" />
-          <template #help>The Agents page links to it when the agent is not installed on the server.</template>
+          <template #help>The Agents page links to it on any agent that has one.</template>
         </UFormField>
 
         <div class="text-sm">

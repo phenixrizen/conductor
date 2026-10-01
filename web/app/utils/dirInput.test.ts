@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DIR_DEBOUNCE_MS, GIT_CAN_WORKTREE, dirQuery, gitCheckLine, gitMark, matchingEntries } from './dirInput'
+import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, matchingEntries, movesHighlight } from './dirInput'
 
 describe('dirInput', () => {
   it('sends the text trimmed, and empty for the server default', () => {
@@ -66,5 +66,29 @@ describe('dirInput', () => {
   it('debounces for longer than a keystroke and shorter than a pause', () => {
     expect(DIR_DEBOUNCE_MS).toBeGreaterThanOrEqual(100)
     expect(DIR_DEBOUNCE_MS).toBeLessThanOrEqual(300)
+  })
+})
+
+describe('movesHighlight', () => {
+  it('is the keys the field hands to the list to move its highlight', () => {
+    for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) expect(movesHighlight(key), key).toBe(true)
+    for (const key of ['Enter', 'Tab', 'Escape', 'a', '/', 'Backspace', 'ArrowLeft', 'ArrowRight']) expect(movesHighlight(key), key).toBe(false)
+  })
+})
+
+describe('enterKeepsText', () => {
+  const open = { open: true, highlighted: true, moved: false }
+  it('keeps the text over the highlight reka puts on the first entry after a keystroke', () => {
+    expect(enterKeepsText({}, open)).toBe(true)
+  })
+  it('lets the list pick once the highlight was moved', () => {
+    expect(enterKeepsText({}, { ...open, moved: true })).toBe(false)
+  })
+  it('leaves Enter alone with the list closed or nothing highlighted: the form around has it', () => {
+    expect(enterKeepsText({}, { ...open, open: false })).toBe(false)
+    expect(enterKeepsText({}, { ...open, highlighted: false })).toBe(false)
+  })
+  it('leaves a modified Enter and Enter while composing alone, as the list does', () => {
+    for (const e of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }]) expect(enterKeepsText(e, open), JSON.stringify(e)).toBe(false)
   })
 })

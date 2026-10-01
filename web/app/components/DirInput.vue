@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { DIR_DEBOUNCE_MS, dirQuery, gitMark, matchingEntries } from '~/utils/dirInput'
+import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, movesHighlight } from '~/utils/dirInput'
 
 /**
  * A working-directory field completed from the server: as the text changes,
@@ -11,11 +11,14 @@ import { DIR_DEBOUNCE_MS, dirQuery, gitMark, matchingEntries } from '~/utils/dir
  * are its items (its own filter is off: the server filters by what is
  * typed), the arrow keys move, Enter or a click picks (the entry's path
  * replaces the text and the list opens again on its children), Esc closes.
- * While the list is open, Enter picks the highlighted entry (the first until
- * the arrows move); with it closed, Enter belongs to the form around. Until
- * the listing of what is typed arrives, only the entries under it stay, so
- * Enter never puts an entry the text has moved past in its place. Tab moves
- * on and closes the list. The model is the text, whatever is picked.
+ * The list highlights its first entry after every keystroke, so Enter picks
+ * only once the highlight was moved since the text last changed (the arrows,
+ * or the pointer over an entry): Enter on a complete path keeps it, and the
+ * list stays as it is. With the list closed, Enter belongs to the form
+ * around. Until the listing of what is typed arrives, only the entries under
+ * it stay, so Enter never puts an entry the text has moved past in its place.
+ * Tab moves on and closes the list. The model is the text, whatever is
+ * picked.
  */
 const model = defineModel<string>({ default: '' })
 defineProps<{ placeholder?: string; name?: string }>()
@@ -40,6 +43,8 @@ let listedFor: string | undefined
 // The text became an entry's path in the field: picked (Enter, or a click, which takes the focus away), or typed in full.
 // Only then does a reply open the list again; Esc or leaving the field forgets it.
 let picked = false
+// The highlight was moved (the arrows, or the pointer over an entry) since the text last changed: only then does Enter pick.
+let moved = false
 
 async function fetchNow() {
   pending.value = false
@@ -90,6 +95,7 @@ function schedule() {
 // Typing and picking in the field change the text; a change from the form around (a crew discarded) is no pick.
 // A pick of the text as it stands changes nothing: its children are listed all the same.
 function onText(text: string) {
+  moved = false
   if (entries.value.some((e) => e.path === text)) picked = true
   if (text === model.value) schedule()
   model.value = text
@@ -97,9 +103,35 @@ function onText(text: string) {
 
 // Any change of the text: the entries it has moved past go at once, and it is listed again after a pause.
 watch(model, (text) => {
+  moved = false
   entries.value = matchingEntries(entries.value, text)
   schedule()
 })
+
+function onKeydown(e: KeyboardEvent) {
+  if (movesHighlight(e.key)) moved = true
+}
+
+// The list highlights the entry under a moving pointer, as the arrows do.
+function onPointerMove(e: PointerEvent) {
+  if ((e.target as Element | null)?.closest?.('[role="option"]')) moved = true
+}
+watch(
+  () => menu.value?.viewportRef,
+  (el, old) => {
+    old?.removeEventListener('pointermove', onPointerMove)
+    el?.addEventListener('pointermove', onPointerMove)
+  },
+)
+
+// Before the list's own Enter (capture, on the way down to the field): with the highlight where the list put it,
+// Enter keeps the text and the list as they are, and does not reach the form around either.
+function onEnter(e: KeyboardEvent) {
+  const highlighted = !!menu.value?.viewportRef?.querySelector('[role="option"][data-highlighted]')
+  if (!enterKeepsText(e, { open: open.value, highlighted, moved })) return
+  e.preventDefault()
+  e.stopPropagation()
+}
 
 // The field taking the focus (focusin: not the focus UInputMenu reports when a keystroke opens the
 // list, before the text changes, so that keystroke sends one request, not two): it lists a text
@@ -124,11 +156,14 @@ function onEscape() {
   picked = false
 }
 
-onBeforeUnmount(() => window.clearTimeout(timer))
+onBeforeUnmount(() => {
+  window.clearTimeout(timer)
+  menu.value?.viewportRef?.removeEventListener('pointermove', onPointerMove)
+})
 </script>
 
 <template>
-  <div ref="root" data-dir-input @keydown.esc="onEscape" @focusin="onFocus">
+  <div ref="root" data-dir-input @keydown.esc="onEscape" @keydown="onKeydown" @keydown.enter.capture="onEnter" @focusin="onFocus">
     <UInputMenu
       ref="menu"
       :model-value="model"
@@ -164,7 +199,7 @@ onBeforeUnmount(() => window.clearTimeout(timer))
       </template>
       <template #content-bottom>
         <div aria-live="polite">
-          <p v-if="truncated" class="px-2 py-1 text-[11px] text-muted">More here than listed: keep typing to narrow it.</p>
+          <p v-if="truncated" class="px-2 py-1 text-[11px] text-muted">More here than listed or marked: keep typing to narrow it.</p>
         </div>
       </template>
     </UInputMenu>

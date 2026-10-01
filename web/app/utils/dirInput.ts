@@ -20,6 +20,28 @@ export function matchingEntries<T extends { path: string }>(entries: T[], text: 
   return q ? entries.filter((e) => e.path.startsWith(q) && !e.path.slice(q.length).includes('/')) : []
 }
 
+/** Whether a key in the field moves the list's highlight (the list takes the arrows, Home and End from the field). */
+export function movesHighlight(key: string): boolean {
+  return key === 'ArrowDown' || key === 'ArrowUp' || key === 'Home' || key === 'End'
+}
+
+/**
+ * Whether Enter in the field keeps the text instead of letting the list pick
+ * the highlighted entry. The list highlights its first entry after every
+ * keystroke, so Enter on a complete path would put its first child in its
+ * place: Enter picks only once the highlight was moved (`moved`: the arrows,
+ * or the pointer over an entry, since the text last changed). With the list
+ * closed or nothing highlighted, Enter is the form's; a modified Enter, or
+ * one that ends a composition, the list leaves alone, and so does this.
+ */
+export function enterKeepsText(
+  e: { isComposing?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+  s: { open: boolean; highlighted: boolean; moved: boolean },
+): boolean {
+  if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return false
+  return s.open && s.highlighted && !s.moved
+}
+
 /** The mark beside a listed directory: whether a crew with worktrees could use it. */
 export function gitMark(git: PathGit): { label: string; tone: 'success' | 'warning' | 'neutral' } {
   if (git.repo && git.commits) return { label: 'git', tone: 'success' }
