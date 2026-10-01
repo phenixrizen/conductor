@@ -1,4 +1,5 @@
 import type { SessionInfo } from '~/composables/useSessions'
+import type { EventType, RouteRow } from './events'
 import { groupSessions, type SessionGroupKey } from './sessions'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
@@ -15,22 +16,29 @@ export interface KeyValueStore {
   removeItem(key: string): void
 }
 
-/** The mode saved for this browser. An old hidden flag is moved to the new key on the way. Anything unreadable is full. */
+/**
+ * The mode saved for this browser. An old hidden flag is moved to the new key
+ * on the way; when the new key cannot be written, the old choice still holds
+ * and its key stays for a later try. Anything unreadable is full.
+ */
 export function readSidebarMode(storage: KeyValueStore): SidebarMode {
+  let legacy: string | null
   try {
     const mode = storage.getItem(SIDEBAR_KEY)
     if (mode === 'rail' || mode === 'full') return mode
-    const legacy = storage.getItem(LEGACY_SIDEBAR_KEY)
-    if (legacy !== null) {
-      const migrated: SidebarMode = legacy === '1' ? 'rail' : 'full'
-      storage.setItem(SIDEBAR_KEY, migrated)
-      storage.removeItem(LEGACY_SIDEBAR_KEY)
-      return migrated
-    }
+    legacy = storage.getItem(LEGACY_SIDEBAR_KEY)
   } catch {
-    /* no storage: full */
+    return 'full'
   }
-  return 'full'
+  if (legacy === null) return 'full'
+  const migrated: SidebarMode = legacy === '1' ? 'rail' : 'full'
+  try {
+    storage.setItem(SIDEBAR_KEY, migrated)
+    storage.removeItem(LEGACY_SIDEBAR_KEY)
+  } catch {
+    /* not saved: the old key stays */
+  }
+  return migrated
 }
 
 export function writeSidebarMode(storage: KeyValueStore, mode: SidebarMode): void {
@@ -69,6 +77,26 @@ export function writeSidebarSize(storage: KeyValueStore, size: number): void {
   } catch {
     /* ignore */
   }
+}
+
+/** The sessions a sidebar lists, full or rail: every one, or with `runId` only that run's members. */
+export function sidebarSessions(sessions: SessionInfo[], runId?: string): SessionInfo[] {
+  return runId ? sessions.filter((s) => s.crew?.runId === runId) : sessions
+}
+
+/** Whether `path` is the page of session `id`: its sidebar entry is marked as the current page. */
+export function sessionOpen(path: string, id: string): boolean {
+  return path === `/sessions/${id}`
+}
+
+/** Whether `path` is the crew view of run `runId`. */
+export function runOpen(path: string, runId: string): boolean {
+  return path === `/runs/${runId}`
+}
+
+/** The amber dot on a session needing input follows the Events page's Badge route for needs_input; the group and its text stay. */
+export function needsDotShown(routes: Readonly<Record<EventType, RouteRow>>): boolean {
+  return routes.needs_input.badge
 }
 
 export type RailDot = 'needs' | 'running' | 'idle' | 'exited'

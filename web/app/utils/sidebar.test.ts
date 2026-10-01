@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { LEGACY_SIDEBAR_KEY, SIDEBAR_KEY, SIDEBAR_SIZE, SIDEBAR_SIZE_KEY, railGroups, readSidebarMode, readSidebarSize, writeSidebarMode, writeSidebarSize, type KeyValueStore } from './sidebar'
+import { DEFAULT_ROUTES } from './events'
+import {
+  LEGACY_SIDEBAR_KEY,
+  SIDEBAR_KEY,
+  SIDEBAR_SIZE,
+  SIDEBAR_SIZE_KEY,
+  needsDotShown,
+  railGroups,
+  readSidebarMode,
+  readSidebarSize,
+  runOpen,
+  sessionOpen,
+  sidebarSessions,
+  writeSidebarMode,
+  writeSidebarSize,
+  type KeyValueStore,
+} from './sidebar'
 
 function memory(initial: Record<string, string> = {}): KeyValueStore & { data: Map<string, string> } {
   const data = new Map(Object.entries(initial))
@@ -45,6 +61,42 @@ describe('readSidebarMode', () => {
     const s = memory()
     writeSidebarMode(s, 'rail')
     expect(readSidebarMode(s)).toBe('rail')
+  })
+
+  it('keeps a migrated choice when the new key cannot be written, and the old key for a later try', () => {
+    const s = memory({ [LEGACY_SIDEBAR_KEY]: '1' })
+    const full: KeyValueStore = {
+      getItem: s.getItem,
+      setItem: () => {
+        throw new Error('quota')
+      },
+      removeItem: s.removeItem,
+    }
+    expect(readSidebarMode(full)).toBe('rail')
+    expect(s.data.get(LEGACY_SIDEBAR_KEY)).toBe('1')
+    expect(s.data.has(SIDEBAR_KEY)).toBe(false)
+  })
+})
+
+describe('the sidebars share', () => {
+  it('lists every session, or with a run only its members', () => {
+    const list = [session({ id: 'a' }), session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' } }), session({ id: 'c', crew: { runId: 'r2', crewId: 'c', member: 'c' } })]
+    expect(sidebarSessions(list).map((s) => s.id)).toEqual(['a', 'b', 'c'])
+    expect(sidebarSessions(list, 'r1').map((s) => s.id)).toEqual(['b'])
+    expect(sidebarSessions(list, 'r9')).toEqual([])
+  })
+
+  it('knows the page that is open', () => {
+    expect(sessionOpen('/sessions/a', 'a')).toBe(true)
+    expect(sessionOpen('/sessions/ab', 'a')).toBe(false)
+    expect(sessionOpen('/runs/a', 'a')).toBe(false)
+    expect(runOpen('/runs/r1', 'r1')).toBe(true)
+    expect(runOpen('/sessions/r1', 'r1')).toBe(false)
+  })
+
+  it('shows the amber needs-you dot as the Events page routes needs_input to the Badge', () => {
+    expect(needsDotShown(DEFAULT_ROUTES)).toBe(true)
+    expect(needsDotShown({ ...DEFAULT_ROUTES, needs_input: { ...DEFAULT_ROUTES.needs_input, badge: false } })).toBe(false)
   })
 })
 

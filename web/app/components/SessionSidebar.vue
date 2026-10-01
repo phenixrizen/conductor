@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import { filterSessions, groupSessions, relativeTime, sessionMeta } from '~/utils/sessions'
+import { needsDotShown, runOpen, sessionOpen, sidebarSessions } from '~/utils/sidebar'
 
 /** With `runId`, only the sessions of that crew run, under a header naming it (`runName`) with a link back to its crew view. */
 const props = defineProps<{ runId?: string; runName?: string }>()
@@ -15,14 +16,13 @@ const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput
 const now = ref(Date.now())
 let tick: number | undefined
 
-const shown = computed(() => (props.runId ? attention.sessions.value.filter((s) => s.crew?.runId === props.runId) : attention.sessions.value))
+const shown = computed(() => sidebarSessions(attention.sessions.value, props.runId))
 const groups = computed(() => groupSessions(filterSessions(shown.value, query.value)))
-/** The amber dot on a session needing input follows the Events page's Badge route for needs_input; the group and its text stay. */
-const needsDot = computed(() => events.routes.value.needs_input.badge)
+const needsDot = computed(() => needsDotShown(events.routes.value))
 const empty = computed(() => shown.value.length === 0)
 
 function active(id: string) {
-  return route.path === `/sessions/${id}`
+  return sessionOpen(route.path, id)
 }
 
 function exitLabel(s: SessionInfo) {
@@ -54,11 +54,11 @@ onBeforeUnmount(() => window.clearInterval(tick))
     <div class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3.5" data-session-list>
       <div v-if="runId" class="flex flex-col gap-0.5 rounded-md bg-elevated/60 px-2.5 py-2" data-sidebar-run>
         <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Crew</span>
-        <NuxtLink :to="`/runs/${encodeURIComponent(runId)}`" class="flex items-center gap-1.5 text-sm font-semibold text-highlighted hover:underline" :aria-current="route.path === `/runs/${runId}` ? 'page' : undefined">
+        <NuxtLink :to="`/runs/${encodeURIComponent(runId)}`" class="flex items-center gap-1.5 text-sm font-semibold text-highlighted hover:underline" :aria-current="runOpen(route.path, runId) ? 'page' : undefined">
           <UIcon name="i-lucide-layout-grid" class="size-4 flex-none text-muted" />
           <span class="truncate">{{ runName || runId }}</span>
         </NuxtLink>
-        <span v-if="route.path !== `/runs/${runId}`" class="text-xs text-muted">Only this crew's members are listed.</span>
+        <span v-if="!runOpen(route.path, runId)" class="text-xs text-muted">Only this crew's members are listed.</span>
       </div>
       <p v-if="empty && runId" class="px-2 py-4 text-xs text-muted leading-relaxed">No member of this crew has a session yet.</p>
       <p v-else-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
