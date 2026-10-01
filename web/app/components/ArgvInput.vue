@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import theme from '#build/ui/input-tags'
 import { tv } from '@nuxt/ui/utils/tv'
-import { hasOpenQuote, splitArgs } from '~/utils/argv'
+import { hasOpenQuote, pasteArgs, splitArgs } from '~/utils/argv'
 
 /**
  * Edits an argv as chips, one per element. Enter, or a space outside quotes,
@@ -65,11 +65,12 @@ function onKeydown(e: KeyboardEvent) {
 
 function onPaste(e: ClipboardEvent) {
   const pasted = e.clipboardData?.getData('text') ?? ''
-  // One plain word goes into the field as usual; anything with spaces or quotes becomes chips.
+  // One plain word goes into the field as usual; anything with spaces or quotes becomes chips, unless a quote is left open.
   if (!/[\s"']/.test(pasted.trim())) return
   e.preventDefault()
-  add([...splitArgs(pending.value), ...splitArgs(pasted)])
-  pending.value = ''
+  const r = pasteArgs(pending.value, pasted)
+  pending.value = r.pending
+  add(r.chips)
 }
 </script>
 

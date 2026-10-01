@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { agentPayload, commandOf, formErrors, formFromAgent, type AgentForm, type Field } from '~/utils/agentForm'
+import { agentPayload, commandOf, formErrors, formFromAgent, type AgentForm, type Field, type SignalKind } from '~/utils/agentForm'
 import { slugId } from '~/utils/argv'
 
 /**
@@ -106,24 +106,26 @@ onBeforeUnmount(() => clearTimeout(checkTimer))
 function addEnv() {
   form.env.push({ uid: uid(), key: '', value: '', masked: false })
 }
-function removeEnv(uid: number) {
-  form.env = form.env.filter((r) => r.uid !== uid)
+function removeEnv(rowUid: number) {
+  form.env = form.env.filter((r) => r.uid !== rowUid)
 }
 
 // The hook card needs an adapter to report through; until adapters can be
 // picked here, only an agent that already has one (or already reports by hook)
 // can use it, so editing a built-in never loses its wiring.
 const hookAvailable = computed(() => !!props.agent?.adapter || props.agent?.signal?.kind === 'hook')
-const signalItems = computed(() => [
+const signalItems = computed<Array<{ value: SignalKind; label: string; suffix?: string; description: string; icon: string; disabled?: boolean }>>(() => [
   {
     value: 'hook',
-    label: props.agent?.adapter ? `Hook command · adapter ${props.agent.adapter}` : 'Hook command',
+    label: 'Hook command',
+    suffix: props.agent?.adapter ? `adapter ${props.agent.adapter}` : undefined,
     description: hookAvailable.value ? 'The agent reports through its own hooks.' : 'pick an adapter (coming with Events)',
+    icon: 'i-lucide-webhook',
     disabled: !hookAvailable.value,
   },
-  { value: 'bell', label: 'Bell / OSC 9·777', description: 'A terminal bell or notification escape. The default.' },
-  { value: 'pattern', label: 'Screen pattern', description: 'A regex matched against the last screen line.' },
-  { value: 'none', label: 'None', description: 'Never flagged; you watch it yourself.' },
+  { value: 'bell', label: 'Bell / OSC 9·777', description: 'A terminal bell or notification escape. The default.', icon: 'i-lucide-bell' },
+  { value: 'pattern', label: 'Screen pattern', description: 'A regex matched against the last screen line.', icon: 'i-lucide-scan-text' },
+  { value: 'none', label: 'None', description: 'Never flagged; you watch it yourself.', icon: 'i-lucide-bell-off' },
 ])
 
 const errors = computed(() => formErrors(form))
@@ -249,8 +251,16 @@ async function testLaunch() {
             :items="signalItems"
             variant="card"
             legend="How does it tell Conductor it needs you?"
-            :ui="{ fieldset: 'mt-2 grid gap-2 sm:grid-cols-2', legend: 'font-medium text-default' }"
-          />
+            aria-label="Needs-input signal"
+            :ui="{ fieldset: 'grid gap-2 sm:grid-cols-2', legend: 'mb-2 font-medium text-default', description: 'text-xs leading-snug' }"
+          >
+            <template #label="{ item }">
+              <span class="flex items-center gap-2">
+                <UIcon :name="item.icon" class="size-4 flex-none text-muted" />
+                <span>{{ item.label }}<span v-if="item.suffix" class="text-xs font-normal text-muted"> · {{ item.suffix }}</span></span>
+              </span>
+            </template>
+          </URadioGroup>
           <UFormField v-if="form.signal === 'pattern'" label="Pattern" name="pattern" hint="RE2 regular expression" :error="shown.pattern" class="mt-3">
             <UInput v-model="form.pattern" placeholder="^> $" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
             <template #help>Matched against the last line on screen once output goes quiet.</template>

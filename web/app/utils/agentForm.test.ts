@@ -43,6 +43,17 @@ describe('formFromAgent and agentPayload', () => {
       signal: { kind: 'hook', toolEvents: true },
     })
   })
+  it('sends a value typed in a new row as it is, next to the masked ones', () => {
+    const f = formFromAgent(keyed, counter())
+    f.env.push({ uid: 99, key: 'TOKEN', value: 's3cret', masked: false })
+    expect(agentPayload(f, keyed).env).toEqual({ API_KEY: MASK, REGION: MASK, TOKEN: 's3cret' })
+  })
+  it('leaves a removed stored value out of the payload', () => {
+    const f = formFromAgent(keyed, counter())
+    f.env = f.env.filter((r) => r.key !== 'API_KEY')
+    expect(agentPayload(f, keyed)).toMatchObject({ env: { REGION: MASK }, envPassthrough: ['HTTP_PROXY'] })
+    expect(agentPayload(f, keyed).env).not.toHaveProperty('API_KEY')
+  })
   it('starts a new agent empty, ringing the bell', () => {
     const f = formFromAgent(undefined, counter())
     expect(f).toMatchObject({ name: '', id: '', command: [], pendingCommand: '', env: [], allowArgs: true, signal: 'bell' })

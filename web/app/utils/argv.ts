@@ -24,6 +24,17 @@ export function hasOpenQuote(s: string): boolean {
   return false
 }
 
+/**
+ * What pasting `pasted` after the typed `pending` leaves: the arguments it
+ * completes and what stays typed. With a quote still open, everything stays
+ * typed, so a closing quote typed or pasted next can finish it.
+ */
+export function pasteArgs(pending: string, pasted: string): { chips: string[]; pending: string } {
+  const t = pending + pasted
+  if (hasOpenQuote(t)) return { chips: [], pending: t }
+  return { chips: splitArgs(t), pending: '' }
+}
+
 /** A catalog ID (`[a-z0-9-]`, at most 32 characters, no dash at either end) suggested by a display name; empty when nothing usable is left. */
 export function slugId(name: string): string {
   return name
