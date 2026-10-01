@@ -405,13 +405,14 @@ export function entryIcon(e: ActivityEntry): { icon: string; color: EventColor }
 }
 
 /**
- * Holds activity entries per session until eventTypeOf can type them. The
- * admin stream sends an attention entry just before the session change that
- * carries its state, so an entry attentionSettled refuses waits for settle()
- * after that change, or `holdMs` at most, and every later entry of the same
- * session waits behind it so the session's entries come out in order. Each
- * released entry goes to `release`, which types it against the session as the
- * store has it then.
+ * Holds activity entries per session until eventTypeOf can type them. An
+ * attention entry that carries its state, as the stream's do (but an older
+ * host's), can be typed at once. One without comes just before the session
+ * change that carries its state, so an entry attentionSettled refuses waits
+ * for settle() after that change, or `holdMs` at most, and every later entry
+ * of the same session waits behind it so the session's entries come out in
+ * order. Each released entry goes to `release`, which types it against the
+ * session as the store has it then.
  */
 export class EntryHold {
   private held = new Map<string, { items: Array<{ entry: ActivityEntry; until: number }>; timer?: ReturnType<typeof setTimeout> }>()

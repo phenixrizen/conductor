@@ -533,10 +533,11 @@ func TestOnActivityRunsAfterTheBroadcastAndOutsideTheLock(t *testing.T) {
 	}
 }
 
-// The attention state an attention entry records travels with it to
-// OnActivity: the state set in the same critical section as the entry's
-// stamp, whatever the session shows by the time the hook runs. Every other
-// entry comes with none.
+// The attention state an attention entry records reaches OnActivity with the
+// entry, as a value: a hook held while the session moves on (it runs outside
+// the session lock, so the session can) goes on with its entry's state,
+// though the session shows another by then. Every other entry comes with
+// none.
 func TestOnActivityGetsTheStateTheEntryRecords(t *testing.T) {
 	type call struct {
 		typ, msg string
@@ -544,22 +545,50 @@ func TestOnActivityGetsTheStateTheEntryRecords(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var calls []call
-	s, _ := newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letGo) // a failed test does not leave the hook held
+	var s *Local
+	var shown AttentionState // what the session shows when the held hook goes on
+	s, _ = newLocalWith(t, Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
+		if e.Message == "Allow Bash?" {
+			close(entered)
+			<-release
+			shown = s.Info().Attention.State
+		}
 		mu.Lock()
 		calls = append(calls, call{e.Type, e.Message, state})
 		mu.Unlock()
 	}})
-	s.SetAttention(AttentionNeedsInput, "Allow Bash?", SourceAPI)
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		s.SetAttention(AttentionNeedsInput, "Allow Bash?", SourceAPI)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnActivity was not called for the first entry")
+	}
 	s.SetAttention(AttentionDone, "", SourceAPI)
 	s.SetAttention(AttentionWorking, "compiling", SourceAPI)
 	s.Record(ActivityEntry{Type: ActivityProgress, Message: "1/3"})
+	letGo()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held hook did not return")
+	}
+	if shown != AttentionWorking {
+		t.Fatalf("the session showed %q when the held hook went on, want working", shown)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	want := []call{
-		{ActivityAttention, "Allow Bash?", AttentionNeedsInput},
 		{ActivityAttention, "done", AttentionDone},
 		{ActivityAttention, "compiling", AttentionWorking},
 		{ActivityProgress, "1/3", ""},
+		{ActivityAttention, "Allow Bash?", AttentionNeedsInput},
 	}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("OnActivity got %+v, want %+v", calls, want)

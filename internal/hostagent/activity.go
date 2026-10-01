@@ -27,9 +27,9 @@ type activityForwarder struct {
 }
 
 // forwarded is an entry waiting for the connection, with the attention state
-// it records when it is an attention entry: the hook reads it when the entry
-// is recorded, for by the time the entry is sent the session may be in
-// another.
+// it records when it is an attention entry: the session hands the state on
+// with the entry (set with the entry's stamp), for by the time the entry is
+// sent the session may be in another.
 type forwarded struct {
 	entry session.ActivityEntry
 	state session.AttentionState

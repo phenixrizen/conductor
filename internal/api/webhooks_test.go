@@ -205,7 +205,7 @@ func TestWebhookDeliversSignedEventsOfTheTypesItLists(t *testing.T) {
 }
 
 // Beside the entry types, a webhook may list what the Events page routes: an
-// attention entry reaches one that lists the state the session is in, and
+// attention entry reaches one that lists the state it records, and
 // the status entry of a process that exited on its own with a non-zero code
 // one that lists exit_nonzero, never the status of a process an admin
 // stopped. X-Conductor-Event names what the webhook listed. A webhook without

@@ -153,9 +153,9 @@ type HostAttentionMsg struct {
 // MaxHostMessage.
 //
 // State goes host to server only, with an attention entry: the attention
-// state the host's session was in when it recorded the entry (needs_input,
-// working or done), which is the state the entry records. The server keeps it
-// only on an attention entry and only as one of those three.
+// state the entry records (needs_input, working or done), which the host's
+// session hands on with the entry, set with the entry's stamp. The server
+// keeps it only on an attention entry and only as one of those three.
 type HostActivityMsg struct {
 	T         string   `json:"t"`
 	SessionID string   `json:"sessionId,omitempty"`

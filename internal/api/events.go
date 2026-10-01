@@ -32,8 +32,9 @@ type eventHub struct {
 }
 
 // activitySink receives an activity entry of a session and, for an attention
-// entry, the attention state it records: the state the session was in when it
-// recorded the entry, "" when that is not known.
+// entry, the attention state it records, which comes with the entry: set with
+// the entry's stamp on a server session, sent by the host on a hosted one; ""
+// when it is not known (an older host).
 type activitySink func(sessionID string, e session.ActivityEntry, state session.AttentionState)
 
 func newEventHub() *eventHub { return &eventHub{clients: map[chan []byte]struct{}{}} }
@@ -83,13 +84,10 @@ type activityEvent struct {
 }
 
 // eventState is what an activity event says an entry records: state, for an
-// attention entry and one of the three states; nothing otherwise.
+// attention entry and one of the three states (isAttentionState); nothing
+// otherwise.
 func eventState(e session.ActivityEntry, state session.AttentionState) session.AttentionState {
-	if e.Type != session.ActivityAttention {
-		return ""
-	}
-	switch state {
-	case session.AttentionNeedsInput, session.AttentionWorking, session.AttentionDone:
+	if e.Type == session.ActivityAttention && isAttentionState(state) {
 		return state
 	}
 	return ""

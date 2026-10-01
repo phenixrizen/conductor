@@ -868,18 +868,27 @@ func TestEventsAndAttentionRoutesShareAHostedSessionsBudget(t *testing.T) {
 }
 
 // A host that leaves sends its viewer one error frame, host_disconnected, then
-// the close. The frames it still owed come first, and the viewer's reader
-// never closes the connection under the pump, whether the viewer is quiet or
-// typing into the relay.
+// the close, and the frames it still owed come first. The host queues more
+// output than the connection to a viewer that is not reading can take, so
+// the viewer is still owed most of it when the host leaves; the viewer then
+// reads everything, one frame at a time. Whether the viewer is quiet or
+// typing into the relay (where its reader learns that the host is gone), the
+// reader never closes the connection under the pump: every frame the host
+// sent arrives, its last one included, before the error frame.
 func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
+	// 1000 frames of 16 KiB, well past what the sockets between the server
+	// and the viewer hold (a few MiB), and well within the viewer's queue.
+	const frames = 1000
+	filler := bytes.Repeat([]byte("o"), proto.MaxOutput)
 	for _, typing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("typing=%v", typing), func(t *testing.T) {
 			e := newTestEnv(t, nil)
 			host := dialFakeHost(t, e, "hosted-agent-token")
+			events := e.sse(t)
 			v := dialViewer(t, e, host.sessionID, adminToken)
 			v.hello(80, 24)
 			v.expectControl(proto.CtlWelcome)
-			host.expect(proto.HostViewerJoin)
+			viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
 			relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
 			v.send(relay)
 			for {
@@ -891,8 +900,32 @@ func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 					break
 				}
 			}
+
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			for i := 0; i <= frames; i++ {
+				out := filler
+				if i == frames {
+					out = []byte("the last frame")
+				}
+				env, err := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, out))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := host.c.Write(ctx, websocket.MessageBinary, env); err != nil {
+					t.Fatalf("relay frame %d: %v", i, err)
+				}
+			}
+			// The server reads a host's messages in order: once it streams the
+			// marker, every frame above is queued for the viewer.
+			host.send(hostActivity(session.ActivityProgress, func(a *proto.Activity) { a.Message = "queued" }))
+			e.waitEvent(t, events, func(ev string) bool {
+				return isActivity(session.ActivityProgress, host.sessionID)(ev) && strings.Contains(ev, `"message":"queued"`)
+			})
 			host.c.CloseNow()
-			errs := 0
+
+			outputs, errs := 0, 0
+			last := false
 			for {
 				if typing {
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -906,17 +939,26 @@ func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 					}
 					break
 				}
-				if f.Type != proto.TypeControl {
-					continue
-				}
-				var m map[string]any
-				json.Unmarshal(f.Payload, &m)
-				if m["t"] == proto.CtlError {
-					errs++
-					if m["code"] != proto.ErrCodeHostDisconnected {
-						t.Fatalf("error frame %v", m)
+				switch f.Type {
+				case proto.TypeOutput:
+					if errs > 0 {
+						t.Fatal("an output frame came after the error frame")
+					}
+					outputs++
+					last = string(f.Payload) == "the last frame"
+				case proto.TypeControl:
+					var m map[string]any
+					json.Unmarshal(f.Payload, &m)
+					if m["t"] == proto.CtlError {
+						errs++
+						if m["code"] != proto.ErrCodeHostDisconnected {
+							t.Fatalf("error frame %v", m)
+						}
 					}
 				}
+			}
+			if outputs != frames+1 || !last {
+				t.Fatalf("%d of %d output frames before the close, the last one last: %v", outputs, frames+1, last)
 			}
 			if errs != 1 {
 				t.Fatalf("%d error frames, want one", errs)

@@ -305,14 +305,15 @@ server, but the server holds a bucket for it, of the same size (20 a second,
 sends on to the host, by this route or by `/attention`: the host's connection
 also carries its viewers' input, and closes when its queue is full, so a flood
 of reports must not reach it. With no token the answer is `429 rate_limited`
-and nothing is sent or changed. Every report through the routes spends one,
-its host connected or not, and the host's own reports do not. The host applies
-an attention word it is sent without a token of its own and records its entry,
-as a server session does. An event the server sends to the host (see Host
-control connection) is answered `202` once it is on its way. The server cannot
-know whether the host's own bucket takes it, so an event the host drops is
-dropped without a word to the caller; `409 host_disconnected` says that no host
-is connected.
+and nothing is sent or changed. Every attention word through the routes spends
+one, its host connected or not; an event needs a connected host (below) and
+spends nothing without one. The host's own reports spend none. The host
+applies an attention word it is sent without a token of its own and records
+its entry, as a server session does. An event the server sends to the host
+(see Host control connection) is answered `202` once it is on its way. The
+server cannot know whether the host's own bucket takes it, so an event the
+host drops is dropped without a word to the caller; `409 host_disconnected`
+says that no host is connected.
 
 `conductor notify --event <type> [--message M] [--url U] [--to T] [--tool N]`
 sends an event from inside a session: it turns the `CONDUCTOR_NOTIFY_URL` of
@@ -340,9 +341,11 @@ messages replay the log.
 Webhooks: the server also POSTs every entry whose event type a configured
 webhook lists (README, Webhooks) to its URL, one entry a request, with the
 body `{"sessionId", "session": {"id", "name", "agentId"}, "entry": {…}}`, the
-entry as the stream above sends it. The headers are `Content-Type:
-application/json`, `X-Conductor-Event` and, for a webhook with a secret,
-`X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body>`.
+entry as the stream above sends it less `sessionId` (beside it in the body)
+and `state`, which the body does not carry: an attention entry's state reaches
+a webhook that lists it as `X-Conductor-Event` (below). The headers are
+`Content-Type: application/json`, `X-Conductor-Event` and, for a webhook with
+a secret, `X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body>`.
 `X-Conductor-Event` is the type the webhook listed: an entry type, or the
 Events page's name for the entry, which wins when both are listed. An
 attention entry is the attention state it records, which comes with the entry:
