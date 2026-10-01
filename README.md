@@ -504,9 +504,10 @@ that `conductor host` writes there does not count), keeps using it and logs a
 warning naming both paths. It keeps it only when it is a real directory, not
 a symbolic link, owned by the user running the server: its `catalog.json`
 chooses the commands agents run, and anyone may make a `conductor.d` in a
-shared directory. Anything else under that name stops the server with an
-error naming it, its owner and the two settings; set `dataDir` or
-`CONDUCTOR_DATA_DIR`. To move it, stop the server, move the files in it
+shared directory. A symbolic link or another user's directory under that
+name, when it would be kept, stops the server with an error naming it, its
+owner and the two settings; set `dataDir` or `CONDUCTOR_DATA_DIR` instead.
+To move it, stop the server, move the files in it
 into `~/.conductor` (`hooks/` need not move: the server writes it at every
 start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
 to it. When both `~/.conductor` and the old directory hold server data, the
