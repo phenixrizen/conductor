@@ -213,37 +213,115 @@ func TestResolvePathDenyListIgnoresSpelling(t *testing.T) {
 	}
 }
 
-// An entry ending in "*" denies, in its directory, every name that starts with
-// the rest of its last element, ignoring case: the copies an editor or a
-// person leaves beside a config file hold its secrets too. The files beside it
-// with other names still read, and an entry whose directory is gone denies
-// nothing.
+// An entry of the form dir/*name* denies, in dir, every name that contains
+// name, folded as a case-insensitive file system folds it: the copies an editor
+// or a person leaves beside a config file hold its secrets too, whether they
+// start with its name (conductor.json.bak, conductor.json~), end with it, or
+// wrap it (.conductor.json.swp, #conductor.json#, .#conductor.json). The files
+// beside it with other names still read, and an entry whose directory is gone
+// denies nothing.
 func TestResolvePathDeniesCopiesBesideADeniedFile(t *testing.T) {
 	root := setupTree(t)
-	for _, name := range []string{"conductor.json", "conductor.json.bak", "conductor.json~", "Conductor.JSON.orig", "conductor.example.json", "other.json"} {
+	copies := []string{
+		"conductor.json.bak", "conductor.json~", "Conductor.JSON.orig", "conductor.jſon.bak",
+		".conductor.json.swp", "#conductor.json#", ".#conductor.json", "old.conductor.json",
+	}
+	for _, name := range append([]string{"conductor.json", "conductor.example.json", "other.json"}, copies...) {
+		if name == ".#conductor.json" {
+			continue // an Emacs lock file is a dangling symbolic link, made below
+		}
 		if err := os.WriteFile(filepath.Join(root, name), []byte(`{"adminToken":"secret"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if err := os.Symlink("user@host.1234", filepath.Join(root, ".#conductor.json")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(filepath.Join(root, "conductor.json.bak"), filepath.Join(root, "sub", "innocent.txt")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "conductor.json.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "conductor.json.d", "inner"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := filepath.Join(root, "conductor.json")
-	deny := []string{cfg, cfg + "*"}
-	for _, p := range []string{"conductor.json", "conductor.json.bak", "conductor.json~", "Conductor.JSON.orig", "sub/innocent.txt", "conductor.json.swp"} {
+	deny := []string{cfg, filepath.Join(root, "*conductor.json*")}
+	denied := append([]string{"conductor.json", "sub/innocent.txt", "conductor.json.swp", "conductor.json.d", "conductor.json.d/inner"}, copies...)
+	for _, p := range denied {
 		if r, err := ResolvePath(root, p, deny); err == nil {
 			t.Errorf("%q: resolved to %s, want it denied", p, r)
 		}
-		if h, body := ReadPath(root, p, false, deny); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || body != nil {
-			t.Errorf("%q: %+v %q", p, h, body)
+		for _, statOnly := range []bool{false, true} {
+			if h, body := ReadPath(root, p, statOnly, deny); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || body != nil {
+				t.Errorf("%q (stat %t): %+v %q", p, statOnly, h, body)
+			}
 		}
 	}
-	for _, p := range []string{"conductor.example.json", "other.json", ".", "sub/file.go"} {
+	for _, p := range []string{"conductor.example.json", "other.json", ".", "sub/file.go", "sub"} {
 		if _, err := ResolvePath(root, p, deny); err != nil {
 			t.Errorf("%q: %v", p, err)
 		}
 	}
-	if _, err := ResolvePath(root, "other.json", []string{filepath.Join(root, "gone", "x.json*")}); err != nil {
+	if _, err := ResolvePath(root, "other.json", []string{filepath.Join(root, "gone", "*x.json*")}); err != nil {
 		t.Fatalf("an entry in a directory that does not exist: %v", err)
+	}
+}
+
+// The directory of a name entry is compared as a file, like every other entry:
+// naming it through a symbolic link denies the same names in the real directory
+// and the other way around, and the same name in another directory reads.
+func TestResolvePathNameEntryDirectoryIsComparedAsAFile(t *testing.T) {
+	root := setupTree(t)
+	for _, d := range []string{"real", "elsewhere"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"conductor.json.bak", "notes.txt"} {
+			if err := os.WriteFile(filepath.Join(root, d, name), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	deny := []string{filepath.Join(root, "link", "*conductor.json*")}
+	for _, p := range []string{"real/conductor.json.bak", "link/conductor.json.bak"} {
+		if r, err := ResolvePath(root, p, deny); err == nil {
+			t.Errorf("%q: resolved to %s, want it denied", p, r)
+		}
+	}
+	for _, p := range []string{"elsewhere/conductor.json.bak", "real/notes.txt", "link/notes.txt"} {
+		if _, err := ResolvePath(root, p, deny); err != nil {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+}
+
+// Names are folded the way a case-insensitive file system folds them (simple
+// Unicode folding), which is wider than lower-casing both sides: the long s
+// opens conductor.json on APFS, and the Kelvin sign is a K.
+func TestContainsFold(t *testing.T) {
+	for _, c := range []struct {
+		name, sub string
+		want      bool
+	}{
+		{"conductor.json.bak", "conductor.json", true},
+		{"Conductor.JSON~", "conductor.json", true},
+		{"conductor.jſon.bak", "conductor.json", true},
+		{"conductor.json", "conductor.jſon", true},
+		{"BAK.\u212Aey", "bak.key", true},
+		{"#conductor.json#", "conductor.json", true},
+		{"xconductor.jso", "conductor.json", false},
+		{"conductor.jsn.bak", "conductor.json", false},
+		{"", "a", false},
+		{"a", "a", true},
+		{"ǆa", "ǅA", true},
+	} {
+		if got := containsFold(c.name, c.sub); got != c.want {
+			t.Errorf("containsFold(%q, %q) = %t, want %t", c.name, c.sub, got, c.want)
+		}
 	}
 }

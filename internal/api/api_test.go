@@ -602,8 +602,10 @@ func TestFileReadsNeverReachTheConfigOrCatalogFile(t *testing.T) {
 }
 
 // The copies an editor leaves beside the config file and the catalog file
-// (.bak, ~, .orig) are as secret as the files: no read reaches them, over
-// HTTP or in-band. The example config beside them still reads.
+// (.bak, ~, .orig, and swap and backup files that wrap the name, such as
+// .conductor.json.swp and #conductor.json#) are as secret as the files: no read
+// reaches them, over HTTP or in-band, whole or stat-only. The example config
+// beside them still reads.
 func TestFileReadsNeverReachCopiesOfTheConfigOrCatalogFile(t *testing.T) {
 	var configFile, catalogFile string
 	e := newTestEnv(t, func(c *config.Config) {
@@ -611,8 +613,65 @@ func TestFileReadsNeverReachCopiesOfTheConfigOrCatalogFile(t *testing.T) {
 		catalogFile = filepath.Join(c.DefaultCwd, "agents.json")
 		c.Path, c.CatalogPath = configFile, catalogFile
 	})
-	copies := []string{"conductor.json.bak", "conductor.json~", "CONDUCTOR.json.orig", "agents.json.bak", "agents.json~"}
+	copies := []string{
+		"conductor.json.bak", "conductor.json~", "CONDUCTOR.json.orig", "conductor.jſon.bak",
+		".conductor.json.swp", "#conductor.json#", "agents.json.bak", "agents.json~", ".agents.json.swp",
+	}
 	for _, name := range append(copies, "conductor.example.json") {
+		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+	for _, p := range copies {
+		for _, mode := range []string{"raw", "stat", ""} {
+			if status, got, code := e.getFile(id, view, p, mode); status != http.StatusForbidden || code != "denied" || strings.Contains(got, adminToken) {
+				t.Errorf("HTTP %q (mode %q): %d %s", p, mode, status, got)
+			}
+		}
+	}
+	if status, _, _ := e.getFile(id, view, "conductor.example.json", "raw"); status != http.StatusOK {
+		t.Fatalf("the example config: %d", status)
+	}
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range copies {
+		for _, stat := range []bool{false, true} {
+			reqID := fmt.Sprintf("c%d-%t", i, stat)
+			c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p, Stat: stat}))
+			if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+				t.Errorf("file_get %q (stat %t): %+v %q", p, stat, h, b)
+			}
+		}
+	}
+}
+
+// A config file that is a symbolic link to a file in another directory is
+// edited in place or beside its target, so the copies beside the target, under
+// the target's name, are as secret as those beside the link.
+func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
+	var configFile string
+	var target string
+	e := newTestEnv(t, func(c *config.Config) {
+		real := filepath.Join(c.DefaultCwd, "real")
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target = filepath.Join(real, "prod.json")
+		configFile = filepath.Join(c.DefaultCwd, "conductor.json")
+		if err := os.WriteFile(target, []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, configFile); err != nil {
+			t.Fatal(err)
+		}
+		c.Path = configFile
+	})
+	copies := []string{"real/prod.json", "real/prod.json.bak", "real/.prod.json.swp", "real/#prod.json#", "conductor.json.bak", ".conductor.json.swp"}
+	for _, name := range append(copies[1:], "real/notes.txt") {
 		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -625,18 +684,8 @@ func TestFileReadsNeverReachCopiesOfTheConfigOrCatalogFile(t *testing.T) {
 			t.Errorf("HTTP %q: %d %s", p, status, got)
 		}
 	}
-	if status, _, _ := e.getFile(id, view, "conductor.example.json", "raw"); status != http.StatusOK {
-		t.Fatalf("the example config: %d", status)
-	}
-	c := dialViewer(t, e, id, view)
-	c.hello(80, 24)
-	c.expectControl(proto.CtlReady)
-	for i, p := range copies {
-		reqID := fmt.Sprintf("c%d", i)
-		c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p}))
-		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
-			t.Errorf("file_get %q: %+v %q", p, h, b)
-		}
+	if status, _, _ := e.getFile(id, view, "real/notes.txt", "raw"); status != http.StatusOK {
+		t.Fatalf("a file beside the target: %d", status)
 	}
 }
 

@@ -356,11 +356,15 @@ the owner's home). After symlink resolution the target must stay inside the
 working directory, and `.git/objects` is never readable. Server sessions also
 refuse the server's data directory (`dataDir`, which holds agent secrets) with
 everything in it, its config file (admin and host tokens) and its catalog file
-(`catalogPath`), and any file beside those two whose name starts with theirs,
-ignoring case (`conductor.json.bak`, `conductor.json~`), even inside the working
-directory. Every one of these rules answers `denied`. A hosted session applies
-only the first two: the host serves everything else under its working
-directory. Responses carry a JSON header
+(`catalogPath`), and the editor and backup copies beside those two: any file or
+directory in the same directory (and in the target's directory, when either path
+is a symbolic link) whose name contains theirs, ignoring case as a
+case-insensitive file system does (`conductor.json.bak`, `conductor.json~`,
+`.conductor.json.swp`, `#conductor.json#`), even inside the working directory.
+The two files themselves are matched as files, so a link to them is refused as
+well; the copies are matched by name alone. Every one of these rules answers
+`denied`. A hosted session applies only the first two: the host serves
+everything else under its working directory. Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?}`
 followed by up to 1 MiB of bytes for text files. Files with a NUL byte in the
 first 8 KiB are reported `binary` without bytes; images are sent as bytes. Up to
