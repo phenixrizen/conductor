@@ -871,10 +871,13 @@ func TestEventsAndAttentionRoutesShareAHostedSessionsBudget(t *testing.T) {
 // the close, and the frames it still owed come first. The host queues more
 // output than the connection to a viewer that is not reading can take, so
 // the viewer is still owed most of it when the host leaves; the viewer then
-// reads everything, one frame at a time. Whether the viewer is quiet or
-// typing into the relay (where its reader learns that the host is gone), the
-// reader never closes the connection under the pump: every frame the host
-// sent arrives, its last one included, before the error frame.
+// reads everything, one frame at a time. Every frame the host sent arrives,
+// its last one included, before the error frame. The quiet sub-case pins the
+// pump's drain-then-close order alone: its reader sits in readFrame until the
+// pump closes the sink and never learns on its own that the host is gone.
+// The typing sub-case is the one where the reader learns it (the relay
+// answers ErrHostGone) and must wait for the pump rather than close the
+// connection under it.
 func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 	// 1000 frames of 16 KiB, well past what the sockets between the server
 	// and the viewer hold (a few MiB), and well within the viewer's queue.

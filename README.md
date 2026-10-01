@@ -278,7 +278,8 @@ never one an admin stopped. There are at most 16 webhooks, and a URL is
 array as JSON and replaces the config file's.
 
 Each entry is one request, naming its session and carrying the entry as the
-Events feed streams it:
+Events feed streams it, without `state` (an attention entry's state is the
+request's `X-Conductor-Event`):
 
 ```http
 POST /conductor HTTP/1.1

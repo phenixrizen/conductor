@@ -443,9 +443,9 @@ func TestHostSendsTheStateAnAttentionEntryRecords(t *testing.T) {
 	}
 }
 
-// The state is read on the goroutine that records the entry, not when the
-// connection gets to send it: a change made in between belongs to the next
-// entry, not to the one waiting.
+// The state comes with the entry, handed to OnActivity by the goroutine that
+// records it, not read when the connection gets to send it: a change made in
+// between belongs to the next entry, not to the one waiting.
 func TestHostTakesTheStateWhenTheEntryIsRecorded(t *testing.T) {
 	a, out := activityTestAgent(t, 0)
 	release := make(chan struct{})

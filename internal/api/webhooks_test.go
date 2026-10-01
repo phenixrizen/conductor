@@ -260,9 +260,9 @@ func TestWebhookListsAttentionStatesAndExitNonZero(t *testing.T) {
 // web/app/utils/events.ts): an attention entry is the state it records, a
 // status entry is exit_nonzero for a process that exited on its own with a
 // non-zero code, the six event types are themselves. The state an attention
-// entry records comes with it, read when the session recorded the entry; the
-// entry names it itself when the report had no message, and nothing else
-// types it.
+// entry records comes with it (set with the entry's stamp on a server
+// session, sent by the host on a hosted one); the entry names it itself when
+// the report had no message, and nothing else types it.
 func TestWebhookEventTypeOfFollowsTheEventsPage(t *testing.T) {
 	entry := func(typ, message string) session.ActivityEntry {
 		return session.ActivityEntry{Type: typ, Message: message}
