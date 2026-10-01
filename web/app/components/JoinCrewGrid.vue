@@ -5,7 +5,10 @@ import type { TerminalTransport } from '~/utils/transport/types'
 import { joinTileStatus } from '~/utils/crews'
 import { agentInitials } from '~/utils/sessions'
 
-/** The member tiles of a run link: a live, read-only terminal for each member that runs, a placeholder for the rest. Opening one is the page's to do. */
+/**
+ * The member tiles of a run link: a live, read-only terminal for each member that runs, a placeholder for the rest. Opening one is the
+ * page's to do. What the tiles heard is the page's too (v-model:heard), so it outlasts the grid while a member is open in full.
+ */
 const props = defineProps<{
   members: JoinRunMember[]
   role: Role
@@ -15,12 +18,17 @@ const props = defineProps<{
 const emit = defineEmits<{ open: [member: JoinRunMember, heard: { status?: string; attention?: string } | undefined] }>()
 
 /** What each member's tile last heard from its session, by member name. */
-const heard = ref<Record<string, { status?: string; attention?: string }>>({})
+const heard = defineModel<Record<string, { status?: string; attention?: string }>>('heard', { required: true })
+// The map as last set here or by the page. heard.value shows the page's copy only once the page has rendered again, so a second report
+// before that (two tiles, or a status and an attention, in one task) builds on this one and does not drop the first.
+let latest = heard.value
+watch(heard, (v) => (latest = v), { flush: 'sync' })
 function hear(name: string, patch: { status?: string; attention?: string }) {
-  heard.value = { ...heard.value, [name]: { ...heard.value[name], ...patch } }
+  latest = { ...latest, [name]: { ...latest[name], ...patch } }
+  heard.value = latest
 }
 function open(m: JoinRunMember) {
-  if (m.sessionId) emit('open', m, heard.value[m.name])
+  if (m.sessionId) emit('open', m, latest[m.name])
 }
 </script>
 

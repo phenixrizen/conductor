@@ -376,10 +376,17 @@ describe('sidebarRunFor', () => {
 })
 
 describe('holdViewLink and takeViewLink', () => {
-  it('hands a launch view link to its crew view once', () => {
-    holdViewLink('r1', 'https://x.test/join/t', 28800, 1000)
-    expect(takeViewLink('r1', 2000)).toEqual({ url: 'https://x.test/join/t', ttlSeconds: 28800 })
-    expect(takeViewLink('r1', 2000)).toBeNull()
+  it('hands a launch view link to its crew view once, and keeps no timer holding it once taken', () => {
+    vi.useFakeTimers()
+    try {
+      holdViewLink('r1', 'https://x.test/join/t', 28800, 1000)
+      expect(vi.getTimerCount()).toBe(1)
+      expect(takeViewLink('r1', 2000)).toEqual({ url: 'https://x.test/join/t', ttlSeconds: 28800 })
+      expect(vi.getTimerCount()).toBe(0)
+      expect(takeViewLink('r1', 2000)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drops it when another run asks, or when nobody took it within a minute', () => {
@@ -414,6 +421,24 @@ describe('RunNameAsks', () => {
     expect(asks.shouldAsk('r1', 10 + RUN_NAME_RETRY_MS - 1)).toBe(false)
     expect(asks.shouldAsk('r1', 10 + RUN_NAME_RETRY_MS)).toBe(true)
     expect(asks.shouldAsk('r2', 0)).toBe(true)
+  })
+
+  it('never asks again for a run the server does not have, whatever fails later', () => {
+    vi.useFakeTimers()
+    try {
+      const asks = new RunNameAsks()
+      expect(asks.shouldAsk('r1')).toBe(true)
+      asks.failed('r1')
+      vi.advanceTimersByTime(RUN_NAME_RETRY_MS)
+      expect(asks.shouldAsk('r1')).toBe(true)
+      asks.gone('r1')
+      asks.failed('r1')
+      vi.advanceTimersByTime(RUN_NAME_RETRY_MS * 100)
+      expect(asks.shouldAsk('r1')).toBe(false)
+      expect(asks.shouldAsk('r2')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

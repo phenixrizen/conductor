@@ -1408,8 +1408,17 @@ func TestIfKeptRunsUnderTheLockOfAKeptRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	locked := false
-	if !e.IfKept(run.ID, func() { locked = !e.mu.TryLock() }) || !locked {
-		t.Fatal("f did not run under the engine's lock")
+	ran := e.IfKept(run.ID, func() {
+		if e.mu.TryLock() {
+			// Not held: let it go again, so that the check below fails
+			// with its message instead of the next IfKept hanging.
+			e.mu.Unlock()
+			return
+		}
+		locked = true
+	})
+	if !ran || !locked {
+		t.Fatalf("f ran %v, under the engine's lock %v", ran, locked)
 	}
 	if e.IfKept("nope", func() { t.Error("f ran for a run the engine does not have") }) {
 		t.Fatal("IfKept reported a run the engine does not have")

@@ -227,7 +227,7 @@ async function confirmDelete() {
  * The view link a launch returned, until this page has shown it: in app state, so a launch that resolves after the page was left keeps it
  * for the next visit, and a toast offers it meanwhile. Its token is in no other state.
  */
-const shownLink = useState<{ url: string; runId: string; name: string; hours: number; crewId: string } | null>('crewShownLink', () => null)
+const shownLink = useState<{ url: string; runId: string; name: string; hours: number } | null>('crewShownLink', () => null)
 let mounted = false
 const shownOpen = computed({
   get: () => !!shownLink.value,
@@ -270,7 +270,7 @@ async function launch() {
       return
     }
     if (viewLink) {
-      shownLink.value = { url: viewLink.url, runId: run.id, name: c.name, hours: hours(ttl), crewId: c.id }
+      shownLink.value = { url: viewLink.url, runId: run.id, name: c.name, hours: hours(ttl) }
       if (!mounted) {
         toast.add({
           title: `${c.name} launched`,
@@ -322,9 +322,11 @@ onBeforeUnmount(() => {
 watch(
   () => admin.token.value,
   () => {
-    // Another token may be another server: nothing typed under the old one stays.
+    // Another token may be another server: nothing typed under the old one
+    // stays, and neither does a view link held from it.
     drafts.value = {}
     crews.value = []
+    shownLink.value = null
     refresh()
   },
 )

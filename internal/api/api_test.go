@@ -4189,7 +4189,9 @@ func TestRevokingARevokedLinkRecordsNothing(t *testing.T) {
 	_, out = e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "solo"})
 	sl := out["link"].(map[string]any)["id"].(string)
 	for range 2 {
-		e.do("DELETE", "/api/sessions/"+id+"/links/"+sl, adminToken, nil)
+		if resp, _ := e.do("DELETE", "/api/sessions/"+id+"/links/"+sl, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("session revoke: %d", resp.StatusCode)
+		}
 	}
 	n = 0
 	for _, a := range e.local(id).Activity() {

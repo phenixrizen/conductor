@@ -45,6 +45,9 @@ const current = computed<{ id: string; name: string; agentId: string; kind: Sess
   return m?.sessionId ? { id: m.sessionId, name: m.name, agentId: m.agentId, kind: 'server' } : null
 })
 
+/** What each member's tile last heard from its session, by member name: kept while a member is open in full, for the tiles on the way back. */
+const tileState = ref<Record<string, { status?: string; attention?: string }>>({})
+
 useHead({ title: computed(() => (run.value ? `${run.value.name} (shared)` : info.value?.session ? `${info.value.session.name} (shared)` : 'Join session')) })
 
 function agentName(agentId: string): string {
@@ -196,7 +199,7 @@ function requestFile(path: string, stat?: boolean) {
 
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
-      <JoinCrewGrid :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
+      <JoinCrewGrid v-model:heard="tileState" :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
   </template>
 

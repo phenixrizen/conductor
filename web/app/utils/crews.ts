@@ -290,6 +290,9 @@ export function holdViewLink(runId: string, url: string, ttlSeconds: number, now
 export function takeViewLink(runId: string, now = Date.now()): { url: string; ttlSeconds: number } | null {
   const held = heldViewLink
   heldViewLink = null
+  // The timer's closure holds the link too: it goes with it.
+  clearTimeout(heldTimer)
+  heldTimer = undefined
   if (!held || held.runId !== runId || now - held.at > VIEW_LINK_HOLD_MS) return null
   return { url: held.url, ttlSeconds: held.ttlSeconds }
 }
@@ -297,18 +300,28 @@ export function takeViewLink(runId: string, now = Date.now()): { url: string; tt
 /** How long a run name that could not be read waits before it is asked for again. */
 export const RUN_NAME_RETRY_MS = 5_000
 
-/** Which run names the layout reads: each once, and again after a failure once RUN_NAME_RETRY_MS has passed. */
+/**
+ * Which run names the layout reads: each once, and again after a failure once RUN_NAME_RETRY_MS has passed; never again once the server
+ * says it does not have the run (gone), as it does for a run forgotten past the kept-runs limit whose member sessions are still listed.
+ */
 export class RunNameAsks {
   /** By run: when it may be asked again; Infinity while asked or read. */
   private next = new Map<string, number>()
+  /** The runs the server does not have: never asked again. */
+  private never = new Set<string>()
   shouldAsk(id: string, now = Date.now()): boolean {
+    if (this.never.has(id)) return false
     const at = this.next.get(id)
     if (at !== undefined && now < at) return false
     this.next.set(id, Infinity)
     return true
   }
   failed(id: string, now = Date.now()): void {
-    this.next.set(id, now + RUN_NAME_RETRY_MS)
+    if (!this.never.has(id)) this.next.set(id, now + RUN_NAME_RETRY_MS)
+  }
+  gone(id: string): void {
+    this.never.add(id)
+    this.next.delete(id)
   }
 }
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
+import { ApiError } from '~/composables/useApi'
 import { RUN_NAME_RETRY_MS, RunNameAsks, sidebarRunFor } from '~/utils/crews'
 
 const { hasToken, clear } = useAdminToken()
@@ -26,7 +27,8 @@ const list = useTemplateRef<{ focusFilter: () => void }>('list')
 // of any member session of a run however it was reached, the sidebar lists
 // only that run's members. The run's name comes from a cache the crew view
 // fills; for a member session opened elsewhere it is read once per run, and
-// again RUN_NAME_RETRY_MS after a failure, the crew's id standing in until then.
+// again RUN_NAME_RETRY_MS after a failure, the crew's id standing in until then;
+// a run the server does not have (404) is never asked for again.
 const api = useSessions()
 const sidebarRun = computed(() => sidebarRunFor(route.path, attention.sessions.value))
 const runRoute = computed(() => route.path.startsWith('/runs/'))
@@ -39,7 +41,12 @@ async function readRunName(id: string) {
   try {
     const r = await api.getRun(id)
     runNames.value = { ...runNames.value, [r.id]: r.name }
-  } catch {
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) {
+      // Forgotten past the kept-runs limit: the crew id stands in for good.
+      asks.gone(id)
+      return
+    }
     // The crew id stands in until a later try reads it.
     asks.failed(id)
     clearTimeout(retry)

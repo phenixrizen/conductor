@@ -427,7 +427,7 @@ its run, and on no other.
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list |
 | `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers |
 | `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` |
-| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204` |
+| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204`; revoking a revoked link answers `204` and records nothing |
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
@@ -583,13 +583,13 @@ token as they take a session link's for its session, and `GET
 capped at 100 and revoked through its run alone; revoking it closes the
 viewers attached through it on every session (`4403`). Creating and revoking
 one are noted in the run log; revoking a revoked link answers `204` and logs
-nothing. When the server forgets the run (past 100 runs,
-the oldest with nothing running), its links go with it, as a session's go with
-the session: they open nothing, the join route answers `404 invalid_link`, and
-the viewers still attached through them, to the ended sessions of its members,
-are closed with `4403` as on a revoke. The join route answers `404 run_gone`
-only when the run is forgotten as the link is being resolved. A restart
-forgets links and runs alike.
+nothing. When the server forgets the run (past 100 runs, the oldest with
+nothing running), its links go with it, as a session's go with the session:
+they open nothing, the join route answers `404 invalid_link`, and the viewers
+still attached through them, to the ended sessions of its members, are closed
+with `4403` as on a revoke. The join route answers `404 run_gone` only when
+the run is forgotten as the link is being resolved. A restart forgets links
+and runs alike.
 
 The run log is the run's own record beside its sessions' activity, oldest
 first; each entry is an activity entry of type `status`, `error` or `link`
