@@ -29,6 +29,11 @@ const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any>; se
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
+  hearFocused({ attention: msg.state })
+}
+function onStatus(s: string) {
+  status.value = s
+  hearFocused({ status: s })
 }
 
 // A run link opens every member of a crew run: a tile each, and one member
@@ -47,6 +52,15 @@ const current = computed<{ id: string; name: string; agentId: string; kind: Sess
 
 /** What each member's tile last heard from its session, by member name: kept while a member is open in full, for the tiles on the way back. */
 const tileState = ref<Record<string, { status?: string; attention?: string }>>({})
+/**
+ * What the full view hears of the member open in it goes to that member's tile too, so Back shows the truth: a tile that joins again is
+ * told of a prompt only while one is live, never that one was cleared.
+ */
+function hearFocused(patch: { status?: string; attention?: string }) {
+  const name = focus.value?.name
+  if (!name) return
+  tileState.value = { ...tileState.value, [name]: { ...tileState.value[name], ...patch } }
+}
 
 useHead({ title: computed(() => (run.value ? `${run.value.name} (shared)` : info.value?.session ? `${info.value.session.name} (shared)` : 'Join session')) })
 
@@ -233,7 +247,7 @@ function requestFile(path: string, stat?: boolean) {
           ref="terminal"
           :create-transport="createTransport"
           :read-only="info.role !== 'control'"
-          @status="(s) => (status = s)"
+          @status="onStatus"
           @attention="onAttention"
           @viewers="viewers = $event.count"
           @transport="transport = $event"
