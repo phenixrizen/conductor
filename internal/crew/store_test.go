@@ -258,6 +258,50 @@ func TestMigrationFinishesAfterAnInterruptedStart(t *testing.T) {
 	}
 }
 
+// Two servers that start on one data directory both move crews.json, and
+// write the same crew files: the one that renames it second finds it gone.
+// That is the other's move, finished, and no reason to stop.
+func TestMigrationGoesOnWhenAnotherServerRenamedCrewsJSON(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(st.Dir(), "crews.json")
+	legacy := `{"crews": [` + crewJSON("alpha", "Alpha") + `, ` + crewJSON("beta", "Beta") + `]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rename = os.Rename })
+	rename = func(from, to string) error {
+		// The other server renames it first, to the same free name.
+		if err := os.Rename(from, to); err != nil {
+			return err
+		}
+		return os.Rename(from, to)
+	}
+	s, problems, err := NewStore(st)
+	if err != nil || len(problems) != 0 {
+		t.Fatalf("NewStore: %v %v", problems, err)
+	}
+	if got := files(t, st); !slices.Equal(got, []string{"alpha.json", "beta.json"}) {
+		t.Fatalf("files %v", got)
+	}
+	if b, err := os.ReadFile(path + ".migrated"); err != nil || string(b) != legacy {
+		t.Fatalf("crews.json.migrated: %v %q", err, b)
+	}
+	if _, total, _ := s.List(0, 10); total != 2 {
+		t.Fatalf("%d crews", total)
+	}
+	// Any other failure to rename still stops startup.
+	if err := os.Rename(path+".migrated", path); err != nil {
+		t.Fatal(err)
+	}
+	rename = func(string, string) error { return &fs.PathError{Op: "rename", Path: path, Err: fs.ErrPermission} }
+	if _, _, err := NewStore(st); err == nil || !strings.Contains(err.Error(), "could not be renamed") {
+		t.Fatalf("NewStore: %v", err)
+	}
+}
+
 // crews.json that cannot be used stops startup, as it always did, naming its
 // path, and nothing is moved: a store that started without it would lose it.
 func TestMigrationRefusesAMalformedCrewsJSON(t *testing.T) {

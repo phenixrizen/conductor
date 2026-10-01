@@ -16,6 +16,10 @@ import (
 // legacyFile is the file an older Conductor kept every crew in.
 const legacyFile = "crews.json"
 
+// rename is os.Rename: a test replaces it to move crews.json from under the
+// migration, as another server starting on the same data directory does.
+var rename = os.Rename
+
 // legacyDoc is the shape of crews.json.
 type legacyDoc struct {
 	Crews []Crew `json:"crews"`
@@ -31,7 +35,9 @@ type legacyDoc struct {
 // so, naming both files: that crew stays in crews.json.migrated only.
 // crews.json is held to what it always was: one that cannot be parsed, or
 // that holds an invalid crew or an ID twice, stops startup with an error
-// naming it, and nothing is moved.
+// naming it, and nothing is moved. Two servers starting on one data
+// directory both move it, writing the same files; the second to rename it
+// finds it gone and goes on.
 func migrate(st, dir *store.Store) (notices []error, err error) {
 	path := filepath.Join(st.Dir(), legacyFile)
 	var doc legacyDoc
@@ -78,7 +84,15 @@ func migrate(st, dir *store.Store) (notices []error, err error) {
 			return nil, fmt.Errorf("%s: move crew %s to %s: %w", path, c.ID, dir.Dir(), err)
 		}
 	}
-	if err := os.Rename(path, migrated); err != nil {
+	if err := rename(path, migrated); err != nil {
+		// crews.json gone by now is another server's move, on the same
+		// data directory, finished first: it wrote the same crew files and
+		// renamed the file itself. There is nothing left to do or to say:
+		// the notices are that server's, and they name a file this one did
+		// not make.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("%s: the crews are moved, but the file could not be renamed: %w", path, err)
 	}
 	return notices, nil

@@ -177,8 +177,9 @@ func (ws *webhookSender) offer(sessionID string, e session.ActivityEntry, state 
 // of a process that exited on its own with a non-zero code is exit_nonzero,
 // and the six event types are themselves. For an attention entry state is
 // the state the entry records, handed on with it (OnActivity for a server
-// session, the host's activity message for a hosted one); it is "" only for
-// an older host, and then the entry names its state itself when the report
+// session, the host's activity message for a hosted one); it is "" only when
+// the host sent none (an older host) or one that is not one of the three,
+// which is dropped, and then the entry names its state itself when the report
 // had no message. (The browser reads the same state from the event's state
 // field, and consults the session only for an entry that carries none.)
 func eventTypeOf(e session.ActivityEntry, state session.AttentionState) string {

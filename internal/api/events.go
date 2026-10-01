@@ -34,7 +34,8 @@ type eventHub struct {
 // activitySink receives an activity entry of a session and, for an attention
 // entry, the attention state it records, which comes with the entry: set with
 // the entry's stamp on a server session, sent by the host on a hosted one; ""
-// when it is not known (an older host).
+// when it is not known (an older host sends none, and a state that is not one
+// of the three is dropped).
 type activitySink func(sessionID string, e session.ActivityEntry, state session.AttentionState)
 
 func newEventHub() *eventHub { return &eventHub{clients: map[chan []byte]struct{}{}} }
@@ -78,8 +79,10 @@ type activityEvent struct {
 	SessionID string `json:"sessionId"`
 	session.ActivityEntry
 	// State is the attention state an attention entry records: needs_input,
-	// working or done. It is absent for any other entry, and for one whose
-	// recorder did not say (an older host).
+	// working or done. It is absent for any other entry, and for an attention
+	// entry that came without one: from an older host, which sends no state,
+	// or from a host whose state was not one of the three, which the server
+	// drops.
 	State session.AttentionState `json:"state,omitempty"`
 }
 

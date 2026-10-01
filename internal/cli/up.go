@@ -181,6 +181,10 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		} `json:"members"`
 	}
 	var all []crewLine
+	// Pages by offset and limit, with no snapshot across them: a crew made
+	// or deleted between two pages shifts the ones after it, so one may be
+	// listed twice or not at all. That is inherent to offset paging; a run
+	// again lists them as they are.
 	for offset := 0; ; {
 		var reply struct {
 			Crews []crewLine `json:"crews"`

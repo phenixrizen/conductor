@@ -511,8 +511,11 @@ into `~/.conductor` (`hooks/` need not move: the server writes it at every
 start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
 to it. When both `~/.conductor` and the old directory hold server data, the
 server uses `~/.conductor` and logs a warning naming the old directory, which
-it does not read. An agent override saved on the **Agents** page by an earlier
-version holds its env values in full; at start the server stores `***` in
+it does not read. Crews an earlier version kept in one `crews.json` move at
+the first start to a file each in `crews/<id>.json`, and `crews.json` is
+renamed `crews.json.migrated`, which keeps every crew as it was. An agent
+override saved on the **Agents** page by an earlier version holds its env
+values in full; at start the server stores `***` in
 `catalog.json` for every one equal to the config's (and logs the agents it
 changed), so that key follows the config from then on and a secret rotated
 after the upgrade reaches the agent. A server started without a home directory
