@@ -82,8 +82,8 @@ Upgrade deliberately and update this table.
 - **An agent**: add a catalog entry in config (or `internal/catalog/defaults.go`
   for built-ins) with `id`, `name`, `command` and `allowArgs`.
 - **An API route**: handler in `internal/api`, auth via `requireAdmin` or
-  `authenticate`, a test in `api_test.go`, and the client call in
-  `web/app/composables/useSessions.ts`.
+  `authenticate`, a test in `internal/api` (`api_test.go` or the route family's
+  `*_test.go`), and the client call in `web/app/composables/useSessions.ts`.
 - **A control message**: struct in `internal/proto/control.go`, dispatch in
   `ws_viewer.go` and `hostagent/peer.go`, TypeScript type in `protocol.ts`,
   handling in `transport/base.ts`, and a row in `docs/protocol.md`.

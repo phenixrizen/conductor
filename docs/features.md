@@ -274,6 +274,8 @@ open deferred item from rounds 1 and 2, then the features below.
 
 ### Deferred items to close (plan 1 of round 3)
 
+Closed by `docs/superpowers/plans/2026-10-01-round3-deferred.md`.
+
 Strict JSON and the store:
 - `config.Load` and `catalog.ReadFile` reject trailing data after the first JSON value, like the store and webhooks do; the store comment then tells the truth.
 - `store.Save` writes with `SetEscapeHTML(false)` so patterns and snippets stay hand-editable.

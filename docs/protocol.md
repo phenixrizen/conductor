@@ -352,9 +352,11 @@ attention entry is the attention state it records, which comes with the entry:
 a server session hands it on as it records the entry (the state set with the
 entry's stamp), and a hosted session's host sends it (`state` of the host's
 `activity` message).
-An entry that comes without one, from an older host, is the state it names as
-its message, if it names one (as it does for a report without a message), and
-otherwise only an `attention` entry. A `status` entry
+An entry that comes without one is the state it names as its message, if it
+names one (as it does for a report without a message), and otherwise only an
+`attention` entry. That happens for two reasons: the host is older and sends no
+state, or it sent a state the server does not take (anything but `needs_input`,
+`working` or `done`), which the server drops. A `status` entry
 `exited (exit N)` with N other than 0 is `exit_nonzero`. Each webhook queues
 at most 256 entries and drops its oldest; a delivery is tried once, for at
 most 5 s, without following redirects.
@@ -462,17 +464,19 @@ the next listing. A file that cannot be used, a symbolic link included (it is
 not followed), is named in the server's log at startup and left out of the
 list; it is never overwritten (a new crew of the same name takes the next id),
 and `DELETE` removes it. A file that cannot be read for now (its mode, say) is
-left out of that listing and read again at the next. A `crews.json` from an earlier version is split into
-these files at the first start and renamed `crews.json.migrated`, which keeps
-every crew; the move never overwrites a crew file, and a crew whose file exists
-with something else in it is not moved, which the log says naming both files.
+left out of that listing and read again at the next. A `crews.json` from an
+earlier version is split into these files at the first start and renamed
+`crews.json.migrated`, which keeps every crew; the move never overwrites a crew
+file, and a crew whose file exists with something else in it is not moved,
+which the log says naming both files.
 A `crews.json` that cannot be parsed stops startup, as before. So does one that
 holds an invalid crew or an `id` twice; nothing is moved then. Without a data
 directory the listing is empty and every other crew route answers
 `503 store_unavailable`. A failure of the store is `500 store_failed`: "could
 not save the crews" for a write, which changes nothing, and "could not read the
-crews" for a read. `openAfterLaunch` is for the workbench, which opens the crew view after
-a launch when it is set; the server stores it and does nothing else with it.
+crews" for a read. `openAfterLaunch` is for the workbench, which opens the crew
+view after a launch when it is set; the server stores it and does nothing else
+with it.
 Crews are held to these limits: `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
 not blank, at most 60 characters and without control characters (surrounding
 space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;

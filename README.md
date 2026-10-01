@@ -331,11 +331,11 @@ answer; redirects are not followed, and an answer other than 2xx is logged as
 a warning. When the server shuts down it stops the webhooks first, so the
 `stopped` statuses of the sessions it stops then are not delivered. User info
 in a URL (`https://user:password@host/…`) is sent as `Authorization: Basic`,
-as Go's HTTP client does. The Events page and `GET /api/integrations` show a
-webhook's URL without its user info, query string and fragment, and never its
-secret, but with its path: for a service that puts its credential in the path
-(Slack, Discord), admins see it there. Logs name a webhook by its place in the
-list and its host.
+as Go's HTTP client does. The Events page shows each webhook by its host.
+`GET /api/integrations` returns its URL without its user info, query string and
+fragment, and never its secret, but with its path: for a service that puts its
+credential in the path (Slack, Discord), an admin reading that route sees it.
+Logs name a webhook by its place in the list and its host.
 
 **Private addresses.** A webhook may not point at a loopback, link-local,
 private (unique-local in IPv6), shared (CGNAT, `100.64.0.0/10`, where some

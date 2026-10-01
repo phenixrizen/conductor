@@ -124,7 +124,7 @@ func TestValidateRejectsBadMembers(t *testing.T) {
 		change func(*Crew)
 		want   string // part of the message
 	}{
-		{"duplicate member names", func(c *Crew) { c.Members[1] = manual("lead") }, `"lead"`},
+		{"duplicate member names", func(c *Crew) { c.Members[1] = manual("lead") }, `member "lead": the name is used twice`},
 		{"member name Lead!", func(c *Crew) { c.Members[0].Name = "Lead!"; c.Members[1].Start.Member = "Lead!" }, "must match"},
 		{"member name starting with a dot", func(c *Crew) { c.Members[1].Name = ".tests" }, "must match"},
 		{"member name of 41 characters", func(c *Crew) { c.Members[1].Name = strings.Repeat("t", 41) }, "must match"},
