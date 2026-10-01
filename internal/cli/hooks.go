@@ -295,13 +295,19 @@ func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
 // serveHooksDir is the hooks dir of the data directory dataDir or, when it is
 // empty, of the one conductor serve uses without dataDir in its config:
 // CONDUCTOR_DATA_DIR, else ~/.conductor (or an older ./conductor.d while
-// ~/.conductor holds no server data).
+// ~/.conductor holds no server data, or while the home directory is
+// unknown). Without a home directory and an older ./conductor.d, the error
+// names --data-dir and CONDUCTOR_DATA_DIR, the settings conductor hooks
+// takes.
 func serveHooksDir(dataDir string) (string, error) {
 	cfg := config.Config{DataDir: dataDir}
 	if cfg.DataDir == "" {
 		cfg.DataDir = os.Getenv("CONDUCTOR_DATA_DIR")
 	}
 	if _, err := cfg.ResolveDataDir(""); err != nil {
+		if errors.Is(err, config.ErrNoHome) {
+			return "", errors.New("the data directory of conductor serve defaults to ~/.conductor, but the home directory is unknown: name it with --data-dir, or set CONDUCTOR_DATA_DIR")
+		}
 		return "", err
 	}
 	return agents.HooksDir(cfg.DataDir), nil

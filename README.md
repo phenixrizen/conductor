@@ -479,8 +479,10 @@ that `conductor host` writes there does not count), keeps using it and logs a
 warning naming both paths. To move it, stop the server, move the files in it
 into `~/.conductor` (`hooks/` need not move: the server writes it at every
 start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
-to it. A directory the server cannot create stops it with
-`data directory … is not usable`. The Docker image sets
+to it. A server started without a home directory (no `HOME`, as some services
+run) keeps using an old directory too, and needs `dataDir` or
+`CONDUCTOR_DATA_DIR` only when there is none. A directory the server cannot
+create stops it with `data directory … is not usable`. The Docker image sets
 `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the
 server logs the directory it uses, and warns when it overlaps an allowed root:
 agents working there can read and commit its secrets.

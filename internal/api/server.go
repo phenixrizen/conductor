@@ -60,10 +60,20 @@ type Server struct {
 	// it is replaced as a whole and never edited in place, so a copy taken
 	// under the lock (see Catalog) is a stable snapshot. An editor also holds
 	// catalogEditMu, so it may read overlay without this lock.
+	//
+	// overlay's slices (Agents, Hidden) are copy-on-write: an editor reads
+	// them under catalogEditMu alone while handleCatalog reads Hidden under
+	// catalogMu, so an editor builds new slices (upsertAgent, withoutAgent,
+	// withoutID, slices.Clone before append) and publishes them in the swap.
+	// Changing one in place, with slices.Delete or an append into its spare
+	// capacity, would race with those readers.
 	catalogMu sync.Mutex
 	base      catalog.Catalog // the configured catalog, before the overlay; never changed after New
 	overlay   catalog.Overlay // the UI-managed layer, as saved in catalog.json
 	catalog   catalog.Catalog
+	// writeCatalog writes an overlay to catalog.json in the store; a test
+	// holds it to show that only another edit waits for the write.
+	writeCatalog func(catalog.Overlay) error
 
 	mu      sync.Mutex
 	counter int
@@ -109,6 +119,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		fileDeny: fileDeny(cfg, st),
 		home:     home,
 	}
+	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
 	s.runOf = func(sessionID string) (string, bool) {

@@ -127,6 +127,34 @@ func TestHooksInstallTakesTheHomeDataDir(t *testing.T) {
 	install(fromHome)
 }
 
+// Without a home directory, --data-dir or CONDUCTOR_DATA_DIR, conductor
+// hooks names the settings it takes, not a config file it has none of. An
+// old ./conductor.d is still found, as conductor serve finds it.
+func TestHooksWithoutAHomeNameTheDataDirFlag(t *testing.T) {
+	clearConductorEnv(t)
+	t.Cleanup(agents.ForgetBinary())
+	t.Setenv("HOME", "")
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	install := func() (int, string, error) {
+		t.Helper()
+		target := t.TempDir()
+		var out, errOut bytes.Buffer
+		code, err := runHooks(t.Context(), []string{"install", "copilot", "--home", target}, &out, &errOut)
+		b, _ := os.ReadFile(filepath.Join(target, ".copilot", "hooks", "conductor.json"))
+		return code, string(b), err
+	}
+	code, _, err := install()
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "--data-dir") || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") || strings.Contains(err.Error(), "dataDir in the config") {
+		t.Fatalf("without a home: exit %d %v", code, err)
+	}
+	bin := fakeBinary(t)
+	serverAssets(t, filepath.Join(cwd, "conductor.d"), bin)
+	if code, installed, err := install(); code != 0 || err != nil || !strings.Contains(installed, `"`+bin+` notify --copilot-hook"`) {
+		t.Fatalf("with an old ./conductor.d: exit %d %v\n%s", code, err, installed)
+	}
+}
+
 // install all installs every adapter that has a file to install, with the
 // skill for the agents that read skills, says what is left by hand (dsh) and
 // what has nothing to install (aider), and exits 0.

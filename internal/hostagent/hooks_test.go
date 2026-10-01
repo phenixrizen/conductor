@@ -206,6 +206,49 @@ func TestHostWritesNoHooksForAnAdapterWithoutALaunchRoute(t *testing.T) {
 	}
 }
 
+// Without HooksDir the host writes its hooks to ~/.conductor/hooks, or to
+// the state directory an older Conductor used while that exists, and then
+// says where they stay and why.
+func TestInjectHooksKeepsAndNamesTheOldStateDirectory(t *testing.T) {
+	t.Cleanup(agents.ForgetBinary())
+	home, state := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", state)
+	old := filepath.Join(state, "conductor", "hooks")
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inject := func() ([]string, string) {
+		t.Helper()
+		var logs logBuffer
+		got, _ := injectHooks(Options{Argv: []string{"/bin/cat"}, Adapter: "claude", Log: slog.New(slog.NewTextHandler(&logs, nil))})
+		return got, logs.String()
+	}
+	got, logs := inject()
+	if want := []string{"/bin/cat", "--settings", filepath.Join(old, "claude.json")}; !slices.Equal(got, want) {
+		t.Fatalf("command %q, want %q", got, want)
+	}
+	if !strings.Contains(logs, "level=INFO") || !strings.Contains(logs, "an older Conductor used") || !strings.Contains(logs, "~/.conductor/hooks") || !strings.Contains(logs, "dir="+old) {
+		t.Fatalf("host log:\n%s", logs)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".conductor")); !os.IsNotExist(err) {
+		t.Fatalf("~/.conductor was made: %v", err)
+	}
+
+	// Once the old directory is gone, the hooks go to ~/.conductor/hooks
+	// without a word.
+	if err := os.RemoveAll(filepath.Join(state, "conductor")); err != nil {
+		t.Fatal(err)
+	}
+	got, logs = inject()
+	if want := []string{"/bin/cat", "--settings", filepath.Join(home, ".conductor", "hooks", "claude.json")}; !slices.Equal(got, want) {
+		t.Fatalf("command %q, want %q", got, want)
+	}
+	if strings.Contains(logs, "older Conductor") {
+		t.Fatalf("host log:\n%s", logs)
+	}
+}
+
 // Every adapter without a launch route is treated alike.
 func TestInjectHooksWritesNothingForAdaptersWithoutALaunchRoute(t *testing.T) {
 	var ids []string

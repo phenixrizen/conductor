@@ -1477,6 +1477,67 @@ func TestCatalogReadersDoNotWaitForAnEdit(t *testing.T) {
 	e.stopEverything(t)
 }
 
+// The catalog lock is not held across the write of catalog.json: while an
+// edit's write is held, a list answers at once with the catalog as it was,
+// and the edit publishes once its write completes.
+func TestCatalogListAnswersWhileAnEditWrites(t *testing.T) {
+	e := newTestEnv(t, nil)
+	writing, release := make(chan struct{}), make(chan struct{})
+	write := e.srv.writeCatalog
+	e.srv.writeCatalog = func(ov catalog.Overlay) error {
+		close(writing)
+		<-release
+		return write(ov)
+	}
+	request := func(method, path string, body any) <-chan int {
+		status := make(chan int, 1)
+		go func() {
+			var rd io.Reader
+			if body != nil {
+				b, _ := json.Marshal(body)
+				rd = bytes.NewReader(b)
+			}
+			req, _ := http.NewRequest(method, e.http.URL+path, rd)
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			resp, err := e.client.Do(req)
+			if err != nil {
+				status <- 0
+				return
+			}
+			resp.Body.Close()
+			status <- resp.StatusCode
+		}()
+		return status
+	}
+	saved := request("POST", "/api/catalog", agentBody("slow"))
+	select {
+	case <-writing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the edit never reached its write")
+	}
+	select {
+	case got := <-request("GET", "/api/catalog", nil):
+		if got != http.StatusOK {
+			close(release)
+			t.Fatalf("list during the write: status %d", got)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("a list waited for an edit's write")
+	}
+	if ids := e.catalogIDs(); slices.Contains(ids, "slow") {
+		close(release)
+		t.Fatalf("listed before its write completed: %v", ids)
+	}
+	close(release)
+	if got := <-saved; got != http.StatusOK {
+		t.Fatalf("save: status %d", got)
+	}
+	if ids := e.catalogIDs(); !slices.Contains(ids, "slow") {
+		t.Fatalf("not listed once its write completed: %v", ids)
+	}
+}
+
 func TestCatalogSavedAgentsRun(t *testing.T) {
 	e := newTestEnv(t, nil)
 	body := agentBody("mycat")

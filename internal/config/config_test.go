@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -286,10 +287,105 @@ func TestResolveDataDirDefaults(t *testing.T) {
 
 	t.Run("without a home directory the error names the settings", func(t *testing.T) {
 		t.Setenv("HOME", "")
+		t.Chdir(t.TempDir()) // no old directory either
 		cfg := Defaults()
 		_, err := cfg.ResolveDataDir("")
-		if err == nil || !strings.Contains(err.Error(), "dataDir") || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") {
+		if err == nil || !strings.Contains(err.Error(), "dataDir") || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") || !errors.Is(err, ErrNoHome) {
 			t.Fatalf("no home: %v", err)
+		}
+	})
+
+	// An upgraded service started without HOME keeps working: the home is
+	// needed only when there is no old directory to keep.
+	t.Run("without a home directory an old conductor.d is kept with the notice", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		dir := t.TempDir()
+		t.Chdir(dir)
+		old := filepath.Join(dir, "conductor.d")
+		mkdir(t, old)
+		for _, configPath := range []string{"", filepath.Join(dir, "conductor.json")} {
+			cfg := Defaults()
+			notice := resolve(t, cfg, configPath)
+			if cfg.DataDir != old {
+				t.Fatalf("config %q: DataDir %q, want the old %q", configPath, cfg.DataDir, old)
+			}
+			for _, want := range []string{old, "~/.conductor", "home directory is unknown", "dataDir", "CONDUCTOR_DATA_DIR"} {
+				if !strings.Contains(notice, want) {
+					t.Errorf("notice %q does not mention %q", notice, want)
+				}
+			}
+		}
+	})
+
+	// ~/.conductor wins, and the old directory's own server data would be
+	// lost from sight without a word: the notice names it.
+	t.Run("an old directory that holds server data too is named when ~/.conductor wins", func(t *testing.T) {
+		h := home(t)
+		dir := t.TempDir()
+		t.Chdir(dir)
+		old := filepath.Join(dir, "conductor.d")
+		mkdir(t, filepath.Join(old, "crews"))
+		def := filepath.Join(h, ".conductor")
+		mkdir(t, def)
+		if err := os.WriteFile(filepath.Join(def, "catalog.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := Defaults()
+		notice := resolve(t, cfg, "")
+		if cfg.DataDir != def {
+			t.Fatalf("DataDir %q, want %q", cfg.DataDir, def)
+		}
+		for _, want := range []string{old, def, "dataDir", "CONDUCTOR_DATA_DIR"} {
+			if !strings.Contains(notice, want) {
+				t.Errorf("notice %q does not mention %q", notice, want)
+			}
+		}
+	})
+
+	// A ~/.conductor that cannot be looked into is reported as what it is,
+	// never as a directory that holds no server data yet.
+	t.Run("a ~/.conductor that cannot be checked is an error", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, want string
+			make       func(t *testing.T, def string)
+		}{
+			{"a file in its place", "not a directory", func(t *testing.T, def string) {
+				if err := os.WriteFile(def, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"no permission", "permission denied", func(t *testing.T, def string) {
+				if os.Geteuid() == 0 {
+					t.Skip("root looks into a directory of mode 0000")
+				}
+				mkdir(t, def)
+				if err := os.Chmod(def, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(def, 0o700) })
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := home(t)
+				dir := t.TempDir()
+				t.Chdir(dir)
+				mkdir(t, filepath.Join(dir, "conductor.d"))
+				def := filepath.Join(h, ".conductor")
+				tc.make(t, def)
+				cfg := Defaults()
+				notice, err := cfg.ResolveDataDir("")
+				if err == nil {
+					t.Fatalf("no error: DataDir %q, notice %q", cfg.DataDir, notice)
+				}
+				for _, want := range []string{def, tc.want, "dataDir", "CONDUCTOR_DATA_DIR"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+				if strings.Contains(err.Error(), "no server data") {
+					t.Errorf("error %q says there is no server data", err)
+				}
+			})
 		}
 	})
 

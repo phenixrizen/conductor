@@ -156,8 +156,15 @@ func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 	if err := os.WriteFile(data, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A server that starts anyway is stopped by the deadline, so the test
+	// fails instead of waiting for the package timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	var logs syncBuffer
-	code, err := runServe(context.Background(), []string{"--config", cfg, "--listen", "127.0.0.1:0"}, io.Discard, &logs)
+	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, io.Discard, &logs)
+	if strings.Contains(logs.String(), "conductor serving") {
+		t.Fatalf("serve listened with an unusable data directory:\n%s", logs.String())
+	}
 	if code != 1 || err == nil {
 		t.Fatalf("serve started with an unusable data directory: %d %v", code, err)
 	}

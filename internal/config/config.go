@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -316,6 +317,12 @@ func (c *Config) Validate() error {
 // webhook host that did not resolve. conductor serve logs them.
 func (c *Config) Warnings() []string { return c.warnings }
 
+// ErrNoHome is in the error ResolveDataDir returns when the data directory
+// is the default, ~/.conductor, and the home directory is unknown. Callers
+// that choose the directory with settings of their own (conductor hooks
+// --data-dir) name those instead.
+var ErrNoHome = errors.New("the home directory is unknown")
+
 // ResolveDataDir fills DataDir when neither dataDir nor CONDUCTOR_DATA_DIR set
 // it: ~/.conductor, in the home of the user running conductor serve, never
 // next to the config file or in the working directory. An older Conductor
@@ -323,8 +330,12 @@ func (c *Config) Warnings() []string { return c.warnings }
 // without one. While ~/.conductor holds no server data (holdsServerData) and
 // that directory exists, it is kept, and notice says so, naming both and how
 // to move. conductor host writes ~/.conductor/hooks for itself, so hooks/
-// alone does not end the rule. With no value set and no home directory, the
-// error names the settings that choose one.
+// alone does not end the rule. Without a home directory that old directory
+// is kept too, so an upgraded service started without HOME keeps working;
+// with no old directory either, the error (ErrNoHome) names the settings
+// that choose one. When ~/.conductor wins and the old directory holds server
+// data as well, notice names the directory this server no longer reads. A
+// ~/.conductor that cannot be looked into is an error.
 //
 // The result is absolute: agent processes started in other working
 // directories are handed paths under it. A value that was set is made
@@ -333,21 +344,46 @@ func (c *Config) Warnings() []string { return c.warnings }
 // determined.
 func (c *Config) ResolveDataDir(configPath string) (notice string, err error) {
 	if c.DataDir == "" {
-		home, herr := os.UserHomeDir()
-		if herr != nil || !filepath.IsAbs(home) {
-			return "", errors.New("the data directory defaults to ~/.conductor, but the home directory is unknown: set dataDir in the config, or CONDUCTOR_DATA_DIR")
-		}
-		def := filepath.Join(home, ".conductor")
-		c.DataDir = def
-		if !holdsServerData(def) {
-			if old, aerr := filepath.Abs(legacyDataDir(configPath)); aerr == nil && isDir(old) {
-				c.DataDir = old
-				notice = fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now %s, which holds no server data yet (catalog.json, crews/ or crews.json). To move it, stop the server, move the files in %s into %s (hooks/ need not move: the server writes it at every start) and start it again; to keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old, def, old, def)
-			}
+		if notice, err = c.defaultDataDir(configPath); err != nil {
+			return "", err
 		}
 	}
 	if abs, aerr := filepath.Abs(c.DataDir); aerr == nil {
 		c.DataDir = abs
+	}
+	return notice, nil
+}
+
+// defaultDataDir sets DataDir when nothing chose it, by the rules
+// ResolveDataDir describes, and returns what the server should say about it.
+func (c *Config) defaultDataDir(configPath string) (notice string, err error) {
+	old, aerr := filepath.Abs(legacyDataDir(configPath))
+	hasOld := aerr == nil && isDir(old)
+	home, herr := os.UserHomeDir()
+	if herr != nil || !filepath.IsAbs(home) {
+		if !hasOld {
+			return "", fmt.Errorf("the data directory defaults to ~/.conductor, but %w: set dataDir in the config, or CONDUCTOR_DATA_DIR", ErrNoHome)
+		}
+		c.DataDir = old
+		return fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now ~/.conductor, but the home directory is unknown. To keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old), nil
+	}
+	def := filepath.Join(home, ".conductor")
+	held, err := holdsServerData(def)
+	if err != nil {
+		return "", fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", def, err)
+	}
+	c.DataDir = def
+	switch {
+	case !hasOld:
+		// Nothing older to keep or to name.
+	case !held:
+		c.DataDir = old
+		notice = fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now %s, which holds no server data yet (catalog.json, crews/ or crews.json). To move it, stop the server, move the files in %s into %s (hooks/ need not move: the server writes it at every start) and start it again; to keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old, def, old, def)
+	default:
+		// What cannot be looked into is left alone: the server reads def.
+		if oldHeld, _ := holdsServerData(old); oldHeld {
+			notice = fmt.Sprintf("using the data directory %s; %s, where an older Conductor put it, holds server data too, which this server does not read. Move what you need from it into %s while the server is stopped, or set dataDir or CONDUCTOR_DATA_DIR to it to use it instead", def, old, def)
+		}
 	}
 	return notice, nil
 }
@@ -359,14 +395,20 @@ func (c *Config) ResolveDataDir(configPath string) (notice string, err error) {
 var serverData = []string{"catalog.json", "crews", "crews.json"}
 
 // holdsServerData reports whether dir holds anything in serverData, as a
-// file, a directory or a link.
-func holdsServerData(dir string) bool {
+// file, a directory or a link. A dir that does not exist holds nothing; one
+// that cannot be looked into (no permission, a file in its place) is an
+// error, never a directory without server data.
+func holdsServerData(dir string) (bool, error) {
 	for _, name := range serverData {
-		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
-			return true
+		_, err := os.Lstat(filepath.Join(dir, name))
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, err
 		}
 	}
-	return false
+	return false, nil
 }
 
 // legacyDataDir is where an older Conductor put the data directory by

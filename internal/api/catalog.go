@@ -249,7 +249,7 @@ func (s *Server) commitOverlay(ov catalog.Overlay) error {
 	if ov.Agents == nil {
 		ov.Agents = []catalog.Agent{}
 	}
-	if err := s.store.Save(catalogFile, ov); err != nil {
+	if err := s.writeCatalog(ov); err != nil {
 		return fmt.Errorf("save %s: %w", catalogFile, err)
 	}
 	s.catalogMu.Lock()
