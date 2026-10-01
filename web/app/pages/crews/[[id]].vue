@@ -188,26 +188,29 @@ const seeding = ref(false)
 
 /**
  * Seeds the example crews and opens the first one; what already existed is left as it is. The button shows on the empty page only, which
- * is page 1 with a total of 0 (refresh steps back from a page past the end), so reading the list again lists the examples there.
+ * is page 1 with a total of 0 (refresh steps back from a page past the end), so reading the list again lists the examples there. The list
+ * is read again on failure too: a seed that stops part way keeps the crews it saved before it stopped.
  */
 async function loadExamples() {
   seeding.value = true
+  let first: string | undefined
   try {
     const r = await api.loadExampleCrews()
-    await refresh()
     toast.add({
       title: r.added.length ? `${r.added.length} example ${r.added.length === 1 ? 'crew' : 'crews'} added` : 'The examples are here already',
       description: 'Edit or delete them like any crew.',
       icon: 'i-lucide-package-open',
-      color: 'success',
+      // Nothing added: every example's id has a file already, on this empty page one the server cannot use (or another admin's seed).
+      color: r.added.length ? 'success' : 'neutral',
     })
-    const first = r.added[0] ?? r.skipped[0]
-    if (first) await router.push(`/crews/${encodeURIComponent(first)}`)
+    first = r.added[0] ?? r.skipped[0]
   } catch (e) {
     fail('Loading the examples failed', e)
   } finally {
+    await refresh()
     seeding.value = false
   }
+  if (first) await router.push(`/crews/${encodeURIComponent(first)}`)
 }
 
 function fail(title: string, e: unknown) {

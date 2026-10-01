@@ -2,6 +2,7 @@ package crew
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,9 @@ import (
 	"testing"
 	"time"
 )
+
+// exampleIDs are the ids of the example crews, in the order Examples lists them.
+var exampleIDs = []string{"example-todo-app", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"}
 
 // Every example is a crew the store would accept: the four ids in order,
 // claude and codex members with role prompts that use the goal, the server's
@@ -37,16 +41,20 @@ func TestExamplesAreValidCrews(t *testing.T) {
 			}
 		}
 	}
-	if !slices.Equal(ids, ExampleIDs) {
+	if !slices.Equal(ids, exampleIDs) {
 		t.Fatalf("ids: %v", ids)
 	}
 }
 
 // The todo app: a lead that plans, two builders after the lead, a tester
-// after cli (a start condition names one member), told to wait for core's
-// branch and merge both.
+// after cli (a start condition names one member), told to merge the lead's
+// and cli's branches, wait for core's and merge it too. Its goal says it is
+// meant for a fresh repository, not the project the server works in.
 func TestTodoAppStartsLeadThenBuildersThenTester(t *testing.T) {
 	todo := Examples("/w", time.Now())[0]
+	if !strings.Contains(todo.Goal, "a fresh repository with one commit") {
+		t.Errorf("the goal does not say the crew wants a fresh repository: %s", todo.Goal)
+	}
 	want := map[string]Start{
 		"lead":   {When: StartImmediately},
 		"core":   {When: StartAfter, Member: "lead"},
@@ -62,10 +70,44 @@ func TestTodoAppStartsLeadThenBuildersThenTester(t *testing.T) {
 		}
 	}
 	tester := todo.Members[3].Prompt
-	for _, part := range []string{"crew/<run>/core", "crew/<run>/cli", "wait until"} {
+	for _, part := range []string{
+		"git merge --no-edit crew/$CONDUCTOR_RUN/lead",
+		"git merge --no-edit crew/$CONDUCTOR_RUN/cli",
+		"wait until crew/$CONDUCTOR_RUN/core",
+		"git merge --no-edit crew/$CONDUCTOR_RUN/core",
+		`"${CONDUCTOR_BIN:-conductor}" notify --event handoff`,
+	} {
 		if !strings.Contains(tester, part) {
 			t.Errorf("the tester's prompt does not say %q: %s", part, tester)
 		}
+	}
+}
+
+// A member's worktree starts at the checkout's HEAD, so what an earlier
+// member committed is on that member's branch only, crew/<run>/<member>:
+// every member that starts after another begins by merging its branch, the
+// run being in the member's environment as CONDUCTOR_RUN, which the agent's
+// shell expands (ExpandPrompt expands only $GOAL). Every prompt is one line.
+func TestEveryAfterMemberMergesItsPredecessorsBranch(t *testing.T) {
+	afters := 0
+	for _, c := range Examples("/w", time.Now()) {
+		for _, m := range c.Members {
+			if strings.ContainsAny(m.Prompt, "\r\n\t") {
+				t.Errorf("%s/%s: the prompt is not one line", c.ID, m.Name)
+			}
+			if m.Start.When != StartAfter {
+				continue
+			}
+			afters++
+			merge := "git merge --no-edit crew/$CONDUCTOR_RUN/" + m.Start.Member
+			if !strings.HasPrefix(m.Prompt, "Start by merging") || !strings.Contains(ExpandPrompt(m.Prompt, c.Goal), merge) {
+				t.Errorf("%s/%s: the prompt does not begin by merging %s's branch (%s): %s", c.ID, m.Name, m.Start.Member, merge, m.Prompt)
+			}
+		}
+	}
+	// core, cli, tester, fixer, writer, upgrader.
+	if afters != 6 {
+		t.Fatalf("%d members start after another", afters)
 	}
 }
 
@@ -75,7 +117,7 @@ func TestSeedAddsOnceAndLeavesEditsAlone(t *testing.T) {
 	s, _ := newStore(t)
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	added, skipped, err := s.Seed(Examples("/w", now))
-	if err != nil || !slices.Equal(added, ExampleIDs) || len(skipped) != 0 {
+	if err != nil || !slices.Equal(added, exampleIDs) || len(skipped) != 0 {
 		t.Fatalf("first seed: %v %v %v", added, skipped, err)
 	}
 	c, err := s.Get("example-todo-app")
@@ -112,6 +154,40 @@ func TestSeedLeavesAnUnreadableFileAlone(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != "{not json" {
 		t.Fatalf("the unreadable file was overwritten: %s", b)
+	}
+}
+
+// A link with an example's id, to a file or to nothing, is skipped and left
+// as it is: the seed neither writes through it nor makes what it names.
+func TestSeedLeavesLinksAlone(t *testing.T) {
+	s, st := newStore(t)
+	dir := filepath.Join(st.Dir(), "crews")
+	outside := t.TempDir()
+	target := filepath.Join(outside, "target.json")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(outside, "missing.json")
+	if err := os.Symlink(target, filepath.Join(dir, "example-test-fixer.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(missing, filepath.Join(dir, "example-docs-writer.json")); err != nil {
+		t.Fatal(err)
+	}
+	added, skipped, err := s.Seed(Examples("/w", time.Now()))
+	if err != nil || !slices.Equal(added, []string{"example-todo-app", "example-dependency-upgrade"}) || !slices.Equal(skipped, []string{"example-test-fixer", "example-docs-writer"}) {
+		t.Fatalf("%v %v %v", added, skipped, err)
+	}
+	if b, err := os.ReadFile(target); err != nil || string(b) != "keep" {
+		t.Fatalf("the seed wrote through the link: %q %v", b, err)
+	}
+	if des, err := os.ReadDir(outside); err != nil || len(des) != 1 {
+		t.Fatalf("the seed made what the dangling link names: %v %v", des, err)
+	}
+	for _, name := range []string{"example-test-fixer.json", "example-docs-writer.json"} {
+		if fi, err := os.Lstat(filepath.Join(dir, name)); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+			t.Fatalf("%s is no longer a link: %v %v", name, fi, err)
+		}
 	}
 }
 
