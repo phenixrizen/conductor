@@ -232,18 +232,19 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES=1`)
-  seeds example crews once: ids `example-todo-app`, `example-test-fixer`,
-  `example-docs-writer`, `example-dependency-upgrade`; a crew whose id exists
-  is left alone. Members use the `claude` and `codex` built-ins with real role
-  prompts and start conditions (the todo app: a lead that plans, two builders
-  after the lead, a tester after the second builder, since a start condition
-  names one member; every member that starts after another begins by merging
-  that member's branch, `crew/$CONDUCTOR_RUN/<member>`, because a worktree
-  starts from `HEAD`); `cwd` is the server's default working directory;
-  isolation `worktree`. The empty Crews page offers "Load the examples", which
-  calls `POST /api/crews/examples` (admin, same seeding, same once-only rule).
-  The examples are data, not built-ins: editing or deleting them is normal.
+- **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES` set
+  to `1` or `true`) seeds example crews once: ids `example-todo-app`,
+  `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`; a
+  crew whose id exists is left alone. Members use the `claude` and `codex`
+  built-ins with real role prompts and start conditions (the todo app: a lead
+  that plans, two builders after the lead, a tester after the second builder,
+  since a start condition names one member; every member that starts after
+  another begins by merging that member's branch,
+  `crew/$CONDUCTOR_RUN/<member>`, because a worktree starts from `HEAD`); `cwd`
+  is the server's default working directory; isolation `worktree`. The empty
+  Crews page offers "Load the examples", which calls `POST /api/crews/examples`
+  (admin, same seeding, same once-only rule). The examples are data, not
+  built-ins: editing or deleting them is normal.
 - **Working-directory autocomplete.** `GET /api/paths?prefix=<path>&limit=50`
   (admin) lists child directories of the longest existing directory in the
   prefix, confined to `allowedRoots` through the same resolution as
@@ -252,6 +253,13 @@ open deferred item from rounds 1 and 2, then the features below.
   each entry with `git: {repo, commits}` so the picker shows which
   directories a worktree crew can use. The crew editor and the Launch dialog
   use one `DirInput` combobox fed by it (debounced, keyboard navigable).
+  Enter takes an entry only once the highlight was moved (the arrows, or the
+  pointer over an entry) since the text last changed: the list highlights its
+  first entry by itself, and Enter on a complete path must keep it rather
+  than take its first child. A prefix outside the roots is refused with a
+  message that names the allowed roots, which the picker shows as it is. A
+  listing cut short by its 5 s deadline, entries left unmarked, says
+  `truncated`.
 - **Git check.** `GET /api/git/check?cwd=<path>` (admin) answers
   `{inRepo, toplevel?, hasCommit, message}` with the same rules the launch
   uses (`git rev-parse` as argv, under the allowed roots). The crew editor
@@ -272,8 +280,9 @@ open deferred item from rounds 1 and 2, then the features below.
   registration, so the session page, the crew views, the join page, Events,
   Agents and Crews all toggle it; the wall and carousel keep their buttons.
   `F` is ignored while an input or textarea has focus, as the other letter
-  shortcuts already are.
-- **Agent availability.** `GET /api/catalog` reports `available` per agent (whether `command[0]` resolves on the server through the same check `POST /api/catalog/check` uses, re-evaluated per request and cached for 30 s; any program of that name on the server's PATH counts, so a namesake such as the Go migration tool `goose` makes the Goose agent show as installed, and a relative path such as `./agent.sh` counts as installed because it resolves in the session's directory) and `site` (the agent's website, a field on built-ins and an optional field on saved agents). The Agents page greys out an agent that is not installed, says "Not installed on <host>" and links to its site; the Launch dialog's server tab lists only available agents and, when none is, says so with a link to the Agents page; the "My machine" tab lists every agent because availability there is the host's. The crew editor's agent select marks unavailable agents the same way and the launch route refuses a crew whose member agent is not installed with `invalid_crew` naming it.
+  shortcuts already are, and while a select (a combobox or listbox, whose
+  typeahead takes letters) has focus.
+- **Agent availability.** `GET /api/catalog` reports `available` per agent (whether `command[0]` resolves on the server through the same check `POST /api/catalog/check` uses, re-evaluated per request and cached for 30 s; any program of that name on the server's PATH counts, so a namesake such as the Go migration tool `goose` makes the Goose agent show as installed, and a relative path such as `./agent.sh` counts as installed because it resolves in the session's directory, which the check reports as `unknown: "relative"`, resolved at launch; a lookup that does not answer within 2 s, or before the client goes away, counts as installed too and its answer is kept when it lands, so a `PATH` entry on a stalled mount cannot hold up the listing, the Launch dialog or a launch, whose spawn still fails if the program is missing) and `site` (the agent's website, a field on built-ins and an optional field on saved agents). The Agents page greys out an agent that is not installed and says "Not installed on <host>", and links to the site of any agent that has one; the Launch dialog's server tab lists only available agents and, when none is, says so with a link to the Agents page; the "My machine" tab lists every agent because availability there is the host's. The crew editor's agent select marks unavailable agents the same way and the launch route refuses a crew whose member agent is not installed with `invalid_crew` naming it.
 - **Deferred items.** Every open item from the rounds 1 and 2 ledgers is
   closed in the first plan, whatever its kind. A triage on 2026-10-01 found
   five already closed and two obsolete; the 55 open ones are listed below
@@ -294,8 +303,8 @@ open deferred item from rounds 1 and 2, then the features below.
 - The built-in agents' `site` URLs (twelve, in `internal/catalog/defaults.go`),
   each opened in a browser by hand: they ship as best known and a test checks
   their shape only.
-- Entering fullscreen with the `F` key and the header button in a real browser:
-  headless Chromium did not grant it, so the headless checks emulated the
+- Real fullscreen entry with the `F` key and the header button is unverified:
+  headless Chromium does not grant it, so the headless checks emulated the
   Fullscreen API and counted the requests.
 - The picker, the rail and the Launch dialog's server tab on a real phone (the
   slideover) and at 1024 px; they were only looked at in headless Chromium.

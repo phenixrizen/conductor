@@ -388,16 +388,19 @@ on the server only for now (members are ordinary server sessions, under
 
 The working-directory field completes as you type: the server lists the
 directories under its allowed roots, at most 50 at a time (hidden ones once
-you type the dot), marking the ones that are git repositories with a commit,
-which a crew with worktrees needs. The editor says under the field whether
+you type the dot), and marks git repositories: "git" for one with a commit,
+which a crew with worktrees needs, "git, no commit" for one without. Enter
+keeps what you typed; to take an entry, move to it with the arrow keys or the
+pointer and press Enter, or click it. A path outside the roots shows which
+roots there are. The editor says under the field whether
 the crew could launch there with worktrees; the launch itself still decides
 (`409 not_a_repo`). The Launch dialog's working directory completes the same
 way. A crew whose member's agent is not installed on the server is refused at
 launch (`invalid_crew`, naming the member).
 
-**Example crews.** `conductor serve --examples` (or `CONDUCTOR_EXAMPLES=1`)
-adds four example crews the first time: `example-todo-app` (a lead that
-plans, two builders after it, a tester after the second builder),
+**Example crews.** `conductor serve --examples` (or `CONDUCTOR_EXAMPLES` set to
+`1` or `true`) adds four example crews the first time: `example-todo-app` (a
+lead that plans, two builders after it, a tester after the second builder),
 `example-test-fixer`, `example-docs-writer` and `example-dependency-upgrade`,
 each using Claude Code and Codex, the server's default working directory and a
 worktree per member. They are ordinary crews once saved: edit or delete them
@@ -521,9 +524,11 @@ both sides. Load it with `source <(conductor completion zsh)` in `~/.zshrc`
 (after `compinit`), or let `conductor completion install` append a line that
 does so, marked `# conductor completion`, to `~/.zshrc` or `~/.bashrc` (the
 shell from `$SHELL`, or `--shell`; the file from `--rc`); run again it changes
-nothing, and it refuses a file, a link or a directory that is not yours, naming
-it. After a zsh install it says the rc file must run `compinit` before that
-line.
+nothing, since the installed line is matched as a whole line (spaces around it
+aside; a comment of yours that contains the mark does not count), and it
+refuses a file, a link or a directory that is not yours, naming it, or a link
+of yours that leads to someone else's file. After a zsh install it says the rc
+file must run `compinit` before that line.
 
 ## Configuration
 
@@ -546,7 +551,7 @@ line.
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
-| — | `CONDUCTOR_EXAMPLES` | off | `1` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
+| — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
 
 ### Upgrading
 
@@ -628,12 +633,16 @@ running are not affected. The config file is never written. The server
 refuses to start when `catalog.json` cannot be parsed or holds an invalid
 agent, rather than overwrite it. The form checks the command against the
 server's `PATH`, and an agent whose program is missing there can still be
-saved, for use with `conductor host`.
+saved, for use with `conductor host`; a command given as a relative path
+(`./agent.sh`) is not looked up there, and the form says it is resolved at
+launch in the session's directory.
 
 **Installed agents.** The Agents page says which agents are installed on the
 server (the program of their command resolves there, checked on every visit
-and kept for 30 seconds) and links to the website of an agent that has one:
-the built-ins name theirs, and the form takes one (`site`, an `https://`
+and kept for 30 seconds; a check that takes more than two seconds, as on a
+`PATH` that reaches a stalled network mount, shows the agent as installed
+meanwhile) and links to the website of an agent that has one: all built-ins
+but Shell name theirs, and the form takes one (`site`, an `https://`
 address) for an agent you add. Any program of that name on the server's `PATH`
 counts, so the Go migration tool `goose` makes the Goose agent show as
 installed, and a command given as a relative path (`./agent.sh`) counts as
