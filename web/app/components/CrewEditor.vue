@@ -159,9 +159,12 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
       </UFormField>
 
       <div class="flex flex-col gap-2">
-        <UFormField label="Working directory" hint="allowed root" name="cwd">
+        <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
+        <UFormField label="Working directory" hint="allowed root" name="cwd" :help="gitLine.text || undefined" :ui="{ help: 'mt-1 text-xs' }">
           <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" @update:model-value="set('cwd', $event)" />
-          <p v-if="gitLine.text" class="mt-1 text-xs" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ gitLine.text }}</p>
+          <template v-if="gitLine.text" #help>
+            <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ gitLine.text }}</span>
+          </template>
         </UFormField>
         <!-- One tab stop (the option chosen); the arrow keys move between the options. -->
         <div ref="whereGroup" class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm" role="radiogroup" aria-label="Runs on" @keydown="onWhereKey">
