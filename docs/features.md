@@ -205,3 +205,122 @@ Collected here so they are not lost. None of these block the planned work.
   page shows the stage graph, a Spec / Events / Artifacts inspector, and
   `on_needs_input: queue` routes step prompts into the wall queue. Presence
   and the activity log above are prerequisites for gates and approvers.
+
+## Round 3: polish, examples and completion (planned 2026-10-01)
+
+Decided with the user on 2026-10-01. Two plans, run in order: first close every
+open deferred item from rounds 1 and 2, then the features below.
+
+### Decisions
+
+- **Sidebar rail.** Hiding the sidebar collapses it to a narrow icon rail
+  instead of removing it. The rail keeps every function: the mark (artwork),
+  a Launch button, the filter as a search icon that expands the sidebar, the
+  nav entries as icons with tooltips, and the session list as agent avatars
+  with the attention dot and the crew grouping (a thin label when a run is
+  active). Clicking an avatar opens the session; the rail has an expand
+  button; `meta+B` / Alt+B toggles rail and full width. The choice is
+  persisted per browser as before. Narrow screens keep the slideover.
+- **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES=1`)
+  seeds example crews once: ids `example-todo-app`, `example-test-fixer`,
+  `example-docs-writer`, `example-dependency-upgrade`; a crew whose id exists
+  is left alone. Members use the `claude` and `codex` built-ins with real
+  role prompts and start conditions (the todo app: a lead that plans, two
+  builders after the lead, a tester after the builders); `cwd` is the
+  server's default working directory; isolation `worktree`. The empty Crews
+  page offers "Load the examples", which calls `POST /api/crews/examples`
+  (admin, same seeding, same once-only rule). The examples are data, not
+  built-ins: editing or deleting them is normal.
+- **Working-directory autocomplete.** `GET /api/paths?prefix=<path>&limit=50`
+  (admin) lists child directories of the longest existing directory in the
+  prefix, confined to `allowedRoots` through the same resolution as
+  `resolveCwd` (symlinks resolved, nothing outside a root), at most 50
+  entries, hidden directories only when the typed segment starts with a dot,
+  each entry with `git: {repo, commits}` so the picker shows which
+  directories a worktree crew can use. The crew editor and the Launch dialog
+  use one `DirInput` combobox fed by it (debounced, keyboard navigable).
+- **Git check.** `GET /api/git/check?cwd=<path>` (admin) answers
+  `{inRepo, toplevel, hasCommit, message}` with the same rules the launch
+  uses (`git rev-parse` as argv, under the allowed roots). The crew editor
+  shows the state beside the working directory and explains why Launch with
+  worktree isolation would be refused; the launch handler's 409 stays as the
+  authority.
+- **CLI completion.** `conductor completion zsh|bash` prints a completion
+  script: subcommands, flags and their values statically; crew ids for
+  `conductor up` dynamically through `conductor crews --ids` (ids only, one
+  per line, exit 0 and silent when the server is unreachable or the token is
+  missing), using `CONDUCTOR_SERVER` and `CONDUCTOR_ADMIN_TOKEN` from the
+  environment. `conductor completion install` appends one marked `source`
+  line to `~/.zshrc` or `~/.bashrc` (idempotent; refuses a file not owned by
+  the user). No new dependency.
+- **Fullscreen everywhere.** The document-fullscreen toggle that the wall and
+  the carousel have (`useFullscreenToggle`, the `F` key, Alt+F in a terminal)
+  moves to the layout: one button in every page header and one shortcut
+  registration, so the session page, the crew views, the join page, Events,
+  Agents and Crews all toggle it; the wall and carousel keep their buttons.
+  `F` is ignored while an input or textarea has focus, as the other letter
+  shortcuts already are.
+- **Deferred items.** Every open item from the rounds 1 and 2 ledgers is
+  closed in the first plan, whatever its kind. A triage on 2026-10-01 found
+  five already closed and two obsolete; the 55 open ones are listed below
+  with the decision taken where one was needed.
+
+### Open verification (round 3)
+
+- The example crews' role prompts against a live Claude Code and Codex.
+- The completion scripts in a real zsh and bash session.
+
+### Deferred items to close (plan 1 of round 3)
+
+Strict JSON and the store:
+- `config.Load` and `catalog.ReadFile` reject trailing data after the first JSON value, like the store and webhooks do; the store comment then tells the truth.
+- `store.Save` writes with `SetEscapeHTML(false)` so patterns and snippets stay hand-editable.
+- The catalog lock is not held across the fsync or the response: an editor lock for writers, the catalog lock only for the snapshot swap.
+- Store tests: a chmod 0500 write-probe case (skipped as root), a forced rename failure for the kept-previous-document test, a concurrent reader in the concurrent-save test; the end-to-end test stops assigning the server's catalog without the lock.
+
+Catalog validation and API shape:
+- `validate` bounds `cwd`, `icon` and `adapter` (shape `^[a-z0-9-]{1,32}$`), env key and value lengths and `envPassthrough` name length, and checks the adapter id against the registry for config files too.
+- `Upsert` stores a clone; signal kinds become exported constants; `Clone` gets a value receiver.
+- A saved override that omits `adapter` or `signal` inherits them from the built-in it replaces.
+- An override stores only the env keys whose value the editor changed; unchanged keys follow the base agent, so a secret rotated in the config reaches the agent (closes the "pinned env" item).
+- Catalog entries carry `source` (`built-in`, `config`, `saved`) so the Agents page says Hidden or Removed truthfully.
+- Tests: launching an overridden built-in, hiding down to an empty catalog, deleting an overlay-only agent.
+
+The add-agent form:
+- The form logic (masked-env round trip, `signalOut`, errors, the id pattern from the server's rule) moves to `utils/agentForm.ts` with vitest; a typed `***` on a new row is caught in the form; the command check posts `command[0]` only; an unclosed quote is refused instead of chipped; `slugId` never ends in a dash; the signal cards use the Nuxt UI radio group with arrow keys; `ArgvInput` reuses the input ring classes.
+
+File reads:
+- The file-read deny list also covers files in the config file's directory whose name starts with the config's base name (`.bak`, `~` copies).
+
+Sessions and events:
+- The viewer reader stops closing the sink under `Pump` on a host disconnect, and a departing host's viewer gets one error frame.
+- The attention state travels with the entry from `Record` to `OnActivity` (closes the read-after-the-fact window), and the SSE `activity` event carries `state` for attention entries so the Events page stops inferring hosted state.
+- `conductor notify` retries a 429 for attention words (bounded backoff within its 5 s budget).
+- A hosted session with no host connected meters route reports like a connected one.
+- The host's "no launch route" line is logged at warn so it shows with the local terminal attached.
+- `oneLine`/`dropControl` reuse `CleanName`'s stripping; the Record and hook tests move to their own file; the bell test waits on a frame instead of polling.
+
+Adapters and the CLI:
+- `WriteAssets` warns instead of refusing to start on a chmod failure of an existing asset; `staleCommand` rewrites only commands whose program is named `conductor`; `withYAMLListItem` handles a BOM and refuses a flow-style root; the hooks dir records the version with the binary and the CLI warns on skew; the by-hand note prints only the step that needs the hand; the ownership check accepts the process's own home when it is writable; `payloadFlags` derives from the hooks table; the aider card says "nothing to install" under an unknown home.
+- `merge.go` splits out `home.go`, the mappers move to `notify/mappers.go`, `injectHooks` to `hostagent/hooks.go`, the claude/cursor merge closures share a helper; the remaining clipboard calls and dark code blocks use the shared helper and component.
+- A catalog icon missing from the client bundle renders a generic agent icon, not nothing.
+
+Docs:
+- README: the Events page shows the webhook host, not the path; protocol.md: a missing hosted attention state has two causes; README and protocol.md: what an override inherits.
+
+Webhook address rule:
+- 6to4, Teredo and SIIT forms are judged by their embedded IPv4 address; a `64:ff9b:1::/48` prefix of another length is refused with a clear message.
+
+Crews, runs and links:
+- `Launch` returns `ErrRunStopped` when a stop lands before the first reserve; the run being launched stays exempt from eviction until its view link is minted; the link creation and the run lookup happen under one check; the forget-time disconnect goroutine is tracked by `Shutdown`; revoking an already-revoked link records nothing.
+- `inRepo` reports `rev-parse` failures other than "not a repository" (dubious ownership, permissions) with git's message.
+- The crews page keeps a launch's shown-once link until it is shown, refreshes crews on every visit, retries a failed run-name fetch, and checks the holder's expiry when storing; the join page gets a `JoinCrewGrid` component; the run view's grid has no empty cell beside the feed; the long prompt placeholder is checked in a browser at narrow widths.
+- Tests: a sync point in the handoff "nothing typed" check; `api_test.go` split by route family (crews and runs into `crews_test.go`), the duplicate 503 and crew-cap checks deduplicated, the duplicate-names test asserting "twice".
+
+Crew storage (replaces the single `crews.json` and the 50-crew cap):
+- One file per crew at `conductor.d/crews/<id>.json`, written atomically by the store, which gains `List` and `Delete`; a corrupt file names itself in the startup error and the other crews still load.
+- `GET /api/crews?offset=0&limit=100` reads the directory and answers `{crews: [summaries], total}` (limit at most 500); `GET /api/crews/{id}` returns one crew in full for the editor; the Crews page pages through the list.
+- No cap on the number of crews; the per-crew size cap stays as a sanity bound on one file and its request body, at 1 MiB.
+- An existing `crews.json` is split into per-crew files on the first start and renamed `crews.json.migrated`.
+
+Accepted as documented limitations (not changed): hosted crews stay future work.
