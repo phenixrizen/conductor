@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,10 +22,46 @@ func (c *lookupCache) stub(look func(program string) (string, error)) {
 	c.entries = map[string]lookupEntry{}
 }
 
+// stubWait sets how long askers wait for a lookup, under the cache's lock.
+func (c *lookupCache) stubWait(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.wait = d
+}
+
+// kept returns the answer the cache keeps about program, if any.
+func (c *lookupCache) kept(program string) (lookupEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[program]
+	return e, ok
+}
+
+// underWay reports whether a lookup of program is registered as under way.
+func (c *lookupCache) underWay(program string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.inflight[program]
+	return ok
+}
+
+// waitKept waits up to d for the cache to keep an answer about program.
+func waitKept(t *testing.T, c *lookupCache, program string, d time.Duration) lookupEntry {
+	t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+		if e, ok := c.kept(program); ok {
+			return e
+		}
+	}
+	t.Fatalf("no answer about %s kept after %v", program, d)
+	return lookupEntry{}
+}
+
 // The cache asks the system once per program and again after 30 s, so a CLI
 // installed while the server runs shows up without a restart; a check asks at
 // once and the cache keeps its answer.
 func TestLookupCacheExpires(t *testing.T) {
+	ctx := t.Context()
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	asked := map[string]int{}
 	present := map[string]bool{"cat": true}
@@ -36,27 +74,27 @@ func TestLookupCacheExpires(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	if p, ok := c.found("cat"); !ok || p != "/bin/cat" {
-		t.Fatalf("cat: %q %v", p, ok)
+	if p, ok, known := c.found(ctx, "cat"); !ok || !known || p != "/bin/cat" {
+		t.Fatalf("cat: %q %v %v", p, ok, known)
 	}
-	if _, ok := c.found("ghost"); ok {
-		t.Fatal("ghost found")
+	if _, ok, known := c.found(ctx, "ghost"); ok || !known {
+		t.Fatalf("ghost: %v %v", ok, known)
 	}
-	c.found("cat")
-	c.found("ghost")
+	c.found(ctx, "cat")
+	c.found(ctx, "ghost")
 	if asked["cat"] != 1 || asked["ghost"] != 1 {
 		t.Fatalf("asked twice within the TTL: %v", asked)
 	}
 	present["ghost"] = true
-	if p, ok := c.check("ghost"); !ok || p != "/bin/ghost" || asked["ghost"] != 2 {
+	if p, ok, _ := c.check(ctx, "ghost"); !ok || p != "/bin/ghost" || asked["ghost"] != 2 {
 		t.Fatalf("a check asks at once: %q %v %v", p, ok, asked)
 	}
-	if _, ok := c.found("ghost"); !ok || asked["ghost"] != 2 {
+	if _, ok, _ := c.found(ctx, "ghost"); !ok || asked["ghost"] != 2 {
 		t.Fatalf("the check's answer is kept: %v", asked)
 	}
 	delete(present, "cat")
 	now = now.Add(lookupTTL + time.Second)
-	if _, ok := c.found("cat"); ok || asked["cat"] != 2 {
+	if _, ok, _ := c.found(ctx, "cat"); ok || asked["cat"] != 2 {
 		t.Fatalf("after the TTL cat should be looked up again: %v", asked)
 	}
 	if len(c.entries) != 1 {
@@ -80,7 +118,7 @@ func TestLookupCacheCoalescesConcurrentAskers(t *testing.T) {
 	var wg sync.WaitGroup
 	found := make([]bool, 10)
 	for i := range found {
-		wg.Go(func() { _, found[i] = c.found("slow") })
+		wg.Go(func() { _, found[i], _ = c.found(t.Context(), "slow") })
 	}
 	<-started
 	time.Sleep(50 * time.Millisecond) // most askers reach the lookup in flight; a later one finds the answer kept
@@ -100,6 +138,7 @@ func TestLookupCacheCoalescesConcurrentAskers(t *testing.T) {
 // not kept, nothing is evicted, and a program already kept is still
 // refreshed. Answers that expire make room.
 func TestLookupCacheKeepsAtMostMaxLookups(t *testing.T) {
+	ctx := t.Context()
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	asked := map[string]int{}
 	c := newLookupCache()
@@ -109,25 +148,25 @@ func TestLookupCacheKeepsAtMostMaxLookups(t *testing.T) {
 		return "/bin/" + program, nil
 	}
 	for i := range maxLookups {
-		c.found(fmt.Sprintf("p%d", i))
+		c.found(ctx, fmt.Sprintf("p%d", i))
 	}
 	if len(c.entries) != maxLookups {
 		t.Fatalf("%d answers kept, want %d", len(c.entries), maxLookups)
 	}
-	if p, ok := c.found("extra"); !ok || p != "/bin/extra" {
+	if p, ok, _ := c.found(ctx, "extra"); !ok || p != "/bin/extra" {
 		t.Fatalf("the answer past the bound: %q %v", p, ok)
 	}
-	c.found("extra")
+	c.found(ctx, "extra")
 	if asked["extra"] != 2 || len(c.entries) != maxLookups {
 		t.Fatalf("the answer past the bound was kept: asked %d, %d kept", asked["extra"], len(c.entries))
 	}
 	now = now.Add(time.Second)
-	c.check("p0")
+	c.check(ctx, "p0")
 	if c.entries["p0"].at != now {
 		t.Fatalf("a program already kept is not refreshed at the bound: %v", c.entries["p0"])
 	}
 	now = now.Add(lookupTTL)
-	c.found("extra")
+	c.found(ctx, "extra")
 	if _, kept := c.entries["extra"]; !kept || len(c.entries) != 1 {
 		t.Fatalf("expired answers do not make room: %d kept", len(c.entries))
 	}
@@ -157,22 +196,144 @@ func TestLookupCacheKeepsTheNewerAnswer(t *testing.T) {
 	}
 	older := make(chan bool)
 	go func() {
-		_, ok := c.found("agent")
+		_, ok, _ := c.found(t.Context(), "agent")
 		older <- ok
 	}()
 	<-started
 	mu.Lock()
 	now = now.Add(time.Second)
 	mu.Unlock()
-	if p, ok := c.check("agent"); !ok || p != "/bin/agent" {
+	if p, ok, _ := c.check(t.Context(), "agent"); !ok || p != "/bin/agent" {
 		t.Fatalf("check: %q %v", p, ok)
 	}
 	close(release)
 	if !<-older {
 		t.Fatal("the older found answered with its own, older answer")
 	}
-	if _, ok := c.found("agent"); !ok || calls.Load() != 2 {
+	if _, ok, _ := c.found(t.Context(), "agent"); !ok || calls.Load() != 2 {
 		t.Fatalf("the check's answer was replaced: %v, %d lookups", ok, calls.Load())
+	}
+}
+
+// A lookup that does not answer within lookupWait (2 s; a PATH entry on a
+// stalled 9P mount, here a lookup held for as long as the test likes) leaves
+// its askers with "unknown" after 2 s, which installed counts, while the
+// lookup goes on: its answer is kept when it lands, and the next asker finds
+// it without another lookup.
+func TestLookupAnswersUnknownAfterTheWait(t *testing.T) {
+	if lookupWait != 2*time.Second {
+		t.Fatalf("lookupWait is %v", lookupWait)
+	}
+	c := newLookupCache()
+	var calls atomic.Int32
+	release := make(chan struct{})
+	c.look = func(program string) (string, error) {
+		calls.Add(1)
+		select { // a lookup that takes 5 s, unless the test lets it end sooner
+		case <-release:
+		case <-time.After(5 * time.Second):
+		}
+		return "/opt/" + program, nil
+	}
+	start := time.Now()
+	_, ok, known := c.found(t.Context(), "stalled")
+	took := time.Since(start)
+	if ok || known || took < lookupWait-100*time.Millisecond || took > lookupWait+time.Second {
+		t.Fatalf("found %v known %v after %v; want unknown after about %v", ok, known, took, lookupWait)
+	}
+	if !c.underWay("stalled") {
+		t.Fatal("the lookup stopped with its asker")
+	}
+	close(release)
+	if e := waitKept(t, c, "stalled", 2*time.Second); !e.ok || e.path != "/opt/stalled" {
+		t.Fatalf("kept %+v", e)
+	}
+	if p, ok, known := c.found(t.Context(), "stalled"); !ok || !known || p != "/opt/stalled" || calls.Load() != 1 {
+		t.Fatalf("after it landed: %q %v %v, %d lookups", p, ok, known, calls.Load())
+	}
+}
+
+// An asker whose context ends (the client went away) stops waiting at once,
+// before the context ends as well as while it waits, and answers "unknown";
+// installed counts it, a check says so. The lookup's answer is kept.
+func TestLookupLetsACancelledAskerGo(t *testing.T) {
+	c := newLookupCache()
+	release := make(chan struct{})
+	c.look = func(program string) (string, error) {
+		<-release
+		return "", errors.New("not found")
+	}
+	gone, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	if _, ok, known := c.found(gone, "slow"); ok || known {
+		t.Fatalf("found with a cancelled context: %v %v", ok, known)
+	}
+	if !c.installed(gone, "slow") {
+		t.Fatal("installed: unknown is not counted")
+	}
+	if _, ok, known := c.check(gone, "slow"); ok || known {
+		t.Fatalf("check with a cancelled context: %v %v", ok, known)
+	}
+	if took := time.Since(start); took > 200*time.Millisecond {
+		t.Fatalf("a cancelled asker waited %v", took)
+	}
+	leaving, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start = time.Now()
+	if _, _, known := c.found(leaving, "slow"); known {
+		t.Fatal("known while the lookup is held")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("an asker cancelled while it waited returned after %v", took)
+	}
+	close(release)
+	if e := waitKept(t, c, "slow", 2*time.Second); e.ok {
+		t.Fatalf("kept %+v", e)
+	}
+	if c.installed(t.Context(), "slow") {
+		t.Fatal("the missing program counts as installed once its answer is kept")
+	}
+}
+
+// A lookup that panics takes itself off the lookups under way and gives its
+// slot back on the way out, so later askers start a lookup of their own
+// rather than join one that never ends; its askers are woken with no answer,
+// and nothing is kept.
+func TestLookupPanicLeavesNoLookupUnderWay(t *testing.T) {
+	c := newLookupCache()
+	c.look = func(string) (string, error) { panic("boom") }
+	c.mu.Lock()
+	call := c.begin("prog")
+	c.mu.Unlock()
+	func() {
+		defer func() {
+			if r := recover(); r != "boom" {
+				t.Fatalf("recovered %v", r)
+			}
+		}()
+		c.run("prog", call)
+	}()
+	select {
+	case <-call.done:
+	default:
+		t.Fatal("the askers of the panicked lookup are not woken")
+	}
+	if call.known {
+		t.Fatal("the panicked lookup has an answer")
+	}
+	if c.underWay("prog") {
+		t.Fatal("the panicked lookup is still under way")
+	}
+	if _, ok := c.kept("prog"); ok {
+		t.Fatal("the panicked lookup kept an answer")
+	}
+	if n := len(c.sem); n != 0 {
+		t.Fatalf("%d lookup slots still taken", n)
+	}
+	c.stub(func(program string) (string, error) { return "/bin/" + program, nil })
+	if p, ok, known := c.found(t.Context(), "prog"); !ok || !known || p != "/bin/prog" {
+		t.Fatalf("after the panic: %q %v %v", p, ok, known)
 	}
 }
 
@@ -182,31 +343,44 @@ func TestLookupCacheKeepsTheNewerAnswer(t *testing.T) {
 // absolute path are looked up.
 func TestLookupCacheInstalledTakesARelativePath(t *testing.T) {
 	c := newLookupCache()
+	var mu sync.Mutex
 	var asked []string
 	c.look = func(program string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		asked = append(asked, program)
 		return "", errors.New("not found")
 	}
 	for _, p := range []string{"./x", "sub/x", "../x"} {
-		if !c.installed(p) {
+		if !c.installed(t.Context(), p) {
 			t.Fatalf("%s: not installed", p)
 		}
 	}
 	for _, p := range []string{"x", "/abs/x"} {
-		if c.installed(p) {
+		if c.installed(t.Context(), p) {
 			t.Fatalf("%s: installed", p)
 		}
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(asked) != 2 {
 		t.Fatalf("looked up %q", asked)
 	}
 }
 
-// The catalog and a crew launch agree on a relative program: listed as
-// available, and not refused.
+// The catalog, a crew launch and the add-agent form's check agree on a
+// relative program: listed as available, not refused, and reported by the
+// check as judged at launch (unknown "relative"), without a lookup.
 func TestCheckLaunchTakesARelativeProgram(t *testing.T) {
 	e := newTestEnv(t, nil)
-	for id, program := range map[string]string{"dot": "./x", "sub": "sub/x"} {
+	var asked atomic.Int32
+	e.srv.lookups.stub(func(program string) (string, error) {
+		if strings.Contains(program, "/") && !strings.HasPrefix(program, "/") {
+			asked.Add(1)
+		}
+		return "", errors.New("not found")
+	})
+	for id, program := range map[string]string{"dot": "./x", "sub": "sub/x", "up": "../x"} {
 		a := agentBody(id)
 		a["command"] = []string{program}
 		if out := e.save(a); out["agent"].(map[string]any)["available"] != true {
@@ -215,9 +389,18 @@ func TestCheckLaunchTakesARelativeProgram(t *testing.T) {
 		if got := e.catalogAgent(id); got["available"] != true {
 			t.Fatalf("%s listed: %v", program, got)
 		}
-		if err := checkLaunch([]crew.Member{{Name: "m", AgentID: id}}, e.srv.Catalog(), e.srv.installed); err != nil {
+		members := []crew.Member{{Name: "m", AgentID: id}}
+		cat := e.srv.Catalog()
+		if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members)); err != nil {
 			t.Fatalf("%s: %v", program, err)
 		}
+		_, out := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{program}})
+		if _, hasPath := out["path"]; out["found"] != false || out["unknown"] != "relative" || hasPath {
+			t.Fatalf("%s checked: %v", program, out)
+		}
+	}
+	if n := asked.Load(); n != 0 {
+		t.Fatalf("%d lookups of a relative program", n)
 	}
 }
 
@@ -261,5 +444,74 @@ func TestCatalogLooksUpConcurrently(t *testing.T) {
 	}
 	if serial := time.Duration(len(programs)) * delay; took > serial/2 {
 		t.Fatalf("listing %d uncached programs took %v; one lookup takes %v, all in a row %v", len(programs), took, delay, serial)
+	}
+}
+
+// Programs whose lookups stall do not hold up the catalog, a crew launch or
+// the add-agent form's check past the wait: the catalog answers once, in
+// about one wait, listing them as available; a launch of members on them is
+// allowed (the spawn still fails if a program is missing); the check says
+// unknown "timeout". When the lookups land, their answers are kept and the
+// catalog says what they found.
+func TestLookupsThatStallAnswerUnknownInTime(t *testing.T) {
+	e := newTestEnv(t, nil)
+	const wait = 300 * time.Millisecond
+	const stalled = 5
+	var members []crew.Member
+	for i := range stalled {
+		id := fmt.Sprintf("stall-%d", i)
+		a := agentBody(id)
+		a["command"] = []string{"stalled-program-" + id}
+		e.save(a)
+		members = append(members, crew.Member{Name: id, AgentID: id})
+	}
+	release := make(chan struct{})
+	e.srv.lookups.stubWait(wait)
+	e.srv.lookups.stub(func(program string) (string, error) {
+		if strings.HasPrefix(program, "stalled-program-") {
+			<-release
+			return "", errors.New("not found")
+		}
+		return "/bin/" + program, nil
+	})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	start := time.Now()
+	list := e.catalogList()
+	if took := time.Since(start); took > stalled*wait/2 {
+		t.Fatalf("the catalog took %v with %d stalled lookups of %v each", took, stalled, wait)
+	}
+	for _, raw := range list {
+		if a := raw.(map[string]any); strings.HasPrefix(a["id"].(string), "stall-") && a["available"] != true {
+			t.Fatalf("%v: a stalled lookup is listed as not available", a["id"])
+		}
+	}
+	start = time.Now()
+	cat := e.srv.Catalog()
+	if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members)); err != nil {
+		t.Fatalf("a launch on stalled lookups: %v", err)
+	}
+	if took := time.Since(start); took > stalled*wait/2 {
+		t.Fatalf("the launch check took %v", took)
+	}
+	_, out := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{"stalled-program-stall-0"}})
+	if out["found"] != false || out["unknown"] != "timeout" {
+		t.Fatalf("check: %v", out)
+	}
+	close(release)
+	for i := range stalled {
+		waitKept(t, e.srv.lookups, fmt.Sprintf("stalled-program-stall-%d", i), 2*time.Second)
+	}
+	if got := e.catalogAgent("stall-0"); got["available"] != false {
+		t.Fatalf("after the lookups landed: %v", got)
+	}
+	err := checkLaunch(members[:1], cat, e.srv.installedFor(t.Context(), cat, members[:1]))
+	if !errors.Is(err, crew.ErrInvalid) || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("a launch after the lookups landed: %v", err)
 	}
 }

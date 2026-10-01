@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,16 @@ const lookupTTL = 30 * time.Second
 // until answers expire and make room.
 const maxLookups = 256
 
-// lookupWorkers bounds the lookups one listing runs at once (warm).
+// lookupWorkers bounds the lookups under way at once, for every request
+// together: on a PATH that stalls, at most this many goroutines sit in the
+// system's lookup, and the lookups after them wait their turn.
 const lookupWorkers = 8
+
+// lookupWait is how long an asker waits for a lookup. Past it the asker
+// answers "unknown" and the lookup goes on: its answer is kept when it lands.
+// A PATH entry on a mount that stalls (a 9P share under /mnt/c on WSL) can
+// hold a lookup for minutes.
+const lookupWait = 2 * time.Second
 
 type lookupEntry struct {
 	path string
@@ -26,12 +35,15 @@ type lookupEntry struct {
 	at   time.Time // when the lookup started
 }
 
-// lookupCall is a lookup under way. Its entry is set before done is closed.
+// lookupCall is a lookup under way, run by a goroutine of its own (run). Its
+// entry, and known, are set before done is closed; known is false when the
+// lookup gave no answer (it panicked).
 type lookupCall struct {
-	done chan struct{}
-	at   time.Time
-	look func(program string) (string, error)
-	e    lookupEntry
+	done  chan struct{}
+	at    time.Time
+	look  func(program string) (string, error)
+	e     lookupEntry
+	known bool
 }
 
 // lookupCache answers whether programs resolve on this server, the way exec
@@ -40,65 +52,93 @@ type lookupCall struct {
 // marks every agent with it and a crew launch refuses a member whose program
 // it cannot find. Nothing is run.
 //
-// A lookup runs without the lock: on a slow PATH (a stat per directory, about
-// 90 ms for a missing program on a WSL PATH that reaches into /mnt/c) it holds
-// up only the askers of that program. Askers of a program whose lookup is
-// under way wait for it rather than start another.
+// A lookup runs in a goroutine of its own, without the lock: on a slow PATH
+// (a stat per directory, about 90 ms for a missing program on a WSL PATH that
+// reaches into /mnt/c) it holds up only the askers of that program, and those
+// for at most lookupWait, or until their request ends. Askers of a program
+// whose lookup is under way wait for it rather than start another.
 type lookupCache struct {
 	mu       sync.Mutex
 	entries  map[string]lookupEntry
 	inflight map[string]*lookupCall
 	look     func(program string) (string, error) // exec.LookPath; tests replace it
 	now      func() time.Time
+	wait     time.Duration // lookupWait; tests shorten it
+	sem      chan struct{} // a slot per lookup under way, lookupWorkers of them
 }
 
 func newLookupCache() *lookupCache {
-	return &lookupCache{entries: map[string]lookupEntry{}, inflight: map[string]*lookupCall{}, look: exec.LookPath, now: time.Now}
+	return &lookupCache{
+		entries:  map[string]lookupEntry{},
+		inflight: map[string]*lookupCall{},
+		look:     exec.LookPath,
+		now:      time.Now,
+		wait:     lookupWait,
+		sem:      make(chan struct{}, lookupWorkers),
+	}
 }
 
 // found reports whether program resolves, and to what, asking the system at
-// most once per lookupTTL for each program.
-func (c *lookupCache) found(program string) (string, bool) {
+// most once per lookupTTL for each program. known is false when the answer
+// did not come within lookupWait, or before ctx ended: the lookup goes on,
+// and its answer is kept for the next asker.
+func (c *lookupCache) found(ctx context.Context, program string) (path string, ok, known bool) {
 	c.mu.Lock()
 	if e, ok := c.entries[program]; ok && c.now().Sub(e.at) < lookupTTL {
 		c.mu.Unlock()
-		return e.path, e.ok
+		return e.path, e.ok, true
 	}
 	call, joined := c.inflight[program]
 	if !joined {
 		call = c.begin(program)
 	}
+	wait := c.wait
 	c.mu.Unlock()
-	if joined {
-		<-call.done
-	} else {
-		c.run(program, call)
+	if !joined {
+		go c.run(program, call)
 	}
-	return call.e.path, call.e.ok
+	return await(ctx, call, wait)
 }
 
 // check asks the system now, whatever the cache holds or has under way, and
 // keeps the answer: the add-agent form's check, which the catalog then agrees
-// with.
-func (c *lookupCache) check(program string) (string, bool) {
+// with. It waits as found does.
+func (c *lookupCache) check(ctx context.Context, program string) (path string, ok, known bool) {
 	c.mu.Lock()
 	call := c.begin(program)
+	wait := c.wait
 	c.mu.Unlock()
-	c.run(program, call)
-	return call.e.path, call.e.ok
+	go c.run(program, call)
+	return await(ctx, call, wait)
+}
+
+// await waits for call's answer, at most wait and no longer than ctx lasts;
+// past either, known is false.
+func await(ctx context.Context, call *lookupCall, wait time.Duration) (path string, ok, known bool) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-call.done:
+		return call.e.path, call.e.ok, call.known
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	return "", false, false
 }
 
 // installed reports whether a session of program could start on this server.
 // A relative path with a separator (./agent.sh, bin/agent) counts without a
 // lookup: exec resolves it against the session's working directory, which the
 // server's own cannot stand for. A bare name is looked up on the PATH, and any
-// program of that name counts; an absolute path is looked up as it is.
-func (c *lookupCache) installed(program string) bool {
+// program of that name counts; an absolute path is looked up as it is. A
+// lookup that does not answer in time (found's known false) counts as well:
+// the launch goes ahead, and the spawn fails if the program is missing.
+func (c *lookupCache) installed(ctx context.Context, program string) bool {
 	if relativePath(program) {
 		return true
 	}
-	_, ok := c.found(program)
-	return ok
+	_, ok, known := c.found(ctx, program)
+	return ok || !known
 }
 
 // relativePath reports whether program names a file relative to the working
@@ -107,69 +147,79 @@ func relativePath(program string) bool {
 	return strings.ContainsAny(program, "/"+string(filepath.Separator)) && !filepath.IsAbs(program)
 }
 
-// warm looks up the programs the cache has no fresh answer for, each once and
-// at most lookupWorkers at a time, so a listing of N uncached programs takes
-// about one lookup's time, not N. Relative paths are skipped (installed).
-func (c *lookupCache) warm(programs []string) {
-	sem := make(chan struct{}, lookupWorkers)
+// warm reports whether each of programs is installed, asking about them all
+// at once: the lookups of those with no fresh answer run together, at most
+// lookupWorkers at a time, so a listing of N uncached programs takes about
+// one lookup's time, not N, and never much more than lookupWait.
+func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bool {
+	var mu sync.Mutex
 	var wg sync.WaitGroup
+	answers := make(map[string]bool, len(programs))
 	seen := map[string]bool{}
 	for _, p := range programs {
-		if seen[p] || relativePath(p) || c.fresh(p) {
+		if seen[p] {
 			continue
 		}
 		seen[p] = true
-		sem <- struct{}{}
 		wg.Go(func() {
-			defer func() { <-sem }()
-			c.found(p)
+			ok := c.installed(ctx, p)
+			mu.Lock()
+			answers[p] = ok
+			mu.Unlock()
 		})
 	}
 	wg.Wait()
-}
-
-// fresh reports whether the cache holds an answer about program younger than
-// lookupTTL.
-func (c *lookupCache) fresh(program string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.entries[program]
-	return ok && c.now().Sub(e.at) < lookupTTL
+	return answers
 }
 
 // begin registers a lookup of program as the one under way, which later
-// askers wait for. The caller holds c.mu.
+// askers wait for; the caller starts it (run). The caller holds c.mu.
 func (c *lookupCache) begin(program string) *lookupCall {
 	call := &lookupCall{done: make(chan struct{}), at: c.now(), look: c.look}
 	c.inflight[program] = call
 	return call
 }
 
-// run looks program up without c.mu, then keeps the answer, dropping the
-// answers that have expired so the cache holds only programs asked about
-// lately, and wakes the askers waiting for it. Of two lookups of one program
-// at once, the one that started later decides: an earlier one that ends after
-// it answers with the later one's answer.
+// run looks program up once a slot is free, without c.mu, and then settles
+// the call. Both happen on the way out, whatever the lookup does: one that
+// panics gives its slot back and leaves no call under way for later askers
+// to join, and wakes its askers with no answer.
 func (c *lookupCache) run(program string, call *lookupCall) {
+	var e lookupEntry
+	known := false
+	defer func() { c.settle(program, call, e, known) }()
+	c.sem <- struct{}{}
+	defer func() { <-c.sem }()
 	path, err := call.look(program)
-	e := lookupEntry{path: path, ok: err == nil, at: call.at}
+	e, known = lookupEntry{path: path, ok: err == nil, at: call.at}, true
+}
+
+// settle takes call off the lookups under way and, when it has an answer
+// (known), keeps it, dropping the answers that have expired so the cache
+// holds only programs asked about lately; then it wakes the askers waiting
+// for it. Of two lookups of one program at once, the one that started later
+// decides: an earlier one that ends after it answers with the later one's
+// answer.
+func (c *lookupCache) settle(program string, call *lookupCall, e lookupEntry, known bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for p, old := range c.entries {
-		if e.at.Sub(old.at) >= lookupTTL {
-			delete(c.entries, p)
-		}
-	}
-	old, had := c.entries[program]
-	switch {
-	case had && old.at.After(e.at):
-		e = old
-	case had || len(c.entries) < maxLookups:
-		c.entries[program] = e
-	}
 	if c.inflight[program] == call {
 		delete(c.inflight, program)
 	}
-	call.e = e
+	if known {
+		for p, old := range c.entries {
+			if e.at.Sub(old.at) >= lookupTTL {
+				delete(c.entries, p)
+			}
+		}
+		old, had := c.entries[program]
+		switch {
+		case had && old.at.After(e.at):
+			e = old
+		case had || len(c.entries) < maxLookups:
+			c.entries[program] = e
+		}
+		call.e, call.known = e, true
+	}
 	close(call.done)
 }

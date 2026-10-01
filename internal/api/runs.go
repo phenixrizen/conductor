@@ -84,11 +84,21 @@ func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(prog
 	return nil
 }
 
-// installed reports whether a session of program could start on this server
-// (lookups: cached 30 s; a relative path with a separator counts, since it
-// resolves against the session's directory), for checkLaunch.
-func (s *Server) installed(program string) bool {
-	return s.lookups.installed(program)
+// installedFor looks up the programs of the members' agents in cat together
+// (warm), so that a launch waits about one lookup's time for them, at most
+// lookupWait, and answers checkLaunch from those answers: a program whose
+// lookup did not answer in time, or before ctx ended, counts as installed (a
+// relative path with a separator always does, since it resolves against the
+// session's directory).
+func (s *Server) installedFor(ctx context.Context, cat catalog.Catalog, members []crew.Member) func(program string) bool {
+	var programs []string
+	for _, m := range members {
+		if a, ok := cat.Get(m.AgentID); ok && len(a.Command) > 0 {
+			programs = append(programs, a.Command[0])
+		}
+	}
+	answers := s.lookups.warm(ctx, programs)
+	return func(program string) bool { return answers[program] }
 }
 
 // runContext is the context of a launch or a start: the request's values,
@@ -114,7 +124,8 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
-	if err := checkLaunch(c.Members, s.Catalog(), s.installed); err != nil {
+	cat := s.Catalog()
+	if err := checkLaunch(c.Members, cat, s.installedFor(r.Context(), cat, c.Members)); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
@@ -197,7 +208,8 @@ func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
-	if err := checkLaunch([]crew.Member{m}, s.Catalog(), s.installed); err != nil {
+	cat := s.Catalog()
+	if err := checkLaunch([]crew.Member{m}, cat, s.installedFor(r.Context(), cat, []crew.Member{m})); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}

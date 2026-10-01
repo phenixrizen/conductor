@@ -275,6 +275,28 @@ func TestCheckLinkOwnerJudgesTheLinkItself(t *testing.T) {
 	}
 }
 
+// A link of one's own to another user's file is refused by CheckOwner for
+// what it is: the link leads to a file of theirs. The refusal names the link
+// and the owner of the file, and does not tell the user to run conductor as
+// that owner: the rc file is the user's, the file it leads to is not.
+func TestCheckOwnerNamesALinkToAnotherUsersFile(t *testing.T) {
+	target := rootFile(t)
+	link := filepath.Join(t.TempDir(), ".zshrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckLinkOwner(link); err != nil {
+		t.Fatalf("the link is the user's own: %v", err)
+	}
+	err := CheckOwner(link)
+	if err == nil || !strings.Contains(err.Error(), link+" leads to a file of "+ownerName(0)+"'s") || !strings.Contains(err.Error(), "nothing written") {
+		t.Fatalf("a link of one's own to root's file: %v", err)
+	}
+	if strings.Contains(err.Error(), "belongs to") || strings.Contains(err.Error(), "sudo") {
+		t.Fatalf("the refusal says the link is root's, or to run as root: %v", err)
+	}
+}
+
 // SetEUIDForTest replaces the user the checks take and restores it.
 func TestSetEUIDForTest(t *testing.T) {
 	restore := SetEUIDForTest(4242)

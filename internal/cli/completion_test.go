@@ -407,6 +407,28 @@ func TestCompletionInstallRefusesAnotherUsersLink(t *testing.T) {
 	}
 }
 
+// A link of one's own to a file of root's (the user is not root) is refused,
+// saying where the link leads, and the file is untouched.
+func TestCompletionInstallRefusesAnOwnLinkToRootsFile(t *testing.T) {
+	clearConductorEnv(t)
+	target := rootFile(t)
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), ".zshrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _, err := runCompletionWith(t, "install", "--shell", "zsh", "--rc", link)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), link+" leads to a file of ") || !strings.Contains(err.Error(), "nothing written") || strings.Contains(err.Error(), "sudo") || out != "" {
+		t.Fatalf("exit %d %v\n%s", code, err, out)
+	}
+	if after, _ := os.ReadFile(target); !bytes.Equal(after, before) {
+		t.Fatalf("%s changed", target)
+	}
+}
+
 // A file of one's own in a directory of another user's is refused, naming
 // the directory, and left as it was: who owns the directory may swap the
 // file for a link between the check and the write.

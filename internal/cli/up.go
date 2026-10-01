@@ -153,8 +153,8 @@ func printableURL(s string) bool {
 const crewsPage = 100
 
 // idsTimeout bounds all of conductor crews --ids: a completion that waits is
-// worse than one that offers nothing.
-const idsTimeout = 2 * time.Second
+// worse than one that offers nothing. A test lowers it.
+var idsTimeout = 2 * time.Second
 
 // runCrews lists the saved crews, one per line, or with --ids their ids.
 func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {

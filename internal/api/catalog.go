@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -21,7 +22,8 @@ const catalogFile = "catalog.json"
 // masked, where the catalog took it from and, for a saved agent that replaces
 // a built-in or configured one, where that one came from (deleting the saved
 // agent brings it back), and whether its program resolves on this server
-// (lookups: cached 30 s). Its site is the agent's own field.
+// (lookups: cached 30 s; a lookup that does not answer within 2 s counts).
+// Its site is the agent's own field.
 type catalogEntry struct {
 	catalog.Agent
 	Source    catalog.Source `json:"source,omitempty"`
@@ -30,16 +32,23 @@ type catalogEntry struct {
 }
 
 // entry is a as the routes show it, by the effective catalog cat, the
-// configured one, base, and the server's program lookups.
-func entry(a catalog.Agent, cat, base catalog.Catalog, lookups *lookupCache) catalogEntry {
+// configured one, base, and installed, which says whether a program could
+// start on this server (the server's lookups).
+func entry(a catalog.Agent, cat, base catalog.Catalog, installed func(program string) bool) catalogEntry {
 	e := catalogEntry{Agent: a.Redacted(), Source: cat.Source(a.ID)}
 	if e.Source == catalog.SourceSaved {
 		e.Replaces = base.Source(a.ID)
 	}
 	if len(a.Command) > 0 {
-		e.Available = lookups.installed(a.Command[0])
+		e.Available = installed(a.Command[0])
 	}
 	return e
+}
+
+// installedNow is the server's lookups' installed for one request's ctx, for
+// the catalog routes that answer with one agent.
+func (s *Server) installedNow(ctx context.Context) func(program string) bool {
+	return func(program string) bool { return s.lookups.installed(ctx, program) }
 }
 
 // saveAgentRequest is the body of POST /api/catalog: an agent, as a client
@@ -60,18 +69,19 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	cat, hidden := s.catalog, uniqueIDs(s.overlay.Hidden)
 	s.catalogMu.Unlock()
 	list := cat.List()
-	// The programs not looked up lately are looked up together first, so
-	// the entries below find every answer kept.
+	// The programs are asked about together: a request waits about one
+	// lookup's time for those not looked up lately, at most lookupWait.
 	programs := make([]string, 0, len(list))
 	for _, a := range list {
 		if len(a.Command) > 0 {
 			programs = append(programs, a.Command[0])
 		}
 	}
-	s.lookups.warm(programs)
+	answers := s.lookups.warm(r.Context(), programs)
+	installed := func(program string) bool { return answers[program] }
 	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
-		out = append(out, entry(a, cat, s.base, s.lookups))
+		out = append(out, entry(a, cat, s.base, installed))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden})
 }
@@ -88,7 +98,7 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	saved, aerr := s.saveAgent(req.Agent)
+	saved, aerr := s.saveAgent(r.Context(), req.Agent)
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
@@ -99,13 +109,14 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 // saveAgent adds a to the overlay, or replaces the entry with its ID, and
 // returns it as the catalog now lists it. The reply is built from the catalog
 // this save published (storeAgent), so it is this save's and no later edit's;
-// its program is looked up after catalogEditMu is released.
-func (s *Server) saveAgent(a catalog.Agent) (catalogEntry, *apiError) {
+// its program is looked up after catalogEditMu is released, for as long as
+// ctx lasts (at most lookupWait).
+func (s *Server) saveAgent(ctx context.Context, a catalog.Agent) (catalogEntry, *apiError) {
 	saved, cat, aerr := s.storeAgent(a)
 	if aerr != nil {
 		return catalogEntry{}, aerr
 	}
-	return entry(saved, cat, s.base, s.lookups), nil
+	return entry(saved, cat, s.base, s.installedNow(ctx)), nil
 }
 
 // storeAgent is saveAgent's edit. It holds catalogEditMu from reading the
@@ -192,7 +203,7 @@ func (s *Server) handleUnhideAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	a, found, aerr := s.unhideAgent(r.PathValue("id"))
+	a, found, aerr := s.unhideAgent(r.Context(), r.PathValue("id"))
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
@@ -208,12 +219,12 @@ func (s *Server) handleUnhideAgent(w http.ResponseWriter, r *http.Request) {
 // back, if one has that ID, as the reply shows it: built from the catalog the
 // change published (unhide), its program looked up after catalogEditMu is
 // released.
-func (s *Server) unhideAgent(id string) (catalogEntry, bool, *apiError) {
+func (s *Server) unhideAgent(ctx context.Context, id string) (catalogEntry, bool, *apiError) {
 	a, cat, ok, aerr := s.unhide(id)
 	if aerr != nil {
 		return catalogEntry{}, false, aerr
 	}
-	return entry(a, cat, s.base, s.lookups), ok, nil
+	return entry(a, cat, s.base, s.installedNow(ctx)), ok, nil
 }
 
 // unhide is unhideAgent's edit, under catalogEditMu: it returns the agent the
@@ -246,6 +257,11 @@ type checkCommandRequest struct {
 // command[0] is looked up, now and not from the cache, which keeps the answer
 // for GET /api/catalog; nothing is run. A program that is not found is a
 // normal answer, not an error: the agent may be meant for `conductor host`.
+// Two programs are not judged here, and unknown says why; the catalog's
+// available counts both as installed: a relative path with a separator
+// ("relative", resolved at launch in the session's working directory, which
+// the server's own cannot stand for) and one whose lookup does not answer
+// within lookupWait ("timeout"; its answer is kept when it lands).
 func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 	var req checkCommandRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -256,12 +272,20 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "command must have at least one element")
 		return
 	}
-	path, ok := s.lookups.check(req.Command[0])
-	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{"found": false})
+	program := req.Command[0]
+	if relativePath(program) {
+		writeJSON(w, http.StatusOK, map[string]any{"found": false, "unknown": "relative"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"found": true, "path": path})
+	path, ok, known := s.lookups.check(r.Context(), program)
+	switch {
+	case !known:
+		writeJSON(w, http.StatusOK, map[string]any{"found": false, "unknown": "timeout"})
+	case !ok:
+		writeJSON(w, http.StatusOK, map[string]any{"found": false})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"found": true, "path": path})
+	}
 }
 
 // checkAdapter rejects an agent whose adapter Conductor does not have.

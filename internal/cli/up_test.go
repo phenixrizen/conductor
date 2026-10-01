@@ -516,10 +516,16 @@ func TestCrewsIDsIsSilentWhenItCannotAsk(t *testing.T) {
 	noSecret(t, stdout, stderr, err)
 }
 
-// A server that does not answer is given idsTimeout in all, not a request's
-// timeout: completion does not hang the shell.
+// A server that does not answer is given idsTimeout in all (2 s), not a
+// request's timeout: completion does not hang the shell. The test lowers it.
 func TestCrewsIDsGivesUpQuickly(t *testing.T) {
 	clearConductorEnv(t)
+	if idsTimeout != 2*time.Second {
+		t.Fatalf("idsTimeout is %v", idsTimeout)
+	}
+	was := idsTimeout
+	idsTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { idsTimeout = was })
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -530,7 +536,7 @@ func TestCrewsIDsGivesUpQuickly(t *testing.T) {
 	t.Cleanup(func() { close(release); srv.Close() })
 	start := time.Now()
 	code, stdout, _, err := crews(t, "--server", srv.URL, "--token", secretToken, "--ids")
-	if code != 0 || err != nil || stdout != "" || time.Since(start) > idsTimeout+time.Second {
-		t.Fatalf("exit %d %v %q after %s", code, err, stdout, time.Since(start))
+	if took := time.Since(start); code != 0 || err != nil || stdout != "" || took < idsTimeout || took > idsTimeout+time.Second {
+		t.Fatalf("exit %d %v %q after %s", code, err, stdout, took)
 	}
 }

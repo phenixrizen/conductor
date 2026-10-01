@@ -73,8 +73,16 @@ type gitCheckReply struct {
 }
 
 // errNoAllowedDir says that no leading part of a prefix is a directory under
-// the allowed roots.
+// the allowed roots. The reply's message names the roots (noAllowedDir).
 var errNoAllowedDir = errors.New("no directory in the prefix is under the allowed roots")
+
+// noAllowedDir is the message of the listing's invalid_cwd, which the picker
+// shows as it is: errNoAllowedDir and the allowed roots, so that whoever
+// typed a path outside them sees where to start. The route is the admin's,
+// who configured the roots.
+func (s *Server) noAllowedDir() string {
+	return errNoAllowedDir.Error() + ": " + strings.Join(s.cfg.AllowedRoots, ", ")
+}
 
 // resolveDir is resolveCwd behind a stat, with resolveCwd's errors. The
 // kernel answers a symbolic link loop, or a chain too long to follow (ELOOP,
@@ -189,7 +197,8 @@ func readCandidates(dir, seg string) (out []candidate, capped bool, err error) {
 // The work ends with ctx. Past its end, or once maxSkippedLinks links have led
 // nowhere usable, no link is resolved any more: the listing stops at the next
 // one, truncated. Past its end git is not asked either, and the listing keeps
-// its entries, those not yet marked left unmarked.
+// its entries, those not yet marked left unmarked, and is truncated too: a
+// mark left out is not a directory outside git.
 func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (pathsReply, error) {
 	dir, seg, err := s.splitPrefix(ctx, prefix)
 	if err != nil {
@@ -225,26 +234,36 @@ func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (paths
 			break
 		}
 		var mark pathGit
-		if ctx.Err() == nil {
+		unmarked := ctx.Err() != nil // git not asked, or cut off
+		if !unmarked {
 			if own == "" {
 				if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
 					own = path
 				}
 			}
 			if own != "" {
-				if mark, err = gitMark(ctx, own); err != nil {
+				if mark, unmarked, err = gitMark(ctx, own); err != nil {
 					return pathsReply{}, err
 				}
 			} else {
 				if parent == nil {
-					m, err := gitMark(ctx, dir)
+					m, cut, err := gitMark(ctx, dir)
 					if err != nil {
 						return pathsReply{}, err
 					}
-					parent = &m
+					if cut {
+						unmarked = true
+					} else {
+						parent = &m
+					}
 				}
-				mark = *parent
+				if parent != nil {
+					mark = *parent
+				}
 			}
+		}
+		if unmarked {
+			out.Truncated = true
 		}
 		out.Entries = append(out.Entries, pathEntry{Name: c.name, Path: path, Git: mark})
 	}
@@ -252,17 +271,20 @@ func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (paths
 }
 
 // gitMark is the git state of dir as the picker shows it. Without git on the
-// server nothing is marked, nor when ctx ends during the call: the listing
-// keeps the entry, unmarked.
-func gitMark(ctx context.Context, dir string) (pathGit, error) {
+// server nothing is marked. When ctx ends during the call nothing is marked
+// either, and cut says so: the listing keeps the entry, unmarked, and is
+// truncated.
+func gitMark(ctx context.Context, dir string) (mark pathGit, cut bool, err error) {
 	st, err := gitState(ctx, dir)
 	switch {
-	case errors.Is(err, crew.ErrNoGit), err != nil && ctx.Err() != nil:
-		return pathGit{}, nil
+	case errors.Is(err, crew.ErrNoGit):
+		return pathGit{}, false, nil
+	case err != nil && ctx.Err() != nil:
+		return pathGit{}, true, nil
 	case err != nil:
-		return pathGit{}, err
+		return pathGit{}, false, err
 	}
-	return pathGit{Repo: st.InRepo, Commits: st.HasCommit}, nil
+	return pathGit{Repo: st.InRepo, Commits: st.HasCommit}, false, nil
 }
 
 // pathQuery reads a bounded path from the query, or answers the request.
@@ -296,7 +318,7 @@ func (s *Server) handleListPaths(w http.ResponseWriter, r *http.Request) {
 	reply, err := s.listPaths(ctx, prefix, limit)
 	switch {
 	case errors.Is(err, errNoAllowedDir):
-		writeError(w, http.StatusBadRequest, "invalid_cwd", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_cwd", s.noAllowedDir())
 		return
 	case err != nil:
 		s.log.Debug("list paths failed", "prefix", prefix, "err", err)

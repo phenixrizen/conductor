@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -52,6 +53,14 @@ func entryGit(out map[string]any, name string) (repo, commits bool) {
 		}
 	}
 	return false, false
+}
+
+// errorMessage returns the message of an error reply.
+func errorMessage(out map[string]any) any {
+	if m, ok := out["error"].(map[string]any); ok {
+		return m["message"]
+	}
+	return nil
 }
 
 func mkdirs(t *testing.T, root string, names ...string) {
@@ -128,9 +137,11 @@ func TestPathsNeverLeaveTheRoots(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "inside"), filepath.Join(root, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	// Wholly outside: refused.
+	// Wholly outside: refused, the message naming the roots (the route is
+	// the admin's), which the picker shows as it is.
+	want := "no directory in the prefix is under the allowed roots: " + e.root
 	for _, prefix := range []string{outside, filepath.Join(root, ".."), "/", filepath.Join(root, "..", filepath.Base(outside), "sec")} {
-		if status, out := e.paths(prefix, ""); status != http.StatusBadRequest || errorCode(out) != "invalid_cwd" {
+		if status, out := e.paths(prefix, ""); status != http.StatusBadRequest || errorCode(out) != "invalid_cwd" || errorMessage(out) != want {
 			t.Fatalf("%s: %d %v", prefix, status, out)
 		}
 	}
@@ -144,6 +155,16 @@ func TestPathsNeverLeaveTheRoots(t *testing.T) {
 	// A link that stays inside is listed; one that leaves is not.
 	if _, out := e.paths(root, ""); !slices.Equal(entryNames(out), []string{"alias", "inside"}) {
 		t.Fatalf("root: %v", entryNames(out))
+	}
+}
+
+// With several roots, the refusal names each, in the configured order.
+func TestPathsRefusalNamesEveryRoot(t *testing.T) {
+	other := t.TempDir()
+	e := newTestEnv(t, func(c *config.Config) { c.AllowedRoots = append(c.AllowedRoots, other) })
+	status, out := e.paths("/", "")
+	if want := "no directory in the prefix is under the allowed roots: " + e.root + ", " + other; status != http.StatusBadRequest || errorMessage(out) != want {
+		t.Fatalf("%d %v", status, out)
 	}
 }
 
@@ -308,25 +329,49 @@ func (e *testEnv) gitCheck(cwd string) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+// mazeDepth is how deep linkMaze goes: deep enough that
+// filepath.EvalSymlinks takes about a second on the maze (its cost grows
+// with the square of the depth), shallow enough that the maze's longest
+// link, "../" mazeDepth times, fits in macOS's PATH_MAX of 1024 bytes.
+const mazeDepth = 300
+
 // linkMaze makes, outside the roots, a symbolic link whose resolution walks
 // depth directories down and back up, again and again: the kernel gives up
-// on it after 40 links (ELOOP) in milliseconds, while filepath.EvalSymlinks
-// walks 255 of them, each the whole depth down, for seconds. It returns the
-// link.
+// on it after 40 links (ELOOP; 32 on macOS) in milliseconds, while
+// filepath.EvalSymlinks walks 255 of them, each the whole depth down, for
+// about a second at mazeDepth. It returns the link, which the test checks
+// the kernel refuses. Where the system cannot hold a link that long, the
+// test is skipped.
 func linkMaze(t *testing.T, depth int) string {
 	t.Helper()
 	dir := t.TempDir()
 	down := filepath.Join(slices.Repeat([]string{"n"}, depth)...)
 	if err := os.MkdirAll(filepath.Join(dir, down), 0o755); err != nil {
+		skipTooLong(t, err)
 		t.Fatal(err)
 	}
 	if err := os.Symlink(strings.Repeat("../", depth)+"loop", filepath.Join(dir, down, "up")); err != nil {
+		skipTooLong(t, err)
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(down, "up"), filepath.Join(dir, "loop")); err != nil {
+		skipTooLong(t, err)
 		t.Fatal(err)
 	}
-	return filepath.Join(dir, "loop")
+	maze := filepath.Join(dir, "loop")
+	if _, err := os.Stat(maze); !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("the kernel does not refuse the maze with ELOOP: %v", err)
+	}
+	return maze
+}
+
+// skipTooLong skips the test when err says a path or link is longer than
+// the system holds.
+func skipTooLong(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, syscall.ENAMETOOLONG) {
+		t.Skipf("the system cannot hold the maze: %v", err)
+	}
 }
 
 // A link that leads to no directory (a loop, a chain too long to follow, a
@@ -338,8 +383,12 @@ func TestPathsLeavesOutLinksToNoDirectoryQuickly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	maze := linkMaze(t, 400)
-	for name, target := range map[string]string{"self": filepath.Join(root, "self"), "file": filepath.Join(root, "notes.txt"), "maze1": maze, "maze2": maze} {
+	maze := linkMaze(t, mazeDepth)
+	links := map[string]string{"self": filepath.Join(root, "self"), "file": filepath.Join(root, "notes.txt")}
+	for i := range 4 { // each would cost EvalSymlinks about a second: 4 s in all, past the bound below
+		links[fmt.Sprintf("maze%d", i)] = maze
+	}
+	for name, target := range links {
 		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +405,7 @@ func TestPathsLeavesOutLinksToNoDirectoryQuickly(t *testing.T) {
 func TestPathsPrefixThroughALinkLoopAnswersInTime(t *testing.T) {
 	e := newTestEnv(t, nil)
 	root := realRoot(t, e.root)
-	if err := os.Symlink(linkMaze(t, 400), filepath.Join(root, "maze")); err != nil {
+	if err := os.Symlink(linkMaze(t, mazeDepth), filepath.Join(root, "maze")); err != nil {
 		t.Fatal(err)
 	}
 	prefix := filepath.Join(append([]string{root, "maze"}, slices.Repeat([]string{"x"}, 10)...)...)
@@ -365,10 +414,11 @@ func TestPathsPrefixThroughALinkLoopAnswersInTime(t *testing.T) {
 	if took := time.Since(start); status != http.StatusOK || out["dir"] != root || len(entryNames(out)) != 0 || took > 2*time.Second {
 		t.Fatalf("%d %v in %v", status, out, took)
 	}
-	// The git check's cwd is refused as quickly.
+	// The git check's cwd is refused as quickly: well within the second
+	// EvalSymlinks would take.
 	start = time.Now()
 	status, out = e.gitCheck(prefix)
-	if took := time.Since(start); status != http.StatusBadRequest || errorCode(out) != "invalid_cwd" || took > time.Second {
+	if took := time.Since(start); status != http.StatusBadRequest || errorCode(out) != "invalid_cwd" || took > 400*time.Millisecond {
 		t.Fatalf("check: %d %v in %v", status, out, took)
 	}
 }
@@ -378,7 +428,7 @@ func TestPathsPrefixThroughALinkLoopAnswersInTime(t *testing.T) {
 func TestPathsStopsWhenTheContextEnds(t *testing.T) {
 	e := newTestEnv(t, nil)
 	root := realRoot(t, e.root)
-	if err := os.Symlink(linkMaze(t, 400), filepath.Join(root, "maze")); err != nil {
+	if err := os.Symlink(linkMaze(t, mazeDepth), filepath.Join(root, "maze")); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -414,8 +464,9 @@ func TestPathsCapsTheLinksItCannotUse(t *testing.T) {
 	}
 }
 
-// Past the deadline the listing keeps its entries, unmarked, and asks git
-// no more.
+// Past the deadline the listing keeps its entries, unmarked, asks git no
+// more, and says it is truncated: a client can tell a mark left out from a
+// directory that is no repository.
 func TestPathsKeepsItsEntriesPastTheDeadline(t *testing.T) {
 	e := newTestEnv(t, nil)
 	root := realRoot(t, e.root)
@@ -431,7 +482,7 @@ func TestPathsKeepsItsEntriesPastTheDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	reply, err := e.srv.listPaths(ctx, root, maxPathEntries)
-	if err != nil || len(reply.Entries) != 3 || len(asked) != 1 {
+	if err != nil || len(reply.Entries) != 3 || len(asked) != 1 || !reply.Truncated {
 		t.Fatalf("%+v %v, asked %v", reply, err, asked)
 	}
 	for _, en := range reply.Entries {

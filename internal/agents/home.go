@@ -100,7 +100,8 @@ func otherOwner(path string, fi fs.FileInfo, uid int) (who string, other bool) {
 // process's home directory itself, never a file in it); where the system does
 // not say who owns a file, it passes. A missing path is its own error
 // (fs.ErrNotExist). It follows a link: what it judges is the file the link
-// leads to (CheckLinkOwner judges the link). conductor completion install
+// leads to (CheckLinkOwner judges the link), and its refusal says where the
+// link leads. conductor completion install
 // checks the directory of the rc file it appends to, the rc file and, when
 // that is a link, the link: under sudo, another user's ~/.zshrc is refused.
 func CheckOwner(path string) error { return checkOwner(path, os.Stat) }
@@ -112,20 +113,29 @@ func CheckOwner(path string) error { return checkOwner(path, os.Stat) }
 func CheckLinkOwner(path string) error { return checkOwner(path, os.Lstat) }
 
 // checkOwner applies ownedBy's rule to what stat says of path, and names
-// path, and that it is a link when it is one, in the refusal.
+// path, and that it is a link when it is one, in the refusal. When stat
+// followed a link to the file it judged, the refusal says where the link
+// leads instead: the link may be the user's own, and running conductor as
+// the file's owner is no advice for that.
 func checkOwner(path string, stat func(string) (fs.FileInfo, error)) error {
 	fi, err := stat(path)
 	if err != nil {
 		return err
 	}
-	if who, other := otherOwner(path, fi, geteuid()); other {
-		what := path
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			what += ", a link,"
-		}
-		return fmt.Errorf("%s belongs to %s, not to the user running conductor: nothing written; run it as %s, for example sudo -u %s conductor completion install", what, who, who, who)
+	who, other := otherOwner(path, fi, geteuid())
+	if !other {
+		return nil
 	}
-	return nil
+	if fi.Mode()&fs.ModeSymlink == 0 {
+		if li, err := os.Lstat(path); err == nil && li.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s leads to a file of %s's, not of the user running conductor: nothing written", path, who)
+		}
+	}
+	what := path
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		what += ", a link,"
+	}
+	return fmt.Errorf("%s belongs to %s, not to the user running conductor: nothing written; run it as %s, for example sudo -u %s conductor completion install", what, who, who, who)
 }
 
 // SetEUIDForTest makes the owner checks of this package (CheckHome,

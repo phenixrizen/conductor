@@ -2078,7 +2078,7 @@ func TestCatalogListsWhereEachAgentComesFrom(t *testing.T) {
 		t.Fatalf("unhide: %d %v", resp.StatusCode, out)
 	}
 	// An agent the catalog no longer lists has no source, rather than "".
-	if b, err := json.Marshal(entry(catalog.Agent{ID: "gone", Name: "gone", Command: []string{"x"}}, e.srv.Catalog(), e.srv.base, e.srv.lookups)); err != nil || strings.Contains(string(b), `"source"`) {
+	if b, err := json.Marshal(entry(catalog.Agent{ID: "gone", Name: "gone", Command: []string{"x"}}, e.srv.Catalog(), e.srv.base, func(string) bool { return false })); err != nil || strings.Contains(string(b), `"source"`) {
 		t.Fatalf("entry of an unlisted agent: %s %v", b, err)
 	}
 }
