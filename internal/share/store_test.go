@@ -28,10 +28,10 @@ func TestCreateResolveRevoke(t *testing.T) {
 	if _, err := s.Resolve("nope"); !errors.Is(err, ErrUnknownToken) {
 		t.Fatalf("unknown: %v", err)
 	}
-	if !s.Revoke("sess", link.ID) {
+	if !found(s.Revoke("sess", link.ID)) {
 		t.Fatal("revoke failed")
 	}
-	if s.Revoke("other", link.ID) {
+	if found(s.Revoke("other", link.ID)) {
 		t.Fatal("revoke must check session ownership")
 	}
 	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
@@ -108,17 +108,17 @@ func TestRunLinks(t *testing.T) {
 	if l := s.ListBySession(""); len(l) != 0 {
 		t.Fatalf("a run link is listed by session: %+v", l)
 	}
-	if s.Revoke("", link.ID) || s.Revoke("run", link.ID) {
+	if found(s.Revoke("", link.ID)) || found(s.Revoke("run", link.ID)) {
 		t.Fatal("a run link is revoked as a session's")
 	}
-	if s.RevokeRun("other", link.ID) {
+	if found(s.RevokeRun("other", link.ID)) {
 		t.Fatal("revoke must check run ownership")
 	}
 	sl, _, _ := s.Create("sess", session.RoleView, "", 0)
-	if s.RevokeRun("", sl.ID) || s.RevokeRun("sess", sl.ID) {
+	if found(s.RevokeRun("", sl.ID)) || found(s.RevokeRun("sess", sl.ID)) {
 		t.Fatal("a session link is revoked as a run's")
 	}
-	if !s.RevokeRun("run", link.ID) {
+	if !found(s.RevokeRun("run", link.ID)) {
 		t.Fatal("revoke run failed")
 	}
 	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
@@ -217,5 +217,28 @@ func TestResolveWhileRevoking(t *testing.T) {
 	wg.Wait()
 	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("after revoke: %v", err)
+	}
+}
+
+// found is the first result of a revoke: whether the link was the caller's.
+func found(ok, _ bool) bool { return ok }
+
+// A revoke says whether it revoked the link: a second one finds it revoked
+// already, and the hook fires once.
+func TestRevokeSaysWhetherItRevoked(t *testing.T) {
+	s := NewStore()
+	link, _, _ := s.CreateRunLink("run", session.RoleView, "", 0)
+	if ok, revoked := s.RevokeRun("run", link.ID); !ok || !revoked {
+		t.Fatalf("first: %v %v", ok, revoked)
+	}
+	if ok, revoked := s.RevokeRun("run", link.ID); !ok || revoked {
+		t.Fatalf("second: %v %v", ok, revoked)
+	}
+	sl, _, _ := s.Create("sess", session.RoleView, "", 0)
+	if ok, revoked := s.Revoke("sess", sl.ID); !ok || !revoked {
+		t.Fatalf("session first: %v %v", ok, revoked)
+	}
+	if ok, revoked := s.Revoke("sess", sl.ID); !ok || revoked {
+		t.Fatalf("session second: %v %v", ok, revoked)
 	}
 }

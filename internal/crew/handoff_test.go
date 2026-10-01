@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,6 +73,12 @@ func runningPair(t *testing.T, e *Engine, fl *fakeLauncher, more ...Member) Run 
 func TestHandoffTypedOrQueued(t *testing.T) {
 	e, fl := newEngine(t)
 	run := runningPair(t, e, fl)
+	var refused atomic.Int32 // attempts to type into tests that found it waiting
+	e.tried = func(member string, typed bool) {
+		if member == "tests" && !typed {
+			refused.Add(1)
+		}
+	}
 	lead, _ := fl.member("lead")
 	tests, p := fl.member("tests")
 
@@ -90,8 +97,11 @@ func TestHandoffTypedOrQueued(t *testing.T) {
 	lead.Record(handoffEntry("tests", "first"))
 	lead.Record(handoffEntry("tests", "second"))
 	waitLogged(t, e, run.ID, "handoff queued from lead to tests: tests is waiting for input", 2, 5*time.Second)
-	// Another prompt is still a prompt.
+	// Another prompt is still a prompt. Sync point: the engine has tried
+	// again since the change, and typed nothing.
+	before := refused.Load()
 	tests.SetAttention(session.AttentionNeedsInput, "Allow write?", session.SourceAPI)
+	waitTrue(t, "a try after the second prompt", func() bool { return refused.Load() > before })
 	if got := typed(p); len(got) != 0 {
 		t.Fatalf("typed %q into a prompt", got)
 	}
@@ -107,8 +117,26 @@ func TestHandoffTypedOrQueued(t *testing.T) {
 		}
 	}
 	waitLogged(t, e, run.ID, "handoff delivered from lead to tests", 3, 5*time.Second)
+	// Sync point: the goroutine typing for tests has ended.
+	waitTrue(t, "the delivery to end", func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return !e.runs[run.ID].member("tests").delivering.Load()
+	})
 	if got := typed(p); len(got) != 0 {
 		t.Fatalf("typed %q more", got)
+	}
+}
+
+// waitTrue waits up to 5 s for cond.
+func waitTrue(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited 5 s for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

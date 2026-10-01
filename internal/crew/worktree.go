@@ -47,7 +47,8 @@ var (
 
 // inRepo checks that dir is in a git working tree: git -C dir rev-parse
 // --show-toplevel succeeds. The error is ErrNoGit when git is not on PATH,
-// and matches ErrNotRepo otherwise.
+// and otherwise matches ErrNotRepo: "not in a git repository" when git says
+// so, git's own message for any other failure (classifyRevParse).
 func inRepo(ctx context.Context, dir string) error {
 	if _, err := git(ctx, dir, "rev-parse", "--show-toplevel"); err != nil {
 		switch {
@@ -56,9 +57,21 @@ func inRepo(ctx context.Context, dir string) error {
 		case errors.Is(err, exec.ErrNotFound):
 			return ErrNoGit
 		}
-		return errNotInRepo
+		return classifyRevParse(err)
 	}
 	return nil
+}
+
+// classifyRevParse is the error inRepo reports for a failed rev-parse:
+// errNotInRepo when git says the directory is not in a repository, and git's
+// message otherwise, as for a repository owned by another user (dubious
+// ownership) or one the server user cannot read. Both match ErrNotRepo.
+func classifyRevParse(err error) error {
+	msg := strings.TrimPrefix(err.Error(), "git rev-parse: ")
+	if strings.Contains(msg, "not a git repository") {
+		return errNotInRepo
+	}
+	return &repoError{"git cannot use the working directory's repository: " + msg}
 }
 
 // CheckRepo reports whether worktrees can be made of repo, a directory in a

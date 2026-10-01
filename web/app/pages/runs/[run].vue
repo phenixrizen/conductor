@@ -2,7 +2,7 @@
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
-import { bestGrid } from '~/utils/wall'
+import { bestGrid, lastItemSpan } from '~/utils/wall'
 
 // The crew view: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions come from the live store (useAttention); the run
@@ -167,6 +167,7 @@ watch(
 )
 const narrow = computed(() => box.value.w > 0 && box.value.w < 640)
 const layout = computed(() => bestGrid(tiles.value.length + 1, box.value.w, box.value.h, 12, 1.4))
+const feedSpan = computed(() => lastItemSpan(tiles.value.length + 1, layout.value))
 const gridStyle = computed(() =>
   narrow.value
     ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: '16rem' }
@@ -256,7 +257,7 @@ watch(() => admin.token.value, load)
                 </div>
               </div>
             </template>
-            <CrewFeed :items="feed" />
+            <CrewFeed :items="feed" :style="narrow ? undefined : { gridColumn: `span ${feedSpan} / span ${feedSpan}` }" />
           </div>
         </div>
         <div class="flex-none px-3 pb-3">

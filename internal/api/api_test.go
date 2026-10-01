@@ -4162,3 +4162,66 @@ func TestRunLinkJoinSessionAndFiles(t *testing.T) {
 	resp, out = e.do("GET", "/api/join/"+token, "", nil)
 	wantAPIError(t, "join after revoke", resp, out, http.StatusNotFound, "revoked", "")
 }
+
+// Revoking a link twice notes it once, in the run's log and in the session's.
+func TestRevokingARevokedLinkRecordsNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Crew", catMember("lead", "manual"))
+	_, out := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "pair"})
+	linkID := out["link"].(map[string]any)["id"].(string)
+	for range 2 {
+		if resp, _ := e.do("DELETE", "/api/runs/"+runID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("revoke: %d", resp.StatusCode)
+		}
+	}
+	_, out = e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	n := 0
+	for _, raw := range out["run"].(map[string]any)["log"].([]any) {
+		if raw.(map[string]any)["message"] == "link revoked: pair" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the run log notes the revoke %d times", n)
+	}
+	id := e.createSession("cat")
+	_, out = e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "solo"})
+	sl := out["link"].(map[string]any)["id"].(string)
+	for range 2 {
+		e.do("DELETE", "/api/sessions/"+id+"/links/"+sl, adminToken, nil)
+	}
+	n = 0
+	for _, a := range e.local(id).Activity() {
+		if a.Type == session.ActivityLink && a.Message == "link revoked: solo" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the session records the revoke %d times", n)
+	}
+}
+
+// Closing the viewers of a forgotten run's links is the server's own work:
+// Shutdown waits for it, or for its context.
+func TestShutdownWaitsForWhatTheServerStarted(t *testing.T) {
+	e := newTestEnv(t, nil)
+	release := make(chan struct{})
+	e.srv.track(func() { <-release })
+	done := make(chan struct{})
+	go func() {
+		e.srv.Shutdown(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("Shutdown returned while the server's own goroutine ran")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return")
+	}
+}

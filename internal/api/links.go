@@ -116,7 +116,17 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	link, token, err := s.links.CreateRunLink(id, req.Role, req.Label, req.ttl())
+	// The link is made under the check that the run is kept: a run forgotten
+	// in between takes its links (OnForget), and this one would be left over.
+	var (
+		link  *share.Link
+		token string
+		err   error
+	)
+	if !s.runs.IfKept(id, func() { link, token, err = s.links.CreateRunLink(id, req.Role, req.Label, req.ttl()) }) {
+		writeError(w, http.StatusNotFound, "not_found", "no such run")
+		return
+	}
 	if err != nil {
 		writeLinkError(w, err, "too many links for this run")
 		return
@@ -161,11 +171,14 @@ func (s *Server) handleRevokeRunLink(w http.ResponseWriter, r *http.Request) {
 	if l, ok := s.links.Get(linkID); ok {
 		label = l.Label
 	}
-	if !s.links.RevokeRun(id, linkID) {
+	found, revoked := s.links.RevokeRun(id, linkID)
+	if !found {
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}
-	s.runs.Note(id, session.ActivityLink, "link revoked: "+linkLabelOr(label))
+	if revoked {
+		s.runs.Note(id, session.ActivityLink, "link revoked: "+linkLabelOr(label))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -175,11 +188,14 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 	if l, ok := s.links.Get(linkID); ok {
 		label = l.Label
 	}
-	if !s.links.Revoke(id, linkID) {
+	found, revoked := s.links.Revoke(id, linkID)
+	if !found {
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}
-	s.recordLink(id, "link revoked: "+linkLabelOr(label))
+	if revoked {
+		s.recordLink(id, "link revoked: "+linkLabelOr(label))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

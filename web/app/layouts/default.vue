@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
-import { sidebarRunFor } from '~/utils/crews'
+import { RUN_NAME_RETRY_MS, RunNameAsks, sidebarRunFor } from '~/utils/crews'
 
 const { hasToken, clear } = useAdminToken()
 const showToken = ref(false)
@@ -26,27 +26,32 @@ const list = useTemplateRef<{ focusFilter: () => void }>('list')
 // of any member session of a run however it was reached, the sidebar lists
 // only that run's members. The run's name comes from a cache the crew view
 // fills; for a member session opened elsewhere it is read once per run, and
-// the crew's id stands in until then (or if that fails).
+// again RUN_NAME_RETRY_MS after a failure, the crew's id standing in until then.
 const api = useSessions()
 const sidebarRun = computed(() => sidebarRunFor(route.path, attention.sessions.value))
 const runRoute = computed(() => route.path.startsWith('/runs/'))
 const runNames = useState<Record<string, string>>('crewRunNames', () => ({}))
-const askedNames = new Set<string>()
-watch(
-  sidebarRun,
-  async (id) => {
-    // The crew view reads its run itself.
-    if (!id || runRoute.value || runNames.value[id] || askedNames.has(id)) return
-    askedNames.add(id)
-    try {
-      const r = await api.getRun(id)
-      runNames.value = { ...runNames.value, [r.id]: r.name }
-    } catch {
-      /* the crew id stands in */
-    }
-  },
-  { immediate: true },
-)
+const asks = new RunNameAsks()
+let retry: ReturnType<typeof setTimeout> | undefined
+async function readRunName(id: string) {
+  // The crew view reads its run itself.
+  if (runRoute.value || runNames.value[id] || !asks.shouldAsk(id)) return
+  try {
+    const r = await api.getRun(id)
+    runNames.value = { ...runNames.value, [r.id]: r.name }
+  } catch {
+    // The crew id stands in until a later try reads it.
+    asks.failed(id)
+    clearTimeout(retry)
+    retry = setTimeout(() => {
+      if (sidebarRun.value === id) readRunName(id)
+    }, RUN_NAME_RETRY_MS)
+  }
+}
+watch(sidebarRun, (id) => {
+  if (id) readRunName(id)
+}, { immediate: true })
+onBeforeUnmount(() => clearTimeout(retry))
 const sidebarRunName = computed(() => {
   const id = sidebarRun.value
   if (!id) return undefined

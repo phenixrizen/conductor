@@ -1345,3 +1345,73 @@ func TestStopDuringLaunchKeepsTheRun(t *testing.T) {
 		t.Fatalf("launched %v", names)
 	}
 }
+
+// A stop that lands before any member's start is reserved ends the launch as
+// a later stop does: ErrRunStopped, the run kept and stopped, nothing started.
+func TestStopBeforeTheFirstStartEndsTheLaunch(t *testing.T) {
+	e, fl := newEngine(t)
+	e.afterAdd = func(runID string) {
+		if err := e.Stop(context.Background(), runID); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), manual("tests", ""))); !errors.Is(err, ErrRunStopped) {
+		t.Fatalf("Launch: %v", err)
+	}
+	runs := e.List()
+	if len(runs) != 1 || runs[0].StoppedAt == nil {
+		t.Fatalf("runs %+v", runs)
+	}
+	if names := fl.launched(); len(names) != 0 {
+		t.Fatalf("launched %v", names)
+	}
+	if m := memberState(t, e, runs[0].ID, "lead"); m.Status != MemberPending {
+		t.Fatalf("lead %+v", m)
+	}
+}
+
+// A run stays exempt from eviction until its launcher lets it go. The API
+// mints the run's view link in between, and a launch at the cap meanwhile
+// must not forget the run.
+func TestAHeldRunIsNeverForgotten(t *testing.T) {
+	e, _ := newEngine(t)
+	var forgotten []string
+	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
+	held, release, err := e.LaunchHeld(t.Context(), testCrew(manual("lead", "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxRuns {
+		if _, err := e.Launch(t.Context(), testCrew(manual("lead", ""))); err != nil {
+			t.Fatalf("launch %d: %v", i, err)
+		}
+	}
+	if _, ok := e.Get(held.ID); !ok {
+		t.Fatal("the held run was forgotten")
+	}
+	release()
+	release() // once is enough; twice changes nothing
+	if _, err := e.Launch(t.Context(), testCrew(manual("lead", ""))); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Get(held.ID); ok || len(forgotten) < 2 || forgotten[len(forgotten)-1] != held.ID {
+		t.Fatalf("the released run, the oldest idle one, was kept past the cap: %v", forgotten)
+	}
+}
+
+// IfKept runs f under the engine's lock while the run is kept, and not at all
+// otherwise: a link made in f cannot outlive a run forgotten meanwhile.
+func TestIfKeptRunsUnderTheLockOfAKeptRun(t *testing.T) {
+	e, _ := newEngine(t)
+	run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := false
+	if !e.IfKept(run.ID, func() { locked = !e.mu.TryLock() }) || !locked {
+		t.Fatal("f did not run under the engine's lock")
+	}
+	if e.IfKept("nope", func() { t.Error("f ran for a run the engine does not have") }) {
+		t.Fatal("IfKept reported a run the engine does not have")
+	}
+}

@@ -224,10 +224,11 @@ async function confirmDelete() {
 }
 
 /**
- * The view link a launch returned, while this page shows it: once, then it
- * is gone. Its token is in no other state.
+ * The view link a launch returned, until this page has shown it: in app state, so a launch that resolves after the page was left keeps it
+ * for the next visit, and a toast offers it meanwhile. Its token is in no other state.
  */
-const shownLink = ref<{ url: string; runId: string; name: string; hours: number } | null>(null)
+const shownLink = useState<{ url: string; runId: string; name: string; hours: number; crewId: string } | null>('crewShownLink', () => null)
+let mounted = false
 const shownOpen = computed({
   get: () => !!shownLink.value,
   set: (open: boolean) => {
@@ -269,7 +270,16 @@ async function launch() {
       return
     }
     if (viewLink) {
-      shownLink.value = { url: viewLink.url, runId: run.id, name: c.name, hours: hours(ttl) }
+      shownLink.value = { url: viewLink.url, runId: run.id, name: c.name, hours: hours(ttl), crewId: c.id }
+      if (!mounted) {
+        toast.add({
+          title: `${c.name} launched`,
+          description: 'Its view link is shown once, on the Crews page.',
+          icon: 'i-lucide-link',
+          color: 'success',
+          actions: [{ label: 'Show the link', onClick: () => router.push(`/crews/${encodeURIComponent(c.id)}`) }],
+        })
+      }
       return
     }
     toast.add({
@@ -299,11 +309,13 @@ watch(crewSessions, () => {
 
 let tick: number | undefined
 onMounted(() => {
+  mounted = true
   live.start()
   refresh()
   tick = window.setInterval(() => (now.value = Date.now()), 30000)
 })
 onBeforeUnmount(() => {
+  mounted = false
   window.clearInterval(tick)
   window.clearTimeout(runsTimer)
 })
@@ -316,6 +328,7 @@ watch(
     refresh()
   },
 )
+watch(routeId, () => refresh())
 </script>
 
 <template>

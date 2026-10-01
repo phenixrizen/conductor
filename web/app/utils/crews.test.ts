@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewInfo, CrewMember, CrewStart, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
 import {
@@ -9,9 +9,12 @@ import {
   crewKey,
   defaultCrew,
   holdViewLink,
+  joinTileStatus,
   memberNameError,
   memberNameFrom,
   memberStatus,
+  RUN_NAME_RETRY_MS,
+  RunNameAsks,
   runActive,
   runCounts,
   sidebarRunFor,
@@ -385,5 +388,40 @@ describe('holdViewLink and takeViewLink', () => {
     expect(takeViewLink('r1', 1500)).toBeNull()
     holdViewLink('r1', 'https://x.test/join/t', 28800, 1000)
     expect(takeViewLink('r1', 62_000)).toBeNull()
+  })
+})
+
+describe('holdViewLink', () => {
+  it('drops a link nobody took within a minute, without waiting for a take', () => {
+    vi.useFakeTimers()
+    try {
+      holdViewLink('r1', 'https://x/join/t', 3600, 0)
+      vi.advanceTimersByTime(60_001)
+      // Taken "at" 0, within the hold: only the timer can have dropped it.
+      expect(takeViewLink('r1', 0)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('RunNameAsks', () => {
+  it('asks once, and again after a failure once the retry time has passed', () => {
+    const asks = new RunNameAsks()
+    expect(asks.shouldAsk('r1', 0)).toBe(true)
+    expect(asks.shouldAsk('r1', 1)).toBe(false)
+    asks.failed('r1', 10)
+    expect(asks.shouldAsk('r1', 10 + RUN_NAME_RETRY_MS - 1)).toBe(false)
+    expect(asks.shouldAsk('r1', 10 + RUN_NAME_RETRY_MS)).toBe(true)
+    expect(asks.shouldAsk('r2', 0)).toBe(true)
+  })
+})
+
+describe('joinTileStatus', () => {
+  it("prefers what the tile's terminal reported, and flags a prompt", () => {
+    expect(joinTileStatus({ status: 'running' }, { attention: 'needs_input' })).toMatchObject({ label: 'Needs input' })
+    expect(joinTileStatus({ status: 'starting' }, { status: 'running' })).toMatchObject({ label: 'Running' })
+    expect(joinTileStatus({ status: 'ended' }, { attention: 'needs_input' })).toMatchObject({ label: 'ended' })
+    expect(joinTileStatus({ status: 'pending' })).toMatchObject({ label: 'pending', cls: 'text-muted' })
   })
 })

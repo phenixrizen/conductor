@@ -168,6 +168,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		e.mu.Unlock()
 
 		typed, err := l.TypeUnlessWaiting(h.text+"\r", typedBy)
+		if e.tried != nil {
+			e.tried(m.def.Name, typed)
+		}
 		e.mu.Lock()
 		switch {
 		case err != nil:

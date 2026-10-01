@@ -4,7 +4,6 @@ import type { Attention, TransportKind } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileViewer.vue'
 import { parseLocation } from '~/utils/links'
-import { agentInitials } from '~/utils/sessions'
 
 definePageMeta({ layout: 'bare' })
 
@@ -45,9 +44,6 @@ const current = computed<{ id: string; name: string; agentId: string; kind: Sess
   // Crew members run on the server.
   return m?.sessionId ? { id: m.sessionId, name: m.name, agentId: m.agentId, kind: 'server' } : null
 })
-
-/** What each member's tile last heard from its session, by member name. */
-const tileState = ref<Record<string, { status?: string; attention?: string }>>({})
 
 useHead({ title: computed(() => (run.value ? `${run.value.name} (shared)` : info.value?.session ? `${info.value.session.name} (shared)` : 'Join session')) })
 
@@ -93,21 +89,9 @@ function tileTransport(m: JoinRunMember) {
   return () => create({ sessionId: m.sessionId!, token: token.value, kind: 'server', name: identity.name.value })
 }
 
-function setTile(name: string, patch: { status?: string; attention?: string }) {
-  tileState.value = { ...tileState.value, [name]: { ...tileState.value[name], ...patch } }
-}
-
-function tileStatus(m: JoinRunMember): { label: string; cls: string; dot: string } {
-  const t = tileState.value[m.name]
-  const st = t?.status ?? m.status
-  if (t?.attention === 'needs_input' && (st === 'running' || st === 'starting')) return { label: 'Needs input', cls: 'text-warning', dot: 'bg-warning' }
-  if (st === 'running') return { label: 'Running', cls: 'text-success', dot: 'bg-success' }
-  return { label: st.replace('_', ' '), cls: 'text-muted', dot: 'bg-neutral-400' }
-}
-
-function openMember(m: JoinRunMember) {
+function openMember(m: JoinRunMember, heard?: { status?: string; attention?: string }) {
   if (!m.sessionId) return
-  status.value = tileState.value[m.name]?.status ?? m.status
+  status.value = heard?.status ?? m.status
   attention.value = { state: '' }
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
@@ -212,50 +196,7 @@ function requestFile(path: string, stat?: boolean) {
 
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
-      <div class="grid auto-rows-[18rem] gap-3 sm:grid-cols-2 xl:grid-cols-3" data-join-tiles>
-        <template v-for="m in run.members" :key="m.name">
-          <div
-            v-if="m.sessionId"
-            class="flex min-h-0 cursor-pointer flex-col overflow-hidden rounded-lg border bg-elevated/40 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary"
-            :class="tileState[m.name]?.attention === 'needs_input' ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented'"
-            role="button"
-            tabindex="0"
-            :aria-label="`Open ${m.name}`"
-            :data-member="m.name"
-            @click="openMember(m)"
-            @keydown.enter.prevent="openMember(m)"
-            @keydown.space.prevent="openMember(m)"
-          >
-            <div class="flex flex-none items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
-              <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(m.agentId) }}</span>
-              <span class="flex-1 truncate text-[13px] font-semibold">{{ m.name }}</span>
-              <span class="flex items-center gap-1.5 text-[11.5px]" :class="tileStatus(m).cls"><span class="size-[7px] rounded-full" :class="tileStatus(m).dot" aria-hidden="true" />{{ tileStatus(m).label }}</span>
-            </div>
-            <div class="pointer-events-none min-h-0 flex-1">
-              <TerminalView
-                :create-transport="tileTransport(m)"
-                read-only
-                fit="scale"
-                compact
-                :auto-focus="false"
-                @status="(s) => setTile(m.name, { status: s })"
-                @attention="(a) => setTile(m.name, { attention: a.state })"
-              />
-            </div>
-            <div class="flex flex-none items-center gap-2 border-t border-default px-2.5 py-1 font-mono text-[11px] text-muted">
-              <span class="truncate">{{ agentName(m.agentId) }}</span>
-              <span class="ml-auto flex-none">{{ info!.role === 'control' ? 'open to type' : 'open' }}</span>
-            </div>
-          </div>
-          <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="m.name">
-            <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
-              <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(m.agentId) }}</span>
-              <span class="flex-1 truncate text-[13px] font-semibold">{{ m.name }}</span>
-            </div>
-            <div class="flex flex-1 items-center justify-center p-3 text-sm text-muted">{{ m.status === 'ended' ? 'ended' : m.status === 'starting' ? 'starting…' : 'not started yet' }}</div>
-          </div>
-        </template>
-      </div>
+      <JoinCrewGrid :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
   </template>
 

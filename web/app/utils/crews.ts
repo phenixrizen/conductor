@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewInput, CrewMember, CrewStart, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewInput, CrewMember, CrewStart, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -271,13 +271,19 @@ export function sidebarRunFor(path: string, sessions: readonly SessionInfo[]): s
 const VIEW_LINK_HOLD_MS = 60_000
 
 let heldViewLink: { runId: string; url: string; ttlSeconds: number; at: number } | null = null
+let heldTimer: ReturnType<typeof setTimeout> | undefined
 
 /**
- * Hands the view link a launch returned to the crew view the launch opens, in memory only: the crew view takes it once (takeViewLink)
- * and nothing keeps it after that.
+ * Hands the view link a launch returned to the crew view the launch opens, in memory only: the crew view takes it once (takeViewLink), and
+ * a timer drops it once the hold is over, so a token nobody took does not stay in memory.
  */
 export function holdViewLink(runId: string, url: string, ttlSeconds: number, now = Date.now()) {
-  heldViewLink = { runId, url, ttlSeconds, at: now }
+  clearTimeout(heldTimer)
+  const held = { runId, url, ttlSeconds, at: now }
+  heldViewLink = held
+  heldTimer = setTimeout(() => {
+    if (heldViewLink === held) heldViewLink = null
+  }, VIEW_LINK_HOLD_MS)
 }
 
 /** The view link held for this run, once; any call drops what is held, as does a minute nobody took it in. */
@@ -286,4 +292,30 @@ export function takeViewLink(runId: string, now = Date.now()): { url: string; tt
   heldViewLink = null
   if (!held || held.runId !== runId || now - held.at > VIEW_LINK_HOLD_MS) return null
   return { url: held.url, ttlSeconds: held.ttlSeconds }
+}
+
+/** How long a run name that could not be read waits before it is asked for again. */
+export const RUN_NAME_RETRY_MS = 5_000
+
+/** Which run names the layout reads: each once, and again after a failure once RUN_NAME_RETRY_MS has passed. */
+export class RunNameAsks {
+  /** By run: when it may be asked again; Infinity while asked or read. */
+  private next = new Map<string, number>()
+  shouldAsk(id: string, now = Date.now()): boolean {
+    const at = this.next.get(id)
+    if (at !== undefined && now < at) return false
+    this.next.set(id, Infinity)
+    return true
+  }
+  failed(id: string, now = Date.now()): void {
+    this.next.set(id, now + RUN_NAME_RETRY_MS)
+  }
+}
+
+/** A run link's member tile: its label and classes, from what its terminal last reported (`heard`), else the run's own status. */
+export function joinTileStatus(m: Pick<JoinRunMember, 'status'>, heard?: { status?: string; attention?: string }): { label: string; cls: string; dot: string } {
+  const st = heard?.status ?? m.status
+  if (heard?.attention === 'needs_input' && (st === 'running' || st === 'starting')) return { label: 'Needs input', cls: 'text-warning', dot: 'bg-warning' }
+  if (st === 'running') return { label: 'Running', cls: 'text-success', dot: 'bg-success' }
+  return { label: st.replace('_', ' '), cls: 'text-muted', dot: 'bg-neutral-400' }
 }

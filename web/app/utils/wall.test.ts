@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bestGrid } from './wall'
+import { bestGrid, lastItemSpan } from './wall'
 
 describe('bestGrid', () => {
   it('handles empty and degenerate boxes', () => {
@@ -41,6 +41,23 @@ describe('bestGrid', () => {
       const { cols, rows } = bestGrid(n, 1440, 800)
       expect(cols * rows).toBeGreaterThanOrEqual(n)
       expect(cols).toBeLessThanOrEqual(n)
+    }
+  })
+})
+
+describe('lastItemSpan', () => {
+  it('fills the cells the last row leaves', () => {
+    expect(lastItemSpan(5, { cols: 3, rows: 2 })).toBe(2)
+    expect(lastItemSpan(6, { cols: 3, rows: 2 })).toBe(1)
+    expect(lastItemSpan(3, { cols: 2, rows: 2 })).toBe(2)
+    expect(lastItemSpan(1, { cols: 1, rows: 1 })).toBe(1)
+  })
+  it('stays within a row, whatever bestGrid picks', () => {
+    for (let n = 1; n <= 13; n++) {
+      const g = bestGrid(n, 1600, 900, 12, 1.4)
+      const span = lastItemSpan(n, g)
+      expect(span).toBeGreaterThanOrEqual(1)
+      expect(span).toBeLessThanOrEqual(g.cols)
     }
   })
 })

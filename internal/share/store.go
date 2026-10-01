@@ -130,9 +130,10 @@ func (s *Store) Get(linkID string) (*Link, bool) {
 	return copyLink(l), true
 }
 
-// Revoke marks a session's link unusable and notifies OnRevoke. It returns
-// false when the link does not belong to sessionID.
-func (s *Store) Revoke(sessionID, linkID string) bool {
+// Revoke marks a session's link unusable and notifies OnRevoke the first
+// time. found is false when the link does not belong to sessionID; revoked
+// says whether this call revoked it (false when it was revoked before).
+func (s *Store) Revoke(sessionID, linkID string) (found, revoked bool) {
 	return s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {
 		if s.OnRevoke != nil {
 			s.OnRevoke(sessionID, linkID)
@@ -140,9 +141,8 @@ func (s *Store) Revoke(sessionID, linkID string) bool {
 	})
 }
 
-// RevokeRun marks a run's link unusable and notifies OnRevokeRun. It returns
-// false when the link does not belong to runID.
-func (s *Store) RevokeRun(runID, linkID string) bool {
+// RevokeRun is Revoke for a run's link, notifying OnRevokeRun.
+func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
 	return s.revoke(linkID, func(l *Link) bool { return l.RunID != "" && l.RunID == runID }, func() {
 		if s.OnRevokeRun != nil {
 			s.OnRevokeRun(runID, linkID)
@@ -152,12 +152,12 @@ func (s *Store) RevokeRun(runID, linkID string) bool {
 
 // revoke marks the link with linkID revoked when owned says it is the
 // caller's, and calls notify, outside the lock, the first time.
-func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) bool {
+func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) (found, revoked bool) {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
 	if !ok || !owned(link) {
 		s.mu.Unlock()
-		return false
+		return false, false
 	}
 	already := link.Revoked
 	link.Revoked = true
@@ -165,7 +165,7 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) boo
 	if !already {
 		notify()
 	}
-	return true
+	return true, !already
 }
 
 // ListBySession returns links for a session, newest first.

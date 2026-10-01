@@ -15,6 +15,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/crew"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/share"
 )
 
 const (
@@ -112,7 +113,10 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 	c.Cwd = cwd
 	ctx, cancel := runContext(r)
 	defer cancel()
-	run, err := s.runs.Launch(ctx, c)
+	run, release, err := s.runs.LaunchHeld(ctx, c)
+	// Released once the reply is written: the view link is minted first, so a
+	// launch at the cap meanwhile cannot forget the run.
+	defer release()
 	if err != nil {
 		s.runError(w, "launch", c.ID, err)
 		return
@@ -137,7 +141,14 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 // does not fail the launch, which has happened: it is logged and noted in
 // the run's log, and the reply has no viewLink.
 func (s *Server) launchViewLink(runID string, ttl time.Duration) map[string]any {
-	link, token, err := s.links.CreateRunLink(runID, session.RoleView, "launch", ttl)
+	var (
+		link  *share.Link
+		token string
+		err   error
+	)
+	if !s.runs.IfKept(runID, func() { link, token, err = s.links.CreateRunLink(runID, session.RoleView, "launch", ttl) }) {
+		return nil
+	}
 	if err != nil {
 		s.log.Warn("launch view link not created", "run", runID, "err", err)
 		s.runs.Note(runID, session.ActivityError, "the view link could not be created: "+err.Error())

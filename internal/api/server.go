@@ -78,6 +78,13 @@ type Server struct {
 
 	mu      sync.Mutex
 	counter int
+
+	// bg counts the goroutines the server starts on its own, outside any
+	// request: Shutdown waits for them. bgMu guards bgDone, which is set once
+	// Shutdown waits; what starts after that is not counted.
+	bg     sync.WaitGroup
+	bgMu   sync.Mutex
+	bgDone bool
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -144,10 +151,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// A run the engine forgets takes its links: under the engine's lock only
 	// the share store's maps change (the store never calls the engine); the
 	// viewers attached through them are closed as on a revoke, on a goroutine
-	// of their own.
+	// of the server's own (track), which Shutdown waits for.
 	s.runs.OnForget = func(runID string) {
 		if live := s.links.DeleteRun(runID); len(live) > 0 {
-			go s.disconnectLinks(live)
+			s.track(func() { s.disconnectLinks(live) })
 		}
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
@@ -187,6 +194,17 @@ func (s *Server) disconnectLinks(linkIDs []string) {
 		})
 	})
 	wg.Wait()
+}
+
+// track runs f on a goroutine of its own that Shutdown waits for.
+func (s *Server) track(f func()) {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.bgDone {
+		go f()
+		return
+	}
+	s.bg.Go(f)
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -365,7 +383,9 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 
 // Shutdown stops the webhooks, then the runs, so that no crew member starts
 // any more, then every session, and closes every viewer. The webhooks go
-// first: the entries the sessions record as they stop are not sent.
+// first: the entries the sessions record as they stop are not sent. The
+// goroutines the server started on its own (track) are waited for last, once
+// every viewer is closed, until they end or ctx does.
 func (s *Server) Shutdown(ctx context.Context) {
 	s.webhooks.close(ctx)
 	for _, run := range s.runs.List() {
@@ -380,6 +400,20 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	})
 	s.hosts.CloseAll()
+	// What the server started on its own (the viewers of a forgotten run's
+	// links being closed) ends before Shutdown returns, or ctx does.
+	s.bgMu.Lock()
+	s.bgDone = true
+	s.bgMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // Registry exposes the session index (used by tests and the CLI).

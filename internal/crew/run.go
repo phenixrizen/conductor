@@ -153,6 +153,13 @@ type Engine struct {
 	// maxRuns, or after a launch that failed. It runs under mu, so it must
 	// not call the engine or wait. Set it before the first launch.
 	OnForget func(runID string)
+
+	// afterAdd, when set, runs once Launch has kept its run and before any
+	// member's start is reserved: a test stops the run there.
+	afterAdd func(runID string)
+	// tried, when set, is called by deliver after each attempt to type a
+	// handoff, with the member and whether it was typed: tests wait on it.
+	tried func(member string, typed bool)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -177,9 +184,10 @@ type run struct {
 	cancel context.CancelFunc
 	// stopping is set once the run begins to stop: no member starts after it.
 	stopping bool
-	// launching is set while Launch has not returned: evict leaves the run
-	// alone, so that a crew whose members all start later, which has nothing
-	// running once it is kept, is not forgotten before Launch answers with it.
+	// launching is set from add until the launcher releases the run
+	// (LaunchHeld): evict leaves the run alone meanwhile, so that a crew whose
+	// members all start later, which has nothing running once it is kept, is
+	// not forgotten before Launch answers with it.
 	launching bool
 	// starts counts the member starts in flight; a stop waits for them.
 	starts sync.WaitGroup
@@ -218,56 +226,87 @@ func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool))
 		runs: map[string]*run{}}
 }
 
-// Launch starts a run of c, whose Cwd the caller has resolved. With isolation
-// "worktree" it first checks that git is on the server's PATH (ErrNoGit) and
-// that Cwd is in a git repository to make worktrees of (ErrNotRepo), before
-// anything is made. It starts the sessions of the members that start
-// immediately, each in a worktree of its own when the crew has them, and
-// returns once they exist: each member is starting, and its
-// prompt is typed once its session is ready (on the run's context, so a
+// Launch is LaunchHeld for a caller that needs nothing more of the run once
+// it has it.
+func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
+	run, release, err := e.LaunchHeld(ctx, c)
+	release()
+	return run, err
+}
+
+// LaunchHeld starts a run of c, whose Cwd the caller has resolved. With
+// isolation "worktree" it first checks that git is on the server's PATH
+// (ErrNoGit) and that Cwd is in a git repository to make worktrees of
+// (ErrNotRepo), before anything is made. It starts the sessions of the
+// members that start immediately, each in a worktree of its own when the
+// crew has them, and returns once they exist: each member is starting, and
+// its prompt is typed once its session is ready (on the run's context, so a
 // client that goes away does not stop it). A member whose prompt cannot be
 // typed ends alone. When a member's session cannot be started, the ones
 // started are stopped, no run is kept, and the error names the member; when
-// the run is stopped meanwhile, it stays, stopped, and Launch returns
-// ErrRunStopped. A crew with no members, one that runs on a host, one
-// without a valid ID or, with worktrees, one whose <cwd>/.conductor or
-// <cwd>/.conductor/worktrees is a symbolic link is not launched (ErrInvalid),
-// and neither is a member whose directory in its worktree lies through a
-// symbolic link.
-func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
+// the run is stopped meanwhile, it stays, stopped, and LaunchHeld returns
+// ErrRunStopped, a stop that lands before the first member's start included.
+// A crew with no members, one that runs on a host, one without a valid ID
+// or, with worktrees, one whose <cwd>/.conductor or <cwd>/.conductor/worktrees
+// is a symbolic link is not launched (ErrInvalid), and neither is a member
+// whose directory in its worktree lies through a symbolic link.
+//
+// The run stays exempt from eviction until the caller calls release, which
+// is never nil and must be called once, after an error too (a second call
+// does nothing): the API mints the run's view link first, so that a launch at
+// the cap cannot forget the run between its start and its link.
+func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
+	noop := func() {}
 	if err := c.validateWithID(); err != nil {
-		return nil, err
+		return nil, noop, err
 	}
 	if err := c.Launchable(); err != nil {
-		return nil, err
+		return nil, noop, err
 	}
 	prefix := ""
 	if c.Isolation == IsolationWorktree {
 		if err := checkGit(); err != nil {
-			return nil, err
+			return nil, noop, err
 		}
 		if !filepath.IsAbs(c.Cwd) {
-			return nil, invalidf("with worktrees, cwd must be an absolute path")
+			return nil, noop, invalidf("with worktrees, cwd must be an absolute path")
 		}
 		if err := checkWorktreesDir(c.Cwd); err != nil {
-			return nil, err
+			return nil, noop, err
 		}
 		if err := CheckRepo(ctx, c.Cwd); err != nil {
-			return nil, err
+			return nil, noop, err
 		}
 		p, err := repoPrefix(ctx, c.Cwd)
 		if err != nil {
-			return nil, err
+			return nil, noop, err
 		}
 		prefix = p
 	}
 	r := e.add(c, prefix)
-	defer e.launched(r)
+	release := sync.OnceFunc(func() { e.launched(r) })
+	if e.afterAdd != nil {
+		e.afterAdd(r.id)
+	}
+	run, err := e.startImmediate(ctx, r)
+	return run, release, err
+}
+
+// startImmediate starts the members of r that start immediately and returns
+// r as it then is. r is launching (held) until its launcher releases it, so
+// no other launch forgets it meanwhile. (Engine.start, which starts one
+// member, is another function and stays as it is.)
+func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
 
 	e.mu.Lock()
+	if r.stopping {
+		// Stopped before any start was reserved: the run stays, stopped.
+		e.mu.Unlock()
+		return nil, ErrRunStopped
+	}
 	var starts []*member
 	for _, m := range r.members {
 		if m.def.Start.When == StartImmediately && r.reserve(m) {
@@ -301,8 +340,7 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 		e.abort(r)
 		return nil, fmt.Errorf("member %s: %w", quote(m.def.Name), err)
 	}
-	// The run is launching until Launch returns, so no other launch forgets it
-	// meanwhile; the check stays, should something else ever forget a run.
+	// The check stays, should something else ever forget a run.
 	out, ok := e.Get(r.id)
 	if !ok {
 		return nil, ErrRunNotFound
@@ -850,6 +888,20 @@ func (e *Engine) forget(r *run) {
 	if e.OnForget != nil {
 		e.OnForget(r.id)
 	}
+}
+
+// IfKept runs f while the engine keeps the run with the given ID, under the
+// engine's lock, and reports whether it ran. A run is forgotten under that
+// lock too (OnForget), so what f makes for the run, such as a link, cannot
+// outlive a forgotten run unseen. f must not call the engine or wait.
+func (e *Engine) IfKept(runID string, f func()) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.runs[runID]; !ok {
+		return false
+	}
+	f()
+	return true
 }
 
 // Note adds an entry of type typ with msg to the log of the run with the

@@ -256,3 +256,22 @@ func TestExcludeWorktreesAddsTheLineOnce(t *testing.T) {
 		t.Fatalf("git status:\n%s", status)
 	}
 }
+
+// A rev-parse failure other than "not a git repository" says what git said:
+// a repository owned by someone else, or one the server user cannot read, is
+// no missing repository. Both still answer not_a_repo.
+func TestClassifyRevParsePassesGitsMessageOn(t *testing.T) {
+	for _, tc := range []struct {
+		msg, want string
+		notInRepo bool
+	}{
+		{"git rev-parse: fatal: not a git repository (or any of the parent directories): .git", "is not in a git repository", true},
+		{"git rev-parse: fatal: detected dubious ownership in repository at '/srv/x'", "detected dubious ownership in repository at '/srv/x'", false},
+		{"git rev-parse: fatal: Invalid path '/srv/x/.git': Permission denied", "Permission denied", false},
+	} {
+		err := classifyRevParse(errors.New(tc.msg))
+		if !errors.Is(err, ErrNotRepo) || !strings.Contains(err.Error(), tc.want) || (err == errNotInRepo) != tc.notInRepo {
+			t.Errorf("%q: %v", tc.msg, err)
+		}
+	}
+}
