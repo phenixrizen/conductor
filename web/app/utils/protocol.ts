@@ -71,6 +71,8 @@ export interface ActivityEntry {
   to?: string
   /** `tool_use`, `tool_denied`, `error`: the tool involved (≤ 100 bytes). */
   tool?: string
+  /** GET /api/events only: for an attention entry, the state it records. Absent from a session's own replay and from an older host's entries. */
+  state?: 'needs_input' | 'working' | 'done'
 }
 
 /** Data of an `activity` event on GET /api/events: an activity entry and the session it belongs to. */

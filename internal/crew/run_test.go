@@ -91,14 +91,10 @@ func (f *fakeLauncher) Launch(ctx context.Context, agentID, name, cwd string, ar
 }
 
 // activity is the sessions' OnActivity: the entry goes to the engine with the
-// state of an attention entry, read from the session as the server reads it.
-func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry) {
+// state it records, as the server's hook hands it on.
+func (f *fakeLauncher) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
 	if f.beforeActivity != nil {
 		f.beforeActivity(sessionID, e)
-	}
-	var state session.AttentionState
-	if l, ok := f.lookup(sessionID); ok && e.Type == session.ActivityAttention {
-		state = l.Info().Attention.State
 	}
 	f.engine.OnActivity(sessionID, e, state)
 }

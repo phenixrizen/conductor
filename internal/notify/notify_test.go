@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMapClaudeHook(t *testing.T) {
@@ -206,5 +208,62 @@ func TestRequestEventLeavesOtherURLsAlone(t *testing.T) {
 		if path, _, _ := sendTo(t, in, Request{Event: "progress"}); path != in {
 			t.Fatalf("%s was sent to %s", in, path)
 		}
+	}
+}
+
+// An attention word the server refuses with 429 (the session's bucket is
+// empty) is tried again after a short wait, a few times, within the 5 s Send
+// has. An event is not: a hook must not hold up its agent for one.
+func TestSendRetriesARateLimitedAttentionWord(t *testing.T) {
+	old := retryDelays
+	retryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { retryDelays = old })
+	var calls atomic.Int32
+	limited := func(first int32) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls.Add(1) <= first {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	srv := limited(2)
+	for _, req := range []Request{{State: "needs_input"}, {Event: "done"}} {
+		calls.Store(0)
+		if err := Send(t.Context(), srv.URL+"/api/sessions/s/attention", "tok", req); err != nil || calls.Load() != 3 {
+			t.Fatalf("%+v: %v after %d calls", req, err, calls.Load())
+		}
+	}
+	calls.Store(0)
+	if err := Send(t.Context(), srv.URL+"/api/sessions/s/attention", "tok", Request{Event: "tool_use", Tool: "Bash"}); err == nil || !strings.Contains(err.Error(), "429") || calls.Load() != 1 {
+		t.Fatalf("event: %v after %d calls", err, calls.Load())
+	}
+	// A server that never lets up: the word is given up after the last wait.
+	always := limited(1 << 30)
+	calls.Store(0)
+	if err := Send(t.Context(), always.URL+"/api/sessions/s/attention", "tok", Request{State: "working"}); err == nil || calls.Load() != int32(len(retryDelays)+1) {
+		t.Fatalf("always limited: %v after %d calls", err, calls.Load())
+	}
+}
+
+// The waits fit the budget, and a deadline that comes first ends them.
+func TestSendRetriesWithinItsBudget(t *testing.T) {
+	var total time.Duration
+	for _, d := range retryDelays {
+		total += d
+	}
+	if total >= sendTimeout {
+		t.Fatalf("the waits add up to %v, not within %v", total, sendTimeout)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := Send(ctx, srv.URL+"/a/attention", "tok", Request{State: "working"}); err == nil || !strings.Contains(err.Error(), "429") || time.Since(start) > time.Second {
+		t.Fatalf("%v after %v", err, time.Since(start))
 	}
 }

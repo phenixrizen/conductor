@@ -184,7 +184,7 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 
 // Sinks receive every activity entry, the session it belongs to and the
 // attention state it was handed with, after the clients have the entry, whether
-// or not any client listens. Clients get the entry alone.
+// or not any client listens. Clients get the entry with that state on it.
 func TestEventHubSinksGetEveryEntryAfterTheClients(t *testing.T) {
 	h := newEventHub()
 	type got struct {
@@ -200,12 +200,33 @@ func TestEventHubSinksGetEveryEntryAfterTheClients(t *testing.T) {
 	})
 	e := session.ActivityEntry{At: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), Type: session.ActivityAttention, Message: "approve?"}
 	h.activity("s1", e, session.AttentionNeedsInput)
-	if msg := string(<-ch); strings.Contains(msg, "needs_input") || !strings.Contains(msg, `"message":"approve?"`) {
+	if msg := string(<-ch); !strings.Contains(msg, `"state":"needs_input"`) || !strings.Contains(msg, `"message":"approve?"`) {
 		t.Fatalf("a client was sent %q", msg)
 	}
 	h.unsubscribe(ch)
 	h.activity("s2", e, "")
 	if len(sunk) != 2 || sunk[0] != (got{"s1", e, session.AttentionNeedsInput, 1}) || sunk[1] != (got{"s2", e, "", 0}) {
 		t.Fatalf("sunk %+v", sunk)
+	}
+}
+
+// An attention entry's event carries the state it records, so a client types
+// it without waiting for the session change; other entries carry none, and
+// neither does an attention entry with a state that is not one of the three.
+func TestEventHubActivityCarriesTheAttentionState(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityAttention, Message: "Allow Bash?"}, session.AttentionNeedsInput)
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityProgress, Message: "1/3"}, session.AttentionNeedsInput)
+	h.activity("s1", session.ActivityEntry{At: at, Type: session.ActivityAttention, Message: "x"}, "bogus")
+	for _, want := range []string{
+		`{"sessionId":"s1","at":"2026-10-01T09:00:00Z","type":"attention","message":"Allow Bash?","state":"needs_input"}`,
+		`{"sessionId":"s1","at":"2026-10-01T09:00:00Z","type":"progress","message":"1/3"}`,
+		`{"sessionId":"s1","at":"2026-10-01T09:00:00Z","type":"attention","message":"x"}`,
+	} {
+		if got := string(<-ch); got != "event: activity\ndata: "+want+"\n\n" {
+			t.Fatalf("got %q, want data %s", got, want)
+		}
 	}
 }

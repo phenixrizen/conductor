@@ -139,12 +139,9 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 			return false
 		}
 	case *signal.HostedSession:
+		// The only refusal is an empty bucket, host or no host.
 		if err := drv.SetAttentionFull(state, message, source, kind, options, true); err != nil {
-			if errors.Is(err, session.ErrRateLimited) {
-				writeSessionLimited(w)
-				return false
-			}
-			writeError(w, http.StatusConflict, "host_disconnected", "the session's host is not connected")
+			writeSessionLimited(w)
 			return false
 		}
 	}

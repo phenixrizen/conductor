@@ -180,7 +180,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Transport:       proto.TransportWS,
 		Log:             s.log,
 		OnChange:        s.localChange,
-		OnActivity:      s.localActivity,
+		OnActivity:      s.events.activity,
 		Pattern:         pattern,
 	})
 	local.SetAgentToken(agentToken)
@@ -202,21 +202,6 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 func (s *Server) localChange(info session.Info) {
 	s.events.publish(info)
 	s.runs.OnChange(info)
-}
-
-// localActivity is the OnActivity hook of a server session: it hands the
-// entry to the event hub with, for an attention entry, the attention state
-// the session is in, read from the registry. The session calls it on the
-// goroutine that recorded the entry, right after that goroutine set the state
-// the entry records.
-func (s *Server) localActivity(sessionID string, e session.ActivityEntry) {
-	var state session.AttentionState
-	if e.Type == session.ActivityAttention {
-		if d, ok := s.registry.Get(sessionID); ok {
-			state = d.Info().Attention.State
-		}
-	}
-	s.events.activity(sessionID, e, state)
 }
 
 func (s *Server) nextCounter() int {

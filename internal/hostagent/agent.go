@@ -284,17 +284,18 @@ func currentUser() string {
 // hooks, without tool events. A name that is no adapter's leaves the command
 // as it is and writes nothing, and so does an adapter without a launch route,
 // whose agent reads Conductor's hooks only from its own config: nothing the
-// host starts would read the assets, so the host says so at info level and
-// names the command that puts the hooks where the agent reads them. Hooks are
-// a convenience: when they cannot be written, the host says so and runs the
-// command as it is.
+// host starts would read the assets, so the host says so at warn level, so the
+// line shows with the local terminal attached (`conductor host` logs at warn
+// then), and names the command that puts the hooks where the agent reads them.
+// Hooks are a convenience: when they cannot be written, the host says so and
+// runs the command as it is.
 func injectHooks(opts Options) ([]string, map[string]string) {
 	a, ok := agents.Get(opts.Adapter)
 	if !ok {
 		return opts.Argv, nil
 	}
 	if a.Inject == nil {
-		opts.Log.Info("hosting without Conductor's hooks at launch: this agent reads them only from its own config", "adapter", a.ID, "install", "conductor hooks install "+a.ID)
+		opts.Log.Warn("hosting without Conductor's hooks at launch: this agent reads them only from its own config", "adapter", a.ID, "install", "conductor hooks install "+a.ID)
 		return opts.Argv, nil
 	}
 	dir := opts.HooksDir
@@ -466,27 +467,13 @@ func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttenti
 	return m
 }
 
-// onLocalActivity is the local session's OnActivity hook: it queues the entry
-// for the server, whose admin stream shows every entry of every session. The
-// session calls it on the goroutine that recorded the entry, so it never waits
-// for the connection. Entries recorded while the connection is down are lost
-// to the stream; the session log has them.
-//
-// With an attention entry goes the state the session is in now: the session
-// records the entry right after it sets the state, on this goroutine, so that
-// is the state the entry records. The server may hear of the entry before it
-// hears of the change (onLocalChange sends that on another path), and types
-// the entry by the state it carries.
-func (a *agent) onLocalActivity(_ string, e session.ActivityEntry) {
-	var state session.AttentionState
-	if e.Type == session.ActivityAttention {
-		a.mu.Lock()
-		local := a.local
-		a.mu.Unlock()
-		if local != nil {
-			state = local.Info().Attention.State
-		}
-	}
+// onLocalActivity is the local session's OnActivity hook: it queues the entry,
+// with the attention state an attention entry records, for the server, whose
+// admin stream shows every entry of every session. The session calls it on the
+// goroutine that recorded the entry, so it never waits for the connection.
+// Entries recorded while the connection is down are lost to the stream; the
+// session log has them.
+func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
 	a.activity.push(e, state)
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)

@@ -96,11 +96,32 @@ func eventsURL(u string) string {
 	return u
 }
 
+// sendTimeout bounds a Send, its retries included: a hook waits at most this.
+const sendTimeout = 5 * time.Second
+
+// retryDelays are the waits between the attempts of an attention word the
+// server answers 429: the session's bucket refills at 20 tokens a second, so a
+// short wait usually finds one. They add up to well under sendTimeout, which
+// still ends them.
+var retryDelays = []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second}
+
+// attentionWord reports whether r reports an attention state, by the
+// attention route or as an attention word of the events route: what a 429
+// retries.
+func (r Request) attentionWord() bool {
+	switch r.Event {
+	case "", "needs_input", "working", "done", "clear":
+		return true
+	}
+	return false
+}
+
 // Send posts the request to url with the agent token. A request with Event
 // set goes to the session's events route (url with /attention replaced by
-// /events) as an event; any other goes to url as an attention update, as it
-// always did. Redirects are refused so a token never follows a rewrite, and
-// only one attempt is made.
+// /events) as an event; any other goes to url as an attention update.
+// Redirects are refused so a token never follows a rewrite. An attention word
+// answered 429 is tried again after each of retryDelays, while the 5 s budget
+// lasts; anything else is tried once.
 func Send(ctx context.Context, url, token string, req Request) error {
 	var payload any = req
 	if req.Event != "" {
@@ -111,25 +132,45 @@ func Send(ctx context.Context, url, token string, req Request) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
+	for attempt := 0; ; attempt++ {
+		status, msg, err := post(ctx, url, token, body)
+		if err != nil {
+			return err
+		}
+		if status < 300 {
+			return nil
+		}
+		failed := fmt.Errorf("notify: server returned %d: %s", status, msg)
+		if status != http.StatusTooManyRequests || !req.attentionWord() || attempt >= len(retryDelays) {
+			return failed
+		}
+		select {
+		case <-ctx.Done():
+			return failed
+		case <-time.After(retryDelays[attempt]):
+		}
+	}
+}
+
+// post makes one attempt: the status and, for a failure, the start of the
+// reply.
+func post(ctx context.Context, url, token string, body []byte) (int, string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("notify: server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
-	}
-	return nil
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return resp.StatusCode, strings.TrimSpace(string(msg)), nil
 }
 
 // ClaudeHook is the subset of the Claude Code hook stdin payload we use.

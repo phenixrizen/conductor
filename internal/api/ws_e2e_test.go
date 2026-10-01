@@ -605,6 +605,20 @@ func TestHostActivityReachesTheEventStream(t *testing.T) {
 	}
 }
 
+// A hosted session's attention entry carries the state its host sends with it.
+func TestHostedAttentionEntriesCarryTheirStateOnTheEventStream(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	events := e.sse(t)
+	msg := hostActivity(session.ActivityAttention, func(a *proto.Activity) { a.Message = "waiting" })
+	msg.State = "needs_input"
+	host.send(msg)
+	ev := e.waitEvent(t, events, isActivity("attention", host.sessionID))
+	if m := activityPayload(t, ev); m["state"] != "needs_input" {
+		t.Fatalf("activity %v", m)
+	}
+}
+
 // A message that cannot be read is the host's mistake, as for every other
 // host message, and ends the connection with a protocol error.
 func TestHostActivityThatIsNotAnEntryClosesTheConnection(t *testing.T) {
@@ -717,6 +731,20 @@ func TestEventsRouteTellsWhenTheHostIsAway(t *testing.T) {
 	}
 	if d.Info().Attention.State != session.AttentionNeedsInput {
 		t.Fatalf("attention %+v", d.Info().Attention)
+	}
+	// And they are metered as for a connected host: past the burst, 429.
+	limited := false
+	for i := 0; i < 5*session.EventBurst && !limited; i++ {
+		resp, out := e.do("POST", "/api/sessions/"+host.sessionID+"/attention", "hosted-agent-token", map[string]any{"state": "working", "message": fmt.Sprint("n", i)})
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests && errorCode(out) == "rate_limited":
+			limited = true
+		case resp.StatusCode != http.StatusOK:
+			t.Fatalf("word %d: %d %v", i, resp.StatusCode, out)
+		}
+	}
+	if !limited {
+		t.Fatal("attention words for a session without a host were never limited")
 	}
 }
 
@@ -836,5 +864,63 @@ func TestEventsAndAttentionRoutesShareAHostedSessionsBudget(t *testing.T) {
 	}
 	if errorCode(refused) != "rate_limited" || words > session.EventBurst/2 {
 		t.Fatalf("%d attention words followed a spent burst of events, refusal %v", words, refused)
+	}
+}
+
+// A host that leaves sends its viewer one error frame, host_disconnected, then
+// the close. The frames it still owed come first, and the viewer's reader
+// never closes the connection under the pump, whether the viewer is quiet or
+// typing into the relay.
+func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
+	for _, typing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("typing=%v", typing), func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			host := dialFakeHost(t, e, "hosted-agent-token")
+			v := dialViewer(t, e, host.sessionID, adminToken)
+			v.hello(80, 24)
+			v.expectControl(proto.CtlWelcome)
+			host.expect(proto.HostViewerJoin)
+			relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
+			v.send(relay)
+			for {
+				f, err := v.read()
+				if err != nil {
+					t.Fatalf("waiting for relay_ok: %v", err)
+				}
+				if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+					break
+				}
+			}
+			host.c.CloseNow()
+			errs := 0
+			for {
+				if typing {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					_ = v.c.Write(ctx, websocket.MessageBinary, proto.Encode(proto.TypeInput, []byte("x")))
+					cancel()
+				}
+				f, err := v.read()
+				if err != nil {
+					if got := websocket.CloseStatus(err); got != proto.CloseSessionEnded {
+						t.Fatalf("close status %d (%v), want %d", got, err, proto.CloseSessionEnded)
+					}
+					break
+				}
+				if f.Type != proto.TypeControl {
+					continue
+				}
+				var m map[string]any
+				json.Unmarshal(f.Payload, &m)
+				if m["t"] == proto.CtlError {
+					errs++
+					if m["code"] != proto.ErrCodeHostDisconnected {
+						t.Fatalf("error frame %v", m)
+					}
+				}
+			}
+			if errs != 1 {
+				t.Fatalf("%d error frames, want one", errs)
+			}
+		})
 	}
 }

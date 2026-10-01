@@ -137,9 +137,12 @@ in its environment, and `conductor notify` reports with them: an attention
 state (`--state needs_input`, `working`, `done` or `clear`) or an event
 (`--event progress`, `artifact`, `handoff`, `tool_use`, `tool_denied` or
 `error`). Outside a Conductor session the command exits silently, so it is
-safe to install globally. Sessions that need a human show an amber **needs
-input** badge, move to the top of the sidebar, count in the tab title, can
-raise a browser notification, and appear in the wall queue. Claude Code
+safe to install globally. An attention report (the state flags, `--event` with
+an attention word, or a hook mapped to one) that the server answers `429` is
+tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes
+at most; an event is tried once. Sessions that need a human show an amber
+**needs input** badge, move to the top of the sidebar, count in the tab title,
+can raise a browser notification, and appear in the wall queue. Claude Code
 permission requests arrive with their options, so **Yes / Always / No** buttons
 appear wherever the prompt is shown. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.

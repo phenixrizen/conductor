@@ -112,18 +112,18 @@ server, it carries every entry the host's session records, so that
 them (at most 256 waiting; a burst past that is dropped, and so is anything
 recorded while the connection is down, for the session log has it all) and
 sends them in order. With an `attention` entry the host sends `state`
-(`needs_input`, `working` or `done`): the attention state its session was in
-when it recorded the entry, read on the goroutine that recorded it, which is
-the state the entry records. The host sends a change of state in its own
-`attention` message on another path, so the server may receive the entry
-first; `state` is how it types the entry for webhooks all the same (see
-Events). The server takes the session from the connection and ignores
-`sessionId`, drops an entry whose `type` it does not know instead of closing
-the connection, cuts every field to the limits of Events (`by` too: it loses
-its control characters and surrounding space, and one still over 64 bytes is
-dropped rather than cut), keeps `state` only on an `attention` entry and only
-as one of the three states (it ignores anything else), stamps the time of
-receipt on an entry without a readable `at`, and never sends the entry back.
+(`needs_input`, `working` or `done`): the attention state the entry records,
+which its session hands on with the entry (the state set with the entry's
+stamp). The host sends a change of state in its own `attention` message on
+another path, so the server may receive the entry first; `state` is how it
+types the entry for webhooks all the same (see Events). The server takes the
+session from the connection and ignores `sessionId`, drops an entry whose
+`type` it does not know instead of closing the connection, cuts every field to
+the limits of Events (`by` too: it loses its control characters and surrounding
+space, and one still over 64 bytes is dropped rather than cut), keeps `state`
+only on an `attention` entry and only as one of the three states (it ignores
+anything else), stamps the time of receipt on an entry without a readable `at`,
+and never sends the entry back.
 Server to host, it carries an event that an agent reported through
 `POST /api/sessions/{id}/events` for the hosted session: the server has no
 activity log for it, so the host records it (its own event limit applies)
@@ -203,13 +203,13 @@ a session. The token is stored
 hashed and only ever authorizes this route and `POST /api/sessions/{id}/events`
 for this one session. Each report, the agent's or the admin's, spends a token
 of the bucket the events of its session spend (see Events), on a server
-session and on a hosted session whose host is connected: with none left the
+session and on a hosted session, its host connected or not: with none left the
 answer is `429 rate_limited` and the state does not change. For a hosted
 session the state is also sent on to the host; while no host is connected
-the report is applied on the server without a token. What a session sees for
-itself (the bell, an OSC notification, the screen pattern) spends no token,
-and a change of state a session applies always records its `attention`
-activity entry: a state that shows has its entry (see Events).
+the report is applied on the server, and spends its token all the same. What
+a session sees for itself (the bell, an OSC notification, the screen pattern)
+spends no token, and a change of state a session applies always records its
+`attention` activity entry: a state that shows has its entry (see Events).
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
@@ -305,31 +305,37 @@ server, but the server holds a bucket for it, of the same size (20 a second,
 sends on to the host, by this route or by `/attention`: the host's connection
 also carries its viewers' input, and closes when its queue is full, so a flood
 of reports must not reach it. With no token the answer is `429 rate_limited`
-and nothing is sent or changed. Only a report that goes to a connected host
-spends one, and the host's own reports do not. The host applies an attention
-word it is sent without a token of its own and records its entry, as a server
-session does. An event the server sends to the host (see Host control
-connection) is answered `202` once it is on its way. The server cannot know
-whether the host's own bucket takes it, so an event the host drops is dropped
-without a word to the caller; `409 host_disconnected` says that no host is
-connected.
+and nothing is sent or changed. Every report through the routes spends one,
+its host connected or not, and the host's own reports do not. The host applies
+an attention word it is sent without a token of its own and records its entry,
+as a server session does. An event the server sends to the host (see Host
+control connection) is answered `202` once it is on its way. The server cannot
+know whether the host's own bucket takes it, so an event the host drops is
+dropped without a word to the caller; `409 host_disconnected` says that no host
+is connected.
 
 `conductor notify --event <type> [--message M] [--url U] [--to T] [--tool N]`
 sends an event from inside a session: it turns the `CONDUCTOR_NOTIFY_URL` of
 the session (`…/attention`) into `…/events`. `--event` cannot be combined with
 `--state`, `--codex` or a `--<agent>-hook` flag, and `--url`, `--to` and
 `--tool` are refused without it: nothing else carries them. A mistake exits 2,
-or 1 in a hook's command line, where 2 would block the agent.
+or 1 in a hook's command line, where 2 would block the agent. An attention
+report (the state flags, `--event` with an attention word, or a hook mapped to
+one) that the server answers `429` is tried again after 0.1, 0.25, 0.5, 1 and
+2 s, within the 5 s the command takes at most. An event is tried once.
 
 Streaming: every entry a session records, whether an agent reported it or the
 session made it, reaches admins as an `activity` event on `GET /api/events`,
 next to `session` and `removed`:
-`data: {"sessionId", "at", "type", "by"?, "byName"?, "message"?, "url"?, "to"?, "tool"?}`.
-Entries arrive as the sessions record them, so a few can be out of order; `at`
-says when each happened. The feed is live, not a log: a client that has fallen
-behind (its queue is three quarters full) misses entries and keeps its
-stream, with room left for the `session` and `removed` events it cannot do
-without. The session's own `activity` control messages replay the log.
+`data: {"sessionId", "at", "type", "by"?, "byName"?, "message"?, "url"?, "to"?, "tool"?, "state"?}`,
+where `state` is, for an attention entry, the state it records (`needs_input`,
+`working` or `done`), absent for other entries and for an attention entry from
+a host that does not send one. Entries arrive as the sessions record them, so
+a few can be out of order; `at` says when each happened. The feed is live, not
+a log: a client that has fallen behind (its queue is three quarters full)
+misses entries and keeps its stream, with room left for the `session` and
+`removed` events it cannot do without. The session's own `activity` control
+messages replay the log.
 
 Webhooks: the server also POSTs every entry whose event type a configured
 webhook lists (README, Webhooks) to its URL, one entry a request, with the
@@ -339,9 +345,10 @@ application/json`, `X-Conductor-Event` and, for a webhook with a secret,
 `X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body>`.
 `X-Conductor-Event` is the type the webhook listed: an entry type, or the
 Events page's name for the entry, which wins when both are listed. An
-attention entry is the attention state it records, the state its session was
-in when it recorded the entry: a server session's is read then, a hosted
-session's comes with the entry (`state` of the host's `activity` message).
+attention entry is the attention state it records, which comes with the entry:
+a server session hands it on as it records the entry (the state set with the
+entry's stamp), and a hosted session's host sends it (`state` of the host's
+`activity` message).
 An entry that comes without one, from an older host, is the state it names as
 its message, if it names one (as it does for a report without a message), and
 otherwise only an `attention` entry. A `status` entry
@@ -421,7 +428,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`) and of activity entries (`activity`), see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`) and of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone` |
 
 The catalog routes persist their changes as `catalog.json` in the data

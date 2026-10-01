@@ -564,9 +564,11 @@ func TestSetAttentionFullChangesNothingWhenItIsLimited(t *testing.T) {
 	}
 }
 
-// Only what is sent on to the host is limited. The host's own reports come
-// the other way and are not, and neither is a session with no host to protect.
-func TestOnlyForwardsToAConnectedHostAreLimited(t *testing.T) {
+// What comes through the routes (forward true) spends the session's bucket
+// whether a host is connected or not: a session whose host is away cannot be
+// flooded with reports while it waits for the host. The host's own reports
+// come the other way and never spend one.
+func TestRouteReportsAreLimitedWithOrWithoutAHost(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	hs, conn := register(t, hub)
 	for i := 0; i < 5*session.EventBurst; i++ {
@@ -577,27 +579,27 @@ func TestOnlyForwardsToAConnectedHostAreLimited(t *testing.T) {
 	if len(conn.Send) != 0 {
 		t.Fatalf("%d messages went back to the host that sent them", len(conn.Send))
 	}
-
 	hs.HostDisconnected(conn)
+	accepted := 0
 	for i := 0; i < 5*session.EventBurst; i++ {
-		if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); !errors.Is(err, ErrHostGone) {
-			t.Fatalf("event %d for a session without a host: %v", i, err)
+		err := hs.SetAttentionFull(session.AttentionNeedsInput, fmt.Sprint("n", i), session.SourceAPI, "", nil, true)
+		if errors.Is(err, ErrRateLimited) {
+			break
 		}
-		if err := hs.SetAttentionFull(session.AttentionNeedsInput, "n", session.SourceAPI, "", nil, true); err != nil {
-			t.Fatalf("attention word %d for a session without a host: %v", i, err)
+		if err != nil {
+			t.Fatal(err)
 		}
+		accepted++
 	}
-
-	// Nothing above spent a token: the host comes back to a full bucket.
-	conn2 := NewHostConn()
-	if _, resumed, err := hub.Register(proto.Register{Proto: 1, Session: proto.HostSession{Command: []string{"bash"}, Cols: 10, Rows: 10},
-		Resume: &proto.HostResume{SessionID: hs.Info().ID, Secret: hs.Secret()}}, conn2); err != nil || !resumed {
-		t.Fatalf("resume: %v %v", err, resumed)
+	if accepted < session.EventBurst || accepted >= 5*session.EventBurst {
+		t.Fatalf("accepted %d words for a session without a host, want about %d", accepted, session.EventBurst)
 	}
-	for i := 0; i < session.EventBurst; i++ {
-		if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); err != nil {
-			t.Fatalf("event %d after the host came back: %v", i, err)
-		}
+	if got := hs.Info().Attention.Message; got != fmt.Sprint("n", accepted-1) {
+		t.Fatalf("attention %q: a refused word was applied", got)
+	}
+	// An event for a session without a host is refused before it spends anything.
+	if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); !errors.Is(err, ErrHostGone) {
+		t.Fatalf("event without a host: %v", err)
 	}
 }
 

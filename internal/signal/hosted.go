@@ -296,11 +296,11 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 }
 
 // SetAttentionFull records an attention change. When forward is true (API
-// origin) the host is told so its viewers see the change too, and the report
-// spends a token of the session's bucket, the one ForwardActivity spends
-// from: it returns ErrRateLimited, having changed nothing, when there is none.
-// Only a report that would be sent to a connected host is limited, and a
-// change from the host (forward false) never is.
+// origin), the report spends a token of the session's bucket, the one
+// ForwardActivity spends from, whether a host is connected or not: it returns
+// ErrRateLimited, having changed nothing, when there is none. A connected host
+// is told, so its viewers see the change too; without one the change is held
+// on the server. A change from the host (forward false) never spends one.
 func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
 	if !state.Valid() {
 		return nil
@@ -315,7 +315,7 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 	}
 	h.mu.Lock()
 	conn := h.conn
-	if forward && conn != nil && !h.events.Take(time.Now()) {
+	if forward && !h.events.Take(time.Now()) {
 		h.mu.Unlock()
 		return ErrRateLimited
 	}
@@ -651,8 +651,10 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 	}
 	h.viewers = map[string]*Viewer{}
 	h.mu.Unlock()
+	// Each viewer is closed with ErrHostGone: Pump writes what the host still
+	// owed it, then closes its sink, which tells the viewer why with one error
+	// frame (host_disconnected).
 	for _, v := range viewers {
-		v.push(proto.NewError(proto.ErrCodeHostDisconnected, "the host disconnected"))
 		v.close(ErrHostGone)
 	}
 	conn.Close()

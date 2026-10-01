@@ -3,6 +3,8 @@ package session
 import (
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 func TestScannerEvents(t *testing.T) {
@@ -64,6 +66,27 @@ func TestCleanName(t *testing.T) {
 	for in, want := range cases {
 		if got := CleanName(in); got != want {
 			t.Errorf("CleanName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCleanNameIsOneLineWithAGuestDefault(t *testing.T) {
+	if proto.MaxNameLen != 40 {
+		t.Fatalf("MaxNameLen is %d; the cases below are written for 40", proto.MaxNameLen)
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"", "guest"},
+		{"  ", "guest"},
+		{"\x07\x1b", "guest"},
+		{"Priya", "Priya"},
+		{" a\tb\nc ", "abc"},
+		{"x\x7fy", "xy"},
+		{strings.Repeat("é", 45), strings.Repeat("é", 40)},         // 40 runes, not 40 bytes
+		{" " + strings.Repeat("é", 45), strings.Repeat("é", 40)},   // trimmed before the cut
+		{strings.Repeat("a", 39) + "  b", strings.Repeat("a", 39)}, // the cut ends in a space, trimmed after
+	} {
+		if got := CleanName(tc.in); got != tc.want {
+			t.Errorf("CleanName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

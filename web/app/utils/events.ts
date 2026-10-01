@@ -91,14 +91,19 @@ export function exitCode(message?: string): number | null {
 /**
  * The event type of an activity entry, or null for entries that are not
  * events (join, leave, input, link, other status changes). An `attention`
- * entry counts as the state of the session's attention it records; one
- * recorded without a message carries the state itself. A status entry counts
- * only for a process that exited with a non-zero code: an admin's Stop ends
- * one with a signal, which is not the agent failing.
+ * entry counts as the attention state it records: an entry from the event
+ * stream carries that state, and the session is consulted only for one that
+ * does not (a viewer's replay, an older host), where the entry counts as the
+ * state of the session's attention it records, and one recorded without a
+ * message names the state itself. A status entry counts only for a process
+ * that exited with a non-zero code: an admin's Stop ends one with a signal,
+ * which is not the agent failing.
  */
 export function eventTypeOf(entry: ActivityEntry, session?: SessionInfo): EventType | null {
   switch (entry.type) {
     case 'attention': {
+      // The event stream says which state the entry records.
+      if (isState(entry.state)) return entry.state
       if (records(session, entry)) return session!.attention!.state as StateEvent
       if (isState(entry.message)) return entry.message
       const state = session?.attention?.state
@@ -120,13 +125,16 @@ export function eventTypeOf(entry: ActivityEntry, session?: SessionInfo): EventT
 }
 
 /**
- * Whether eventTypeOf can type an entry against this session yet. The admin
- * stream sends an attention entry just before the session change that carries
- * its state, so one with a message of its own waits for the session to show
- * that message; one recorded without a message names its state.
+ * Whether eventTypeOf can type an entry against this session yet. An entry
+ * from the event stream carries its state and waits for nothing. The session
+ * is consulted only for one that does not (a viewer's replay, an older host):
+ * the admin stream sends an attention entry just before the session change
+ * that carries its state, so one with a message of its own waits for the
+ * session to show that message; one recorded without a message names its
+ * state.
  */
 export function attentionSettled(entry: ActivityEntry, session?: SessionInfo): boolean {
-  return entry.type !== 'attention' || records(session, entry) || isState(entry.message)
+  return entry.type !== 'attention' || isState(entry.state) || records(session, entry) || isState(entry.message)
 }
 
 /**

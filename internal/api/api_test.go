@@ -2589,6 +2589,22 @@ func TestSessionOwnEntriesReachTheEventStream(t *testing.T) {
 	e.waitEvent(t, events, isActivity("leave", id))
 }
 
+// A server session's attention entry reaches the event stream with the state
+// it records.
+func TestAttentionEntriesCarryTheirStateOnTheEventStream(t *testing.T) {
+	e := newTestEnv(t, nil)
+	events := e.sse(t)
+	id := e.createSession("cat")
+	tok := e.agentToken(id)
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", tok, map[string]any{"state": "needs_input", "message": "Allow Bash?"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("attention: %d %v", resp.StatusCode, out)
+	}
+	ev := e.waitEvent(t, events, isActivity("attention", id))
+	if m := activityPayload(t, ev); m["state"] != "needs_input" || m["message"] != "Allow Bash?" {
+		t.Fatalf("activity %v", m)
+	}
+}
+
 // integrations returns what GET /api/integrations lists, keyed by id, and the
 // ids in their order.
 func (e *testEnv) integrations() (map[string]map[string]any, []string) {

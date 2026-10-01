@@ -118,6 +118,15 @@ describe('attentionSettled', () => {
   })
 })
 
+describe('an entry that carries its state', () => {
+  it('is that state, whatever the session shows, and waits for nothing', () => {
+    const e = entry('attention', { message: 'Allow Bash?', state: 'needs_input' })
+    expect(eventTypeOf(e, session('working', 'compiling'))).toBe('needs_input')
+    expect(eventTypeOf(e)).toBe('needs_input')
+    expect(attentionSettled(e, session(''))).toBe(true)
+  })
+})
+
 describe('linkableUrl', () => {
   it('links only http(s) URLs up to 2048 bytes', () => {
     expect(linkableUrl('javascript:alert(1)')).toBeNull()

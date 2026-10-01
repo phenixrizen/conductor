@@ -235,8 +235,13 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	if err := sink.WriteFrame(welcome); err != nil {
 		return
 	}
-	// Writer: drain frames queued by the host side.
-	go v.Pump(sink)
+	// Writer: drain frames queued by the host side. pumped closes when Pump
+	// has closed the sink.
+	pumped := make(chan struct{})
+	go func() {
+		defer close(pumped)
+		v.Pump(sink)
+	}()
 	go keepalive(sink.ctx, c)
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
@@ -245,7 +250,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		}
 		switch f.Type {
 		case proto.TypeSignal:
-			if !s.handleViewerSignal(sink, hs, v, f.Payload) {
+			if !s.handleViewerSignal(sink, pumped, hs, v, f.Payload) {
 				return
 			}
 		case proto.TypeInput, proto.TypeControl:
@@ -258,7 +263,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 				case errors.Is(err, session.ErrReadOnly):
 					_ = sink.WriteFrame(proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
 				case errors.Is(err, signal.ErrHostGone):
-					sink.Close(signal.ErrHostGone)
+					hostGone(sink, pumped)
 					return
 				}
 			}
@@ -270,14 +275,14 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 }
 
 // handleViewerSignal forwards signaling; false ends the connection.
-func (s *Server) handleViewerSignal(sink *wsSink, hs *signal.HostedSession, v *signal.Viewer, payload []byte) bool {
+func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *signal.HostedSession, v *signal.Viewer, payload []byte) bool {
 	t, err := proto.ParseHeader(payload)
 	if err != nil {
 		return false
 	}
 	fail := func(err error) bool {
 		if errors.Is(err, signal.ErrHostGone) {
-			sink.Close(signal.ErrHostGone)
+			hostGone(sink, pumped)
 			return false
 		}
 		return true

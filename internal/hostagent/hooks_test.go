@@ -189,7 +189,7 @@ func TestHostWithoutAnAdapterInjectsNothing(t *testing.T) {
 // An adapter without a launch route reads Conductor's hooks only from its
 // own config: --agent copilot hosts the command as it is, as the server
 // launches it, and writes no hook assets, since nothing it starts would read
-// them. The host says so at info level and names the command that puts the
+// them. The host says so at warn level and names the command that puts the
 // hooks where the agent reads them.
 func TestHostWritesNoHooksForAnAdapterWithoutALaunchRoute(t *testing.T) {
 	hooks := filepath.Join(t.TempDir(), "hooks")
@@ -201,7 +201,7 @@ func TestHostWritesNoHooksForAnAdapterWithoutALaunchRoute(t *testing.T) {
 	if _, err := os.Stat(hooks); !os.IsNotExist(err) {
 		t.Fatalf("hooks dir: %v", err)
 	}
-	if out := logs.String(); !strings.Contains(out, "level=INFO") || !strings.Contains(out, "adapter=copilot") || !strings.Contains(out, "conductor hooks install copilot") {
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "adapter=copilot") || !strings.Contains(out, "conductor hooks install copilot") {
 		t.Fatalf("host log:\n%s", out)
 	}
 }
@@ -273,7 +273,7 @@ func TestInjectHooksWritesNothingForAdaptersWithoutALaunchRoute(t *testing.T) {
 			if _, err := os.Stat(hooks); !os.IsNotExist(err) {
 				t.Fatalf("hooks dir: %v", err)
 			}
-			if out := logs.String(); !strings.Contains(out, "level=INFO") || !strings.Contains(out, "conductor hooks install "+id) {
+			if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "conductor hooks install "+id) {
 				t.Fatalf("host log:\n%s", out)
 			}
 		})

@@ -71,11 +71,28 @@ func (h *eventHub) publish(info session.Info) {
 	}
 }
 
-// activityEvent is the data of an `activity` event: the entry, and the session
-// it belongs to.
+// activityEvent is the data of an `activity` event: the entry, the session it
+// belongs to and, for an attention entry, the attention state it records.
 type activityEvent struct {
 	SessionID string `json:"sessionId"`
 	session.ActivityEntry
+	// State is the attention state an attention entry records: needs_input,
+	// working or done. It is absent for any other entry, and for one whose
+	// recorder did not say (an older host).
+	State session.AttentionState `json:"state,omitempty"`
+}
+
+// eventState is what an activity event says an entry records: state, for an
+// attention entry and one of the three states; nothing otherwise.
+func eventState(e session.ActivityEntry, state session.AttentionState) session.AttentionState {
+	if e.Type != session.ActivityAttention {
+		return ""
+	}
+	switch state {
+	case session.AttentionNeedsInput, session.AttentionWorking, session.AttentionDone:
+		return state
+	}
+	return ""
 }
 
 // addSink makes f receive every activity entry, after the clients have it.
@@ -87,16 +104,15 @@ func (h *eventHub) addSink(f activitySink) {
 	h.sinks = append(h.sinks, f)
 }
 
-// activity queues an activity entry of a session for every client, then hands
-// it to every sink with state, the attention state an attention entry
-// records ("" when it is not known); the clients get the entry alone. It is
-// the OnActivity hook of every hosted session (a server session's is
-// Server.localActivity, which calls it), so it runs on the goroutines that
+// activity queues an activity entry of a session for every client, with the
+// attention state an attention entry records (eventState), then hands it to
+// every sink with state ("" when it is not known). It is the OnActivity hook
+// of every session, server and hosted alike, so it runs on the goroutines that
 // record, concurrently and out of order (each entry says when it happened),
 // and it never waits: a client whose queue is past activityQueueLimit misses
 // the entry and keeps its stream.
 func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
-	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e})
+	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e, State: eventState(e, state)})
 	h.mu.Lock()
 	if err == nil {
 		msg := []byte("event: activity\ndata: " + string(b) + "\n\n")

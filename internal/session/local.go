@@ -48,15 +48,18 @@ type Options struct {
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.
 	OnChange func(Info)
-	// OnActivity is called (outside the session lock) with the session ID and
-	// the stored entry after Record has appended and broadcast it. It runs on
-	// the recording goroutine, which may be the one reading the process, so it
-	// must not block. Because it runs after the lock is released, calls for
-	// different entries can overlap and arrive out of order: implementations
-	// must be safe for concurrent use. An entry the event bucket drops never
-	// reaches it; the attention entry of an attention change the session
-	// applied always does.
-	OnActivity func(sessionID string, e ActivityEntry)
+	// OnActivity is called (outside the session lock) with the session ID,
+	// the stored entry and, for the attention entry of a change the session
+	// applied, the attention state it records: the state set in the same
+	// critical section as the entry's stamp ("" for every other entry). It
+	// runs on the recording goroutine, which may be the one reading the
+	// process, so it must not block. Because it runs after the lock is
+	// released, calls for different entries can overlap and arrive out of
+	// order: implementations must be safe for concurrent use, and must take
+	// the state from here, never from Info, which may have moved on. An entry
+	// the event bucket drops never reaches it; the attention entry of an
+	// attention change the session applied always does.
+	OnActivity func(sessionID string, e ActivityEntry, state AttentionState)
 	// Pattern, when set, is matched against the last line of the terminal
 	// after patternQuiet without output. A match marks the session needs_input
 	// (source "pattern", kind "prompt") unless it is that already. It is for
@@ -226,23 +229,23 @@ func (s *Local) markEnded(status Status) {
 // to Record comes from outside the session and is limited like an event,
 // although nothing records one that way today.
 func (s *Local) Record(e ActivityEntry) bool {
-	return s.record(e, bucketed(e.Type))
+	return s.record(e, bucketed(e.Type), "")
 }
 
 // recordOwn records an entry the session makes itself without asking the
-// event bucket, whatever its type. It records the attention entry of an
-// attention change the session has applied, which must not be dropped while
-// the state it records is showing: a report from outside paid its token
-// before the change (TrySetAttentionFull), and what the session observes
-// itself (the bell, OSC notifications, the screen pattern) is held to its own
-// pace and spends none.
-func (s *Local) recordOwn(e ActivityEntry) {
-	s.record(e, false)
+// event bucket, whatever its type, and hands OnActivity the attention state
+// it records. It records the attention entry of an attention change the
+// session has applied, which must not be dropped while the state it records
+// is showing: a report from outside paid its token before the change
+// (TrySetAttentionFull), and what the session observes itself (the bell, OSC
+// notifications, the screen pattern) is held to its own pace and spends none.
+func (s *Local) recordOwn(e ActivityEntry, state AttentionState) {
+	s.record(e, false, state)
 }
 
 // record is Record, with limited saying whether the entry spends a token of
-// the event bucket.
-func (s *Local) record(e ActivityEntry, limited bool) bool {
+// the event bucket, and state what OnActivity is told the entry records.
+func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool {
 	s.mu.Lock()
 	if limited && !s.events.Take(time.Now()) {
 		log := s.log
@@ -258,7 +261,7 @@ func (s *Local) record(e ActivityEntry, limited bool) bool {
 	id := s.info.ID
 	s.mu.Unlock()
 	if s.opts.OnActivity != nil {
-		s.opts.OnActivity(id, e)
+		s.opts.OnActivity(id, e, state)
 	}
 	return true
 }
@@ -424,7 +427,7 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 		if label == "" {
 			label = string(state)
 		}
-		s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label})
+		s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label}, state)
 	}
 	s.notifyChange()
 	return nil
