@@ -482,13 +482,14 @@ start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
 to it. When both `~/.conductor` and the old directory hold server data, the
 server uses `~/.conductor` and logs a warning naming the old directory, which
 it does not read. An agent override saved on the **Agents** page by an earlier
-version holds its env values in full; from its next save, every key whose
-value then matches the config's follows the config. A server started without
-a home directory (no `HOME`, as some services run) keeps using an old
-directory too, and needs `dataDir` or `CONDUCTOR_DATA_DIR` only when there is
-none. A directory the server cannot
-create stops it with `data directory … is not usable`. The Docker image sets
-`CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the
+version holds its env values in full; at start the server stores `***` in
+`catalog.json` for every one equal to the config's (and logs the agents it
+changed), so that key follows the config from then on and a secret rotated
+after the upgrade reaches the agent. A server started without a home directory
+(no `HOME`, as some services run) keeps using an old directory too, and needs
+`dataDir` or `CONDUCTOR_DATA_DIR` only when there is none. A directory the
+server cannot create stops it with `data directory … is not usable`. The Docker
+image sets `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the
 server logs the directory it uses, and warns when it overlaps an allowed root:
 agents working there can read and commit its secrets.
 

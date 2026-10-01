@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -1788,41 +1790,22 @@ func TestCatalogOverrideFollowsTheBaseEnv(t *testing.T) {
 	check(start("v2"), "v2")
 }
 
-// An override saved by an earlier build holds every env value in full. A value
-// equal to the configured one is the configured one: the next save stores the
-// mask for it, a value sent as read and a value typed alike, so a later
-// rotation reaches the agent, while a value of the admin's own stays.
-func TestCatalogEarlierOverrideFollowsTheBaseOnceSaved(t *testing.T) {
+// A value sent equal to the configured one, typed or kept as read, is stored
+// as the mask, as ApplyOverlay reads it: a later rotation reaches the agent,
+// while a value of the admin's own stays.
+func TestCatalogSaveMasksValuesEqualToTheBase(t *testing.T) {
 	e := newTestEnv(t, nil)
 	start := func(secret string) *testEnv {
 		t.Helper()
-		base, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
-			{ID: "keyed", Name: "keyed", Command: []string{"/bin/cat"}, Env: map[string]string{"API_KEY": secret, "REGION": "eu", "TOKEN": "t1"}},
-		}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		srv, err := New(e.srv.cfg, base, e.srv.log, nil, e.srv.store)
+		srv, err := New(e.srv.cfg, keyedBase(t, secret), e.srv.log, nil, e.srv.store)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return e.serve(srv)
 	}
-	runsWith := func(env *testEnv, want map[string]string) {
-		t.Helper()
-		if a, _ := env.srv.Catalog().Get("keyed"); !reflect.DeepEqual(a.Env, want) {
-			t.Fatalf("keyed runs with %v, want %v", a.Env, want)
-		}
-	}
-	earlier := `{"agents": [{"id": "keyed", "name": "keyed", "command": ["/bin/cat"], "env": {"API_KEY": "v1", "REGION": "other", "TOKEN": "t1"}}]}`
-	if err := os.WriteFile(filepath.Join(e.srv.store.Dir(), "catalog.json"), []byte(earlier), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	v1 := start("v1")
-	runsWith(v1, map[string]string{"API_KEY": "v1", "REGION": "other", "TOKEN": "t1"})
-	// Saved as read, every value masked; TOKEN is typed, equal to the config's.
 	listed := v1.catalogAgent("keyed")
-	listed["env"] = map[string]any{"API_KEY": "***", "REGION": "***", "TOKEN": "t1"}
+	listed["env"] = map[string]any{"API_KEY": "v1", "REGION": "other", "TOKEN": "***"}
 	v1.save(listed)
 	var ov catalog.Overlay
 	if ok, err := v1.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 ||
@@ -1830,11 +1813,139 @@ func TestCatalogEarlierOverrideFollowsTheBaseOnceSaved(t *testing.T) {
 		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
 	}
 	if raw := v1.overlayFile(); strings.Contains(raw, `"v1"`) || strings.Contains(raw, `"t1"`) {
-		t.Fatalf("a configured value stayed in catalog.json:\n%s", raw)
+		t.Fatalf("a configured value was copied into catalog.json:\n%s", raw)
 	}
-	runsWith(v1, map[string]string{"API_KEY": "v1", "REGION": "other", "TOKEN": "t1"})
+	keyedRunsWith(t, v1.srv, map[string]string{"API_KEY": "v1", "REGION": "other", "TOKEN": "t1"})
 	// The config rotates the secret: the next start reads it; REGION stays the admin's.
-	runsWith(start("v2"), map[string]string{"API_KEY": "v2", "REGION": "other", "TOKEN": "t1"})
+	keyedRunsWith(t, start("v2").srv, map[string]string{"API_KEY": "v2", "REGION": "other", "TOKEN": "t1"})
+}
+
+// keyedBase is a configured catalog of "cat" and "keyed", whose API_KEY is
+// secret.
+func keyedBase(t *testing.T, secret string) catalog.Catalog {
+	t.Helper()
+	base, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
+		{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}},
+		{ID: "keyed", Name: "keyed", Command: []string{"/bin/cat"}, Env: map[string]string{"API_KEY": secret, "REGION": "eu", "TOKEN": "t1"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base
+}
+
+// keyedRunsWith requires srv's catalog to give "keyed" the env want.
+func keyedRunsWith(t *testing.T, srv *Server, want map[string]string) {
+	t.Helper()
+	if a, _ := srv.Catalog().Get("keyed"); !reflect.DeepEqual(a.Env, want) {
+		t.Fatalf("keyed runs with %v, want %v", a.Env, want)
+	}
+}
+
+// An override an earlier version saved holds its env values in full. At start
+// the server stores the mask for every value equal to the configured agent's,
+// once, and says which agents it changed: a secret rotated after the upgrade
+// reaches the agent with no save, while a value of the admin's own, and an
+// agent that replaces nothing, stay as they are.
+func TestNewMasksConfiguredValuesInSavedOverrides(t *testing.T) {
+	e := newTestEnv(t, nil)
+	path := filepath.Join(e.srv.store.Dir(), "catalog.json")
+	earlier := `{"agents": [
+  {"id": "keyed", "name": "keyed", "command": ["/bin/cat"], "env": {"API_KEY": "v1", "REGION": "other", "TOKEN": "t1"}},
+  {"id": "mine", "name": "mine", "command": ["/bin/cat"], "env": {"API_KEY": "v1"}}
+], "hidden": ["cat"]}`
+	if err := os.WriteFile(path, []byte(earlier), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	srv, err := New(e.srv.cfg, keyedBase(t, "v1"), slog.New(slog.NewTextHandler(&logs, nil)), nil, e.srv.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 2 ||
+		!reflect.DeepEqual(ov.Agents[0].Env, map[string]string{"API_KEY": "***", "REGION": "other", "TOKEN": "***"}) ||
+		!reflect.DeepEqual(ov.Agents[1].Env, map[string]string{"API_KEY": "v1"}) || !slices.Equal(ov.Hidden, []string{"cat"}) {
+		t.Fatalf("catalog.json after the start: %v %v %+v", ok, err, ov)
+	}
+	if n := strings.Count(logs.String(), "agents=[keyed]"); n != 1 {
+		t.Fatalf("%d log lines name keyed:\n%s", n, logs.String())
+	}
+	keyedRunsWith(t, srv, map[string]string{"API_KEY": "v1", "REGION": "other", "TOKEN": "t1"})
+	if ids := idsOf(srv.Catalog()); ids != "keyed,mine" {
+		t.Fatalf("catalog %s", ids)
+	}
+	// The config rotates the secret: the next start reads it, and has nothing
+	// left to mask, so it writes nothing.
+	before, _ := os.ReadFile(path)
+	again, err := New(e.srv.cfg, keyedBase(t, "v2"), e.srv.log, nil, e.srv.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyedRunsWith(t, again, map[string]string{"API_KEY": "v2", "REGION": "other", "TOKEN": "t1"})
+	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+		t.Fatalf("a start with nothing to mask rewrote catalog.json:\n%s", after)
+	}
+}
+
+// idsOf lists a catalog's agent IDs in order, comma separated.
+func idsOf(c catalog.Catalog) string {
+	var ids []string
+	for _, a := range c.List() {
+		ids = append(ids, a.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+// An override whose values are its own is left as it is: the start does not
+// write catalog.json.
+func TestNewLeavesAnOverrideOfItsOwnAlone(t *testing.T) {
+	e := newTestEnv(t, nil)
+	path := filepath.Join(e.srv.store.Dir(), "catalog.json")
+	// Compact, as no save writes it: a rewrite would change the bytes.
+	own := `{"agents":[{"id":"keyed","name":"keyed","command":["/bin/cat"],"env":{"API_KEY":"other","REGION":"***"}}]}`
+	if err := os.WriteFile(path, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(e.srv.cfg, keyedBase(t, "v1"), e.srv.log, nil, e.srv.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyedRunsWith(t, srv, map[string]string{"API_KEY": "other", "REGION": "eu"})
+	fi, err := os.Stat(path)
+	if b, _ := os.ReadFile(path); err != nil || string(b) != own || !fi.ModTime().Equal(old) {
+		t.Fatalf("catalog.json was written: %v %s %v", err, b, fi.ModTime())
+	}
+}
+
+// A start that has values to mask but cannot save catalog.json stops, with
+// the store's error, and leaves the file as it was.
+func TestNewFailsWhenTheMaskedOverlayCannotBeSaved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a directory of mode 0500")
+	}
+	e := newTestEnv(t, nil)
+	dir := e.srv.store.Dir()
+	path := filepath.Join(dir, "catalog.json")
+	earlier := `{"agents": [{"id": "keyed", "name": "keyed", "command": ["/bin/cat"], "env": {"API_KEY": "v1"}}]}`
+	if err := os.WriteFile(path, []byte(earlier), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	srv, err := New(e.srv.cfg, keyedBase(t, "v1"), e.srv.log, nil, e.srv.store)
+	if err == nil || srv != nil || !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), path) {
+		t.Fatalf("New: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != earlier {
+		t.Fatalf("catalog.json changed: %s", b)
+	}
 }
 
 func TestCatalogListsWhereEachAgentComesFrom(t *testing.T) {

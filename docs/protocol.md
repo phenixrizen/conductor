@@ -421,7 +421,9 @@ its run, and on no other.
 The catalog routes persist their changes as `catalog.json` in the data
 directory (`dataDir`): `{"agents": [...], "hidden": [...]}`. At startup that
 overlay is applied over the configured catalog, and the server refuses to start
-when the file cannot be parsed or an agent in it is invalid. An entry of
+when the file cannot be parsed or an agent in it is invalid. An env value of an
+entry that equals the replaced agent's is saved back as `***` at startup (once;
+a failure to save stops the server), as a save stores it. An entry of
 `catalog.json` with the ID of a built-in or configured agent replaces it but
 inherits what it leaves out (`adapter`, `signal`, `***` env values and env
 values equal to the replaced agent's); env keys it does not list are not

@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -82,8 +83,11 @@ type Server struct {
 // New wires the server. cat is the configured catalog; when st holds a
 // catalog.json overlay it is applied on top. A corrupt or invalid overlay, or
 // crews.json, is an error, so that startup fails instead of a later save
-// overwriting the file. web serves the embedded SPA and may be nil. st persists
-// UI-managed state in the data directory and may be nil when there is none.
+// overwriting the file. An override env value equal to the configured
+// agent's is saved back as the mask first (maskConfiguredEnv), and a failure
+// to save it stops startup too. web serves the embedded SPA and may be nil.
+// st persists UI-managed state in the data directory and may be nil when
+// there is none.
 func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
@@ -92,6 +96,17 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	effective, overlay, err := loadCatalog(st, base)
 	if err != nil {
 		return nil, err
+	}
+	// An override an earlier version saved holds its env values in full.
+	// Those equal to the configured agent's become the mask, as a save stores
+	// them now, so a secret rotated in the config later reaches the agent.
+	// The values the catalog runs with are the same either way.
+	if masked, ids := maskConfiguredEnv(overlay, base); len(ids) > 0 {
+		if err := st.Save(catalogFile, masked); err != nil {
+			return nil, fmt.Errorf("%s: save with the env values equal to the config's masked: %w", filepath.Join(st.Dir(), catalogFile), err)
+		}
+		overlay = masked
+		log.Info("saved agents now follow the config for env values equal to it", "agents", ids)
 	}
 	var crews *crew.Store
 	if st != nil {

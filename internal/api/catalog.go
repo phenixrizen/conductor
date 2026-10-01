@@ -243,9 +243,9 @@ func checkAdapter(a catalog.Agent) error {
 // the mask itself is stored: ApplyOverlay reads it as base's value, so a
 // change in the config reaches the agent. A masked key that neither has is an
 // error. A value, sent or kept, equal to base's for the key is stored as the
-// mask too, as ApplyOverlay reads it: an override an earlier version saved in
-// full follows the config from its next save. The first error by key name is
-// reported, so the answer does not depend on map order.
+// mask too, as ApplyOverlay reads it (New applies the same rule to what an
+// earlier version saved). The first error by key name is reported, so the
+// answer does not depend on map order.
 func keepMaskedEnv(a *catalog.Agent, saved, base catalog.Agent) error {
 	for _, k := range slices.Sorted(maps.Keys(a.Env)) {
 		v := a.Env[k]
@@ -265,6 +265,46 @@ func keepMaskedEnv(a *catalog.Agent, saved, base catalog.Agent) error {
 		a.Env[k] = v
 	}
 	return nil
+}
+
+// maskConfiguredEnv returns ov with every env value of an override equal to
+// the value the configured agent it replaces (in base) has for that key set
+// to catalog.RedactedValue, the rule keepMaskedEnv applies on save, and the
+// IDs of the overrides it changed, each once (none when nothing changed, and
+// then ov itself). ov is not modified.
+func maskConfiguredEnv(ov catalog.Overlay, base catalog.Catalog) (catalog.Overlay, []string) {
+	var ids []string
+	var out []catalog.Agent
+	for i, a := range ov.Agents {
+		b, ok := base.Get(a.ID)
+		if !ok {
+			continue
+		}
+		var env map[string]string
+		for k, v := range a.Env {
+			if bv, inBase := b.Env[k]; inBase && v == bv && v != catalog.RedactedValue {
+				if env == nil {
+					env = maps.Clone(a.Env)
+				}
+				env[k] = catalog.RedactedValue
+			}
+		}
+		if env == nil {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(ov.Agents)
+		}
+		out[i].Env = env
+		if !slices.Contains(ids, a.ID) {
+			ids = append(ids, a.ID)
+		}
+	}
+	if ids == nil {
+		return ov, nil
+	}
+	ov.Agents = out
+	return ov, ids
 }
 
 // savedAgent returns the overlay's entry for id, the last one when a
