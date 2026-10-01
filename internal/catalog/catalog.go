@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -25,6 +26,9 @@ type Agent struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Cwd         string            `json:"cwd,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
+	// Site is the agent's website, which the Agents page links to beside an
+	// agent that is not installed on the server: an https URL, or empty.
+	Site string `json:"site,omitempty"`
 	// EnvPassthrough names server environment variables this agent's
 	// sessions may inherit, in addition to the server-wide envPassthrough.
 	EnvPassthrough []string `json:"envPassthrough,omitempty"`
@@ -105,6 +109,7 @@ const (
 	maxEnvKeys        = 32   // entries in env
 	maxEnvPassthrough = 32   // entries in envPassthrough
 	maxSignalPattern  = 200  // bytes in a signal pattern
+	maxSite           = 200  // bytes in site
 )
 
 const (
@@ -210,6 +215,11 @@ func validate(a Agent) error {
 	if a.Icon != "" && !iconPattern.MatchString(a.Icon) {
 		return fmt.Errorf("agent %s: icon must match %s", a.ID, iconPattern)
 	}
+	if a.Site != "" {
+		if err := validateSite(a.Site); err != nil {
+			return fmt.Errorf("agent %s: site: %w", a.ID, err)
+		}
+	}
 	// The adapter's shape; the registry of adapters is checked where it is
 	// known (agents.CheckAdapter), for the config and for saved agents alike.
 	if a.Adapter != "" && !idPattern.MatchString(a.Adapter) {
@@ -255,6 +265,19 @@ func cut(s string) string {
 		return s[:40]
 	}
 	return s
+}
+
+// validateSite accepts an https URL with a host and no user info, at most
+// maxSite bytes, so that the Agents page can link to it as it is.
+func validateSite(site string) error {
+	if len(site) > maxSite {
+		return fmt.Errorf("must be at most %d bytes", maxSite)
+	}
+	u, err := url.Parse(site)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.ContainsAny(site, " \t\r\n") {
+		return errors.New("must be an https:// URL with a host")
+	}
+	return nil
 }
 
 // validateSignal checks a signal's kind and pattern. Its errors carry no agent
@@ -338,11 +361,11 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 }
 
 // inherit returns a, an agent saved over prev (had says there was one), with
-// what it leaves to prev filled in: an adapter or a signal it omits, and every
-// env value it holds as RedactedValue. The Agents page stores the mask for a
-// key whose value the editor did not change, so a value changed in the config
-// reaches the agent. A value equal to prev's counts as the mask: it is prev's
-// value, and the server stores the mask for it at start and on save
+// what it leaves to prev filled in: an adapter, a signal or a site it omits,
+// and every env value it holds as RedactedValue. The Agents page stores the
+// mask for a key whose value the editor did not change, so a value changed in
+// the config reaches the agent. A value equal to prev's counts as the mask: it
+// is prev's value, and the server stores the mask for it at start and on save
 // (internal/api), which is how an override saved in full by an earlier version
 // comes to follow the config. A masked key that prev does not have, and every
 // masked value when there is no prev, is dropped. a itself is not changed.
@@ -355,6 +378,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.Signal == nil && prev.Signal != nil {
 			s := *prev.Signal
 			a.Signal = &s
+		}
+		if a.Site == "" {
+			a.Site = prev.Site
 		}
 	}
 	for k, v := range a.Env {

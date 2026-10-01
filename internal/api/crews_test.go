@@ -1486,3 +1486,32 @@ func TestRevokingARevokedLinkRecordsNothing(t *testing.T) {
 		t.Fatalf("the session records the revoke %d times", n)
 	}
 }
+
+// A crew with a member whose agent is not installed on the server is refused
+// at launch, before any session starts, naming the member and the agent; so
+// is such a member added to a run.
+func TestLaunchRefusesAnAgentNotInstalled(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	ghost := agentBody("ghost")
+	ghost["command"] = []string{"definitely-not-a-real-binary-xyz"}
+	e.save(ghost)
+	body := e.crewBody("Ghost crew")
+	body["isolation"] = "none"
+	crewMember(body, 1)["agentId"] = "ghost"
+	c := e.sendCrew("POST", "/api/crews", body, http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/"+c["id"].(string)+"/launch", adminToken, nil)
+	wantAPIError(t, "launch", resp, out, http.StatusBadRequest, "invalid_crew", `member "tests": agent "ghost" is not installed on the server`)
+	if _, out := e.do("GET", "/api/sessions", adminToken, nil); len(out["sessions"].([]any)) != 0 {
+		t.Fatalf("a session was started: %v", out)
+	}
+	crewMember(body, 1)["agentId"] = "cat"
+	c = e.sendCrew("POST", "/api/crews", body, http.StatusCreated)
+	resp, out = e.do("POST", "/api/crews/"+c["id"].(string)+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	runID := out["run"].(map[string]any)["id"].(string)
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, map[string]any{"name": "late", "agentId": "ghost", "prompt": "", "start": map[string]any{"when": "manual"}})
+	wantAPIError(t, "add member", resp, out, http.StatusBadRequest, "invalid_crew", `member "late": agent "ghost" is not installed on the server`)
+}

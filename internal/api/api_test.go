@@ -984,6 +984,34 @@ func TestCatalogCheckCommand(t *testing.T) {
 	}
 }
 
+// GET /api/catalog says which agents are installed on this server: cat is,
+// an agent whose program does not exist is not, by the check POST
+// /api/catalog/check runs; site travels with the agent. An agent read there,
+// available included, saves back as it is.
+func TestCatalogReportsAvailability(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ghost := agentBody("ghost")
+	ghost["command"] = []string{"definitely-not-a-real-binary-xyz"}
+	ghost["site"] = "https://example.com/ghost"
+	if out := e.save(ghost); out["agent"].(map[string]any)["available"] != false {
+		t.Fatalf("save reply: %v", out)
+	}
+	if a := e.catalogAgent("cat"); a["available"] != true {
+		t.Fatalf("cat: %v", a)
+	}
+	listed := e.catalogAgent("ghost")
+	if listed["available"] != false || listed["site"] != "https://example.com/ghost" {
+		t.Fatalf("ghost: %v", listed)
+	}
+	listed["description"] = "edited"
+	e.save(listed)
+	bad := agentBody("badsite")
+	bad["site"] = "http://example.com"
+	if resp, out := e.do("POST", "/api/catalog", adminToken, bad); resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_agent" {
+		t.Fatalf("http site: %d %v", resp.StatusCode, out)
+	}
+}
+
 // serve exposes srv over HTTP next to e's server, sharing its temp root.
 func (e *testEnv) serve(srv *Server) *testEnv {
 	e.t.Helper()
@@ -2050,7 +2078,7 @@ func TestCatalogListsWhereEachAgentComesFrom(t *testing.T) {
 		t.Fatalf("unhide: %d %v", resp.StatusCode, out)
 	}
 	// An agent the catalog no longer lists has no source, rather than "".
-	if b, err := json.Marshal(entry(catalog.Agent{ID: "gone", Name: "gone", Command: []string{"x"}}, e.srv.Catalog(), e.srv.base)); err != nil || strings.Contains(string(b), `"source"`) {
+	if b, err := json.Marshal(entry(catalog.Agent{ID: "gone", Name: "gone", Command: []string{"x"}}, e.srv.Catalog(), e.srv.base, e.srv.lookups)); err != nil || strings.Contains(string(b), `"source"`) {
 		t.Fatalf("entry of an unlisted agent: %s %v", b, err)
 	}
 }

@@ -46,6 +46,9 @@ type Server struct {
 	// fileDeny lists the directories and files no file read may reach, even
 	// inside a session's working directory (see fileDeny).
 	fileDeny []string
+	// lookups says, for 30 s at a time, whether the programs of the catalog's
+	// agents resolve on this server (see lookupCache).
+	lookups *lookupCache
 	// home is the server user's home directory: the integrations routes
 	// report and install the agents' hooks there, and nowhere else. Empty
 	// when it is unknown.
@@ -148,6 +151,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		store:    st,
 		crews:    crews,
 		fileDeny: fileDeny(cfg, st),
+		lookups:  newLookupCache(),
 		home:     home,
 	}
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }

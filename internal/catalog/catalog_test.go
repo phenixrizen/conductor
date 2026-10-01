@@ -709,3 +709,60 @@ func TestBuiltInIconsAreInTheWorkbenchBundle(t *testing.T) {
 		t.Fatalf("AGENT_ICONS in web/app/utils/agentIcons.ts lacks %q (a built-in agent's icon, or a generic one), and holds %q, which no built-in agent uses and which is neither generic icon", missing, extra)
 	}
 }
+
+// site is an optional https URL with a host and no user info, at most 200 bytes.
+func TestSiteValidation(t *testing.T) {
+	base := Agent{ID: "x", Name: "X", Command: []string{"x"}}
+	for _, ok := range []string{"", "https://example.com", "https://example.com/docs/cli?x=1"} {
+		a := base
+		a.Site = ok
+		if err := validate(a); err != nil {
+			t.Fatalf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://example.com", "example.com", "https://", "https://user:pw@example.com", "https://example.com/" + strings.Repeat("a", 200), "javascript:alert(1)", "https://exa mple.com"} {
+		a := base
+		a.Site = bad
+		if err := validate(a); err == nil || !strings.Contains(err.Error(), "site") {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+}
+
+// Every built-in but the shell names a website of the right shape (an https
+// URL with a host, which validate checks); whether each is the agent's real
+// site is checked by hand (docs/features.md, open verification of round 3).
+func TestDefaultsHaveSites(t *testing.T) {
+	for _, a := range defaults() {
+		if a.ID == "shell" {
+			if a.Site != "" {
+				t.Fatalf("shell has a site: %q", a.Site)
+			}
+			continue
+		}
+		if a.Site == "" {
+			t.Errorf("%s: no site", a.ID)
+		}
+		if err := validate(a); err != nil {
+			t.Errorf("%s: %v", a.ID, err)
+		}
+	}
+}
+
+// A saved override that leaves the site out keeps the built-in's, as it keeps
+// its adapter and signal; one with a site of its own keeps that.
+func TestOverlayInheritsTheSite(t *testing.T) {
+	c := Default()
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{
+		{ID: "claude", Name: "Claude, mine", Command: []string{"claude"}},
+		{ID: "codex", Name: "Codex", Command: []string{"codex"}, Site: "https://example.com/codex"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := c.Get("claude"); a.Site != "https://claude.com/claude-code" {
+		t.Fatalf("claude: %q", a.Site)
+	}
+	if a, _ := c.Get("codex"); a.Site != "https://example.com/codex" {
+		t.Fatalf("codex: %q", a.Site)
+	}
+}

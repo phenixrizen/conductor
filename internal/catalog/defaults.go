@@ -2,8 +2,10 @@ package catalog
 
 // defaults lists the built-in agents: one for each agent Conductor has a hook
 // adapter for (internal/agents), with the signal its adapter reports
-// through, then a login shell. Operators can override any entry by ID or
-// disable the whole set with disableDefaults.
+// through and its website as best known (to be checked in a browser: the
+// open verification of round 3 in docs/features.md), then a login shell.
+// Operators can override any entry by ID or disable the whole set with
+// disableDefaults.
 func defaults() []Agent {
 	return []Agent{
 		{
@@ -13,6 +15,7 @@ func defaults() []Agent {
 			Command:     []string{"claude"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-sparkles",
+			Site:        "https://claude.com/claude-code",
 			Adapter:     "claude",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -23,6 +26,7 @@ func defaults() []Agent {
 			Command:     []string{"codex"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-code-xml",
+			Site:        "https://developers.openai.com/codex/cli",
 			Adapter:     "codex",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -33,6 +37,7 @@ func defaults() []Agent {
 			Command:     []string{"agy"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-rocket",
+			Site:        "https://antigravity.google",
 			Adapter:     "agy",
 			// Antigravity fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
@@ -44,6 +49,7 @@ func defaults() []Agent {
 			Command:     []string{"copilot"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-github",
+			Site:        "https://github.com/features/copilot/cli",
 			Adapter:     "copilot",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -54,6 +60,7 @@ func defaults() []Agent {
 			Command:     []string{"cursor-agent"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-mouse-pointer-2",
+			Site:        "https://cursor.com/cli",
 			Adapter:     "cursor",
 			// The CLI fires no event while it waits: its prompt on the last
 			// line says so.
@@ -66,6 +73,7 @@ func defaults() []Agent {
 			Command:     []string{"opencode"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-braces",
+			Site:        "https://opencode.ai",
 			Adapter:     "opencode",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -76,6 +84,7 @@ func defaults() []Agent {
 			Command:     []string{"pi"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-pi",
+			Site:        "https://github.com/badlogic/pi-mono",
 			Adapter:     "pi",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -86,6 +95,7 @@ func defaults() []Agent {
 			Command:     []string{"omp"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-pi-square",
+			Site:        "https://github.com/can1357/oh-my-pi",
 			Adapter:     "omp",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -96,6 +106,7 @@ func defaults() []Agent {
 			Command:     []string{"aider"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-git-commit",
+			Site:        "https://aider.chat",
 			Adapter:     "aider",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -106,6 +117,7 @@ func defaults() []Agent {
 			Command:     []string{"goose"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-feather",
+			Site:        "https://block.github.io/goose/",
 			Adapter:     "goose",
 			// Goose fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
@@ -117,6 +129,7 @@ func defaults() []Agent {
 			Command:     []string{"amp"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-zap",
+			Site:        "https://ampcode.com",
 			Adapter:     "amp",
 			Signal:      &Signal{Kind: SignalHook},
 		},
@@ -127,6 +140,7 @@ func defaults() []Agent {
 			Command:     []string{"dsh"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-cpu",
+			Site:        "https://github.com/deepseek-ai/dsh",
 			Adapter:     "dsh",
 			// Its plugin is installed by hand, if at all: nothing is assumed.
 			Signal: &Signal{Kind: SignalNone},

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"os/exec"
 	"path/filepath"
 	"slices"
 
@@ -21,31 +20,37 @@ const catalogFile = "catalog.json"
 // catalogEntry is an agent as the catalog routes answer with it: env values
 // masked, where the catalog took it from and, for a saved agent that replaces
 // a built-in or configured one, where that one came from (deleting the saved
-// agent brings it back).
+// agent brings it back), and whether its program resolves on this server
+// (lookups: cached 30 s). Its site is the agent's own field.
 type catalogEntry struct {
 	catalog.Agent
-	Source   catalog.Source `json:"source,omitempty"`
-	Replaces catalog.Source `json:"replaces,omitempty"`
+	Source    catalog.Source `json:"source,omitempty"`
+	Replaces  catalog.Source `json:"replaces,omitempty"`
+	Available bool           `json:"available"`
 }
 
-// entry is a as the routes show it, by the effective catalog cat and the
-// configured one, base.
-func entry(a catalog.Agent, cat, base catalog.Catalog) catalogEntry {
+// entry is a as the routes show it, by the effective catalog cat, the
+// configured one, base, and the server's program lookups.
+func entry(a catalog.Agent, cat, base catalog.Catalog, lookups *lookupCache) catalogEntry {
 	e := catalogEntry{Agent: a.Redacted(), Source: cat.Source(a.ID)}
 	if e.Source == catalog.SourceSaved {
 		e.Replaces = base.Source(a.ID)
+	}
+	if len(a.Command) > 0 {
+		_, e.Available = lookups.found(a.Command[0])
 	}
 	return e
 }
 
 // saveAgentRequest is the body of POST /api/catalog: an agent, as a client
-// builds it or as GET /api/catalog lists it. source and replaces, which the
-// listing adds, are taken and ignored, so an agent read there can be sent back
-// as it is; any other field the agent does not have is refused.
+// builds it or as GET /api/catalog lists it. source, replaces and available,
+// which the listing adds, are taken and ignored, so an agent read there can be
+// sent back as it is; any other field the agent does not have is refused.
 type saveAgentRequest struct {
 	catalog.Agent
-	Source   json.RawMessage `json:"source,omitempty"`
-	Replaces json.RawMessage `json:"replaces,omitempty"`
+	Source    json.RawMessage `json:"source,omitempty"`
+	Replaces  json.RawMessage `json:"replaces,omitempty"`
+	Available json.RawMessage `json:"available,omitempty"`
 }
 
 // handleCatalog lists the launchable agents, env values masked, and the IDs
@@ -57,7 +62,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	list := cat.List()
 	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
-		out = append(out, entry(a, cat, s.base))
+		out = append(out, entry(a, cat, s.base, s.lookups))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden})
 }
@@ -114,7 +119,7 @@ func (s *Server) saveAgent(a catalog.Agent) (catalogEntry, *apiError) {
 	s.log.Info("catalog agent saved", "agent", a.ID)
 	cat := s.Catalog()
 	saved, _ := cat.Get(a.ID)
-	return entry(saved, cat, s.base), nil
+	return entry(saved, cat, s.base, s.lookups), nil
 }
 
 // handleDeleteAgent removes the overlay entry with the given ID, which restores
@@ -197,7 +202,7 @@ func (s *Server) unhideAgent(id string) (catalogEntry, bool, *apiError) {
 	s.log.Info("catalog agent changed", "agent", id, "action", "unhidden")
 	cat := s.Catalog()
 	a, ok := cat.Get(id)
-	return entry(a, cat, s.base), ok, nil
+	return entry(a, cat, s.base, s.lookups), ok, nil
 }
 
 // checkCommandRequest is the body of POST /api/catalog/check.
@@ -207,7 +212,8 @@ type checkCommandRequest struct {
 
 // handleCheckCommand reports whether the program a command starts resolves on
 // this server, the way exec resolves it when a session launches. Only
-// command[0] is looked up and nothing is run. A program that is not found is a
+// command[0] is looked up, now and not from the cache, which keeps the answer
+// for GET /api/catalog; nothing is run. A program that is not found is a
 // normal answer, not an error: the agent may be meant for `conductor host`.
 func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 	var req checkCommandRequest
@@ -219,8 +225,8 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "command must have at least one element")
 		return
 	}
-	path, err := exec.LookPath(req.Command[0])
-	if err != nil {
+	path, ok := s.lookups.check(req.Command[0])
+	if !ok {
 		writeJSON(w, http.StatusOK, map[string]any{"found": false})
 		return
 	}

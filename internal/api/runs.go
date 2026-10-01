@@ -63,19 +63,32 @@ func (s *Server) lookupLocal(id string) (*session.Local, bool) {
 	return l, ok
 }
 
-// checkLaunch reports the first member whose agent the catalog lacks, or who
-// is given arguments its agent does not take, so that a launch refuses it
-// before any session starts. The error matches crew.ErrInvalid.
-func checkLaunch(members []crew.Member, cat catalog.Catalog) error {
+// checkLaunch reports the first member whose agent the catalog lacks, whose
+// agent's program is not installed on this server (installed, the server's
+// lookups), or who is given arguments its agent does not take, so that a
+// launch refuses it before any session starts. The error matches
+// crew.ErrInvalid.
+func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(program string) bool) error {
 	if err := (crew.Crew{Members: members}).CheckAgents(cat); err != nil {
 		return err
 	}
 	for _, m := range members {
-		if a, _ := cat.Get(m.AgentID); len(m.Args) > 0 && !a.AllowArgs {
+		a, _ := cat.Get(m.AgentID)
+		if !installed(a.Command[0]) {
+			return fmt.Errorf("%w: member %q: agent %q is not installed on the server (%s was not found)", crew.ErrInvalid, m.Name, m.AgentID, a.Command[0])
+		}
+		if len(m.Args) > 0 && !a.AllowArgs {
 			return fmt.Errorf("%w: member %q: agent %q takes no extra arguments", crew.ErrInvalid, m.Name, m.AgentID)
 		}
 	}
 	return nil
+}
+
+// installed reports whether a program resolves on this server (lookups:
+// cached 30 s), for checkLaunch.
+func (s *Server) installed(program string) bool {
+	_, ok := s.lookups.found(program)
+	return ok
 }
 
 // runContext is the context of a launch or a start: the request's values,
@@ -101,7 +114,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
-	if err := checkLaunch(c.Members, s.Catalog()); err != nil {
+	if err := checkLaunch(c.Members, s.Catalog(), s.installed); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
@@ -184,7 +197,7 @@ func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
-	if err := checkLaunch([]crew.Member{m}, s.Catalog()); err != nil {
+	if err := checkLaunch([]crew.Member{m}, s.Catalog(), s.installed); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
