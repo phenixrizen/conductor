@@ -58,6 +58,10 @@ export interface AgentInfo {
   source?: 'built-in' | 'config' | 'saved'
   /** For a saved agent that replaces a built-in or configured one: where that one came from. Deleting the saved agent brings it back. */
   replaces?: 'built-in' | 'config'
+  /** Whether command[0] resolves on the server (the check of POST /api/catalog/check, cached 30 s). Missing from an older server. */
+  available?: boolean
+  /** The agent's website, an https URL, when known: a built-in's, or what was saved with the agent. */
+  site?: string
 }
 
 /** Body of POST /api/catalog: the whole agent, replacing any agent with the same id. */
@@ -76,6 +80,8 @@ export interface AgentInput {
   envPassthrough?: string[]
   cwd?: string
   icon?: string
+  /** An https:// URL with a host, at most 200 bytes; left out, an agent that replaces a built-in keeps the built-in's. */
+  site?: string
   adapter?: string
   signal?: AgentSignal
 }

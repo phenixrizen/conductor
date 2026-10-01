@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { AGENT_ID_PATTERN, MASK, agentPayload, commandOf, formErrors, formFromAgent, signalOut } from './agentForm'
+import { AGENT_ID_PATTERN, MASK, agentPayload, commandOf, formErrors, formFromAgent, signalOut, siteError } from './agentForm'
 import { slugId } from './argv'
 
 function counter() {
@@ -112,5 +112,23 @@ describe('AGENT_ID_PATTERN and slugId', () => {
       expect(id === '' || AGENT_ID_PATTERN.test(id)).toBe(true)
       expect(id.endsWith('-')).toBe(false)
     }
+  })
+})
+
+describe('the site field', () => {
+  it('round-trips the site, and sends none when it is empty', () => {
+    const f = formFromAgent({ ...keyed, site: 'https://example.com/keyed' }, counter())
+    expect(f.site).toBe('https://example.com/keyed')
+    expect(agentPayload(f, keyed).site).toBe('https://example.com/keyed')
+    expect(agentPayload({ ...f, site: '  ' }, keyed).site).toBeUndefined()
+  })
+  it('accepts an empty or https site and refuses the rest, as the server does', () => {
+    expect(siteError('')).toBe('')
+    expect(siteError('https://example.com/x')).toBe('')
+    for (const bad of ['http://example.com', 'example.com', 'https://user:pw@example.com', 'javascript:alert(1)', `https://example.com/${'a'.repeat(200)}`]) {
+      expect(siteError(bad)).toBe('An https:// address, or nothing')
+    }
+    const f = formFromAgent(keyed, counter())
+    expect(formErrors({ ...f, site: 'http://example.com' }).site).toBe('An https:// address, or nothing')
   })
 })

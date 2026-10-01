@@ -24,13 +24,15 @@ export interface AgentForm {
   command: string[]
   pendingCommand: string
   description: string
+  /** The agent's website: an https:// address, or empty. */
+  site: string
   env: EnvRow[]
   allowArgs: boolean
   signal: SignalKind
   pattern: string
 }
 
-export type Field = 'name' | 'id' | 'command' | 'pattern' | 'env'
+export type Field = 'name' | 'id' | 'command' | 'pattern' | 'env' | 'site'
 
 /** The form for `a`, or an empty one. Stored env values come in masked, by name; passthrough names follow as rows without a value. */
 export function formFromAgent(a: AgentInfo | undefined, uid: () => number): AgentForm {
@@ -40,6 +42,7 @@ export function formFromAgent(a: AgentInfo | undefined, uid: () => number): Agen
     command: [...(a?.command ?? [])],
     pendingCommand: '',
     description: a?.description ?? '',
+    site: a?.site ?? '',
     env: [
       ...Object.keys(a?.env ?? {})
         .sort()
@@ -57,6 +60,19 @@ export function commandOf(f: Pick<AgentForm, 'command' | 'pendingCommand'>): str
   return [...f.command, ...splitArgs(f.pendingCommand)]
 }
 
+/** The server's rule for an agent's site (validateSite in internal/catalog), in words: '' when empty or an https URL with a host and no user info. */
+export function siteError(site: string): string {
+  const s = site.trim()
+  if (!s) return ''
+  try {
+    const u = new URL(s)
+    if (u.protocol === 'https:' && u.hostname && !u.username && !u.password && s.length <= 200 && !/\s/.test(s)) return ''
+  } catch {
+    /* not a URL */
+  }
+  return 'An https:// address, or nothing'
+}
+
 /** What is wrong with the form, by field; empty when it can be saved. */
 export function formErrors(f: AgentForm): Partial<Record<Field, string>> {
   const e: Partial<Record<Field, string>> = {}
@@ -66,6 +82,8 @@ export function formErrors(f: AgentForm): Partial<Record<Field, string>> {
   else if (!commandOf(f)[0]?.trim()) e.command = 'Add the command to run'
   // Spaces count in a regex (a "> " prompt), so trim only to tell whether anything was typed.
   if (f.signal === 'pattern' && !f.pattern.trim()) e.pattern = 'Enter the pattern to look for'
+  const site = siteError(f.site)
+  if (site) e.site = site
   const seen = new Set<string>()
   for (const r of f.env) {
     const key = r.key.trim()
@@ -110,6 +128,7 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
     id: f.id,
     name: f.name.trim(),
     description: f.description.trim() || undefined,
+    site: f.site.trim() || undefined,
     command: commandOf(f),
     allowArgs: f.allowArgs,
     env: Object.keys(env).length ? env : undefined,

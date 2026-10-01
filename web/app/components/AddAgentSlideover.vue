@@ -220,6 +220,11 @@ async function testLaunch() {
           <UInput v-model="form.description" placeholder="What it is for" maxlength="200" class="w-full" />
         </UFormField>
 
+        <UFormField label="Website" name="site" hint="optional, https" :error="shown.site">
+          <UInput v-model="form.site" type="url" placeholder="https://" maxlength="200" autocapitalize="off" spellcheck="false" class="w-full" />
+          <template #help>The Agents page links to it when the agent is not installed on the server.</template>
+        </UFormField>
+
         <div class="text-sm">
           <div class="font-medium text-default">Environment</div>
           <p class="mt-1 text-xs text-muted">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { agentIcon } from '~/utils/agentIcons'
+import { agentItem } from '~/utils/agents'
 import { argsFrom, memberNameError, startFrom, startValue, type DraftMember } from '~/utils/crews'
 
 /**
@@ -12,7 +13,7 @@ import { argsFrom, memberNameError, startFrom, startValue, type DraftMember } fr
  * after.
  */
 const members = defineModel<DraftMember[]>({ required: true })
-const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; single?: boolean }>(), { others: () => [], single: false })
+const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; single?: boolean; host?: string }>(), { others: () => [], single: false, host: '' })
 const emit = defineEmits<{ add: []; addFromSession: [] }>()
 
 // Every cell keeps its place in the one-column-per-field layout of a wide
@@ -29,7 +30,8 @@ const cell = {
 }
 const cols = 'grid-cols-[1rem_minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[49rem]:grid-cols-[1rem_6.5rem_9.5rem_minmax(8rem,1fr)_7.5rem_8.5rem_1.5rem]'
 
-const agentItems = computed(() => props.agents.map((a) => ({ label: a.name, value: a.id, icon: agentIcon(a.icon) })))
+/** The agent select: an agent not installed on the server (`host` names it) is marked, never disabled. */
+const agentItems = computed(() => props.agents.map((a) => agentItem(a, props.host)))
 
 function agentOf(id: string): AgentInfo | undefined {
   return props.agents.find((a) => a.id === id)

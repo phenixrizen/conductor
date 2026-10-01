@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
+import { serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 
@@ -21,6 +22,12 @@ const knownHosted = ref<Set<string>>(new Set())
 const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: string; cwd: string; args: string }>({ agentId: '', runsOn: 'server', name: '', cwd: '', args: '' })
 
 const selected = computed(() => agents.value.find((a) => a.id === state.agentId))
+/** The server tab offers the agents installed on the server; My machine offers every agent: what is installed there is the host's. */
+const offered = computed(() => (state.runsOn === 'server' ? serverAgents(agents.value) : agents.value))
+// The pick stays one the tab offers.
+watch(offered, (list) => {
+  if (!list.some((a) => a.id === state.agentId)) state.agentId = list[0]?.id ?? ''
+})
 
 watch(open, async (v) => {
   if (!v) return
@@ -29,7 +36,7 @@ watch(open, async (v) => {
   loading.value = true
   try {
     agents.value = await api.catalog()
-    if (!state.agentId && agents.value[0]) state.agentId = agents.value[0].id
+    if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -102,7 +109,7 @@ async function submit() {
 
         <div class="grid grid-cols-2 gap-2 sm:grid-cols-4" role="radiogroup" aria-label="Agent">
           <button
-            v-for="a in agents"
+            v-for="a in offered"
             :key="a.id"
             type="button"
             role="radio"
@@ -114,7 +121,10 @@ async function submit() {
             <SessionAvatar :agent-id="a.id" size="md" :solid="state.agentId === a.id" />
             <span class="text-sm" :class="state.agentId === a.id ? 'font-semibold' : 'font-medium'">{{ a.name }}</span>
           </button>
-          <p v-if="!agents.length && !loading" class="col-span-full text-sm text-muted">No agents in the catalog.</p>
+          <p v-if="!offered.length && !loading" class="col-span-full text-sm text-muted" data-none-available>
+            <template v-if="state.runsOn === 'server' && agents.length">No agent in the catalog is installed on this server. <NuxtLink to="/agents" class="underline" @click="open = false">See the Agents page</NuxtLink> for what is missing, or run one on your machine.</template>
+            <template v-else>No agents in the catalog.</template>
+          </p>
         </div>
         <p v-if="selected?.description" class="-mt-2 text-xs text-muted">{{ selected.description }} <code class="font-mono">{{ selected.command.join(' ') }}</code></p>
 

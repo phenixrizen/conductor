@@ -16,6 +16,9 @@ const emit = defineEmits<{ save: []; discard: []; duplicate: []; launch: []; del
 
 const live = useAttention()
 const api = useSessions()
+// The agent select names the server's host beside an agent not installed there.
+const serverHost = useServerHost()
+serverHost.load()
 
 // The git state of the working directory, read 300 ms after it last
 // changed; stale replies are dropped. The line it makes explains a launch
@@ -201,7 +204,7 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
       Each agent works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The working directory must be in a git repository with a commit.
     </p>
 
-    <CrewMembersTable :model-value="crew.members" :agents="agents" @update:model-value="set('members', $event)" @add="addMember" @add-from-session="pickOpen = true" />
+    <CrewMembersTable :model-value="crew.members" :agents="agents" :host="serverHost.host.value" @update:model-value="set('members', $event)" @add="addMember" @add-from-session="pickOpen = true" />
 
     <UModal v-model:open="pickOpen" title="Add from a running session" description="Its agent becomes a new member, and its working directory the crew's when the crew has none yet.">
       <template #body>

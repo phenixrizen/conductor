@@ -2,6 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
+import { isAvailable, notInstalled } from '~/utils/agents'
 import { removalOf, removalText } from '~/utils/catalog'
 
 useHead({ title: 'Agents' })
@@ -15,6 +16,7 @@ const hidden = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
 const launch = useLaunchModal()
+const serverHost = useServerHost()
 
 async function refresh() {
   if (!admin.hasToken.value) {
@@ -27,6 +29,7 @@ async function refresh() {
     agents.value = r.agents
     hidden.value = r.hidden
     error.value = ''
+    serverHost.load()
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -139,7 +142,7 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
         Agents come from the server catalog: the built-in entries, the <code>catalog</code> section of the config file and whatever you add here, which the server keeps in its data directory. Commands are argv arrays; nothing goes through a shell.
       </p>
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <UCard v-for="a in agents" :key="a.id">
+        <UCard v-for="a in agents" :key="a.id" :class="!isAvailable(a) && 'opacity-60'" :data-agent="a.id" :data-available="isAvailable(a)">
           <div class="flex items-start gap-3">
             <UIcon :name="agentIcon(a.icon)" class="size-6 text-primary flex-none mt-0.5" />
             <div class="min-w-0 flex-1">
@@ -147,11 +150,13 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
               <p v-if="a.description" class="text-sm text-muted">{{ a.description }}</p>
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
+                <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value)" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
                 <UBadge :label="signalBadge(a).label" :title="signalBadge(a).title" color="neutral" variant="subtle" size="sm" />
                 <UBadge v-if="a.allowArgs" label="accepts args" color="neutral" variant="subtle" size="sm" />
                 <UBadge v-if="a.cwd" :label="a.cwd" color="neutral" variant="subtle" size="sm" />
               </div>
               <div class="mt-3 -mb-1 flex justify-end gap-1">
+                <UButton v-if="a.site" label="Website" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="a.site" target="_blank" rel="noopener noreferrer" :aria-label="`${a.name} website`" />
                 <UButton label="Edit" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Edit ${a.name}`" @click="editAgent(a)" />
                 <UButton
                   :label="removalText(removalOf(a), a.name, a.id).button"
