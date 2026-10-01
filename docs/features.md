@@ -292,7 +292,7 @@ The add-agent form:
 - The form logic (masked-env round trip, `signalOut`, errors, the id pattern from the server's rule) moves to `utils/agentForm.ts` with vitest; a typed `***` on a new row is caught in the form; the command check posts `command[0]` only; an unclosed quote is refused instead of chipped; `slugId` never ends in a dash; the signal cards use the Nuxt UI radio group with arrow keys; `ArgvInput` reuses the input ring classes.
 
 File reads:
-- The file-read deny list also covers files in the config file's directory whose name starts with the config's base name (`.bak`, `~` copies).
+- The file-read deny list also covers, in the config file's directory (and beside its symlink-resolved target), every name that contains the config's base name, ignoring case (`.bak`, `~`, `.swp` and `#…#` editor copies); the catalog file gets the same rule.
 
 Sessions and events:
 - The viewer reader stops closing the sink under `Pump` on a host disconnect, and a departing host's viewer gets one error frame.
