@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 stdlib (`net/http`, `encoding/json`, `log/slog`, `os/exec` with argv), Nuxt 4.5.2 + @nuxt/ui 4.11.2 + Vue 3.5.43, vitest.
 
-**Spec:** `docs/features.md`, section "Round 3: polish, examples and completion": "Deferred items to close (plan 1 of round 3)", "Data directory default" and "Crew storage". The spec is the authority. The triage that backs each item, with file:line evidence, is `/tmp/claude-1000/-home-nater-go-src-github-com-phenixrizen-conductor/a75c70c0-928a-4c03-ab5e-19119aca1b6c/scratchpad/round3-triage.md`. Item numbers below (#7, #19, …) are the triage's.
+**Spec:** `docs/features.md`, section "Round 3: polish, examples and completion": "Deferred items to close (plan 1 of round 3)", "Data directory default" and "Crew storage". The spec is the authority. Item numbers below (#7, #19, …) are those of the triage that found the open items; "Triage items" lists each one in a line.
 
 Commit messages follow the repository's `area: what changed` style. Add the commit trailers your harness asks for.
 
@@ -41,7 +41,7 @@ The binding limits and decisions from the spec, verbatim:
 - "A hosted session with no host connected meters route reports like a connected one."
 - "6to4, Teredo and SIIT forms are judged by their embedded IPv4 address; a `64:ff9b:1::/48` prefix of another length is refused with a clear message."
 - "When neither `dataDir` nor `CONDUCTOR_DATA_DIR` is set, the data directory is `~/.conductor` (the home of the user running `conductor serve`), never next to the config file or in the working directory. For backward compatibility, when `~/.conductor` does not exist and the old default (`<config dir>/conductor.d` or `./conductor.d`) does, the server keeps using the old directory and logs a notice naming both paths and how to move. The host's hooks directory moves to `~/.conductor/hooks` the same way (old `~/.local/state/conductor/hooks` kept when present). The Docker image keeps its explicit `CONDUCTOR_DATA_DIR`."
-- "One file per crew at `conductor.d/crews/<id>.json`, written atomically by the store, which gains `List` and `Delete`; a corrupt file names itself in the startup error and the other crews still load."
+- "One file per crew at `<dataDir>/crews/<id>.json`, written atomically by the store, which gains `List` and `Delete`; a corrupt file names itself in the startup error and the other crews still load."
 - "`GET /api/crews?offset=0&limit=100` reads the directory and answers `{crews: [summaries], total}` (limit at most 500); `GET /api/crews/{id}` returns one crew in full for the editor; the Crews page pages through the list."
 - "No cap on the number of crews; the per-crew size cap stays as a sanity bound on one file and its request body, at 1 MiB."
 - "An existing `crews.json` is split into per-crew files on the first start and renamed `crews.json.migrated`."
@@ -52,17 +52,32 @@ Values this plan fixes where the spec leaves a number open (one line each, used 
 - Agent `cwd` at most 4096 bytes without NUL. `icon` matches `^[a-z0-9][a-z0-9:-]{0,63}$`. An env key and an `envPassthrough` name are at most 128 bytes, and an env value at most 16384 bytes.
 - `conductor notify` waits 100 ms, 250 ms, 500 ms, 1 s and 2 s between attempts (at most six attempts), all inside the existing 5 s context.
 - The crew list defaults to `limit=100`, takes `limit` from 1 to 500 and `offset` from 0 up. Any other value is `400 invalid_request`.
-- `crew.MaxEncoded` is 1 MiB (1048576 bytes). It bounds a crew's file as `store.Encode` writes it, and the body of a crew create or update.
+- `crew.MaxEncoded` is 1 MiB (1048576 bytes). It bounds a crew's file as `store.Encode` writes it, and `Validate` holds every crew a create or update sends to it. The request body itself may be up to 2 MiB (`maxCrewBody` in `internal/api/crews.go`), so a crew near the bound that a client sends indented, or escaped more than the server writes it, is accepted.
+- The server counts `~/.conductor` as its data directory only once it holds server data: `catalog.json`, `crews/` or `crews.json`. `conductor host` writes `~/.conductor/hooks` for itself, so a `~/.conductor` that holds only `hooks/` (or nothing) does not end the legacy rule: an upgraded server with an old `conductor.d` keeps it, with the notice, until the operator moves it. A server that uses `~/.conductor` makes `crews/` there at its first start (Task 9).
 
 ## Review Focus
 
 These are the five input classes the spec implies and nothing yet exercises, most likely first. Each one gets a test in the task that owns the code.
 
-1. **An upgrade where `./conductor.d` (or `<config dir>/conductor.d`) exists and `~/.conductor` does not.** The server keeps the old directory, logs one warning that names both paths and how to move, and serves the old crews and catalog. When both exist, `~/.conductor` wins. With no home directory, startup fails and names `dataDir` and `CONDUCTOR_DATA_DIR`. Pinned in Task 1 (`TestServeKeepsAnOldDataDirectoryWithANotice`, `TestResolveDataDirDefaults`).
-2. **A start that stopped halfway through the `crews.json` migration**, with some per-crew files written and `crews.json` not yet renamed. The next start finishes the move without duplicates or loss, and the start after it changes nothing. A `crews.json.migrated` from an earlier move is not overwritten. Pinned in Task 9 (`TestMigrationFinishesAfterAnInterruptedStart`).
+1. **An upgrade where `./conductor.d` (or `<config dir>/conductor.d`) exists and `~/.conductor` holds no server data** (it is missing, or holds only the `hooks/` a `conductor host` wrote). The server keeps the old directory, logs one warning that names both paths and how to move, and serves the old crews and catalog. Once `~/.conductor` holds server data (`catalog.json`, `crews/` or `crews.json`), it wins; a `~/.conductor` that holds only the `hooks/` a `conductor host` wrote does not, and the old directory is kept with the notice. With no home directory, startup fails and names `dataDir` and `CONDUCTOR_DATA_DIR`. Pinned in Task 1 (`TestServeKeepsAnOldDataDirectoryWithANotice`, `TestResolveDataDirDefaults`).
+2. **A start that stopped halfway through the `crews.json` migration**, with some per-crew files written and `crews.json` not yet renamed. The next start finishes the move without duplicates or loss, and the start after it changes nothing. A `crews.json.migrated` from an earlier move is not overwritten, and neither is a per-crew file: a crew of `crews.json` whose file holds something else is skipped with a notice naming both files. Pinned in Task 9 (`TestMigrationFinishesAfterAnInterruptedStart`, `TestMigrationNeverOverwritesACrewFile`).
 3. **A crew file that is corrupt (hand-edited, or truncated by a full disk).** The server starts, names the file in an error log, and lists the other crews. The bad file is never overwritten: a new crew with the same name takes another ID, an update answers `409 crew_unreadable`, and delete removes it. Pinned in Task 9 (`TestACorruptCrewFileIsSkippedAndNeverOverwritten`, `TestCrewRoutesAnswerForACorruptFile`).
 4. **A secret rotated in the config file for a built-in or configured agent that an admin edited on the Agents page.** After a restart the agent runs with the new value. A key the admin changed keeps the admin's value, and a key the admin removed stays removed. Pinned in Task 2 (`TestCatalogOverrideFollowsTheBaseEnv`).
 5. **`sudo conductor hooks install` with `HOME` preserved**, which is root writing into another user's home. The "own home" exception never covers root, so the refusal stands. Pinned in Task 6 (`TestOwnHomeExceptionNeverCoversRoot`).
+
+## Triage items
+
+The open items the triage of rounds 1 and 2 found, by number. Tasks name the ones they close. Numbers not listed were closed or dropped before this plan.
+
+- **Strict JSON and the store.** #1 the store's write probe is untested. #2 the kept-previous-document test fails before the temp file. #3 the concurrent-save test reads only after the saves. #6 the store comment overclaims. #7 `config.Load` and `catalog.ReadFile` accept trailing data. #8 `store.Save` escapes `<`, `>` and `&`. #9 the catalog lock is held across the fsync and the response. #11 the end-to-end test assigns the catalog without the lock.
+- **Catalog.** #12 `validate` does not bound `cwd` or `icon`, or shape `adapter`, and the adapter registry is checked for UI saves only. #13 `Upsert` keeps the caller's agent. #14 signal kinds are bare strings. #15 an override loses the replaced agent's adapter and signal. #16 `Clone` has a pointer receiver. #17 env keys, values and `envPassthrough` names are unbounded. #19 a saved copy pins env values and shadows a rotation in the config. #20 the catalog has no `source`, so the Agents page guesses Hidden or Removed. #21 no test launches an overridden built-in, hides every agent or deletes an added one.
+- **Add-agent form.** #23 the form logic lives in the component, untested. #24 a typed `***` is sent as a value. #25 hand-rolled radio cards without arrow keys; `ArgvInput` copies ring classes. #26 the command check sends the whole argv. #27 an unclosed quote becomes a chip; `slugId` can end in a dash. #28 the id pattern duplicates the server's. #29 masked env, `signalOut` and the errors are untested.
+- **File reads.** #30 copies of the config file (`.bak`, `~`) are readable.
+- **Sessions and events.** #31 `oneLine` duplicates `CleanName`; `local_test.go` is long; the bell test polls. #32 a departing host's viewer gets two error frames and its sink is closed under `Pump`. #33 the attention state is read after the fact. #34 the SSE `activity` event has no state. #35 `conductor notify` drops a 429. #36 the host's no-launch-route line is at info. #37 a hosted session without a host spends no token.
+- **Adapters and the CLI.** #38 `merge.go`, `notify.go` and `hostagent/agent.go` hold code that belongs elsewhere; the claude and cursor merge closures repeat. #39 a chmod failure on an asset stops `serve`. #40 `staleCommand` rewrites any absolute program. #41 `payloadFlags` repeats the hooks table. #42 `withYAMLListItem` mishandles a BOM and a flow-style root. #43 the hooks dir records no version. #44 a skill-only by-hand step prints the settings snippet. #45 the process's own home is refused when another uid owns it. #46 a catalog icon outside the bundle renders blank. #47 the aider card blames the missing home. #48 clipboard calls and code blocks are hand-rolled.
+- **Docs.** #49 the README says the Events page shows a webhook's path; `protocol.md` names one cause of a missing hosted state.
+- **Webhook addresses.** #50 6to4, Teredo and SIIT forms are not judged by their IPv4 address; a shorter-prefix `64:ff9b:1::/48` form is misread.
+- **Crews, runs and links.** #51 `api_test.go` is long; the crew cap and the 503 checks are tested twice; the duplicate-names case asserts too little. #53 every `rev-parse` failure reads "not in a git repository". #54 a stop before the first start returns a stopped run without an error. #56 the handoff test has no sync point. #57 a run link can outlive a forgotten run; the forget-time disconnect is untracked; a second revoke is logged. #58 the Crews page loses a launch's link, refreshes once and never retries a run name. #59 the join page hand-codes its tiles; the crew view can leave an empty cell. #60 a run can be forgotten before its view link is minted. #61 the crew prompt placeholder may be cut short at narrow widths.
 
 ---
 
@@ -71,7 +86,7 @@ These are the five input classes the spec implies and nothing yet exercises, mos
 | File | Responsibility | Task |
 |---|---|---|
 | `internal/store/store.go` | `DecodeStrict`, `Encode`, `Save` without HTML escaping; later `Sub`, `List`, `Delete`, `LoadLimit` | 1, 9 |
-| `internal/config/config.go` | strict `Load`; `ResolveDataDir` with the `~/.conductor` default and the legacy rule; adapter check in `LoadCatalog` | 1, 2 |
+| `internal/config/config.go` | strict `Load`; `ResolveDataDir` with the `~/.conductor` default and the legacy rule (`holdsServerData`); adapter check in `LoadCatalog` | 1, 2 |
 | `internal/catalog/catalog.go`, `defaults.go` | strict `ReadFile`; bounds; signal kind constants; `Source`; `inherit`; value-receiver `Clone`; cloning `Upsert` | 1, 2 |
 | `internal/api/catalog.go`, `server.go` | editor lock and snapshot lock; `catalogEntry` with `source`/`replaces`; `keepMaskedEnv`; tracked background work | 1, 2, 8 |
 | `internal/agents/assets.go`, `home.go` (new), `merge.go`, `adapter.go`, `registry.go`, `owner_*.go`, `claude.go`, `cursor.go` | host hooks dir, `ModeError`, version record, own-home rule, `SnippetNeeded`, `CheckAdapter`, shared merge step | 1, 2, 6 |
@@ -79,16 +94,16 @@ These are the five input classes the spec implies and nothing yet exercises, mos
 | `web/app/components/AddAgentSlideover.vue`, `ArgvInput.vue`, `CodeBlock.vue`, `IntegrationCard.vue`, `LaunchSessionModal.vue`, `ShareLinksModal.vue`, `FileBrowser.vue`, `JoinCrewGrid.vue` (new) | UI fixes and reuse | 3, 6, 8 |
 | `internal/session/files.go`, `internal/api/files.go` | deny entries ending in `*` | 4 |
 | `internal/session/local.go`, `activity.go`, `attention.go`, `record_test.go` (new) | state with `OnActivity`; `CleanName` reuse; test split | 5 |
-| `internal/api/ws_viewer.go`, `internal/signal/hosted.go`, `internal/api/events.go`, `attention.go` | close ordering, SSE `state`, hostless metering | 5 |
+| `internal/api/ws_viewer.go`, `internal/signal/hosted.go`, `internal/api/events.go`, `attention.go`, `webhooks.go` | close ordering, SSE `state`, hostless metering, comments that follow the state | 5 |
 | `internal/notify/notify.go`, `mappers.go` (new) | 429 retry; mappers moved | 5, 6 |
 | `internal/hostagent/agent.go`, `hooks.go` (new) | state with the entry; `injectHooks` moved, logged at warn | 1, 5, 6 |
 | `internal/cli/serve.go`, `hooks.go`, `notify.go`, `up.go` | notice, `ModeError`, version skew, snippet only when needed, payload flags from one table, paged `conductor crews` | 1, 6, 9 |
-| `internal/config/webhook.go` | 6to4, Teredo, SIIT, NAT64 local-use forms | 7 |
+| `internal/config/webhook.go` | `parseWebhooks` on `store.DecodeStrict`; 6to4, Teredo, SIIT, NAT64 local-use forms | 1, 7 |
 | `internal/crew/run.go`, `handoff.go`, `worktree.go`, `store.go`, `migrate.go` (new), `crew.go` | launch and eviction fixes, sync hook, git messages, per-crew files, migration | 8, 9 |
 | `internal/share/store.go`, `internal/api/links.go`, `runs.go`, `crews.go` | revoke reports a change; link creation under the run check; paged list; `GET /api/crews/{id}` | 8, 9 |
 | `web/app/pages/crews/[[id]].vue`, `runs/[run].vue`, `join/[token].vue`, `agents.vue`, `layouts/default.vue`, `utils/crews.ts`, `utils/wall.ts`, `utils/events.ts`, `utils/protocol.ts`, `composables/useSessions.ts` | page fixes, paging, SSE `state` | 2, 5, 8, 9 |
 | `internal/api/crews_test.go` (new) | crew and run tests split from `api_test.go` | 10 |
-| `README.md`, `docs/protocol.md`, `docs/features.md`, `conductor.example.json` | docs that change with each task, wording fixes | every task, 10 |
+| `README.md`, `docs/protocol.md`, `docs/features.md`, `docs/architecture.md`, `conductor.example.json`, `AGENTS.md` | docs that change with each task, wording fixes | every task, 10 |
 
 ---
 
@@ -98,7 +113,7 @@ Triage items #1, #2, #3, #6, #7, #8, #9 and #11, plus the spec's "Data directory
 
 **Files:**
 - Modify: `internal/store/store.go`, `internal/store/store_test.go`
-- Modify: `internal/config/config.go` (`Load`, `ResolveDataDir`), `internal/config/config_test.go`
+- Modify: `internal/config/config.go` (`Load`, `ResolveDataDir`), `internal/config/webhook.go` (`parseWebhooks`), `internal/config/config_test.go`
 - Modify: `internal/catalog/catalog.go` (`ReadFile`), `internal/catalog/catalog_test.go`
 - Modify: `internal/api/server.go` (lock fields, `Catalog`), `internal/api/catalog.go` (handlers, `commitOverlay`), `internal/api/api_test.go`, `internal/api/ws_e2e_test.go:239`
 - Modify: `internal/agents/assets.go` (`HostHooksDir`), `internal/agents/assets_test.go` (`TestHooksDirs`)
@@ -117,9 +132,10 @@ Triage items #1, #2, #3, #6, #7, #8, #9 and #11, plus the spec's "Data directory
 
   package config
   func (c *Config) ResolveDataDir(configPath string) (notice string, err error)
+  func holdsServerData(dir string) bool              // catalog.json, crews/ or crews.json is in dir; hooks/ alone is not
 
   package agents
-  func HostHooksDir() (dir string, legacy bool, err error)
+  func HostHooksDir() (dir string, legacy bool, err error) // ~/.conductor/hooks; the old XDG dir while that does not exist
 
   package api
   // Server fields: catalogEditMu sync.Mutex (writers, across the write); catalogMu sync.Mutex (the snapshot swap only)
@@ -365,6 +381,23 @@ Expected: FAIL. The first case of each passes with no error, and the empty file 
 	}
 ```
 
+`internal/config/webhook.go` reads `CONDUCTOR_WEBHOOKS` with the same decoder in place of its hand-rolled one. It drops the `bytes`, `encoding/json` and `io` imports, which nothing else there uses, and imports `internal/store`:
+
+```go
+// parseWebhooks reads the value of CONDUCTOR_WEBHOOKS: a JSON array of
+// webhooks, as the config file holds them, and nothing after it
+// (store.DecodeStrict, as for the config file itself).
+func parseWebhooks(v string) ([]Webhook, error) {
+	var hooks []Webhook
+	if err := store.DecodeStrict([]byte(v), &hooks); err != nil {
+		return nil, err
+	}
+	return hooks, nil
+}
+```
+
+The existing `TestWebhooksFromFileAndEnvironment` pins it: every malformed value it lists (`[] []` included, now "more than one JSON value") is still refused with an error that names `CONDUCTOR_WEBHOOKS` and not the secret.
+
 `internal/catalog/catalog.go` imports `internal/store` (which imports nothing of Conductor's, so no cycle) and drops `bytes`:
 
 ```go
@@ -386,7 +419,7 @@ func ReadFile(path string) (File, error) {
 - [ ] **Step 8: Run them to see them pass**
 
 Run: `go test ./internal/config/ ./internal/catalog/ ./internal/store/ -count=1`
-Expected: PASS.
+Expected: PASS, `TestWebhooksFromFileAndEnvironment` included.
 
 - [ ] **Step 9: Write the failing catalog-lock test**
 
@@ -721,15 +754,55 @@ func TestResolveDataDirDefaults(t *testing.T) {
 		}
 	})
 
-	t.Run("~/.conductor wins once it exists", func(t *testing.T) {
+	// conductor host writes ~/.conductor/hooks for itself. That is no data of
+	// a server's: an upgraded server keeps its old directory, and says so,
+	// until the operator moves it.
+	t.Run("host created ~/.conductor/hooks, legacy conductor.d present: legacy kept with the notice", func(t *testing.T) {
 		h := home(t)
 		dir := t.TempDir()
 		t.Chdir(dir)
-		mkdir(t, filepath.Join(dir, "conductor.d"))
-		mkdir(t, filepath.Join(h, ".conductor"))
+		old := filepath.Join(dir, "conductor.d")
+		mkdir(t, old)
+		mkdir(t, filepath.Join(h, ".conductor", "hooks"))
 		cfg := Defaults()
+		notice := resolve(t, cfg, "")
+		if cfg.DataDir != old {
+			t.Fatalf("DataDir %q, want the old %q", cfg.DataDir, old)
+		}
+		for _, want := range []string{old, filepath.Join(h, ".conductor"), "dataDir", "CONDUCTOR_DATA_DIR"} {
+			if !strings.Contains(notice, want) {
+				t.Errorf("notice %q does not mention %q", notice, want)
+			}
+		}
+		// Without an old directory, that ~/.conductor is the data directory.
+		if err := os.Remove(old); err != nil {
+			t.Fatal(err)
+		}
+		cfg = Defaults()
 		if notice := resolve(t, cfg, ""); cfg.DataDir != filepath.Join(h, ".conductor") || notice != "" {
-			t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+			t.Fatalf("without the old directory: DataDir %q, notice %q", cfg.DataDir, notice)
+		}
+	})
+
+	t.Run("~/.conductor wins once it holds server data", func(t *testing.T) {
+		for _, data := range []string{"catalog.json", "crews", "crews.json"} {
+			t.Run(data, func(t *testing.T) {
+				h := home(t)
+				dir := t.TempDir()
+				t.Chdir(dir)
+				mkdir(t, filepath.Join(dir, "conductor.d"))
+				def := filepath.Join(h, ".conductor")
+				mkdir(t, filepath.Join(def, "hooks"))
+				if data == "crews" {
+					mkdir(t, filepath.Join(def, data))
+				} else if err := os.WriteFile(filepath.Join(def, data), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg := Defaults()
+				if notice := resolve(t, cfg, ""); cfg.DataDir != def || notice != "" {
+					t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+				}
+			})
 		}
 	})
 
@@ -902,6 +975,21 @@ func TestHooksDirs(t *testing.T) {
 			t.Fatalf("%q legacy=%v", dir, legacy)
 		}
 	})
+	// The host's directory is its own. A server's old ./conductor.d, which
+	// the server keeps by the legacy rule, is not where the host writes, and
+	// the host's ~/.conductor/hooks does not end that rule
+	// (config.ResolveDataDir, TestResolveDataDirDefaults).
+	t.Run("a server's old ./conductor.d is not the host's", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_STATE_HOME", "")
+		cwd := t.TempDir()
+		mkdir(t, filepath.Join(cwd, "conductor.d", "hooks"))
+		t.Chdir(cwd)
+		if dir, legacy := host(t); dir != filepath.Join(home, ".conductor", "hooks") || legacy {
+			t.Fatalf("%q legacy=%v", dir, legacy)
+		}
+	})
 }
 ```
 
@@ -950,8 +1038,8 @@ func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 }
 
 // An upgraded server whose data directory an older Conductor put next to the
-// config keeps using it while ~/.conductor does not exist, and says once, at
-// warn, where it is, where the default is and how to move.
+// config keeps using it while ~/.conductor holds no server data, and says
+// once, at warn, where it is, where the default is and how to move.
 func TestServeKeepsAnOldDataDirectoryWithANotice(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
@@ -1011,8 +1099,10 @@ In `internal/cli/host_test.go`, `TestHostAgentFlagInjectsTheAdapter` keeps `XDG_
 Add to `internal/cli/cli_test.go`:
 
 ```go
-// With ~/.conductor in place, conductor hooks takes the hooks from there, as
-// conductor serve would, and not from an old ./conductor.d.
+// conductor hooks takes the hooks from the data directory conductor serve
+// would use: an old ./conductor.d while ~/.conductor holds only hooks/ (which
+// conductor host writes there too), and ~/.conductor once it holds a
+// server's data.
 func TestHooksInstallTakesTheHomeDataDir(t *testing.T) {
 	clearConductorEnv(t)
 	t.Cleanup(agents.ForgetBinary())
@@ -1022,15 +1112,23 @@ func TestHooksInstallTakesTheHomeDataDir(t *testing.T) {
 	cwd, fromCwd := t.TempDir(), fakeBinary(t)
 	serverAssets(t, filepath.Join(cwd, "conductor.d"), fromCwd)
 	t.Chdir(cwd)
-	target := t.TempDir()
-	var out, errOut bytes.Buffer
-	if code, err := runHooks(t.Context(), []string{"install", "copilot", "--home", target}, &out, &errOut); code != 0 || err != nil {
-		t.Fatalf("exit %d %v\n%s%s", code, err, &out, &errOut)
+	install := func(want string) {
+		t.Helper()
+		target := t.TempDir()
+		var out, errOut bytes.Buffer
+		if code, err := runHooks(t.Context(), []string{"install", "copilot", "--home", target}, &out, &errOut); code != 0 || err != nil {
+			t.Fatalf("exit %d %v\n%s%s", code, err, &out, &errOut)
+		}
+		b, _ := os.ReadFile(filepath.Join(target, ".copilot", "hooks", "conductor.json"))
+		if !strings.Contains(string(b), `"`+want+` notify --copilot-hook"`) {
+			t.Fatalf("installed, want %s:\n%s", want, b)
+		}
 	}
-	b, _ := os.ReadFile(filepath.Join(target, ".copilot", "hooks", "conductor.json"))
-	if !strings.Contains(string(b), `"`+fromHome+` notify --copilot-hook"`) {
-		t.Fatalf("installed\n%s", b)
+	install(fromCwd) // ~/.conductor holds hooks/ only
+	if err := os.WriteFile(filepath.Join(home, ".conductor", "catalog.json"), []byte(`{"agents": []}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	install(fromHome)
 }
 ```
 
@@ -1048,9 +1146,11 @@ In `internal/config/config.go`, replace `ResolveDataDir`:
 // it: ~/.conductor, in the home of the user running conductor serve, never
 // next to the config file or in the working directory. An older Conductor
 // chose conductor.d next to the config file, or in the working directory
-// without one. While ~/.conductor does not exist and that directory does, it
-// is kept, and notice says so, naming both and how to move. With no value set
-// and no home directory, the error names the settings that choose one.
+// without one. While ~/.conductor holds no server data (holdsServerData) and
+// that directory exists, it is kept, and notice says so, naming both and how
+// to move. conductor host writes ~/.conductor/hooks for itself, so hooks/
+// alone does not end the rule. With no value set and no home directory, the
+// error names the settings that choose one.
 //
 // The result is absolute: agent processes started in other working
 // directories are handed paths under it. A value that was set is made
@@ -1065,10 +1165,10 @@ func (c *Config) ResolveDataDir(configPath string) (notice string, err error) {
 		}
 		def := filepath.Join(home, ".conductor")
 		c.DataDir = def
-		if !isDir(def) {
+		if !holdsServerData(def) {
 			if old, aerr := filepath.Abs(legacyDataDir(configPath)); aerr == nil && isDir(old) {
 				c.DataDir = old
-				notice = fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now %s. To move it, stop the server, move %s to %s and start it again; to keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old, def, old, def)
+				notice = fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now %s, which holds no server data yet (catalog.json, crews/ or crews.json). To move it, stop the server, move the files in %s into %s (hooks/ need not move: the server writes it at every start) and start it again; to keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old, def, old, def)
 			}
 		}
 	}
@@ -1076,6 +1176,23 @@ func (c *Config) ResolveDataDir(configPath string) (notice string, err error) {
 		c.DataDir = abs
 	}
 	return notice, nil
+}
+
+// serverData names what only a server writes in its data directory: the
+// Agents page's overlay and the crews, in the layout of this version and of
+// the one before. conductor host writes hooks/ into ~/.conductor too, so
+// hooks/ is not among them.
+var serverData = []string{"catalog.json", "crews", "crews.json"}
+
+// holdsServerData reports whether dir holds anything in serverData, as a
+// file, a directory or a link.
+func holdsServerData(dir string) bool {
+	for _, name := range serverData {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // legacyDataDir is where an older Conductor put the data directory by
@@ -1104,7 +1221,10 @@ In `internal/agents/assets.go`, replace `HostHooksDir`:
 // An older Conductor kept them in $XDG_STATE_HOME/conductor/hooks, or in
 // ~/.local/state/conductor/hooks when XDG_STATE_HOME is unset or, against the
 // XDG spec, not absolute. While ~/.conductor/hooks does not exist and that
-// directory does, it is kept, and legacy is true.
+// directory does, it is kept, and legacy is true. conductor serve does not
+// count a ~/.conductor that holds only hooks/ as its data
+// (config.ResolveDataDir), so what the host writes here never moves a
+// server's data directory.
 func HostHooksDir() (dir string, legacy bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -1134,7 +1254,7 @@ func dirExists(p string) bool {
 }
 ```
 
-When the same user runs `conductor serve` with the default data directory and `conductor host` on one machine, both write `~/.conductor/hooks`. That is intended: the assets are the same files for the same binary.
+When the same user runs `conductor serve` with the default data directory and `conductor host` on one machine, both write `~/.conductor/hooks`. That is intended: the assets are the same files for the same binary. When the host ran first and an upgraded server still has an old `conductor.d`, the server keeps that one with the notice: hooks/ alone is no server data.
 
 In `internal/hostagent/agent.go`, `injectHooks` takes the new result:
 
@@ -1170,11 +1290,12 @@ The overlap warning text becomes:
 In `internal/cli/hooks.go`:
 
 ```go
-const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the hooks and names the binary they run (default: CONDUCTOR_DATA_DIR, else ~/.conductor, or ./conductor.d where an older conductor left one and ~/.conductor does not exist)"
+const dataDirUsage = "data directory of conductor serve, whose hooks/ holds the hooks and names the binary they run (default: CONDUCTOR_DATA_DIR, else ~/.conductor, or ./conductor.d where an older conductor left one and ~/.conductor holds no server data)"
 
 // serveHooksDir is the hooks dir of the data directory dataDir or, when it is
 // empty, of the one conductor serve uses without dataDir in its config:
-// CONDUCTOR_DATA_DIR, else ~/.conductor (or an older ./conductor.d).
+// CONDUCTOR_DATA_DIR, else ~/.conductor (or an older ./conductor.d while
+// ~/.conductor holds no server data).
 func serveHooksDir(dataDir string) (string, error) {
 	cfg := config.Config{DataDir: dataDir}
 	if cfg.DataDir == "" {
@@ -1205,11 +1326,12 @@ Expected: PASS.
 
 - [ ] **Step 17: Update the docs for the data directory**
 
-- `README.md`, config table row: `| \`dataDir\` | \`CONDUCTOR_DATA_DIR\` | \`~/.conductor\` (an older \`conductor.d\` next to the config, or in the current directory, is kept while \`~/.conductor\` does not exist) | UI-managed state; must be writable, best outside \`allowedRoots\` |`.
+- `README.md`, config table row: `| \`dataDir\` | \`CONDUCTOR_DATA_DIR\` | \`~/.conductor\` (an older \`conductor.d\` next to the config, or in the current directory, is kept while \`~/.conductor\` holds no server data) | UI-managed state; must be writable, best outside \`allowedRoots\` |`.
 - `README.md`, "### Upgrading", replaced by:
-  > The server keeps UI-managed state (agents added on the **Agents** page, crews, the hook files) in a data directory that it must be able to create and write at startup. Unless `dataDir` or `CONDUCTOR_DATA_DIR` says otherwise, that is `~/.conductor` in the home of the user running `conductor serve`. Earlier versions used `conductor.d` next to the config file, or in the current directory without one. A server that finds that old directory, and no `~/.conductor`, keeps using it and logs a warning naming both paths. To move it, stop the server, move the directory to `~/.conductor` and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR` to it. A directory the server cannot create stops it with `data directory … is not usable`. The Docker image sets `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the server logs the directory it uses, and warns when it overlaps an allowed root: agents working there can read and commit its secrets.
+  > The server keeps UI-managed state (agents added on the **Agents** page, crews, the hook files) in a data directory that it must be able to create and write at startup. Unless `dataDir` or `CONDUCTOR_DATA_DIR` says otherwise, that is `~/.conductor` in the home of the user running `conductor serve`. Earlier versions used `conductor.d` next to the config file, or in the current directory without one. A server that finds that old directory, and no server data in `~/.conductor` (`catalog.json`, `crews/` or `crews.json`; the `hooks/` that `conductor host` writes there does not count), keeps using it and logs a warning naming both paths. To move it, stop the server, move the files in it into `~/.conductor` (`hooks/` need not move: the server writes it at every start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR` to it. A directory the server cannot create stops it with `data directory … is not usable`. The Docker image sets `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the server logs the directory it uses, and warns when it overlaps an allowed root: agents working there can read and commit its secrets.
 - `README.md`, "Wired at launch": after "`conductor host --agent <id> -- <command>` does the same on your machine", add "with the hook files in `~/.conductor/hooks` (an older `~/.local/state/conductor/hooks` is kept while it exists)".
-- `README.md`, the `conductor hooks` paragraph: "by default the one `conductor serve` uses without a config file" becomes "by default the one `conductor serve` uses without `dataDir`: `CONDUCTOR_DATA_DIR`, else `~/.conductor`".
+- `README.md`, the `conductor hooks` paragraph: "by default the one `conductor serve` uses without a config file" becomes "by default the one `conductor serve` uses without `dataDir`: `CONDUCTOR_DATA_DIR`, else `~/.conductor` (or an older `./conductor.d` while `~/.conductor` holds no server data)".
+- `README.md`, the same paragraph (around line 186): "They refuse a `hooks/` that is not yours or not 0700, as `conductor serve` writes it (the 0755 `conductor.d` of a checkout is refused too), since its commands would go into your agents' configs." becomes "They refuse a `hooks/` that is not yours or not 0700, as `conductor serve` writes it (so a `conductor.d/hooks` that a checkout made 0755 is refused too, should an older `./conductor.d` still be the data directory), since its commands would go into your agents' configs."
 - `conductor.example.json`: add `"dataDir": ""` after `"fileView": "view",`. An empty value means the default, `~/.conductor`, and the key is listed so readers find it.
 - `docs/features.md`, Round 2 "Persistence": "default `conductor.d` next to the config file" becomes "default `~/.conductor` since round 3, `conductor.d` next to the config file before".
 
@@ -1236,7 +1358,7 @@ Triage items #12, #13, #14, #15, #16, #17, #19, #20 and #21. The docs for what a
 - Modify: `internal/api/catalog.go`, `internal/api/sessions.go:111`, `internal/api/api_test.go`
 - Modify: `internal/hostagent/agent.go:312` (`catalog.SignalHook`)
 - Create: `web/app/utils/catalog.ts`, `web/app/utils/catalog.test.ts`
-- Modify: `web/app/composables/useSessions.ts` (`AgentInfo`), `web/app/pages/agents.vue`
+- Modify: `web/app/composables/useSessions.ts` (`AgentInfo`, the `AgentInput.env` comment), `web/app/pages/agents.vue`
 - Modify: `README.md` ("Adding agents from the UI", the limits paragraph, the security bullet about saved copies), `docs/protocol.md` (catalog rows, the catalog persistence paragraph)
 
 **Interfaces:**
@@ -1270,6 +1392,7 @@ Triage items #12, #13, #14, #15, #16, #17, #19, #20 and #21. The docs for what a
   export function removalOf(a: Pick<AgentInfo, 'source' | 'replaces'>): Removal
   export function removalText(r: Removal, name: string, id: string): { button: string; title: string; description: string; icon: string; toast: { title: string; description: string } }
   ```
+- Shapes: an `icon` matches this plan's `^[a-z0-9][a-z0-9:-]{0,63}$` (`iconPattern`), an Iconify name such as `i-lucide-pi-square` or `lucide:bot`. The spec's `^[a-z0-9-]{1,32}$` is the adapter's shape (`idPattern`), not the icon's: an icon name is longer and may hold a colon.
 
 - [ ] **Step 1: Write the failing catalog tests**
 
@@ -2094,7 +2217,18 @@ export function removalText(r: Removal, name: string, id: string) {
 }
 ```
 
-In `web/app/composables/useSessions.ts`, `AgentInfo` gains:
+In `web/app/composables/useSessions.ts`, the comment on `AgentInput.env` follows the new rule. It said the server "rejects it for a key the agent does not have", which no longer holds for an agent that replaces another:
+
+```ts
+  /**
+   * A value of "***", as read from the catalog, means "unchanged": the value the saved agent holds for that key or, for an agent that
+   * replaces a built-in or configured one, the replaced agent's value, which then follows the config. The server rejects it for a key
+   * neither has.
+   */
+  env?: Record<string, string>
+```
+
+`AgentInfo` gains:
 
 ```ts
   /** Where the catalog took the agent from: built in, the config file (or catalog file), or saved from the Agents page. */
@@ -2631,11 +2765,24 @@ function onPaste(e: ClipboardEvent) {
 </script>
 ```
 
-In the template, the root `div` takes the theme's classes in place of the copied ring classes, and the input binds `pending`:
+Replace the template with this one. The root `div` takes the theme's classes in place of the copied ring classes, the chips stay as they are, and the input binds `pending`:
 
 ```vue
-  <div :class="ui.root({ class: ui.base({ class: 'min-h-8 w-full cursor-text' }) })" @click="field?.inputRef?.focus()">
-    …chips unchanged…
+<template>
+  <div :class="ui.root({ class: ui.base({ class: 'flex min-h-8 w-full cursor-text flex-wrap items-center gap-1.5' }) })" @click="field?.inputRef?.focus()">
+    <UBadge v-for="(arg, i) in model" :key="i" color="neutral" variant="subtle" size="md" class="max-w-full font-mono">
+      <span class="truncate" :class="arg === '' && 'text-muted'">{{ arg === '' ? "''" : arg }}</span>
+      <template #trailing>
+        <button
+          type="button"
+          class="-me-0.5 inline-flex flex-none rounded-xs text-dimmed transition-colors hover:text-default"
+          :aria-label="`Remove ${arg === '' ? 'empty argument' : arg}`"
+          @click.stop="remove(i)"
+        >
+          <UIcon name="i-lucide-x" class="size-3.5" />
+        </button>
+      </template>
+    </UBadge>
     <UInput
       ref="field"
       v-model="pending"
@@ -2649,6 +2796,7 @@ In the template, the root `div` takes the theme's classes in place of the copied
       @blur="commit"
     />
   </div>
+</template>
 ```
 
 - [ ] **Step 7: Run the web gate**
@@ -2890,12 +3038,12 @@ Triage items #31 to #37.
 - Modify: `internal/api/ws_viewer.go` (`serveHostedViewer`, `handleViewerSignal`), `internal/signal/hosted.go` (`HostDisconnected`, `SetAttentionFull`), `internal/signal/signal_test.go`
 - Modify: `internal/session/local.go` (`Options.OnActivity`, `record`, `recordOwn`, `setAttention`), `internal/session/activity.go` (`oneLine`), `internal/session/attention.go` (`CleanName`)
 - Create: `internal/session/record_test.go` (the Record and hook tests moved from `local_test.go`); Modify: `internal/session/local_test.go`
-- Modify: `internal/api/sessions.go` (`OnActivity` wiring, `localActivity` deleted), `internal/api/events.go` (`activityEvent.State`), `internal/api/events_test.go`, `internal/api/attention.go` (hosted branch), `internal/api/ws_e2e_test.go`, `internal/api/api_test.go`
+- Modify: `internal/api/sessions.go` (`OnActivity` wiring, `localActivity` deleted), `internal/api/events.go` (`activityEvent.State`, the `activity` comment), `internal/api/webhooks.go` (the `eventTypeOf` comment), `internal/api/events_test.go`, `internal/api/attention.go` (hosted branch), `internal/api/ws_e2e_test.go`, `internal/api/api_test.go`
 - Modify: `internal/hostagent/agent.go` (`onLocalActivity`; the no-launch-route line at warn), `internal/hostagent/activity_test.go:160`, `internal/hostagent/hooks_test.go` (two `level=INFO` checks)
 - Modify: `internal/crew/run_test.go` (`fakeLauncher.activity`)
 - Modify: `internal/notify/notify.go` (`Send`), `internal/notify/notify_test.go`
 - Modify: `web/app/utils/protocol.ts` (`ActivityEntry.state`), `web/app/utils/events.ts` (`eventTypeOf`, `attentionSettled`), `web/app/utils/events.test.ts`
-- Modify: `docs/protocol.md` (the streaming paragraph and the `/api/events` row, the attention limit paragraphs, `conductor notify`), `README.md` (`conductor notify` retry)
+- Modify: `docs/protocol.md` (the streaming paragraph and the `/api/events` row, the attention limit paragraphs, the webhook paragraph's "read then" sentence, `conductor notify`), `README.md` (`conductor notify` retry)
 
 The SSE `activity` event is defined in `internal/api/events.go`, not `internal/proto`. Its three places are `events.go`, `protocol.ts` and `protocol.md`. The new field is bounded: it is one of `needs_input`, `working` or `done`, at most 11 bytes, and the test pins that nothing else gets through.
 
@@ -3192,7 +3340,12 @@ func (s *Local) Record(e ActivityEntry) bool {
 }
 
 // recordOwn records an entry the session makes itself without asking the
-// event bucket, whatever its type, with the attention state it records. …
+// event bucket, whatever its type, and hands OnActivity the attention state
+// it records. It records the attention entry of an attention change the
+// session has applied, which must not be dropped while the state it records
+// is showing: a report from outside paid its token before the change
+// (TrySetAttentionFull), and what the session observes itself (the bell, OSC
+// notifications, the screen pattern) is held to its own pace and spends none.
 func (s *Local) recordOwn(e ActivityEntry, state AttentionState) {
 	s.record(e, false, state)
 }
@@ -3200,13 +3353,28 @@ func (s *Local) recordOwn(e ActivityEntry, state AttentionState) {
 // record is Record, with limited saying whether the entry spends a token of
 // the event bucket, and state what OnActivity is told the entry records.
 func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool {
-	// (the bucket check, the ring write and the broadcast under s.mu stay as they are)
+	s.mu.Lock()
+	if limited && !s.events.Take(time.Now()) {
+		log := s.log
+		s.mu.Unlock()
+		countDrop(&s.dropped, log, e.Type)
+		return false
+	}
+	// The ring write and the broadcast share one critical section, so a client
+	// attaching meanwhile finds the entry in its replay or receives the
+	// broadcast, never both.
+	e = s.activity.Add(e)
+	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
+	id := s.info.ID
+	s.mu.Unlock()
 	if s.opts.OnActivity != nil {
 		s.opts.OnActivity(id, e, state)
 	}
 	return true
 }
 ```
+
+The body is the old one with `state` passed on; nothing else in it changes.
 
 In `setAttention`, the call becomes `s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label}, state)`.
 
@@ -3240,7 +3408,37 @@ func eventState(e session.ActivityEntry, state session.AttentionState) session.A
 }
 ```
 
-In `activity`, marshal `activityEvent{SessionID: sessionID, ActivityEntry: e, State: eventState(e, state)}`.
+`activity` marshals the state with the entry, and its comment no longer names `localActivity`, which is gone, or says the clients get the entry alone:
+
+```go
+// activity queues an activity entry of a session for every client, with the
+// attention state an attention entry records (eventState), then hands it to
+// every sink with state ("" when it is not known). It is the OnActivity hook
+// of every session, server and hosted alike, so it runs on the goroutines
+// that record, concurrently and out of order (each entry says when it
+// happened), and it never waits: a client whose queue is past
+// activityQueueLimit misses the entry and keeps its stream.
+func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e, State: eventState(e, state)})
+```
+
+The rest of `activity` stays as it is.
+
+In `internal/api/webhooks.go`, the comment of `eventTypeOf` says where the state comes from now (the function body does not change):
+
+```go
+// eventTypeOf is the event type the Events page gives an entry, as
+// eventTypeOf in web/app/utils/events.ts does, or "" for an entry that is
+// none: an attention entry is the attention state it records, a status entry
+// of a process that exited on its own with a non-zero code is exit_nonzero,
+// and the six event types are themselves. For an attention entry state is
+// the state the entry records, handed on with it (OnActivity for a server
+// session, the host's activity message for a hosted one); it is "" only for
+// an older host, and then the entry names its state itself when the report
+// had no message. (The browser reads the same state from the event's state
+// field, and consults the session only for an entry that carries none.)
+func eventTypeOf(e session.ActivityEntry, state session.AttentionState) string {
+```
 
 In `internal/hostagent/agent.go`, `onLocalActivity` takes the state it is handed and reads `Info` no more:
 
@@ -3261,7 +3459,20 @@ func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session
 
 Each remaining `OnActivity` literal gets the third parameter:
 
-- `internal/hostagent/activity_test.go:160`: the hook there gains `, _ session.AttentionState`.
+- `internal/hostagent/activity_test.go:153-159`: the wrapper takes the state and passes it on, so it has the hook's type:
+
+```go
+	hook := a.onLocalActivity
+	if delayStatus > 0 {
+		hook = func(id string, e session.ActivityEntry, state session.AttentionState) {
+			if e.Type == session.ActivityStatus {
+				time.Sleep(delayStatus)
+			}
+			a.onLocalActivity(id, e, state)
+		}
+	}
+```
+
 - In `internal/session/local_test.go`, every function literal passed as `OnActivity` (`func(_ string, e ActivityEntry)`, `func(string, ActivityEntry)`, `func(id string, e ActivityEntry)`), and `(*attentionHook).hook`, gain a third parameter, `_ AttentionState`.
 - In `internal/crew/run_test.go`, `fakeLauncher.activity` passes the state through:
 
@@ -3606,14 +3817,22 @@ Pin it with a test in `internal/session/attention_test.go` (it passes before and
 
 ```go
 func TestCleanNameIsOneLineWithAGuestDefault(t *testing.T) {
-	long := strings.Repeat("é", proto.MaxNameLen+5)
-	for _, s := range []string{"", "  ", "\x07\x1b", "Priya", " a\tb\nc ", long, "x\x7fy", " " + long} {
-		want := oneLine(s, proto.MaxNameLen)
-		if want == "" {
-			want = "guest"
-		}
-		if got := CleanName(s); got != want {
-			t.Errorf("CleanName(%q) = %q, want %q", s, got, want)
+	if proto.MaxNameLen != 40 {
+		t.Fatalf("MaxNameLen is %d; the cases below are written for 40", proto.MaxNameLen)
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"", "guest"},
+		{"  ", "guest"},
+		{"\x07\x1b", "guest"},
+		{"Priya", "Priya"},
+		{" a\tb\nc ", "abc"},
+		{"x\x7fy", "xy"},
+		{strings.Repeat("é", 45), strings.Repeat("é", 40)},          // 40 runes, not 40 bytes
+		{" " + strings.Repeat("é", 45), strings.Repeat("é", 40)},    // trimmed before the cut
+		{strings.Repeat("a", 39) + "  b", strings.Repeat("a", 39)}, // the cut ends in a space, trimmed after
+	} {
+		if got := CleanName(tc.in); got != tc.want {
+			t.Errorf("CleanName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -3672,6 +3891,7 @@ Expected: PASS. `wc -l internal/session/local_test.go` drops by about 550 lines.
 
 - `docs/protocol.md`, streaming paragraph: `data: {"sessionId", "at", "type", "by"?, "byName"?, "message"?, "url"?, "to"?, "tool"?, "state"?}`, where `state` is, for an attention entry, the state it records (`needs_input`, `working` or `done`), absent for other entries and for an attention entry from a host that does not send one. Add the same to the `GET /api/events` row.
 - `docs/protocol.md`, attention paragraph (around line 205): "on a server session and on a hosted session whose host is connected" becomes "on a server session and on a hosted session, its host connected or not"; "while no host is connected the report is applied on the server without a token" becomes "while no host is connected the report is applied on the server, and spends its token all the same". In the events paragraph (around line 309), "Only a report that goes to a connected host spends one" becomes "Every report through the routes spends one, its host connected or not".
+- `docs/protocol.md`, webhooks paragraph (around line 343): "An attention entry is the attention state it records, the state its session was in when it recorded the entry: a server session's is read then, a hosted session's comes with the entry (`state` of the host's `activity` message)." becomes "An attention entry is the attention state it records, which comes with the entry: a server session hands it on as it records the entry (the state set with the entry's stamp), and a hosted session's host sends it (`state` of the host's `activity` message)."
 - `docs/protocol.md` and `README.md`, `conductor notify`: an attention report (the state flags, `--event` with an attention word, or a hook mapped to one) that the server answers `429` is tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes at most. An event is tried once.
 
 - [ ] **Step 15: Run the narrow gate and commit**
@@ -3692,14 +3912,14 @@ Triage items #38 to #48. The behaviour fixes come first, each with its test, the
 
 **Files:**
 - Create: `internal/agents/home.go` (moved from `merge.go`), `internal/notify/mappers.go` (moved from `notify.go`), `internal/hostagent/hooks.go` (moved from `agent.go`)
-- Modify: `internal/agents/assets.go` (`ModeError`, `chmod` seam, `.version` record, `RecordedVersion`), `internal/agents/merge.go` (`staleCommand`, `withYAMLListItem`, `mergeHooksStep`, `stepError`), `internal/agents/adapter.go` (`SnippetNeeded`), `internal/agents/claude.go`, `internal/agents/cursor.go`, `internal/agents/owner_unix.go`, `internal/agents/owner_other.go`
+- Modify: `internal/agents/assets.go` (`ModeError`, `chmod` seam, `.version` record, `RecordedVersion`), `internal/agents/merge.go` (`staleCommand`, `withYAMLListItem`, `mergeHooksStep`, `run` tags its by-hand steps), `internal/agents/adapter.go` (`SnippetNeeded`, `stepError`), `internal/agents/claude.go`, `internal/agents/cursor.go`, `internal/agents/owner_unix.go`, `internal/agents/owner_other.go`
 - Modify tests: `internal/agents/assets_test.go`, `merge_test.go`, `owner_test.go`, `adapter_test.go`
 - Modify: `internal/cli/serve.go`, `internal/cli/hooks.go`, `internal/cli/notify.go`, `internal/cli/cli_test.go`, `internal/cli/notify_test.go`
 - Modify: `internal/hostagent/agent.go`, `internal/api/integrations.go`, `internal/api/api_test.go`
 - Modify: `internal/catalog/catalog_test.go` (built-in icons are bundled)
 - Create: `web/app/utils/agentIcons.ts`, `web/app/utils/agentIcons.test.ts`, `web/app/utils/integrations.ts`, `web/app/utils/integrations.test.ts`
 - Modify: `web/nuxt.config.ts`, `web/app/components/IntegrationCard.vue`, `CodeBlock.vue`, `LaunchSessionModal.vue`, `ShareLinksModal.vue`, `FileBrowser.vue`, `CrewMembersTable.vue`, `web/app/pages/agents.vue`, `web/app/pages/crews/[[id]].vue`, `web/app/composables/useSessions.ts` (`Integration.installable`)
-- Modify: `README.md` (icons, hooks), `docs/protocol.md` (`GET /api/integrations` row)
+- Modify: `README.md` (icons, hooks), `docs/protocol.md` (`GET /api/integrations` row, the `permissionOptions()` path), `docs/features.md` (the `permissionOptions()` path)
 
 **Interfaces:**
 - Consumes (Task 1): `agents.HostHooksDir()` three results; `serveHooksDir`. (Task 5): `injectHooks` logs its no-launch-route line at warn.
@@ -3710,6 +3930,7 @@ Triage items #38 to #48. The behaviour fixes come first, each with its test, the
   var chmod = os.Chmod                              // test seam
   func RecordedVersion(hooksDir string) (string, error)
   func SnippetNeeded(err error) bool                // a step left to the user other than the skill's
+  type stepError struct{ rel string; err error }    // adapter.go: a by-hand step with its file; run makes it, SnippetNeeded reads it
   func mergeHooksStep(assets map[string]string, hooksDir, asset, rel, marker string) step
   func writable(dir string) bool                    // owner_unix.go / owner_other.go
 
@@ -4102,7 +4323,7 @@ func withYAMLListItem(content, key, marker, item, match string) (string, error) 
 
 with `rootSeen := false` declared beside `started`. Update the doc comment of `withYAMLListItem`: "…a file of more than one document, and a root written in flow style ({…} or […]). A byte order mark is kept".
 
-`run` tags each step left to the user with its file, and `SnippetNeeded` reads the tags (`adapter.go`):
+`run` tags each step left to the user with its file, and `SnippetNeeded` reads the tags. `stepError` lives in `adapter.go`, beside `SnippetNeeded`, and stays there: Step 7 moves `run` to `home.go` but not `stepError`. Add to `adapter.go`:
 
 ```go
 // stepError is what a step left to the user (ErrByHand) says, with the file
@@ -4116,12 +4337,16 @@ func (e *stepError) Error() string { return e.err.Error() }
 func (e *stepError) Unwrap() error { return e.err }
 ```
 
+In `run` (`merge.go`), the by-hand branch becomes:
+
 ```go
 		if errors.Is(err, ErrByHand) {
 			manual = append(manual, &stepError{s.rel, err})
 			continue
 		}
 ```
+
+And, in `adapter.go` too:
 
 ```go
 // SnippetNeeded reports whether what Install left to the user (err) calls for
@@ -4424,12 +4649,28 @@ In `runNotify`, the local table becomes:
 
 The rest of `runNotify`, which ranges over `hooks` reading `.flag`, `.set` and `.mapHook`, stays.
 
-In `internal/cli/hooks.go`, the by-hand case prints the snippet only when it is needed:
+In `internal/cli/hooks.go`, `runHooksInstall`'s loop over the adapters prints the snippet only when it is needed. The loop becomes:
 
 ```go
+	for _, a := range list {
+		if a.Install == nil {
+			fmt.Fprintf(stdout, "%s: nothing to install: Conductor sets %s up when it launches it\n", a.ID, a.Name)
+			if one {
+				fmt.Fprintf(stdout, "Where Conductor does not launch it, set it up with:\n\n%s", a.Snippet(hooksDir))
+				left = true
+			}
+			continue
+		}
+		touched, err := a.Install(dir, hooksDir)
+		for _, p := range touched {
+			fmt.Fprintf(stdout, "%s: wrote %s\n", a.ID, p)
+		}
+		switch {
 		case errors.Is(err, agents.ErrByHand):
 			fmt.Fprintf(stdout, "%s: %v\n", a.ID, err)
 			if !one {
+				// The snippet is for the agent's hooks: a skill file left by
+				// hand says what to do in its own message.
 				if agents.SnippetNeeded(err) {
 					fmt.Fprintf(stdout, "%s: conductor hooks install %s prints the snippet\n", a.ID, a.ID)
 				}
@@ -4439,7 +4680,16 @@ In `internal/cli/hooks.go`, the by-hand case prints the snippet only when it is 
 				fmt.Fprintf(stdout, "\n%s", a.Snippet(hooksDir))
 			}
 			left = true
+		case err != nil:
+			fmt.Fprintf(stderr, "%s: %v\n", a.ID, err)
+			failed = append(failed, a.ID)
+		case len(touched) == 0:
+			fmt.Fprintf(stdout, "%s: installed already, nothing to change\n", a.ID)
+		}
+	}
 ```
+
+Only the `ErrByHand` case changes; the lines before and after the loop (`one`, `left`, `failed` and the exit code) stay as they are.
 
 `adoptHooksDir` warns on version skew after the binary is adopted (import `internal/version`):
 
@@ -4499,7 +4749,7 @@ Expected: PASS.
 
 These are moves with no behaviour change. Move code with its doc comments, then fix the imports of both files with `go build`.
 
-- `internal/agents/home.go`: from `merge.go`, move `homeDir`, `openHome`, `geteuid`, `CheckHome`, `ownedBy`, `ownHome`, `(*homeDir).path`, `resolve`, `read`, `write`, `errLink`, `linkByHand`, `existing`, `holds`, `modeError`, `replaceFile`, `step`, `stepError`, `run`, `install` and `statusOf`. Start the file with:
+- `internal/agents/home.go`: from `merge.go`, move `homeDir`, `openHome`, `geteuid`, `CheckHome`, `ownedBy`, `ownHome`, `(*homeDir).path`, `resolve`, `read`, `write`, `errLink`, `linkByHand`, `existing`, `holds`, `modeError`, `replaceFile`, `step`, `run`, `install` and `statusOf`. `stepError` stays in `adapter.go` (Step 3). Start the file with:
   ```go
   package agents
 
@@ -4600,11 +4850,12 @@ Expected: PASS.
 - `README.md`, catalog icons: "The workbench carries the icons it uses and fetches none at runtime, so a name outside that set shows no icon" becomes "The workbench carries the icons it uses and fetches none at runtime: the built-in agents' icons, `i-lucide-wrench` and `i-lucide-bot` (`web/app/utils/agentIcons.ts`). Any other name shows the generic agent icon."
 - `README.md`, `conductor hooks`: say that it warns when the hooks dir was written by another version, that a by-hand step prints the snippet only when the snippet is what is missing, and that a home that is not yours is refused unless it is `HOME` and you may write it (never for root).
 - `docs/protocol.md`, `GET /api/integrations` row: each integration also carries `installable` (the adapter has a file to install into). In the install row, `snippet` is only present when what is left by hand is the agent's hooks, not a skill file.
+- `docs/protocol.md` (around line 165) and `docs/features.md` (around line 168): `permissionOptions()` moved with the mappers, so "`permissionOptions()` in `internal/notify/notify.go`" becomes "`permissionOptions()` in `internal/notify/mappers.go`" in both.
 
 Run: `make lint && go test -race -count=1 ./... && npm --prefix web test && npm --prefix web run typecheck`
 
 ```bash
-git add internal/agents internal/notify internal/hostagent internal/cli internal/api internal/catalog/catalog_test.go web README.md docs/protocol.md
+git add internal/agents internal/notify internal/hostagent internal/cli internal/api internal/catalog/catalog_test.go web README.md docs/protocol.md docs/features.md
 git commit -m "adapters: modes warn, version record, conductor-only rewrites, YAML BOM and flow roots, own writable home; home.go, mappers.go, hooks.go; shared copy and icons"
 ```
 
@@ -4744,6 +4995,8 @@ func embeddedIPv4(a netip.Addr) (via string, v4 []netip.Addr, err error) {
 }
 ```
 
+`errShorterNAT64` uses `errors.New`. `webhook.go` imports `errors` already (`Webhook.check` uses it, so Task 1's change to `parseWebhooks` keeps the import), and `fmt` and `net/netip` too: the new code needs no import.
+
 The check refuses a few true /96 addresses as well: an IPv4 address ending in `.0.0.0` behind a /96 whose bits 64 to 71 are zero. The message says why, and `allowPrivate` sends to it.
 
 - [ ] **Step 4: Run them to see them pass**
@@ -4783,6 +5036,7 @@ Triage items #53, #54, #56, #57, #58, #59, #60 and #61. The `api_test.go` split 
   func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) // release is never nil; call it once
   func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error)                // LaunchHeld, released at once
   func (e *Engine) IfKept(runID string, f func()) bool                             // f under the engine's lock
+  func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error)       // the members that start at once; the existing start(ctx, r, m), one member's start, stays as it is
   // Engine test hooks: afterAdd func(runID string); tried func(member string, typed bool)
   func classifyRevParse(err error) error
 
@@ -4986,38 +5240,76 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 	return run, err
 }
 
-// LaunchHeld starts a run of c … (the comment of Launch as it was, with this
-// paragraph added:) The run stays exempt from eviction until the caller calls
-// release, which is never nil and must be called once, after an error too:
-// the API mints the run's view link first, so that a launch at the cap cannot
-// forget the run between its start and its link. A stop that lands before the
-// first member's start ends the launch with ErrRunStopped, the run kept,
-// stopped, as a later stop does.
+// LaunchHeld starts a run of c, whose Cwd the caller has resolved. With
+// isolation "worktree" it first checks that git is on the server's PATH
+// (ErrNoGit) and that Cwd is in a git repository to make worktrees of
+// (ErrNotRepo), before anything is made. It starts the sessions of the
+// members that start immediately, each in a worktree of its own when the
+// crew has them, and returns once they exist: each member is starting, and
+// its prompt is typed once its session is ready (on the run's context, so a
+// client that goes away does not stop it). A member whose prompt cannot be
+// typed ends alone. When a member's session cannot be started, the ones
+// started are stopped, no run is kept, and the error names the member; when
+// the run is stopped meanwhile, it stays, stopped, and LaunchHeld returns
+// ErrRunStopped, a stop that lands before the first member's start included.
+// A crew with no members, one that runs on a host, one without a valid ID
+// or, with worktrees, one whose <cwd>/.conductor or <cwd>/.conductor/worktrees
+// is a symbolic link is not launched (ErrInvalid), and neither is a member
+// whose directory in its worktree lies through a symbolic link.
+//
+// The run stays exempt from eviction until the caller calls release, which
+// is never nil and must be called once, after an error too (a second call
+// does nothing): the API mints the run's view link first, so that a launch at
+// the cap cannot forget the run between its start and its link.
 func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
 	noop := func() {}
 	if err := c.validateWithID(); err != nil {
 		return nil, noop, err
 	}
-	… (the checks of Launch, each returning nil, noop, err) …
+	if err := c.Launchable(); err != nil {
+		return nil, noop, err
+	}
+	prefix := ""
+	if c.Isolation == IsolationWorktree {
+		if err := checkGit(); err != nil {
+			return nil, noop, err
+		}
+		if !filepath.IsAbs(c.Cwd) {
+			return nil, noop, invalidf("with worktrees, cwd must be an absolute path")
+		}
+		if err := checkWorktreesDir(c.Cwd); err != nil {
+			return nil, noop, err
+		}
+		if err := CheckRepo(ctx, c.Cwd); err != nil {
+			return nil, noop, err
+		}
+		p, err := repoPrefix(ctx, c.Cwd)
+		if err != nil {
+			return nil, noop, err
+		}
+		prefix = p
+	}
 	r := e.add(c, prefix)
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
 	}
-	run, err := e.start(ctx, r)
+	run, err := e.startImmediate(ctx, r)
 	return run, release, err
 }
 
-// start starts the members of r that start immediately and returns r as it
-// then is. The caller holds r as launching.
-func (e *Engine) start(ctx context.Context, r *run) (*Run, error) {
+// startImmediate starts the members of r that start immediately and returns
+// r as it then is. r is launching (held) until its launcher releases it, so
+// no other launch forgets it meanwhile. (Engine.start, which starts one
+// member, is another function and stays as it is.)
+func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
 
 	e.mu.Lock()
 	if r.stopping {
-		// Stopped before anything started: the run stays, stopped.
+		// Stopped before any start was reserved: the run stays, stopped.
 		e.mu.Unlock()
 		return nil, ErrRunStopped
 	}
@@ -5028,11 +5320,44 @@ func (e *Engine) start(ctx context.Context, r *run) (*Run, error) {
 		}
 	}
 	e.mu.Unlock()
-	… (the rest of the old Launch body, from `for i, m := range starts` to the final Get, unchanged) …
+	for i, m := range starts {
+		local, err := e.launch(ctx, r, m)
+		if err == nil {
+			go e.finish(r, m, local) // takes over the start
+			continue
+		}
+		if errors.Is(err, ErrRunStopped) || r.ctx.Err() != nil {
+			// Stopped meanwhile: the run stays, stopped, and so does what
+			// had started. The members not begun were never started.
+			e.fail(r, m, ErrRunStopped)
+			e.mu.Lock()
+			for _, rest := range starts[i+1:] {
+				rest.state.Status = MemberPending
+			}
+			e.mu.Unlock()
+			for range starts[i:] {
+				r.starts.Done()
+			}
+			return nil, ErrRunStopped
+		}
+		for range starts[i:] {
+			r.starts.Done()
+		}
+		e.abort(r)
+		return nil, fmt.Errorf("member %s: %w", quote(m.def.Name), err)
+	}
+	// The check stays, should something else ever forget a run.
+	out, ok := e.Get(r.id)
+	if !ok {
+		return nil, ErrRunNotFound
+	}
+	return &out, nil
 }
 ```
 
-The old `defer e.launched(r)` goes. Update the `launching` field's comment: "set from add until the launcher releases the run (LaunchHeld): evict leaves the run alone meanwhile". Remove the "The run is launching until Launch returns" comment before the final `Get`.
+From the `e.mu.Lock()` that reserves the starts to the end, `startImmediate` is the old body of `Launch`; the stopping check before the reservation is new. `run.go` imports `sync` already (`run.starts`).
+
+The old `defer e.launched(r)` goes; `release` calls `launched`. Update the `launching` field's comment: "set from add until the launcher releases the run (LaunchHeld): evict leaves the run alone meanwhile". The "The run is launching until Launch returns" comment before the final `Get` is gone (above).
 
 ```go
 // IfKept runs f while the engine keeps the run with the given ID, under the
@@ -5096,7 +5421,18 @@ Expected: PASS, the existing `TestStopDuringLaunchKeepsTheRun` and `TestALaunchi
 
 - [ ] **Step 4: Write the failing link and shutdown tests**
 
-In `internal/share/store_test.go`, add a helper, and wrap every boolean use of `s.Revoke(…)` and `s.RevokeRun(…)` in it: `if !found(s.Revoke("sess", link.ID))`, `if found(s.Revoke("", link.ID)) || found(s.Revoke("run", link.ID))`, and so on. Calls used as statements stay as they are.
+In `internal/share/store_test.go`, add a helper, and wrap every boolean use of `s.Revoke(…)` and `s.RevokeRun(…)` in it. These are the six conditions that change, each in place:
+
+| Test | Before | After |
+|---|---|---|
+| `TestCreateResolveRevoke` | `if !s.Revoke("sess", link.ID) {` | `if !found(s.Revoke("sess", link.ID)) {` |
+| `TestCreateResolveRevoke` | `if s.Revoke("other", link.ID) {` | `if found(s.Revoke("other", link.ID)) {` |
+| `TestRunLinks` | `if s.Revoke("", link.ID) \|\| s.Revoke("run", link.ID) {` | `if found(s.Revoke("", link.ID)) \|\| found(s.Revoke("run", link.ID)) {` |
+| `TestRunLinks` | `if s.RevokeRun("other", link.ID) {` | `if found(s.RevokeRun("other", link.ID)) {` |
+| `TestRunLinks` | `if s.RevokeRun("", sl.ID) \|\| s.RevokeRun("sess", sl.ID) {` | `if found(s.RevokeRun("", sl.ID)) \|\| found(s.RevokeRun("sess", sl.ID)) {` |
+| `TestRunLinks` | `if !s.RevokeRun("run", link.ID) {` | `if !found(s.RevokeRun("run", link.ID)) {` |
+
+The five calls used as statements stay as they are, since a call statement discards both results: `s.Revoke("sess", link.ID)` in `TestCreateResolveRevoke`, `s.RevokeRun("run", link.ID)` in `TestRunLinks`, `s.RevokeRun("run", revoked.ID)` in `TestDeleteRun`, and `s.RevokeRun("run", link.ID)` and `s.Revoke("sess", sl.ID)` in `TestResolveWhileRevoking`. `grep -n 'Revoke' internal/share/store_test.go` lists them all; after the edit, every one inside a condition goes through `found`.
 
 ```go
 // found is the first result of a revoke: whether the link was the caller's.
@@ -5675,16 +6011,16 @@ git commit -m "crews: stop before the first start, held runs, links under the ru
 
 ### Task 9: Crew storage: one file per crew, a paged list
 
-The spec's "Crew storage" block. It replaces `crews.json`, the 50-crew cap and its tests, and the 512 KiB bound.
+The spec's "Crew storage" block. It replaces `crews.json`, the 50-crew cap and its tests, and the 512 KiB bound. The crews directory is `crews/` in whichever data directory Task 1 resolves (`<dataDir>/crews/<id>.json`).
 
 **Files:**
-- Modify: `internal/store/store.go` (`Sub`, `Entry`, `List`, `Delete`, `LoadLimit`), `internal/store/store_test.go`
+- Modify: `internal/store/store.go` (`Sub`, `Entry`, `List`, `Delete`, `LoadLimit`, the package and `Store` comments), `internal/store/store_test.go`
 - Modify: `internal/crew/store.go` (rewritten), `internal/crew/crew.go` (`MaxEncoded`, `maxEncoded`, size measured as the file), `internal/crew/crew_test.go`
 - Create: `internal/crew/migrate.go`, `internal/crew/store_test.go`
 - Modify: `internal/api/crews.go`, `internal/api/server.go` (`New`), `internal/api/runs.go` (`handleLaunchCrew`), `internal/api/api_test.go`
 - Modify: `internal/cli/up.go` (`runCrews` pages), `internal/cli/up_test.go`
 - Modify: `web/app/composables/useSessions.ts` (`CrewSummary`, `listCrews`, `getCrew`, comments), `web/app/utils/crews.ts` (`summaryOf`), `web/app/utils/crews.test.ts`, `web/app/pages/crews/[[id]].vue`
-- Modify: `docs/protocol.md` (crew rows, the persistence paragraph, the limits), `README.md` (where crews are saved), `docs/architecture.md:94`, `AGENTS.md` map row for `internal/crew`
+- Modify: `docs/protocol.md` (crew rows, the persistence paragraph, the limits, the body-size sentence), `README.md` (where crews are saved, the crew limits at lines 433 to 437), `docs/architecture.md:94`, `AGENTS.md` map row for `internal/crew`
 
 **Interfaces:**
 - Consumes (Task 1): `store.Encode`, `store.DecodeStrict`. (Task 8): `Engine.LaunchHeld` in `handleLaunchCrew`.
@@ -5695,20 +6031,23 @@ The spec's "Crew storage" block. It replaces `crews.json`, the 50-crew cap and i
   type Entry struct { Name string; Size int64; ModTime time.Time }
   func (s *Store) List() ([]Entry, error)                                 // documents only, by name
   func (s *Store) Delete(name string) error                               // missing is no error
-  func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error)
+  func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error) // refuses a link or any file but a regular one (Lstat), as List leaves them out
 
   package crew
   const MaxEncoded = 1 << 20
   var maxEncoded = MaxEncoded                                             // a test lowers it
   var ErrUnreadable = errors.New("the crew's file cannot be used")
+  var ErrWrite = errors.New("the crew's file could not be written")      // wraps a failed save or delete; a read failure does not
   type Summary struct { ID, Name, Cwd, Where, Isolation string; Members []MemberSummary; UpdatedAt time.Time } // json: id name cwd where isolation members updatedAt
   type MemberSummary struct { Name string `json:"name"`; AgentID string `json:"agentId"` }
-  func NewStore(st *store.Store) (s *Store, problems []error, err error)
+  func NewStore(st *store.Store) (s *Store, problems []error, err error) // problems: unusable files and crews of crews.json not moved, each naming its files
   func (s *Store) List(offset, limit int) ([]Summary, int, error)
-  func (s *Store) Get(id string) (Crew, error)                            // ErrNotFound, or wraps ErrUnreadable
+  func (s *Store) Get(id string) (Crew, error)                            // ErrNotFound, or wraps ErrUnreadable (a link included)
+  func migrate(st, dir *store.Store) (notices []error, err error)         // migrate.go
   // Put, Create, Update, Duplicate, Delete keep their signatures; ErrTooManyCrews is gone.
 
   package api
+  const maxCrewBody = 2 << 20                                             // a crew create or update body: twice crew.MaxEncoded
   // GET /api/crews?offset=0&limit=100 -> 200 {crews: [Summary], total}; 400 invalid_request for a bad offset or limit
   // GET /api/crews/{id} -> 200 {crew}; 404 not_found; 409 crew_unreadable; 503 store_unavailable
   ```
@@ -5801,6 +6140,13 @@ func TestLoadLimit(t *testing.T) {
 	if _, err := s.LoadLimit("bad.json", &d, 64); err == nil || !strings.Contains(err.Error(), "bad.json") {
 		t.Fatalf("trailing data: %v", err)
 	}
+	// A link is refused, never read through, as List leaves links out.
+	if err := os.Symlink(filepath.Join(s.Dir(), "c.json"), filepath.Join(s.Dir(), "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.LoadLimit("link.json", &d, 64); ok || err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a link: %v %v", ok, err)
+	}
 }
 ```
 
@@ -5809,7 +6155,7 @@ Expected: build failure, because `Sub`, `List`, `Delete` and `LoadLimit` are und
 
 - [ ] **Step 2: Implement them**
 
-In `internal/store/store.go` (import `"io"` and `"time"`):
+In `internal/store/store.go` (import `"time"`; `"io"` is imported already):
 
 ```go
 // subPattern limits a sub-store's name to a flat, lower-case directory name.
@@ -5867,19 +6213,38 @@ func (s *Store) Delete(name string) error {
 }
 
 // LoadLimit is Load for a document of at most limit bytes. A larger one is an
-// error that says so, and is not read past the limit.
+// error that says so, and is not read past the limit. Only a regular file is
+// read: a symbolic link, which List leaves out too, is refused rather than
+// followed (Lstat), and so is anything else in the document's place.
 func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error) {
 	if !namePattern.MatchString(name) {
 		return false, fmt.Errorf("store: bad name %q", name)
 	}
-	f, err := os.Open(filepath.Join(s.dir, name))
+	path := filepath.Join(s.dir, name)
+	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
+	if !fi.Mode().IsRegular() {
+		what := "not a regular file"
+		if fi.Mode()&os.ModeSymlink != 0 {
+			what = "a symbolic link, which is not followed"
+		}
+		return false, fmt.Errorf("store: %s is %s", name, what)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
 	defer f.Close()
+	// The file opened is the one checked: a link put in its place meanwhile
+	// is refused too.
+	if ofi, err := f.Stat(); err != nil || !os.SameFile(fi, ofi) {
+		return false, fmt.Errorf("store: %s changed while it was opened", name)
+	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return false, err
@@ -6211,126 +6576,451 @@ func TestStoreHoldsMoreThan50Crews(t *testing.T) {
 		t.Fatalf("%d crews", total)
 	}
 }
+
+// The move never overwrites a crew file. A crew of crews.json whose file
+// exists and holds something else (a crew made or edited since) is not
+// moved: a notice names both files, the file stays as it was, and
+// crews.json.migrated keeps the crew whole. The next start has nothing to
+// say.
+func TestMigrationNeverOverwritesACrewFile(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(st.Dir(), "crews.json")
+	legacy := `{"crews": [` + crewJSON("alpha", "Alpha from crews.json") + `, ` + crewJSON("beta", "Beta") + `]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := st.Sub("crews")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.Save("alpha.json", validCrew("alpha", "Alpha made since")); err != nil {
+		t.Fatal(err)
+	}
+	alphaFile := filepath.Join(sub.Dir(), "alpha.json")
+	before, err := os.ReadFile(alphaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, problems, err := NewStore(st)
+	if err != nil || len(problems) != 1 {
+		t.Fatalf("NewStore: %v %v", problems, err)
+	}
+	for _, want := range []string{path, alphaFile, path + ".migrated"} {
+		if !strings.Contains(problems[0].Error(), want) {
+			t.Errorf("notice %q does not name %s", problems[0], want)
+		}
+	}
+	if b, _ := os.ReadFile(alphaFile); string(b) != string(before) {
+		t.Fatalf("alpha.json was overwritten:\n%s", b)
+	}
+	if c, err := s.Get("alpha"); err != nil || c.Name != "Alpha made since" {
+		t.Fatalf("alpha: %q %v", c.Name, err)
+	}
+	if c, err := s.Get("beta"); err != nil || c.Name != "Beta" {
+		t.Fatalf("beta: %q %v", c.Name, err)
+	}
+	if b, err := os.ReadFile(path + ".migrated"); err != nil || string(b) != legacy {
+		t.Fatalf("crews.json.migrated: %v %q", err, b)
+	}
+	reopen(t, st)
+}
+
+// A crew file that is a symbolic link is never followed: Get and Update
+// refuse it as unusable, the list leaves it out, a new crew does not take its
+// ID, and a delete removes the link and not what it points to.
+func TestALinkedCrewFileIsNotFollowed(t *testing.T) {
+	s, st := newStore(t)
+	target := filepath.Join(t.TempDir(), "elsewhere.json")
+	b, _ := store.Encode(validCrew("linked", "Linked"))
+	if err := os.WriteFile(target, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(st.Dir(), "crews", "linked.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("linked"); !errors.Is(err, ErrUnreadable) || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("get: %v", err)
+	}
+	if _, err := s.Update("linked", validCrew("", "Changed")); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("update: %v", err)
+	}
+	if _, total, _ := s.List(0, 10); total != 0 {
+		t.Fatalf("%d crews listed", total)
+	}
+	if c, err := s.Create(validCrew("", "Linked")); err != nil || c.ID != "linked-2" {
+		t.Fatalf("create: %q %v", c.ID, err)
+	}
+	if ok, err := s.Delete("linked"); !ok || err != nil {
+		t.Fatalf("delete: %v %v", ok, err)
+	}
+	if _, err := os.Lstat(link); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the link: %v", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != string(b) {
+		t.Fatalf("the file the link named: %v %q", err, got)
+	}
+}
+
+// A save is listed at once, even when the file keeps its size and its time
+// (a rename to a name of the same length within the clock's tick): commit
+// drops the summary the list cached for the file, and Delete does too.
+func TestASaveIsListedAtOnce(t *testing.T) {
+	s, st := newStore(t)
+	path := filepath.Join(st.Dir(), "crews", "c.json")
+	if err := s.Put(validCrew("c", "Alpha")); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := func() string {
+		t.Helper()
+		page, _, err := s.List(0, 1)
+		if err != nil || len(page) != 1 {
+			t.Fatalf("list: %v %v", page, err)
+		}
+		return page[0].Name
+	}
+	// saveAs puts the crew c under another name of five letters and gives
+	// its file the first save's time back.
+	saveAs := func(n string) {
+		t.Helper()
+		if err := s.Put(validCrew("c", n)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, first.ModTime(), first.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		if fi, _ := os.Stat(path); fi.Size() != first.Size() {
+			t.Fatalf("sizes %d and %d", fi.Size(), first.Size())
+		}
+	}
+	if got := name(); got != "Alpha" {
+		t.Fatalf("listed %q", got)
+	}
+	saveAs("Bravo")
+	if got := name(); got != "Bravo" {
+		t.Fatalf("listed %q after the save", got)
+	}
+	// A file put back by hand after a delete, with the same size and time,
+	// is read again: Delete dropped the summary too.
+	if ok, err := s.Delete("c"); !ok || err != nil {
+		t.Fatalf("delete: %v %v", ok, err)
+	}
+	b, _ := store.Encode(validCrew("c", "Carol"))
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, first.ModTime(), first.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if got := name(); got != "Carol" {
+		t.Fatalf("listed %q after a delete and a file put back by hand", got)
+	}
+}
 ```
 
-In `internal/crew/crew_test.go`, apply these edits:
+In `internal/crew/crew_test.go`, apply these edits. `NewStore` now returns three values, `List` takes a page and returns summaries, and `Get` returns an error in place of a found flag; every test that used them changes as shown.
 
-- `newStore` takes the three results, and new helpers follow it:
-  ```go
-  func newStore(t *testing.T) (*Store, *store.Store) {
-  	t.Helper()
-  	st, err := store.Open(t.TempDir())
-  	if err != nil {
-  		t.Fatal(err)
-  	}
-  	return reopen(t, st), st
-  }
+`newStore` keeps its two results, the crew store and the data directory's store, and opens the crew store with `reopen`. Two helpers follow it:
 
-  // reopen is NewStore over st, as a restart does, requiring no problem.
-  func reopen(t *testing.T, st *store.Store) *Store {
-  	t.Helper()
-  	s, problems, err := NewStore(st)
-  	if err != nil || len(problems) != 0 {
-  		t.Fatalf("NewStore: %v %v", problems, err)
-  	}
-  	return s
-  }
+```go
+func newStore(t *testing.T) (*Store, *store.Store) {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reopen(t, st), st
+}
 
-  // all returns every crew of s in full, in list order.
-  func all(t *testing.T, s *Store) []Crew {
-  	t.Helper()
-  	sums, total, err := s.List(0, 500)
-  	if err != nil || total != len(sums) {
-  		t.Fatalf("list: %d of %d, %v", len(sums), total, err)
-  	}
-  	out := []Crew{}
-  	for _, sum := range sums {
-  		c, err := s.Get(sum.ID)
-  		if err != nil {
-  			t.Fatal(err)
-  		}
-  		out = append(out, c)
-  	}
-  	return out
-  }
+// reopen is NewStore over st, as a restart does, requiring no problem.
+func reopen(t *testing.T, st *store.Store) *Store {
+	t.Helper()
+	s, problems, err := NewStore(st)
+	if err != nil || len(problems) != 0 {
+		t.Fatalf("NewStore: %v %v", problems, err)
+	}
+	return s
+}
 
-  // get is Get as a found flag.
-  func get(s *Store, id string) (Crew, bool) {
-  	c, err := s.Get(id)
-  	return c, err == nil
-  }
-  ```
-- Everywhere in `crew_test.go`, `s.List()` and `again.List()` become `all(t, s)` and `all(t, again)`. `s.Get(id)` and `again.Get(id)` become `get(s, id)` and `get(again, id)`. `again, err := NewStore(st)` followed by `if err != nil { t.Fatal(err) }` becomes `again := reopen(t, st)`.
-- Delete `TestStoreRoundTrip` (replaced by `TestEachCrewIsAFile` and `TestListPagesThroughTheDirectory`), `TestStoreHoldsAtMost50Crews` (replaced by `TestStoreHoldsMoreThan50Crews`) and `TestNewStoreRefusesAMalformedFile` (replaced by `TestMigrationRefusesAMalformedCrewsJSON`).
-- `TestFailedSaveChangesNothing` becomes a read-only crews directory:
-  ```go
-  // A save that fails changes nothing: the files stay as they were and the
-  // list with them.
-  func TestFailedSaveChangesNothing(t *testing.T) {
-  	if os.Geteuid() == 0 {
-  		t.Skip("root writes to a directory of mode 0500")
-  	}
-  	s, st := newStore(t)
-  	if err := s.Put(validCrew("kept", "Kept")); err != nil {
-  		t.Fatal(err)
-  	}
-  	dir := filepath.Join(st.Dir(), "crews")
-  	if err := os.Chmod(dir, 0o500); err != nil {
-  		t.Fatal(err)
-  	}
-  	t.Cleanup(func() { os.Chmod(dir, 0o700) })
-  	if err := s.Put(validCrew("lost", "Lost")); err == nil {
-  		t.Error("put succeeded")
-  	}
-  	if _, err := s.Create(validCrew("", "Lost")); err == nil {
-  		t.Error("create succeeded")
-  	}
-  	if _, err := s.Update("kept", validCrew("", "Changed")); err == nil {
-  		t.Error("update succeeded")
-  	}
-  	if _, err := s.Duplicate("kept"); err == nil {
-  		t.Error("duplicate succeeded")
-  	}
-  	if ok, err := s.Delete("kept"); ok || err == nil {
-  		t.Errorf("delete: %v %v", ok, err)
-  	}
-  	if got := all(t, s); !reflect.DeepEqual(got, []Crew{validCrew("kept", "Kept")}) {
-  		t.Fatalf("a failed save changed the crews: %+v", got)
-  	}
-  }
-  ```
-- `encodedSize` measures what the store writes, and `crewOfEncodedSize` uses `\x01`, which JSON writes as six bytes whatever the HTML escaping:
-  ```go
-  // encodedSize is the length of c's file, as the store writes it.
-  func encodedSize(t *testing.T, c Crew) int {
-  	t.Helper()
-  	b, err := store.Encode(c)
-  	if err != nil {
-  		t.Fatal(err)
-  	}
-  	return len(b)
-  }
-  ```
-  In `crewOfEncodedSize`, both `strings.Repeat("<", …)` become `strings.Repeat("\x01", …)`, and its comment says `\x01` (`\u0001`). `TestValidateAcceptsCrewsAtTheLimits` and `TestDuplicateRefusesACopyOverTheEncodedLimit` lower the bound for their duration, since no valid crew reaches 1 MiB. Under `MaxEncoded`, `Validate`'s check is a guarantee that every file written reads back:
-  ```go
-  	old := maxEncoded
-  	maxEncoded = 300 << 10
-  	t.Cleanup(func() { maxEncoded = old })
-  ```
-  with `crewOfEncodedSize(t, "edge", 300<<10)` and `crewOfEncodedSize(t, "edge", 300<<10-9)`. The duplicate test checks `strings.Contains(err.Error(), "as its file")` and ends with `reopen(t, st)`.
+// all returns every crew of s in full, in list order.
+func all(t *testing.T, s *Store) []Crew {
+	t.Helper()
+	sums, total, err := s.List(0, 500)
+	if err != nil || total != len(sums) {
+		t.Fatalf("list: %d of %d, %v", len(sums), total, err)
+	}
+	out := []Crew{}
+	for _, sum := range sums {
+		c, err := s.Get(sum.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+```
+
+`encodedSize` measures the file as the store writes it, and `crewOfEncodedSize` uses `\x01`, which JSON writes as six bytes (`\u0001`) whatever the HTML escaping. Both replace the old ones whole:
+
+```go
+// encodedSize is the length of c's file, as the store writes it.
+func encodedSize(t *testing.T, c Crew) int {
+	t.Helper()
+	b, err := store.Encode(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(b)
+}
+
+// crewOfEncodedSize returns a valid crew whose file is exactly size bytes:
+// twelve members with prompts and args of "\x01", which JSON writes as six
+// bytes (\u0001), and a goal of "g" making up the rest.
+func crewOfEncodedSize(t *testing.T, id string, size int) Crew {
+	t.Helper()
+	c := validCrew(id, "Edge")
+	c.Goal = ""
+	c.Members = nil
+	for i := range 12 {
+		c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Prompt: strings.Repeat("\x01", 4000), Args: []string{""}, Start: Start{When: "manual"}})
+	}
+	lt := (size - encodedSize(t, c) - 1000) / 6 // leave about 1000 bytes to the goal
+	for i := range c.Members {
+		n := lt / 12
+		if i == 0 {
+			n += lt % 12
+		}
+		c.Members[i].Args[0] = strings.Repeat("\x01", n)
+	}
+	c.Goal = strings.Repeat("g", size-encodedSize(t, c))
+	if got := encodedSize(t, c); got != size || c.Validate() != nil {
+		t.Fatalf("crew of %d bytes: %v", got, c.Validate())
+	}
+	return c
+}
+```
+
+No valid crew reaches `MaxEncoded` (twelve members at every limit, written with six-byte escapes, come to about 900 KB), so the two tests at the bound lower it for their duration. Under `MaxEncoded`, `Validate`'s check is a guarantee that every file the store writes reads back. `TestValidateAcceptsCrewsAtTheLimits` ends, in place of its "As JSON, up to 512 KiB" lines:
+
+```go
+	// As its file, up to maxEncoded, lowered here to a size a valid crew reaches.
+	old := maxEncoded
+	maxEncoded = 300 << 10
+	t.Cleanup(func() { maxEncoded = old })
+	if err := crewOfEncodedSize(t, "edge", 300<<10).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+`TestDuplicateRefusesACopyOverTheEncodedLimit` becomes:
+
+```go
+// The store checks a crew as it saves it, ID and times included, so a crew at
+// the encoded limit is not copied into one past it: the store never writes a
+// file a start cannot read.
+func TestDuplicateRefusesACopyOverTheEncodedLimit(t *testing.T) {
+	old := maxEncoded
+	maxEncoded = 300 << 10
+	t.Cleanup(func() { maxEncoded = old })
+	s, st := newStore(t)
+	edge := crewOfEncodedSize(t, "edge", 300<<10-9) // a copy is 10 bytes longer: " copy" and "-copy"
+	if err := s.Put(edge); err != nil {
+		t.Fatal(err)
+	}
+	clock(s, time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)) // times as long as edge's
+	if _, err := s.Duplicate("edge"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "as its file") {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if n := len(all(t, s)); n != 1 {
+		t.Fatalf("%d crews", n)
+	}
+	reopen(t, st)
+}
+```
+
+Delete `TestStoreRoundTrip` (replaced by `TestEachCrewIsAFile` and `TestListPagesThroughTheDirectory`), `TestStoreHoldsAtMost50Crews` (replaced by `TestStoreHoldsMoreThan50Crews`) and `TestNewStoreRefusesAMalformedFile` (replaced by `TestMigrationRefusesAMalformedCrewsJSON`).
+
+`TestStoreReturnsCopies` checks the summaries the list returns as well as the crew `Get` returns:
+
+```go
+func TestStoreReturnsCopies(t *testing.T) {
+	s, _ := newStore(t)
+	c := validCrew("api", "API")
+	if err := s.Put(c); err != nil {
+		t.Fatal(err)
+	}
+	c.Members[0].Prompt = "changed after Put"
+	c.Members[1].Args[0] = "changed after Put"
+	got, err := s.Get("api")
+	list, _, _ := s.List(0, 10)
+	if err != nil || len(got.Members) != 2 || len(list) != 1 || len(list[0].Members) != 2 {
+		t.Fatalf("stored: %v %+v %+v", err, got, list)
+	}
+	got.Members[0].Prompt = "changed after Get"
+	got.Members[1].Args[0] = "changed after Get"
+	list[0].Members[1].Name = "changed after List"
+	list[0].Members = append(list[0].Members[:1], MemberSummary{Name: "extra"})
+	if got, _ := s.Get("api"); !reflect.DeepEqual(got, validCrew("api", "API")) {
+		t.Fatalf("the stored crew changed: %+v", got)
+	}
+	want := []MemberSummary{{Name: "lead", AgentID: "claude"}, {Name: "tests", AgentID: "shell"}}
+	if again, _, _ := s.List(0, 10); !reflect.DeepEqual(again[0].Members, want) {
+		t.Fatalf("the cached summary changed: %+v", again[0].Members)
+	}
+}
+```
+
+In `TestCreateDerivesUniqueIDs`, the lines from `again, err := NewStore(st)` to the end of the function become:
+
+```go
+	if n := len(all(t, reopen(t, st))); n != len(cases) {
+		t.Fatalf("reloaded %d crews, want %d", n, len(cases))
+	}
+}
+```
+
+In `TestCreateConcurrentlyGivesDistinctIDs`, the last check becomes:
+
+```go
+	if n := len(all(t, s)); !slices.Equal(got, want) || n != writers {
+		t.Fatalf("ids %v, %d crews", got, n)
+	}
+}
+```
+
+In `TestUpdateKeepsTheIDAndCreationTime`, the lines from `again, err := NewStore(st)` to the end become:
+
+```go
+	if list := all(t, reopen(t, st)); !reflect.DeepEqual(list, []Crew{want}) {
+		t.Fatalf("stored: %+v", list)
+	}
+}
+```
+
+In `TestStoreRefusesInvalidCrews`, the lines from `if got, _ := s.Get("ok")` to the end become:
+
+```go
+	if got, _ := s.Get("ok"); !reflect.DeepEqual(got, validCrew("ok", "x")) || len(all(t, s)) != 1 {
+		t.Fatalf("an invalid crew changed the store: %+v", all(t, s))
+	}
+	if list := all(t, reopen(t, st)); len(list) != 1 || list[0].ID != "ok" {
+		t.Fatalf("stored: %+v", list)
+	}
+}
+```
+
+`TestNewStoreListsNoMembersAsEmpty` reads a crew that `crews.json` holds without members after the move:
+
+```go
+// A crew that went into crews.json without members, by hand, is moved and
+// read with members [] as every saved crew is, never null, and listed so.
+func TestNewStoreListsNoMembersAsEmpty(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := `{"crews": [{"id": "draft", "name": "Draft", "where": "server", "isolation": "none"}]}`
+	if err := os.WriteFile(filepath.Join(st.Dir(), "crews.json"), []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := reopen(t, st)
+	c, err := s.Get("draft")
+	if err != nil {
+		t.Fatalf("draft not loaded: %v", err)
+	}
+	if b, _ := json.Marshal(c); !strings.Contains(string(b), `"members":[]`) {
+		t.Fatalf("read as %s", b)
+	}
+	if page, _, _ := s.List(0, 1); len(page) != 1 || page[0].Members == nil {
+		t.Fatalf("listed as %+v", page)
+	}
+}
+```
+
+In `TestStoreTrimsTheName`, the lines from `if err := os.WriteFile(filepath.Join(st.Dir(), "crews.json")` to the end become (a name with spaces is trimmed whether it comes from `crews.json` or from a crew file written by hand):
+
+```go
+	if err := os.WriteFile(filepath.Join(st.Dir(), "crews.json"), []byte(`{"crews": [{"id": "hand", "name": "  Hand  ", "where": "server", "isolation": "none", "members": []}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again := reopen(t, st)
+	if got, err := again.Get("hand"); err != nil || got.Name != "Hand" {
+		t.Fatalf("moved: %q %v", got.Name, err)
+	}
+	b, _ := store.Encode(validCrew("byhand", "  By hand  "))
+	if err := os.WriteFile(filepath.Join(st.Dir(), "crews", "byhand.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := again.Get("byhand"); err != nil || got.Name != "By hand" {
+		t.Fatalf("by hand: %q %v", got.Name, err)
+	}
+}
+```
+
+`TestFailedSaveChangesNothing` makes the crews directory read-only:
+
+```go
+// A save that fails changes nothing: the files stay as they were and the
+// list with them.
+func TestFailedSaveChangesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a directory of mode 0500")
+	}
+	s, st := newStore(t)
+	if err := s.Put(validCrew("kept", "Kept")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(st.Dir(), "crews")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	if err := s.Put(validCrew("lost", "Lost")); !errors.Is(err, ErrWrite) {
+		t.Errorf("put: %v", err)
+	}
+	if _, err := s.Create(validCrew("", "Lost")); !errors.Is(err, ErrWrite) {
+		t.Errorf("create: %v", err)
+	}
+	if _, err := s.Update("kept", validCrew("", "Changed")); !errors.Is(err, ErrWrite) {
+		t.Errorf("update: %v", err)
+	}
+	if _, err := s.Duplicate("kept"); !errors.Is(err, ErrWrite) {
+		t.Errorf("duplicate: %v", err)
+	}
+	if ok, err := s.Delete("kept"); ok || !errors.Is(err, ErrWrite) {
+		t.Errorf("delete: %v %v", ok, err)
+	}
+	if got := all(t, s); !reflect.DeepEqual(got, []Crew{validCrew("kept", "Kept")}) {
+		t.Fatalf("a failed save changed the crews: %+v", got)
+	}
+}
+```
+
+`TestDuplicateCopiesUnderACopyID` and the validation test that calls `st.Put` need no change: they read `Get` as `stored, _ :=` and `got, _ :=`, which compile with the error. `go vet ./internal/crew/` names any import the edits leave unused.
 
 Run: `go test ./internal/crew/ -count=1`
-Expected: build failure, because `NewStore` returns two values and `Summary`, `MemberSummary`, `ErrUnreadable`, `MaxEncoded` and `maxEncoded` are undefined.
+Expected: build failure, because `NewStore` returns two values and `Summary`, `MemberSummary`, `ErrUnreadable`, `ErrWrite`, `MaxEncoded` and `maxEncoded` are undefined.
 
 - [ ] **Step 4: Rewrite the crew store**
 
 In `internal/crew/crew.go`, replace the `maxEncoded` constant and the size check:
 
 ```go
-// MaxEncoded bounds a crew: its file, as the store writes it (store.Encode),
-// and the body of a create or an update. It is a sanity bound, not a quota:
-// the limits above keep a valid crew well under it, and there is no limit on
-// the number of crews.
+// MaxEncoded bounds a crew: its file, as the store writes it (store.Encode).
+// Validate holds every crew to it, so the crew a create or an update sends is
+// held to it too; the request body itself may be larger (the API takes up to
+// twice this, since a client may indent the crew). It is a sanity bound, not
+// a quota: the limits above keep a valid crew well under it, and there is no
+// limit on the number of crews.
 const MaxEncoded = 1 << 20
 
 // maxEncoded is the bound Validate holds a crew to, MaxEncoded but for tests,
@@ -6359,6 +7049,8 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -6387,9 +7079,14 @@ var (
 	ErrNotFound = errors.New("no such crew")
 	// ErrUnreadable is a crew whose file cannot be used: not JSON, a field a
 	// crew does not have, an invalid crew, another crew's ID, more than
-	// MaxEncoded bytes. The error that wraps it says why. Such a file is left
-	// alone: never listed, never overwritten, and deleted only on request.
+	// MaxEncoded bytes, a symbolic link. The error that wraps it says why and
+	// names the file, not the directory. Such a file is left alone: never
+	// listed, never overwritten, and deleted only on request.
 	ErrUnreadable = errors.New("the crew's file cannot be used")
+	// ErrWrite wraps a save or a delete that failed: the file is as it was.
+	// A failure to read the crews directory or a file does not wrap it, so
+	// the API can say which of the two failed.
+	ErrWrite = errors.New("the crew's file could not be written")
 )
 
 // Summary is a crew as GET /api/crews lists it: what the Crews page's list
@@ -6432,7 +7129,10 @@ type Store struct {
 	mu sync.Mutex
 	// sums caches each file's summary by document name, with the size and
 	// time the file had when it was read: one whose size or time changed is
-	// read again.
+	// read again. commit and Delete drop the entry of the file they change,
+	// so a save that keeps the size and the time (a rename to a name of the
+	// same length within the clock's tick) is listed at once; a hand edit
+	// that keeps both shows once either changes.
 	sums map[string]cached
 }
 
@@ -6446,15 +7146,18 @@ type cached struct {
 // NewStore opens the crews of the data directory st: crews/ in it, made 0700
 // when missing, after the crews.json of an older Conductor is moved there
 // (migrate). It reads every crew file once. problems lists, each naming its
-// file, those that cannot be used: they are left out and the other crews
-// load. err is fatal: a crews.json that cannot be moved, or a crews directory
-// that cannot be made or read.
+// files, what was left as it was: a crew of crews.json that was not moved
+// because its file exists and holds something else (crews.json.migrated
+// keeps it), and a crew file that cannot be used (left out; the other crews
+// load). err is fatal: a crews.json that cannot be moved, or a crews
+// directory that cannot be made or read.
 func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 	dir, err := st.Sub(crewsDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := migrate(st, dir); err != nil {
+	notices, err := migrate(st, dir)
+	if err != nil {
 		return nil, nil, err
 	}
 	s = &Store{st: dir, now: func() time.Time { return time.Now().UTC() }, sums: map[string]cached{}}
@@ -6464,6 +7167,7 @@ func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", dir.Dir(), err)
 	}
+	problems = notices
 	for _, e := range entries {
 		if c := s.summaryOf(e); c.err != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", filepath.Join(dir.Dir(), e.Name), c.err))
@@ -6489,19 +7193,24 @@ func (s *Store) summaryOf(e store.Entry) cached {
 }
 
 // read loads the crew with the given ID from its file and checks it as the
-// store saves it: strict JSON of at most MaxEncoded bytes, a valid crew, the
-// ID its file is named for. ErrNotFound when there is no file, an error
-// wrapping ErrUnreadable when it cannot be used.
+// store saves it: a regular file (not a link), strict JSON of at most
+// MaxEncoded bytes, a valid crew, the ID its file is named for. ErrNotFound
+// when there is no file, an error wrapping ErrUnreadable when it cannot be
+// used. A failure of the file system itself (a *fs.PathError, which names
+// the data directory) is neither: it is a read failure.
 func (s *Store) read(id string) (Crew, error) {
 	if !idPattern.MatchString(id) {
 		return Crew{}, ErrNotFound
 	}
 	var c Crew
 	ok, err := s.st.LoadLimit(id+".json", &c, MaxEncoded)
-	if err != nil {
+	var pe *fs.PathError
+	switch {
+	case errors.As(err, &pe):
+		return Crew{}, fmt.Errorf("read %s.json: %w", id, err)
+	case err != nil:
 		return Crew{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
-	}
-	if !ok {
+	case !ok:
 		return Crew{}, ErrNotFound
 	}
 	c = c.canonical()
@@ -6552,7 +7261,8 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 }
 
 // Get returns the crew with the given ID, read from its file: ErrNotFound when
-// there is none, an error wrapping ErrUnreadable when it cannot be used.
+// there is none, an error wrapping ErrUnreadable when it cannot be used, a
+// symbolic link included (store.LoadLimit does not follow one).
 func (s *Store) Get(id string) (Crew, error) {
 	return s.read(id)
 }
@@ -6646,35 +7356,41 @@ func (s *Store) Delete(id string) (bool, error) {
 		return false, nil
 	}
 	if err := s.st.Delete(id + ".json"); err != nil {
-		return false, fmt.Errorf("delete %s.json: %w", id, err)
+		return false, fmt.Errorf("%w: delete %s.json: %w", ErrWrite, id, err)
 	}
+	delete(s.sums, id+".json")
 	return true, nil
 }
 
-// commit checks c as it will be saved, then writes its file. An invalid crew
-// is refused, and a failed write leaves the file as it was. The caller holds
-// s.mu.
+// commit checks c as it will be saved, then writes its file and drops the
+// summary the list cached for it. An invalid crew is refused, and a failed
+// write (ErrWrite) leaves the file as it was. The caller holds s.mu.
 func (s *Store) commit(c Crew) error {
 	c = c.canonical()
 	if err := c.validateWithID(); err != nil {
 		return err
 	}
 	if err := s.st.Save(c.ID+".json", c); err != nil {
-		return fmt.Errorf("save %s.json: %w", c.ID, err)
+		return fmt.Errorf("%w: save %s.json: %w", ErrWrite, c.ID, err)
 	}
+	delete(s.sums, c.ID+".json")
 	return nil
 }
 
-// taken returns the IDs that have a file, usable or not, so that no new crew
-// takes the name of a file the store cannot read. The caller holds s.mu.
+// taken returns the IDs that have an entry in the crews directory, usable or
+// not, a link included, so that no new crew takes the name of a file the
+// store cannot read and Delete removes such a file. It reads the directory
+// itself, since store.List leaves links out. The caller holds s.mu.
 func (s *Store) taken() (map[string]bool, error) {
-	entries, err := s.st.List()
+	des, err := os.ReadDir(s.st.Dir())
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		out[strings.TrimSuffix(e.Name, ".json")] = true
+	out := make(map[string]bool, len(des))
+	for _, de := range des {
+		if id, ok := strings.CutSuffix(de.Name(), ".json"); ok {
+			out[id] = true
+		}
 	}
 	return out, nil
 }
@@ -6698,12 +7414,15 @@ func freeID(taken map[string]bool, stem, tag string) string {
 
 Keep `validateWithID`, `canonical`, `slug` (and `maxSlug`) and `copyName` from the old `store.go` below this, unchanged.
 
+The summary cache (`sums`) stays: a listing reads again only the files whose size or time changed, which keeps a page of a large directory cheap. `commit` and `Delete` drop the entry of the file they change, so the cache never shows a save of this server late (`TestASaveIsListedAtOnce`); `List` drops the entries of files that are gone.
+
 Create `internal/crew/migrate.go`:
 
 ```go
 package crew
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -6723,44 +7442,69 @@ type legacyDoc struct {
 }
 
 // migrate moves the crews of crews.json in the data directory st, if there is
-// one, to a file each in dir. It then renames crews.json to
-// crews.json.migrated (or .migrated.2 and on, when that is taken), so the move
-// happens once. Each crew is written whole, so a start that stopped halfway
-// finishes the move: a crew already in dir is written again from crews.json,
-// and a crew made since is left as it is. crews.json is held to what it always
-// was: one that cannot be parsed, or that holds an invalid crew or an ID twice,
-// stops startup with an error naming it, and nothing is moved.
-func migrate(st, dir *store.Store) error {
+// one, to a file each in dir, then renames crews.json to crews.json.migrated
+// (or .migrated.2 and on, when that is taken), so the move happens once and
+// the renamed file keeps every crew as crews.json had it. It never overwrites
+// a crew file. One that holds exactly what the move would write is the first
+// half of a move that stopped, and is left as it is. One that holds anything
+// else (a crew made or edited since, a link) is kept too, and notices says
+// so, naming both files: that crew stays in crews.json.migrated only.
+// crews.json is held to what it always was: one that cannot be parsed, or
+// that holds an invalid crew or an ID twice, stops startup with an error
+// naming it, and nothing is moved.
+func migrate(st, dir *store.Store) (notices []error, err error) {
 	path := filepath.Join(st.Dir(), legacyFile)
 	var doc legacyDoc
 	found, err := st.Load(legacyFile, &doc)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if !found {
-		return nil
+		return nil, nil
 	}
 	seen := make(map[string]bool, len(doc.Crews))
 	for i, c := range doc.Crews {
 		c = c.canonical()
 		if err := c.validateWithID(); err != nil {
-			return fmt.Errorf("%s: crews[%d]: %w", path, i, err)
+			return nil, fmt.Errorf("%s: crews[%d]: %w", path, i, err)
 		}
 		if seen[c.ID] {
-			return fmt.Errorf("%s: crews[%d]: id %q is used twice", path, i, c.ID)
+			return nil, fmt.Errorf("%s: crews[%d]: id %q is used twice", path, i, c.ID)
 		}
 		seen[c.ID] = true
 		doc.Crews[i] = c
 	}
+	migrated := freeName(path + ".migrated")
 	for _, c := range doc.Crews {
+		file := filepath.Join(dir.Dir(), c.ID+".json")
+		want, err := store.Encode(c)
+		if err != nil {
+			return nil, fmt.Errorf("%s: crew %s: %w", path, c.ID, err)
+		}
+		fi, err := os.Lstat(file)
+		switch {
+		case err == nil:
+			if !fi.Mode().IsRegular() || !holds(file, want) {
+				notices = append(notices, fmt.Errorf("%s: crew %s is not moved: %s exists and is kept; %s keeps the crew as %s had it", path, quote(c.ID), file, migrated, legacyFile))
+			}
+			continue
+		case !errors.Is(err, fs.ErrNotExist):
+			return nil, fmt.Errorf("%s: move crew %s to %s: %w", path, c.ID, dir.Dir(), err)
+		}
 		if err := dir.Save(c.ID+".json", c); err != nil {
-			return fmt.Errorf("%s: move crew %s to %s: %w", path, c.ID, dir.Dir(), err)
+			return nil, fmt.Errorf("%s: move crew %s to %s: %w", path, c.ID, dir.Dir(), err)
 		}
 	}
-	if err := os.Rename(path, freeName(path+".migrated")); err != nil {
-		return fmt.Errorf("%s: the crews are moved, but the file could not be renamed: %w", path, err)
+	if err := os.Rename(path, migrated); err != nil {
+		return nil, fmt.Errorf("%s: the crews are moved, but the file could not be renamed: %w", path, err)
 	}
-	return nil
+	return notices, nil
+}
+
+// holds reports whether the regular file p holds exactly want.
+func holds(p string, want []byte) bool {
+	b, err := os.ReadFile(p)
+	return err == nil && bytes.Equal(b, want)
 }
 
 // freeName returns p, or p.2, p.3 and so on, the first that does not exist.
@@ -6922,7 +7666,7 @@ func TestCrewFailedSaveChangesNothing(t *testing.T) {
 		{"DELETE", "/api/crews/kept", nil},
 	} {
 		resp, out := e.do(r.method, r.path, adminToken, r.body)
-		wantAPIError(t, r.method+" "+r.path, resp, out, http.StatusInternalServerError, "store_failed", "")
+		wantAPIError(t, r.method+" "+r.path, resp, out, http.StatusInternalServerError, "store_failed", "could not save the crews")
 		if strings.Contains(fmt.Sprint(out), e.srv.store.Dir()) {
 			t.Errorf("%s %s names the data directory: %v", r.method, r.path, out)
 		}
@@ -6961,8 +7705,180 @@ func TestNewLogsACorruptCrewFile(t *testing.T) {
 }
 ```
 
+Two existing tests assumed the list of full crews and the 50-crew cap. Replace both whole. `TestCrewSaveRejectsInvalidCrews` compares the full crew (`e.crew`), not a summary, with the reply, and its body case is now past 2 MiB:
+
+```go
+func TestCrewSaveRejectsInvalidCrews(t *testing.T) {
+	e := newTestEnv(t, nil)
+	kept := e.sendCrew("POST", "/api/crews", e.crewBody("Kept"), http.StatusCreated)
+	with := func(change func(b map[string]any)) map[string]any {
+		b := e.crewBody("Crew")
+		change(b)
+		return b
+	}
+	cases := []struct {
+		name string
+		body any
+		code string
+		msg  string // part of the message
+	}{
+		{"member name Lead!", with(func(b map[string]any) { crewMember(b, 0)["name"] = "Lead!" }), "invalid_crew", "must match"},
+		{"unknown agent", with(func(b map[string]any) { crewMember(b, 1)["agentId"] = "nope" }), "invalid_crew", `"nope"`},
+		{"after a missing member", with(func(b map[string]any) {
+			crewMember(b, 1)["start"] = map[string]any{"when": "after", "member": "ghost"}
+		}), "invalid_crew", `"ghost"`},
+		{"13 members", with(func(b map[string]any) {
+			for i := 2; i < 13; i++ {
+				b["members"] = append(b["members"].([]any), map[string]any{"name": fmt.Sprintf("m%d", i), "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}})
+			}
+		}), "invalid_crew", "at most 12"},
+		{"where elsewhere", with(func(b map[string]any) { b["where"] = "cloud" }), "invalid_crew", `"cloud"`},
+		{"args over 8 KiB in all", with(func(b map[string]any) {
+			crewMember(b, 0)["args"] = []any{strings.Repeat("a", 4096), strings.Repeat("b", 4096), "c"}
+		}), "invalid_crew", "8192 bytes"},
+		{"members starting after each other", with(func(b map[string]any) {
+			crewMember(b, 0)["start"] = map[string]any{"when": "after", "member": "tests"}
+		}), "invalid_crew", "cycle"},
+		{"member name git refuses", with(func(b map[string]any) {
+			crewMember(b, 1)["name"] = "tests.lock"
+		}), "invalid_crew", "git"},
+		{"name with a control character", with(func(b map[string]any) { b["name"] = "API\x1b[2Jsweep" }), "invalid_crew", "control"},
+		{"id sent by the client", with(func(b map[string]any) { b["id"] = "mine" }), "invalid_request", `"id"`},
+		{"createdAt sent by the client", with(func(b map[string]any) { b["createdAt"] = "2026-09-29T10:00:00Z" }), "invalid_request", `"createdAt"`},
+		{"unknown member field", with(func(b map[string]any) { crewMember(b, 0)["model"] = "x" }), "invalid_request", `"model"`},
+		{"no body", nil, "invalid_request", ""},
+		{"body over 2 MiB", with(func(b map[string]any) { b["goal"] = strings.Repeat("g", maxCrewBody) }), "invalid_request", "too large"},
+	}
+	for _, tc := range cases {
+		for _, path := range []string{"POST /api/crews", "PUT /api/crews/kept"} {
+			method, route, _ := strings.Cut(path, " ")
+			resp, out := e.do(method, route, adminToken, tc.body)
+			wantAPIError(t, tc.name+" ("+path+")", resp, out, http.StatusBadRequest, tc.code, tc.msg)
+		}
+	}
+	if list := e.crews(); len(list) != 1 || list[0]["id"] != "kept" || !reflect.DeepEqual(e.crew("kept"), kept) {
+		t.Fatalf("a refused save changed the crews: %v", list)
+	}
+}
+```
+
+`TestCrewErrorsQuoteShortAndComeInOrder` keeps its order checks and ends with a valid crew created, where it expected `409 too_many_crews` at 50 crews:
+
+```go
+// A value quoted in an error comes back cut short, however long it was sent.
+// A crew that breaks a rule is refused for that before its agents are looked
+// up and before its id is; an agent the catalog does not have is 400 whatever
+// else holds. No crew limit comes after them: a valid crew is created.
+func TestCrewErrorsQuoteShortAndComeInOrder(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.sendCrew("POST", "/api/crews", e.crewBody("Kept"), http.StatusCreated)
+	message := func(out map[string]any) string {
+		apiErr, _ := out["error"].(map[string]any)
+		msg, _ := apiErr["message"].(string)
+		return msg
+	}
+	huge := e.crewBody("Huge")
+	crewMember(huge, 1)["agentId"] = strings.Repeat("a", 900<<10)
+	invalid := e.crewBody("Invalid")
+	crewMember(invalid, 0)["name"] = "Lead!"
+	unknown := e.crewBody("Unknown")
+	crewMember(unknown, 1)["agentId"] = "nope"
+	both := e.crewBody("Both")
+	crewMember(both, 0)["name"] = "Lead!"
+	crewMember(both, 1)["agentId"] = "nope"
+	for _, path := range []string{"POST /api/crews", "PUT /api/crews/kept", "PUT /api/crews/missing"} {
+		method, route, _ := strings.Cut(path, " ")
+		resp, out := e.do(method, route, adminToken, huge)
+		wantAPIError(t, "a 900 KiB agentId ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", "agentId")
+		if msg := message(out); len(msg) > 300 {
+			t.Errorf("%s: a message of %d bytes", path, len(msg))
+		}
+		resp, out = e.do(method, route, adminToken, both)
+		wantAPIError(t, "a rule broken and an unknown agent ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", "must match")
+		resp, out = e.do(method, route, adminToken, invalid)
+		wantAPIError(t, "a rule broken ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", "must match")
+		resp, out = e.do(method, route, adminToken, unknown)
+		wantAPIError(t, "an unknown agent ("+path+")", resp, out, http.StatusBadRequest, "invalid_crew", `"nope"`)
+	}
+	e.sendCrew("POST", "/api/crews", e.crewBody("Valid"), http.StatusCreated)
+}
+```
+
+In `TestCrewRoutesTakeTheLargestCrews`, the comment's "whose bodies may reach 1 MiB where others stop at 64 KiB" becomes "whose bodies may reach 2 MiB (`maxCrewBody`) where others stop at 64 KiB"; its code stays.
+
+Add the tests for the body bound and for a crews directory the server cannot read:
+
+```go
+// A crew near the bound on its file goes through when a client sends it
+// indented: the body may be up to 2 MiB (maxCrewBody), twice the bound, and
+// the crew itself is held to crew.MaxEncoded as its file.
+func TestCrewRoutesTakeAnIndentedBodyNearTheBound(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ctl := func(n int) string { return strings.Repeat("\x01", n) } // six bytes each as JSON
+	body := e.crewBody("Indented")
+	var members []any
+	for i := range 12 {
+		members = append(members, map[string]any{
+			"name": fmt.Sprintf("m%02d", i), "agentId": "sh", "prompt": ctl(4000),
+			"args":  []any{ctl(4096), ctl(4096)},
+			"start": map[string]any{"when": "manual"},
+		})
+	}
+	body["members"] = members
+	body["goal"] = ctl(2000)
+	compact, _ := json.Marshal(body)
+	raw, err := json.MarshalIndent(body, "", strings.Repeat(" ", 2048))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compact) < 800<<10 || len(raw) <= 1<<20 || len(raw) >= maxCrewBody {
+		t.Fatalf("compact %d bytes, indented %d", len(compact), len(raw))
+	}
+	// e.do would marshal the body again, compact: send the bytes as they are.
+	req, _ := http.NewRequest("POST", e.http.URL+"/api/crews", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("the indented crew: %d", resp.StatusCode)
+	}
+	fi, err := os.Stat(filepath.Join(e.srv.store.Dir(), "crews", "indented.json"))
+	if err != nil || fi.Size() > crew.MaxEncoded {
+		t.Fatalf("its file: %v %v", fi, err)
+	}
+}
+
+// A crews directory the server cannot read is a read failure and is answered
+// as one: the list, and a create, which reads the directory for a free id,
+// say "could not read the crews", without the data directory's path.
+func TestCrewRoutesSayWhenTheyCannotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory of mode 0300")
+	}
+	e := newTestEnv(t, nil)
+	dir := filepath.Join(e.srv.store.Dir(), "crews")
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	resp, out := e.do("GET", "/api/crews", adminToken, nil)
+	wantAPIError(t, "list", resp, out, http.StatusInternalServerError, "store_failed", "could not read the crews")
+	resp, out = e.do("POST", "/api/crews", adminToken, e.crewBody("New"))
+	wantAPIError(t, "create", resp, out, http.StatusInternalServerError, "store_failed", "could not read the crews")
+	if strings.Contains(fmt.Sprint(out), e.srv.store.Dir()) {
+		t.Errorf("the reply names the data directory: %v", out)
+	}
+}
+```
+
+(`api_test.go` imports `"bytes"` and `"encoding/json"` already; add `github.com/phenixrizen/conductor/internal/crew` for `crew.MaxEncoded`.) `TestCrewFailedSaveChangesNothing` above already expects "could not save the crews" from every write.
+
 Run: `go test ./internal/api/ -count=1 -run 'Crew|NewLogs'`
-Expected: build failure on `crew.NewStore`'s results; then FAIL on the new routes.
+Expected: build failure on `crew.NewStore`'s results; then FAIL on the new routes, the 2 MiB body and the read failures.
 
 - [ ] **Step 6: Implement the routes**
 
@@ -6975,20 +7891,25 @@ In `internal/api/server.go`, `New`:
 		if crews, problems, err = crew.NewStore(st); err != nil {
 			return nil, err
 		}
+		// Each problem names its files and says why: a crew file that
+		// cannot be used (fix or delete it), or a crew of crews.json that
+		// was not moved over a file of the same id.
 		for _, p := range problems {
-			log.Error("crew left out: its file cannot be used; fix or delete it", "err", p)
+			log.Error("crew left out", "err", p)
 		}
 	}
 ```
 
-Update `Server.crews`'s comment ("one file each in crews/ of the data directory") and `New`'s ("…or crews.json that cannot be moved, is an error…; a crew file that cannot be used is logged and left out").
+Update `Server.crews`'s comment ("one file each in crews/ of the data directory") and `New`'s ("…or crews.json that cannot be moved, is an error…; a crew file that cannot be used, and a crew of crews.json not moved over an existing file, are logged and left out").
 
 `internal/api/crews.go` (add `"fmt"`, `"net/url"` and `"strconv"` to the imports):
 
 ```go
-// maxCrewBody bounds the body of a crew create or update: crew.MaxEncoded, the
-// bound on a crew's file.
-const maxCrewBody = crew.MaxEncoded
+// maxCrewBody bounds the body of a crew create or update: 2 MiB, twice
+// crew.MaxEncoded. A client may indent a crew, or escape more of it than the
+// server does, so a crew near the bound on its file still fits; Validate holds
+// the crew itself to crew.MaxEncoded as its file.
+const maxCrewBody = 2 << 20
 
 // The crew list's page: limit defaults to 100 and takes 1 to 500.
 const (
@@ -7058,6 +7979,9 @@ func (s *Server) handleGetCrew(w http.ResponseWriter, r *http.Request) {
 `handleDuplicateCrew` reads the source with `src, err := s.crews.Get(id)` and calls `s.crewStoreError(w, id, err)` on error, in place of the `ok` check. `crewStoreError`:
 
 ```go
+// crewStoreError answers an error from the crew store. A failure of the
+// store itself is logged with its cause, which names the data directory; the
+// reply does not, and says whether a read or a write failed.
 func (s *Server) crewStoreError(w http.ResponseWriter, id string, err error) {
 	switch {
 	case errors.Is(err, crew.ErrUnreadable):
@@ -7068,12 +7992,18 @@ func (s *Server) crewStoreError(w http.ResponseWriter, id string, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 	case errors.Is(err, crew.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "no such crew")
-	default:
+	case errors.Is(err, crew.ErrWrite):
 		s.log.Error("crew save failed", "crew", id, "err", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "could not save the crews")
+	default:
+		// The crews directory, or a crew's file, could not be read.
+		s.log.Error("crew read failed", "crew", id, "err", err)
+		writeError(w, http.StatusInternalServerError, "store_failed", "could not read the crews")
 	}
 }
 ```
+
+`readCrew`'s comment drops the crew limit: "So a crew that breaks a rule is refused for it (400) before the store looks at the crew limit (409) or at the id of an update (404)" becomes "So a crew that breaks a rule is refused for it (400) before the store looks at the id of an update (404)".
 
 `ErrUnreadable` comes first, since its errors may wrap `ErrInvalid` too. The store's errors name the file (`broken.json`), never the directory. Delete the `ErrTooManyCrews` case. In `server.go`, add the route `mux.HandleFunc("GET /api/crews/{id}", s.requireAdmin(s.handleGetCrew))` after `GET /api/crews`. In `runs.go`, `handleLaunchCrew` reads the crew with:
 
@@ -7096,6 +8026,8 @@ In `internal/cli/up.go`:
 // crewsPage is how many crews conductor crews asks for at a time.
 const crewsPage = 500
 ```
+
+In `runCrews`, everything from `// As in runUp, unknown fields are ignored on purpose.` to the end of the function becomes:
 
 ```go
 	// As in runUp, unknown fields are ignored on purpose. A reply without
@@ -7127,8 +8059,13 @@ const crewsPage = 500
 		return 0, nil
 	}
 	for _, cr := range all {
-		…the printing loop, unchanged…
+		names := make([]string, len(cr.Members))
+		for i, m := range cr.Members {
+			names[i] = m.Name
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%d members: %s\n", cr.ID, cr.Name, len(names), strings.Join(names, ", "))
 	}
+	return 0, nil
 ```
 
 In `internal/cli/up_test.go`, `TestCrewsList` expects the query `offset=0&limit=500`: `request{http.MethodGet, "/api/crews", "offset=0&limit=500", "Bearer " + secretToken}`. Add:
@@ -7197,7 +8134,7 @@ export interface CrewSummary {
     getCrew: (id: string) => request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew),
 ```
 
-In the `CrewInfo` and `saveCrew` comments, "512 KiB" becomes "1 MiB", and "409 `too_many_crews` past 50" goes.
+In the `CrewInfo` comment on `members`, "The whole crew is at most 512 KiB as JSON." becomes "The whole crew is at most 1 MiB as its file." In the `saveCrew` comment, "so a listed CrewInfo can be passed as it is" becomes "so a CrewInfo read with getCrew can be passed as it is", and "409 `too_many_crews` past 50" becomes "409 `crew_unreadable` for a crew whose file the server cannot use".
 
 In `web/app/utils/crews.ts`:
 
@@ -7237,6 +8174,8 @@ const page = useState<number>('crewsPage', () => 1)
 const full = useState<Record<string, CrewInfo>>('crewsFull', () => ({}))
 /** Why the selected crew's file cannot be used, when the server says so. */
 const unreadable = ref('')
+/** The id of the crew being read in full: the editor shows a loading state meanwhile, never "No crew has the id". */
+const crewLoading = ref<string>()
 
 const saved = computed(() => (selectedKey.value ? full.value[selectedKey.value] : undefined))
 
@@ -7273,6 +8212,7 @@ async function loadSelected() {
   const id = routeId.value
   unreadable.value = ''
   if (!id) return
+  crewLoading.value = id
   try {
     const fresh = await api.getCrew(id)
     const before = full.value[id]
@@ -7283,38 +8223,192 @@ async function loadSelected() {
     const next = { ...full.value }
     delete next[id]
     full.value = next
+    // An answer for a crew no longer on screen says nothing about the one that is.
+    if (routeId.value !== id) return
     if (e instanceof ApiError && e.code === 'crew_unreadable') unreadable.value = e.message
     else if (!(e instanceof ApiError && e.status === 404)) error.value = (e as Error).message
+  } finally {
+    if (crewLoading.value === id) crewLoading.value = undefined
   }
 }
 watch(page, refresh)
 ```
 
-Replace Task 8's `watch(routeId, () => refresh())` with `watch(routeId, loadSelected)`. `isDirty` reads `full.value[key]` in place of `crews.value.find(...)`. The `list` computed types its items `{ key: string; crew: DraftCrew | CrewSummary; to: string }`; `meta` takes `DraftCrew | CrewSummary`. After a save:
+Replace Task 8's `watch(routeId, () => refresh())` with `watch(routeId, loadSelected)`: moving to another crew reads that crew, and the page of the list stays.
+
+The draft for the crew on screen is seeded from the crew read in full (`saved`, which reads `full`), never from a summary, which has no prompts. The watcher that makes it watches `full` as well, so it seeds the draft once `getCrew` answers:
+
+```ts
+// A draft for the crew on screen, seeded from the crew read in full once it is read; /crews moves to the first crew of the page.
+watch(
+  [selectedKey, crews, full, loaded],
+  () => {
+    if (!loaded.value) return
+    if (selectedKey.value === undefined) {
+      const first = crews.value[0]
+      if (first) router.replace(`/crews/${encodeURIComponent(first.id)}`)
+      return
+    }
+    if (selectedKey.value !== NEW && !drafts.value[selectedKey.value] && saved.value) {
+      drafts.value = { ...drafts.value, [selectedKey.value]: toDraft(saved.value) }
+    }
+  },
+  { immediate: true },
+)
+```
+
+`isDirty` compares a draft with the crew read in full:
+
+```ts
+function isDirty(key: string): boolean {
+  const d = drafts.value[key]
+  if (!d) return false
+  if (key === NEW) return true
+  // A draft is seeded from `full`, so the crew is there; without it (a new token cleared it) the draft counts as changed.
+  const c = full.value[key]
+  return !c || crewKey(d) !== crewKey(c)
+}
+```
+
+The list shows the page's summaries, or a crew's draft when one is open; `meta` takes either:
+
+```ts
+/** The list's meta in two parts: the working directory, which may be cut short, and the rest, which may not. */
+function meta(c: DraftCrew | CrewSummary, id?: string): { cwd: string; rest: string } {
+  const last = id ? runsOf(id)[0] : undefined
+  return {
+    cwd: shortCwd(c.cwd) || 'server default',
+    rest: `${c.isolation === 'worktree' ? 'worktrees' : 'shared cwd'} · last run ${last ? relativeTime(last.startedAt, now.value) : 'never'}`,
+  }
+}
+
+/** The list: a new draft first, then the page's crews, each as its draft shows it when one is open. */
+const list = computed(() => {
+  const out: Array<{ key: string; crew: DraftCrew | CrewSummary; to: string }> = []
+  const fresh = drafts.value[NEW]
+  if (fresh) out.push({ key: NEW, crew: fresh, to: '/crews' })
+  for (const c of crews.value) out.push({ key: c.id, crew: drafts.value[c.id] ?? c, to: `/crews/${encodeURIComponent(c.id)}` })
+  return out
+})
+```
+
+In `save()`, the two lines after `const c = await api.saveCrew(toCrewInput(d), d.id)` that update `crews` become:
 
 ```ts
     full.value = { ...full.value, [c.id]: c }
-    const at = crews.value.findIndex((x) => x.id === c.id)
-    if (at >= 0) crews.value = crews.value.map((x) => (x.id === c.id ? summaryOf(c) : x))
-    else {
-      crews.value = [...crews.value, summaryOf(c)].sort((a, b) => a.name.localeCompare(b.name))
-      total.value += 1
-    }
+    if (crews.value.some((x) => x.id === c.id)) crews.value = crews.value.map((x) => (x.id === c.id ? summaryOf(c) : x))
+    else crews.value = [...crews.value, summaryOf(c)].sort((a, b) => a.name.localeCompare(b.name))
+    // Only a new crew adds to the count: one opened by its link from another page was counted already.
+    if (key === NEW) total.value += 1
 ```
 
-`duplicate()` adds `full.value = { ...full.value, [copy.id]: copy }`, inserts `summaryOf(copy)` and adds 1 to `total`. `confirmDelete()` deletes by `const id = saved.value?.id ?? routeId.value`, removes the id from `crews` and `full`, and subtracts 1 from `total`. The delete modal's title uses `saved?.name ?? routeId`. In the template, under the list:
+`duplicate()` and `confirmDelete()` become:
+
+```ts
+async function duplicate() {
+  const c = saved.value
+  if (!c) return
+  try {
+    const copy = await api.duplicateCrew(c.id)
+    full.value = { ...full.value, [copy.id]: copy }
+    crews.value = [...crews.value, summaryOf(copy)].sort((a, b) => a.name.localeCompare(b.name))
+    total.value += 1
+    toast.add({ title: 'Crew duplicated', description: isDirty(c.id) ? `${copy.name}, from what ${c.name} has saved` : copy.name, icon: 'i-lucide-copy', color: 'success' })
+    router.push(`/crews/${encodeURIComponent(copy.id)}`)
+  } catch (e) {
+    fail('Duplicate failed', e)
+  }
+}
+
+async function confirmDelete() {
+  // A crew whose file cannot be used has no `saved`: it is deleted by the id on screen.
+  const id = saved.value?.id ?? routeId.value
+  if (!id) return
+  const name = saved.value?.name ?? id
+  // Only a crew the server could read counts in `total`.
+  const counted = !!saved.value
+  deleting.value = true
+  try {
+    await api.deleteCrew(id)
+    crews.value = crews.value.filter((x) => x.id !== id)
+    if (counted) total.value = Math.max(0, total.value - 1)
+    const nextFull = { ...full.value }
+    delete nextFull[id]
+    full.value = nextFull
+    const next = { ...drafts.value }
+    delete next[id]
+    drafts.value = next
+    unreadable.value = ''
+    deleteOpen.value = false
+    toast.add({ title: 'Crew deleted', description: name, icon: 'i-lucide-trash-2', color: 'neutral' })
+    router.replace('/crews')
+  } catch (e) {
+    fail('Delete failed', e)
+  } finally {
+    deleting.value = false
+  }
+}
+```
+
+The token watcher also forgets what was read under the old token, and goes back to the first page:
+
+```ts
+watch(
+  () => admin.token.value,
+  () => {
+    // Another token may be another server: nothing typed or read under the old one stays.
+    drafts.value = {}
+    crews.value = []
+    full.value = {}
+    total.value = 0
+    if (page.value !== 1) page.value = 1 // its watcher reads the list
+    else refresh()
+  },
+)
+```
+
+In the template, the delete modal's title is `` :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" ``. Under the list, after the "No crews yet." line:
 
 ```vue
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="mt-2 self-center" />
 ```
 
-and before the "No crew has the id" branch:
+The editor section's branches become these, in this order. While the crew on screen is read, the page says so, and "No crew has the id" shows only once the server has answered that there is none:
 
 ```vue
+          <CrewEditor
+            v-if="draft"
+            :key="selectedKey"
+            v-model="draft"
+            :agents="agents"
+            :dirty="isDirty(selectedKey!)"
+            :saving="saving"
+            :launching="launching"
+            @save="onSave"
+            @discard="discard"
+            @duplicate="duplicate"
+            @launch="launch"
+            @delete="deleteOpen = true"
+          />
           <div v-else-if="unreadable" class="flex flex-col items-start gap-3" data-crew-unreadable>
             <UAlert color="error" variant="subtle" icon="i-lucide-file-warning" :title="`The file of ${routeId} cannot be used`" :description="unreadable" />
             <UButton label="Delete it" icon="i-lucide-trash-2" color="error" variant="soft" @click="deleteOpen = true" />
           </div>
+          <div v-else-if="routeId && (crewLoading === routeId || !loaded)" class="flex items-center gap-2 text-sm text-muted" data-crew-loading>
+            <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading the crew…
+          </div>
+          <div v-else-if="loaded && routeId && !saved" class="flex flex-col items-start gap-3 text-sm text-muted">
+            <p>No crew has the id <code>{{ routeId }}</code>.</p>
+            <UButton label="All crews" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/crews" />
+          </div>
+          <UEmpty
+            v-else-if="loaded && !list.length"
+            icon="i-lucide-users"
+            title="No crews yet"
+            description="A crew is a saved team of agents: each with a role prompt, its own git worktree and a start condition. Launch it here or with conductor up <crew>."
+            :actions="[{ label: 'New crew', icon: 'i-lucide-plus', onClick: newCrew }]"
+          />
+          <div v-else-if="loading" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading crews…</div>
 ```
 
 Run: `npm --prefix web test && npm --prefix web run typecheck`
@@ -7322,9 +8416,11 @@ Expected: PASS.
 
 - [ ] **Step 9: Docs**
 
-- `docs/protocol.md`, the `GET /api/crews` row becomes: "`{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId}], updatedAt}`; `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory". Add a row `GET /api/crews/{id}` | admin | "one crew in full, `{crew}`, shaped as before; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable`". In the create row, drop `409 too_many_crews`. In the duplicate row, "over 512 KiB" becomes "over 1 MiB" and `409 too_many_crews` goes. In the update, duplicate and launch rows, add `409 crew_unreadable`. In the body-size sentence, "1 MiB on the crew routes" stays.
-- `docs/protocol.md`, the persistence paragraph: "The crew routes keep each crew in a file of its own, `crews/<id>.json` in the data directory, written whole (a temp file renamed into place). The list is read from that directory, so a file added, changed or removed by hand shows at the next listing. A file that cannot be used is named in the server's log at startup and left out of the list; it is never overwritten (a new crew of the same name takes the next id), and `DELETE` removes it. A `crews.json` from an earlier version is split into these files at the first start and renamed `crews.json.migrated`; a `crews.json` that cannot be parsed stops startup, as before." In the limits, "at most 50 crews;" goes, "The whole crew… at most 512 KiB of JSON" becomes "A crew's file is at most 1 MiB, and so is a create or update body", and "the 50-crew limit (`409`)" goes from the order of checks.
+- `docs/protocol.md`, the `GET /api/crews` row becomes: "`{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId}], updatedAt}`; `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory". Add a row `GET /api/crews/{id}` | admin | "one crew in full, `{crew}`, shaped as before; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable`". In the create row, drop `409 too_many_crews`. In the duplicate row, "over 512 KiB" becomes "over 1 MiB" and `409 too_many_crews` goes. In the update, duplicate and launch rows, add `409 crew_unreadable`. In the body-size sentence (around line 375), "1 MiB on the crew routes" becomes "2 MiB on the crew routes". A failure of the store is `500 store_failed`, "could not save the crews" for a write and "could not read the crews" for a read.
+- `docs/protocol.md`, the persistence paragraph: "The crew routes keep each crew in a file of its own, `crews/<id>.json` in the data directory, written whole (a temp file renamed into place). The list is read from that directory, so a file added, changed or removed by hand shows at the next listing. A file that cannot be used, a symbolic link included (it is not followed), is named in the server's log at startup and left out of the list; it is never overwritten (a new crew of the same name takes the next id), and `DELETE` removes it. A `crews.json` from an earlier version is split into these files at the first start and renamed `crews.json.migrated`, which keeps every crew; the move never overwrites a crew file, and a crew whose file exists with something else in it is not moved, which the log says naming both files. A `crews.json` that cannot be parsed stops startup, as before." In the limits, "at most 50 crews;" goes, "The whole crew… at most 512 KiB of JSON" becomes "A crew's file, as the server writes it with its `id` and times, is at most 1 MiB; a create or update body may be up to 2 MiB, so a crew sent indented still fits", and "the 50-crew limit (`409`)" goes from the order of checks.
 - `README.md:346`: "Crews are saved as `crews.json` in the data directory" becomes "Crews are saved one file each, `crews/<id>.json` in the data directory (a `crews.json` from an earlier version is split up at the first start)".
+- `README.md`, crew limits (around lines 433 to 437): "- 50 crews; 12 members a crew, and a run takes no more than that." becomes "- No limit on the number of crews (the Crews page and `conductor crews` page through them); 12 members a crew, and a run takes no more than that." "- 32 extra arguments a member, 8 KiB in all; 512 KiB for a whole crew as saved; request bodies of 1 MiB on the crew routes." becomes "- 32 extra arguments a member, 8 KiB in all; 1 MiB for a whole crew as its file; request bodies of 2 MiB on the crew routes."
+- `internal/store/store.go:22`, the `Store` comment: "Store is a directory of JSON documents such as catalog.json or crews.json." becomes "Store is a directory of JSON documents such as catalog.json. It may hold directories of its own, each a Store (Sub), such as crews/ with one document per crew."
 - `docs/architecture.md:94`: "saved crews in `dataDir/crews.json`" becomes "saved crews, one file each in `dataDir/crews/`".
 - `AGENTS.md` map, `internal/crew` row: "persistence in `crews.json`" becomes "persistence in `crews/<id>.json`".
 
@@ -7348,7 +8444,7 @@ Triage items #49 and #51, and the spec's "Docs" items that no earlier task cover
 - Create: `internal/api/crews_test.go`
 - Modify: `internal/api/api_test.go` (the crew and run tests leave it)
 - Modify: `internal/crew/crew_test.go` (the duplicate-names case)
-- Modify: `README.md` (Webhooks: what the Events page shows), `docs/protocol.md` (the two causes of a missing hosted attention state), `docs/features.md` (Round 3: plan 1 closed)
+- Modify: `README.md` (Webhooks: what the Events page shows), `docs/protocol.md` (the two causes of a missing hosted attention state), `docs/features.md` (Round 3: plan 1 closed), `AGENTS.md` ("Adding things": where a route's test goes)
 
 **Interfaces:**
 - Consumes: the tests and helpers of Tasks 1 to 9, as they are after Task 9.
@@ -7380,15 +8476,46 @@ Expected: PASS.
 
 - [ ] **Step 3: Move the crew and run tests into `crews_test.go`**
 
-Create `internal/api/crews_test.go` with `package api`, and move from `api_test.go`, with their doc comments, everything from `func (e *testEnv) crewBody` to the end of the file. That covers the crew helpers (`crewBody`, `crewMember`, `crews`, `crew`, `crewIDs`, `sendCrew`, `storedCrew`, `wantAPIError`, `gitRepo`, `runCrewBody`, `stopEverything`, `runMember`, `catMember`, `launchCrew`, `waitRunning`, `local`, `inputsBy`, `outputUntil` and `wantRunLog`) and every test between them: `TestCrewsCRUD` to `TestRunLinkJoinSessionAndFiles`, with `TestDevCORSAllowsPut` (the crews' `PUT`) and `TestPlainSessionHasNoCrewVariables`. Move the tests that Tasks 8 and 9 added about crews and runs as well: `TestCrewRoutesPageThroughMoreThan50Crews`, `TestCrewRoutesAnswerForACorruptFile`, `TestNewLogsACorruptCrewFile` and `TestRevokingARevokedLinkRecordsNothing`. `TestShutdownWaitsForWhatTheServerStarted` stays in `api_test.go`. Give `crews_test.go` the imports its code uses, and remove from `api_test.go` those it no longer uses; `go vet ./internal/api/` names both.
+Before the move, record the test count: `go test ./internal/api/ -list '.*' | grep -c '^Test'`.
 
-Run: `go vet ./internal/api/ && go test -race -count=1 ./internal/api/ && wc -l internal/api/api_test.go internal/api/crews_test.go`
-Expected: PASS. `api_test.go` drops to about 2300 lines, and no test was lost: `go test ./internal/api/ -list '.*' | wc -l` gives the same count as before the move. Record that count before the move.
+Create `internal/api/crews_test.go` with `package api`, and move from `api_test.go`, each with its doc comment, exactly these functions and nothing else (other tests that Tasks 1 to 9 added to `api_test.go`, such as `TestCatalogReadersDoNotWaitForAnEdit` and `TestShutdownWaitsForWhatTheServerStarted`, stay where they are, wherever in the file they were added):
+
+- Helpers: `crewBody`, `crewMember`, `crews`, `crew`, `crewIDs`, `sendCrew`, `storedCrew`, `wantAPIError`, `gitRepo`, `runCrewBody`, `stopEverything`, `runMember`, `catMember`, `launchCrew`, `waitRunning`, `local`, `inputsBy`, `outputUntil` (a method of `*wsClient`) and `wantRunLog`.
+- Tests: `TestCrewsCRUD`, `TestCrewSaveRejectsInvalidCrews`, `TestCrewErrorsQuoteShortAndComeInOrder`, `TestCrewRoutesTakeTheLargestCrews`, `TestCrewRoutesCheckTheAgents`, `TestCrewRoutesNeedAStore`, `TestCrewFailedSaveChangesNothing`, `TestNewRefusesAMalformedCrewsFile`, `TestDevCORSAllowsPut` (the crews' `PUT`), `TestCrewRunLifecycle`, `TestCrewLaunchViewLink`, `TestCrewLaunchRefusals`, `TestCrewLaunchWithoutGit`, `TestPlainSessionHasNoCrewVariables`, `TestCrewHandoffReachesTheOtherMember`, `TestBroadcastSkipsWaitingMembers`, `TestBroadcastReasonsAndLimits`, `TestRunLinkGrantsViewOnEveryMember`, `TestRunLinksGoWithTheirForgottenRun` and `TestRunLinkJoinSessionAndFiles`.
+- Tests that Tasks 8 and 9 added: `TestRevokingARevokedLinkRecordsNothing`, `TestCrewRoutesPageThroughMoreThan50Crews`, `TestCrewRoutesAnswerForACorruptFile`, `TestNewLogsACorruptCrewFile`, `TestCrewRoutesTakeAnIndentedBodyNearTheBound` and `TestCrewRoutesSayWhenTheyCannotRead`.
+
+Give `crews_test.go` the imports its code uses, and remove from `api_test.go` those it no longer uses; `go vet ./internal/api/` names both.
+
+Check that every name moved, and moved once:
+
+```bash
+cd internal/api
+for name in crewBody crewMember crews crew crewIDs sendCrew storedCrew wantAPIError gitRepo runCrewBody \
+  stopEverything runMember catMember launchCrew waitRunning local inputsBy outputUntil wantRunLog \
+  TestCrewsCRUD TestCrewSaveRejectsInvalidCrews TestCrewErrorsQuoteShortAndComeInOrder TestCrewRoutesTakeTheLargestCrews \
+  TestCrewRoutesCheckTheAgents TestCrewRoutesNeedAStore TestCrewFailedSaveChangesNothing TestNewRefusesAMalformedCrewsFile \
+  TestDevCORSAllowsPut TestCrewRunLifecycle TestCrewLaunchViewLink TestCrewLaunchRefusals TestCrewLaunchWithoutGit \
+  TestPlainSessionHasNoCrewVariables TestCrewHandoffReachesTheOtherMember TestBroadcastSkipsWaitingMembers \
+  TestBroadcastReasonsAndLimits TestRunLinkGrantsViewOnEveryMember TestRunLinksGoWithTheirForgottenRun \
+  TestRunLinkJoinSessionAndFiles TestRevokingARevokedLinkRecordsNothing TestCrewRoutesPageThroughMoreThan50Crews \
+  TestCrewRoutesAnswerForACorruptFile TestNewLogsACorruptCrewFile TestCrewRoutesTakeAnIndentedBodyNearTheBound \
+  TestCrewRoutesSayWhenTheyCannotRead; do
+  grep -qE "^func (\([^)]*\) )?$name\(" api_test.go && echo "still in api_test.go: $name"
+  [ "$(grep -cE "^func (\([^)]*\) )?$name\(" crews_test.go)" = 1 ] || echo "not once in crews_test.go: $name"
+done
+cd ../..
+```
+
+Expected: no output.
+
+Run: `go vet ./internal/api/ && go test -race -count=1 ./internal/api/ && go test ./internal/api/ -list '.*' | grep -c '^Test'`
+Expected: PASS, and the same test count as before the move: no test was lost or doubled.
 
 - [ ] **Step 4: The doc wording**
 
 - `README.md`, Webhooks: "The Events page and `GET /api/integrations` show a webhook's URL without its user info, query string and fragment, and never its secret, but with its path: for a service that puts its credential in the path (Slack, Discord), admins see it there." becomes "The Events page shows each webhook by its host. `GET /api/integrations` returns its URL without its user info, query string and fragment, and never its secret, but with its path: for a service that puts its credential in the path (Slack, Discord), an admin reading that route sees it."
 - `docs/protocol.md`, Webhooks (around line 344): "An entry that comes without one, from an older host, is the state it names as its message…" becomes "An entry that comes without one is the state it names as its message, if it names one (as it does for a report without a message), and otherwise only an `attention` entry. That happens for two reasons: the host is older and sends no state, or it sent a state the server does not take (anything but `needs_input`, `working` or `done`), which the server drops."
+- `AGENTS.md`, "Adding things", the API route rule: "a test in `api_test.go`" becomes "a test in `internal/api` (`api_test.go` or the route family's `*_test.go`)", since the crew and run routes now have `crews_test.go`.
 - `docs/features.md`, Round 3: after the heading "Deferred items to close (plan 1 of round 3)", add a line: "Closed by `docs/superpowers/plans/2026-10-01-round3-deferred.md`." Under "Open verification (round 3)", add "The crew-prompt placeholder at narrow widths (plan 1, Task 8)" only if Task 8's browser check could not run.
 
 - [ ] **Step 5: Run the full gate and commit**
@@ -7397,7 +8524,7 @@ Run: `make lint && go test -race -count=1 ./... && npm --prefix web run typechec
 Expected: every command succeeds.
 
 ```bash
-git add internal/api internal/crew/crew_test.go README.md docs/protocol.md docs/features.md
+git add internal/api internal/crew/crew_test.go README.md docs/protocol.md docs/features.md AGENTS.md
 git commit -m "tests: crew and run tests in crews_test.go, one 503 table, duplicate names pinned; docs: webhook host, two causes"
 ```
 
@@ -7407,7 +8534,7 @@ git commit -m "tests: crew and run tests in crews_test.go, one 503 table, duplic
 
 1. Run the full gate from `AGENTS.md`: `make lint`, `go test -race -count=1 ./...`, `npm --prefix web run typecheck`, `npm --prefix web test`, `make web-build`, `make build-go`, `python3 scripts/brand_assets.py --check`. A check that cannot run is reported as a limitation, not a pass.
 2. Start a test server with a home of its own: `HOME=$(mktemp -d) bin/conductor serve --config conductor.example.json --listen 127.0.0.1:8099`. The admin token is `dev-admin-token-change-me`. The log names `dataDir=$HOME/.conductor`. For the headless browser, use `playwright-core@1.44.0` from a scratchpad directory with `~/.cache/ms-playwright/chromium-1117/chrome-linux/chrome` and `--no-sandbox`. Seed `localStorage` with `conductor.adminToken` through `addInitScript`. Stop the server by its pid.
-3. Upgrade path: stop it, `mkdir ./conductor.d`, then put a `crews.json` with two crews in `./conductor.d` and start again with a new empty `HOME`. The log has one `level=WARN` line naming `./conductor.d` and `~/.conductor`. `./conductor.d/crews/` holds two files, and `crews.json.migrated` exists. **Crews** lists both, and a second start moves nothing.
+3. Upgrade path: stop it, `mkdir ./conductor.d`, then put a `crews.json` with two crews in `./conductor.d` and start again with a new `HOME` that holds only `~/.conductor/hooks` (`mkdir -p $HOME/.conductor/hooks`, as `conductor host` leaves it). The log has one `level=WARN` line naming `./conductor.d` and `~/.conductor`. `./conductor.d/crews/` holds two files, and `crews.json.migrated` exists. **Crews** lists both, and a second start moves nothing.
 4. Create 120 crews (a loop over `POST /api/crews`). The Crews page shows a pager with two pages. Delete one on page two and the page stays. `conductor crews` prints 120 lines.
 5. Write `{oops` into `crews/broken.json` and restart. The log names the file at error level. `/crews/broken` shows the "cannot be used" alert with Delete, and Delete removes it.
 6. Agents page: edit the built-in `claude` (change only the description). `catalog.json` holds no env values, only `***` markers if it had env. The card's button says "Revert", and Revert says "Change removed". Hide `shell`: its button says "Hide", and it moves to Hidden.
@@ -7422,5 +8549,5 @@ Run against the spec on 2026-10-01:
 
 - **Coverage.** Every bullet under "Deferred items to close (plan 1 of round 3)", "Data directory default" and "Crew storage" maps to a task: strict JSON, the store and the lock to Task 1; catalog validation, inheritance, env and `source` to Task 2; the add-agent form to Task 3; file reads to Task 4; sessions and events to Task 5; adapters and the CLI to Task 6; the webhook address rule to Task 7; crews, runs and links to Task 8 (the `api_test.go` split, the duplicate checks and the duplicate-names assertion are Task 10); the Docs bullets to Task 2 (what an override inherits) and Task 10 (Events page host, two causes); crew storage to Task 9; the data directory default to Task 1. "Accepted as documented limitations (not changed): hosted crews" needs no task.
 - **Placeholders.** Each step carries its code or its exact edit. Where a step moves code unchanged (Tasks 5, 6 and 10), it names every function that moves and gives the command that proves nothing was lost.
-- **Type consistency.** `catalogEditMu` (Task 1) is used by Task 2. `ResolveDataDir` returns `(notice, err)` in Tasks 1 and 6. `HostHooksDir` returns `(dir, legacy, err)` in Tasks 1 and 6. `OnActivity` has three parameters in Tasks 5 and 8. `LaunchHeld` (Task 8) is used by Task 9's `handleLaunchCrew`. `Revoke` and `RevokeRun` return `(found, revoked)` in Task 8. `crew.Store.Get` returns `(Crew, error)` from Task 9 on, while Task 8's code still uses the old `(Crew, bool)` and Task 9 changes it. `store.Encode` (Task 1) is used by Task 9.
+- **Type consistency.** `catalogEditMu` (Task 1) is used by Task 2. `store.DecodeStrict` (Task 1) is used by `config.Load`, `parseWebhooks`, `catalog.ReadFile` and `store.LoadLimit` (Task 9). `holdsServerData` (Task 1) is the one test of `~/.conductor` that `ResolveDataDir`, and so `serveHooksDir`, apply. `startImmediate(ctx, r)` (Task 8) is new; the existing `Engine.start(ctx, r, m)` keeps its name and signature. `crew.ErrWrite` and `crew.ErrUnreadable` (Task 9) are what `crewStoreError` tells apart, and `migrate` returns `(notices, err)` to `NewStore`, whose `problems` carry the notices. `maxCrewBody` is 2 MiB in the Values line, Task 9's code and its tests. `ResolveDataDir` returns `(notice, err)` in Tasks 1 and 6. `HostHooksDir` returns `(dir, legacy, err)` in Tasks 1 and 6. `OnActivity` has three parameters in Tasks 5 and 8. `LaunchHeld` (Task 8) is used by Task 9's `handleLaunchCrew`. `Revoke` and `RevokeRun` return `(found, revoked)` in Task 8. `crew.Store.Get` returns `(Crew, error)` from Task 9 on, while Task 8's code still uses the old `(Crew, bool)` and Task 9 changes it. `store.Encode` (Task 1) is used by Task 9.
 - **Review Focus.** Each of the five has its test in its owning task: `TestServeKeepsAnOldDataDirectoryWithANotice` and `TestResolveDataDirDefaults` (Task 1), `TestMigrationFinishesAfterAnInterruptedStart` (Task 9), `TestACorruptCrewFileIsSkippedAndNeverOverwritten` and `TestCrewRoutesAnswerForACorruptFile` (Task 9), `TestCatalogOverrideFollowsTheBaseEnv` (Task 2), and `TestOwnHomeExceptionNeverCoversRoot` (Task 6).
