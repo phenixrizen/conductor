@@ -99,18 +99,44 @@ func otherOwner(path string, fi fs.FileInfo, uid int) (who string, other bool) {
 // rule CheckHome holds a home to (ownedBy: its own-home exception passes the
 // process's home directory itself, never a file in it); where the system does
 // not say who owns a file, it passes. A missing path is its own error
-// (fs.ErrNotExist). conductor completion install checks the rc file it
-// appends to, or the directory it makes one in: under sudo, another user's
-// ~/.zshrc is refused.
-func CheckOwner(path string) error {
-	fi, err := os.Stat(path)
+// (fs.ErrNotExist). It follows a link: what it judges is the file the link
+// leads to (CheckLinkOwner judges the link). conductor completion install
+// checks the directory of the rc file it appends to, the rc file and, when
+// that is a link, the link: under sudo, another user's ~/.zshrc is refused.
+func CheckOwner(path string) error { return checkOwner(path, os.Stat) }
+
+// CheckLinkOwner is CheckOwner on path itself: a symbolic link is not
+// followed, and its own owner must pass. Under sudo, a link the user made
+// from ~/.zshrc to a file of root's passes CheckOwner, which judges root's
+// file, and is refused here.
+func CheckLinkOwner(path string) error { return checkOwner(path, os.Lstat) }
+
+// checkOwner applies ownedBy's rule to what stat says of path, and names
+// path, and that it is a link when it is one, in the refusal.
+func checkOwner(path string, stat func(string) (fs.FileInfo, error)) error {
+	fi, err := stat(path)
 	if err != nil {
 		return err
 	}
 	if who, other := otherOwner(path, fi, geteuid()); other {
-		return fmt.Errorf("%s belongs to %s, not to the user running conductor: nothing written; run it as %s, for example sudo -u %s conductor completion install", path, who, who, who)
+		what := path
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			what += ", a link,"
+		}
+		return fmt.Errorf("%s belongs to %s, not to the user running conductor: nothing written; run it as %s, for example sudo -u %s conductor completion install", what, who, who, who)
 	}
 	return nil
+}
+
+// SetEUIDForTest makes the owner checks of this package (CheckHome,
+// CheckOwner, CheckLinkOwner, Install) take uid as the user running
+// conductor, and returns what restores the real one. It is for the tests of
+// the packages that call them (internal/cli), which cannot reach geteuid; it
+// is not safe for concurrent use and is never called outside tests.
+func SetEUIDForTest(uid int) (restore func()) {
+	was := geteuid
+	geteuid = func() int { return uid }
+	return func() { geteuid = was }
 }
 
 // ownHome reports whether dir is the process's home directory, compared as a

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -12,6 +13,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/phenixrizen/conductor/internal/crew"
 )
 
 // fakeConductor is a conductor that answers `crews --ids` with ids, for the
@@ -97,8 +101,10 @@ func TestCompletionCompletes(t *testing.T) {
 			script := scriptFile(t, sh)
 			bin := fakeConductor(t, "alpha", "beta")
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "x.json"), nil, 0o644); err != nil {
-				t.Fatal(err)
+			for _, name := range []string{"x.json", "my config.json"} {
+				if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			has := func(words []string, want ...string) bool {
 				for _, w := range want {
@@ -123,9 +129,10 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "serve", "--log-level", ""); !slices.Equal(got, []string{"debug", "info", "warn", "error"}) {
 				t.Fatalf("log level: %v", got)
 			}
+			// A file name with a space is one candidate, not two words.
 			got := complete(t, sh, script, dir, bin, "serve", "--config", "")
-			if (sh == "zsh" && !slices.Equal(got, []string{"<files>"})) || (sh == "bash" && !slices.Equal(got, []string{"x.json"})) {
-				t.Fatalf("files: %v", got)
+			if (sh == "zsh" && !slices.Equal(got, []string{"<files>"})) || (sh == "bash" && !slices.Equal(slices.Sorted(slices.Values(got)), []string{"my config.json", "x.json"})) {
+				t.Fatalf("files: %q", got)
 			}
 			if got := complete(t, sh, script, dir, bin, "hooks", ""); !slices.Equal(got, []string{"install", "status"}) {
 				t.Fatalf("hooks words: %v", got)
@@ -149,28 +156,45 @@ func TestCompletionCompletes(t *testing.T) {
 }
 
 // Review Focus 2: whatever `crews --ids` prints reaches the candidates as
-// data. A line holding shell syntax is never run, and a typed prefix with
-// pattern characters is compared as text.
+// data. A line holding shell syntax is never run, a line not shaped like a
+// crew id is dropped by the script too (an older or foreign conductor may
+// print it), and a typed prefix with pattern characters is compared as text.
+// The directory holds a file, so that a candidate globbed against it shows.
 func TestCompletionNeverRunsWhatTheServerSends(t *testing.T) {
 	for _, sh := range []string{"zsh", "bash"} {
 		t.Run(sh, func(t *testing.T) {
 			script := scriptFile(t, sh)
 			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "x.json"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
 			marker := filepath.Join(dir, "ran")
-			bin := fakeConductor(t, "alpha", "$(touch "+marker+")", "`touch "+marker+"`", "a b", "*")
+			bin := fakeConductor(t, "alpha", "$(touch "+marker+")", "`touch "+marker+"`", "a b", "*", "-flag", "Beta", "ok;id", "a\x1b[31m")
 			got := complete(t, sh, script, dir, bin, "up", "")
 			if _, err := os.Stat(marker); err == nil {
-				t.Fatalf("an id was run as a command: %v", got)
+				t.Fatalf("an id was run as a command: %q", got)
 			}
-			if !slices.Contains(got, "alpha") || !slices.Contains(got, "*") || slices.Contains(got, "x.json") {
+			if !slices.Equal(got, []string{"alpha"}) {
 				t.Fatalf("candidates: %q", got)
 			}
 			if sh == "bash" {
-				if got := complete(t, sh, script, dir, bin, "up", "*"); !slices.Equal(got, []string{"*"}) {
-					t.Fatalf("a typed * is text, not a pattern: %q", got)
+				for _, typed := range []string{"*", "a*", "[a]"} {
+					if got := complete(t, sh, script, dir, bin, "up", typed); len(got) != 0 {
+						t.Fatalf("a typed %q is text, not a pattern: %q", typed, got)
+					}
 				}
 			}
 		})
+	}
+}
+
+// The pattern the scripts apply to `crews --ids` is crew.ValidID's.
+func TestCompletionIDShapeIsValidID(t *testing.T) {
+	re := regexp.MustCompile(idShape)
+	for _, id := range []string{"alpha", "a", "0", "beta-2", "a--b", "a-", strings.Repeat("a", 64), strings.Repeat("a", 65), "", "-a", "Alpha", "a b", "a_b", "a.b", "ä", "a\n", "$(x)", "*"} {
+		if re.MatchString(id) != crew.ValidID(id) {
+			t.Errorf("%q: idShape %v, crew.ValidID %v", id, re.MatchString(id), crew.ValidID(id))
+		}
 	}
 }
 
@@ -181,6 +205,7 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 	helps := map[string][][]string{
 		"serve": {{"serve", "-h"}}, "host": {{"host", "-h"}}, "notify": {{"notify", "-h"}}, "up": {{"up", "-h"}}, "crews": {{"crews", "-h"}},
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
+		"skill": {{"skill", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
 	for _, c := range completionSpec() {
@@ -230,7 +255,8 @@ func TestCompletionInstall(t *testing.T) {
 	}
 	rc := filepath.Join(home, ".zshrc")
 	code, out, _, err := install()
-	if code != 0 || err != nil || !strings.Contains(out, rc) {
+	// For zsh it says the line needs compinit before it.
+	if code != 0 || err != nil || !strings.Contains(out, rc) || !strings.Contains(out, "compinit") {
 		t.Fatalf("first: %d %v\n%s", code, err, out)
 	}
 	want := completionLine("zsh") + "\n"
@@ -252,8 +278,8 @@ func TestCompletionInstall(t *testing.T) {
 	if err := os.WriteFile(custom, []byte("alias l='ls'"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, _, err := install("--shell", "bash", "--rc", custom); code != 0 || err != nil {
-		t.Fatalf("custom: %d %v", code, err)
+	if code, out, _, err := install("--shell", "bash", "--rc", custom); code != 0 || err != nil || strings.Contains(out, "compinit") {
+		t.Fatalf("custom: %d %v\n%s", code, err, out)
 	}
 	if b, _ := os.ReadFile(custom); string(b) != "alias l='ls'\n"+completionLine("bash")+"\n" {
 		t.Fatalf("custom rc:\n%s", b)
@@ -261,5 +287,204 @@ func TestCompletionInstall(t *testing.T) {
 	t.Setenv("SHELL", "/usr/bin/fish")
 	if code, _, _, err := install(); code != 2 || err == nil {
 		t.Fatalf("fish: %d %v", code, err)
+	}
+	// Without a home, it says which flag names the file.
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("HOME", "")
+	if code, _, _, err := install(); code != 1 || err == nil || !strings.Contains(err.Error(), "--rc") || strings.Contains(err.Error(), "--home") {
+		t.Fatalf("no home: %d %v", code, err)
+	}
+}
+
+// Only the installed line itself, trimmed, counts as installed: a comment of
+// the user's that mentions the mark does not.
+func TestCompletionInstallMatchesTheWholeLine(t *testing.T) {
+	clearConductorEnv(t)
+	home := os.Getenv("HOME")
+	own := "# conductor completion: maybe later\nalias c=conductor # conductor completion\n"
+	rc := filepath.Join(home, "rc")
+	if err := os.WriteFile(rc, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _, err := runCompletionWith(t, "install", "--shell", "zsh", "--rc", rc); code != 0 || err != nil || !strings.Contains(out, "wrote") {
+		t.Fatalf("install: %d %v\n%s", code, err, out)
+	}
+	if b, _ := os.ReadFile(rc); string(b) != own+completionLine("zsh")+"\n" {
+		t.Fatalf("rc:\n%s", b)
+	}
+	indented := filepath.Join(home, "indented")
+	if err := os.WriteFile(indented, []byte("  "+completionLine("bash")+" \t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _, err := runCompletionWith(t, "install", "--shell", "bash", "--rc", indented); code != 0 || err != nil || !strings.Contains(out, "nothing to change") {
+		t.Fatalf("indented: %d %v\n%s", code, err, out)
+	}
+}
+
+// rootFile returns a regular file root owns, and skips the test where there
+// is none, or where the tests run as root (whose own files root owns).
+func rootFile(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("needs a user other than root")
+	}
+	for _, p := range []string{"/etc/passwd", "/etc/hosts"} {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			if owner, ok := agents.FileOwner(fi); ok && owner == 0 {
+				return p
+			}
+		}
+	}
+	t.Skip("no regular file owned by root")
+	return ""
+}
+
+// rootDir returns a directory root owns that this user may make files in (the
+// sticky /tmp), and skips the test where there is none.
+func rootDir(t *testing.T) string {
+	t.Helper()
+	for _, d := range []string{os.TempDir(), "/tmp"} {
+		fi, err := os.Stat(d)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		if owner, ok := agents.FileOwner(fi); ok && owner == 0 {
+			if f, err := os.CreateTemp(d, "conductor-probe-*"); err == nil {
+				f.Close()
+				os.Remove(f.Name())
+				return d
+			}
+		}
+	}
+	t.Skip("no directory of root's to make a file in")
+	return ""
+}
+
+// tempName returns a name for a new entry in dir, removed when the test ends.
+func tempName(t *testing.T, dir string) string {
+	t.Helper()
+	f, err := os.CreateTemp(dir, "conductor-rc-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if err := os.Remove(f.Name()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	return f.Name()
+}
+
+// Under sudo, a link the user made to a file of root's is refused, naming the
+// link, and the file is untouched: root (geteuid 0 through the seam) owns the
+// directory, /tmp, and the file the link leads to, so only the link's own
+// owner tells. CheckOwner, which follows the link, passes it.
+func TestCompletionInstallRefusesAnotherUsersLink(t *testing.T) {
+	clearConductorEnv(t)
+	target := rootFile(t)
+	dir := rootDir(t)
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := tempName(t, dir)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agents.SetEUIDForTest(0))
+	if err := agents.CheckOwner(link); err != nil {
+		t.Fatalf("CheckOwner judges root's file, which root owns: %v", err)
+	}
+	code, out, _, err := runCompletionWith(t, "install", "--shell", "zsh", "--rc", link)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), link+", a link,") || !strings.Contains(err.Error(), "nothing written") || out != "" {
+		t.Fatalf("exit %d %v\n%s", code, err, out)
+	}
+	if after, _ := os.ReadFile(target); !bytes.Equal(after, before) {
+		t.Fatalf("%s changed", target)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("the link: %v %v", fi, err)
+	}
+}
+
+// A file of one's own in a directory of another user's is refused, naming
+// the directory, and left as it was: who owns the directory may swap the
+// file for a link between the check and the write.
+func TestCompletionInstallRefusesAnotherUsersDirectory(t *testing.T) {
+	clearConductorEnv(t)
+	if os.Geteuid() == 0 {
+		t.Skip("needs a user other than root")
+	}
+	dir := rootDir(t)
+	rc := tempName(t, dir)
+	const own = "alias l='ls'\n"
+	if err := os.WriteFile(rc, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _, err := runCompletionWith(t, "install", "--shell", "bash", "--rc", rc)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), dir+" belongs to") || !strings.Contains(err.Error(), "nothing written") || out != "" {
+		t.Fatalf("exit %d %v\n%s", code, err, out)
+	}
+	if b, _ := os.ReadFile(rc); string(b) != own {
+		t.Fatalf("rc:\n%s", b)
+	}
+}
+
+// A refused install leaves the file as it was: the rc file belongs to
+// another user (through the seam), in a home that passes as the process's own.
+func TestCompletionInstallLeavesAnotherUsersFileAlone(t *testing.T) {
+	clearConductorEnv(t)
+	home := os.Getenv("HOME")
+	rc := filepath.Join(home, ".bashrc")
+	const own = "export EDITOR=vi\n"
+	if err := os.WriteFile(rc, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(rc); err != nil {
+		t.Fatal(err)
+	} else if _, ok := agents.FileOwner(fi); !ok {
+		t.Skip("this platform does not report who owns a file")
+	}
+	t.Cleanup(agents.SetEUIDForTest(os.Geteuid() + 1))
+	code, out, _, err := runCompletionWith(t, "install", "--shell", "bash")
+	if code != 1 || err == nil || !strings.Contains(err.Error(), rc+" belongs to") || !strings.Contains(err.Error(), "nothing written") || out != "" {
+		t.Fatalf("exit %d %v\n%s", code, err, out)
+	}
+	if b, _ := os.ReadFile(rc); string(b) != own {
+		t.Fatalf("rc:\n%s", b)
+	}
+}
+
+// The owned case: a link of one's own to a file of one's own (dotfiles kept
+// elsewhere) gets the line in the file it leads to, whose mode is kept; the
+// link stays a link.
+func TestCompletionInstallThroughAnOwnLink(t *testing.T) {
+	clearConductorEnv(t)
+	home := os.Getenv("HOME")
+	target := filepath.Join(home, "dotfiles", "zshrc")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("setopt nobeep\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".zshrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _, err := runCompletionWith(t, "install", "--shell", "zsh"); code != 0 || err != nil || !strings.Contains(out, "wrote") {
+		t.Fatalf("exit %d %v\n%s", code, err, out)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "setopt nobeep\n"+completionLine("zsh")+"\n" {
+		t.Fatalf("target:\n%s", b)
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o640 {
+		t.Fatalf("mode %v", fi.Mode().Perm())
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("the link: %v %v", fi, err)
 	}
 }

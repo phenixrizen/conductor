@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -196,12 +198,92 @@ func TestCheckOwnerRefusesAnotherUsersFile(t *testing.T) {
 	was := geteuid
 	geteuid = func() int { return os.Geteuid() + 1 }
 	t.Cleanup(func() { geteuid = was })
-	if err := CheckOwner(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "nothing written") {
+	if err := CheckOwner(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "belongs to "+ownerName(os.Geteuid())) || !strings.Contains(err.Error(), "nothing written") {
 		t.Fatalf("another user's file: %v", err)
 	}
 	// The own-home exception passes the process's home itself, never a file in it.
 	t.Setenv("HOME", filepath.Dir(path))
 	if err := CheckOwner(path); err == nil {
 		t.Fatal("a file in the process's own home passed as if it were the home")
+	}
+}
+
+// ownerName is how the owner checks name the user uid.
+func ownerName(uid int) string {
+	who := strconv.Itoa(uid)
+	if u, err := user.LookupId(who); err == nil && u.Username != "" {
+		who = u.Username
+	}
+	return who
+}
+
+// rootFile returns a regular file root owns, and skips the test where there
+// is none, or where the tests run as root.
+func rootFile(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("needs a user other than root")
+	}
+	for _, p := range []string{"/etc/passwd", "/etc/hosts"} {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			if owner, ok := FileOwner(fi); ok && owner == 0 {
+				return p
+			}
+		}
+	}
+	t.Skip("no regular file owned by root")
+	return ""
+}
+
+// CheckOwner follows a link, so that under sudo a link of the user's to a
+// file of root's passes it; CheckLinkOwner judges the link itself, by its own
+// owner, and names it. A file that is not a link it judges as CheckOwner does.
+func TestCheckLinkOwnerJudgesTheLinkItself(t *testing.T) {
+	dir := t.TempDir()
+	own := filepath.Join(dir, "zshrc")
+	if err := os.WriteFile(own, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".zshrc")
+	if err := os.Symlink(own, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckLinkOwner(link); err != nil {
+		t.Fatalf("own link: %v", err)
+	}
+	if err := CheckLinkOwner(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
+	}
+	target := rootFile(t)
+	toRoot := filepath.Join(dir, ".bashrc")
+	if err := os.Symlink(target, toRoot); err != nil {
+		t.Fatal(err)
+	}
+	was := geteuid
+	t.Cleanup(func() { geteuid = was })
+	geteuid = func() int { return 0 }
+	if err := CheckOwner(toRoot); err != nil {
+		t.Fatalf("CheckOwner follows the link to root's file, which root owns: %v", err)
+	}
+	err := CheckLinkOwner(toRoot)
+	if err == nil || !strings.Contains(err.Error(), toRoot+", a link,") || !strings.Contains(err.Error(), "belongs to "+ownerName(os.Geteuid())) || !strings.Contains(err.Error(), "nothing written") {
+		t.Fatalf("a link of another user's to root's file: %v", err)
+	}
+	geteuid = func() int { return os.Geteuid() + 1 }
+	if err := CheckLinkOwner(own); err == nil || strings.Contains(err.Error(), "a link") {
+		t.Fatalf("another user's file, not a link: %v", err)
+	}
+}
+
+// SetEUIDForTest replaces the user the checks take and restores it.
+func TestSetEUIDForTest(t *testing.T) {
+	restore := SetEUIDForTest(4242)
+	if geteuid() != 4242 {
+		restore()
+		t.Fatalf("geteuid %d", geteuid())
+	}
+	restore()
+	if geteuid() != os.Geteuid() {
+		t.Fatalf("restored geteuid %d, want %d", geteuid(), os.Geteuid())
 	}
 }
