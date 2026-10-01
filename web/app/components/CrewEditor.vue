@@ -2,6 +2,7 @@
 import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftCrew } from '~/utils/crews'
 import { isActive } from '~/utils/attention'
+import { gitCheckLine, type GitCheckView } from '~/utils/dirInput'
 import { shortCwd } from '~/utils/sessions'
 
 /**
@@ -14,6 +15,33 @@ const props = defineProps<{ agents: AgentInfo[]; dirty: boolean; saving?: boolea
 const emit = defineEmits<{ save: []; discard: []; duplicate: []; launch: []; delete: [] }>()
 
 const live = useAttention()
+const api = useSessions()
+
+// The git state of the working directory, read 300 ms after it last
+// changed; stale replies are dropped. The line it makes explains a launch
+// with worktrees the server would refuse; the server still decides.
+const gitCheck = ref<GitCheckView | null>(null)
+let gitTimer: number | undefined
+let gitSeq = 0
+async function checkGit() {
+  const n = ++gitSeq
+  try {
+    const r = await api.gitCheck(crew.value.cwd.trim())
+    if (n === gitSeq) gitCheck.value = r
+  } catch (e) {
+    if (n === gitSeq) gitCheck.value = { inRepo: false, hasCommit: false, message: (e as Error).message, error: true }
+  }
+}
+watch(
+  () => crew.value.cwd,
+  () => {
+    window.clearTimeout(gitTimer)
+    gitTimer = window.setTimeout(checkGit, 300)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => window.clearTimeout(gitTimer))
+const gitLine = computed(() => gitCheckLine(gitCheck.value, crew.value.isolation))
 
 /** The view link a launch creates lasts 8 hours when the switch is on. */
 const VIEW_LINK_TTL = 8 * 3600
@@ -28,6 +56,8 @@ const launchBlocked = computed(() => {
   if (invalid.value) return 'Fix the fields marked in red first'
   return ''
 })
+/** The launch button's tooltip: what blocks it, else why the server would refuse it (it stays enabled: the 409 answers). */
+const launchHint = computed(() => launchBlocked.value || (gitLine.value.blocks ? gitLine.value.text : ''))
 const subtitle = computed(() => `${crew.value.id ? `crews/${crew.value.id}.json` : 'not saved yet'} · ${crew.value.members.length} ${crew.value.members.length === 1 ? 'agent' : 'agents'}`)
 
 const isolationItems = [
@@ -111,7 +141,7 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
           <UButton label="Save" icon="i-lucide-save" color="neutral" variant="outline" :loading="saving" :disabled="invalid || launching" @click="emit('save')" />
         </template>
         <UButton v-if="crew.id" label="Duplicate" icon="i-lucide-copy" color="neutral" variant="outline" :disabled="saving || launching" @click="emit('duplicate')" />
-        <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
+        <UTooltip :text="launchHint" :disabled="!launchHint">
           <UButton :label="launchLabel" icon="i-lucide-play" :loading="launching" :disabled="!!launchBlocked || saving" data-launch @click="emit('launch')" />
         </UTooltip>
         <UDropdownMenu v-if="crew.id" :items="menu" :content="{ align: 'end' }">
@@ -127,7 +157,8 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
 
       <div class="flex flex-col gap-2">
         <UFormField label="Working directory" hint="allowed root" name="cwd">
-          <UInput :model-value="crew.cwd" placeholder="server default" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" @update:model-value="set('cwd', String($event))" />
+          <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" @update:model-value="set('cwd', $event)" />
+          <p v-if="gitLine.text" class="mt-1 text-xs" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ gitLine.text }}</p>
         </UFormField>
         <!-- One tab stop (the option chosen); the arrow keys move between the options. -->
         <div ref="whereGroup" class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm" role="radiogroup" aria-label="Runs on" @keydown="onWhereKey">
