@@ -2,12 +2,14 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
 
@@ -283,6 +285,144 @@ func TestResolveDataDirDefaults(t *testing.T) {
 		}
 		cfg := Defaults()
 		if notice := resolve(t, cfg, ""); cfg.DataDir != filepath.Join(h, ".conductor") || notice != "" {
+			t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
+		}
+	})
+
+	// In a shared working directory anyone may make ./conductor.d (or the
+	// config's directory may be shared), and the catalog.json in it would
+	// choose the commands the server launches. An old directory is kept only
+	// when it is a real directory, not a link, of the user running conductor
+	// serve; anything else under that name stops the server with an error
+	// naming it, its owner and the settings that choose a data directory,
+	// rather than leaving the old data behind without a word. The places it
+	// is looked for, and a home that is unknown, change nothing.
+	refusedCases := []struct {
+		name           string
+		noHome, config bool
+	}{
+		{"in the working directory", false, false},
+		{"next to the config file", false, true},
+		{"without a home directory", true, false},
+	}
+	// refused resolves the data directory with the old directory old, in
+	// dir, made by the caller, and checks that it is refused, naming want.
+	refused := func(t *testing.T, dir, old string, noHome, config bool, want ...string) {
+		t.Helper()
+		if noHome {
+			t.Setenv("HOME", "")
+		}
+		t.Chdir(dir)
+		configPath := ""
+		if config {
+			t.Chdir(t.TempDir())
+			configPath = filepath.Join(dir, "conductor.json")
+		}
+		cfg := Defaults()
+		notice, err := cfg.ResolveDataDir(configPath)
+		if err == nil {
+			t.Fatalf("no error: DataDir %q, notice %q", cfg.DataDir, notice)
+		}
+		for _, w := range append([]string{old, "dataDir", "CONDUCTOR_DATA_DIR"}, want...) {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("error %q does not mention %q", err, w)
+			}
+		}
+		if errors.Is(err, ErrNoHome) || cfg.DataDir != "" {
+			t.Errorf("DataDir %q, error %v", cfg.DataDir, err)
+		}
+	}
+	useEuid := func(t *testing.T, uid int) {
+		t.Helper()
+		old := geteuid
+		geteuid = func() int { return uid }
+		t.Cleanup(func() { geteuid = old })
+	}
+
+	t.Run("a conductor.d that is a link is refused", func(t *testing.T) {
+		for _, tc := range refusedCases {
+			t.Run(tc.name, func(t *testing.T) {
+				home(t)
+				dir := t.TempDir()
+				old := filepath.Join(dir, "conductor.d")
+				// A directory of the user's own, through a link.
+				if err := os.Symlink(t.TempDir(), old); err != nil {
+					t.Fatal(err)
+				}
+				want := []string{"symbolic link"}
+				if fi, err := os.Lstat(old); err != nil {
+					t.Fatal(err)
+				} else if owner, ok := agents.FileOwner(fi); ok {
+					want = append(want, fmt.Sprintf("uid %d", owner))
+				}
+				refused(t, dir, old, tc.noHome, tc.config, want...)
+			})
+		}
+	})
+
+	// Another user's directory is refused whoever runs the server, root too:
+	// root could read it, but its owner could change what root launches.
+	t.Run("a conductor.d of another user is refused", func(t *testing.T) {
+		for _, tc := range refusedCases {
+			t.Run(tc.name, func(t *testing.T) {
+				home(t)
+				dir := t.TempDir()
+				old := filepath.Join(dir, "conductor.d")
+				mkdir(t, old)
+				fi, err := os.Lstat(old)
+				if err != nil {
+					t.Fatal(err)
+				}
+				owner, ok := agents.FileOwner(fi)
+				if !ok {
+					t.Skip("this platform does not report who owns a file")
+				}
+				if owner == 0 {
+					// The tests run as root: make it another user's.
+					if err := os.Chown(old, 65534, 65534); err != nil {
+						t.Skipf("cannot give the directory to another user: %v", err)
+					}
+					owner = 65534
+				}
+				for _, euid := range []int{owner + 1, 0} {
+					t.Run(fmt.Sprintf("euid %d", euid), func(t *testing.T) {
+						useEuid(t, euid)
+						refused(t, dir, old, tc.noHome, tc.config, fmt.Sprintf("uid %d", owner), fmt.Sprintf("uid %d", euid))
+					})
+				}
+				// Its owner keeps it, as before.
+				useEuid(t, owner)
+				if tc.noHome {
+					t.Setenv("HOME", "")
+				}
+				t.Chdir(dir)
+				cfg := Defaults()
+				if notice := resolve(t, cfg, ""); cfg.DataDir != old || notice == "" {
+					t.Fatalf("its owner: DataDir %q, notice %q", cfg.DataDir, notice)
+				}
+			})
+		}
+	})
+
+	// Once ~/.conductor holds server data, an old directory is not used,
+	// and one that would be refused is no reason to stop.
+	t.Run("a conductor.d that would be refused does not matter once ~/.conductor holds server data", func(t *testing.T) {
+		h := home(t)
+		dir := t.TempDir()
+		t.Chdir(dir)
+		old := filepath.Join(dir, "conductor.d")
+		target := t.TempDir()
+		mkdir(t, filepath.Join(target, "crews"))
+		if err := os.Symlink(target, old); err != nil {
+			t.Fatal(err)
+		}
+		def := filepath.Join(h, ".conductor")
+		mkdir(t, def)
+		if err := os.WriteFile(filepath.Join(def, "catalog.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := Defaults()
+		if notice := resolve(t, cfg, ""); cfg.DataDir != def || notice != "" {
 			t.Fatalf("DataDir %q, notice %q", cfg.DataDir, notice)
 		}
 	})

@@ -683,37 +683,120 @@ func TestWriteAssetsReportsModesItCannotSetAndGoesOn(t *testing.T) {
 	}
 }
 
-// Only its owner can set a directory's mode: a hooks dir whose mode cannot
-// be set because another user owns it is no place to take the commands
-// agents run from. That is a plain error, no ModeError, naming the directory
-// and its owner, and nothing is written there.
-func TestWriteAssetsRefusesAHooksDirOfAnotherUser(t *testing.T) {
-	dir := t.TempDir()
-	fi, err := os.Stat(dir)
-	if err != nil {
+// A new or changed asset is written to a temporary file that is renamed over
+// it: a mode that cannot be set on that file (a file system that keeps no
+// modes) stops nothing either. The rename still puts the content in place,
+// every other asset is written, and the error is a ModeError naming the
+// asset, not its temporary file.
+func TestWriteAssetsReportsTheModeOfANewAssetAndGoesOn(t *testing.T) {
+	want := t.TempDir()
+	if err := writeAssets(t, want, "/opt/conductor"); err != nil {
 		t.Fatal(err)
 	}
-	owner, ok := fileOwner(fi)
-	if !ok {
-		t.Skip("this platform does not report who owns a file")
-	}
-	chmod = func(p string, m fs.FileMode) error {
-		if p == dir {
+	dir := filepath.Join(t.TempDir(), "hooks") // a first write
+	asset := filepath.Join(dir, "claude.json")
+	var failed []string
+	t.Cleanup(ReplaceChmod(func(p string, m fs.FileMode) error {
+		if strings.HasPrefix(filepath.Base(p), ".claude.json.conductor-") {
+			failed = append(failed, p)
 			return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
 		}
 		return os.Chmod(p, m)
-	}
-	t.Cleanup(func() { chmod = os.Chmod })
-	old := geteuid
-	geteuid = func() int { return owner + 1 }
-	t.Cleanup(func() { geteuid = old })
-	err = writeAssets(t, dir, "/opt/conductor")
+	}))
+	err := writeAssets(t, dir, "/opt/conductor")
 	var me *ModeError
-	if err == nil || errors.As(err, &me) || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), fmt.Sprintf("uid %d", owner)) {
-		t.Fatalf("WriteAssets: %v", err)
+	if !errors.As(err, &me) || len(me.Errs) != 1 || !strings.Contains(err.Error(), asset+":") || len(failed) != 1 || strings.Contains(err.Error(), failed[0]) {
+		t.Fatalf("WriteAssets: %v (failed on %q)", err, failed)
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("wrote %v", entries)
+	var names []string
+	if err := filepath.WalkDir(want, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(want, p)
+		names = append(names, rel)
+		a, _ := os.ReadFile(p)
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil || !bytes.Equal(a, b) {
+			t.Errorf("%s: %v\n%s", rel, err, b)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(names, "claude.json") || len(names) < 12 {
+		t.Fatalf("assets %v", names)
+	}
+	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.Contains(d.Name(), ".conductor-") {
+			t.Errorf("a temporary file is left: %s", p)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The temporary file is made 0600: the asset is no more open than that.
+	if fi, err := os.Stat(asset); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("claude.json: %v %v", fi, err)
+	}
+}
+
+// A hooks dir that belongs to another user is no place to take the commands
+// agents run from: its owner could change them. WriteAssets refuses it before
+// it writes anything, whether or not it could set the directory's mode, and
+// whoever runs it, root too, which can set any mode. That is a plain error,
+// no ModeError, naming the directory and its owner.
+func TestWriteAssetsRefusesAHooksDirOfAnotherUser(t *testing.T) {
+	// anothers returns a directory of another user than the one running the
+	// tests, and its owner.
+	anothers := func(t *testing.T) (string, int) {
+		dir := t.TempDir()
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner, ok := FileOwner(fi)
+		if !ok {
+			t.Skip("this platform does not report who owns a file")
+		}
+		if owner == 0 {
+			// The tests run as root: make it another user's.
+			if err := os.Chown(dir, 65534, 65534); err != nil {
+				t.Skipf("cannot give the directory to another user: %v", err)
+			}
+			owner = 65534
+		}
+		return dir, owner
+	}
+	for _, root := range []bool{false, true} {
+		for _, chmodFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("root %v, chmod fails %v", root, chmodFails), func(t *testing.T) {
+				dir, owner := anothers(t)
+				euid := owner + 1
+				if root {
+					euid = 0
+				}
+				if chmodFails {
+					t.Cleanup(ReplaceChmod(func(p string, m fs.FileMode) error {
+						if p == dir {
+							return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
+						}
+						return os.Chmod(p, m)
+					}))
+				}
+				old := geteuid
+				geteuid = func() int { return euid }
+				t.Cleanup(func() { geteuid = old })
+				err := writeAssets(t, dir, "/opt/conductor")
+				var me *ModeError
+				if err == nil || errors.As(err, &me) || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), fmt.Sprintf("uid %d", owner)) {
+					t.Fatalf("WriteAssets: %v", err)
+				}
+				if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+					t.Fatalf("wrote %v", entries)
+				}
+			})
+		}
 	}
 }
 

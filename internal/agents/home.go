@@ -70,7 +70,7 @@ func CheckHome(home string) error {
 // way: under sudo, HOME may still name the invoking user's home, which root
 // can always write.
 func ownedBy(home string, fi fs.FileInfo, uid int) error {
-	owner, ok := fileOwner(fi)
+	owner, ok := FileOwner(fi)
 	if !ok || owner == uid {
 		return nil
 	}
@@ -202,8 +202,8 @@ func holds(p string, data []byte) bool {
 	return err == nil && bytes.Equal(cur, data)
 }
 
-// modeError is a mode replaceFile could not set on a file whose content was
-// right already.
+// modeError is a mode replaceFile could not set: on a file whose content was
+// right already, or on the temporary file it renamed into place all the same.
 type modeError struct{ err error }
 
 func (e *modeError) Error() string { return e.err.Error() }
@@ -213,9 +213,11 @@ func (e *modeError) Unwrap() error { return e.err }
 // the content differs it writes a temporary file next to it and renames that
 // over p, so a reader sees the old content or the new, never half of it. With
 // mode zero a new file is 0600 and a file that was there keeps its mode;
-// otherwise the file gets mode, even when its content was right. Directories
-// it makes are 0700. A link or anything else that is not a regular file is
-// refused.
+// otherwise the file gets mode, even when its content was right. A mode it
+// cannot set (with chmod) does not keep the content out: the file is written
+// all the same, 0600 at most when it was new or changed, and the error is a
+// *modeError naming it. Directories it makes are 0700. A link or anything
+// else that is not a regular file is refused.
 func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
 	fi, err := existing(p, name)
 	if err != nil {
@@ -251,8 +253,10 @@ func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
 			os.Remove(f.Name())
 		}
 	}()
-	if err := f.Chmod(perm); err != nil {
-		return false, err
+	// CreateTemp makes the file 0600; a mode that cannot be set leaves it so.
+	var modeErr error
+	if err := chmod(f.Name(), perm); err != nil {
+		modeErr = &modeError{&fs.PathError{Op: "chmod", Path: name, Err: pathErr(err)}}
 	}
 	if _, err := f.Write(data); err != nil {
 		return false, err
@@ -267,7 +271,17 @@ func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
 		return false, err
 	}
 	renamed = true
-	return true, nil
+	return true, modeErr
+}
+
+// pathErr is the cause of err without the path it names, which is the
+// temporary file's; replaceFile names the file it became instead.
+func pathErr(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // step changes one file under home and reports whether it did (or, in a dry

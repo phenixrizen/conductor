@@ -286,6 +286,39 @@ func TestServeGoesOnWhenItCannotSetTheModesOfTheHookAssets(t *testing.T) {
 	}
 }
 
+// The same holds for the mode of a new asset, set on the temporary file
+// that is renamed over it: on a first start whose file system keeps no
+// modes, the real WriteAssets puts every asset in place, and the server
+// warns, naming the asset, and serves.
+func TestServeGoesOnWhenItCannotSetTheModeOfANewHookAsset(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	asset := filepath.Join(data, "hooks", "claude.json")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	t.Cleanup(agents.ReplaceChmod(func(p string, m fs.FileMode) error {
+		if strings.HasPrefix(filepath.Base(p), ".claude.json.conductor-") {
+			return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
+		}
+		return os.Chmod(p, m)
+	}))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "level=WARN", asset+":", "goes on"); len(lines) != 1 {
+		t.Fatalf("no warning naming %s:\n%s", asset, logs)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(asset); err != nil || !strings.Contains(string(b), exe+" notify --claude-hook") {
+		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+}
+
 // When the conductor on PATH is this binary through a link, as package
 // managers install it, the assets name the link: it survives an upgrade that
 // replaces the binary it points to.

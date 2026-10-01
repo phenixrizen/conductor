@@ -7,8 +7,10 @@ import (
 	"syscall"
 )
 
-// fileOwner returns the user that owns the file fi describes.
-func fileOwner(fi fs.FileInfo) (int, bool) {
+// FileOwner returns the user that owns the file fi describes. The hooks dir,
+// a home Install writes to and an old data directory the server would keep
+// (config.ResolveDataDir) are checked with it.
+func FileOwner(fi fs.FileInfo) (int, bool) {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
 		return 0, false

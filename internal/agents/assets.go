@@ -149,7 +149,7 @@ func CheckHooksDir(hooksDir string) error {
 	if err != nil {
 		return err
 	}
-	owner, ok := fileOwner(fi)
+	owner, ok := FileOwner(fi)
 	if !ok {
 		return nil
 	}
@@ -227,6 +227,16 @@ func checkBin(bin string) error {
 // chmod is os.Chmod: a test replaces it to make a mode fail.
 var chmod = os.Chmod
 
+// ReplaceChmod makes WriteAssets and Install set modes with f in place of
+// os.Chmod, and returns a function that puts back what it replaced. It is for
+// tests outside this package, to make a mode fail where the system would set
+// it; a test that calls it restores the old one with what it returns.
+func ReplaceChmod(f func(string, fs.FileMode) error) (restore func()) {
+	old := chmod
+	chmod = f
+	return func() { chmod = old }
+}
+
 // ModeError is what WriteAssets returns when it wrote every asset but could
 // not set the mode of some of them, or of a hooks dir of the process's own
 // (a file system that keeps no modes, say). The assets are in place and name
@@ -245,18 +255,18 @@ func (e *ModeError) Error() string {
 func (e *ModeError) Unwrap() []error { return e.Errs }
 
 // ownHooksDir returns nil when the user the process runs as owns the hooks
-// directory dir, whose mode could not be set (why), and an error naming the
-// directory and its owner otherwise: only its owner can set a directory's
-// mode, and another user's directory is no place to take the commands agents
-// run from. Where the system does not say who owns a file, it passes.
-func ownHooksDir(dir string, why error) error {
+// directory dir, and an error naming the directory and its owner otherwise:
+// another user's directory is no place to take the commands agents run from,
+// as its owner could change them, even when the process (root) could set its
+// mode. Where the system does not say who owns a file, it passes.
+func ownHooksDir(dir string) error {
 	fi, err := os.Stat(dir)
 	if err != nil {
 		return err
 	}
-	owner, ok := fileOwner(fi)
+	owner, ok := FileOwner(fi)
 	if uid := geteuid(); ok && owner != uid {
-		return fmt.Errorf("the hooks directory %s belongs to uid %d, not to uid %d, which runs conductor, so its mode cannot be made 0700 (%w); its hooks would choose the commands agents run: make it yours, or use another data directory", dir, owner, uid, why)
+		return fmt.Errorf("the hooks directory %s belongs to uid %d, not to uid %d, which runs conductor; its hooks would choose the commands agents run, and its owner could change them: make it yours, or use another data directory", dir, owner, uid)
 	}
 	return nil
 }
@@ -267,10 +277,11 @@ func ownHooksDir(dir string, why error) error {
 // made 0700 and every asset 0600, whatever they were. Each file is replaced
 // whole, so an agent reading one never sees half of it, and one that already
 // holds the right content is not rewritten. From then on the adapters name
-// bin wherever they render the binary themselves. A mode it cannot set stops
-// nothing: the assets are all written, and the error is a *ModeError. The one
-// exception is the hooks dir itself when another user owns it: that is an
-// error, and nothing is written. It also records version.Version as .version.
+// bin wherever they render the binary themselves. A hooks dir that another
+// user owns is refused before anything is written, whoever runs it, root
+// too. A mode it cannot set stops nothing: the assets are all written, a new
+// or changed one through a rename all the same, and the error is a
+// *ModeError naming them. It also records version.Version as .version.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -281,11 +292,11 @@ func WriteAssets(hooksDir, bin string) error {
 	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
 		return err
 	}
+	if err := ownHooksDir(hooksDir); err != nil {
+		return err
+	}
 	var modes []error
 	if err := chmod(hooksDir, 0o700); err != nil {
-		if err := ownHooksDir(hooksDir, err); err != nil {
-			return err
-		}
 		modes = append(modes, err)
 	}
 	put := func(p string, data []byte) error {

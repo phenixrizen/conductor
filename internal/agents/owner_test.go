@@ -21,7 +21,7 @@ func TestOwnedByRefusesAnotherUsersHome(t *testing.T) {
 	if err := ownedBy(dir, fi, os.Geteuid()); err != nil {
 		t.Fatalf("a home of one's own: %v", err)
 	}
-	if _, ok := fileOwner(fi); !ok {
+	if _, ok := FileOwner(fi); !ok {
 		t.Skip("this platform does not report who owns a file")
 	}
 	err = ownedBy(dir, fi, os.Geteuid()+1)
@@ -37,7 +37,7 @@ func TestInstallRefusesAHomeItDoesNotOwn(t *testing.T) {
 	home := t.TempDir()
 	if fi, err := os.Stat(home); err != nil {
 		t.Fatal(err)
-	} else if _, ok := fileOwner(fi); !ok {
+	} else if _, ok := FileOwner(fi); !ok {
 		t.Skip("this platform does not report who owns a file")
 	}
 	old := geteuid
@@ -84,7 +84,7 @@ func TestCheckHooksDir(t *testing.T) {
 	}
 	if fi, err := os.Stat(dir); err != nil {
 		t.Fatal(err)
-	} else if _, ok := fileOwner(fi); !ok {
+	} else if _, ok := FileOwner(fi); !ok {
 		t.Skip("this platform does not report who owns a file")
 	}
 	for _, mode := range []fs.FileMode{0o700, 0o500} {
@@ -123,7 +123,7 @@ func TestOwnedByAcceptsTheProcesssOwnWritableHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := fileOwner(fi); !ok {
+	if _, ok := FileOwner(fi); !ok {
 		t.Skip("this platform does not report who owns a file")
 	}
 	t.Setenv("HOME", home)
@@ -163,7 +163,7 @@ func TestOwnHomeExceptionNeverCoversRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner, ok := fileOwner(fi); !ok || owner == 0 {
+	if owner, ok := FileOwner(fi); !ok || owner == 0 {
 		t.Skip("needs a home that is not root's")
 	}
 	t.Setenv("HOME", home)

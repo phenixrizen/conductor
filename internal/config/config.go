@@ -336,7 +336,10 @@ var ErrNoHome = errors.New("the home directory is unknown")
 // with no old directory either, the error (ErrNoHome) names the settings
 // that choose one. When ~/.conductor wins and the old directory holds server
 // data as well, notice names the directory this server no longer reads. A
-// ~/.conductor that cannot be looked into is an error.
+// ~/.conductor that cannot be looked into is an error. An old directory is
+// kept only when it is a real directory of the user running the server
+// (oldDataDir): one that would be kept but is a link or another user's is an
+// error naming it, its owner and the settings.
 //
 // The result is absolute: agent processes started in other working
 // directories are handed paths under it. A value that was set is made
@@ -359,9 +362,16 @@ func (c *Config) ResolveDataDir(configPath string) (notice string, err error) {
 // ResolveDataDir describes, and returns what the server should say about it.
 func (c *Config) defaultDataDir(configPath string) (notice string, err error) {
 	old, aerr := filepath.Abs(legacyDataDir(configPath))
-	hasOld := aerr == nil && isDir(old)
+	var hasOld bool
+	var refused error // why old, which would be kept, is not
+	if aerr == nil {
+		hasOld, refused = oldDataDir(old)
+	}
 	home, herr := os.UserHomeDir()
 	if herr != nil || !filepath.IsAbs(home) {
+		if refused != nil {
+			return "", refused
+		}
 		if !hasOld {
 			return "", fmt.Errorf("the data directory defaults to ~/.conductor, but %w: set dataDir in the config, or CONDUCTOR_DATA_DIR", ErrNoHome)
 		}
@@ -373,10 +383,14 @@ func (c *Config) defaultDataDir(configPath string) (notice string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", def, err)
 	}
+	if !held && refused != nil {
+		return "", refused
+	}
 	c.DataDir = def
 	switch {
 	case !hasOld:
-		// Nothing older to keep or to name.
+		// Nothing older to keep or to name. A refused directory is not
+		// named either once ~/.conductor holds server data: it is not used.
 	case !held:
 		c.DataDir = old
 		notice = fmt.Sprintf("using the data directory %s, where an older Conductor put it; the default is now %s, which holds no server data yet (catalog.json, crews/ or crews.json). To move it, stop the server, move the files in %s into %s (hooks/ need not move: the server writes it at every start) and start it again; to keep it where it is, set dataDir or CONDUCTOR_DATA_DIR to it", old, def, old, def)
@@ -423,10 +437,39 @@ func legacyDataDir(configPath string) string {
 	return filepath.Join(base, "conductor.d")
 }
 
-// isDir reports whether p is a directory, following links.
-func isDir(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && fi.IsDir()
+// geteuid is the user conductor serve runs as. Tests replace it.
+var geteuid = os.Geteuid
+
+// oldDataDir reports whether old, where an older Conductor put the data
+// directory, is one to keep: a real directory, not a link, that belongs to
+// the user running the server (where the system says who owns a file; a real
+// directory suffices elsewhere). Nothing there, or something that is neither
+// a directory nor a link (a file), is no old directory, as before. A link or
+// another user's directory is refused with an error naming it, its owner and
+// the settings that choose a data directory: in a shared working directory
+// anyone may make ./conductor.d, and its catalog.json would choose the
+// commands the server launches.
+func oldDataDir(old string) (bool, error) {
+	fi, err := os.Lstat(old)
+	if err != nil {
+		return false, nil
+	}
+	const settings = "set dataDir in the config or CONDUCTOR_DATA_DIR to the data directory to use (the default is ~/.conductor)"
+	owner, known := agents.FileOwner(fi)
+	uid := geteuid()
+	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
+		by := ""
+		if known {
+			by = fmt.Sprintf(" owned by uid %d", owner)
+		}
+		return false, fmt.Errorf("%s, where an older Conductor put the data directory, is a symbolic link%s, and an old data directory is kept only when it is a real directory of the user running conductor serve (uid %d), as its catalog.json chooses the commands agents run: %s", old, by, uid, settings)
+	case !fi.IsDir():
+		return false, nil
+	case known && owner != uid:
+		return false, fmt.Errorf("%s, where an older Conductor put the data directory, belongs to uid %d, not to uid %d, which runs conductor serve, and an old data directory is kept only when it is the server's own, as its catalog.json chooses the commands agents run: %s", old, owner, uid, settings)
+	}
+	return true, nil
 }
 
 // LoadCatalog merges the inline catalog and the optional catalog file.

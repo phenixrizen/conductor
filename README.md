@@ -166,7 +166,8 @@ on your machine, with the hook files in `~/.conductor/hooks` (an older
 `~/.local/state/conductor/hooks` is kept while it exists). `conductor serve`
 warns and goes on when it cannot set the modes of the files in a `hooks/` of
 its own (0600 files in a 0700 directory); a `hooks/` that belongs to another
-user stops it, since those files choose the commands agents run.
+user stops it before anything is written there, root included, since those
+files choose the commands agents run.
 
 **Installed on demand.** The other agents read hooks only from their own
 config, and so do the agents above when something other than Conductor starts
@@ -487,7 +488,7 @@ Limits:
 | `fileView` | `CONDUCTOR_FILE_VIEW` | `view` | who may read session files |
 | `scrollbackBytes`, `maxSessions`, `maxViewersPerSession`, `exitedRetention`, `envPassthrough` | matching `CONDUCTOR_*` | see example | limits |
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
-| `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data) | UI-managed state; must be writable, best outside `allowedRoots` |
+| `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 
 ### Upgrading
@@ -500,7 +501,12 @@ versions used `conductor.d` next to the config file, or in the current
 directory without one. A server that finds that old directory, and no server
 data in `~/.conductor` (`catalog.json`, `crews/` or `crews.json`; the `hooks/`
 that `conductor host` writes there does not count), keeps using it and logs a
-warning naming both paths. To move it, stop the server, move the files in it
+warning naming both paths. It keeps it only when it is a real directory, not
+a symbolic link, owned by the user running the server: its `catalog.json`
+chooses the commands agents run, and anyone may make a `conductor.d` in a
+shared directory. Anything else under that name stops the server with an
+error naming it, its owner and the two settings; set `dataDir` or
+`CONDUCTOR_DATA_DIR`. To move it, stop the server, move the files in it
 into `~/.conductor` (`hooks/` need not move: the server writes it at every
 start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
 to it. When both `~/.conductor` and the old directory hold server data, the
