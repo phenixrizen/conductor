@@ -12,6 +12,9 @@ describe('slugId', () => {
     expect(slugId('My  Tool -- v2')).toBe('my-tool-v2')
     expect(slugId('--x--')).toBe('x')
   })
+  it('never ends in a dash when the cut falls on one', () => {
+    expect(slugId('a'.repeat(31) + ' b')).toBe('a'.repeat(31))
+  })
 })
 
 describe('splitArgs', () => {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { AgentInfo, AgentInput, AgentSignal } from '~/composables/useSessions'
+import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
+import { agentPayload, commandOf, formErrors, formFromAgent, type AgentForm, type Field } from '~/utils/agentForm'
 import { slugId } from '~/utils/argv'
 
 /**
@@ -20,29 +21,9 @@ const emit = defineEmits<{ saved: [agent: AgentInfo] }>()
 const api = useSessions()
 const toast = useToast()
 
-type SignalKind = AgentSignal['kind']
-/** `masked` rows are values already stored on the server: the API only ever returns `***` for them. */
-interface EnvRow {
-  uid: number
-  key: string
-  value: string
-  masked: boolean
-}
-
-const MASK = '***'
-const ID_PATTERN = /^[a-z0-9-]{1,32}$/
 let nextUid = 0
-
-const form = reactive({
-  name: '',
-  id: '',
-  command: [] as string[],
-  description: '',
-  env: [] as EnvRow[],
-  allowArgs: true,
-  signal: 'bell' as SignalKind,
-  pattern: '',
-})
+const uid = () => nextUid++
+const form = reactive<AgentForm>(formFromAgent(undefined, uid))
 const idTouched = ref(false)
 /** The ID names the agent being replaced, so it stays fixed once the agent exists. */
 const idLocked = ref(false)
@@ -52,22 +33,9 @@ const saving = ref(false)
 const testing = ref(false)
 
 function reset() {
-  const a = props.agent
-  form.name = a?.name ?? ''
-  form.id = a?.id ?? ''
-  form.command = [...(a?.command ?? [])]
-  form.description = a?.description ?? ''
-  form.env = [
-    ...Object.keys(a?.env ?? {})
-      .sort()
-      .map((key) => ({ uid: nextUid++, key, value: '', masked: true })),
-    ...(a?.envPassthrough ?? []).map((key) => ({ uid: nextUid++, key, value: '', masked: false })),
-  ]
-  form.allowArgs = a?.allowArgs ?? true
-  form.signal = a?.signal?.kind ?? 'bell'
-  form.pattern = a?.signal?.pattern ?? ''
-  idTouched.value = !!a
-  idLocked.value = !!a
+  Object.assign(form, formFromAgent(props.agent, uid))
+  idTouched.value = !!props.agent
+  idLocked.value = !!props.agent
   attempted.value = false
   error.value = ''
   scheduleCheck()
@@ -117,7 +85,7 @@ let checkSeq = 0
 function scheduleCheck() {
   clearTimeout(checkTimer)
   const seq = ++checkSeq
-  const program = form.command[0]?.trim()
+  const program = commandOf(form)[0]?.trim()
   if (!program) {
     check.value = { state: 'idle' }
     return
@@ -125,18 +93,18 @@ function scheduleCheck() {
   check.value = { state: 'pending' }
   checkTimer = setTimeout(async () => {
     try {
-      const r = await api.checkCommand([...form.command])
+      const r = await api.checkCommand(program)
       if (seq === checkSeq) check.value = r.found ? { state: 'found', path: r.path ?? program } : { state: 'missing' }
     } catch {
       if (seq === checkSeq) check.value = { state: 'failed' }
     }
   }, 400)
 }
-watch(() => form.command[0], scheduleCheck)
+watch(() => commandOf(form)[0], scheduleCheck)
 onBeforeUnmount(() => clearTimeout(checkTimer))
 
 function addEnv() {
-  form.env.push({ uid: nextUid++, key: '', value: '', masked: false })
+  form.env.push({ uid: uid(), key: '', value: '', masked: false })
 }
 function removeEnv(uid: number) {
   form.env = form.env.filter((r) => r.uid !== uid)
@@ -146,83 +114,20 @@ function removeEnv(uid: number) {
 // picked here, only an agent that already has one (or already reports by hook)
 // can use it, so editing a built-in never loses its wiring.
 const hookAvailable = computed(() => !!props.agent?.adapter || props.agent?.signal?.kind === 'hook')
-const signalCards = computed<Array<{ kind: SignalKind; title: string; suffix?: string; text: string; icon: string; disabled?: boolean }>>(() => [
+const signalItems = computed(() => [
   {
-    kind: 'hook',
-    title: 'Hook command',
-    suffix: props.agent?.adapter ? `adapter ${props.agent.adapter}` : undefined,
-    text: hookAvailable.value ? 'The agent reports through its own hooks.' : 'pick an adapter (coming with Events)',
-    icon: 'i-lucide-webhook',
+    value: 'hook',
+    label: props.agent?.adapter ? `Hook command · adapter ${props.agent.adapter}` : 'Hook command',
+    description: hookAvailable.value ? 'The agent reports through its own hooks.' : 'pick an adapter (coming with Events)',
     disabled: !hookAvailable.value,
   },
-  { kind: 'bell', title: 'Bell / OSC 9·777', text: 'A terminal bell or notification escape. The default.', icon: 'i-lucide-bell' },
-  { kind: 'pattern', title: 'Screen pattern', text: 'A regex matched against the last screen line.', icon: 'i-lucide-scan-text' },
-  { kind: 'none', title: 'None', text: 'Never flagged; you watch it yourself.', icon: 'i-lucide-bell-off' },
+  { value: 'bell', label: 'Bell / OSC 9·777', description: 'A terminal bell or notification escape. The default.' },
+  { value: 'pattern', label: 'Screen pattern', description: 'A regex matched against the last screen line.' },
+  { value: 'none', label: 'None', description: 'Never flagged; you watch it yourself.' },
 ])
 
-type Field = 'name' | 'id' | 'command' | 'pattern' | 'env'
-const errors = computed(() => {
-  const e: Partial<Record<Field, string>> = {}
-  if (!form.name.trim()) e.name = 'Give the agent a name'
-  if (!ID_PATTERN.test(form.id)) e.id = form.id ? 'Use lowercase letters, digits and dashes, up to 32' : 'An ID is required'
-  if (!form.command[0]?.trim()) e.command = 'Add the command to run'
-  // Spaces count in a regex (a "> " prompt), so trim only to tell whether anything was typed.
-  if (form.signal === 'pattern' && !form.pattern.trim()) e.pattern = 'Enter the pattern to look for'
-  const seen = new Set<string>()
-  for (const r of form.env) {
-    const key = r.key.trim()
-    if (!key) {
-      if (r.value) e.env = 'Give every variable a name'
-      continue
-    }
-    if (seen.has(key)) e.env = `${key} is listed twice`
-    seen.add(key)
-  }
-  return e
-})
+const errors = computed(() => formErrors(form))
 const shown = computed<Partial<Record<Field, string>>>(() => (attempted.value ? errors.value : {}))
-
-function signalOut(): AgentSignal | undefined {
-  const prev = props.agent?.signal
-  // The flag is independent of how the agent asks for input, and this form has no control for it.
-  const toolEvents = prev?.toolEvents || undefined
-  switch (form.signal) {
-    case 'pattern':
-      return { kind: 'pattern', pattern: form.pattern, toolEvents }
-    case 'hook':
-      return { kind: 'hook', toolEvents }
-    case 'none':
-      return { kind: 'none', toolEvents }
-    default:
-      // Bell is what an agent without a signal gets, so leave it out unless one was set.
-      return prev ? { kind: 'bell', toolEvents } : undefined
-  }
-}
-
-function payload(): AgentInput {
-  const env: Record<string, string> = {}
-  const passthrough: string[] = []
-  for (const row of form.env) {
-    const key = row.key.trim()
-    if (!key) continue
-    if (row.masked) env[key] = MASK // the server keeps the value it stores for this key
-    else if (row.value !== '') env[key] = row.value
-    else passthrough.push(key)
-  }
-  return {
-    id: form.id,
-    name: form.name.trim(),
-    description: form.description.trim() || undefined,
-    command: [...form.command],
-    allowArgs: form.allowArgs,
-    env: Object.keys(env).length ? env : undefined,
-    envPassthrough: passthrough.length ? passthrough : undefined,
-    cwd: props.agent?.cwd,
-    icon: props.agent?.icon,
-    adapter: props.agent?.adapter,
-    signal: signalOut(),
-  }
-}
 
 /** Validates, then saves. Returns the saved agent, or null with `error` set. */
 async function persist(): Promise<AgentInfo | null> {
@@ -234,7 +139,7 @@ async function persist(): Promise<AgentInfo | null> {
     return null
   }
   try {
-    const saved = await api.saveAgent(payload())
+    const saved = await api.saveAgent(agentPayload(form, props.agent))
     // A rename typed while the request was in flight may have moved the ID (it
     // is not locked yet): lock the ID that was actually saved.
     form.id = saved.id
@@ -299,7 +204,7 @@ async function testLaunch() {
         </div>
 
         <UFormField label="Command" name="command" required :error="shown.command">
-          <ArgvInput v-model="form.command" placeholder="aider --model sonnet" :invalid="!!shown.command" />
+          <ArgvInput v-model="form.command" v-model:pending="form.pendingCommand" placeholder="aider --model sonnet" :invalid="!!shown.command" />
           <template #help>
             <span v-if="check.state === 'pending'" class="flex items-center gap-1.5"><UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin" />Checking the server…</span>
             <span v-else-if="check.state === 'found'" class="flex items-center gap-1.5 text-success"><UIcon name="i-lucide-check" class="size-3.5 flex-none" />Found on the server: <code class="font-mono">{{ check.path }}</code></span>
@@ -339,26 +244,13 @@ async function testLaunch() {
         <USwitch v-model="form.allowArgs" label="Accept extra arguments" description="The Launch dialog can append arguments to this command." />
 
         <div class="text-sm">
-          <div class="font-medium text-default">How does it tell Conductor it needs you?</div>
-          <div class="mt-2 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Needs-input signal">
-            <button
-              v-for="c in signalCards"
-              :key="c.kind"
-              type="button"
-              role="radio"
-              :aria-checked="form.signal === c.kind"
-              :disabled="c.disabled"
-              class="flex flex-col gap-1 rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-              :class="form.signal === c.kind ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default enabled:hover:border-accented'"
-              @click="form.signal = c.kind"
-            >
-              <span class="flex items-center gap-2 font-semibold">
-                <UIcon :name="c.icon" class="size-4 flex-none text-muted" />
-                <span>{{ c.title }}<span v-if="c.suffix" class="text-xs font-normal text-muted"> · {{ c.suffix }}</span></span>
-              </span>
-              <span class="text-xs leading-snug text-muted">{{ c.text }}</span>
-            </button>
-          </div>
+          <URadioGroup
+            v-model="form.signal"
+            :items="signalItems"
+            variant="card"
+            legend="How does it tell Conductor it needs you?"
+            :ui="{ fieldset: 'mt-2 grid gap-2 sm:grid-cols-2', legend: 'font-medium text-default' }"
+          />
           <UFormField v-if="form.signal === 'pattern'" label="Pattern" name="pattern" hint="RE2 regular expression" :error="shown.pattern" class="mt-3">
             <UInput v-model="form.pattern" placeholder="^> $" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
             <template #help>Matched against the last line on screen once output goes quiet.</template>

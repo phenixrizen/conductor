@@ -278,9 +278,9 @@ export function useSessions() {
     /** Takes a hidden id off the hidden list and returns its agent, back as it was; undefined when no agent has that id any more. */
     unhideAgent: (id: string) =>
       request<{ agent?: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}/unhide`, { method: 'POST' }).then((r) => r.agent),
-    /** Whether the program (argv[0]) resolves on the server. Nothing is run. */
-    checkCommand: (argv: string[]) =>
-      request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: argv } }),
+    /** Whether the program resolves on the server. Only the program is sent; nothing is run. */
+    checkCommand: (program: string) =>
+      request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: [program] } }),
     /** The saved crews, ordered by name. */
     listCrews: () => request<{ crews: CrewInfo[] }>('/api/crews').then((r) => r.crews ?? []),
     /**

@@ -24,7 +24,7 @@ export function hasOpenQuote(s: string): boolean {
   return false
 }
 
-/** A catalog ID (`[a-z0-9-]`, at most 32 characters) suggested by a display name; empty when nothing usable is left. */
+/** A catalog ID (`[a-z0-9-]`, at most 32 characters, no dash at either end) suggested by a display name; empty when nothing usable is left. */
 export function slugId(name: string): string {
   return name
     .trim()
@@ -32,6 +32,7 @@ export function slugId(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 32)
+    .replace(/-+$/, '')
 }
 
 /** An argv as one line for display, quoting only what needs it. Never fed to a shell. */
