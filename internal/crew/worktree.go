@@ -81,31 +81,51 @@ type State struct {
 // msgCanWorktree is State.Message when worktrees can be made.
 const msgCanWorktree = "a git repository with a commit: a crew with worktrees can launch here"
 
-// GitState reports, in one answer, what CheckRepo checks of a crew's working
-// directory before a launch with isolation "worktree", through the same
-// rev-parse calls: whether dir is in a git working tree and its top, and
-// whether HEAD is a commit to branch from. Message says so in the words the
-// launch's refusal uses; a directory git refuses for another reason (dubious
-// ownership, permissions) is InRepo false with git's message. The error is
-// ErrNoGit when git is not on PATH, or ctx's.
-func GitState(ctx context.Context, dir string) (State, error) {
+// repoState makes the checks CheckRepo makes of dir, through the same
+// rev-parse calls: whether dir is in a git working tree, and its top, and
+// whether HEAD is a commit to branch from. refusal is the error a launch
+// refuses dir with, which matches ErrNotRepo, nil when worktrees can be made
+// of it; err is ErrNoGit when git is not on PATH, or ctx's.
+func repoState(ctx context.Context, dir string) (st State, refusal, err error) {
 	top, err := toplevel(ctx, dir)
 	if err != nil {
 		if errors.Is(err, ErrNotRepo) {
-			return State{Message: err.Error()}, nil
+			return State{}, err, nil
 		}
-		return State{}, err
+		return State{}, nil, err
 	}
-	st := State{InRepo: true, Toplevel: top}
+	st = State{InRepo: true, Toplevel: top}
 	if _, err := headCommit(ctx, dir); err != nil {
 		if ctx.Err() != nil {
-			return State{}, ctx.Err()
+			return State{}, nil, ctx.Err()
 		}
-		st.Message = errNoCommit.Error()
-		return st, nil
+		return st, errNoCommit, nil
 	}
 	st.HasCommit = true
+	return st, nil, nil
+}
+
+// GitState reports, in one answer, what a launch with isolation "worktree"
+// checks of a crew's working directory, by the same checks: whether dir is in
+// a git working tree and its top, and whether HEAD is a commit to branch from
+// (repoState, as CheckRepo), and whether its .conductor or
+// .conductor/worktrees is a symbolic link (checkWorktreesDir), which the
+// launch refuses first. Message is the launch's refusal of dir, or says that
+// worktrees can be made there; a directory git refuses for another reason
+// (dubious ownership, permissions) is InRepo false with git's message. The
+// error is ErrNoGit when git is not on PATH, or ctx's.
+func GitState(ctx context.Context, dir string) (State, error) {
+	st, refusal, err := repoState(ctx, dir)
+	if err != nil {
+		return State{}, err
+	}
+	if err := checkWorktreesDir(dir); err != nil {
+		refusal = err
+	}
 	st.Message = msgCanWorktree
+	if refusal != nil {
+		st.Message = refusal.Error()
+	}
 	return st, nil
 }
 
@@ -126,16 +146,11 @@ func classifyRevParse(err error) error {
 // matches ErrNotRepo otherwise, and says which of the two it is; it is
 // ErrNoGit when git is not on PATH.
 func CheckRepo(ctx context.Context, repo string) error {
-	if err := inRepo(ctx, repo); err != nil {
+	_, refusal, err := repoState(ctx, repo)
+	if err != nil {
 		return err
 	}
-	if _, err := headCommit(ctx, repo); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return errNoCommit
-	}
-	return nil
+	return refusal
 }
 
 // AddWorktree adds a worktree of the repository repo is in at path, on a new

@@ -21,7 +21,9 @@ import (
 // worktrees could launch there from GET /api/git/check. Both say what exists
 // under the allowed roots and nothing else: a prefix is resolved as a
 // session's working directory is (resolveCwd), so a symbolic link out of the
-// roots leads nowhere.
+// roots leads nowhere. Each path is stat'ed before it is resolved (resolveDir),
+// and the work of one request ends with its context: at its 5 s deadline, or
+// when the client goes away.
 
 const (
 	// maxPathEntries bounds one listing: a page for a picker, not a file system.
@@ -32,6 +34,8 @@ const (
 	gitCheckTimeout = 5 * time.Second
 	// pathReadChunk is how many directory entries one read takes.
 	pathReadChunk = 256
+	// maxSkippedLinks bounds the symbolic links one listing resolves in vain.
+	maxSkippedLinks = 50
 )
 
 // maxPathScan bounds the directory entries one listing reads, before they
@@ -72,17 +76,37 @@ type gitCheckReply struct {
 // the allowed roots.
 var errNoAllowedDir = errors.New("no directory in the prefix is under the allowed roots")
 
-// splitPrefix finds the longest leading part of prefix that resolveCwd
+// resolveDir is resolveCwd behind a stat, with resolveCwd's errors. The
+// kernel answers a symbolic link loop, or a chain too long to follow (ELOOP,
+// past 40 links), in milliseconds, where resolveCwd's filepath.EvalSymlinks
+// walks up to 255 links, each down its whole path again, for seconds: a path
+// that does not stat as a directory is never resolved.
+func (s *Server) resolveDir(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", errors.New("invalid working directory")
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return "", errors.New("working directory does not exist")
+	}
+	if !fi.IsDir() {
+		return "", errors.New("working directory is not a directory")
+	}
+	return s.resolveCwd(abs)
+}
+
+// splitPrefix finds the longest leading part of prefix that resolveDir
 // accepts (an existing directory under an allowed root, symbolic links
 // resolved) and the path element typed after it, "" when prefix names such
 // a directory itself. A lone "." after the last separator is the start of a
 // hidden name, which filepath.Clean would drop. An empty prefix is the
 // server's default working directory. A prefix no part of which qualifies is
-// errNoAllowedDir.
-func (s *Server) splitPrefix(prefix string) (dir, seg string, err error) {
+// errNoAllowedDir; the error is ctx's once ctx is done.
+func (s *Server) splitPrefix(ctx context.Context, prefix string) (dir, seg string, err error) {
 	raw := cmp.Or(prefix, s.cfg.DefaultCwd)
 	if strings.HasSuffix(raw, string(filepath.Separator)+".") {
-		dir, seg, err := s.splitPrefix(strings.TrimSuffix(raw, "."))
+		dir, seg, err := s.splitPrefix(ctx, strings.TrimSuffix(raw, "."))
 		if err == nil && seg == "" {
 			seg = "."
 		}
@@ -90,7 +114,10 @@ func (s *Server) splitPrefix(prefix string) (dir, seg string, err error) {
 	}
 	cur := filepath.Clean(raw)
 	for {
-		if real, err := s.resolveCwd(cur); err == nil {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
+		if real, err := s.resolveDir(cur); err == nil {
 			return real, seg, nil
 		}
 		parent := filepath.Dir(cur)
@@ -112,9 +139,10 @@ type candidate struct {
 // readCandidates reads at most maxPathScan entries of dir, pathReadChunk at a
 // time, and keeps the directories and symbolic links whose names start with
 // seg, hidden ones only when seg starts with a dot. capped reports that the
-// directory has entries it did not read.
+// directory has entries it did not read. dir is opened as a directory only
+// (openDir).
 func readCandidates(dir, seg string) (out []candidate, capped bool, err error) {
-	f, err := os.Open(dir)
+	f, err := openDir(dir)
 	if err != nil {
 		return nil, false, err
 	}
@@ -141,6 +169,10 @@ func readCandidates(dir, seg string) (out []candidate, capped bool, err error) {
 			return nil, false, err
 		}
 	}
+	// maxPathScan entries read: one more says whether there are others.
+	if _, err := f.ReadDir(1); errors.Is(err, io.EOF) {
+		return out, false, nil
+	}
 	return out, true, nil
 }
 
@@ -148,46 +180,71 @@ func readCandidates(dir, seg string) (out []candidate, capped bool, err error) {
 // splitPrefix) whose names start with the element typed after it: at most
 // limit of them in name order, from at most maxPathScan entries read, hidden
 // ones only when that element starts with a dot, a symbolic link only when it
-// leads under an allowed root. A child with a .git of its own is asked git
-// for its marks; the others carry their parent's, asked once and only when
-// needed, so one listing runs GitState at most limit times, one after another.
+// leads under an allowed root. A directory the server cannot read lists
+// nothing. A child with a .git of its own, or a link, is asked git for its
+// marks (a link's are those of the directory it leads to); the others carry
+// their parent's, asked once and only when needed, so one listing runs
+// GitState at most limit times, one after another.
+//
+// The work ends with ctx. Past its end, or once maxSkippedLinks links have led
+// nowhere usable, no link is resolved any more: the listing stops at the next
+// one, truncated. Past its end git is not asked either, and the listing keeps
+// its entries, those not yet marked left unmarked.
 func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (pathsReply, error) {
-	dir, seg, err := s.splitPrefix(prefix)
+	dir, seg, err := s.splitPrefix(ctx, prefix)
 	if err != nil {
 		return pathsReply{}, err
 	}
+	out := pathsReply{Dir: dir, Entries: []pathEntry{}}
 	cands, capped, err := readCandidates(dir, seg)
 	if err != nil {
-		return pathsReply{}, err
+		s.log.Debug("list paths: cannot read the directory", "dir", dir, "err", err)
+		return out, nil
 	}
+	out.Truncated = capped
 	slices.SortFunc(cands, func(a, b candidate) int { return strings.Compare(a.name, b.name) })
-	out := pathsReply{Dir: dir, Entries: []pathEntry{}, Truncated: capped}
 	var parent *pathGit
+	skipped := 0
 	for _, c := range cands {
 		path := filepath.Join(dir, c.name)
+		own := "" // the directory git is asked about for the entry's own marks
 		if c.link {
-			if _, err := s.resolveCwd(path); err != nil {
+			if ctx.Err() != nil || skipped == maxSkippedLinks {
+				out.Truncated = true
+				break
+			}
+			real, err := s.resolveDir(path)
+			if err != nil {
+				skipped++
 				continue
 			}
+			own = real
 		}
 		if len(out.Entries) == limit {
 			out.Truncated = true
 			break
 		}
 		var mark pathGit
-		if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
-			if mark, err = gitMark(ctx, path); err != nil {
-				return pathsReply{}, err
+		if ctx.Err() == nil {
+			if own == "" {
+				if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+					own = path
+				}
 			}
-		} else {
-			if parent == nil {
-				m, err := gitMark(ctx, dir)
-				if err != nil {
+			if own != "" {
+				if mark, err = gitMark(ctx, own); err != nil {
 					return pathsReply{}, err
 				}
-				parent = &m
+			} else {
+				if parent == nil {
+					m, err := gitMark(ctx, dir)
+					if err != nil {
+						return pathsReply{}, err
+					}
+					parent = &m
+				}
+				mark = *parent
 			}
-			mark = *parent
 		}
 		out.Entries = append(out.Entries, pathEntry{Name: c.name, Path: path, Git: mark})
 	}
@@ -195,13 +252,14 @@ func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (paths
 }
 
 // gitMark is the git state of dir as the picker shows it. Without git on the
-// server nothing is marked.
+// server nothing is marked, nor when ctx ends during the call: the listing
+// keeps the entry, unmarked.
 func gitMark(ctx context.Context, dir string) (pathGit, error) {
 	st, err := gitState(ctx, dir)
-	if errors.Is(err, crew.ErrNoGit) {
+	switch {
+	case errors.Is(err, crew.ErrNoGit), err != nil && ctx.Err() != nil:
 		return pathGit{}, nil
-	}
-	if err != nil {
+	case err != nil:
 		return pathGit{}, err
 	}
 	return pathGit{Repo: st.InRepo, Commits: st.HasCommit}, nil
@@ -250,13 +308,16 @@ func (s *Server) handleListPaths(w http.ResponseWriter, r *http.Request) {
 
 // handleGitCheck answers GET /api/git/check?cwd=<path>: whether a crew with
 // worktrees could launch in cwd (the default working directory when empty),
-// by the launch's own rules. A preview: the launch's 409 is the authority.
+// by the launch's own rules (cwd resolved as resolveDir does). A preview:
+// the launch's 409 is the authority. The top of the repository is named only when it is under the allowed
+// roots: git names it as the repository says (core.worktree can name any
+// directory), and a root may lie inside a repository.
 func (s *Server) handleGitCheck(w http.ResponseWriter, r *http.Request) {
 	cwdInput, ok := pathQuery(w, r, "cwd")
 	if !ok {
 		return
 	}
-	cwd, err := s.resolveCwd(cmp.Or(cwdInput, s.cfg.DefaultCwd))
+	cwd, err := s.resolveDir(cmp.Or(cwdInput, s.cfg.DefaultCwd))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_cwd", err.Error())
 		return
@@ -273,5 +334,11 @@ func (s *Server) handleGitCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "git_failed", "could not run git")
 		return
 	}
-	writeJSON(w, http.StatusOK, gitCheckReply{InRepo: st.InRepo, Toplevel: st.Toplevel, HasCommit: st.HasCommit, Message: st.Message})
+	reply := gitCheckReply{InRepo: st.InRepo, HasCommit: st.HasCommit, Message: st.Message}
+	if st.Toplevel != "" {
+		if top, err := s.resolveDir(st.Toplevel); err == nil {
+			reply.Toplevel = top
+		}
+	}
+	writeJSON(w, http.StatusOK, reply)
 }

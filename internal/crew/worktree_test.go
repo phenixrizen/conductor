@@ -304,3 +304,20 @@ func TestGitStateReportsRepoCommitAndPlain(t *testing.T) {
 		t.Fatalf("plain: %+v %v", st, err)
 	}
 }
+
+// GitState says what the launch says of a .conductor that is a symbolic
+// link, which the launch refuses before it asks git.
+func TestGitStateReportsTheLaunchRefusalOfAWorktreesLink(t *testing.T) {
+	repo := newRepo(t)
+	if err := os.Symlink(t.TempDir(), filepath.Join(repo, ".conductor")); err != nil {
+		t.Fatal(err)
+	}
+	st, err := GitState(t.Context(), repo)
+	e, _ := newEngine(t)
+	c := testCrew(immediate("lead", "Plan it."))
+	c.Isolation, c.Cwd = IsolationWorktree, repo
+	_, lerr := e.Launch(t.Context(), c)
+	if err != nil || lerr == nil || !st.InRepo || !st.HasCommit || st.Message != lerr.Error() {
+		t.Fatalf("%+v %v; the launch: %v", st, err, lerr)
+	}
+}

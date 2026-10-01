@@ -2,16 +2,21 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/crew"
 )
 
@@ -293,5 +298,318 @@ func TestGitCheckAnswersByTheLaunchRules(t *testing.T) {
 	}
 	if resp, _ := e.do("GET", "/api/git/check?cwd="+url.QueryEscape(root), "", nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous: %d", resp.StatusCode)
+	}
+}
+
+// gitCheck asks GET /api/git/check as the admin and returns the status and reply.
+func (e *testEnv) gitCheck(cwd string) (int, map[string]any) {
+	e.t.Helper()
+	resp, out := e.do("GET", "/api/git/check?cwd="+url.QueryEscape(cwd), adminToken, nil)
+	return resp.StatusCode, out
+}
+
+// linkMaze makes, outside the roots, a symbolic link whose resolution walks
+// depth directories down and back up, again and again: the kernel gives up
+// on it after 40 links (ELOOP) in milliseconds, while filepath.EvalSymlinks
+// walks 255 of them, each the whole depth down, for seconds. It returns the
+// link.
+func linkMaze(t *testing.T, depth int) string {
+	t.Helper()
+	dir := t.TempDir()
+	down := filepath.Join(slices.Repeat([]string{"n"}, depth)...)
+	if err := os.MkdirAll(filepath.Join(dir, down), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(strings.Repeat("../", depth)+"loop", filepath.Join(dir, down, "up")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(down, "up"), filepath.Join(dir, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "loop")
+}
+
+// A link that leads to no directory (a loop, a chain too long to follow, a
+// file) is left out at the kernel's word, without walking it.
+func TestPathsLeavesOutLinksToNoDirectoryQuickly(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	mkdirs(t, root, "real")
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	maze := linkMaze(t, 400)
+	for name, target := range map[string]string{"self": filepath.Join(root, "self"), "file": filepath.Join(root, "notes.txt"), "maze1": maze, "maze2": maze} {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	status, out := e.paths(root, "")
+	if took := time.Since(start); status != http.StatusOK || !slices.Equal(entryNames(out), []string{"real"}) || out["truncated"] != false || took > 2*time.Second {
+		t.Fatalf("%d %v in %v", status, out, took)
+	}
+}
+
+// A prefix that runs through such a link answers from the root in time,
+// whatever follows the link.
+func TestPathsPrefixThroughALinkLoopAnswersInTime(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	if err := os.Symlink(linkMaze(t, 400), filepath.Join(root, "maze")); err != nil {
+		t.Fatal(err)
+	}
+	prefix := filepath.Join(append([]string{root, "maze"}, slices.Repeat([]string{"x"}, 10)...)...)
+	start := time.Now()
+	status, out := e.paths(prefix, "")
+	if took := time.Since(start); status != http.StatusOK || out["dir"] != root || len(entryNames(out)) != 0 || took > 2*time.Second {
+		t.Fatalf("%d %v in %v", status, out, took)
+	}
+	// The git check's cwd is refused as quickly.
+	start = time.Now()
+	status, out = e.gitCheck(prefix)
+	if took := time.Since(start); status != http.StatusBadRequest || errorCode(out) != "invalid_cwd" || took > time.Second {
+		t.Fatalf("check: %d %v in %v", status, out, took)
+	}
+}
+
+// A listing stops when its context ends (the client went away, or the
+// deadline passed), in the walk of the prefix too.
+func TestPathsStopsWhenTheContextEnds(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	if err := os.Symlink(linkMaze(t, 400), filepath.Join(root, "maze")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	_, err := e.srv.listPaths(ctx, filepath.Join(root, "maze", "x", "y"), maxPathEntries)
+	if took := time.Since(start); !errors.Is(err, context.Canceled) || took > time.Second {
+		t.Fatalf("%v in %v", err, took)
+	}
+}
+
+// At most 50 links that lead nowhere usable are looked at in one listing:
+// at the next link, the listing stops and says it may have missed some.
+func TestPathsCapsTheLinksItCannotUse(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	mkdirs(t, root, "zz")
+	broken := func(name string) {
+		t.Helper()
+		if err := os.Symlink(filepath.Join(root, "gone"), filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 50 {
+		broken(fmt.Sprintf("b%02d", i))
+	}
+	if _, out := e.paths(root, ""); !slices.Equal(entryNames(out), []string{"zz"}) || out["truncated"] != false {
+		t.Fatalf("50 broken links: %v", out)
+	}
+	broken("b50")
+	if _, out := e.paths(root, ""); len(entryNames(out)) != 0 || out["truncated"] != true {
+		t.Fatalf("51 broken links: %v", out)
+	}
+}
+
+// Past the deadline the listing keeps its entries, unmarked, and asks git
+// no more.
+func TestPathsKeepsItsEntriesPastTheDeadline(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	mkdirs(t, root, filepath.Join("a", ".git"), filepath.Join("b", ".git"), "c")
+	var asked []string
+	was := gitState
+	gitState = func(ctx context.Context, dir string) (crew.State, error) {
+		asked = append(asked, dir)
+		<-ctx.Done()
+		return crew.State{}, ctx.Err()
+	}
+	t.Cleanup(func() { gitState = was })
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	reply, err := e.srv.listPaths(ctx, root, maxPathEntries)
+	if err != nil || len(reply.Entries) != 3 || len(asked) != 1 {
+		t.Fatalf("%+v %v, asked %v", reply, err, asked)
+	}
+	for _, en := range reply.Entries {
+		if en.Git.Repo || en.Git.Commits {
+			t.Fatalf("%s is marked: %+v", en.Name, en.Git)
+		}
+	}
+}
+
+// The git check's one call answers 500 git_failed when its context ends.
+func TestGitCheckFailsPastItsDeadline(t *testing.T) {
+	e := newTestEnv(t, nil)
+	was := gitState
+	gitState = func(ctx context.Context, _ string) (crew.State, error) {
+		<-ctx.Done()
+		return crew.State{}, ctx.Err()
+	}
+	t.Cleanup(func() { gitState = was })
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rec := httptest.NewRecorder()
+	e.srv.handleGitCheck(rec, httptest.NewRequestWithContext(ctx, "GET", "/api/git/check?cwd="+url.QueryEscape(e.root), nil))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "git_failed") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// A link is marked by the directory it leads to, not by the one it is in.
+func TestPathsMarksALinkByItsTarget(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	gitInit(t, filepath.Join(root, "repo"), true)
+	mkdirs(t, root, "plain", filepath.Join("repo", "pkg"))
+	if err := os.Symlink(filepath.Join(root, "repo", "pkg"), filepath.Join(root, "into")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "plain"), filepath.Join(root, "repo", "out")); err != nil {
+		t.Fatal(err)
+	}
+	if _, out := e.paths(root, ""); func() bool { r, c := entryGit(out, "into"); return !r || !c }() {
+		t.Fatalf("into, a link into the repository: %v", out)
+	}
+	_, out := e.paths(filepath.Join(root, "repo"), "")
+	if r, c := entryGit(out, "out"); r || c {
+		t.Fatalf("out, a link out of the repository: %v", out)
+	}
+	if r, c := entryGit(out, "pkg"); !r || !c {
+		t.Fatalf("pkg: %v", out)
+	}
+}
+
+// A directory under a root that the server cannot read lists nothing.
+func TestPathsListsNothingOfAnUnreadableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a user that a directory's mode keeps out")
+	}
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	locked := filepath.Join(root, "locked")
+	mkdirs(t, root, filepath.Join("locked", "inner"))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	status, out := e.paths(locked, "")
+	if status != http.StatusOK || out["dir"] != locked || len(entryNames(out)) != 0 || out["truncated"] != false {
+		t.Fatalf("%d %v", status, out)
+	}
+}
+
+// A FIFO in place of the directory (swapped in after its stat) fails to open
+// at once instead of waiting for a writer.
+func TestPathsReadRefusesAFIFO(t *testing.T) {
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo is not installed")
+	}
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	if out, err := exec.Command(mkfifo, fifo).CombinedOutput(); err != nil {
+		t.Fatalf("mkfifo: %v %s", err, out)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := readCandidates(fifo, "")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a FIFO was read as a directory")
+		}
+	case <-time.After(5 * time.Second):
+		// A writer lets the waiting open return, so that the goroutine ends.
+		if w, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
+			w.Close()
+		}
+		<-done
+		t.Fatal("opening the FIFO waited for a writer")
+	}
+}
+
+// Exactly maxPathScan entries are read whole; one more is truncated.
+func TestPathsTruncatesOnlyPastTheScanCap(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	for i := range 10 {
+		mkdirs(t, root, fmt.Sprintf("d%02d", i))
+	}
+	was := maxPathScan
+	maxPathScan = 10
+	t.Cleanup(func() { maxPathScan = was })
+	if _, out := e.paths(root, ""); len(entryNames(out)) != 10 || out["truncated"] != false {
+		t.Fatalf("exactly the cap: %v", out)
+	}
+	mkdirs(t, root, "d10")
+	if _, out := e.paths(root, ""); len(entryNames(out)) != 10 || out["truncated"] != true {
+		t.Fatalf("one past the cap: %v", out)
+	}
+}
+
+// Without git on the server, nothing is marked and the check says why.
+func TestPathsAndGitCheckWithoutGit(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	mkdirs(t, root, filepath.Join("repo", ".git"), "plain")
+	t.Setenv("PATH", t.TempDir())
+	status, out := e.paths(root, "")
+	if status != http.StatusOK || !slices.Equal(entryNames(out), []string{"plain", "repo"}) {
+		t.Fatalf("%d %v", status, out)
+	}
+	for _, name := range []string{"plain", "repo"} {
+		if r, c := entryGit(out, name); r || c {
+			t.Fatalf("%s is marked: %v", name, out)
+		}
+	}
+	status, out = e.gitCheck(root)
+	if _, named := out["toplevel"]; status != http.StatusOK || out["inRepo"] != false || out["hasCommit"] != false || out["message"] != crew.ErrNoGit.Error() || named {
+		t.Fatalf("check: %d %v", status, out)
+	}
+}
+
+// The check names the top of the repository only when it is under the
+// allowed roots: core.worktree can make it any directory, and a root can lie
+// inside a repository.
+func TestGitCheckOmitsAToplevelOutsideTheRoots(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	repo := filepath.Join(root, "repo")
+	gitInit(t, repo, true)
+	outside := realRoot(t, t.TempDir())
+	cmd := exec.Command("git", "-C", repo, "config", "core.worktree", outside)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v %s", err, out)
+	}
+	if status, out := e.gitCheck(repo); status != http.StatusOK || out["inRepo"] != true || out["hasCommit"] != true || out["toplevel"] != nil {
+		t.Fatalf("core.worktree outside: %d %v", status, out)
+	}
+	outer := realRoot(t, t.TempDir())
+	gitInit(t, outer, true)
+	inner := filepath.Join(outer, "sub")
+	mkdirs(t, outer, "sub")
+	e2 := newTestEnv(t, func(c *config.Config) { c.AllowedRoots, c.DefaultCwd = []string{inner}, inner })
+	if status, out := e2.gitCheck(inner); status != http.StatusOK || out["inRepo"] != true || out["toplevel"] != nil {
+		t.Fatalf("a root inside a repository: %d %v", status, out)
+	}
+}
+
+// A .conductor that is a symbolic link is checked in the launch's words.
+func TestGitCheckReportsAWorktreesLink(t *testing.T) {
+	e := newTestEnv(t, nil)
+	root := realRoot(t, e.root)
+	repo := filepath.Join(root, "repo")
+	gitInit(t, repo, true)
+	if err := os.Symlink(t.TempDir(), filepath.Join(repo, ".conductor")); err != nil {
+		t.Fatal(err)
+	}
+	if status, out := e.gitCheck(repo); status != http.StatusOK || !strings.Contains(fmt.Sprint(out["message"]), "symbolic link") {
+		t.Fatalf("%d %v", status, out)
 	}
 }
