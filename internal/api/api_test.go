@@ -1305,6 +1305,7 @@ func TestNewRefusesAnUnusableOverlay(t *testing.T) {
 		{"unknown field", `{"agents": [], "bogus": true}`, `"bogus"`},
 		{"invalid agent", `{"agents": [{"id": "Bad Id", "name": "x", "command": ["x"]}]}`, "agents[0]"},
 		{"invalid signal", `{"agents": [{"id": "ok", "name": "x", "command": ["x"], "signal": {"kind": "smoke"}}]}`, "unknown kind"},
+		{"unknown adapter", `{"agents": [{"id": "ok", "name": "x", "command": ["x"], "adapter": "gemini"}]}`, `"gemini"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1483,6 +1484,12 @@ func TestCatalogReadersDoNotWaitForAnEdit(t *testing.T) {
 func TestCatalogListAnswersWhileAnEditWrites(t *testing.T) {
 	e := newTestEnv(t, nil)
 	writing, release := make(chan struct{}), make(chan struct{})
+	// Every way out of the test lets the held write go, a failure before the
+	// write was reached included, so the handler never stays blocked. This
+	// cleanup runs before the server's, which waits for its handlers.
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
 	write := e.srv.writeCatalog
 	e.srv.writeCatalog = func(ov catalog.Overlay) error {
 		close(writing)
@@ -1518,18 +1525,15 @@ func TestCatalogListAnswersWhileAnEditWrites(t *testing.T) {
 	select {
 	case got := <-request("GET", "/api/catalog", nil):
 		if got != http.StatusOK {
-			close(release)
 			t.Fatalf("list during the write: status %d", got)
 		}
 	case <-time.After(5 * time.Second):
-		close(release)
 		t.Fatal("a list waited for an edit's write")
 	}
 	if ids := e.catalogIDs(); slices.Contains(ids, "slow") {
-		close(release)
 		t.Fatalf("listed before its write completed: %v", ids)
 	}
-	close(release)
+	unblock()
 	if got := <-saved; got != http.StatusOK {
 		t.Fatalf("save: status %d", got)
 	}
@@ -1719,6 +1723,163 @@ func TestCatalogSaveCollapsesDuplicateOverlayEntries(t *testing.T) {
 	var ov catalog.Overlay
 	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 {
 		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+}
+
+// The Agents page stores, for an agent that replaces a built-in or configured
+// one, only the env values the admin changed; the others stay the mask, read
+// as the replaced agent's value. So a secret rotated in the config reaches the
+// agent at the next start, a value the admin set stays, and a key the admin
+// removed stays removed. The adapter and signal left out come from the
+// replaced agent too.
+func TestCatalogOverrideFollowsTheBaseEnv(t *testing.T) {
+	e := newTestEnv(t, nil)
+	start := func(secret string) *testEnv {
+		t.Helper()
+		base, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
+			{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}},
+			{ID: "keyed", Name: "keyed", Command: []string{"/bin/cat"}, Adapter: "claude",
+				Signal: &catalog.Signal{Kind: catalog.SignalPattern, Pattern: `^> $`},
+				Env:    map[string]string{"API_KEY": secret, "REGION": "eu", "DEBUG": "1"}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv, err := New(e.srv.cfg, base, e.srv.log, nil, e.srv.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e.serve(srv)
+	}
+	v1 := start("v1")
+	listed := v1.catalogAgent("keyed")
+	if listed["source"] != "config" {
+		t.Fatalf("listed %v", listed)
+	}
+	// The admin edits the description and REGION, leaves API_KEY as read,
+	// removes DEBUG, and sends neither adapter nor signal. source travels back
+	// as it was read.
+	listed["description"] = "edited"
+	listed["env"] = map[string]any{"API_KEY": "***", "REGION": "us"}
+	delete(listed, "adapter")
+	delete(listed, "signal")
+	out := v1.save(listed)
+	if a := out["agent"].(map[string]any); a["source"] != "saved" || a["replaces"] != "config" {
+		t.Fatalf("saved %v", a)
+	}
+	var ov catalog.Overlay
+	if ok, err := v1.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 1 ||
+		!reflect.DeepEqual(ov.Agents[0].Env, map[string]string{"API_KEY": "***", "REGION": "us"}) || ov.Agents[0].Adapter != "" || ov.Agents[0].Signal != nil {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+	if strings.Contains(v1.overlayFile(), `"v1"`) {
+		t.Fatalf("the secret was copied into catalog.json:\n%s", v1.overlayFile())
+	}
+	check := func(env *testEnv, secret string) {
+		t.Helper()
+		a, _ := env.srv.Catalog().Get("keyed")
+		if a.Description != "edited" || !reflect.DeepEqual(a.Env, map[string]string{"API_KEY": secret, "REGION": "us"}) ||
+			a.Adapter != "claude" || a.Signal == nil || a.Signal.Kind != catalog.SignalPattern {
+			t.Fatalf("keyed runs with %+v (signal %+v)", a, a.Signal)
+		}
+	}
+	check(v1, "v1")
+	// The config rotates the secret: the next start reads it, through the same catalog.json.
+	check(start("v2"), "v2")
+}
+
+func TestCatalogListsWhereEachAgentComesFrom(t *testing.T) {
+	e := newTestEnv(t, nil) // cat, sh and exit come from the config
+	e.save(map[string]any{"id": "cat", "name": "Cat mk2", "command": []string{"/bin/cat"}})
+	e.save(agentBody("aider"))
+	for id, want := range map[string][2]any{"cat": {"saved", "config"}, "sh": {"config", nil}, "exit": {"config", nil}, "aider": {"saved", nil}} {
+		if a := e.catalogAgent(id); a["source"] != want[0] || a["replaces"] != want[1] {
+			t.Errorf("%s: source %v, replaces %v; want %v", id, a["source"], a["replaces"], want)
+		}
+	}
+	if c := e.del("sh"); c != http.StatusNoContent {
+		t.Fatalf("hide: %d", c)
+	}
+	resp, out := e.do("POST", "/api/catalog/sh/unhide", adminToken, nil)
+	if a, _ := out["agent"].(map[string]any); resp.StatusCode != http.StatusOK || a["source"] != "config" {
+		t.Fatalf("unhide: %d %v", resp.StatusCode, out)
+	}
+}
+
+// A built-in that a saved agent replaces launches as saved, with the signal
+// the saved agent left out taken from the built-in.
+func TestCatalogLaunchesAnOverriddenBuiltIn(t *testing.T) {
+	e := newTestEnv(t, nil)
+	srv, err := New(e.srv.cfg, catalog.Default(), e.srv.log, nil, e.srv.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := e.serve(srv)
+	argv := []string{"/bin/sh", "-c", "echo OVERRIDE-RAN; exec /bin/cat"}
+	b.save(map[string]any{"id": "shell", "name": "Shell", "command": argv})
+	if a := b.catalogAgent("shell"); a["source"] != "saved" || a["replaces"] != "built-in" {
+		t.Fatalf("listed %v", a)
+	}
+	if a, _ := b.srv.Catalog().Get("shell"); a.Signal == nil || a.Signal.Kind != catalog.SignalNone {
+		t.Fatalf("the override lost the built-in's signal: %+v", a.Signal)
+	}
+	id := b.createSession("shell")
+	c := dialViewer(t, b, id, adminToken)
+	c.hello(80, 24)
+	c.expectOutput("OVERRIDE-RAN")
+	if d, _ := b.srv.registry.Get(id); !slices.Equal(d.Info().Command, argv) {
+		t.Fatalf("command %q", d.Info().Command)
+	}
+}
+
+// Every agent can be hidden: the catalog is then empty, launches are refused
+// as for an unknown agent, a restart comes up empty, and Restore brings one back.
+func TestCatalogHidesDownToNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	for _, id := range []string{"cat", "sh", "exit"} {
+		if c := e.del(id); c != http.StatusNoContent {
+			t.Fatalf("hide %s: %d", id, c)
+		}
+	}
+	if ids := e.catalogIDs(); len(ids) != 0 {
+		t.Fatalf("listed %v", ids)
+	}
+	if hidden := e.catalogHidden(); !slices.Equal(hidden, []string{"cat", "sh", "exit"}) {
+		t.Fatalf("hidden %v", hidden)
+	}
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat"})
+	if resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_agent" {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	again := e.restart()
+	if ids := again.catalogIDs(); len(ids) != 0 {
+		t.Fatalf("after a restart: %v", ids)
+	}
+	if resp, _ := again.do("POST", "/api/catalog/sh/unhide", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("unhide: %d", resp.StatusCode)
+	}
+	if ids := again.catalogIDs(); !slices.Equal(ids, []string{"sh"}) {
+		t.Fatalf("after unhiding sh: %v", ids)
+	}
+}
+
+// An agent the Agents page added is deleted outright: not hidden, gone from
+// catalog.json, and unknown to a second delete.
+func TestCatalogDeletesAnAgentItAdded(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.save(agentBody("aider"))
+	if c := e.del("aider"); c != http.StatusNoContent {
+		t.Fatalf("delete: %d", c)
+	}
+	if e.catalogAgent("aider") != nil || slices.Contains(e.catalogHidden(), "aider") {
+		t.Fatal("aider is still listed or hidden")
+	}
+	var ov catalog.Overlay
+	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 0 || len(ov.Hidden) != 0 {
+		t.Fatalf("overlay: %v %v %+v", ok, err, ov)
+	}
+	if c := e.del("aider"); c != http.StatusNotFound {
+		t.Fatalf("second delete: %d", c)
 	}
 }
 

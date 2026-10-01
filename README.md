@@ -479,7 +479,9 @@ that `conductor host` writes there does not count), keeps using it and logs a
 warning naming both paths. To move it, stop the server, move the files in it
 into `~/.conductor` (`hooks/` need not move: the server writes it at every
 start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
-to it. A server started without a home directory (no `HOME`, as some services
+to it. When both `~/.conductor` and the old directory hold server data, the
+server uses `~/.conductor` and logs a warning naming the old directory, which
+it does not read. A server started without a home directory (no `HOME`, as some services
 run) keeps using an old directory too, and needs `dataDir` or
 `CONDUCTOR_DATA_DIR` only when there is none. A directory the server cannot
 create stops it with `data directory … is not usable`. The Docker image sets
@@ -515,7 +517,12 @@ uses and fetches none at runtime, so a name outside that set shows no icon.
 **Agents** page (**Add agent**) without editing the config file. The changes are
 saved as `catalog.json` in the data directory (`dataDir`) and layered over the
 configured catalog at startup: an agent with the ID of a built-in or configured
-one replaces it, and deleting that entry brings the original back. Hiding an
+one replaces it, and deleting that entry brings the original back. Such an
+entry inherits what it leaves out: the original's `adapter` and `signal`, and
+every `env` value it holds as `***`, which the Agents page stores for a value
+the form did not change, so a change to that value in the config file reaches
+it. An agent in the config file that replaces a built-in replaces it whole.
+Hiding an
 agent removes it from the launch dialog and lists it under **Hidden** on the
 Agents page, where **Restore** brings it back as it was; sessions already
 running are not affected. The config file is never written. The server
@@ -528,9 +535,13 @@ Every agent, from the config file or the UI, is held to the same limits: the ID
 matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
 200, `command` has at most 32 elements of at most 4096 bytes each, `env` has at
 most 32 keys, `envPassthrough` (names of server environment variables the agent
-may inherit) at most 32 names, and a signal `pattern` (a regular expression) at
-most 200 bytes that does not match an empty line. An agent saved from the UI
-must name a known `adapter`, if it names one.
+may inherit) at most 32 names, an `env` key or `envPassthrough` name is at most
+128 bytes and an `env` value at most 16384 bytes, `cwd` is at most 4096 bytes
+without NUL, `icon` matches `[a-z0-9][a-z0-9:-]{0,63}`, and a signal `pattern`
+(a regular expression) at most 200 bytes that does not match an empty line. An
+`adapter`, if an agent names one, matches `[a-z0-9-]{1,32}` and must be one
+Conductor has, in the config file (or the catalog file) as on the Agents page:
+the server refuses to start with an unknown one.
 
 ## Security model and limits
 
@@ -548,9 +559,9 @@ must name a known `adapter`, if it names one.
   (mode 0600) in the data directory. The file viewer of a server session never
   serves that directory, the config file or the catalog file, but agents run
   as the same user and can read them. Changing a built-in or configured agent
-  saves a full copy of it, env values included, that replaces the original
-  until it is deleted: a secret rotated in the config file does not reach that
-  agent while the copy exists.
+  saves only what the form changed: an env value left as it was stays the
+  original's, so a secret rotated in the config file reaches the agent at the
+  next start, while a value set on the Agents page is stored in `catalog.json`.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Terminal output is not persisted. Sessions and links live in memory and are

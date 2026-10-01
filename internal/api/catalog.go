@@ -1,13 +1,13 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -18,6 +18,36 @@ import (
 // Agents page edits. The configured catalog is never written.
 const catalogFile = "catalog.json"
 
+// catalogEntry is an agent as the catalog routes answer with it: env values
+// masked, where the catalog took it from and, for a saved agent that replaces
+// a built-in or configured one, where that one came from (deleting the saved
+// agent brings it back).
+type catalogEntry struct {
+	catalog.Agent
+	Source   catalog.Source `json:"source"`
+	Replaces catalog.Source `json:"replaces,omitempty"`
+}
+
+// entry is a as the routes show it, by the effective catalog cat and the
+// configured one, base.
+func entry(a catalog.Agent, cat, base catalog.Catalog) catalogEntry {
+	e := catalogEntry{Agent: a.Redacted(), Source: cat.Source(a.ID)}
+	if e.Source == catalog.SourceSaved {
+		e.Replaces = base.Source(a.ID)
+	}
+	return e
+}
+
+// saveAgentRequest is the body of POST /api/catalog: an agent, as a client
+// builds it or as GET /api/catalog lists it. source and replaces, which the
+// listing adds, are taken and ignored, so an agent read there can be sent back
+// as it is; any other field the agent does not have is refused.
+type saveAgentRequest struct {
+	catalog.Agent
+	Source   json.RawMessage `json:"source,omitempty"`
+	Replaces json.RawMessage `json:"replaces,omitempty"`
+}
+
 // handleCatalog lists the launchable agents, env values masked, and the IDs
 // the overlay hides, which POST /api/catalog/{id}/unhide brings back.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
@@ -25,9 +55,9 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	cat, hidden := s.catalog, uniqueIDs(s.overlay.Hidden)
 	s.catalogMu.Unlock()
 	list := cat.List()
-	out := make([]catalog.Agent, 0, len(list))
+	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
-		out = append(out, a.Redacted())
+		out = append(out, entry(a, cat, s.base))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden})
 }
@@ -39,17 +69,17 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	var a catalog.Agent
-	if err := decodeJSON(w, r, &a); err != nil {
+	var req saveAgentRequest
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	saved, aerr := s.saveAgent(a)
+	saved, aerr := s.saveAgent(req.Agent)
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent": saved.Redacted()})
+	writeJSON(w, http.StatusOK, map[string]any{"agent": entry(saved, s.Catalog(), s.base)})
 }
 
 // saveAgent adds a to the overlay, or replaces the entry with its ID, and
@@ -59,10 +89,10 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveAgent(a catalog.Agent) (catalog.Agent, *apiError) {
 	s.catalogEditMu.Lock()
 	defer s.catalogEditMu.Unlock()
-	// The stored agent is read under the editor lock, so no other save can
-	// change it in between.
-	stored, _ := s.Catalog().Get(a.ID)
-	if err := restoreMaskedEnv(&a, stored); err != nil {
+	// The overlay is read under the editor lock, so no other save can change
+	// it in between.
+	base, _ := s.base.Get(a.ID)
+	if err := keepMaskedEnv(&a, savedAgent(s.overlay.Agents, a.ID), base); err != nil {
 		return catalog.Agent{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
 	}
 	// Check a by itself, so the message is about this agent and not an index
@@ -143,7 +173,7 @@ func (s *Server) handleUnhideAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{}
 	if found {
-		out["agent"] = a.Redacted()
+		out["agent"] = entry(a, s.Catalog(), s.base)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -194,44 +224,50 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"found": true, "path": path})
 }
 
-// checkAdapter rejects an agent whose adapter Conductor does not have. The
-// catalog cannot check it itself (the adapters import the catalog), so an
-// unknown adapter in a config file is only noticed at launch, where it wires
-// nothing; the Agents page is told at once.
+// checkAdapter rejects an agent whose adapter Conductor does not have.
 func checkAdapter(a catalog.Agent) error {
-	if a.Adapter == "" {
-		return nil
+	if err := agents.CheckAdapter(a.Adapter); err != nil {
+		return fmt.Errorf("agent %s: %w", a.ID, err)
 	}
-	if _, ok := agents.Get(a.Adapter); ok {
-		return nil
-	}
-	var ids []string
-	for _, ad := range agents.All() {
-		ids = append(ids, ad.ID)
-	}
-	return fmt.Errorf("agent %s: unknown adapter %q (one of %s)", a.ID, a.Adapter, strings.Join(ids, ", "))
+	return nil
 }
 
-// restoreMaskedEnv puts the stored value back for every env entry of a whose
-// value is catalog.RedactedValue. GET /api/catalog and the save response show
-// that in place of real values, so a client that edits an agent it read there
-// sends it back to mean "unchanged"; saving it as it is would replace the secret
-// with the mask. stored is the agent now listed under a.ID, the zero Agent when
-// there is none. A masked entry for a key stored does not have has no value to
-// keep and is an error; the first such key by name is reported, so the answer
-// does not depend on map order.
-func restoreMaskedEnv(a *catalog.Agent, stored catalog.Agent) error {
+// keepMaskedEnv decides what the overlay stores for each env entry of a whose
+// value is catalog.RedactedValue. GET /api/catalog shows that in place of every
+// value, so a client that sends back what it read means "unchanged". If the
+// overlay entry a replaces (saved) holds a value of its own for the key, that
+// value is kept. Otherwise, if the agent a overrides (base) has the key, the
+// mask itself is stored: ApplyOverlay reads it as base's value, so a change in
+// the config reaches the agent. A masked key that neither has is an error.
+// The first such key by name is reported, so the answer does not depend on map
+// order.
+func keepMaskedEnv(a *catalog.Agent, saved, base catalog.Agent) error {
 	for _, k := range slices.Sorted(maps.Keys(a.Env)) {
 		if a.Env[k] != catalog.RedactedValue {
 			continue
 		}
-		v, ok := stored.Env[k]
-		if !ok {
-			return fmt.Errorf("env %s: value is redacted; set a real value", k)
+		if v, ok := saved.Env[k]; ok && v != catalog.RedactedValue {
+			a.Env[k] = v
+			continue
 		}
-		a.Env[k] = v
+		if _, ok := base.Env[k]; ok {
+			continue // stays the mask: the base agent's value
+		}
+		return fmt.Errorf("env %s: value is redacted; set a real value", k)
 	}
 	return nil
+}
+
+// savedAgent returns the overlay's entry for id, the last one when a
+// hand-edited file repeats it (the one that wins at startup), or the zero
+// Agent.
+func savedAgent(agents []catalog.Agent, id string) catalog.Agent {
+	for i := len(agents) - 1; i >= 0; i-- {
+		if agents[i].ID == id {
+			return agents[i]
+		}
+	}
+	return catalog.Agent{}
 }
 
 // commitOverlay makes ov the current overlay. It builds the catalog ov yields
@@ -275,6 +311,11 @@ func loadCatalog(st *store.Store, base catalog.Catalog) (catalog.Catalog, catalo
 	}
 	if !ok {
 		return effective, catalog.Overlay{}, nil
+	}
+	for i, a := range ov.Agents {
+		if err := checkAdapter(a); err != nil {
+			return catalog.Catalog{}, catalog.Overlay{}, fmt.Errorf("%s: agents[%d]: %w", path, i, err)
+		}
 	}
 	if err := effective.ApplyOverlay(ov); err != nil {
 		return catalog.Catalog{}, catalog.Overlay{}, fmt.Errorf("%s: %w", path, err)

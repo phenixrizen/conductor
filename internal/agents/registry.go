@@ -1,9 +1,11 @@
 package agents
 
 import (
+	"fmt"
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
@@ -34,6 +36,25 @@ func Get(id string) (Adapter, bool) {
 	return Adapter{}, false
 }
 
+// CheckAdapter reports an error when id names no adapter Conductor has; ""
+// (no adapter) passes. The error lists the adapters there are. The catalog
+// cannot check this itself, since the adapters import it: the config's agents
+// are checked when it is loaded (config.LoadCatalog), saved ones when they are
+// saved and at startup (internal/api).
+func CheckAdapter(id string) error {
+	if id == "" {
+		return nil
+	}
+	if _, ok := Get(id); ok {
+		return nil
+	}
+	ids := make([]string, 0, len(registry))
+	for _, a := range registry {
+		ids = append(ids, a.ID)
+	}
+	return fmt.Errorf("unknown adapter %q (one of %s)", id, strings.Join(ids, ", "))
+}
+
 // All returns every adapter, in a stable order.
 func All() []Adapter {
 	out := make([]Adapter, 0, len(registry))
@@ -57,7 +78,7 @@ func (a Adapter) clone() Adapter {
 // that is not absolute (the flags name files in it, and a relative path would
 // be read from the session's working directory) all give nil, nil.
 func InjectFor(agentID string, hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
-	if sig.Kind != "hook" || !filepath.IsAbs(hooksDir) {
+	if sig.Kind != catalog.SignalHook || !filepath.IsAbs(hooksDir) {
 		return nil, nil
 	}
 	for _, a := range registry {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -439,7 +440,23 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 		file.DisableDefaults = file.DisableDefaults || extra.DisableDefaults
 		file.Agents = append(file.Agents, extra.Agents...)
 	}
-	return catalog.Load(file)
+	cat, err := catalog.Load(file)
+	if err != nil {
+		return catalog.Catalog{}, err
+	}
+	// The catalog cannot check an adapter (the adapters import it): the
+	// config's agents are checked here, as the Agents page checks the ones it
+	// saves.
+	var errs []error
+	for _, a := range file.Agents {
+		if err := agents.CheckAdapter(a.Adapter); err != nil {
+			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
+		}
+	}
+	if len(errs) > 0 {
+		return catalog.Catalog{}, errors.Join(errs...)
+	}
+	return cat, nil
 }
 
 // DataDirOverlap returns the first allowed root that overlaps DataDir: one that

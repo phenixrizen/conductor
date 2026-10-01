@@ -497,3 +497,135 @@ func TestReadFileRejectsTrailingData(t *testing.T) {
 		}
 	}
 }
+
+// Every field an agent carries into a launch or a page is bounded, whether it
+// comes from the config or from the Agents page.
+func TestValidateBoundsCwdIconAdapterAndEnv(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*Agent)
+		field  string // the field the error must name; empty when the agent is valid
+	}{
+		{"cwd of 4096 bytes", func(a *Agent) { a.Cwd = "/" + strings.Repeat("d", 4095) }, ""},
+		{"cwd of 4097 bytes", func(a *Agent) { a.Cwd = "/" + strings.Repeat("d", 4096) }, "cwd"},
+		{"cwd with NUL", func(a *Agent) { a.Cwd = "/srv\x00x" }, "cwd"},
+		{"a lucide icon", func(a *Agent) { a.Icon = "i-lucide-pi-square" }, ""},
+		{"icon of 64 bytes", func(a *Agent) { a.Icon = "i" + strings.Repeat("-", 63) }, ""},
+		{"icon of 65 bytes", func(a *Agent) { a.Icon = "i" + strings.Repeat("-", 64) }, "icon"},
+		{"icon with a space", func(a *Agent) { a.Icon = "i-lucide-x y" }, "icon"},
+		{"icon in upper case", func(a *Agent) { a.Icon = "I-Lucide-X" }, "icon"},
+		{"adapter", func(a *Agent) { a.Adapter = "claude" }, ""},
+		{"adapter of 33 characters", func(a *Agent) { a.Adapter = strings.Repeat("a", 33) }, "adapter"},
+		{"adapter with a slash", func(a *Agent) { a.Adapter = "../x" }, "adapter"},
+		{"env key of 128 bytes", func(a *Agent) { a.Env = map[string]string{strings.Repeat("K", 128): "v"} }, ""},
+		{"env key of 129 bytes", func(a *Agent) { a.Env = map[string]string{strings.Repeat("K", 129): "v"} }, "env"},
+		{"env value of 16384 bytes", func(a *Agent) { a.Env = map[string]string{"K": strings.Repeat("v", 16384)} }, ""},
+		{"env value of 16385 bytes", func(a *Agent) { a.Env = map[string]string{"K": strings.Repeat("v", 16385)} }, "env"},
+		{"envPassthrough name of 128 bytes", func(a *Agent) { a.EnvPassthrough = []string{strings.Repeat("P", 128)} }, ""},
+		{"envPassthrough name of 129 bytes", func(a *Agent) { a.EnvPassthrough = []string{strings.Repeat("P", 129)} }, "envPassthrough"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := Agent{ID: "x", Name: "X", Command: []string{"x"}}
+			c.change(&a)
+			err := validate(a)
+			switch {
+			case c.field == "" && err != nil:
+				t.Fatalf("valid agent rejected: %v", err)
+			case c.field != "" && err == nil:
+				t.Fatal("agent over the limit accepted")
+			case c.field != "" && !strings.Contains(err.Error(), c.field):
+				t.Fatalf("error does not name %q: %v", c.field, err)
+			}
+		})
+	}
+}
+
+// A saved agent that replaces another keeps what it leaves out: the adapter,
+// the signal, and every env value it holds as the mask, which the Agents page
+// stores for a key it did not change. A masked key the replaced agent does not
+// have is dropped, and so is every masked value of an agent that replaces
+// nothing.
+func TestOverlayInheritsWhatAnOverrideLeavesOut(t *testing.T) {
+	base, err := Load(File{DisableDefaults: true, Agents: []Agent{
+		{ID: "keyed", Name: "keyed", Command: []string{"k"}, Adapter: "claude", Signal: &Signal{Kind: SignalPattern, Pattern: `^> $`},
+			Env: map[string]string{"API_KEY": "v1", "REGION": "eu"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := Overlay{Agents: []Agent{
+		{ID: "keyed", Name: "Keyed", Command: []string{"k2"}, Env: map[string]string{"API_KEY": RedactedValue, "REGION": "us", "GONE": RedactedValue}},
+		{ID: "fresh", Name: "fresh", Command: []string{"f"}, Env: map[string]string{"X": RedactedValue, "Y": "y"}},
+	}}
+	got := base.Clone()
+	if err := got.ApplyOverlay(ov); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := got.Get("keyed")
+	if k.Command[0] != "k2" || k.Adapter != "claude" || k.Signal == nil || k.Signal.Kind != SignalPattern || k.Signal.Pattern != `^> $` ||
+		!reflect.DeepEqual(k.Env, map[string]string{"API_KEY": "v1", "REGION": "us"}) {
+		t.Fatalf("keyed %+v (signal %+v)", k, k.Signal)
+	}
+	if f, _ := got.Get("fresh"); !reflect.DeepEqual(f.Env, map[string]string{"Y": "y"}) || f.Adapter != "" || f.Signal != nil {
+		t.Fatalf("fresh %+v", f)
+	}
+	// What an override names it keeps; an env it does not list is not inherited.
+	own := base.Clone()
+	if err := own.ApplyOverlay(Overlay{Agents: []Agent{{ID: "keyed", Name: "k", Command: []string{"k"}, Adapter: "codex", Signal: &Signal{Kind: SignalNone}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if k, _ := own.Get("keyed"); k.Adapter != "codex" || k.Signal.Kind != SignalNone || len(k.Env) != 0 {
+		t.Fatalf("own %+v", k)
+	}
+	// Neither the overlay nor the base changes.
+	if ov.Agents[0].Env["API_KEY"] != RedactedValue || ov.Agents[0].Adapter != "" {
+		t.Fatal("ApplyOverlay changed the overlay")
+	}
+	if b, _ := base.Get("keyed"); b.Env["REGION"] != "eu" {
+		t.Fatal("ApplyOverlay changed the base")
+	}
+}
+
+func TestSourceOfEachAgent(t *testing.T) {
+	c, err := Load(File{Agents: []Agent{
+		{ID: "claude", Name: "Claude (pinned)", Command: []string{"claude"}},
+		{ID: "my-tool", Name: "My tool", Command: []string{"mytool"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]Source{"codex": SourceBuiltIn, "claude": SourceConfig, "my-tool": SourceConfig, "nope": ""} {
+		if got := c.Source(id); got != want {
+			t.Errorf("%s: %q, want %q", id, got, want)
+		}
+	}
+	err = c.ApplyOverlay(Overlay{
+		Agents: []Agent{{ID: "codex", Name: "Codex", Command: []string{"codex"}}, {ID: "added", Name: "Added", Command: []string{"a"}}},
+		Hidden: []string{"my-tool"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]Source{"codex": SourceSaved, "added": SourceSaved, "my-tool": "", "shell": SourceBuiltIn} {
+		if got := c.Source(id); got != want {
+			t.Errorf("after the overlay, %s: %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestUpsertStoresACopy(t *testing.T) {
+	var c Catalog
+	a := Agent{ID: "x", Name: "X", Command: []string{"x"}, Env: map[string]string{"K": "v"}, Signal: &Signal{Kind: SignalBell}}
+	if err := c.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	a.Command[0], a.Env["K"], a.Signal.Kind = "changed", "changed", SignalNone
+	if got, _ := c.Get("x"); got.Command[0] != "x" || got.Env["K"] != "v" || got.Signal.Kind != SignalBell {
+		t.Fatalf("the catalog shares the caller's agent: %+v", got)
+	}
+	// Clone takes a value: a catalog a call returns clones without a variable.
+	if ids := idsOf(Default().Clone()); ids != builtIns {
+		t.Fatalf("clone lists %s", ids)
+	}
+}

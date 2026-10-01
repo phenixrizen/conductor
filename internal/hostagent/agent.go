@@ -312,7 +312,7 @@ func injectHooks(opts Options) ([]string, map[string]string) {
 		opts.Log.Warn("hosting without Conductor's hooks: they could not be written", "adapter", opts.Adapter, "dir", dir, "err", err)
 		return opts.Argv, nil
 	}
-	extra, env := agents.InjectFor(opts.Adapter, dir, catalog.Signal{Kind: "hook"})
+	extra, env := agents.InjectFor(opts.Adapter, dir, catalog.Signal{Kind: catalog.SignalHook})
 	return append(slices.Clone(opts.Argv), extra...), env
 }
 

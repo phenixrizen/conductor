@@ -108,7 +108,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// pattern to the same rules when it took the agent in.
 	sig := agent.EffectiveSignal()
 	var pattern *regexp.Regexp
-	if sig.Kind == "pattern" {
+	if sig.Kind == catalog.SignalPattern {
 		if pattern, err = catalog.CompilePattern(sig.Pattern); err != nil {
 			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's signal pattern is invalid")
 		}

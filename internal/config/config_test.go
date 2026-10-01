@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/catalog"
 )
 
 func TestLoadFileAndEnvPrecedence(t *testing.T) {
@@ -545,5 +547,28 @@ func TestLoadRejectsTrailingDataAndEmptyFiles(t *testing.T) {
 		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), path) {
 			t.Errorf("%q: %v, want an error naming %s and saying %q", tc.body, err, path, tc.want)
 		}
+	}
+}
+
+// An agent of the config that names an adapter Conductor does not have stops
+// startup, as the Agents page refuses it.
+func TestLoadCatalogChecksTheAdapter(t *testing.T) {
+	cfg := Defaults()
+	cfg.Catalog = catalog.File{Agents: []catalog.Agent{{ID: "g", Name: "g", Command: []string{"g"}, Adapter: "gemini"}}}
+	if _, err := cfg.LoadCatalog(); err == nil || !strings.Contains(err.Error(), `"gemini"`) || !strings.Contains(err.Error(), "agent g") {
+		t.Fatalf("inline: %v", err)
+	}
+	cfg.Catalog.Agents[0].Adapter = "claude"
+	if _, err := cfg.LoadCatalog(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "agents.json")
+	if err := os.WriteFile(path, []byte(`{"agents":[{"id":"h","name":"h","command":["h"],"adapter":"nope"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg = Defaults()
+	cfg.CatalogPath = path
+	if _, err := cfg.LoadCatalog(); err == nil || !strings.Contains(err.Error(), `"nope"`) {
+		t.Fatalf("catalog file: %v", err)
 	}
 }

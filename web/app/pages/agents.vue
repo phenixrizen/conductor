@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
+import { removalOf, removalText } from '~/utils/catalog'
 
 useHead({ title: 'Agents' })
 
@@ -64,27 +65,19 @@ function askHide(a: AgentInfo) {
   hideOpen.value = true
 }
 
+const hideText = computed(() => (hideTarget.value ? removalText(removalOf(hideTarget.value), hideTarget.value.name, hideTarget.value.id) : undefined))
+
 async function confirmHide() {
   const a = hideTarget.value
   if (!a) return
+  const text = removalText(removalOf(a), a.name, a.id)
   hiding.value = true
   hideError.value = ''
   try {
     await api.deleteAgent(a.id)
     hideOpen.value = false
+    toast.add({ title: text.toast.title, description: text.toast.description, icon: text.icon, color: 'neutral' })
     await refresh()
-    // The server either hid the agent, dropped a saved change to a built-in
-    // (the original is listed again) or deleted an agent added here. Which one
-    // shows in the lists, unless they could not be reloaded.
-    if (error.value) {
-      toast.add({ title: 'Hidden or removed', description: a.name, icon: 'i-lucide-eye-off', color: 'neutral' })
-    } else if (hidden.value.includes(a.id)) {
-      toast.add({ title: 'Hidden', description: `${a.name} can be restored from the Hidden list.`, icon: 'i-lucide-eye-off', color: 'neutral' })
-    } else if (agents.value.some((x) => x.id === a.id)) {
-      toast.add({ title: 'Change removed', description: `${a.id} is back to its original definition.`, icon: 'i-lucide-undo-2', color: 'neutral' })
-    } else {
-      toast.add({ title: 'Removed', description: a.name, icon: 'i-lucide-trash-2', color: 'neutral' })
-    }
   } catch (e) {
     hideError.value = (e as Error).message
   } finally {
@@ -159,7 +152,15 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
               </div>
               <div class="mt-3 -mb-1 flex justify-end gap-1">
                 <UButton label="Edit" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Edit ${a.name}`" @click="editAgent(a)" />
-                <UButton label="Hide" icon="i-lucide-eye-off" size="xs" color="neutral" variant="ghost" :aria-label="`Hide ${a.name}`" @click="askHide(a)" />
+                <UButton
+                  :label="removalText(removalOf(a), a.name, a.id).button"
+                  :icon="removalText(removalOf(a), a.name, a.id).icon"
+                  size="xs"
+                  color="neutral"
+                  variant="ghost"
+                  :aria-label="`${removalText(removalOf(a), a.name, a.id).button} ${a.name}`"
+                  @click="askHide(a)"
+                />
               </div>
             </div>
           </div>
@@ -190,17 +191,16 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
 
       <AddAgentSlideover v-model:open="formOpen" :agent="editing" :taken-ids="agents.map((a) => a.id)" @saved="onSaved" />
 
-      <UModal v-model:open="hideOpen" :title="`Hide ${hideTarget?.name ?? 'agent'}?`" description="It leaves the agent list and the Launch dialog. Sessions already running keep going.">
+      <UModal v-model:open="hideOpen" :title="hideText?.title ?? 'Hide agent?'" :description="hideText?.description">
         <template #body>
           <div class="flex flex-col gap-3 text-sm text-muted">
             <UAlert v-if="hideError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="hideError" />
-            <p>An agent you added is deleted. If you changed a built-in agent, the original comes back instead. Hidden agents can be restored from the list below.</p>
           </div>
         </template>
         <template #footer>
           <div class="flex w-full justify-end gap-2">
             <UButton label="Cancel" color="neutral" variant="ghost" @click="hideOpen = false" />
-            <UButton label="Hide" icon="i-lucide-eye-off" color="error" :loading="hiding" @click="confirmHide" />
+            <UButton :label="hideText?.button ?? 'Hide'" :icon="hideText?.icon" color="error" :loading="hiding" @click="confirmHide" />
           </div>
         </template>
       </UModal>

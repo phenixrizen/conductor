@@ -837,3 +837,14 @@ func TestInstallOmpListsAnOddPathOnce(t *testing.T) {
 		t.Fatal("status after install")
 	}
 }
+
+func TestCheckAdapter(t *testing.T) {
+	for _, id := range []string{"", "claude", "dsh"} {
+		if err := CheckAdapter(id); err != nil {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+	if err := CheckAdapter("gemini"); err == nil || !strings.Contains(err.Error(), `"gemini"`) || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("gemini: %v", err)
+	}
+}

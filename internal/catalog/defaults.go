@@ -14,7 +14,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-sparkles",
 			Adapter:     "claude",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "codex",
@@ -24,7 +24,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-code-xml",
 			Adapter:     "codex",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "agy",
@@ -35,7 +35,7 @@ func defaults() []Agent {
 			Icon:        "i-lucide-rocket",
 			Adapter:     "agy",
 			// Antigravity fires no event while it waits for the user.
-			Signal: &Signal{Kind: "bell"},
+			Signal: &Signal{Kind: SignalBell},
 		},
 		{
 			ID:          "copilot",
@@ -45,7 +45,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-github",
 			Adapter:     "copilot",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "cursor",
@@ -57,7 +57,7 @@ func defaults() []Agent {
 			Adapter:     "cursor",
 			// The CLI fires no event while it waits: its prompt on the last
 			// line says so.
-			Signal: &Signal{Kind: "pattern", Pattern: `^› $`},
+			Signal: &Signal{Kind: SignalPattern, Pattern: `^› $`},
 		},
 		{
 			ID:          "opencode",
@@ -67,7 +67,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-braces",
 			Adapter:     "opencode",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "pi",
@@ -77,7 +77,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-pi",
 			Adapter:     "pi",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "omp",
@@ -87,7 +87,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-pi-square",
 			Adapter:     "omp",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "aider",
@@ -97,7 +97,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-git-commit",
 			Adapter:     "aider",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "goose",
@@ -108,7 +108,7 @@ func defaults() []Agent {
 			Icon:        "i-lucide-feather",
 			Adapter:     "goose",
 			// Goose fires no event while it waits for the user.
-			Signal: &Signal{Kind: "bell"},
+			Signal: &Signal{Kind: SignalBell},
 		},
 		{
 			ID:          "amp",
@@ -118,7 +118,7 @@ func defaults() []Agent {
 			AllowArgs:   true,
 			Icon:        "i-lucide-zap",
 			Adapter:     "amp",
-			Signal:      &Signal{Kind: "hook"},
+			Signal:      &Signal{Kind: SignalHook},
 		},
 		{
 			ID:          "dsh",
@@ -129,7 +129,7 @@ func defaults() []Agent {
 			Icon:        "i-lucide-cpu",
 			Adapter:     "dsh",
 			// Its plugin is installed by hand, if at all: nothing is assumed.
-			Signal: &Signal{Kind: "none"},
+			Signal: &Signal{Kind: SignalNone},
 		},
 		{
 			ID:          "shell",
@@ -141,7 +141,7 @@ func defaults() []Agent {
 			// Readline rings the bell on a failed completion or a backspace
 			// at the start of the line: no call for attention while a person
 			// types.
-			Signal: &Signal{Kind: "none"},
+			Signal: &Signal{Kind: SignalNone},
 		},
 	}
 }

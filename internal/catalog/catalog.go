@@ -35,6 +35,14 @@ type Agent struct {
 	Signal *Signal `json:"signal,omitempty"`
 }
 
+// Signal kinds (Signal.Kind).
+const (
+	SignalHook    = "hook"    // the agent's hooks report through its adapter
+	SignalBell    = "bell"    // a terminal bell or an OSC notification; the default
+	SignalPattern = "pattern" // Pattern matches the last line of the screen
+	SignalNone    = "none"    // never flagged
+)
+
 // Signal describes how an agent reports that it needs attention.
 type Signal struct {
 	Kind    string `json:"kind"`              // hook | bell | pattern | none
@@ -56,10 +64,20 @@ type Overlay struct {
 	Hidden []string `json:"hidden,omitempty"`
 }
 
+// Source says where the catalog took an agent from.
+type Source string
+
+const (
+	SourceBuiltIn Source = "built-in" // defaults.go
+	SourceConfig  Source = "config"   // the catalog of the config file, or the catalog file
+	SourceSaved   Source = "saved"    // the overlay the Agents page saves (catalog.json)
+)
+
 // Catalog is an ordered, validated set of agents keyed by ID.
 type Catalog struct {
-	agents map[string]Agent
-	order  []string
+	agents  map[string]Agent
+	sources map[string]Source
+	order   []string
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
@@ -73,6 +91,10 @@ func ValidID(id string) bool { return idPattern.MatchString(id) }
 // https_proxy and no_proxy are lower case by convention.
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// iconPattern is what an icon name looks like: an Iconify name in a class
+// (i-lucide-sparkles), at most 64 bytes.
+var iconPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9:-]{0,63}$`)
+
 // Size limits enforced by validate, so that a saved agent stays small enough
 // for catalog.json and the Agents page.
 const (
@@ -83,6 +105,12 @@ const (
 	maxEnvKeys        = 32   // entries in env
 	maxEnvPassthrough = 32   // entries in envPassthrough
 	maxSignalPattern  = 200  // bytes in a signal pattern
+)
+
+const (
+	maxCwd      = 4096     // bytes in cwd
+	maxEnvKey   = 128      // bytes in an env key or an envPassthrough name
+	maxEnvValue = 16 << 10 // bytes in an env value
 )
 
 // ReadFile parses a catalog file: one JSON value, no unknown field, nothing
@@ -103,7 +131,7 @@ func ReadFile(path string) (File, error) {
 func Default() Catalog {
 	c := Catalog{agents: map[string]Agent{}}
 	for _, a := range defaults() {
-		c.add(a)
+		c.add(a, SourceBuiltIn)
 	}
 	return c
 }
@@ -113,7 +141,7 @@ func Load(f File) (Catalog, error) {
 	c := Catalog{agents: map[string]Agent{}}
 	if !f.DisableDefaults {
 		for _, a := range defaults() {
-			c.add(a)
+			c.add(a, SourceBuiltIn)
 		}
 	}
 	var errs []error
@@ -122,7 +150,7 @@ func Load(f File) (Catalog, error) {
 			errs = append(errs, fmt.Errorf("agents[%d]: %w", i, err))
 			continue
 		}
-		c.add(a)
+		c.add(a, SourceConfig)
 	}
 	if len(errs) > 0 {
 		return Catalog{}, errors.Join(errs...)
@@ -133,14 +161,18 @@ func Load(f File) (Catalog, error) {
 	return c, nil
 }
 
-func (c *Catalog) add(a Agent) {
+func (c *Catalog) add(a Agent, src Source) {
 	if c.agents == nil {
 		c.agents = map[string]Agent{}
+	}
+	if c.sources == nil {
+		c.sources = map[string]Source{}
 	}
 	if _, exists := c.agents[a.ID]; !exists {
 		c.order = append(c.order, a.ID)
 	}
 	c.agents[a.ID] = a
+	c.sources[a.ID] = src
 }
 
 // validate checks one agent against every rule. Load and Upsert both run it,
@@ -172,12 +204,29 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: command[%d] is longer than %d bytes", a.ID, i, maxCommandArg)
 		}
 	}
+	if len(a.Cwd) > maxCwd || strings.ContainsRune(a.Cwd, 0) {
+		return fmt.Errorf("agent %s: cwd must be at most %d bytes, without NUL", a.ID, maxCwd)
+	}
+	if a.Icon != "" && !iconPattern.MatchString(a.Icon) {
+		return fmt.Errorf("agent %s: icon must match %s", a.ID, iconPattern)
+	}
+	// The adapter's shape; the registry of adapters is checked where it is
+	// known (agents.CheckAdapter), for the config and for saved agents alike.
+	if a.Adapter != "" && !idPattern.MatchString(a.Adapter) {
+		return fmt.Errorf("agent %s: adapter must match %s", a.ID, idPattern)
+	}
 	if len(a.Env) > maxEnvKeys {
 		return fmt.Errorf("agent %s: too many env entries (at most %d)", a.ID, maxEnvKeys)
 	}
 	for k, v := range a.Env {
 		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) {
-			return fmt.Errorf("agent %s: invalid env entry %q", a.ID, k)
+			return fmt.Errorf("agent %s: invalid env entry %q", a.ID, cut(k))
+		}
+		if len(k) > maxEnvKey {
+			return fmt.Errorf("agent %s: env key %q… is longer than %d bytes", a.ID, cut(k), maxEnvKey)
+		}
+		if len(v) > maxEnvValue {
+			return fmt.Errorf("agent %s: env %s: the value is %d bytes, more than %d", a.ID, k, len(v), maxEnvValue)
 		}
 	}
 	if a.Signal != nil {
@@ -189,6 +238,9 @@ func validate(a Agent) error {
 		return fmt.Errorf("agent %s: too many envPassthrough entries (at most %d)", a.ID, maxEnvPassthrough)
 	}
 	for _, name := range a.EnvPassthrough {
+		if len(name) > maxEnvKey {
+			return fmt.Errorf("agent %s: envPassthrough name %q… is longer than %d bytes", a.ID, cut(name), maxEnvKey)
+		}
 		if !envNamePattern.MatchString(name) {
 			return fmt.Errorf("agent %s: invalid envPassthrough entry %q", a.ID, name)
 		}
@@ -196,15 +248,24 @@ func validate(a Agent) error {
 	return nil
 }
 
+// cut keeps the first 40 bytes of s for an error message, so an error never
+// sends a long value back whole.
+func cut(s string) string {
+	if len(s) > 40 {
+		return s[:40]
+	}
+	return s
+}
+
 // validateSignal checks a signal's kind and pattern. Its errors carry no agent
 // id; validate adds it.
 func validateSignal(s Signal) error {
 	switch s.Kind {
-	case "hook", "bell", "none":
+	case SignalHook, SignalBell, SignalNone:
 		if s.Pattern != "" {
 			return errors.New("pattern only applies to kind=pattern")
 		}
-	case "pattern":
+	case SignalPattern:
 		if _, err := CompilePattern(s.Pattern); err != nil {
 			return err
 		}
@@ -235,12 +296,13 @@ func CompilePattern(pattern string) (*regexp.Regexp, error) {
 }
 
 // Upsert validates a, then replaces the agent with the same ID in place (so it
-// keeps its position) or appends a as a new one.
+// keeps its position) or appends a copy of a as a new one, from the overlay
+// (SourceSaved). a is not kept: changing it later changes nothing here.
 func (c *Catalog) Upsert(a Agent) error {
 	if err := validate(a); err != nil {
 		return err
 	}
-	c.add(a)
+	c.add(a.clone(), SourceSaved)
 	return nil
 }
 
@@ -250,17 +312,21 @@ func (c *Catalog) Hide(id string) bool {
 		return false
 	}
 	delete(c.agents, id)
+	delete(c.sources, id)
 	c.order = slices.DeleteFunc(c.order, func(other string) bool { return other == id })
 	return true
 }
 
-// ApplyOverlay upserts every agent in o, then hides every ID in o.Hidden, so
-// hiding wins over an agent with the same ID. Hiding an ID that is not in the
-// catalog is not an error. If any agent is invalid the catalog is unchanged.
+// ApplyOverlay upserts every agent in o over the agent it replaces, with what
+// it leaves out taken from that one (inherit), then hides every ID in
+// o.Hidden, so hiding wins over an agent with the same ID. Hiding an ID that
+// is not in the catalog is not an error. If any agent is invalid the catalog
+// is unchanged.
 func (c *Catalog) ApplyOverlay(o Overlay) error {
 	next := c.Clone()
 	for i, a := range o.Agents {
-		if err := next.Upsert(a); err != nil {
+		prev, had := next.Get(a.ID)
+		if err := next.Upsert(inherit(a, prev, had)); err != nil {
 			return fmt.Errorf("agents[%d]: %w", i, err)
 		}
 	}
@@ -271,19 +337,54 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 	return nil
 }
 
+// inherit returns a, an agent saved over prev (had says there was one), with
+// what it leaves to prev filled in: an adapter or a signal it omits, and every
+// env value it holds as RedactedValue. The Agents page stores the mask for a
+// key whose value the editor did not change, so a value changed in the config
+// reaches the agent. A masked key that prev does not have, and every masked
+// value when there is no prev, is dropped. a itself is not changed.
+func inherit(a, prev Agent, had bool) Agent {
+	a = a.clone()
+	if had {
+		if a.Adapter == "" {
+			a.Adapter = prev.Adapter
+		}
+		if a.Signal == nil && prev.Signal != nil {
+			s := *prev.Signal
+			a.Signal = &s
+		}
+	}
+	for k, v := range a.Env {
+		if v != RedactedValue {
+			continue
+		}
+		if pv, ok := prev.Env[k]; had && ok {
+			a.Env[k] = pv
+		} else {
+			delete(a.Env, k)
+		}
+	}
+	return a
+}
+
 // Clone returns a deep copy: no map, slice or signal is shared with c. Upsert,
 // Hide and ApplyOverlay change a catalog in place, so a catalog that other
 // goroutines read should be cloned, changed and swapped in, not changed itself.
-func (c *Catalog) Clone() Catalog {
+func (c Catalog) Clone() Catalog {
 	out := Catalog{
-		agents: make(map[string]Agent, len(c.agents)),
-		order:  slices.Clone(c.order),
+		agents:  make(map[string]Agent, len(c.agents)),
+		sources: maps.Clone(c.sources),
+		order:   slices.Clone(c.order),
 	}
 	for id, a := range c.agents {
 		out.agents[id] = a.clone()
 	}
 	return out
 }
+
+// Source says where the agent with the given ID comes from: built in, the
+// config, or saved from the Agents page; "" when the catalog has no such agent.
+func (c Catalog) Source(id string) Source { return c.sources[id] }
 
 // clone returns a copy of a that shares no slice, map or pointer with it.
 func (a Agent) clone() Agent {
@@ -336,7 +437,7 @@ func (a Agent) Redacted() Agent {
 // none.
 func (a Agent) EffectiveSignal() Signal {
 	if a.Signal == nil {
-		return Signal{Kind: "bell"}
+		return Signal{Kind: SignalBell}
 	}
 	return *a.Signal
 }

@@ -54,6 +54,10 @@ export interface AgentInfo {
   envPassthrough?: string[]
   /** Variable names the server sets for this agent. Every value is masked as "***": it means "set on the server", never the real value. Send it back unchanged to keep the stored value. */
   env?: Record<string, string>
+  /** Where the catalog took the agent from: built in, the config file (or catalog file), or saved from the Agents page. */
+  source?: 'built-in' | 'config' | 'saved'
+  /** For a saved agent that replaces a built-in or configured one: where that one came from. Deleting the saved agent brings it back. */
+  replaces?: 'built-in' | 'config'
 }
 
 /** Body of POST /api/catalog: the whole agent, replacing any agent with the same id. */
@@ -63,7 +67,11 @@ export interface AgentInput {
   description?: string
   command: string[]
   allowArgs: boolean
-  /** A value of "***", as read from the catalog, keeps the value stored on the server for that key; the server rejects it for a key the agent does not have. */
+  /**
+   * A value of "***", as read from the catalog, means "unchanged": the value the saved agent holds for that key or, for an agent that
+   * replaces a built-in or configured one, the replaced agent's value, which then follows the config. The server rejects it for a key
+   * neither has.
+   */
   env?: Record<string, string>
   envPassthrough?: string[]
   cwd?: string
