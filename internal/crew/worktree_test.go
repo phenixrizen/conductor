@@ -275,3 +275,32 @@ func TestClassifyRevParsePassesGitsMessageOn(t *testing.T) {
 		}
 	}
 }
+
+// GitState answers in one call what a launch with worktrees checks: in a
+// repository with a commit (from its top or below it), in one without, or in
+// no repository, each with the words the launch's refusal would use.
+func TestGitStateReportsRepoCommitAndPlain(t *testing.T) {
+	repo := newRepo(t)
+	st, err := GitState(t.Context(), repo)
+	if err != nil || !st.InRepo || st.Toplevel != repo || !st.HasCommit || st.Message != msgCanWorktree {
+		t.Fatalf("repo: %+v %v", st, err)
+	}
+	sub := filepath.Join(repo, "pkg")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := GitState(t.Context(), sub); !st.InRepo || st.Toplevel != repo || !st.HasCommit {
+		t.Fatalf("below the top: %+v", st)
+	}
+	empty, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, empty, "init", "-q")
+	if st, err := GitState(t.Context(), empty); err != nil || !st.InRepo || st.Toplevel != empty || st.HasCommit || st.Message != errNoCommit.Error() {
+		t.Fatalf("no commit: %+v %v", st, err)
+	}
+	if st, err := GitState(t.Context(), t.TempDir()); err != nil || st.InRepo || st.HasCommit || st.Message != errNotInRepo.Error() {
+		t.Fatalf("plain: %+v %v", st, err)
+	}
+}

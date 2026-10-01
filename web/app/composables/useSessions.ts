@@ -271,6 +271,29 @@ export interface RunInfo {
   log: ActivityEntry[]
 }
 
+export interface PathGit {
+  repo: boolean
+  commits: boolean
+}
+/** One directory GET /api/paths lists: its name, its full path, and whether it is a git repository with a commit. */
+export interface PathEntry {
+  name: string
+  path: string
+  git: PathGit
+}
+export interface PathsReply {
+  dir: string
+  entries: PathEntry[]
+  truncated: boolean
+}
+/** What GET /api/git/check says of a working directory, by the launch's rules for worktrees. */
+export interface GitCheck {
+  inRepo: boolean
+  toplevel?: string
+  hasCommit: boolean
+  message: string
+}
+
 export function useSessions() {
   const { request } = useApi()
 
@@ -355,6 +378,14 @@ export function useSessions() {
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
+    /**
+     * The child directories of the longest existing directory in `prefix`, under the allowed roots (symlinks resolved), at most 50 of the
+     * first 2000 entries read, each marked when it is a git repository (`repo`) with a commit (`commits`). Hidden directories show once
+     * the typed element starts with a dot. 400 `invalid_cwd` when no part of the prefix is under a root.
+     */
+    listPaths: (prefix: string, limit = 50) => request<PathsReply>('/api/paths', { query: { prefix, limit: String(limit) } }),
+    /** Whether a crew with worktrees could launch in `cwd` (the server's default when empty). A preview: the launch's 409 `not_a_repo` decides. */
+    gitCheck: (cwd: string) => request<GitCheck>('/api/git/check', { query: { cwd } }),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */
     integrations: () =>
       request<Partial<Integrations>>('/api/integrations').then(

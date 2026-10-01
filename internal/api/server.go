@@ -233,6 +233,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.requireAdmin(s.handleDuplicateCrew))
 	mux.HandleFunc("POST /api/crews/{id}/launch", s.requireAdmin(s.handleLaunchCrew))
+	mux.HandleFunc("GET /api/paths", s.requireAdmin(s.handleListPaths))
+	mux.HandleFunc("GET /api/git/check", s.requireAdmin(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.requireAdmin(s.handleListRuns))
 	mux.HandleFunc("GET /api/runs/{run}", s.requireAdmin(s.handleGetRun))
 	mux.HandleFunc("POST /api/runs/{run}/members", s.requireAdmin(s.handleAddRunMember))

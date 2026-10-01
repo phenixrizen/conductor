@@ -45,24 +45,71 @@ var (
 	errNoCommit  = &repoError{"the working directory is a git repository without a commit: a worktree needs one to branch from"}
 )
 
-// inRepo checks that dir is in a git working tree: git -C dir rev-parse
-// --show-toplevel succeeds. The error is ErrNoGit when git is not on PATH,
-// and otherwise matches ErrNotRepo: "not in a git repository" when git says
-// so, git's own message for any other failure (classifyRevParse).
-func inRepo(ctx context.Context, dir string) error {
-	if _, err := git(ctx, dir, "rev-parse", "--show-toplevel"); err != nil {
+// toplevel is the top of the git working tree dir is in: git -C dir
+// rev-parse --show-toplevel. The error is ErrNoGit when git is not on PATH,
+// ctx's when ctx ended, and otherwise matches ErrNotRepo: "not in a git
+// repository" when git says so, git's own message for any other failure
+// (classifyRevParse).
+func toplevel(ctx context.Context, dir string) (string, error) {
+	out, err := git(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
 		switch {
 		case ctx.Err() != nil:
-			return ctx.Err()
+			return "", ctx.Err()
 		case errors.Is(err, exec.ErrNotFound):
-			return ErrNoGit
+			return "", ErrNoGit
 		}
-		return classifyRevParse(err)
+		return "", classifyRevParse(err)
 	}
-	return nil
+	return strings.TrimSpace(out), nil
 }
 
-// classifyRevParse is the error inRepo reports for a failed rev-parse:
+// inRepo checks that dir is in a git working tree (see toplevel).
+func inRepo(ctx context.Context, dir string) error {
+	_, err := toplevel(ctx, dir)
+	return err
+}
+
+// State is what GitState reports of a directory.
+type State struct {
+	InRepo    bool   // dir is in a git working tree
+	Toplevel  string // its top, when InRepo
+	HasCommit bool   // HEAD is a commit to branch from
+	Message   string // the words a launch's refusal uses, or that worktrees can be made
+}
+
+// msgCanWorktree is State.Message when worktrees can be made.
+const msgCanWorktree = "a git repository with a commit: a crew with worktrees can launch here"
+
+// GitState reports, in one answer, what CheckRepo checks of a crew's working
+// directory before a launch with isolation "worktree", through the same
+// rev-parse calls: whether dir is in a git working tree and its top, and
+// whether HEAD is a commit to branch from. Message says so in the words the
+// launch's refusal uses; a directory git refuses for another reason (dubious
+// ownership, permissions) is InRepo false with git's message. The error is
+// ErrNoGit when git is not on PATH, or ctx's.
+func GitState(ctx context.Context, dir string) (State, error) {
+	top, err := toplevel(ctx, dir)
+	if err != nil {
+		if errors.Is(err, ErrNotRepo) {
+			return State{Message: err.Error()}, nil
+		}
+		return State{}, err
+	}
+	st := State{InRepo: true, Toplevel: top}
+	if _, err := headCommit(ctx, dir); err != nil {
+		if ctx.Err() != nil {
+			return State{}, ctx.Err()
+		}
+		st.Message = errNoCommit.Error()
+		return st, nil
+	}
+	st.HasCommit = true
+	st.Message = msgCanWorktree
+	return st, nil
+}
+
+// classifyRevParse is the error toplevel reports for a failed rev-parse:
 // errNotInRepo when git says the directory is not in a repository, and git's
 // message otherwise, as for a repository owned by another user (dubious
 // ownership) or one the server user cannot read. Both match ErrNotRepo.
