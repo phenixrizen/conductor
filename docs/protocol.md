@@ -461,7 +461,8 @@ read from that directory, so a file added, changed or removed by hand shows at
 the next listing. A file that cannot be used, a symbolic link included (it is
 not followed), is named in the server's log at startup and left out of the
 list; it is never overwritten (a new crew of the same name takes the next id),
-and `DELETE` removes it. A `crews.json` from an earlier version is split into
+and `DELETE` removes it. A file that cannot be read for now (its mode, say) is
+left out of that listing and read again at the next. A `crews.json` from an earlier version is split into
 these files at the first start and renamed `crews.json.migrated`, which keeps
 every crew; the move never overwrites a crew file, and a crew whose file exists
 with something else in it is not moved, which the log says naming both files.

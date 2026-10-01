@@ -532,10 +532,11 @@ func TestReadRetriesAFileThatChangedOnce(t *testing.T) {
 }
 
 // A file the store cannot read for now (its mode, say) is a read failure, not
-// an unusable crew, and is not remembered as one: startup names it, the list
-// says it cannot read the crews, and once the file can be read again the crew
-// is listed, though the file kept its size and time.
-func TestAPassingReadFailureIsNotCached(t *testing.T) {
+// an unusable crew, and is not remembered as one: startup names it, a listing
+// leaves it out, total included, and still answers, Get says it cannot read
+// it, and once the file can be read again the crew is listed, though the
+// file kept its size and time.
+func TestAFileUnreadableForNowIsLeftOutOfOneListing(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a file of mode 0000")
 	}
@@ -544,8 +545,10 @@ func TestAPassingReadFailureIsNotCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sub.Save("c.json", validCrew("c", "Crew")); err != nil {
-		t.Fatal(err)
+	for _, c := range []Crew{validCrew("b", "Bravo"), validCrew("c", "Charlie")} {
+		if err := sub.Save(c.ID+".json", c); err != nil {
+			t.Fatal(err)
+		}
 	}
 	path := filepath.Join(sub.Dir(), "c.json")
 	if err := os.Chmod(path, 0); err != nil {
@@ -556,16 +559,16 @@ func TestAPassingReadFailureIsNotCached(t *testing.T) {
 	if err != nil || len(problems) != 1 || !strings.Contains(problems[0].Error(), path) || errors.Is(problems[0], ErrUnreadable) {
 		t.Fatalf("NewStore: %v %v", problems, err)
 	}
-	if _, _, err := s.List(0, 10); err == nil || errors.Is(err, ErrUnreadable) {
-		t.Fatalf("list: %v", err)
+	if page, total, err := s.List(0, 10); err != nil || total != 1 || !slices.Equal(ids(page), []string{"b"}) {
+		t.Fatalf("list: %v of %d, %v", ids(page), total, err)
 	}
-	if _, err := s.Get("c"); err == nil || errors.Is(err, ErrUnreadable) || errors.Is(err, ErrNotFound) {
+	if _, err := s.Get("c"); err == nil || errors.Is(err, ErrUnreadable) || errors.Is(err, ErrNotFound) || !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("get: %v", err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if page, total, err := s.List(0, 10); err != nil || total != 1 || page[0].ID != "c" {
+	if page, total, err := s.List(0, 10); err != nil || total != 2 || !slices.Equal(ids(page), []string{"b", "c"}) {
 		t.Fatalf("list once readable: %v of %d, %v", ids(page), total, err)
 	}
 }

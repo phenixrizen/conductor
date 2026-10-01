@@ -90,7 +90,8 @@ type Store struct {
 	// same length within the clock's tick) is listed at once; a hand edit
 	// that keeps both shows once either changes. Only what the file holds is
 	// cached: a crew, or why it cannot be used. A failure to read the file
-	// (its mode, say) may pass, and is not.
+	// (its mode, say) may pass: it is not cached, so the file is left out of
+	// that listing and read again at the next.
 	sums map[string]cached
 }
 
@@ -98,7 +99,7 @@ type cached struct {
 	size int64
 	mod  time.Time
 	sum  Summary
-	err  error // ErrUnreadable or ErrNotFound: the file is left out of the list
+	err  error // why the file is left out of the list
 }
 
 // loadLimit is store.Store.LoadLimit, which a test replaces.
@@ -130,23 +131,21 @@ func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 	}
 	problems = notices
 	for _, e := range entries {
-		c, err := s.summaryOf(e)
-		if err == nil {
-			err = c.err
-		}
-		if err != nil {
-			problems = append(problems, fmt.Errorf("%s: %w", filepath.Join(dir.Dir(), e.Name), err))
+		if c := s.summaryOf(e); c.err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", filepath.Join(dir.Dir(), e.Name), c.err))
 		}
 	}
 	return s, problems, nil
 }
 
-// summaryOf returns the cached summary of the file e, read again when its size
-// or time changed, or why the file cannot be used. A failure to read it is
-// the error, and is not cached. The caller holds s.mu.
-func (s *Store) summaryOf(e store.Entry) (cached, error) {
+// summaryOf returns the summary of the file e, cached and read again when its
+// size or time changed, or in err why the file is left out of the list. Only
+// what the file holds is cached (a crew, ErrUnreadable, ErrNotFound): a
+// failure to read the file (its mode, say) may pass, so the file is left out
+// of this listing only and read again at the next. The caller holds s.mu.
+func (s *Store) summaryOf(e store.Entry) cached {
 	if c, ok := s.sums[e.Name]; ok && c.size == e.Size && c.mod.Equal(e.ModTime) {
-		return c, nil
+		return c
 	}
 	c := cached{size: e.Size, mod: e.ModTime}
 	crew, err := s.read(strings.TrimSuffix(e.Name, ".json"))
@@ -156,10 +155,12 @@ func (s *Store) summaryOf(e store.Entry) (cached, error) {
 	case errors.Is(err, ErrUnreadable), errors.Is(err, ErrNotFound):
 		c.err = err
 	default:
-		return cached{}, err
+		delete(s.sums, e.Name)
+		c.err = err
+		return c
 	}
 	s.sums[e.Name] = c
-	return c, nil
+	return c
 }
 
 // read loads the crew with the given ID from its file and checks it as the
@@ -203,7 +204,8 @@ func (s *Store) read(id string) (Crew, error) {
 // List returns the summaries of the crews ordered by name, ignoring case,
 // then by ID: those from offset on, at most limit of them, and how many there
 // are in all. The directory is read each time. A file that cannot be used is
-// left out and counts in no total; one that cannot be read fails the list.
+// left out and counts in no total, and so is one that cannot be read for now,
+// in this listing only.
 func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -215,11 +217,7 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	all := make([]Summary, 0, len(entries))
 	for _, e := range entries {
 		seen[e.Name] = true
-		c, err := s.summaryOf(e)
-		if err != nil {
-			return nil, 0, err
-		}
-		if c.err == nil {
+		if c := s.summaryOf(e); c.err == nil {
 			all = append(all, c.sum)
 		}
 	}
