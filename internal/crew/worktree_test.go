@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -319,5 +320,23 @@ func TestGitStateReportsTheLaunchRefusalOfAWorktreesLink(t *testing.T) {
 	_, lerr := e.Launch(t.Context(), c)
 	if err != nil || lerr == nil || !st.InRepo || !st.HasCommit || st.Message != lerr.Error() {
 		t.Fatalf("%+v %v; the launch: %v", st, err, lerr)
+	}
+}
+
+// The workbench's working-directory picker tells a launch with worktrees the
+// git check allows from one it refuses by comparing the check's message with
+// msgCanWorktree, which web/app/utils/dirInput.ts holds as GIT_CAN_WORKTREE:
+// the two must be the same words, or every launch would read as refused.
+func TestPickerHoldsTheCanWorktreeMessage(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "web", "app", "utils", "dirInput.ts"))
+	if err != nil {
+		t.Fatalf("the picker's words: %v", err)
+	}
+	m := regexp.MustCompile(`export const GIT_CAN_WORKTREE = '([^']*)'`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("web/app/utils/dirInput.ts has no export const GIT_CAN_WORKTREE = '...'")
+	}
+	if got := string(m[1]); got != msgCanWorktree {
+		t.Fatalf("GIT_CAN_WORKTREE is %q, msgCanWorktree %q", got, msgCanWorktree)
 	}
 }
