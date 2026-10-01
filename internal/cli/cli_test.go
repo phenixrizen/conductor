@@ -499,6 +499,13 @@ func TestHooksWarnWhenTheServerIsAnotherVersion(t *testing.T) {
 	if _, _, stderr, _ = runHooksWith(t, "status", "--data-dir", data); !strings.Contains(stderr, "did not record its version") {
 		t.Fatalf("no record:\n%s", stderr)
 	}
+	// A record that cannot be read is not a missing one: the warning says why.
+	if err := os.WriteFile(record, bytes.Repeat([]byte("v"), 300), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, stderr, _ = runHooksWith(t, "status", "--data-dir", data); !strings.Contains(stderr, "not a version record") || strings.Contains(stderr, "did not record its version") {
+		t.Fatalf("a record it cannot read:\n%s", stderr)
+	}
 }
 
 // A skill file of the user's own is the only step left: conductor hooks says

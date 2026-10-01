@@ -683,6 +683,40 @@ func TestWriteAssetsReportsModesItCannotSetAndGoesOn(t *testing.T) {
 	}
 }
 
+// Only its owner can set a directory's mode: a hooks dir whose mode cannot
+// be set because another user owns it is no place to take the commands
+// agents run from. That is a plain error, no ModeError, naming the directory
+// and its owner, and nothing is written there.
+func TestWriteAssetsRefusesAHooksDirOfAnotherUser(t *testing.T) {
+	dir := t.TempDir()
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := fileOwner(fi)
+	if !ok {
+		t.Skip("this platform does not report who owns a file")
+	}
+	chmod = func(p string, m fs.FileMode) error {
+		if p == dir {
+			return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
+		}
+		return os.Chmod(p, m)
+	}
+	t.Cleanup(func() { chmod = os.Chmod })
+	old := geteuid
+	geteuid = func() int { return owner + 1 }
+	t.Cleanup(func() { geteuid = old })
+	err = writeAssets(t, dir, "/opt/conductor")
+	var me *ModeError
+	if err == nil || errors.As(err, &me) || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), fmt.Sprintf("uid %d", owner)) {
+		t.Fatalf("WriteAssets: %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("wrote %v", entries)
+	}
+}
+
 // The hooks dir records the version of the conductor that wrote it, beside
 // the binary, for conductor hooks to compare with its own.
 func TestWriteAssetsRecordsTheVersion(t *testing.T) {

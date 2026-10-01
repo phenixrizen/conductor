@@ -4,12 +4,12 @@
  * shell lines with a Copy each. The text stays selectable for pages served
  * without a clipboard API.
  */
-const props = defineProps<{
+defineProps<{
   text?: string
   commands?: string[]
   /** What the text is, for the toast after Copy. */
   name?: string
-  /** Commands wrap instead of being cut short: a command to copy whole, such as one carrying a token. */
+  /** Commands wrap instead of being cut short, and one click selects a whole one: a command to copy whole, such as one carrying a token. */
   wrap?: boolean
   /** Shown dimmed, Copy off: the command is not ready. */
   disabled?: boolean
@@ -25,9 +25,9 @@ const copyClass = 'text-active-300 hover:bg-forest-900 hover:text-active-200'
 <template>
   <div class="relative rounded-md bg-forest-950 text-forest-100" :class="disabled && 'opacity-60'" data-code-block>
     <ul v-if="commands" class="px-3 py-2 font-mono text-xs leading-relaxed">
-      <li v-for="c in commands" :key="c" class="flex items-center gap-2">
+      <li v-for="c in commands" :key="c" class="flex gap-2" :class="wrap ? 'items-start' : 'items-center'">
         <span class="select-none text-forest-400" aria-hidden="true">$</span>
-        <span class="min-w-0 flex-1 select-text" :class="wrap ? 'break-all' : 'truncate'" :title="c">{{ c }}</span>
+        <span class="min-w-0 flex-1" :class="wrap ? 'break-all select-all' : 'truncate select-text'" :title="c">{{ c }}</span>
         <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" :aria-label="`Copy ${c}`" :class="copyClass" :disabled="disabled" @click="copy(c, copyTitle ?? 'Command copied', copyDescription ?? c)" />
       </li>
     </ul>

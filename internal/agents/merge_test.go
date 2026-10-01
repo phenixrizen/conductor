@@ -348,6 +348,8 @@ func TestWithYAMLListItem(t *testing.T) {
 		// A byte order mark stays where it is and hides no key.
 		{"\ufeffextensions:\n  - a.ts\n", "\ufeffextensions:\n  - a.ts\n  # conductor\n  - " + item + "\n"},
 		{"\ufeff", "\ufeffextensions:\n  # conductor\n  - " + item + "\n"},
+		// One in the middle of the file is the file's own: it stays.
+		{"theme: dark\n# \ufeff\nextensions:\n  - a.ts\n", "theme: dark\n# \ufeff\nextensions:\n  - a.ts\n  # conductor\n  - " + item + "\n"},
 	}
 	for _, c := range cases {
 		got, err := withYAMLListItem(c.in, "extensions", "# conductor", item, match)

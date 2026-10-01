@@ -163,7 +163,10 @@ agent's own config: Claude Code through `--settings`, Codex through
 `-c notify=…`, pi through `--extension`, aider through its notification
 environment variables. `conductor host --agent <id> -- <command>` does the same
 on your machine, with the hook files in `~/.conductor/hooks` (an older
-`~/.local/state/conductor/hooks` is kept while it exists).
+`~/.local/state/conductor/hooks` is kept while it exists). `conductor serve`
+warns and goes on when it cannot set the modes of the files in a `hooks/` of
+its own (0600 files in a 0700 directory); a `hooks/` that belongs to another
+user stops it, since those files choose the commands agents run.
 
 **Installed on demand.** The other agents read hooks only from their own
 config, and so do the agents above when something other than Conductor starts
@@ -171,8 +174,10 @@ them. The **Events** page lists every adapter with what it reports and whether
 its hooks are installed, the snippet to paste, and **Install on this machine**,
 which adds Conductor's hooks to the agent's config in the server user's home,
 next to your own settings and hooks and never over them: entries in its hook
-lists, a marked block, or a file of Conductor's own. The same from a shell, for
-whoever runs it, a host included:
+lists, a marked block, or a file of Conductor's own. An entry of Conductor's
+that names an older binary is rewritten where it is, but only when its program
+is named `conductor`: a `conductor-dev` or `conductor.exe` entry is left as it
+is. The same from a shell, for whoever runs it, a host included:
 
 ```bash
 conductor hooks install claude    # one adapter, or: conductor hooks install all

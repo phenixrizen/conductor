@@ -6,3 +6,12 @@ export function noInstallText(it: Pick<Integration, 'installable' | 'launchInjec
   if (!homeKnown) return 'The server has no home directory to install into: paste the snippet.'
   return 'Nothing to install into on this machine: paste the snippet.'
 }
+
+/**
+ * Whether an install left the agent's hooks to wire by hand, which the card's
+ * snippet does: the server's `no_file_route` reply carries the snippet only
+ * then, and not when a skill file of the user's own is all that is left.
+ */
+export function snippetLeft(error: { code: string; details: Record<string, unknown> }): boolean {
+  return error.code === 'no_file_route' && typeof error.details.snippet === 'string' && error.details.snippet !== ''
+}

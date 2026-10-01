@@ -16,7 +16,8 @@ func fileOwner(fi fs.FileInfo) (int, bool) {
 	return int(st.Uid), true
 }
 
-// writable reports whether this process may create files in dir.
+// writable reports whether this process may create files in dir, which takes
+// both write and search permission.
 func writable(dir string) bool {
-	return syscall.Access(dir, 0x2 /* W_OK */) == nil
+	return syscall.Access(dir, 0x2|0x1 /* W_OK|X_OK */) == nil
 }

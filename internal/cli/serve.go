@@ -21,6 +21,9 @@ import (
 	"github.com/phenixrizen/conductor/internal/web"
 )
 
+// writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
+var writeAssets = agents.WriteAssets
+
 func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -79,12 +82,12 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, fmt.Errorf("locate the conductor binary for the hook assets: %w", err)
 	}
-	if err := agents.WriteAssets(agents.HooksDir(cfg.DataDir), exe); err != nil {
+	if err := writeAssets(agents.HooksDir(cfg.DataDir), exe); err != nil {
 		var me *agents.ModeError
 		if !errors.As(err, &me) {
 			return 1, fmt.Errorf("write the hook assets to %s: %w", agents.HooksDir(cfg.DataDir), err)
 		}
-		log.Warn("the hook assets are written, but not all their modes are as Conductor sets them (0600 files in a 0700 directory)", "dir", agents.HooksDir(cfg.DataDir), "err", err)
+		log.Warn("serving with hook assets whose modes could not be set", "dir", agents.HooksDir(cfg.DataDir), "err", err)
 	}
 	if root := cfg.DataDirOverlap(); root != "" {
 		log.Warn("the data directory overlaps an allowed root: agents working there can read it and commit its secrets, and the file viewer refuses it; keep it outside allowedRoots (the default is ~/.conductor), or set dataDir or CONDUCTOR_DATA_DIR to a directory outside them", "dataDir", cfg.DataDir, "allowedRoot", root)

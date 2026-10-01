@@ -228,9 +228,10 @@ func checkBin(bin string) error {
 var chmod = os.Chmod
 
 // ModeError is what WriteAssets returns when it wrote every asset but could
-// not set the mode of some of them, or of the hooks dir: a file that belongs
-// to another user, say. The assets are in place and name the binary;
-// conductor serve warns and starts. Errs says which.
+// not set the mode of some of them, or of a hooks dir of the process's own
+// (a file system that keeps no modes, say). The assets are in place and name
+// the binary; conductor serve and conductor host warn and go on with them.
+// Errs says which.
 type ModeError struct{ Errs []error }
 
 func (e *ModeError) Error() string {
@@ -238,10 +239,27 @@ func (e *ModeError) Error() string {
 	for i, err := range e.Errs {
 		msgs[i] = err.Error()
 	}
-	return "the hook assets are written, but their modes could not all be set: " + strings.Join(msgs, "; ")
+	return "the hook assets are in place, but their modes (0600 files in a 0700 directory) could not all be set, and Conductor goes on with them: " + strings.Join(msgs, "; ")
 }
 
 func (e *ModeError) Unwrap() []error { return e.Errs }
+
+// ownHooksDir returns nil when the user the process runs as owns the hooks
+// directory dir, whose mode could not be set (why), and an error naming the
+// directory and its owner otherwise: only its owner can set a directory's
+// mode, and another user's directory is no place to take the commands agents
+// run from. Where the system does not say who owns a file, it passes.
+func ownHooksDir(dir string, why error) error {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	owner, ok := fileOwner(fi)
+	if uid := geteuid(); ok && owner != uid {
+		return fmt.Errorf("the hooks directory %s belongs to uid %d, not to uid %d, which runs conductor, so its mode cannot be made 0700 (%w); its hooks would choose the commands agents run: make it yours, or use another data directory", dir, owner, uid, why)
+	}
+	return nil
+}
 
 // WriteAssets renders every adapter's assets for bin, the absolute path of the
 // conductor binary, and writes them under hooksDir with the Conductor skill,
@@ -250,8 +268,9 @@ func (e *ModeError) Unwrap() []error { return e.Errs }
 // whole, so an agent reading one never sees half of it, and one that already
 // holds the right content is not rewritten. From then on the adapters name
 // bin wherever they render the binary themselves. A mode it cannot set stops
-// nothing: the assets are all written, and the error is a *ModeError. It also
-// records version.Version as .version.
+// nothing: the assets are all written, and the error is a *ModeError. The one
+// exception is the hooks dir itself when another user owns it: that is an
+// error, and nothing is written. It also records version.Version as .version.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -264,6 +283,9 @@ func WriteAssets(hooksDir, bin string) error {
 	}
 	var modes []error
 	if err := chmod(hooksDir, 0o700); err != nil {
+		if err := ownHooksDir(hooksDir, err); err != nil {
+			return err
+		}
 		modes = append(modes, err)
 	}
 	put := func(p string, data []byte) error {

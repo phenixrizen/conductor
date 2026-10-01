@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Integration } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { noInstallText } from '~/utils/integrations'
+import { noInstallText, snippetLeft } from '~/utils/integrations'
 import { shortCwd } from '~/utils/sessions'
 
 const props = defineProps<{
@@ -56,9 +56,10 @@ async function install() {
       toast.add({ title: 'Nothing to change', description: `${it.name} already has Conductor's hooks on ${props.host}.`, icon: 'i-lucide-check', color: 'neutral' })
     }
   } catch (e) {
-    // The server says what is left to do; the snippet on this card is how.
+    // The server says what is left to do; the snippet on this card is how
+    // when the agent's hooks are (a skill file's message says what to do).
     const byHand = e instanceof ApiError && e.code === 'no_file_route'
-    if (byHand) snippetOpen.value = true
+    if (e instanceof ApiError && snippetLeft(e)) snippetOpen.value = true
     toast.add({
       title: byHand ? `${it.name}: finish by hand` : `Installing ${it.name} failed`,
       description: (e as Error).message,

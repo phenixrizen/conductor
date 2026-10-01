@@ -8,6 +8,9 @@ import (
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
 
+// writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
+var writeAssets = agents.WriteAssets
+
 // injectHooks returns the command to start and the environment to add for the
 // adapter opts.Adapter names, after writing the hook assets its flags point
 // at. The host has no catalog, so the adapter is taken to report through
@@ -37,10 +40,10 @@ func injectHooks(opts Options) ([]string, map[string]string) {
 		}
 	}
 	if err == nil {
-		err = agents.WriteAssets(dir, bin)
+		err = writeAssets(dir, bin)
 		var me *agents.ModeError
 		if errors.As(err, &me) {
-			opts.Log.Warn("the hook assets are written, but not all their modes could be set", "dir", dir, "err", err)
+			opts.Log.Warn("hosting with hook assets whose modes could not be set", "dir", dir, "err", err)
 			err = nil
 		}
 	}

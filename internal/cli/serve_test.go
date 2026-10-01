@@ -250,6 +250,42 @@ func TestServeWritesTheHookAssets(t *testing.T) {
 	}
 }
 
+// A mode WriteAssets cannot set (agents.ModeError: the assets are in place)
+// does not stop the server: it warns, naming the file, and serves. Any other
+// failure to write the assets still stops it.
+func TestServeGoesOnWhenItCannotSetTheModesOfTheHookAssets(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	asset := filepath.Join(data, "hooks", "claude.json")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	old := writeAssets
+	t.Cleanup(func() { writeAssets = old })
+	writeAssets = func(hooksDir, bin string) error {
+		if err := old(hooksDir, bin); err != nil {
+			return err
+		}
+		return &agents.ModeError{Errs: []error{&fs.PathError{Op: "chmod", Path: asset, Err: fs.ErrPermission}}}
+	}
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "level=WARN", asset, "goes on"); len(lines) != 1 {
+		t.Fatalf("no warning naming %s:\n%s", asset, logs)
+	}
+
+	writeAssets = func(string, string) error { return errors.New("disk full") }
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var out syncBuffer
+	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, io.Discard, &out)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "disk full") || strings.Contains(out.String(), "conductor serving") {
+		t.Fatalf("serve with assets it could not write: %d %v\n%s", code, err, out.String())
+	}
+}
+
 // When the conductor on PATH is this binary through a link, as package
 // managers install it, the assets name the link: it survives an upgrade that
 // replaces the binary it points to.

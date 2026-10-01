@@ -54,12 +54,15 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	all := agents.All()
 	out := make([]integration, 0, len(all))
 	for _, a := range all {
+		// An Install without a Status has nothing it can put in place: it
+		// only ever leaves the agent to the user (dsh), so it is not
+		// installable.
 		it := integration{
 			ID:              a.ID,
 			Name:            a.Name,
 			Events:          a.Events,
 			LaunchInjection: a.Inject != nil,
-			Installable:     a.Install != nil,
+			Installable:     a.Install != nil && a.Status != nil,
 			InstallsSkill:   a.InstallsSkill,
 			Experimental:    a.Experimental,
 		}

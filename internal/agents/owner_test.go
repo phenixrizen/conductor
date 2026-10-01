@@ -144,6 +144,13 @@ func TestOwnedByAcceptsTheProcesssOwnWritableHome(t *testing.T) {
 		if err := ownedBy(home, fi, someoneElse); err == nil {
 			t.Fatal("an own home it cannot write was accepted")
 		}
+		// Creating a file takes search permission as well as write.
+		if err := os.Chmod(home, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ownedBy(home, fi, someoneElse); err == nil {
+			t.Fatal("an own home it cannot search was accepted")
+		}
 	}
 }
 

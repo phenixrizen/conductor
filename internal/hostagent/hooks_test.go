@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -277,6 +278,31 @@ func TestInjectHooksWritesNothingForAdaptersWithoutALaunchRoute(t *testing.T) {
 				t.Fatalf("host log:\n%s", out)
 			}
 		})
+	}
+}
+
+// A mode WriteAssets cannot set (agents.ModeError: the assets are in place)
+// does not cost the host its hooks: it warns, naming the file, and the
+// command gets them.
+func TestInjectHooksGoesOnWhenItCannotSetTheModes(t *testing.T) {
+	t.Cleanup(agents.ForgetBinary())
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	asset := filepath.Join(hooks, "claude.json")
+	old := writeAssets
+	t.Cleanup(func() { writeAssets = old })
+	writeAssets = func(dir, bin string) error {
+		if err := old(dir, bin); err != nil {
+			return err
+		}
+		return &agents.ModeError{Errs: []error{&fs.PathError{Op: "chmod", Path: asset, Err: fs.ErrPermission}}}
+	}
+	var logs logBuffer
+	got, _ := injectHooks(Options{Argv: []string{"/bin/cat"}, Adapter: "claude", HooksDir: hooks, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if want := []string{"/bin/cat", "--settings", asset}; !slices.Equal(got, want) {
+		t.Fatalf("command %q, want %q", got, want)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, asset) || !strings.Contains(out, "goes on") {
+		t.Fatalf("host log:\n%s", out)
 	}
 }
 

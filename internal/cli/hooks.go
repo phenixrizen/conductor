@@ -297,12 +297,14 @@ func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
 		return "", nil
 	}
 	// Hooks another version wrote may not be what this one would write.
-	if v, err := agents.RecordedVersion(hooksDir); err != nil || v != version.Version {
-		by := "conductor " + v
-		if err != nil {
-			by = "an older conductor, which did not record its version"
-		}
-		fmt.Fprintf(stderr, "conductor hooks: warning: the hooks in %s were written by %s, and this is conductor %s; install with the conductor that serves, or restart conductor serve with this one\n", hooksDir, by, version.Version)
+	const skew = "conductor hooks: warning: the hooks in %s were written by %s, and this is conductor %s; install with the conductor that serves, or restart conductor serve with this one\n"
+	switch v, err := agents.RecordedVersion(hooksDir); {
+	case errors.Is(err, fs.ErrNotExist):
+		fmt.Fprintf(stderr, skew, hooksDir, "an older conductor, which did not record its version", version.Version)
+	case err != nil:
+		fmt.Fprintf(stderr, "conductor hooks: warning: which conductor wrote the hooks in %s is unknown: %v\n", hooksDir, err)
+	case v != version.Version:
+		fmt.Fprintf(stderr, skew, hooksDir, "conductor "+v, version.Version)
 	}
 	return hooksDir, nil
 }

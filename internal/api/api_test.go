@@ -2767,6 +2767,23 @@ func TestIntegrationsInstallByHandAndFailure(t *testing.T) {
 	if apiErr, _ := out["error"].(map[string]any); resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "no_file_route" || apiErr["snippet"] != nil {
 		t.Fatalf("skill only: %d %v", resp.StatusCode, out)
 	}
+	// pi, whose skill in the shared skills directory is the only step left:
+	// no snippet either.
+	sharedSkill := filepath.Join(home2, ".agents", "skills", "conductor", "SKILL.md")
+	os.MkdirAll(filepath.Dir(sharedSkill), 0o700)
+	os.WriteFile(sharedSkill, []byte("# mine\n"), 0o600)
+	resp, out = e.do("POST", "/api/integrations/pi/install", adminToken, nil)
+	if apiErr, _ := out["error"].(map[string]any); resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "no_file_route" || apiErr["snippet"] != nil {
+		t.Fatalf("pi, skill only: %d %v", resp.StatusCode, out)
+	}
+	// Claude Code's settings left by hand as well: the snippet comes back.
+	settings := filepath.Join(home2, ".claude", "settings.json")
+	os.Remove(settings)
+	os.Symlink(filepath.Join(t.TempDir(), "elsewhere.json"), settings)
+	resp, out = e.do("POST", "/api/integrations/claude/install", adminToken, nil)
+	if apiErr, _ := out["error"].(map[string]any); resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "no_file_route" || !strings.Contains(fmt.Sprint(apiErr["snippet"]), "notify --claude-hook") {
+		t.Fatalf("claude, settings by hand: %d %v", resp.StatusCode, out)
+	}
 
 	// A home that is a file cannot hold the agent's directories.
 	file := filepath.Join(t.TempDir(), "home")
@@ -2839,6 +2856,11 @@ func TestIntegrationsWithoutAKnownHome(t *testing.T) {
 	}
 	if c := list["copilot"]; c["installable"] != true {
 		t.Fatalf("copilot: %v", c)
+	}
+	// DeepSeek Harness has an Install, but it only ever leaves the plugin to
+	// the user: there is nothing to install either.
+	if c := list["dsh"]; c["installable"] != false || c["launchInjection"] != false {
+		t.Fatalf("dsh: %v", c)
 	}
 	resp, out := e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
 	apiErr, _ := out["error"].(map[string]any)
