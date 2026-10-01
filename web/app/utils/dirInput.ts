@@ -10,13 +10,14 @@ export function dirQuery(text: string): string {
 
 /**
  * The entries still shown while the listing of `text` is on its way: those
- * under what is typed (none for an empty text, the server's default listed
- * anew). An entry the text has moved past can never be highlighted, so Enter
- * cannot put it in place of what was typed.
+ * the listing could hold, directories directly under what is typed (none for
+ * an empty text, the server's default listed anew). An entry the text has
+ * moved past, or moved back above (shortened across a slash), can never be
+ * highlighted, so Enter cannot put it in place of what was typed.
  */
 export function matchingEntries<T extends { path: string }>(entries: T[], text: string): T[] {
   const q = dirQuery(text)
-  return q ? entries.filter((e) => e.path.startsWith(q)) : []
+  return q ? entries.filter((e) => e.path.startsWith(q) && !e.path.slice(q.length).includes('/')) : []
 }
 
 /** The mark beside a listed directory: whether a crew with worktrees could use it. */

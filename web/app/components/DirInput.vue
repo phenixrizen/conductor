@@ -35,7 +35,7 @@ const problem = ref('')
 let timer: number | undefined
 // Replies may come back out of order, or after the text changed again: only the reply to the latest text counts.
 let seq = 0
-// The text (trimmed) the entries or the problem shown answer.
+// The text (trimmed) the entries shown answer; not set by a failed listing, which a refocus retries.
 let listedFor: string | undefined
 // The text became an entry's path in the field: picked (Enter, or a click, which takes the focus away), or typed in full.
 // Only then does a reply open the list again; Esc or leaving the field forgets it.
@@ -43,7 +43,11 @@ let picked = false
 
 async function fetchNow() {
   pending.value = false
-  if (!admin.hasToken.value) return
+  if (!admin.hasToken.value) {
+    // A token lost while a listing was on its way: its reply no longer counts, so nothing is looked for.
+    loading.value = false
+    return
+  }
   const n = ++seq
   const query = dirQuery(model.value)
   loading.value = true
@@ -53,23 +57,24 @@ async function fetchNow() {
     entries.value = r.entries
     truncated.value = r.truncated
     problem.value = ''
+    listedFor = query
   } catch (e) {
     if (n !== seq) return
+    listedFor = undefined
     entries.value = []
     truncated.value = false
     problem.value = (e as Error).message
   } finally {
     if (n === seq) {
-      listedFor = query
-      loading.value = false
-      // A pick closes the list: it opens again on the picked directory's children, the focus back in the field.
-      // Typing opens it by itself; a reply after Esc leaves it closed.
+      // A pick closes the list: it opens again on the picked directory's children, the focus back in the field
+      // (while loading still holds, so that focus asks nothing). Typing opens it by itself; a reply after Esc leaves it closed.
       const input = menu.value?.inputRef
       if (input && picked) {
         picked = false
         input.focus()
         open.value = true
       }
+      loading.value = false
     }
   }
 }
@@ -96,8 +101,9 @@ watch(model, (text) => {
   schedule()
 })
 
-// The field's focus, or the one UInputMenu reports when a keystroke opens the list (before the text
-// changes): it lists only a text neither listed nor due, so that keystroke sends one request, not two.
+// The field taking the focus (focusin: not the focus UInputMenu reports when a keystroke opens the
+// list, before the text changes, so that keystroke sends one request, not two): it lists a text
+// neither listed nor due, and retries one whose listing failed.
 function onFocus() {
   if (!pending.value && !loading.value && listedFor !== dirQuery(model.value)) fetchNow()
 }
@@ -122,7 +128,7 @@ onBeforeUnmount(() => window.clearTimeout(timer))
 </script>
 
 <template>
-  <div ref="root" data-dir-input @keydown.esc="onEscape">
+  <div ref="root" data-dir-input @keydown.esc="onEscape" @focusin="onFocus">
     <UInputMenu
       ref="menu"
       :model-value="model"
@@ -142,7 +148,6 @@ onBeforeUnmount(() => window.clearTimeout(timer))
       :ui="{ base: 'font-mono' }"
       class="w-full"
       @update:model-value="onText"
-      @focus="onFocus"
       @blur="onBlur"
     >
       <template #item-leading>

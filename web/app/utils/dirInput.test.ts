@@ -53,6 +53,16 @@ describe('dirInput', () => {
     expect(matchingEntries(listed, '  ')).toEqual([])
   })
 
+  it('keeps only direct children of what is typed: shortening across a slash drops the deeper entries', () => {
+    const children = [{ name: 'pkg', path: '/srv/work/api/pkg' }]
+    expect(matchingEntries(children, '/srv/work/api/')).toEqual(children)
+    expect(matchingEntries(children, '/srv/work/api/p')).toEqual(children)
+    expect(matchingEntries(children, '/srv/work/api')).toEqual([])
+    expect(matchingEntries(children, '/srv/work/ap')).toEqual([])
+    expect(matchingEntries(children, '/srv/work/a')).toEqual([])
+    expect(matchingEntries([{ name: '.hidden', path: '/srv/work/.hidden' }], '/srv/work/.')).toEqual([{ name: '.hidden', path: '/srv/work/.hidden' }])
+  })
+
   it('debounces for longer than a keystroke and shorter than a pause', () => {
     expect(DIR_DEBOUNCE_MS).toBeGreaterThanOrEqual(100)
     expect(DIR_DEBOUNCE_MS).toBeLessThanOrEqual(300)
