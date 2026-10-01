@@ -32,9 +32,6 @@ onMounted(() => {
   <UDashboardPanel id="home">
     <template #header>
       <UDashboardNavbar title="Sessions">
-        <template #leading>
-          <SidebarReveal />
-        </template>
       </UDashboardNavbar>
     </template>
 

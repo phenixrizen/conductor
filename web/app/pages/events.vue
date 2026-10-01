@@ -80,9 +80,6 @@ const skillCommands = [
   <UDashboardPanel id="events">
     <template #header>
       <UDashboardNavbar title="Events">
-        <template #leading>
-          <SidebarReveal />
-        </template>
         <template #right>
           <UButton label="Refresh" icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="loading" @click="refresh" />
         </template>

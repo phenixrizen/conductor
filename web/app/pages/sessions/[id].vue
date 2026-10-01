@@ -271,9 +271,6 @@ watch(id, () => {
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
       <UDashboardNavbar :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
-        <template #leading>
-          <SidebarReveal />
-        </template>
         <template #title>
           <div class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">

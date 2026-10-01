@@ -184,7 +184,6 @@ onMounted(() => {
     <template #header>
       <UDashboardNavbar :title="focusId ? focused?.name || 'Session' : 'Wall'" :ui="{ root: 'h-14' }">
         <template #leading>
-          <SidebarReveal />
           <UTooltip v-if="focusId" text="Back to the grid" :kbds="['escape']">
             <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the grid" @click="backToGrid" />
           </UTooltip>

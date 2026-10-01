@@ -20,7 +20,7 @@ export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'K
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   title: 'Everywhere',
   rows: [
-    { keys: ['meta', 'B'], label: 'Show or hide the sidebar (Alt+B in a terminal)' },
+    { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it (Alt+B in a terminal)' },
     { keys: ['?'], label: 'Keyboard shortcuts (Alt+H in a terminal)' },
     { keys: ['N'], label: 'Launch an agent (Alt+N in a terminal)' },
     { keys: ['/'], label: 'Filter sessions (Alt+S in a terminal)' },

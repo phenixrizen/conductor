@@ -88,9 +88,6 @@ async function stopAll() {
 
 <template>
   <UDashboardNavbar :ui="{ root: 'h-14' }" data-crew-run-header>
-    <template #leading>
-      <SidebarReveal />
-    </template>
     <template #title>
       <span class="truncate">{{ run?.name || 'Crew' }}</span>
     </template>

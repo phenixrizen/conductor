@@ -395,9 +395,6 @@ watch(routeId, loadSelected)
   <UDashboardPanel id="crews" :ui="{ body: 'p-0 sm:p-0 gap-0' }">
     <template #header>
       <UDashboardNavbar title="Crews">
-        <template #leading>
-          <SidebarReveal />
-        </template>
         <template #right>
           <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" @click="newCrew" />
         </template>
