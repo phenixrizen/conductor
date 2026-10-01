@@ -446,11 +446,16 @@ func (c *Config) LoadCatalog() (catalog.Catalog, error) {
 	}
 	// The catalog cannot check an adapter (the adapters import it): the
 	// config's agents are checked here, as the Agents page checks the ones it
-	// saves.
+	// saves. Each error names the catalog the agent comes from: the inline
+	// agents come first in file.Agents, the catalog file's after them.
 	var errs []error
-	for _, a := range file.Agents {
+	for i, a := range file.Agents {
 		if err := agents.CheckAdapter(a.Adapter); err != nil {
-			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
+			src := "config catalog"
+			if i >= len(c.Catalog.Agents) {
+				src = "catalog " + c.CatalogPath
+			}
+			errs = append(errs, fmt.Errorf("%s: agent %s: %w", src, a.ID, err))
 		}
 	}
 	if len(errs) > 0 {

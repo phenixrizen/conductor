@@ -384,7 +384,7 @@ its run, and on no other.
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions` |
 | `GET /api/whoami` | admin | OS user running the server (the default display name) |
 | `GET /api/catalog` | admin | `{agents, hidden}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from) |
-| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source` and `replaces` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it; a saved agent that leaves out `adapter` or `signal` takes those of the agent it replaces; `***` is rejected for a key neither has; `400 invalid_agent` carries the validation message, an unknown `adapter` included (that check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
+| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source` and `replaces` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter` or `signal` takes those of the agent it replaces; `***` is rejected for a key neither has; `400 invalid_agent` carries the validation message, an unknown `adapter` included (that check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
@@ -423,8 +423,11 @@ directory (`dataDir`): `{"agents": [...], "hidden": [...]}`. At startup that
 overlay is applied over the configured catalog, and the server refuses to start
 when the file cannot be parsed or an agent in it is invalid. An entry of
 `catalog.json` with the ID of a built-in or configured agent replaces it but
-inherits what it leaves out (`adapter`, `signal`, `***` env values), while an
-agent in the config file that replaces a built-in replaces it whole. Agents are
+inherits what it leaves out (`adapter`, `signal`, `***` env values and env
+values equal to the replaced agent's); env keys it does not list are not
+inherited, so an API client that omits `env` drops every value of the replaced
+agent, and a key the config adds later does not reach it. An agent in the
+config file that replaces a built-in replaces it whole. Agents are
 held to these limits everywhere: `id` matches `^[a-z0-9-]{1,32}$`, `name` at
 most 60 characters, `description` 200, `command` 1 to 32 elements of at most
 4096 bytes each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern`

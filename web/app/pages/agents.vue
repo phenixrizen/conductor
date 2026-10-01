@@ -192,10 +192,8 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
       <AddAgentSlideover v-model:open="formOpen" :agent="editing" :taken-ids="agents.map((a) => a.id)" @saved="onSaved" />
 
       <UModal v-model:open="hideOpen" :title="hideText?.title ?? 'Hide agent?'" :description="hideText?.description">
-        <template #body>
-          <div class="flex flex-col gap-3 text-sm text-muted">
-            <UAlert v-if="hideError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="hideError" />
-          </div>
+        <template v-if="hideError" #body>
+          <UAlert color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="hideError" />
         </template>
         <template #footer>
           <div class="flex w-full justify-end gap-2">

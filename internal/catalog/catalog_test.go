@@ -587,6 +587,35 @@ func TestOverlayInheritsWhatAnOverrideLeavesOut(t *testing.T) {
 	}
 }
 
+// An override's env value equal to the replaced agent's is that agent's value,
+// as the mask is, and a value of its own stays. A rotation in the config
+// reaches an override saved with the old value once a save has stored the mask
+// for it (internal/api, keepMaskedEnv).
+func TestOverlayValueEqualToTheBaseIsTheBase(t *testing.T) {
+	apply := func(secret, saved string) string {
+		t.Helper()
+		c, err := Load(File{DisableDefaults: true, Agents: []Agent{{ID: "keyed", Name: "keyed", Command: []string{"k"}, Env: map[string]string{"API_KEY": secret}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "keyed", Name: "keyed", Command: []string{"k"}, Env: map[string]string{"API_KEY": saved}}}}); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := c.Get("keyed")
+		return a.Env["API_KEY"]
+	}
+	for _, tc := range []struct{ secret, saved, want string }{
+		{"v1", "v1", "v1"},
+		{"v2", RedactedValue, "v2"}, // what the next save stores for "v1" while the config held it
+		{"v1", "other", "other"},
+		{"v2", "other", "other"},
+	} {
+		if got := apply(tc.secret, tc.saved); got != tc.want {
+			t.Errorf("config %s, saved %s: runs with %s, want %s", tc.secret, tc.saved, got, tc.want)
+		}
+	}
+}
+
 func TestSourceOfEachAgent(t *testing.T) {
 	c, err := Load(File{Agents: []Agent{
 		{ID: "claude", Name: "Claude (pinned)", Command: []string{"claude"}},

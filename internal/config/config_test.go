@@ -555,7 +555,7 @@ func TestLoadRejectsTrailingDataAndEmptyFiles(t *testing.T) {
 func TestLoadCatalogChecksTheAdapter(t *testing.T) {
 	cfg := Defaults()
 	cfg.Catalog = catalog.File{Agents: []catalog.Agent{{ID: "g", Name: "g", Command: []string{"g"}, Adapter: "gemini"}}}
-	if _, err := cfg.LoadCatalog(); err == nil || !strings.Contains(err.Error(), `"gemini"`) || !strings.Contains(err.Error(), "agent g") {
+	if _, err := cfg.LoadCatalog(); err == nil || !strings.Contains(err.Error(), `config catalog: agent g: unknown adapter "gemini"`) {
 		t.Fatalf("inline: %v", err)
 	}
 	cfg.Catalog.Agents[0].Adapter = "claude"
@@ -568,7 +568,13 @@ func TestLoadCatalogChecksTheAdapter(t *testing.T) {
 	}
 	cfg = Defaults()
 	cfg.CatalogPath = path
-	if _, err := cfg.LoadCatalog(); err == nil || !strings.Contains(err.Error(), `"nope"`) {
+	if _, err := cfg.LoadCatalog(); err == nil || !strings.Contains(err.Error(), "catalog "+path+`: agent h: unknown adapter "nope"`) {
 		t.Fatalf("catalog file: %v", err)
+	}
+	// With both, each agent is named with the catalog it comes from.
+	cfg.Catalog.Agents = []catalog.Agent{{ID: "g", Name: "g", Command: []string{"g"}, Adapter: "gemini"}}
+	_, err := cfg.LoadCatalog()
+	if err == nil || !strings.Contains(err.Error(), `config catalog: agent g: unknown adapter "gemini"`) || !strings.Contains(err.Error(), "catalog "+path+`: agent h: unknown adapter "nope"`) {
+		t.Fatalf("both: %v", err)
 	}
 }

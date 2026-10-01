@@ -481,9 +481,12 @@ into `~/.conductor` (`hooks/` need not move: the server writes it at every
 start) and start it again; to keep it, set `dataDir` or `CONDUCTOR_DATA_DIR`
 to it. When both `~/.conductor` and the old directory hold server data, the
 server uses `~/.conductor` and logs a warning naming the old directory, which
-it does not read. A server started without a home directory (no `HOME`, as some services
-run) keeps using an old directory too, and needs `dataDir` or
-`CONDUCTOR_DATA_DIR` only when there is none. A directory the server cannot
+it does not read. An agent override saved on the **Agents** page by an earlier
+version holds its env values in full; from its next save, every key whose
+value then matches the config's follows the config. A server started without
+a home directory (no `HOME`, as some services run) keeps using an old
+directory too, and needs `dataDir` or `CONDUCTOR_DATA_DIR` only when there is
+none. A directory the server cannot
 create stops it with `data directory … is not usable`. The Docker image sets
 `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the
 server logs the directory it uses, and warns when it overlaps an allowed root:
@@ -520,11 +523,12 @@ configured catalog at startup: an agent with the ID of a built-in or configured
 one replaces it, and deleting that entry brings the original back. Such an
 entry inherits what it leaves out: the original's `adapter` and `signal`, and
 every `env` value it holds as `***`, which the Agents page stores for a value
-the form did not change, so a change to that value in the config file reaches
-it. An agent in the config file that replaces a built-in replaces it whole.
-Hiding an
-agent removes it from the launch dialog and lists it under **Hidden** on the
-Agents page, where **Restore** brings it back as it was; sessions already
+the form did not change (or one equal to the original's), so a change to that
+value in the config file reaches it. Env keys it does not list are not
+inherited: an API client that omits `env` drops every value of the original,
+and a key the config file adds later does not reach the entry. An agent in the
+config file that replaces a built-in replaces it whole. Hiding an agent removes
+it from the launch dialog and lists it under **Hidden** on the Agents page, where **Restore** brings it back as it was; sessions already
 running are not affected. The config file is never written. The server
 refuses to start when `catalog.json` cannot be parsed or holds an invalid
 agent, rather than overwrite it. The form checks the command against the
@@ -559,9 +563,10 @@ the server refuses to start with an unknown one.
   (mode 0600) in the data directory. The file viewer of a server session never
   serves that directory, the config file or the catalog file, but agents run
   as the same user and can read them. Changing a built-in or configured agent
-  saves only what the form changed: an env value left as it was stays the
-  original's, so a secret rotated in the config file reaches the agent at the
-  next start, while a value set on the Agents page is stored in `catalog.json`.
+  stores the form's command, cwd, icon, adapter and signal in full; only the
+  env values left unchanged follow the original, so a secret rotated in the
+  config file reaches the agent at the next start, while a value set on the
+  Agents page is stored in `catalog.json`.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Terminal output is not persisted. Sessions and links live in memory and are

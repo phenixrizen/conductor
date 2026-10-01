@@ -341,8 +341,11 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 // what it leaves to prev filled in: an adapter or a signal it omits, and every
 // env value it holds as RedactedValue. The Agents page stores the mask for a
 // key whose value the editor did not change, so a value changed in the config
-// reaches the agent. A masked key that prev does not have, and every masked
-// value when there is no prev, is dropped. a itself is not changed.
+// reaches the agent. A value equal to prev's counts as the mask: it is prev's
+// value, and the next save stores the mask for it (keepMaskedEnv in
+// internal/api), which is how an override saved in full by an earlier version
+// comes to follow the config. A masked key that prev does not have, and every
+// masked value when there is no prev, is dropped. a itself is not changed.
 func inherit(a, prev Agent, had bool) Agent {
 	a = a.clone()
 	if had {
@@ -355,10 +358,12 @@ func inherit(a, prev Agent, had bool) Agent {
 		}
 	}
 	for k, v := range a.Env {
-		if v != RedactedValue {
-			continue
+		pv, inPrev := prev.Env[k]
+		inPrev = had && inPrev
+		if v != RedactedValue && (!inPrev || v != pv) {
+			continue // a value of its own
 		}
-		if pv, ok := prev.Env[k]; had && ok {
+		if inPrev {
 			a.Env[k] = pv
 		} else {
 			delete(a.Env, k)
