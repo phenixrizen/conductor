@@ -438,7 +438,7 @@ func TestRunDispatchesUpAndCrews(t *testing.T) {
 	if code, err := Run(t.Context(), []string{"help"}, nil, &out, &errOut); code != 0 || err != nil {
 		t.Fatalf("help: exit %d %v", code, err)
 	}
-	for _, want := range []string{"conductor up <crew-id>", "conductor crews"} {
+	for _, want := range []string{"conductor up <crew-id>", "conductor crews", "--ids", "conductor completion zsh|bash", "conductor completion install"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help does not name %q:\n%s", want, out.String())
 		}
@@ -451,6 +451,10 @@ func TestRunDispatchesUpAndCrews(t *testing.T) {
 	if code, err := Run(t.Context(), []string{"up"}, nil, &out, &errOut); code != 2 || err == nil {
 		t.Fatalf("up: exit %d %v", code, err)
 	}
+	out.Reset()
+	if code, err := Run(t.Context(), []string{"completion", "zsh"}, nil, &out, &errOut); code != 0 || err != nil || !strings.HasPrefix(out.String(), "#compdef conductor\n") {
+		t.Fatalf("completion: exit %d %v\n%s", code, err, out.String())
+	}
 }
 
 func TestClientDropsUserinfoFromTheServerURL(t *testing.T) {
@@ -461,5 +465,72 @@ func TestClientDropsUserinfoFromTheServerURL(t *testing.T) {
 	}
 	if c.base != "http://example.test" || strings.Contains(c.base, "pw") {
 		t.Fatalf("base %q keeps the userinfo", c.base)
+	}
+}
+
+// conductor crews --ids prints ids only, one per line, paging through the
+// list as conductor crews does, and leaves out anything not shaped like a
+// crew id (crew.ValidID): the output is fed to a shell's completion.
+func TestCrewsIDsPrintsOnlyWellFormedIDs(t *testing.T) {
+	clearConductorEnv(t)
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("offset") == "0" {
+			fmt.Fprint(w, `{"crews":[{"id":"alpha"},{"id":"bad id"},{"id":"evil\u001b[31m"},{"id":"$(rm)"},{"id":"-flag"}],"total":6}`)
+			return
+		}
+		fmt.Fprint(w, `{"crews":[{"id":"beta-2"}],"total":6}`)
+	}))
+	t.Cleanup(srv.Close)
+	code, stdout, stderr, err := crews(t, "--server", srv.URL, "--token", secretToken, "--ids")
+	if code != 0 || err != nil || stdout != "alpha\nbeta-2\n" || stderr != "" {
+		t.Fatalf("exit %d %v\nstdout: %q\nstderr: %q", code, err, stdout, stderr)
+	}
+	if !slices.Equal(pages, []string{"offset=0&limit=100", "offset=5&limit=100"}) {
+		t.Fatalf("pages: %v", pages)
+	}
+}
+
+// Without a token, without a server to reach, or refused, --ids prints
+// nothing and exits 0: a completion must never put an error on the command
+// line.
+func TestCrewsIDsIsSilentWhenItCannotAsk(t *testing.T) {
+	clearConductorEnv(t)
+	code, stdout, stderr, err := crews(t, "--ids")
+	if code != 0 || err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("no token: exit %d %v %q %q", code, err, stdout, stderr)
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	code, stdout, stderr, err = crews(t, "--server", closed.URL, "--token", secretToken, "--ids")
+	if code != 0 || err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("unreachable: exit %d %v %q %q", code, err, stdout, stderr)
+	}
+	srv, _ := stubServer(t, http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"bad token"}}`)
+	code, stdout, stderr, err = crews(t, "--server", srv.URL, "--token", secretToken, "--ids")
+	if code != 0 || err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("refused: exit %d %v %q %q", code, err, stdout, stderr)
+	}
+	noSecret(t, stdout, stderr, err)
+}
+
+// A server that does not answer is given idsTimeout in all, not a request's
+// timeout: completion does not hang the shell.
+func TestCrewsIDsGivesUpQuickly(t *testing.T) {
+	clearConductorEnv(t)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+	start := time.Now()
+	code, stdout, _, err := crews(t, "--server", srv.URL, "--token", secretToken, "--ids")
+	if code != 0 || err != nil || stdout != "" || time.Since(start) > idsTimeout+time.Second {
+		t.Fatalf("exit %d %v %q after %s", code, err, stdout, time.Since(start))
 	}
 }

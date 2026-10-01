@@ -29,6 +29,11 @@ const maxID = 64
 // a hand-edited file is held to it. With ".json" it is a store document name.
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// ValidID reports whether id has the shape of a crew ID (idPattern), for code
+// that handles IDs the store did not make: conductor crews --ids prints only
+// these, since a shell's completion reads what it prints.
+func ValidID(id string) bool { return idPattern.MatchString(id) }
+
 // Errors a Store returns besides validation and save errors.
 var (
 	ErrNotFound = errors.New("no such crew")

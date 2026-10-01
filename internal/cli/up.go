@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/phenixrizen/conductor/internal/crew"
 )
 
 const (
@@ -38,8 +40,10 @@ const crewsUsage = `Usage:
   conductor up <crew-id> [--server URL] [--token T] [--open]
       launch a saved crew as a run; prints the run and the URL of its page,
       and the crew's view link when it has one
-  conductor crews [--server URL] [--token T]
-      list the saved crews: id, name and members
+  conductor crews [--server URL] [--token T] [--ids]
+      list the saved crews: id, name and members; with --ids the ids only,
+      one per line, for shell completion (nothing, and exit 0, when the
+      server cannot be asked)
 
 The server defaults to CONDUCTOR_SERVER, else http://localhost:8080; the
 admin token to CONDUCTOR_ADMIN_TOKEN.
@@ -148,11 +152,16 @@ func printableURL(s string) bool {
 // crewsPage is how many crews conductor crews asks for at a time.
 const crewsPage = 100
 
-// runCrews lists the saved crews, one per line.
+// idsTimeout bounds all of conductor crews --ids: a completion that waits is
+// worse than one that offers nothing.
+const idsTimeout = 2 * time.Second
+
+// runCrews lists the saved crews, one per line, or with --ids their ids.
 func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("crews", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	api := addAPIFlags(fs)
+	ids := fs.Bool("ids", false, "print the crew ids only, one per line, for shell completion: silent and exit 0 when the server cannot be reached or the token is missing")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, crewsUsage)
 		fs.PrintDefaults()
@@ -167,37 +176,16 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		fs.Usage()
 		return 2, errors.New("crews: takes no arguments")
 	}
+	if *ids {
+		return runCrewIDs(ctx, api, stdout)
+	}
 	c, err := api.client()
 	if err != nil {
 		return 2, err
 	}
-	// As in runUp, unknown fields are ignored on purpose. A reply without
-	// total (an older server) is one page.
-	type crewLine struct {
-		ID      string `json:"id"`
-		Name    string `json:"name"`
-		Members []struct {
-			Name string `json:"name"`
-		} `json:"members"`
-	}
-	var all []crewLine
-	// Pages by offset and limit, with no snapshot across them: a crew made
-	// or deleted between two pages shifts the ones after it, so one may be
-	// listed twice or not at all. That is inherent to offset paging; a run
-	// again lists them as they are.
-	for offset := 0; ; {
-		var reply struct {
-			Crews []crewLine `json:"crews"`
-			Total int        `json:"total"`
-		}
-		if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), &reply, maxCrewsReply); err != nil {
-			return 1, err
-		}
-		all = append(all, reply.Crews...)
-		offset += len(reply.Crews)
-		if len(reply.Crews) == 0 || offset >= reply.Total {
-			break
-		}
+	all, err := c.crewList(ctx)
+	if err != nil {
+		return 1, err
 	}
 	if len(all) == 0 {
 		fmt.Fprintln(stdout, "no crews")
@@ -211,6 +199,64 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		fmt.Fprintf(stdout, "%s\t%s\t%d members: %s\n", cr.ID, cr.Name, len(names), strings.Join(names, ", "))
 	}
 	return 0, nil
+}
+
+// runCrewIDs prints the saved crews' ids, one per line, for shell
+// completion: nothing and exit 0 when no client can be made (no token) or the
+// server does not answer within idsTimeout, and never an error, since the
+// output lands on a command line. An id not shaped like a crew's
+// (crew.ValidID) is left out.
+func runCrewIDs(ctx context.Context, api apiFlags, stdout io.Writer) (int, error) {
+	c, err := api.client()
+	if err != nil {
+		return 0, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, idsTimeout)
+	defer cancel()
+	all, err := c.crewList(ctx)
+	if err != nil {
+		return 0, nil
+	}
+	for _, cr := range all {
+		if crew.ValidID(cr.ID) {
+			fmt.Fprintln(stdout, cr.ID)
+		}
+	}
+	return 0, nil
+}
+
+// crewLine is a crew as conductor crews reads it from the list.
+type crewLine struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Members []struct {
+		Name string `json:"name"`
+	} `json:"members"`
+}
+
+// crewList reads every saved crew from GET /api/crews, crewsPage at a time,
+// each page at most maxCrewsReply bytes. As in runUp, unknown fields are
+// ignored on purpose. A reply without total (an older server) is one page.
+func (c *apiClient) crewList(ctx context.Context) ([]crewLine, error) {
+	var all []crewLine
+	// Pages by offset and limit, with no snapshot across them: a crew made
+	// or deleted between two pages shifts the ones after it, so one may be
+	// listed twice or not at all. That is inherent to offset paging; a run
+	// again lists them as they are.
+	for offset := 0; ; {
+		var reply struct {
+			Crews []crewLine `json:"crews"`
+			Total int        `json:"total"`
+		}
+		if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), &reply, maxCrewsReply); err != nil {
+			return nil, err
+		}
+		all = append(all, reply.Crews...)
+		offset += len(reply.Crews)
+		if len(reply.Crews) == 0 || offset >= reply.Total {
+			return all, nil
+		}
+	}
 }
 
 // apiFlags are the flags both commands take.

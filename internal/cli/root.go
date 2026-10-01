@@ -19,12 +19,16 @@ Usage:
   conductor notify [flags]     report "needs input" from inside a session
   conductor up <crew-id> [--server URL] [--token T] [--open]
                                launch a saved crew as a run and print its URL
-  conductor crews [--server URL] [--token T]
-                               list the saved crews
+  conductor crews [--server URL] [--token T] [--ids]
+                               list the saved crews (--ids: ids only, for completion)
   conductor hooks install <adapter>|all [--home DIR] [--data-dir DIR]
                                put Conductor's hooks into an agent's own config
   conductor hooks status       show which agents have Conductor's hooks
   conductor skill              print the Conductor skill (SKILL.md)
+  conductor completion zsh|bash
+                               print a shell completion script
+  conductor completion install [--shell zsh|bash] [--rc FILE]
+                               add the line that loads it to ~/.zshrc or ~/.bashrc
   conductor version            print the version
 
 Run "conductor <command> -h" for command flags.
@@ -51,6 +55,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runHooks(ctx, args[1:], stdout, stderr)
 	case "skill":
 		return runSkill(args[1:], stdout, stderr)
+	case "completion":
+		return runCompletion(args[1:], stdout, stderr)
 	case "version", "-v", "--version":
 		fmt.Fprintln(stdout, "conductor", version.String())
 		return 0, nil

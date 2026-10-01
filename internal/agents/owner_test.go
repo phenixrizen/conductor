@@ -171,3 +171,37 @@ func TestOwnHomeExceptionNeverCoversRoot(t *testing.T) {
 		t.Fatalf("root in a user's home: %v", err)
 	}
 }
+
+// CheckOwner passes a file of one's own and refuses another user's, naming
+// the file and saying nothing was written; a missing path is its own error;
+// where the system cannot say who owns a file, it passes.
+func TestCheckOwnerRefusesAnotherUsersFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rc")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckOwner(path); err != nil {
+		t.Fatalf("own file: %v", err)
+	}
+	if err := CheckOwner(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := FileOwner(fi); !ok {
+		t.Skip("this platform does not report who owns a file")
+	}
+	was := geteuid
+	geteuid = func() int { return os.Geteuid() + 1 }
+	t.Cleanup(func() { geteuid = was })
+	if err := CheckOwner(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "nothing written") {
+		t.Fatalf("another user's file: %v", err)
+	}
+	// The own-home exception passes the process's home itself, never a file in it.
+	t.Setenv("HOME", filepath.Dir(path))
+	if err := CheckOwner(path); err == nil {
+		t.Fatal("a file in the process's own home passed as if it were the home")
+	}
+}

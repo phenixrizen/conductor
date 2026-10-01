@@ -70,18 +70,47 @@ func CheckHome(home string) error {
 // way: under sudo, HOME may still name the invoking user's home, which root
 // can always write.
 func ownedBy(home string, fi fs.FileInfo, uid int) error {
+	who, other := otherOwner(home, fi, uid)
+	if !other {
+		return nil
+	}
+	return fmt.Errorf("%s belongs to %s, and what Conductor wrote there would not: run it as %s, for example sudo -u %s conductor hooks install …", home, who, who, who)
+}
+
+// otherOwner names the owner of path, which fi describes, when ownedBy's rule
+// refuses it for the user uid; other is false when the rule passes it,
+// including where the system does not say who owns a file.
+func otherOwner(path string, fi fs.FileInfo, uid int) (who string, other bool) {
 	owner, ok := FileOwner(fi)
 	if !ok || owner == uid {
-		return nil
+		return "", false
 	}
-	if uid != 0 && ownHome(home) && writable(home) {
-		return nil
+	if uid != 0 && ownHome(path) && writable(path) {
+		return "", false
 	}
-	who := strconv.Itoa(owner)
+	who = strconv.Itoa(owner)
 	if u, err := user.LookupId(who); err == nil && u.Username != "" {
 		who = u.Username
 	}
-	return fmt.Errorf("%s belongs to %s, and what Conductor wrote there would not: run it as %s, for example sudo -u %s conductor hooks install …", home, who, who, who)
+	return who, true
+}
+
+// CheckOwner refuses path unless the user running conductor owns it, by the
+// rule CheckHome holds a home to (ownedBy: its own-home exception passes the
+// process's home directory itself, never a file in it); where the system does
+// not say who owns a file, it passes. A missing path is its own error
+// (fs.ErrNotExist). conductor completion install checks the rc file it
+// appends to, or the directory it makes one in: under sudo, another user's
+// ~/.zshrc is refused.
+func CheckOwner(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if who, other := otherOwner(path, fi, geteuid()); other {
+		return fmt.Errorf("%s belongs to %s, not to the user running conductor: nothing written; run it as %s, for example sudo -u %s conductor completion install", path, who, who, who)
+	}
+	return nil
 }
 
 // ownHome reports whether dir is the process's home directory, compared as a
