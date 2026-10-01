@@ -20,6 +20,7 @@ import {
   sidebarRunFor,
   startFrom,
   startValue,
+  summaryOf,
   takeViewLink,
   toCrewInput,
   toCrewMember,
@@ -352,6 +353,14 @@ describe('toDraft and crewKey', () => {
     expect(crewKey(d)).not.toBe(crewKey(info))
     d.members[1]!.args = argsFrom('  ')
     expect(crewKey(d)).toBe(crewKey(info))
+  })
+})
+
+describe('summaryOf', () => {
+  it('keeps what the list shows and drops the prompts', () => {
+    const s = summaryOf(info)
+    expect(s).toEqual({ id: info.id, name: info.name, cwd: info.cwd, where: info.where, isolation: info.isolation, members: info.members.map((m) => ({ name: m.name, agentId: m.agentId })), updatedAt: info.updatedAt })
+    expect(JSON.stringify(s)).not.toContain('prompt')
   })
 })
 

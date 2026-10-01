@@ -92,9 +92,9 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
 	}
-	c, ok := s.crews.Get(r.PathValue("id"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", "no such crew")
+	c, err := s.crews.Get(r.PathValue("id"))
+	if err != nil {
+		s.crewStoreError(w, r.PathValue("id"), err)
 		return
 	}
 	if err := c.Launchable(); err != nil {

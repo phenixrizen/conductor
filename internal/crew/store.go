@@ -4,7 +4,8 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"maps"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -16,72 +17,353 @@ import (
 	"github.com/phenixrizen/conductor/internal/store"
 )
 
-// crewsFile is the document in the data directory that holds every crew.
-const crewsFile = "crews.json"
-
-// maxCrews bounds how many crews a data directory holds.
-const maxCrews = 50
+// crewsDir is the directory of the data directory that holds one file per
+// crew, <id>.json.
+const crewsDir = "crews"
 
 // maxID bounds an ID. Derived IDs are at most 40 characters from the name
 // plus a suffix; duplicates of duplicates are cut to stay within it.
 const maxID = 64
 
 // idPattern is what a crew ID looks like: a derived ID always matches it, and
-// a hand-edited crews.json is held to it.
+// a hand-edited file is held to it. With ".json" it is a store document name.
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // Errors a Store returns besides validation and save errors.
 var (
-	ErrNotFound     = errors.New("no such crew")
-	ErrTooManyCrews = fmt.Errorf("too many crews (at most %d)", maxCrews)
+	ErrNotFound = errors.New("no such crew")
+	// ErrUnreadable is a crew whose file cannot be used: not JSON, a field a
+	// crew does not have, an invalid crew, another crew's ID, more than
+	// MaxEncoded bytes, a symbolic link. The error that wraps it says why and
+	// names the file, not the directory. Such a file is left alone: never
+	// listed, never overwritten, and deleted only on request.
+	ErrUnreadable = errors.New("the crew's file cannot be used")
+	// ErrWrite wraps a save or a delete that failed: the file is as it was.
+	// A failure to read the crews directory or a file does not wrap it, so
+	// the API can say which of the two failed.
+	ErrWrite = errors.New("the crew's file could not be written")
 )
 
-// crewsDoc is the shape of crews.json.
-type crewsDoc struct {
-	Crews []Crew `json:"crews"`
+// Summary is a crew as GET /api/crews lists it: what the Crews page's list
+// and conductor crews show, without the prompts.
+type Summary struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Cwd       string          `json:"cwd"`
+	Where     string          `json:"where"`
+	Isolation string          `json:"isolation"`
+	Members   []MemberSummary `json:"members"`
+	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
-// Store holds the saved crews in memory and in crews.json. Every change is
-// checked in the form it is saved in (name trimmed, ID and times set), and
-// saved before it is made in memory, so a failed save changes nothing. Crews
-// go in and come out as copies: a caller can never change a stored crew.
+// MemberSummary is a member as a Summary lists it.
+type MemberSummary struct {
+	Name    string `json:"name"`
+	AgentID string `json:"agentId"`
+}
+
+func (c Crew) summary() Summary {
+	members := make([]MemberSummary, 0, len(c.Members))
+	for _, m := range c.Members {
+		members = append(members, MemberSummary{Name: m.Name, AgentID: m.AgentID})
+	}
+	return Summary{ID: c.ID, Name: c.Name, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, UpdatedAt: c.UpdatedAt}
+}
+
+// Store keeps the saved crews, one file each in crews/ of the data directory,
+// each written whole by the store. The list is read from the directory, so a
+// file added, changed or removed by hand shows at the next listing. Every
+// change is checked in the form it is saved in (name trimmed, ID and times
+// set), and a failed save changes nothing. Crews go in and come out as copies.
 type Store struct {
-	st  *store.Store
-	now func() time.Time // stamps CreatedAt and UpdatedAt
+	st  *store.Store // crews/
+	now func() time.Time
 
-	mu    sync.Mutex
-	crews map[string]Crew
+	// mu serialises the writers, so that a derived ID is chosen and taken in
+	// one step, and guards sums.
+	mu sync.Mutex
+	// sums caches each file's summary by document name, with the size and
+	// time the file had when it was read: one whose size or time changed is
+	// read again. commit and Delete drop the entry of the file they change,
+	// so a save that keeps the size and the time (a rename to a name of the
+	// same length within the clock's tick) is listed at once; a hand edit
+	// that keeps both shows once either changes.
+	sums map[string]cached
 }
 
-// NewStore loads the crews saved in st, which must not be nil. A missing
-// crews.json is an empty store. A file that cannot be parsed, or that holds an
-// invalid crew, an ID twice or more than 50 crews, is an error naming its path:
-// startup must fail rather than let the next save overwrite it.
-func NewStore(st *store.Store) (*Store, error) {
-	s := &Store{st: st, now: func() time.Time { return time.Now().UTC() }, crews: map[string]Crew{}}
-	path := filepath.Join(st.Dir(), crewsFile)
-	var doc crewsDoc
-	found, err := st.Load(crewsFile, &doc)
+type cached struct {
+	size int64
+	mod  time.Time
+	sum  Summary
+	err  error // the file cannot be used: it is left out of the list
+}
+
+// NewStore opens the crews of the data directory st: crews/ in it, made 0700
+// when missing, after the crews.json of an older Conductor is moved there
+// (migrate). It reads every crew file once. problems lists, each naming its
+// files, what was left as it was: a crew of crews.json that was not moved
+// because its file exists and holds something else (crews.json.migrated
+// keeps it), and a crew file that cannot be used (left out; the other crews
+// load). err is fatal: a crews.json that cannot be moved, or a crews
+// directory that cannot be made or read.
+func NewStore(st *store.Store) (s *Store, problems []error, err error) {
+	dir, err := st.Sub(crewsDir)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, err
 	}
-	if !found {
-		return s, nil
+	notices, err := migrate(st, dir)
+	if err != nil {
+		return nil, nil, err
 	}
-	if len(doc.Crews) > maxCrews {
-		return nil, fmt.Errorf("%s: %d crews, at most %d", path, len(doc.Crews), maxCrews)
+	s = &Store{st: dir, now: func() time.Time { return time.Now().UTC() }, sums: map[string]cached{}}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.st.List()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", dir.Dir(), err)
 	}
-	for i, c := range doc.Crews {
-		c = c.canonical()
-		if err := c.validateWithID(); err != nil {
-			return nil, fmt.Errorf("%s: crews[%d]: %w", path, i, err)
+	problems = notices
+	for _, e := range entries {
+		if c := s.summaryOf(e); c.err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", filepath.Join(dir.Dir(), e.Name), c.err))
 		}
-		if _, dup := s.crews[c.ID]; dup {
-			return nil, fmt.Errorf("%s: crews[%d]: id %q is used twice", path, i, c.ID)
-		}
-		s.crews[c.ID] = c
 	}
-	return s, nil
+	return s, problems, nil
+}
+
+// summaryOf returns the cached summary of the file e, read again when its size
+// or time changed. The caller holds s.mu.
+func (s *Store) summaryOf(e store.Entry) cached {
+	if c, ok := s.sums[e.Name]; ok && c.size == e.Size && c.mod.Equal(e.ModTime) {
+		return c
+	}
+	c := cached{size: e.Size, mod: e.ModTime}
+	if crew, err := s.read(strings.TrimSuffix(e.Name, ".json")); err != nil {
+		c.err = err
+	} else {
+		c.sum = crew.summary()
+	}
+	s.sums[e.Name] = c
+	return c
+}
+
+// read loads the crew with the given ID from its file and checks it as the
+// store saves it: a regular file (not a link), strict JSON of at most
+// MaxEncoded bytes, a valid crew, the ID its file is named for. ErrNotFound
+// when there is no file, an error wrapping ErrUnreadable when it cannot be
+// used. A failure of the file system itself (a *fs.PathError, which names
+// the data directory) is neither: it is a read failure.
+func (s *Store) read(id string) (Crew, error) {
+	if !idPattern.MatchString(id) {
+		return Crew{}, ErrNotFound
+	}
+	var c Crew
+	ok, err := s.st.LoadLimit(id+".json", &c, MaxEncoded)
+	var pe *fs.PathError
+	switch {
+	case errors.As(err, &pe):
+		return Crew{}, fmt.Errorf("read %s.json: %w", id, err)
+	case err != nil:
+		return Crew{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
+	case !ok:
+		return Crew{}, ErrNotFound
+	}
+	c = c.canonical()
+	if c.ID != id {
+		return Crew{}, fmt.Errorf("%w: it holds the id %s", ErrUnreadable, quote(c.ID))
+	}
+	if err := c.validateWithID(); err != nil {
+		return Crew{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
+	}
+	return c, nil
+}
+
+// List returns the summaries of the crews ordered by name, ignoring case,
+// then by ID: those from offset on, at most limit of them, and how many there
+// are in all. The directory is read each time. A file that cannot be used is
+// left out and counts in no total.
+func (s *Store) List(offset, limit int) ([]Summary, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.st.List()
+	if err != nil {
+		return nil, 0, err
+	}
+	seen := make(map[string]bool, len(entries))
+	all := make([]Summary, 0, len(entries))
+	for _, e := range entries {
+		seen[e.Name] = true
+		if c := s.summaryOf(e); c.err == nil {
+			all = append(all, c.sum)
+		}
+	}
+	for name := range s.sums {
+		if !seen[name] {
+			delete(s.sums, name)
+		}
+	}
+	slices.SortFunc(all, func(a, b Summary) int {
+		return cmp.Or(strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), strings.Compare(a.ID, b.ID))
+	})
+	total := len(all)
+	from := min(max(offset, 0), total)
+	to := min(from+max(limit, 0), total)
+	page := slices.Clone(all[from:to])
+	for i := range page {
+		page[i].Members = slices.Clone(page[i].Members)
+	}
+	return page, total, nil
+}
+
+// Get returns the crew with the given ID, read from its file: ErrNotFound when
+// there is none, an error wrapping ErrUnreadable when it cannot be used, a
+// symbolic link included (store.LoadLimit does not follow one).
+func (s *Store) Get(id string) (Crew, error) {
+	return s.read(id)
+}
+
+// Put validates c and saves it under c.ID, adding it or replacing the crew
+// with that ID. It stores c as it is, times included, only its name trimmed;
+// Create, Update and Duplicate are the operations that set the ID and the
+// times.
+func (s *Store) Put(c Crew) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.commit(c)
+}
+
+// Create saves c as a new crew. Its ID comes from its name, lower case with
+// every other run of characters a dash and at most 40 of them ("crew" when
+// nothing is left), then -2, -3 and so on when a file has it already, usable
+// or not. CreatedAt and UpdatedAt are now. The ID and times c holds are
+// ignored.
+func (s *Store) Create(c Crew) (Crew, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken, err := s.taken()
+	if err != nil {
+		return Crew{}, err
+	}
+	c.ID = freeID(taken, cmp.Or(slug(c.Name), "crew"), "")
+	c.CreatedAt = s.now()
+	c.UpdatedAt = c.CreatedAt
+	if err := s.commit(c); err != nil {
+		return Crew{}, err
+	}
+	return c.canonical(), nil
+}
+
+// Update replaces the crew with the given ID by c. The ID and CreatedAt stay
+// as they were, whatever c holds, and UpdatedAt is now. A file that cannot be
+// used is not replaced (ErrUnreadable).
+func (s *Store) Update(id string, c Crew) (Crew, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, err := s.read(id)
+	if err != nil {
+		return Crew{}, err
+	}
+	c.ID, c.CreatedAt, c.UpdatedAt = id, old.CreatedAt, s.now()
+	if err := s.commit(c); err != nil {
+		return Crew{}, err
+	}
+	return c.canonical(), nil
+}
+
+// Duplicate saves a copy of the crew with the given ID as a new crew: its ID
+// is <id>-copy (then <id>-copy-2 and so on), its name "<name> copy", and its
+// CreatedAt and UpdatedAt now.
+func (s *Store) Duplicate(id string) (Crew, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, err := s.read(id)
+	if err != nil {
+		return Crew{}, err
+	}
+	taken, err := s.taken()
+	if err != nil {
+		return Crew{}, err
+	}
+	c := src.clone()
+	c.ID = freeID(taken, id, "-copy")
+	c.Name = copyName(src.Name)
+	c.CreatedAt = s.now()
+	c.UpdatedAt = c.CreatedAt
+	if err := s.commit(c); err != nil {
+		return Crew{}, err
+	}
+	return c.canonical(), nil
+}
+
+// Delete removes the crew with the given ID, its file whatever it holds, and
+// reports whether there was one.
+func (s *Store) Delete(id string) (bool, error) {
+	if !idPattern.MatchString(id) {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken, err := s.taken()
+	if err != nil {
+		return false, err
+	}
+	if !taken[id] {
+		return false, nil
+	}
+	if err := s.st.Delete(id + ".json"); err != nil {
+		return false, fmt.Errorf("%w: delete %s.json: %w", ErrWrite, id, err)
+	}
+	delete(s.sums, id+".json")
+	return true, nil
+}
+
+// commit checks c as it will be saved, then writes its file and drops the
+// summary the list cached for it. An invalid crew is refused, and a failed
+// write (ErrWrite) leaves the file as it was. The caller holds s.mu.
+func (s *Store) commit(c Crew) error {
+	c = c.canonical()
+	if err := c.validateWithID(); err != nil {
+		return err
+	}
+	if err := s.st.Save(c.ID+".json", c); err != nil {
+		return fmt.Errorf("%w: save %s.json: %w", ErrWrite, c.ID, err)
+	}
+	delete(s.sums, c.ID+".json")
+	return nil
+}
+
+// taken returns the IDs that have an entry in the crews directory, usable or
+// not, a link included, so that no new crew takes the name of a file the
+// store cannot read and Delete removes such a file. It reads the directory
+// itself, since store.List leaves links out. The caller holds s.mu.
+func (s *Store) taken() (map[string]bool, error) {
+	des, err := os.ReadDir(s.st.Dir())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(des))
+	for _, de := range des {
+		if id, ok := strings.CutSuffix(de.Name(), ".json"); ok {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
+// freeID returns stem+tag, or stem+tag+"-2", stem+tag+"-3" and so on, the
+// first that taken does not hold, with stem cut so that the ID stays within
+// maxID. stem starts with a letter or digit, as slugs and IDs do.
+func freeID(taken map[string]bool, stem, tag string) string {
+	for n := 1; ; n++ {
+		end := tag
+		if n > 1 {
+			end += "-" + strconv.Itoa(n)
+		}
+		id := strings.TrimRight(stem[:min(len(stem), maxID-len(end))], "-") + end
+		if !taken[id] {
+			return id
+		}
+	}
 }
 
 // validateWithID is Validate plus the ID, which the store keys crews by.
@@ -102,168 +384,6 @@ func (c Crew) canonical() Crew {
 		c.Members = []Member{}
 	}
 	return c
-}
-
-// List returns every crew ordered by name, ignoring case, then by ID.
-func (s *Store) List() []Crew {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return sorted(s.crews)
-}
-
-// Get returns the crew with the given ID.
-func (s *Store) Get(id string) (Crew, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.crews[id]
-	if !ok {
-		return Crew{}, false
-	}
-	return c.clone(), true
-}
-
-// Put validates c and saves it under c.ID, adding it or replacing the crew
-// with that ID. It stores c as it is, times included, only its name trimmed;
-// Create, Update and Duplicate are the operations that set the ID and the
-// times.
-func (s *Store) Put(c Crew) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.commit(c)
-}
-
-// Create saves c as a new crew. Its ID comes from its name, lower case with
-// every other run of characters a dash and at most 40 of them ("crew" when
-// nothing is left), then -2, -3 and so on when a crew has it already.
-// CreatedAt and UpdatedAt are now. The ID and times c holds are ignored.
-func (s *Store) Create(c Crew) (Crew, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.crews) >= maxCrews {
-		return Crew{}, ErrTooManyCrews
-	}
-	c.ID = s.freeID(cmp.Or(slug(c.Name), "crew"), "")
-	c.CreatedAt = s.now()
-	c.UpdatedAt = c.CreatedAt
-	if err := s.commit(c); err != nil {
-		return Crew{}, err
-	}
-	return s.crews[c.ID].clone(), nil
-}
-
-// Update replaces the crew with the given ID by c. The ID and CreatedAt stay
-// as they were, whatever c holds, and UpdatedAt is now.
-func (s *Store) Update(id string, c Crew) (Crew, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	old, ok := s.crews[id]
-	if !ok {
-		return Crew{}, ErrNotFound
-	}
-	c.ID, c.CreatedAt, c.UpdatedAt = id, old.CreatedAt, s.now()
-	if err := s.commit(c); err != nil {
-		return Crew{}, err
-	}
-	return s.crews[id].clone(), nil
-}
-
-// Duplicate saves a copy of the crew with the given ID as a new crew: its ID
-// is <id>-copy (then <id>-copy-2 and so on), its name "<name> copy", and its
-// CreatedAt and UpdatedAt now.
-func (s *Store) Duplicate(id string) (Crew, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	src, ok := s.crews[id]
-	if !ok {
-		return Crew{}, ErrNotFound
-	}
-	if len(s.crews) >= maxCrews {
-		return Crew{}, ErrTooManyCrews
-	}
-	c := src.clone()
-	c.ID = s.freeID(id, "-copy")
-	c.Name = copyName(src.Name)
-	c.CreatedAt = s.now()
-	c.UpdatedAt = c.CreatedAt
-	if err := s.commit(c); err != nil {
-		return Crew{}, err
-	}
-	return s.crews[c.ID].clone(), nil
-}
-
-// Delete removes the crew with the given ID and reports whether there was one.
-func (s *Store) Delete(id string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.crews[id]; !ok {
-		return false, nil
-	}
-	next := maps.Clone(s.crews)
-	delete(next, id)
-	if err := s.save(next); err != nil {
-		return false, err
-	}
-	s.crews = next
-	return true, nil
-}
-
-// commit checks c as it will be saved, then adds it, or replaces the crew
-// with its ID, and saves. An invalid crew and a new crew past maxCrews are
-// refused, and when the save fails the crews stay as they were. The caller
-// holds s.mu.
-func (s *Store) commit(c Crew) error {
-	c = c.canonical()
-	if err := c.validateWithID(); err != nil {
-		return err
-	}
-	if _, exists := s.crews[c.ID]; !exists && len(s.crews) >= maxCrews {
-		return ErrTooManyCrews
-	}
-	next := maps.Clone(s.crews)
-	next[c.ID] = c
-	if err := s.save(next); err != nil {
-		return err
-	}
-	s.crews = next
-	return nil
-}
-
-// save writes crews to crews.json, ordered as List orders them.
-func (s *Store) save(crews map[string]Crew) error {
-	if err := s.st.Save(crewsFile, crewsDoc{Crews: sorted(crews)}); err != nil {
-		return fmt.Errorf("save %s: %w", crewsFile, err)
-	}
-	return nil
-}
-
-// sorted returns copies of crews ordered by name, ignoring case, then by ID.
-func sorted(crews map[string]Crew) []Crew {
-	out := make([]Crew, 0, len(crews))
-	for _, c := range crews {
-		out = append(out, c.clone())
-	}
-	slices.SortFunc(out, func(a, b Crew) int {
-		return cmp.Or(strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), strings.Compare(a.ID, b.ID))
-	})
-	return out
-}
-
-// freeID returns stem+tag, or stem+tag+"-2", stem+tag+"-3" and so on, the
-// first that no crew has, with stem cut so that the ID stays within maxID.
-// stem starts with a letter or digit, as slugs and IDs do. Every candidate
-// differs from the others, so one of the first len(s.crews)+1 is free. The
-// caller holds s.mu.
-func (s *Store) freeID(stem, tag string) string {
-	for n := 1; ; n++ {
-		end := tag
-		if n > 1 {
-			end += "-" + strconv.Itoa(n)
-		}
-		id := strings.TrimRight(stem[:min(len(stem), maxID-len(end))], "-") + end
-		if _, taken := s.crews[id]; !taken {
-			return id
-		}
-	}
 }
 
 // maxSlug bounds the part of an ID that comes from the name.

@@ -388,7 +388,7 @@ does the same for a hosted session.
 
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <admin token>`; a share token is also accepted where the
-table says so. JSON request bodies are limited to 64 KiB (1 MiB on the crew
+table says so. JSON request bodies are limited to 64 KiB (2 MiB on the crew
 routes, 128 KiB when adding a member to a run) and unknown fields are rejected. Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
@@ -404,12 +404,13 @@ its run, and on no other.
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?}`: whether `command[0]` resolves on the server (`exec.LookPath`); nothing is run, and a missing program is `found:false`, not an error |
-| `GET /api/crews` | admin | `{crews}`: the saved crews ordered by name (ignoring case), each `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, members, createdAt, updatedAt}`, a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `[]` when there is no data directory |
-| `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt` and `updatedAt`, which the server sets and rejects like any unknown field; the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; reply `201 {crew}`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `409 too_many_crews` past 50 crews; `503 store_unavailable` when there is no data directory |
-| `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown |
+| `GET /api/crews` | admin | `{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId}], updatedAt}`; `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory |
+| `GET /api/crews/{id}` | admin | one crew in full, `{crew}`, shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, members, createdAt, updatedAt}`, a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
+| `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt` and `updatedAt`, which the server sets and rejects like any unknown field; the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; reply `201 {crew}`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `503 store_unavailable` when there is no data directory |
+| `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
-| `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 512 KiB; `404` when unknown; `409 too_many_crews` |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `503 store_unavailable` without a data directory |
+| `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 1 MiB; `404` when unknown; `409 crew_unreadable` when its file cannot be used |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory |
 | `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first |
 | `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}` and the run's `log`, whose entries Crew runs lists; `404` when unknown |
 | `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32767 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
@@ -454,14 +455,24 @@ NUL, `icon` matching `^[a-z0-9][a-z0-9:-]{0,63}$`, `adapter` matching
 `^[a-z0-9-]{1,32}$` and naming an adapter Conductor has, an `env` key or
 `envPassthrough` name at most 128 bytes and an `env` value at most 16384 bytes.
 
-The crew routes persist their changes as `crews.json` in the data directory:
-`{"crews": [...]}`. Without a data directory the listing is empty and every
-other crew route answers `503 store_unavailable`; a save that fails answers
-`500 store_failed` and changes nothing. The server refuses to start when the
-file cannot be parsed or holds an invalid crew, an `id` twice or more than 50
-crews. `openAfterLaunch` is for the workbench, which opens the crew view after
+The crew routes keep each crew in a file of its own, `crews/<id>.json` in the
+data directory, written whole (a temp file renamed into place). The list is
+read from that directory, so a file added, changed or removed by hand shows at
+the next listing. A file that cannot be used, a symbolic link included (it is
+not followed), is named in the server's log at startup and left out of the
+list; it is never overwritten (a new crew of the same name takes the next id),
+and `DELETE` removes it. A `crews.json` from an earlier version is split into
+these files at the first start and renamed `crews.json.migrated`, which keeps
+every crew; the move never overwrites a crew file, and a crew whose file exists
+with something else in it is not moved, which the log says naming both files.
+A `crews.json` that cannot be parsed stops startup, as before. So does one that
+holds an invalid crew or an `id` twice; nothing is moved then. Without a data
+directory the listing is empty and every other crew route answers
+`503 store_unavailable`. A failure of the store is `500 store_failed`: "could
+not save the crews" for a write, which changes nothing, and "could not read the
+crews" for a read. `openAfterLaunch` is for the workbench, which opens the crew view after
 a launch when it is set; the server stores it and does nothing else with it.
-Crews are held to these limits: at most 50 crews; `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
+Crews are held to these limits: `id` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `name`
 not blank, at most 60 characters and without control characters (surrounding
 space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 `where` is `server` or `host` and `isolation` is `none` or `worktree`;
@@ -475,11 +486,12 @@ changes no length, with a carriage return, and a session takes at most 32 KiB
 at once), and at most 32 `args` of at most 4096 bytes, 8 KiB in all; `start.when` is `immediately`, `after` or
 `manual`, `start.member`, set with `after` alone, names another member of the crew, and
 following `start.member` from member to member never goes round in a cycle.
-The whole crew, as the server writes it with its `id` and times, is at most
-512 KiB of JSON. Create and update check the body first: a crew that breaks one
-of these rules is refused with `400 invalid_crew` for that rule, ahead of an
-agent the catalog does not have, the 50-crew limit (`409`) and an unknown `id`
-(`404`); an agent the catalog does not have is `400 invalid_crew` whatever else
+A crew's file, as the server writes it with its `id` and times, is at most
+1 MiB; a create or update body may be up to 2 MiB, so a crew sent indented
+still fits. There is no limit on the number of crews. Create and update check
+the body first: a crew that breaks one of these rules is refused with
+`400 invalid_crew` for that rule, ahead of an agent the catalog does not have
+and an unknown `id` (`404`); an agent the catalog does not have is `400 invalid_crew` whatever else
 holds. An error message quotes at most 80 characters of a value, with `…` where
 it was cut.
 

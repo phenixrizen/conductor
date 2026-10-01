@@ -196,7 +196,7 @@ export interface CrewMember {
   start: CrewStart
 }
 
-/** A saved crew, as GET /api/crews lists it. */
+/** A saved crew in full, as GET /api/crews/{id} answers it and the crew routes reply. */
 export interface CrewInfo {
   /** Set by the server from the name when the crew is created; never changes. */
   id: string
@@ -211,9 +211,20 @@ export interface CrewInfo {
   openAfterLaunch: boolean
   /** Lifetime of the view link a launch creates; none when missing. */
   viewLinkTtlSeconds?: number
-  /** At most 12. The whole crew is at most 512 KiB as JSON. */
+  /** At most 12. The whole crew is at most 1 MiB as its file. */
   members: CrewMember[]
   createdAt: string
+  updatedAt: string
+}
+
+/** A crew as GET /api/crews lists it: what the list shows, without the prompts. GET /api/crews/{id} answers it in full. */
+export interface CrewSummary {
+  id: string
+  name: string
+  cwd: string
+  where: 'server' | 'host'
+  isolation: 'none' | 'worktree'
+  members: Array<{ name: string; agentId: string }>
   updatedAt: string
 }
 
@@ -283,12 +294,16 @@ export function useSessions() {
     /** Whether the program resolves on the server. Only the program is sent; nothing is run. */
     checkCommand: (program: string) =>
       request<{ found: boolean; path?: string }>('/api/catalog/check', { method: 'POST', body: { command: [program] } }),
-    /** The saved crews, ordered by name. */
-    listCrews: () => request<{ crews: CrewInfo[] }>('/api/crews').then((r) => r.crews ?? []),
+    /** One page of the saved crews' summaries, ordered by name, and how many there are in all. `limit` is 1 to 500. */
+    listCrews: (offset = 0, limit = 100) =>
+      request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
+    /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
+    getCrew: (id: string) => request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew),
     /**
      * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
-     * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a listed CrewInfo can be passed as it is. 400 `invalid_crew` says
-     * what is wrong, an agent the catalog does not have included; 404 for an unknown id; 409 `too_many_crews` past 50.
+     * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a CrewInfo read with getCrew can be passed as it is.
+     * 400 `invalid_crew` says what is wrong, an agent the catalog does not have included; 404 for an unknown id; 409 `crew_unreadable` for a
+     * crew whose file the server cannot use.
      */
     saveCrew: (crew: CrewInput, id?: string) =>
       (id === undefined

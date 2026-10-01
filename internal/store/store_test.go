@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -269,5 +270,91 @@ func TestLoadRejectsEmptyAndTruncatedFiles(t *testing.T) {
 				t.Fatalf("error should name the file and say %q: %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// A sub-store is a directory of the store, made 0700; it lists its documents,
+// and only them, by name, and deletes them.
+func TestSubListAndDelete(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	sub, err := s.Sub("crews")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(sub.Dir()); err != nil || fi.Mode().Perm() != 0o700 || sub.Dir() != filepath.Join(s.Dir(), "crews") {
+		t.Fatalf("sub dir %s: %v %v", sub.Dir(), fi, err)
+	}
+	for _, bad := range []string{"", "../x", "a/b", "X"} {
+		if _, err := s.Sub(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if list, err := sub.List(); err != nil || len(list) != 0 {
+		t.Fatalf("empty: %v %v", list, err)
+	}
+	for _, name := range []string{"b.json", "a.json"} {
+		if err := sub.Save(name, doc{N: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Not documents: a temp file, the probe, an upper-case name, a link, a directory.
+	writeRaw(t, sub, ".probe-1", "")
+	writeRaw(t, sub, "c.json.123.tmp", "{}")
+	writeRaw(t, sub, "Upper.json", "{}")
+	if err := os.Symlink(filepath.Join(sub.Dir(), "a.json"), filepath.Join(sub.Dir(), "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(sub.Dir(), "dir.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	list, err := sub.List()
+	var names []string
+	for _, e := range list {
+		names = append(names, e.Name)
+	}
+	if err != nil || !slices.Equal(names, []string{"a.json", "b.json"}) || list[0].Size == 0 || list[0].ModTime.IsZero() {
+		t.Fatalf("list %+v %v", list, err)
+	}
+	if err := sub.Delete("a.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.Delete("a.json"); err != nil {
+		t.Fatalf("deleting a missing document: %v", err)
+	}
+	if err := sub.Delete("../x.json"); err == nil {
+		t.Fatal("a bad name was deleted")
+	}
+	if list, _ := sub.List(); len(list) != 1 || list[0].Name != "b.json" {
+		t.Fatalf("after delete: %+v", list)
+	}
+}
+
+// LoadLimit reads a document of at most limit bytes, and refuses a larger one
+// without reading past the limit.
+func TestLoadLimit(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	if err := s.Save("c.json", doc{N: 12345}); err != nil { // 17 bytes
+		t.Fatal(err)
+	}
+	var d doc
+	if ok, err := s.LoadLimit("c.json", &d, 64); !ok || err != nil || d.N != 12345 {
+		t.Fatalf("within: %v %v %+v", ok, err, d)
+	}
+	if ok, err := s.LoadLimit("c.json", &d, 8); ok || err == nil || !strings.Contains(err.Error(), "more than 8 bytes") {
+		t.Fatalf("over: %v %v", ok, err)
+	}
+	if ok, err := s.LoadLimit("gone.json", &d, 8); ok || err != nil {
+		t.Fatalf("missing: %v %v", ok, err)
+	}
+	writeRaw(t, s, "bad.json", `{"n":1} x`)
+	if _, err := s.LoadLimit("bad.json", &d, 64); err == nil || !strings.Contains(err.Error(), "bad.json") {
+		t.Fatalf("trailing data: %v", err)
+	}
+	// A link is refused, never read through, as List leaves links out.
+	if err := os.Symlink(filepath.Join(s.Dir(), "c.json"), filepath.Join(s.Dir(), "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.LoadLimit("link.json", &d, 64); ok || err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a link: %v %v", ok, err)
 	}
 }

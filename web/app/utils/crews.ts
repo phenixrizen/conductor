@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewInput, CrewMember, CrewStart, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewInfo, CrewInput, CrewMember, CrewStart, CrewSummary, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -127,6 +127,11 @@ export function argsFrom(text: string): string[] | undefined {
 /** A crew as the server would store it, for telling a draft from what is saved. */
 export function crewKey(c: CrewInput): string {
   return JSON.stringify(toCrewInput(c))
+}
+
+/** The summary GET /api/crews lists for `c`: what the list shows after a save, until the list is read again. */
+export function summaryOf(c: CrewInfo): CrewSummary {
+  return { id: c.id, name: c.name, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId })), updatedAt: c.updatedAt }
 }
 
 /** A member's state as the run view shows it (memberStatus). */

@@ -368,8 +368,9 @@ then **R**): a name, a shared goal, a working directory, and up to 12 members.
 Each member has a name, an agent from the catalog, optional extra arguments (for
 agents that take them), a role prompt and a start condition. The goal reaches the role prompts
 as `$GOAL` (or `${GOAL}`), which is replaced by the goal before the prompt is
-typed. Crews are saved as `crews.json` in the data directory and run on the
-server only for now (members are ordinary server sessions, under
+typed. Crews are saved one file each, `crews/<id>.json` in the data directory
+(a `crews.json` from an earlier version is split up at the first start), and run
+on the server only for now (members are ordinary server sessions, under
 `allowedRoots`); the **My machine** option is disabled.
 
 A member starts `immediately` at launch, `after <member>` once that member,
@@ -455,11 +456,12 @@ a view link, that link on a third line, `view <url>`.
 
 Limits:
 
-- 50 crews; 12 members a crew, and a run takes no more than that.
+- No limit on the number of crews (the Crews page and `conductor crews` page
+  through them); 12 members a crew, and a run takes no more than that.
 - Name 60 characters, goal 2000, role prompt 4000; with the goal in it a prompt
   is at most 32 KiB, the most a session takes in one write.
-- 32 extra arguments a member, 8 KiB in all; 512 KiB for a whole crew as saved;
-  request bodies of 1 MiB on the crew routes.
+- 32 extra arguments a member, 8 KiB in all; 1 MiB for a whole crew as its file;
+  request bodies of 2 MiB on the crew routes.
 - A broadcast line is at most 4096 bytes.
 - 10 handoffs waiting for a member; 200 entries in a run's log; 100 links for a
   run.

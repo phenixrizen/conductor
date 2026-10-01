@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import type { AgentInfo, CrewInfo, RunInfo } from '~/composables/useSessions'
+import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { agentIcon } from '~/utils/agentIcons'
-import { crewKey, defaultCrew, holdViewLink, runActive, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, runActive, summaryOf, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
 // The crews list and the editor of the selected crew. /crews/<id> selects a
@@ -24,7 +24,19 @@ const live = useAttention()
 /** The key of a crew never saved in `drafts`. */
 const NEW = ''
 
-const crews = useState<CrewInfo[]>('crews', () => [])
+/** Crews the list shows at a time. */
+const PAGE_SIZE = 100
+
+/** The page of the list on screen, as GET /api/crews lists it. */
+const crews = useState<CrewSummary[]>('crews', () => [])
+const total = useState<number>('crewsTotal', () => 0)
+const page = useState<number>('crewsPage', () => 1)
+/** Crews read in full, by id: the one in the editor, and any whose draft is open. */
+const full = useState<Record<string, CrewInfo>>('crewsFull', () => ({}))
+/** Why the selected crew's file cannot be used, when the server says so. */
+const unreadable = ref('')
+/** The id of the crew being read in full: the editor shows a loading state meanwhile, never "No crew has the id". */
+const crewLoading = ref<string>()
 const agents = useState<AgentInfo[]>('crewAgents', () => [])
 const drafts = useState<Record<string, DraftCrew>>('crewDrafts', () => ({}))
 const runs = ref<RunInfo[]>([])
@@ -37,7 +49,7 @@ const now = ref(Date.now())
 
 const routeId = computed(() => (typeof route.params.id === 'string' && route.params.id ? route.params.id : undefined))
 const selectedKey = computed<string | undefined>(() => routeId.value ?? (drafts.value[NEW] ? NEW : undefined))
-const saved = computed(() => crews.value.find((c) => c.id === selectedKey.value))
+const saved = computed(() => (selectedKey.value ? full.value[selectedKey.value] : undefined))
 const draft = computed<DraftCrew | undefined>({
   get: () => (selectedKey.value === undefined ? undefined : drafts.value[selectedKey.value]),
   set: (d) => {
@@ -52,26 +64,52 @@ async function refresh() {
   }
   loading.value = true
   try {
-    const [c, a, r] = await Promise.all([api.listCrews(), api.catalog(), api.listRuns()])
-    // A draft nobody edited follows the crew as saved now (another admin, or `conductor crews`, may have changed it).
-    const next = { ...drafts.value }
-    for (const fresh of c) {
-      const d = next[fresh.id]
-      const before = crews.value.find((x) => x.id === fresh.id)
-      if (d && before && crewKey(d) === crewKey(before)) next[fresh.id] = toDraft(fresh)
+    const [list, a, r] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE), api.catalog(), api.listRuns()])
+    // A page past the end (crews deleted elsewhere) moves back to the last one, and its watcher reads it.
+    const last = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
+    if (page.value > last) {
+      page.value = last
+      return
     }
-    drafts.value = next
-    crews.value = c
+    crews.value = list.crews
+    total.value = list.total
     agents.value = a
     runs.value = r
     error.value = ''
     loaded.value = true
+    await loadSelected()
   } catch (e) {
     error.value = (e as Error).message
   } finally {
     loading.value = false
   }
 }
+
+/** Reads the crew on screen in full. A draft nobody edited follows it as saved now: another admin, or conductor crews, may have changed it. */
+async function loadSelected() {
+  const id = routeId.value
+  unreadable.value = ''
+  if (!id) return
+  crewLoading.value = id
+  try {
+    const fresh = await api.getCrew(id)
+    const before = full.value[id]
+    const d = drafts.value[id]
+    if (d && before && crewKey(d) === crewKey(before)) drafts.value = { ...drafts.value, [id]: toDraft(fresh) }
+    full.value = { ...full.value, [id]: fresh }
+  } catch (e) {
+    const next = { ...full.value }
+    delete next[id]
+    full.value = next
+    // An answer for a crew no longer on screen says nothing about the one that is.
+    if (routeId.value !== id) return
+    if (e instanceof ApiError && e.code === 'crew_unreadable') unreadable.value = e.message
+    else if (!(e instanceof ApiError && e.status === 404)) error.value = (e as Error).message
+  } finally {
+    if (crewLoading.value === id) crewLoading.value = undefined
+  }
+}
+watch(page, refresh)
 
 async function refreshRuns() {
   try {
@@ -81,9 +119,9 @@ async function refreshRuns() {
   }
 }
 
-// A draft for the crew on screen, once it is known; /crews moves to the first crew.
+// A draft for the crew on screen, seeded from the crew read in full once it is read; /crews moves to the first crew of the page.
 watch(
-  [selectedKey, crews, loaded],
+  [selectedKey, crews, full, loaded],
   () => {
     if (!loaded.value) return
     if (selectedKey.value === undefined) {
@@ -102,7 +140,8 @@ function isDirty(key: string): boolean {
   const d = drafts.value[key]
   if (!d) return false
   if (key === NEW) return true
-  const c = crews.value.find((x) => x.id === key)
+  // A draft is seeded from `full`, so the crew is there; without it (a new token cleared it) the draft counts as changed.
+  const c = full.value[key]
   return !c || crewKey(d) !== crewKey(c)
 }
 
@@ -118,7 +157,7 @@ function status(key: string): { label: string; color: 'warning' | 'success' | 'n
 }
 
 /** The list's meta in two parts: the working directory, which may be cut short, and the rest, which may not. */
-function meta(c: DraftCrew | CrewInfo, id?: string): { cwd: string; rest: string } {
+function meta(c: DraftCrew | CrewSummary, id?: string): { cwd: string; rest: string } {
   const last = id ? runsOf(id)[0] : undefined
   return {
     cwd: shortCwd(c.cwd) || 'server default',
@@ -130,9 +169,9 @@ function agentOf(id: string) {
   return agents.value.find((a) => a.id === id)
 }
 
-/** The list: a new draft first, then every saved crew as its draft shows it. */
+/** The list: a new draft first, then the page's crews, each as its draft shows it when one is open. */
 const list = computed(() => {
-  const out: Array<{ key: string; crew: DraftCrew | CrewInfo; to: string }> = []
+  const out: Array<{ key: string; crew: DraftCrew | CrewSummary; to: string }> = []
   const fresh = drafts.value[NEW]
   if (fresh) out.push({ key: NEW, crew: fresh, to: '/crews' })
   for (const c of crews.value) out.push({ key: c.id, crew: drafts.value[c.id] ?? c, to: `/crews/${encodeURIComponent(c.id)}` })
@@ -157,8 +196,11 @@ async function save(): Promise<CrewInfo | undefined> {
   saving.value = true
   try {
     const c = await api.saveCrew(toCrewInput(d), d.id)
-    const at = crews.value.findIndex((x) => x.id === c.id)
-    crews.value = at >= 0 ? crews.value.map((x) => (x.id === c.id ? c : x)) : [...crews.value, c].sort((a, b) => a.name.localeCompare(b.name))
+    full.value = { ...full.value, [c.id]: c }
+    if (crews.value.some((x) => x.id === c.id)) crews.value = crews.value.map((x) => (x.id === c.id ? summaryOf(c) : x))
+    else crews.value = [...crews.value, summaryOf(c)].sort((a, b) => a.name.localeCompare(b.name))
+    // Only a new crew adds to the count: one opened by its link from another page was counted already.
+    if (key === NEW) total.value += 1
     // A new crew moves to its page before its draft goes, so /crews never shows without it in between.
     if (key === NEW) await router.replace(`/crews/${encodeURIComponent(c.id)}`)
     const next = { ...drafts.value, [c.id]: toDraft(c) }
@@ -192,7 +234,9 @@ async function duplicate() {
   if (!c) return
   try {
     const copy = await api.duplicateCrew(c.id)
-    crews.value = [...crews.value, copy].sort((a, b) => a.name.localeCompare(b.name))
+    full.value = { ...full.value, [copy.id]: copy }
+    crews.value = [...crews.value, summaryOf(copy)].sort((a, b) => a.name.localeCompare(b.name))
+    total.value += 1
     toast.add({ title: 'Crew duplicated', description: isDirty(c.id) ? `${copy.name}, from what ${c.name} has saved` : copy.name, icon: 'i-lucide-copy', color: 'success' })
     router.push(`/crews/${encodeURIComponent(copy.id)}`)
   } catch (e) {
@@ -204,17 +248,26 @@ const deleteOpen = ref(false)
 const deleting = ref(false)
 
 async function confirmDelete() {
-  const c = saved.value
-  if (!c) return
+  // A crew whose file cannot be used has no `saved`: it is deleted by the id on screen.
+  const id = saved.value?.id ?? routeId.value
+  if (!id) return
+  const name = saved.value?.name ?? id
+  // Only a crew the server could read counts in `total`.
+  const counted = !!saved.value
   deleting.value = true
   try {
-    await api.deleteCrew(c.id)
-    crews.value = crews.value.filter((x) => x.id !== c.id)
+    await api.deleteCrew(id)
+    crews.value = crews.value.filter((x) => x.id !== id)
+    if (counted) total.value = Math.max(0, total.value - 1)
+    const nextFull = { ...full.value }
+    delete nextFull[id]
+    full.value = nextFull
     const next = { ...drafts.value }
-    delete next[c.id]
+    delete next[id]
     drafts.value = next
+    unreadable.value = ''
     deleteOpen.value = false
-    toast.add({ title: 'Crew deleted', description: c.name, icon: 'i-lucide-trash-2', color: 'neutral' })
+    toast.add({ title: 'Crew deleted', description: name, icon: 'i-lucide-trash-2', color: 'neutral' })
     router.replace('/crews')
   } catch (e) {
     fail('Delete failed', e)
@@ -322,15 +375,18 @@ onBeforeUnmount(() => {
 watch(
   () => admin.token.value,
   () => {
-    // Another token may be another server: nothing typed under the old one
-    // stays, and neither does a view link held from it.
+    // Another token may be another server: nothing typed or read under the
+    // old one stays, and neither does a view link held from it.
     drafts.value = {}
     crews.value = []
+    full.value = {}
+    total.value = 0
     shownLink.value = null
-    refresh()
+    if (page.value !== 1) page.value = 1 // its watcher reads the list
+    else refresh()
   },
 )
-watch(routeId, () => refresh())
+watch(routeId, loadSelected)
 </script>
 
 <template>
@@ -378,6 +434,7 @@ watch(routeId, () => refresh())
             </span>
           </NuxtLink>
           <p v-if="loaded && !list.length" class="px-1 text-sm text-muted">No crews yet.</p>
+          <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="mt-2 self-center" />
         </nav>
 
         <section class="min-w-0 flex-1 p-4 sm:p-6">
@@ -395,6 +452,13 @@ watch(routeId, () => refresh())
             @launch="launch"
             @delete="deleteOpen = true"
           />
+          <div v-else-if="unreadable" class="flex flex-col items-start gap-3" data-crew-unreadable>
+            <UAlert color="error" variant="subtle" icon="i-lucide-file-warning" :title="`The file of ${routeId} cannot be used`" :description="unreadable" />
+            <UButton label="Delete it" icon="i-lucide-trash-2" color="error" variant="soft" @click="deleteOpen = true" />
+          </div>
+          <div v-else-if="routeId && (crewLoading === routeId || !loaded)" class="flex items-center gap-2 text-sm text-muted" data-crew-loading>
+            <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading the crew…
+          </div>
           <div v-else-if="loaded && routeId && !saved" class="flex flex-col items-start gap-3 text-sm text-muted">
             <p>No crew has the id <code>{{ routeId }}</code>.</p>
             <UButton label="All crews" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/crews" />
@@ -430,7 +494,7 @@ watch(routeId, () => refresh())
         </template>
       </UModal>
 
-      <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
+      <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">
             <UButton label="Cancel" color="neutral" variant="ghost" @click="deleteOpen = false" />

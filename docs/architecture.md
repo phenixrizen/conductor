@@ -91,7 +91,7 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
 | `internal/store` | atomic JSON documents in the data directory |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
-| `internal/crew` | saved crews in `dataDir/crews.json`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`) |
+| `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`) |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
 | `internal/session` | ring buffer, fan-out hub, `Local` session, registry, bounded file reads |

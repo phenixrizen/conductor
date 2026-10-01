@@ -28,7 +28,7 @@ const launchBlocked = computed(() => {
   if (invalid.value) return 'Fix the fields marked in red first'
   return ''
 })
-const subtitle = computed(() => `${crew.value.id ? `crews.json → ${crew.value.id}` : 'not saved yet'} · ${crew.value.members.length} ${crew.value.members.length === 1 ? 'agent' : 'agents'}`)
+const subtitle = computed(() => `${crew.value.id ? `crews/${crew.value.id}.json` : 'not saved yet'} · ${crew.value.members.length} ${crew.value.members.length === 1 ? 'agent' : 'agents'}`)
 
 const isolationItems = [
   { label: 'Git worktree per agent', value: 'worktree' },

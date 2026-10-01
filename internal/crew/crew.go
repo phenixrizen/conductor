@@ -1,10 +1,10 @@
 // Package crew holds saved crews: named teams of agents, each member with a
 // role prompt, extra arguments and a start condition, that a run launches
-// together. Crews persist as crews.json in the data directory.
+// together. Crews persist one file each, crews/<id>.json in the data
+// directory (store.go).
 package crew
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/store"
 )
 
 // When a member starts in a run (Start.When).
@@ -102,7 +103,7 @@ type Crew struct {
 	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
-// Limits enforced by Validate. The store adds one more: at most maxCrews crews.
+// Limits enforced by Validate. There is no limit on the number of crews.
 const (
 	maxName      = 60   // characters (runes) in a crew name
 	maxGoal      = 2000 // characters (runes)
@@ -112,13 +113,22 @@ const (
 	maxArgs      = 32      // entries in a member's args
 	maxArg       = 4096    // bytes in one entry
 	maxArgsBytes = 8 << 10 // bytes in all of a member's args
-	// maxEncoded bounds the crew as JSON. The limits above allow more, as a
-	// character can take six bytes there (\u0001).
-	maxEncoded = 512 << 10
 	// maxLinkTTL bounds ViewLinkTTLSeconds as POST /api/sessions/{id}/links
 	// bounds ttlSeconds.
 	maxLinkTTL = 365 * 24 * 3600
 )
+
+// MaxEncoded bounds a crew: its file, as the store writes it (store.Encode).
+// Validate holds every crew to it, so the crew a create or an update sends is
+// held to it too; the request body itself may be larger (the API takes up to
+// twice this, since a client may indent the crew). It is a sanity bound, not
+// a quota: the limits above keep a valid crew well under it, and there is no
+// limit on the number of crews.
+const MaxEncoded = 1 << 20
+
+// maxEncoded is the bound Validate holds a crew to, MaxEncoded but for tests,
+// which lower it to reach it.
+var maxEncoded = MaxEncoded
 
 // memberNamePattern keeps member names short, lower case and free of path
 // separators: they become branch names and worktree paths. gitRefuses adds
@@ -135,8 +145,8 @@ func gitRefuses(name string) bool {
 // which CheckAgents checks against a catalog: the name, goal, working
 // directory and options, the members' names, agent IDs, prompts (with the
 // goal in them, as they are typed), arguments and start conditions, all
-// within their limits, and the size of c as JSON,
-// which counts the ID and the times. The first problem found is returned; it
+// within their limits, and the size of c as its file (MaxEncoded), which
+// counts the ID and the times. The first problem found is returned; it
 // matches ErrInvalid, and quotes at most 80 characters of a value.
 func (c Crew) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
@@ -185,12 +195,12 @@ func (c Crew) Validate() error {
 	if err := c.checkStarts(names); err != nil {
 		return err
 	}
-	b, err := json.Marshal(c)
+	b, err := store.Encode(c)
 	if err != nil {
 		return invalidf("cannot be written as JSON: %v", err)
 	}
 	if len(b) > maxEncoded {
-		return invalidf("the crew is %d bytes as JSON, more than %d (512 KiB)", len(b), maxEncoded)
+		return invalidf("the crew is %d bytes as its file, more than %d", len(b), maxEncoded)
 	}
 	return nil
 }

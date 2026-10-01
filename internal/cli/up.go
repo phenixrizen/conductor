@@ -141,6 +141,9 @@ func printableURL(s string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
+// crewsPage is how many crews conductor crews asks for at a time.
+const crewsPage = 500
+
 // runCrews lists the saved crews, one per line.
 func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("crews", flag.ContinueOnError)
@@ -164,24 +167,35 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 2, err
 	}
-	// As in runUp, unknown fields are ignored on purpose.
-	var reply struct {
-		Crews []struct {
-			ID      string `json:"id"`
-			Name    string `json:"name"`
-			Members []struct {
-				Name string `json:"name"`
-			} `json:"members"`
-		} `json:"crews"`
+	// As in runUp, unknown fields are ignored on purpose. A reply without
+	// total (an older server) is one page.
+	type crewLine struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Members []struct {
+			Name string `json:"name"`
+		} `json:"members"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/crews", &reply); err != nil {
-		return 1, err
+	var all []crewLine
+	for offset := 0; ; {
+		var reply struct {
+			Crews []crewLine `json:"crews"`
+			Total int        `json:"total"`
+		}
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), &reply); err != nil {
+			return 1, err
+		}
+		all = append(all, reply.Crews...)
+		offset += len(reply.Crews)
+		if len(reply.Crews) == 0 || offset >= reply.Total {
+			break
+		}
 	}
-	if len(reply.Crews) == 0 {
+	if len(all) == 0 {
 		fmt.Fprintln(stdout, "no crews")
 		return 0, nil
 	}
-	for _, cr := range reply.Crews {
+	for _, cr := range all {
 		names := make([]string, len(cr.Members))
 		for i, m := range cr.Members {
 			names[i] = m.Name

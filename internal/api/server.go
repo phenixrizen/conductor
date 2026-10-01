@@ -35,8 +35,8 @@ type Server struct {
 	log      *slog.Logger
 	web      http.Handler
 	store    *store.Store
-	// crews holds the saved crews, in crews.json in the data directory; nil
-	// when there is no store.
+	// crews holds the saved crews, one file each in crews/ of the data
+	// directory; nil when there is no store.
 	crews *crew.Store
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
@@ -89,10 +89,12 @@ type Server struct {
 
 // New wires the server. cat is the configured catalog; when st holds a
 // catalog.json overlay it is applied on top. A corrupt or invalid overlay, or
-// crews.json, is an error, so that startup fails instead of a later save
-// overwriting the file. An override env value equal to the configured
-// agent's is saved back as the mask first (maskConfiguredEnv), and a failure
-// to save it stops startup too. web serves the embedded SPA and may be nil.
+// crews.json that cannot be moved, is an error, so that startup fails instead
+// of a later save overwriting the file; a crew file that cannot be used, and
+// a crew of crews.json not moved over an existing file, are logged and left
+// out. An override env value equal to the configured agent's is saved back
+// as the mask first (maskConfiguredEnv), and a failure to save it stops
+// startup too. web serves the embedded SPA and may be nil.
 // st persists UI-managed state in the data directory and may be nil when
 // there is none.
 func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) (*Server, error) {
@@ -117,8 +119,15 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	var crews *crew.Store
 	if st != nil {
-		if crews, err = crew.NewStore(st); err != nil {
+		var problems []error
+		if crews, problems, err = crew.NewStore(st); err != nil {
 			return nil, err
+		}
+		// Each problem names its files and says why: a crew file that
+		// cannot be used (fix or delete it), or a crew of crews.json that
+		// was not moved over a file of the same id.
+		for _, p := range problems {
+			log.Error("crew left out", "err", p)
 		}
 	}
 	// A home that is not an absolute path (HOME=relative) is no home.
@@ -218,6 +227,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/catalog/{id}", s.requireAdmin(s.handleDeleteAgent))
 	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.requireAdmin(s.handleUnhideAgent))
 	mux.HandleFunc("GET /api/crews", s.requireAdmin(s.handleListCrews))
+	mux.HandleFunc("GET /api/crews/{id}", s.requireAdmin(s.handleGetCrew))
 	mux.HandleFunc("POST /api/crews", s.requireAdmin(s.handleCreateCrew))
 	mux.HandleFunc("PUT /api/crews/{id}", s.requireAdmin(s.handleUpdateCrew))
 	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))

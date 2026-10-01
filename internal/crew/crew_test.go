@@ -39,36 +39,60 @@ func newStore(t *testing.T) (*Store, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
+	return reopen(t, st), st
+}
+
+// reopen is NewStore over st, as a restart does, requiring no problem.
+func reopen(t *testing.T, st *store.Store) *Store {
+	t.Helper()
+	s, problems, err := NewStore(st)
+	if err != nil || len(problems) != 0 {
+		t.Fatalf("NewStore: %v %v", problems, err)
 	}
-	return s, st
+	return s
+}
+
+// all returns every crew of s in full, in list order.
+func all(t *testing.T, s *Store) []Crew {
+	t.Helper()
+	sums, total, err := s.List(0, 500)
+	if err != nil || total != len(sums) {
+		t.Fatalf("list: %d of %d, %v", len(sums), total, err)
+	}
+	out := []Crew{}
+	for _, sum := range sums {
+		c, err := s.Get(sum.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // clock makes s stamp every change with at.
 func clock(s *Store, at time.Time) { s.now = func() time.Time { return at } }
 
-// encodedSize is the length of c as JSON.
+// encodedSize is the length of c's file, as the store writes it.
 func encodedSize(t *testing.T, c Crew) int {
 	t.Helper()
-	b, err := json.Marshal(c)
+	b, err := store.Encode(c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return len(b)
 }
 
-// crewOfEncodedSize returns a valid crew whose JSON is exactly size bytes:
-// twelve members with prompts and args of "<", which JSON writes as six bytes
-// (\u003c), and a goal of "g" making up the rest.
+// crewOfEncodedSize returns a valid crew whose file is exactly size bytes:
+// twelve members with prompts and args of "\x01", which JSON writes as six
+// bytes (\u0001), and a goal of "g" making up the rest.
 func crewOfEncodedSize(t *testing.T, id string, size int) Crew {
 	t.Helper()
 	c := validCrew(id, "Edge")
 	c.Goal = ""
 	c.Members = nil
 	for i := range 12 {
-		c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Prompt: strings.Repeat("<", 4000), Args: []string{""}, Start: Start{When: "manual"}})
+		c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Prompt: strings.Repeat("\x01", 4000), Args: []string{""}, Start: Start{When: "manual"}})
 	}
 	lt := (size - encodedSize(t, c) - 1000) / 6 // leave about 1000 bytes to the goal
 	for i := range c.Members {
@@ -76,7 +100,7 @@ func crewOfEncodedSize(t *testing.T, id string, size int) Crew {
 		if i == 0 {
 			n += lt % 12
 		}
-		c.Members[i].Args[0] = strings.Repeat("<", n)
+		c.Members[i].Args[0] = strings.Repeat("\x01", n)
 	}
 	c.Goal = strings.Repeat("g", size-encodedSize(t, c))
 	if got := encodedSize(t, c); got != size || c.Validate() != nil {
@@ -86,6 +110,11 @@ func crewOfEncodedSize(t *testing.T, id string, size int) Crew {
 }
 
 func TestValidateRejectsBadMembers(t *testing.T) {
+	// No valid crew reaches MaxEncoded: lowered, one within every other
+	// limit passes it.
+	old := maxEncoded
+	maxEncoded = 300 << 10
+	t.Cleanup(func() { maxEncoded = old })
 	if err := validCrew("api", "API").Validate(); err != nil {
 		t.Fatalf("valid crew rejected: %v", err)
 	}
@@ -146,13 +175,14 @@ func TestValidateRejectsBadMembers(t *testing.T) {
 		{"agentId over 32 characters", func(c *Crew) { c.Members[0].AgentID = strings.Repeat("a", 33) }, "agentId"},
 		{"name with a tab", func(c *Crew) { c.Name = "API\tsweep" }, "control"},
 		{"name with an escape sequence", func(c *Crew) { c.Name = "API \x1b[31msweep" }, "control"},
-		{"crew over 512 KiB as JSON", func(c *Crew) {
-			// Within every other limit: 8 KiB of "<" per member is 48 KiB of JSON.
+		{"crew over maxEncoded as its file", func(c *Crew) {
+			// Within every other limit: 8 KiB of "\x01" per member is 48 KiB
+			// of the file, past maxEncoded as lowered below.
 			c.Members = nil
 			for i := range 12 {
-				c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Args: []string{strings.Repeat("<", 4096), strings.Repeat("<", 4096)}, Start: Start{When: "manual"}})
+				c.Members = append(c.Members, Member{Name: fmt.Sprintf("m%02d", i), AgentID: "shell", Args: []string{strings.Repeat("\x01", 4096), strings.Repeat("\x01", 4096)}, Start: Start{When: "manual"}})
 			}
-		}, "as JSON"},
+		}, "as its file"},
 	}
 	for _, tc := range cases {
 		c := validCrew("api", "API")
@@ -248,8 +278,11 @@ func TestValidateAcceptsCrewsAtTheLimits(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	// As JSON, up to 512 KiB.
-	if err := crewOfEncodedSize(t, "edge", 512<<10).Validate(); err != nil {
+	// As its file, up to maxEncoded, lowered here to a size a valid crew reaches.
+	old := maxEncoded
+	maxEncoded = 300 << 10
+	t.Cleanup(func() { maxEncoded = old })
+	if err := crewOfEncodedSize(t, "edge", 300<<10).Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -371,55 +404,6 @@ func TestCrewJSON(t *testing.T) {
 	}
 }
 
-func TestStoreRoundTrip(t *testing.T) {
-	s, st := newStore(t)
-	if got := s.List(); len(got) != 0 {
-		t.Fatalf("a store without crews.json lists %v", got)
-	}
-	for _, c := range []Crew{validCrew("zeta", "Zeta"), validCrew("alpha", "alpha")} {
-		if err := s.Put(c); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// By name, ignoring case: "alpha" before "Zeta".
-	want := []Crew{validCrew("alpha", "alpha"), validCrew("zeta", "Zeta")}
-	if got := s.List(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("list:\n got  %+v\n want %+v", got, want)
-	}
-	if got, ok := s.Get("zeta"); !ok || !reflect.DeepEqual(got, want[1]) {
-		t.Fatalf("get: %v %+v", ok, got)
-	}
-	again, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := again.List(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("reloaded:\n got  %+v\n want %+v", got, want)
-	}
-	var doc map[string][]map[string]any
-	b, err := os.ReadFile(filepath.Join(st.Dir(), "crews.json"))
-	if err != nil || json.Unmarshal(b, &doc) != nil || len(doc) != 1 || len(doc["crews"]) != 2 || doc["crews"][0]["id"] != "alpha" {
-		t.Fatalf("crews.json: %v %s", err, b)
-	}
-
-	if ok, err := s.Delete("zeta"); !ok || err != nil {
-		t.Fatalf("delete: %v %v", ok, err)
-	}
-	if ok, err := s.Delete("zeta"); ok || err != nil {
-		t.Fatalf("second delete: %v %v", ok, err)
-	}
-	if _, ok := s.Get("zeta"); ok {
-		t.Fatal("deleted crew still there")
-	}
-	again, err = NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := again.List(); !reflect.DeepEqual(got, want[:1]) {
-		t.Fatalf("reloaded after delete: %+v", got)
-	}
-}
-
 func TestStoreReturnsCopies(t *testing.T) {
 	s, _ := newStore(t)
 	c := validCrew("api", "API")
@@ -428,17 +412,21 @@ func TestStoreReturnsCopies(t *testing.T) {
 	}
 	c.Members[0].Prompt = "changed after Put"
 	c.Members[1].Args[0] = "changed after Put"
-	got, ok := s.Get("api")
-	list := s.List()
-	if !ok || len(got.Members) != 2 || len(list) != 1 || len(list[0].Members) != 2 {
-		t.Fatalf("stored: %v %+v %+v", ok, got, list)
+	got, err := s.Get("api")
+	list, _, _ := s.List(0, 10)
+	if err != nil || len(got.Members) != 2 || len(list) != 1 || len(list[0].Members) != 2 {
+		t.Fatalf("stored: %v %+v %+v", err, got, list)
 	}
 	got.Members[0].Prompt = "changed after Get"
 	got.Members[1].Args[0] = "changed after Get"
-	list[0].Members[1].Args[1] = "changed after List"
-	list[0].Members = append(list[0].Members[:1], Member{Name: "extra"})
+	list[0].Members[1].Name = "changed after List"
+	list[0].Members = append(list[0].Members[:1], MemberSummary{Name: "extra"})
 	if got, _ := s.Get("api"); !reflect.DeepEqual(got, validCrew("api", "API")) {
 		t.Fatalf("the stored crew changed: %+v", got)
+	}
+	want := []MemberSummary{{Name: "lead", AgentID: "claude"}, {Name: "tests", AgentID: "shell"}}
+	if again, _, _ := s.List(0, 10); !reflect.DeepEqual(again[0].Members, want) {
+		t.Fatalf("the cached summary changed: %+v", again[0].Members)
 	}
 }
 
@@ -471,11 +459,7 @@ func TestCreateDerivesUniqueIDs(t *testing.T) {
 			t.Fatalf("%q:\n got  %+v\n want %+v", tc.name, got, want)
 		}
 	}
-	again, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(again.List()); n != len(cases) {
+	if n := len(all(t, reopen(t, st))); n != len(cases) {
 		t.Fatalf("reloaded %d crews, want %d", n, len(cases))
 	}
 }
@@ -505,8 +489,8 @@ func TestCreateConcurrentlyGivesDistinctIDs(t *testing.T) {
 		}
 	})
 	want := []string{"same-name", "same-name-2", "same-name-3", "same-name-4", "same-name-5", "same-name-6", "same-name-7", "same-name-8"}
-	if !slices.Equal(got, want) || len(s.List()) != writers {
-		t.Fatalf("ids %v, %d crews", got, len(s.List()))
+	if n := len(all(t, s)); !slices.Equal(got, want) || n != writers {
+		t.Fatalf("ids %v, %d crews", got, n)
 	}
 }
 
@@ -586,44 +570,8 @@ func TestUpdateKeepsTheIDAndCreationTime(t *testing.T) {
 	if _, err := s.Update("missing", next); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown crew: %v", err)
 	}
-	again, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list := again.List(); !reflect.DeepEqual(list, []Crew{want}) {
+	if list := all(t, reopen(t, st)); !reflect.DeepEqual(list, []Crew{want}) {
 		t.Fatalf("stored: %+v", list)
-	}
-}
-
-func TestStoreHoldsAtMost50Crews(t *testing.T) {
-	s, st := newStore(t)
-	for i := range 50 {
-		if err := s.Put(validCrew(fmt.Sprintf("c%02d", i), fmt.Sprintf("Crew %02d", i))); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.Put(validCrew("c50", "One too many")); !errors.Is(err, ErrTooManyCrews) {
-		t.Fatalf("put: %v", err)
-	}
-	if _, err := s.Create(validCrew("", "One too many")); !errors.Is(err, ErrTooManyCrews) {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := s.Duplicate("c00"); !errors.Is(err, ErrTooManyCrews) {
-		t.Fatalf("duplicate: %v", err)
-	}
-	// Replacing a crew is not adding one.
-	if err := s.Put(validCrew("c00", "Crew 00 again")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Update("c01", validCrew("", "Crew 01 again")); err != nil {
-		t.Fatal(err)
-	}
-	again, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(again.List()); n != 50 {
-		t.Fatalf("%d crews stored", n)
 	}
 }
 
@@ -648,65 +596,16 @@ func TestStoreRefusesInvalidCrews(t *testing.T) {
 	if _, err := s.Update("ok", bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must match") {
 		t.Fatalf("update: %v", err)
 	}
-	if got, _ := s.Get("ok"); !reflect.DeepEqual(got, validCrew("ok", "x")) || len(s.List()) != 1 {
-		t.Fatalf("an invalid crew changed the store: %+v", s.List())
+	if got, _ := s.Get("ok"); !reflect.DeepEqual(got, validCrew("ok", "x")) || len(all(t, s)) != 1 {
+		t.Fatalf("an invalid crew changed the store: %+v", all(t, s))
 	}
-	again, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list := again.List(); len(list) != 1 || list[0].ID != "ok" {
+	if list := all(t, reopen(t, st)); len(list) != 1 || list[0].ID != "ok" {
 		t.Fatalf("stored: %+v", list)
 	}
 }
 
-// A crews.json that cannot be used must stop startup: a store that started
-// empty would overwrite the file on its next save.
-func TestNewStoreRefusesAMalformedFile(t *testing.T) {
-	crewJSON := func(id string) string {
-		return `{"id": "` + id + `", "name": "x", "where": "server", "isolation": "none", "members": []}`
-	}
-	var many []string
-	for i := range 51 {
-		many = append(many, crewJSON(fmt.Sprintf("c%d", i)))
-	}
-	cases := []struct{ name, file, want string }{
-		{"not JSON", `{oops`, "parse crews.json"},
-		{"empty file", ``, "empty document"},
-		{"unknown field", `{"crews": [], "bogus": true}`, `"bogus"`},
-		{"invalid crew", `{"crews": [` + crewJSON("ok") + `, {"id": "bad", "name": "x", "where": "server", "isolation": "none", "members": [{"name": "Lead!", "agentId": "a", "prompt": "", "start": {"when": "manual"}}]}]}`, "crews[1]"},
-		{"invalid id", `{"crews": [` + crewJSON("Bad Id") + `]}`, "crews[0]"},
-		{"invalid agent id", `{"crews": [{"id": "x", "name": "x", "where": "server", "isolation": "none", "members": [{"name": "lead", "agentId": "Bad Id", "prompt": "", "start": {"when": "manual"}}]}]}`, `agentId "Bad Id"`},
-		{"control character in a name", `{"crews": [{"id": "x", "name": "a\u0007b", "where": "server", "isolation": "none", "members": []}]}`, "control"},
-		{"id used twice", `{"crews": [` + crewJSON("x") + `, ` + crewJSON("x") + `]}`, "crews[1]"},
-		{"51 crews", `{"crews": [` + strings.Join(many, ", ") + `]}`, "at most 50"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			st, err := store.Open(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(st.Dir(), "crews.json")
-			if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			s, err := NewStore(st)
-			if err == nil || s != nil {
-				t.Fatalf("NewStore accepted the file: %v", err)
-			}
-			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error %q should name %s and contain %q", err, path, tc.want)
-			}
-			if b, _ := os.ReadFile(path); string(b) != tc.file {
-				t.Fatalf("NewStore changed the file: %q", b)
-			}
-		})
-	}
-}
-
-// A crew that went into crews.json without members, by hand, is listed with
-// members [] as every saved crew is, never null.
+// A crew that went into crews.json without members, by hand, is moved and
+// read with members [] as every saved crew is, never null, and listed so.
 func TestNewStoreListsNoMembersAsEmpty(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -716,16 +615,16 @@ func TestNewStoreListsNoMembersAsEmpty(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(st.Dir(), "crews.json"), []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewStore(st)
+	s := reopen(t, st)
+	c, err := s.Get("draft")
 	if err != nil {
-		t.Fatal(err)
-	}
-	c, ok := s.Get("draft")
-	if !ok {
-		t.Fatal("draft not loaded")
+		t.Fatalf("draft not loaded: %v", err)
 	}
 	if b, _ := json.Marshal(c); !strings.Contains(string(b), `"members":[]`) {
-		t.Fatalf("listed as %s", b)
+		t.Fatalf("read as %s", b)
+	}
+	if page, _, _ := s.List(0, 1); len(page) != 1 || page[0].Members == nil {
+		t.Fatalf("listed as %+v", page)
 	}
 }
 
@@ -752,77 +651,72 @@ func TestStoreTrimsTheName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(st.Dir(), "crews.json"), []byte(`{"crews": [{"id": "hand", "name": "  Hand  ", "where": "server", "isolation": "none", "members": []}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	again, err := NewStore(st)
-	if err != nil {
+	again := reopen(t, st)
+	if got, err := again.Get("hand"); err != nil || got.Name != "Hand" {
+		t.Fatalf("moved: %q %v", got.Name, err)
+	}
+	b, _ := store.Encode(validCrew("byhand", "  By hand  "))
+	if err := os.WriteFile(filepath.Join(st.Dir(), "crews", "byhand.json"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := again.Get("hand"); got.Name != "Hand" {
-		t.Fatalf("loaded: %q", got.Name)
+	if got, err := again.Get("byhand"); err != nil || got.Name != "By hand" {
+		t.Fatalf("by hand: %q %v", got.Name, err)
 	}
 }
 
 // The store checks a crew as it saves it, ID and times included, so a crew at
-// the encoded limit is not copied into one past it: that copy would stop the
-// next start.
+// the encoded limit is not copied into one past it: the store never writes a
+// file a start cannot read.
 func TestDuplicateRefusesACopyOverTheEncodedLimit(t *testing.T) {
+	old := maxEncoded
+	maxEncoded = 300 << 10
+	t.Cleanup(func() { maxEncoded = old })
 	s, st := newStore(t)
-	edge := crewOfEncodedSize(t, "edge", 512<<10-9) // a copy is 10 bytes longer: " copy" and "-copy"
+	edge := crewOfEncodedSize(t, "edge", 300<<10-9) // a copy is 10 bytes longer: " copy" and "-copy"
 	if err := s.Put(edge); err != nil {
 		t.Fatal(err)
 	}
 	clock(s, time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)) // times as long as edge's
-	if _, err := s.Duplicate("edge"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "as JSON") {
+	if _, err := s.Duplicate("edge"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "as its file") {
 		t.Fatalf("duplicate: %v", err)
 	}
-	if n := len(s.List()); n != 1 {
+	if n := len(all(t, s)); n != 1 {
 		t.Fatalf("%d crews", n)
 	}
-	if _, err := NewStore(st); err != nil {
-		t.Fatalf("the store no longer loads: %v", err)
-	}
+	reopen(t, st)
 }
 
+// A save that fails changes nothing: the files stay as they were and the
+// list with them.
 func TestFailedSaveChangesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a directory of mode 0500")
+	}
 	s, st := newStore(t)
 	if err := s.Put(validCrew("kept", "Kept")); err != nil {
 		t.Fatal(err)
 	}
-	// The data directory disappears, so no save can succeed.
-	dir := st.Dir()
-	if err := os.RemoveAll(dir); err != nil {
+	dir := filepath.Join(st.Dir(), "crews")
+	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Put(validCrew("lost", "Lost")); err == nil {
-		t.Error("put succeeded")
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	if err := s.Put(validCrew("lost", "Lost")); !errors.Is(err, ErrWrite) {
+		t.Errorf("put: %v", err)
 	}
-	if _, err := s.Create(validCrew("", "Lost")); err == nil {
-		t.Error("create succeeded")
+	if _, err := s.Create(validCrew("", "Lost")); !errors.Is(err, ErrWrite) {
+		t.Errorf("create: %v", err)
 	}
-	if _, err := s.Update("kept", validCrew("", "Changed")); err == nil {
-		t.Error("update succeeded")
+	if _, err := s.Update("kept", validCrew("", "Changed")); !errors.Is(err, ErrWrite) {
+		t.Errorf("update: %v", err)
 	}
-	if _, err := s.Duplicate("kept"); err == nil {
-		t.Error("duplicate succeeded")
+	if _, err := s.Duplicate("kept"); !errors.Is(err, ErrWrite) {
+		t.Errorf("duplicate: %v", err)
 	}
-	if ok, err := s.Delete("kept"); ok || err == nil {
+	if ok, err := s.Delete("kept"); ok || !errors.Is(err, ErrWrite) {
 		t.Errorf("delete: %v %v", ok, err)
 	}
-	if list := s.List(); !reflect.DeepEqual(list, []Crew{validCrew("kept", "Kept")}) {
-		t.Fatalf("a failed save changed the crews: %+v", list)
-	}
-	// Once the directory is back, the next save writes what the store still
-	// holds plus the new crew, and nothing from the failed attempts.
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Put(validCrew("back", "Back")); err != nil {
-		t.Fatal(err)
-	}
-	again, err := NewStore(st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list := again.List(); !reflect.DeepEqual(list, []Crew{validCrew("back", "Back"), validCrew("kept", "Kept")}) {
-		t.Fatalf("stored: %+v", list)
+	if got := all(t, s); !reflect.DeepEqual(got, []Crew{validCrew("kept", "Kept")}) {
+		t.Fatalf("a failed save changed the crews: %+v", got)
 	}
 }
