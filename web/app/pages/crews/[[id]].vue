@@ -397,6 +397,7 @@ watch(routeId, loadSelected)
       <UDashboardNavbar title="Crews">
         <template #right>
           <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" @click="newCrew" />
+          <FullscreenButton />
         </template>
       </UDashboardNavbar>
     </template>

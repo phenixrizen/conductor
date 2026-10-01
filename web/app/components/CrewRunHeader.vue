@@ -104,6 +104,7 @@ async function stopAll() {
       <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
       <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share crew" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share crew</span></UButton>
       <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop all" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop all</span></UButton>
+      <FullscreenButton />
     </template>
   </UDashboardNavbar>
 

@@ -11,7 +11,6 @@ const attention = useAttention()
 const events = useEvents()
 const admin = useAdminToken()
 const { create } = useTerminalTransport()
-const fs = useFullscreenToggle()
 useShortcutsModal().registerPage(CAROUSEL_SHORTCUTS)
 
 const SETTINGS_KEY = 'conductor.carousel.settings'
@@ -273,11 +272,9 @@ defineShortcuts({
   arrowright: next,
   enter: focusCurrent,
   ' ': togglePlay,
-  f: () => fs.toggle(),
   alt_arrowleft: { ...inTerminal, handler: prev },
   alt_arrowright: { ...inTerminal, handler: next },
   alt_p: { ...inTerminal, handler: togglePlay },
-  alt_f: { ...inTerminal, handler: () => fs.toggle() },
   alt_escape: { ...inTerminal, handler: leaveTerminal },
 })
 
@@ -348,9 +345,7 @@ onBeforeUnmount(() => {
           <UTooltip text="Jump to sessions whose events are routed to Wall jump on the Events page: input requests and handoffs unless changed there">
             <USwitch v-model="settings.follow" label="Follow routed events" size="sm" class="hidden lg:flex" />
           </UTooltip>
-          <UTooltip text="Toggle fullscreen" :kbds="['F']">
-            <UButton :icon="fs.fullscreen.value ? 'i-lucide-minimize' : 'i-lucide-maximize'" color="neutral" variant="ghost" aria-label="Toggle fullscreen" @click="fs.toggle" />
-          </UTooltip>
+          <FullscreenButton />
         </template>
       </UDashboardNavbar>
     </template>

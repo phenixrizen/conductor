@@ -217,6 +217,7 @@ function requestFile(path: string, stat?: boolean) {
       <div class="flex-1" />
       <span class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
       <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="fetchInfo" />
+      <FullscreenButton size="sm" />
     </header>
 
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
@@ -246,6 +247,7 @@ function requestFile(path: string, stat?: boolean) {
       <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
         <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
       </form>
+      <FullscreenButton size="sm" />
     </header>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">

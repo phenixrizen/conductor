@@ -32,6 +32,9 @@ onMounted(() => {
   <UDashboardPanel id="home">
     <template #header>
       <UDashboardNavbar title="Sessions">
+        <template #right>
+          <FullscreenButton />
+        </template>
       </UDashboardNavbar>
     </template>
 

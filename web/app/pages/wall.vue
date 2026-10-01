@@ -18,7 +18,6 @@ const toast = useToast()
 const quick = useQuickReply()
 const { create } = useTerminalTransport()
 const { httpBase } = useApiBase()
-const fs = useFullscreenToggle()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
 
 type Filter = 'all' | 'needs' | 'running'
@@ -85,14 +84,12 @@ function queuePrev() {
 const inTerminal = { usingInput: true }
 defineShortcuts({
   escape: leaveFocus,
-  f: () => fs.toggle(),
   j: queueNext,
   k: queuePrev,
   enter: () => {
     if (!focusId.value && waiting.value.length) queue.value?.focusSelected()
   },
   alt_escape: { ...inTerminal, handler: leaveFocus },
-  alt_f: { ...inTerminal, handler: () => fs.toggle() },
   alt_j: { ...inTerminal, handler: queueNext },
   alt_k: { ...inTerminal, handler: queuePrev },
 })
@@ -209,9 +206,7 @@ onMounted(() => {
             <UButton label="Open page" icon="i-lucide-square-terminal" color="neutral" variant="soft" :to="`/sessions/${focused.id}`" />
             <UButton v-if="isActive(focused)" label="Stop" icon="i-lucide-square" color="error" variant="soft" @click="stop(focused)" />
           </template>
-          <UTooltip text="Toggle fullscreen" :kbds="['F']">
-            <UButton :icon="fs.fullscreen.value ? 'i-lucide-minimize' : 'i-lucide-maximize'" color="neutral" variant="ghost" aria-label="Toggle fullscreen" @click="fs.toggle" />
-          </UTooltip>
+          <FullscreenButton />
         </template>
       </UDashboardNavbar>
     </template>

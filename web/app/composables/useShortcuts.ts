@@ -29,6 +29,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
     { keys: ['G', 'E'], label: 'Go to Events (Alt+E in a terminal)' },
     { keys: ['G', 'R'], label: 'Go to Crews (Alt+R in a terminal)' },
+    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 
@@ -39,7 +40,6 @@ export const WALL_SHORTCUTS: ShortcutGroup = {
     { keys: ['J'], label: 'Next in the queue (Alt+J in a terminal)' },
     { keys: ['K'], label: 'Previous in the queue (Alt+K in a terminal)' },
     { keys: ['enter'], label: 'Reply to the selected queue item' },
-    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 
@@ -51,7 +51,6 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
     { keys: ['enter'], label: 'Type into the current session' },
     { keys: ['space'], label: 'Pause or resume rotation (Alt+P in a terminal)' },
     { keys: ['escape'], label: 'Leave the terminal (Alt+Esc in a terminal)' },
-    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 

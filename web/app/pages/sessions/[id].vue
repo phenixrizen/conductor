@@ -290,6 +290,7 @@ watch(id, () => {
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
           </UDropdownMenu>
+          <FullscreenButton />
         </template>
       </UDashboardNavbar>
     </template>
