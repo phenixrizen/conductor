@@ -113,3 +113,54 @@ func TestCheckHooksDir(t *testing.T) {
 		t.Fatalf("a hooks dir of another user: %v", err)
 	}
 }
+
+// The process's own home passes when the process may write it, whoever owns
+// it (a container whose HOME belongs to another uid). Another user's home
+// does not, and neither does an own home the process cannot write.
+func TestOwnedByAcceptsTheProcesssOwnWritableHome(t *testing.T) {
+	home := t.TempDir()
+	fi, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fileOwner(fi); !ok {
+		t.Skip("this platform does not report who owns a file")
+	}
+	t.Setenv("HOME", home)
+	someoneElse := os.Geteuid() + 1 // the home is ours; we write as another user
+	if err := ownedBy(home, fi, someoneElse); err != nil {
+		t.Fatalf("an own home it can write: %v", err)
+	}
+	other := t.TempDir()
+	ofi, _ := os.Stat(other)
+	if err := ownedBy(other, ofi, someoneElse); err == nil {
+		t.Fatal("a home that is not HOME was accepted")
+	}
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(home, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(home, 0o700) })
+		if err := ownedBy(home, fi, someoneElse); err == nil {
+			t.Fatal("an own home it cannot write was accepted")
+		}
+	}
+}
+
+// Root never gets the own-home exception: under sudo, HOME may still name the
+// invoking user's home, which root can always write, and what root wrote
+// there would belong to root.
+func TestOwnHomeExceptionNeverCoversRoot(t *testing.T) {
+	home := t.TempDir()
+	fi, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner, ok := fileOwner(fi); !ok || owner == 0 {
+		t.Skip("needs a home that is not root's")
+	}
+	t.Setenv("HOME", home)
+	if err := ownedBy(home, fi, 0); err == nil || !strings.Contains(err.Error(), "sudo -u") {
+		t.Fatalf("root in a user's home: %v", err)
+	}
+}

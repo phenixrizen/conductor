@@ -848,3 +848,40 @@ func TestCheckAdapter(t *testing.T) {
 		t.Fatalf("gemini: %v", err)
 	}
 }
+
+// A skill file of the user's own is left to them with its own instruction;
+// the settings snippet would be beside the point. Any other step left to the
+// user wants the snippet.
+func TestSnippetNeededOnlyForStepsOtherThanTheSkill(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	home := t.TempDir()
+	skill := filepath.Join(home, filepath.FromSlash(claudeSkill))
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("# my own skill\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Get("claude")
+	_, err := a.Install(home, t.TempDir())
+	if !errors.Is(err, ErrByHand) || SnippetNeeded(err) {
+		t.Fatalf("the skill alone: %v (snippet %v)", err, SnippetNeeded(err))
+	}
+	settings := filepath.Join(home, ".claude", "settings.json")
+	if err := os.Remove(settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "elsewhere.json"), settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.Install(home, t.TempDir()); !SnippetNeeded(err) {
+		t.Fatalf("the settings left by hand: %v", err)
+	}
+	if SnippetNeeded(nil) || SnippetNeeded(errors.New("disk full")) {
+		t.Fatal("no step left to the user wants no snippet")
+	}
+	d, _ := Get("dsh")
+	if _, err := d.Install(home, t.TempDir()); !SnippetNeeded(err) {
+		t.Fatalf("dsh: %v", err)
+	}
+}

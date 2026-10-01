@@ -15,13 +15,7 @@ var cursorAssets = map[string]string{
 }
 
 func cursorSteps(hooksDir string) []step {
-	return []step{{cursorHooks, func(h *homeDir) (bool, error) {
-		asset, err := assetFor(cursorAssets, hooksDir, "cursor-hooks.json")
-		if err != nil {
-			return false, err
-		}
-		return mergeJSONHooks(h, cursorHooks, asset, cursorMarker)
-	}}}
+	return []step{mergeHooksStep(cursorAssets, hooksDir, "cursor-hooks.json", cursorHooks, cursorMarker)}
 }
 
 func cursorAdapter() Adapter {

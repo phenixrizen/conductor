@@ -2651,7 +2651,7 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 	if len(ids) != 12 || !slices.Equal(ids, want) {
 		t.Fatalf("integrations %v, want %v", ids, want)
 	}
-	fields := []string{"events", "experimental", "id", "installed", "installsSkill", "launchInjection", "name", "snippet", "where"}
+	fields := []string{"events", "experimental", "id", "installable", "installed", "installsSkill", "launchInjection", "name", "snippet", "where"}
 	skillReaders := []string{"claude", "codex", "pi", "goose"}
 	for _, id := range ids {
 		it := list[id]
@@ -2757,6 +2757,17 @@ func TestIntegrationsInstallByHandAndFailure(t *testing.T) {
 		t.Fatalf("hooks.json changed: %s", b)
 	}
 
+	// Only the skill left by hand: the reply carries no snippet.
+	home2 := t.TempDir()
+	e.srv.home = home2
+	ownSkill := filepath.Join(home2, ".claude", "skills", "conductor", "SKILL.md")
+	os.MkdirAll(filepath.Dir(ownSkill), 0o700)
+	os.WriteFile(ownSkill, []byte("# mine\n"), 0o600)
+	resp, out = e.do("POST", "/api/integrations/claude/install", adminToken, nil)
+	if apiErr, _ := out["error"].(map[string]any); resp.StatusCode != http.StatusBadRequest || apiErr["code"] != "no_file_route" || apiErr["snippet"] != nil {
+		t.Fatalf("skill only: %d %v", resp.StatusCode, out)
+	}
+
 	// A home that is a file cannot hold the agent's directories.
 	file := filepath.Join(t.TempDir(), "home")
 	os.WriteFile(file, nil, 0o600)
@@ -2821,6 +2832,12 @@ func TestIntegrationsWithoutAKnownHome(t *testing.T) {
 	}
 	list, _ := e.integrations()
 	if c := list["copilot"]; c["installed"] != false || c["where"] != "" {
+		t.Fatalf("copilot: %v", c)
+	}
+	if c := list["aider"]; c["installable"] != false || c["launchInjection"] != true {
+		t.Fatalf("aider: %v", c)
+	}
+	if c := list["copilot"]; c["installable"] != true {
 		t.Fatalf("copilot: %v", c)
 	}
 	resp, out := e.do("POST", "/api/integrations/copilot/install", adminToken, nil)

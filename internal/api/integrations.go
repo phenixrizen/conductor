@@ -17,6 +17,7 @@ type integration struct {
 	Name            string   `json:"name"`
 	Events          []string `json:"events"`
 	LaunchInjection bool     `json:"launchInjection"`
+	Installable     bool     `json:"installable"`
 	InstallsSkill   bool     `json:"installsSkill"`
 	Installed       bool     `json:"installed"`
 	Where           string   `json:"where"`
@@ -58,6 +59,7 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 			Name:            a.Name,
 			Events:          a.Events,
 			LaunchInjection: a.Inject != nil,
+			Installable:     a.Install != nil,
 			InstallsSkill:   a.InstallsSkill,
 			Experimental:    a.Experimental,
 		}
@@ -126,7 +128,11 @@ func (s *Server) handleInstallIntegration(w http.ResponseWriter, r *http.Request
 	switch {
 	case errors.Is(err, agents.ErrByHand):
 		s.log.Info("integration left to install by hand", "integration", id, "changed", len(changed))
-		writeInstallError(w, http.StatusBadRequest, installError{Code: "no_file_route", Message: err.Error(), Snippet: snippet(), Changed: changed})
+		e := installError{Code: "no_file_route", Message: err.Error(), Changed: changed}
+		if agents.SnippetNeeded(err) {
+			e.Snippet = snippet()
+		}
+		writeInstallError(w, http.StatusBadRequest, e)
 	case err != nil:
 		s.log.Error("integration install failed", "integration", id, "changed", len(changed), "err", err)
 		writeInstallError(w, http.StatusInternalServerError, installError{Code: "install_failed", Message: err.Error(), Changed: changed})

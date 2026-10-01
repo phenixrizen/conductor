@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
+import { agentIcon } from '~/utils/agentIcons'
 import { crewKey, defaultCrew, holdViewLink, runActive, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
@@ -350,7 +351,7 @@ watch(
             <span class="flex flex-wrap gap-1">
               <template v-for="(m, i) in item.crew.members" :key="i">
                 <span v-if="agentOf(m.agentId)?.icon" class="grid size-6 place-items-center rounded-md bg-elevated text-primary" :title="`${m.name} · ${agentOf(m.agentId)?.name}`">
-                  <UIcon :name="agentOf(m.agentId)!.icon!" class="size-3.5" />
+                  <UIcon :name="agentIcon(agentOf(m.agentId)!.icon)" class="size-3.5" />
                 </span>
                 <SessionAvatar v-else :agent-id="m.agentId" />
               </template>

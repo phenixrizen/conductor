@@ -166,7 +166,7 @@ that order.
   against a live Claude Code prompt from this repository's checks (no agent
   runs in CI). First real use: trigger a permission prompt, press **Yes** in
   the reply bar, and confirm Claude proceeds. If it only highlights, change
-  `permissionOptions()` in `internal/notify/notify.go` to send `"1\r"` etc.
+  `permissionOptions()` in `internal/notify/mappers.go` to send `"1\r"` etc.
 
 ## Decisions
 

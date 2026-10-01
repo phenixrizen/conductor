@@ -6,289 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
-	"os"
-	"os/user"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 )
-
-// homeDir is a user's home directory as Install writes to it: a file goes only
-// where its path really lies inside home, and never through a link. A dry run
-// writes nothing and reports what a write would change: that is how Status
-// tells whether Install would change anything.
-type homeDir struct {
-	dir    string // as given: the paths Install reports are under it
-	real   string // with its links resolved, for the checks
-	dryRun bool
-}
-
-func openHome(dir string, dryRun bool) (*homeDir, error) {
-	if !filepath.IsAbs(dir) {
-		return nil, fmt.Errorf("home %q is not an absolute path", dir)
-	}
-	real, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return nil, err
-	}
-	if !dryRun {
-		fi, err := os.Stat(real)
-		if err != nil {
-			return nil, err
-		}
-		if err := ownedBy(dir, fi, geteuid()); err != nil {
-			return nil, err
-		}
-	}
-	return &homeDir{dir: dir, real: real, dryRun: dryRun}, nil
-}
-
-// geteuid is the user Install writes as. Tests replace it.
-var geteuid = os.Geteuid
-
-// CheckHome refuses a home directory that belongs to another user than the
-// one running conductor (under sudo, for example). What Install writes, 0600
-// files in 0700 directories, belongs to the user writing it, so the home's
-// owner could not use it: the install is for that user to run. Install
-// checks it before it writes anything. It takes a system that says who owns
-// a file, as Unix systems do; elsewhere it passes.
-func CheckHome(home string) error {
-	fi, err := os.Stat(home)
-	if err != nil {
-		return err
-	}
-	return ownedBy(home, fi, geteuid())
-}
-
-// ownedBy refuses home, which fi describes, unless the user uid owns it.
-func ownedBy(home string, fi fs.FileInfo, uid int) error {
-	owner, ok := fileOwner(fi)
-	if !ok || owner == uid {
-		return nil
-	}
-	who := strconv.Itoa(owner)
-	if u, err := user.LookupId(who); err == nil && u.Username != "" {
-		who = u.Username
-	}
-	return fmt.Errorf("%s belongs to %s, and what Conductor wrote there would not: run it as %s, for example sudo -u %s conductor hooks install …", home, who, who, who)
-}
-
-// path is the file rel under home, as Install reports it.
-func (h *homeDir) path(rel string) string {
-	return filepath.Join(h.dir, filepath.FromSlash(rel))
-}
-
-// resolve returns where the file rel really lies. The directories on the way
-// may be links (dotfiles kept elsewhere in home), as long as they lead to a
-// place inside home; the ones missing will be created there. The file itself
-// is not resolved: read and write refuse it when it is a link.
-func (h *homeDir) resolve(rel string) (string, error) {
-	rel = filepath.FromSlash(rel)
-	if !filepath.IsLocal(rel) {
-		return "", fmt.Errorf("%s is not a path inside home", rel)
-	}
-	existing, missing := filepath.Dir(filepath.Join(h.real, rel)), ""
-	for {
-		_, err := os.Lstat(existing)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "", err
-		}
-		missing = filepath.Join(filepath.Base(existing), missing)
-		existing = filepath.Dir(existing)
-	}
-	dir, err := filepath.EvalSymlinks(existing)
-	if err != nil {
-		return "", err
-	}
-	if r, err := filepath.Rel(h.real, dir); err != nil || !filepath.IsLocal(r) {
-		return "", byHand("%s: a link on the way leads out of %s, and Conductor writes only inside it", h.path(rel), h.dir)
-	}
-	return filepath.Join(dir, missing, filepath.Base(rel)), nil
-}
-
-// read returns the content of the file rel, and false when there is none. A
-// link is left to the user (ErrByHand).
-func (h *homeDir) read(rel string) ([]byte, bool, error) {
-	p, err := h.resolve(rel)
-	if err != nil {
-		return nil, false, err
-	}
-	fi, err := existing(p, h.path(rel))
-	if err != nil || fi == nil {
-		return nil, false, linkByHand(err)
-	}
-	b, err := os.ReadFile(p)
-	return b, err == nil, err
-}
-
-// write makes the file rel hold data, and reports whether it had to change it;
-// a dry run only reports it. A link is left to the user (ErrByHand).
-func (h *homeDir) write(rel string, data []byte) (bool, error) {
-	p, err := h.resolve(rel)
-	if err != nil {
-		return false, err
-	}
-	if h.dryRun {
-		fi, err := existing(p, h.path(rel))
-		if err != nil {
-			return false, linkByHand(err)
-		}
-		return fi == nil || !holds(p, data), nil
-	}
-	changed, err := replaceFile(p, h.path(rel), data, 0)
-	return changed, linkByHand(err)
-}
-
-// errLink is the refusal to write through a symbolic link.
-var errLink = errors.New("is a symbolic link, and Conductor does not write through links")
-
-// linkByHand marks a refused link as a step for the user.
-func linkByHand(err error) error {
-	if errors.Is(err, errLink) {
-		return fmt.Errorf("%w: %w", ErrByHand, err)
-	}
-	return err
-}
-
-// existing returns the file at p, or nil when there is none; name is how
-// errors call it. A link, or anything else that is not a regular file, is
-// refused.
-func existing(p, name string) (fs.FileInfo, error) {
-	fi, err := os.Lstat(p)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if fi.Mode()&fs.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s %w", name, errLink)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", name)
-	}
-	return fi, nil
-}
-
-// holds reports whether the file at p holds exactly data.
-func holds(p string, data []byte) bool {
-	cur, err := os.ReadFile(p)
-	return err == nil && bytes.Equal(cur, data)
-}
-
-// replaceFile makes the file at p hold data; name is how errors call it. When
-// the content differs it writes a temporary file next to it and renames that
-// over p, so a reader sees the old content or the new, never half of it. With
-// mode zero a new file is 0600 and a file that was there keeps its mode;
-// otherwise the file gets mode, even when its content was right. Directories
-// it makes are 0700. A link or anything else that is not a regular file is
-// refused.
-func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
-	fi, err := existing(p, name)
-	if err != nil {
-		return false, err
-	}
-	if fi != nil && holds(p, data) {
-		if mode != 0 && fi.Mode().Perm() != mode {
-			return false, os.Chmod(p, mode)
-		}
-		return false, nil
-	}
-	perm := mode
-	if perm == 0 {
-		perm = 0o600
-		if fi != nil {
-			perm = fi.Mode().Perm()
-		}
-	}
-	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return false, err
-	}
-	f, err := os.CreateTemp(dir, "."+filepath.Base(p)+".conductor-*")
-	if err != nil {
-		return false, err
-	}
-	renamed := false
-	defer func() {
-		if !renamed {
-			f.Close()
-			os.Remove(f.Name())
-		}
-	}()
-	if err := f.Chmod(perm); err != nil {
-		return false, err
-	}
-	if _, err := f.Write(data); err != nil {
-		return false, err
-	}
-	if err := f.Sync(); err != nil {
-		return false, err
-	}
-	if err := f.Close(); err != nil {
-		return false, err
-	}
-	if err := os.Rename(f.Name(), p); err != nil {
-		return false, err
-	}
-	renamed = true
-	return true, nil
-}
-
-// step changes one file under home and reports whether it did (or, in a dry
-// run, would).
-type step struct {
-	rel string
-	do  func(h *homeDir) (bool, error)
-}
-
-// run runs steps in order on home, for real or as a dry run, and returns the
-// files they changed or would change. A step that leaves its file to the user
-// (ErrByHand) does not stop the steps after it, and what each such step says
-// comes back joined; any other error stops there.
-func run(home string, dryRun bool, steps ...step) ([]string, error) {
-	h, err := openHome(home, dryRun)
-	if err != nil {
-		return nil, err
-	}
-	var touched []string
-	var manual []error
-	for _, s := range steps {
-		changed, err := s.do(h)
-		if changed {
-			touched = append(touched, h.path(s.rel))
-		}
-		if errors.Is(err, ErrByHand) {
-			manual = append(manual, err)
-			continue
-		}
-		if err != nil {
-			return touched, err
-		}
-	}
-	return touched, errors.Join(manual...)
-}
-
-// install is Install: it runs the steps on home and returns the files they
-// changed.
-func install(home string, steps ...step) ([]string, error) {
-	return run(home, false, steps...)
-}
-
-// statusOf is Status: whether Install would change nothing under home and
-// leave nothing to the user, so that an install that is partial or names an
-// older binary reads as not installed, and where the install's main file,
-// rel, is.
-func statusOf(home, rel string, steps ...step) (bool, string) {
-	touched, err := run(home, true, steps...)
-	return err == nil && len(touched) == 0, filepath.Join(home, filepath.FromSlash(rel))
-}
 
 // copyAsset is the step that makes the file rel under home a copy of the
 // asset, a file Conductor owns.
@@ -312,6 +34,19 @@ func copyAssetDir(assets map[string]string, hooksDir, prefix, dir string) []step
 		}
 	}
 	return steps
+}
+
+// mergeHooksStep is the step that merges the hooks of the asset into the
+// JSON file rel under home, owning the entries that run marker
+// (mergeJSONHooks).
+func mergeHooksStep(assets map[string]string, hooksDir, asset, rel, marker string) step {
+	return step{rel, func(h *homeDir) (bool, error) {
+		b, err := assetFor(assets, hooksDir, asset)
+		if err != nil {
+			return false, err
+		}
+		return mergeJSONHooks(h, rel, b, marker)
+	}}
 }
 
 // object is a JSON object read for editing: its members in their order, each
@@ -493,10 +228,10 @@ func ourCommand(asset []byte, marker string) (string, error) {
 }
 
 // staleCommand reports whether s is a hook command Conductor wrote for
-// marker, `<absolute path> notify --x-hook` with the path quoted the way
-// Conductor quotes it, naming another binary than ours does. A bare
-// `conductor notify --x-hook` is the user's own, and anything longer or
-// shaped otherwise is not Conductor's to rewrite.
+// marker, `<absolute path to a program named conductor> notify --x-hook` with
+// the path quoted the way Conductor quotes it, naming another binary than
+// ours does. A bare `conductor notify --x-hook` is the user's own, and so is
+// any other program, or anything longer or shaped otherwise.
 func staleCommand(s, marker, ours string) bool {
 	if s == ours {
 		return false
@@ -506,7 +241,7 @@ func staleCommand(s, marker, ours string) bool {
 		return false
 	}
 	bin, ok := shellUnquote(quoted)
-	return ok && filepath.IsAbs(bin)
+	return ok && filepath.IsAbs(bin) && filepath.Base(bin) == "conductor"
 }
 
 // shellUnquote undoes shellQuote: ok is false for a word shellQuote would not
@@ -830,14 +565,30 @@ func (d *tomlDoc) withBlock(begin, end, body string) (string, error) {
 // the end. Content that mentions match already (match is item as written) is
 // returned as it is. It reads lines, not YAML, and leaves to the user
 // (ErrByHand) what it cannot edit that way: a key that is quoted, a value
-// written inline or that is not a list of single entries, and a file of more
-// than one document, where the entry could land in the wrong one.
+// written inline or that is not a list of single entries, a file of more
+// than one document, where the entry could land in the wrong one, and a root
+// written in flow style ({…} or […]). A byte order mark is kept.
 func withYAMLListItem(content, key, marker, item, match string) (string, error) {
 	if strings.Contains(content, match) {
 		return content, nil
 	}
+	// A byte order mark stays where it is; the lines are read without it.
+	bom := ""
+	if rest, ok := strings.CutPrefix(content, "\ufeff"); ok {
+		bom, content = "\ufeff", rest
+	}
+	out, err := yamlWithListItem(content, key, marker, item)
+	if err != nil {
+		return "", err
+	}
+	return bom + out, nil
+}
+
+// yamlWithListItem is withYAMLListItem on content without a byte order mark.
+func yamlWithListItem(content, key, marker, item string) (string, error) {
 	lines := strings.Split(content, "\n")
 	started := false // past a leading "---" and the comments before it
+	rootSeen := false
 	for _, l := range lines {
 		t := strings.TrimRight(l, "\r")
 		if t == "---" || strings.HasPrefix(t, "--- ") || t == "..." {
@@ -848,6 +599,10 @@ func withYAMLListItem(content, key, marker, item, match string) (string, error) 
 			return "", byHand("the file holds more than one YAML document; add %s to %s by hand", item, key)
 		}
 		if s := strings.TrimSpace(t); s != "" && !strings.HasPrefix(s, "#") {
+			if !rootSeen && (s[0] == '{' || s[0] == '[') {
+				return "", byHand("the file's root is written in flow style (%c…); add %s to %s by hand", s[0], item, key)
+			}
+			rootSeen = true
 			started = true
 		}
 	}

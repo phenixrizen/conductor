@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Integration } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
+import { noInstallText } from '~/utils/integrations'
 import { shortCwd } from '~/utils/sessions'
 
 const props = defineProps<{
@@ -36,11 +37,8 @@ const status = computed<{ label: string; color: 'success' | 'neutral'; variant: 
   return { label: `not configured on ${props.host}`, color: 'neutral', variant: 'subtle' }
 })
 
-/** Why there is no Install button: a server without a home directory, or an agent with no file to install into. */
-const noInstall = computed(() => {
-  if (!props.homeKnown) return 'The server has no home directory to install into: paste the snippet.'
-  return props.integration.launchInjection ? 'Wired at launch by this server; anywhere else, paste the snippet.' : 'No file to install into: paste the snippet.'
-})
+/** Why there is no Install button: an agent with no file to install into, or a server without a home directory. */
+const noInstall = computed(() => noInstallText(props.integration, props.homeKnown))
 
 // Paths are long and unbroken: let toast text wrap anywhere.
 const pathsUi = { description: 'whitespace-pre-line break-all' }

@@ -344,3 +344,19 @@ func TestNotifyHookDoesNotReadATerminal(t *testing.T) {
 		}
 	}
 }
+
+// Every flag that maps an agent's payload makes the command a hook's, which
+// exits 1 and not 2 on a mistake: hookMode reads the table the flags come from.
+func TestHookModeKnowsEveryPayloadFlag(t *testing.T) {
+	for _, h := range hookPayloads {
+		if !hookMode([]string{"--" + h.name}) {
+			t.Errorf("--%s is not a payload flag", h.name)
+		}
+	}
+	if !hookMode([]string{"--codex", "{}"}) || hookMode([]string{"--state", "done"}) {
+		t.Fatal("--codex or --state misread")
+	}
+	if len(payloadFlags) != len(hookPayloads)+1 {
+		t.Fatalf("payloadFlags %v", payloadFlags)
+	}
+}

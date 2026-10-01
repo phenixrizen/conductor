@@ -2,9 +2,11 @@ package catalog
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -656,5 +658,54 @@ func TestUpsertStoresACopy(t *testing.T) {
 	// Clone takes a value: a catalog a call returns clones without a variable.
 	if ids := idsOf(Default().Clone()); ids != builtIns {
 		t.Fatalf("clone lists %s", ids)
+	}
+}
+
+// The workbench fetches no icon at runtime: it bundles the agent icons that
+// web/app/utils/agentIcons.ts lists (AGENT_ICONS, which web/nuxt.config.ts
+// takes), and the built-in agents' icons reach it from the server. The list
+// holds exactly the built-ins' icons and two more: i-lucide-bot, which an
+// agent without an icon, or with one the list lacks, shows
+// (AGENT_ICON_FALLBACK), and i-lucide-wrench, the tool icon of the example
+// config (conductor.example.json). A built-in icon missing from the list would
+// show the fallback; a name nothing uses only weighs on the bundle.
+func TestBuiltInIconsAreInTheWorkbenchBundle(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "web", "app", "utils", "agentIcons.ts"))
+	if err != nil {
+		t.Fatalf("the workbench's icon list: %v", err)
+	}
+	list := regexp.MustCompile(`(?s)export const AGENT_ICONS\b[^=]*=\s*\[(.*?)\]`).FindSubmatch(b)
+	if list == nil {
+		t.Fatal("web/app/utils/agentIcons.ts has no AGENT_ICONS = [...] list")
+	}
+	lucide := regexp.MustCompile(`^i-lucide-[a-z0-9-]+$`)
+	bundled := map[string]bool{}
+	for _, quoted := range regexp.MustCompile(`'([^']*)'`).FindAllSubmatch(list[1], -1) {
+		name := string(quoted[1])
+		if !lucide.MatchString(name) {
+			t.Errorf("AGENT_ICONS holds %q, not an i-lucide-<name> icon", name)
+			continue
+		}
+		bundled[name] = true
+	}
+	want := map[string]bool{"i-lucide-bot": true, "i-lucide-wrench": true}
+	for _, a := range Default().List() {
+		if a.Icon != "" {
+			want[a.Icon] = true
+		}
+	}
+	var missing, extra []string
+	for _, name := range slices.Sorted(maps.Keys(want)) {
+		if !bundled[name] {
+			missing = append(missing, name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(bundled)) {
+		if !want[name] {
+			extra = append(extra, name)
+		}
+	}
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Fatalf("AGENT_ICONS in web/app/utils/agentIcons.ts lacks %q (a built-in agent's icon, or a generic one), and holds %q, which no built-in agent uses and which is neither generic icon", missing, extra)
 	}
 }

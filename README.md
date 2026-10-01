@@ -180,21 +180,29 @@ conductor hooks status            # which agents have the hooks, and where
 ```
 
 `install` prints the files it wrote, and a second run changes nothing. What it
-cannot do from a file it prints with the snippet instead: DeepSeek Harness, a
+cannot do from a file it leaves to you, and says how: DeepSeek Harness, a
 developer preview, is always installed by hand, and a Codex `hooks.json` or a
-`SKILL.md` of your own is never overwritten. Both commands take the hooks, and
-the conductor binary they run, from `hooks/` in the data directory
-`--data-dir DIR` names, by default the one `conductor serve` uses without
-`dataDir`: `CONDUCTOR_DATA_DIR`, else `~/.conductor` (or an older
-`./conductor.d` while `~/.conductor` holds no server data); when no server
-wrote hooks there, or the binary they name is gone, they say so and use the
-binary you run. They refuse a `hooks/` that is not yours or not 0700, as
+`SKILL.md` of your own is never overwritten. It prints the snippet only when
+the snippet is what is missing, the agent's hooks; a `SKILL.md` of your own
+gets its own instruction instead (`conductor skill` prints Conductor's). Both
+commands take the hooks, and the conductor binary they run, from `hooks/` in
+the data directory `--data-dir DIR` names, by default the one
+`conductor serve` uses without `dataDir`: `CONDUCTOR_DATA_DIR`, else
+`~/.conductor` (or an older `./conductor.d` while `~/.conductor` holds no
+server data); when no server wrote hooks there, or the binary they name is
+gone, they say so and use the binary you run; when the hooks there were
+written by another version of Conductor than the one you run, or by one too
+old to record its version, they warn and go on. They refuse a `hooks/` that is
+not yours or not 0700, as
 `conductor serve` writes it (so a `conductor.d/hooks` that a checkout made 0755
 is refused too, should an older `./conductor.d` still be the data directory),
 since its commands would go into your agents' configs. `--home DIR` names
 another home directory of yours. A home that belongs to another user is
 refused, because what Conductor wrote there would belong to you: install for
-that user as that user (`sudo -u <user> conductor hooks install …`).
+that user as that user (`sudo -u <user> conductor hooks install …`). The one
+exception is your own home, the one `HOME` names, when you may write it, as in
+a container whose home belongs to another uid; it never applies to root, since
+under `sudo` `HOME` may still name the invoking user's home.
 
 **Agents without hooks.** Any tool that rings the terminal bell or emits an
 OSC 9 / OSC 777 notification is detected with no configuration at all. A
@@ -519,7 +527,9 @@ arguments). Add your own or override an entry by ID:
 Commands are argv arrays and never pass through a shell. `allowArgs` lets the
 launch form append extra arguments. `disableDefaults: true` drops the built-ins.
 `icon` names a Lucide icon (`i-lucide-…`). The workbench carries the icons it
-uses and fetches none at runtime, so a name outside that set shows no icon.
+uses and fetches none at runtime: the built-in agents' icons, `i-lucide-wrench`
+and `i-lucide-bot` (`web/app/utils/agentIcons.ts`). Any other name shows the
+generic agent icon.
 
 **Adding agents from the UI.** Admins can add, change and hide agents from the
 **Agents** page (**Add agent**) without editing the config file. The changes are

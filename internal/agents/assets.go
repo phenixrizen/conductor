@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/phenixrizen/conductor/internal/version"
 )
 
 // binPlaceholder stands for the conductor binary in an asset. It is always
@@ -76,6 +78,26 @@ const binRecord = ".bin"
 
 // maxBinRecord bounds what AdoptBinary reads: a path of at most PATH_MAX.
 const maxBinRecord = 4096
+
+// versionRecord is the file in the hooks dir that names the version of the
+// conductor that wrote its assets, for conductor hooks to compare with its own.
+const versionRecord = ".version"
+
+// RecordedVersion returns the version of the conductor that wrote the assets
+// in hooksDir; fs.ErrNotExist when there is no record, as an older conductor
+// wrote none.
+func RecordedVersion(hooksDir string) (string, error) {
+	p := filepath.Join(hooksDir, versionRecord)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > 256 {
+		return "", fmt.Errorf("%s is not a version record: not a regular file of at most 256 bytes", p)
+	}
+	b, err := os.ReadFile(p)
+	return strings.TrimSpace(string(b)), err
+}
 
 // AdoptBinary makes the binary the hook assets in hooksDir were written for
 // the one this process's adapters name, as they are in the process that
@@ -202,13 +224,34 @@ func checkBin(bin string) error {
 	return nil
 }
 
+// chmod is os.Chmod: a test replaces it to make a mode fail.
+var chmod = os.Chmod
+
+// ModeError is what WriteAssets returns when it wrote every asset but could
+// not set the mode of some of them, or of the hooks dir: a file that belongs
+// to another user, say. The assets are in place and name the binary;
+// conductor serve warns and starts. Errs says which.
+type ModeError struct{ Errs []error }
+
+func (e *ModeError) Error() string {
+	msgs := make([]string, len(e.Errs))
+	for i, err := range e.Errs {
+		msgs[i] = err.Error()
+	}
+	return "the hook assets are written, but their modes could not all be set: " + strings.Join(msgs, "; ")
+}
+
+func (e *ModeError) Unwrap() []error { return e.Errs }
+
 // WriteAssets renders every adapter's assets for bin, the absolute path of the
 // conductor binary, and writes them under hooksDir with the Conductor skill,
 // and bin itself as .bin for AdoptBinary. Conductor owns the directory: it is
 // made 0700 and every asset 0600, whatever they were. Each file is replaced
 // whole, so an agent reading one never sees half of it, and one that already
 // holds the right content is not rewritten. From then on the adapters name
-// bin wherever they render the binary themselves.
+// bin wherever they render the binary themselves. A mode it cannot set stops
+// nothing: the assets are all written, and the error is a *ModeError. It also
+// records version.Version as .version.
 func WriteAssets(hooksDir, bin string) error {
 	if !filepath.IsAbs(hooksDir) {
 		return fmt.Errorf("the hooks directory %q is not an absolute path", hooksDir)
@@ -219,7 +262,17 @@ func WriteAssets(hooksDir, bin string) error {
 	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(hooksDir, 0o700); err != nil {
+	var modes []error
+	if err := chmod(hooksDir, 0o700); err != nil {
+		modes = append(modes, err)
+	}
+	put := func(p string, data []byte) error {
+		_, err := replaceFile(p, p, data, 0o600)
+		var me *modeError
+		if errors.As(err, &me) {
+			modes = append(modes, me.err)
+			return nil
+		}
 		return err
 	}
 	sets := []map[string]string{skillAssets}
@@ -232,17 +285,21 @@ func WriteAssets(hooksDir, bin string) error {
 			if err != nil {
 				return err
 			}
-			p := filepath.Join(hooksDir, filepath.FromSlash(rel))
-			if _, err := replaceFile(p, p, []byte(content), 0o600); err != nil {
+			if err := put(filepath.Join(hooksDir, filepath.FromSlash(rel)), []byte(content)); err != nil {
 				return err
 			}
 		}
 	}
-	record := filepath.Join(hooksDir, binRecord)
-	if _, err := replaceFile(record, record, []byte(bin), 0o600); err != nil {
+	if err := put(filepath.Join(hooksDir, binRecord), []byte(bin)); err != nil {
+		return err
+	}
+	if err := put(filepath.Join(hooksDir, versionRecord), []byte(version.Version)); err != nil {
 		return err
 	}
 	remember(bin)
+	if len(modes) > 0 {
+		return &ModeError{Errs: modes}
+	}
 	return nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/version"
 )
 
 // writeAssets is WriteAssets for a test: the binary WriteAssets records for
@@ -639,5 +640,60 @@ if (typeof mod.default === "function") {
 				t.Fatalf("%s: notify arguments %s", rel, args)
 			}
 		}
+	}
+}
+
+// A mode WriteAssets cannot set (a file that belongs to another user, say) is
+// no reason to stop: every asset is still written, and the error, a
+// ModeError, says which modes are wrong. A real failure is no ModeError.
+func TestWriteAssetsReportsModesItCannotSetAndGoesOn(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	asset := filepath.Join(dir, "claude.json")
+	if err := os.Chmod(asset, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := filepath.Join(dir, "cursor-hooks.json") // written after claude.json
+	if err := os.Remove(later); err != nil {
+		t.Fatal(err)
+	}
+	chmod = func(p string, m fs.FileMode) error {
+		if p == asset || p == dir {
+			return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
+		}
+		return os.Chmod(p, m)
+	}
+	t.Cleanup(func() { chmod = os.Chmod })
+	err := writeAssets(t, dir, "/opt/conductor")
+	var me *ModeError
+	if !errors.As(err, &me) || len(me.Errs) != 2 || !strings.Contains(err.Error(), asset) {
+		t.Fatalf("WriteAssets: %v", err)
+	}
+	if _, err := os.Stat(later); err != nil {
+		t.Fatalf("an asset after the one whose mode failed was not written: %v", err)
+	}
+	linked := t.TempDir()
+	if err := os.Symlink(filepath.Join(t.TempDir(), "x.json"), filepath.Join(linked, "claude.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAssets(t, linked, "/opt/conductor"); err == nil || errors.As(err, &me) {
+		t.Fatalf("a link is a real failure: %v", err)
+	}
+}
+
+// The hooks dir records the version of the conductor that wrote it, beside
+// the binary, for conductor hooks to compare with its own.
+func TestWriteAssetsRecordsTheVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeAssets(t, dir, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := RecordedVersion(dir); err != nil || v != version.Version {
+		t.Fatalf("RecordedVersion: %q %v", v, err)
+	}
+	if _, err := RecordedVersion(t.TempDir()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("no record: %v", err)
 	}
 }

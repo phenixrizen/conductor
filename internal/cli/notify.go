@@ -28,17 +28,14 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	tool := fs.String("tool", "", "with --event tool_use, tool_denied or error: the tool involved")
 	codex := fs.Bool("codex", false, "read a Codex notify payload from the last argument and map it")
 	// Each agent's hooks write their payload to stdin; the flag says whose it is.
-	hooks := []struct {
+	type hookFlag struct {
 		flag    string
 		set     *bool
 		mapHook func([]byte) (notify.Request, bool)
-	}{
-		{"--claude-hook", fs.Bool("claude-hook", false, "read a Claude Code hook payload from stdin and map it"), notify.MapClaudeHook},
-		{"--codex-hook", fs.Bool("codex-hook", false, "read a Codex hooks.json payload from stdin and map it"), notify.MapCodexHook},
-		{"--copilot-hook", fs.Bool("copilot-hook", false, "read a GitHub Copilot CLI hook payload from stdin and map it"), notify.MapCopilotHook},
-		{"--cursor-hook", fs.Bool("cursor-hook", false, "read a Cursor CLI hook payload from stdin and map it"), notify.MapCursorHook},
-		{"--agy-hook", fs.Bool("agy-hook", false, "read an Antigravity hook payload from stdin and map it"), notify.MapAgyHook},
-		{"--goose-hook", fs.Bool("goose-hook", false, "read a Goose hook payload from stdin and map it"), notify.MapGooseHook},
+	}
+	hooks := make([]hookFlag, 0, len(hookPayloads))
+	for _, h := range hookPayloads {
+		hooks = append(hooks, hookFlag{"--" + h.name, fs.Bool(h.name, false, h.usage), h.mapHook})
 	}
 	quiet := fs.Bool("quiet", true, "exit 0 silently when not running inside a conductor session")
 	fs.Usage = func() {
@@ -168,8 +165,32 @@ func joinFlags(flags []string) string {
 	return strings.Join(flags[:len(flags)-1], ", ") + " and " + flags[len(flags)-1]
 }
 
-// payloadFlags are the flags that make the command map an agent's payload.
-var payloadFlags = []string{"claude-hook", "codex-hook", "copilot-hook", "cursor-hook", "agy-hook", "goose-hook", "codex"}
+// hookPayload is an agent whose hooks write their payload to stdin: the flag
+// that says whose it is, its usage, and the mapper.
+type hookPayload struct {
+	name, usage string
+	mapHook     func([]byte) (notify.Request, bool)
+}
+
+// hookPayloads lists them in the order of the usage.
+var hookPayloads = []hookPayload{
+	{"claude-hook", "read a Claude Code hook payload from stdin and map it", notify.MapClaudeHook},
+	{"codex-hook", "read a Codex hooks.json payload from stdin and map it", notify.MapCodexHook},
+	{"copilot-hook", "read a GitHub Copilot CLI hook payload from stdin and map it", notify.MapCopilotHook},
+	{"cursor-hook", "read a Cursor CLI hook payload from stdin and map it", notify.MapCursorHook},
+	{"agy-hook", "read an Antigravity hook payload from stdin and map it", notify.MapAgyHook},
+	{"goose-hook", "read a Goose hook payload from stdin and map it", notify.MapGooseHook},
+}
+
+// payloadFlags are the flags that make the command map an agent's payload:
+// one per hookPayloads entry, and --codex.
+var payloadFlags = func() []string {
+	out := make([]string, 0, len(hookPayloads)+1)
+	for _, h := range hookPayloads {
+		out = append(out, h.name)
+	}
+	return append(out, "codex")
+}()
 
 // hookMode reports whether args ask for an agent's payload to be mapped, which
 // is how agents' hooks run the command, whether or not the rest of args parses.

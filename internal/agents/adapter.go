@@ -54,3 +54,34 @@ var ErrByHand = errors.New("install by hand")
 func byHand(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrByHand, fmt.Sprintf(format, args...))
 }
+
+// stepError is what a step left to the user (ErrByHand) says, with the file
+// it is about. Its message is the step's.
+type stepError struct {
+	rel string
+	err error
+}
+
+func (e *stepError) Error() string { return e.err.Error() }
+func (e *stepError) Unwrap() error { return e.err }
+
+// SnippetNeeded reports whether what Install left to the user (err) calls for
+// the adapter's snippet. It does unless every step left is the Conductor
+// skill's, whose message says what to do (conductor skill prints it); the
+// snippet is for the agent's hooks.
+func SnippetNeeded(err error) bool {
+	return errors.Is(err, ErrByHand) && !onlySkillSteps(err)
+}
+
+func onlySkillSteps(err error) bool {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range j.Unwrap() {
+			if !onlySkillSteps(e) {
+				return false
+			}
+		}
+		return true
+	}
+	var se *stepError
+	return errors.As(err, &se) && (se.rel == claudeSkill || se.rel == codexSkill || se.rel == agentsSkill)
+}

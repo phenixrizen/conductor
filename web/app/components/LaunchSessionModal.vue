@@ -55,15 +55,6 @@ const command = computed(() => {
   })
 })
 
-async function copyCommand() {
-  try {
-    await navigator.clipboard.writeText(command.value)
-    toast.add({ title: 'Command copied', description: 'It carries your admin token; keep it private.', icon: 'i-lucide-clipboard-check', color: 'success' })
-  } catch {
-    toast.add({ title: 'Copy failed', description: 'Select the command and copy it manually.', color: 'warning' })
-  }
-}
-
 // "My machine": the dialog waits for a hosted session with this name that did
 // not exist when it opened. Ids, not timestamps, so clock skew between the
 // browser and the server cannot make it wait forever.
@@ -152,10 +143,7 @@ async function submit() {
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />
           </UFormField>
           <UFormField label="Run this in your terminal" name="command">
-            <div class="flex items-start gap-3 rounded-md bg-forest-950 px-3.5 py-3 font-mono text-xs leading-relaxed text-forest-100" :class="!localReady && 'opacity-60'">
-              <code class="flex-1 break-all select-all"><span class="text-forest-400">$</span> {{ command }}</code>
-              <UButton label="Copy" size="xs" variant="link" color="success" class="flex-none" :disabled="!localReady" @click="copyCommand" />
-            </div>
+            <CodeBlock :commands="[command]" wrap :disabled="!localReady" copy-title="Command copied" copy-description="It carries your admin token; keep it private." />
             <template #hint><span>uses your admin token; keep it private</span></template>
           </UFormField>
           <p class="text-xs leading-relaxed text-muted">Your terminal stays attached. The session appears here as <b class="text-default">hosted</b> once it connects, peer-to-peer when UDP allows.</p>

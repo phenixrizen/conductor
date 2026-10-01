@@ -103,6 +103,8 @@ export interface Integration {
   events: string[]
   /** A launch from this server wires the hooks in (flags or environment). */
   launchInjection: boolean
+  /** The adapter has a file Conductor can install its hooks into. */
+  installable: boolean
   /** The agent reads skills: installing its hooks also puts the Conductor skill in its skills directory. */
   installsSkill: boolean
   /** The hooks are in place as an install would leave them: false after an upgrade moved the binary, until installed again. */

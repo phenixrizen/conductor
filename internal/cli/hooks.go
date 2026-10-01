@@ -14,6 +14,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/version"
 )
 
 const hooksUsage = `Usage:
@@ -112,10 +113,16 @@ func runHooksInstall(args []string, stdout, stderr io.Writer) (int, error) {
 		case errors.Is(err, agents.ErrByHand):
 			fmt.Fprintf(stdout, "%s: %v\n", a.ID, err)
 			if !one {
-				fmt.Fprintf(stdout, "%s: conductor hooks install %s prints the snippet\n", a.ID, a.ID)
+				// The snippet is for the agent's hooks: a skill file left by
+				// hand says what to do in its own message.
+				if agents.SnippetNeeded(err) {
+					fmt.Fprintf(stdout, "%s: conductor hooks install %s prints the snippet\n", a.ID, a.ID)
+				}
 				break
 			}
-			fmt.Fprintf(stdout, "\n%s", a.Snippet(hooksDir))
+			if agents.SnippetNeeded(err) {
+				fmt.Fprintf(stdout, "\n%s", a.Snippet(hooksDir))
+			}
 			left = true
 		case err != nil:
 			fmt.Fprintf(stderr, "%s: %v\n", a.ID, err)
@@ -288,6 +295,14 @@ func adoptHooksDir(dataDir string, stderr io.Writer) (string, error) {
 		}
 		fmt.Fprintf(stderr, "conductor hooks: the hooks in %s run %s, which does not exist; the hooks run this conductor, %s\n", hooksDir, adopted, bin)
 		return "", nil
+	}
+	// Hooks another version wrote may not be what this one would write.
+	if v, err := agents.RecordedVersion(hooksDir); err != nil || v != version.Version {
+		by := "conductor " + v
+		if err != nil {
+			by = "an older conductor, which did not record its version"
+		}
+		fmt.Fprintf(stderr, "conductor hooks: warning: the hooks in %s were written by %s, and this is conductor %s; install with the conductor that serves, or restart conductor serve with this one\n", hooksDir, by, version.Version)
 	}
 	return hooksDir, nil
 }

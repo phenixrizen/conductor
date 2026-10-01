@@ -187,6 +187,10 @@ func TestStaleCommand(t *testing.T) {
 		"say done; /opt/old/conductor notify --x-hook":     false,
 		`"/opt/old/conductor" notify --x-hook`:             false,
 		"/opt/my apps/conductor notify --x-hook":           false,
+		"/opt/old/bin/conductor notify --x-hook":           true,
+		"/usr/bin/python3 notify --x-hook":                 false, // not conductor: not Conductor's to rewrite
+		"/opt/old/conductor-dev notify --x-hook":           false,
+		"'/opt/my apps/notconductor' notify --x-hook":      false,
 	} {
 		if got := staleCommand(in, marker, ours); got != want {
 			t.Errorf("staleCommand(%q) = %v, want %v", in, got, want)
@@ -341,6 +345,9 @@ func TestWithYAMLListItem(t *testing.T) {
 		// An explicit start of the one document, and comments in the list.
 		{"---\nextensions:\n  # mine\n  - a.ts\n", "---\nextensions:\n  # mine\n  - a.ts\n  # conductor\n  - " + item + "\n"},
 		{"extensions:\n  - \"a b.ts\" # quoted\n", "extensions:\n  - \"a b.ts\" # quoted\n  # conductor\n  - " + item + "\n"},
+		// A byte order mark stays where it is and hides no key.
+		{"\ufeffextensions:\n  - a.ts\n", "\ufeffextensions:\n  - a.ts\n  # conductor\n  - " + item + "\n"},
+		{"\ufeff", "\ufeffextensions:\n  # conductor\n  - " + item + "\n"},
 	}
 	for _, c := range cases {
 		got, err := withYAMLListItem(c.in, "extensions", "# conductor", item, match)
@@ -358,6 +365,8 @@ func TestWithYAMLListItem(t *testing.T) {
 		"extensions:\n  - a.ts\n---\nmodel: y\n",
 		"model: y\n---\nother: 1\n",
 		"model: y\n...\n",
+		// A root written in flow style.
+		"{extensions: [a.ts]}\n", "# mine\n{model: y}\n", "[a.ts]\n",
 	} {
 		if _, err := withYAMLListItem(in, "extensions", "# conductor", item, match); !errors.Is(err, ErrByHand) {
 			t.Errorf("%q: %v", in, err)

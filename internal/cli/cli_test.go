@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/phenixrizen/conductor/internal/version"
 )
 
 // runHooksWith runs `conductor hooks` with args, as a new conductor process
@@ -470,5 +471,50 @@ func TestHooksRefuseAHooksDirOthersMayWrite(t *testing.T) {
 		if entries, _ := os.ReadDir(home); len(entries) != 0 {
 			t.Fatalf("mode %o: wrote %v", mode, entries)
 		}
+	}
+}
+
+// The hooks dir records the version of the conductor that wrote it. conductor
+// hooks says so when that is another version than its own, or unknown, and
+// goes on.
+func TestHooksWarnWhenTheServerIsAnotherVersion(t *testing.T) {
+	clearConductorEnv(t)
+	data, bin := t.TempDir(), fakeBinary(t)
+	serverAssets(t, data, bin)
+	code, _, stderr, err := runHooksWith(t, "install", "copilot", "--home", t.TempDir(), "--data-dir", data)
+	if code != 0 || err != nil || strings.Contains(stderr, "were written by") {
+		t.Fatalf("same version: exit %d %v\n%s", code, err, stderr)
+	}
+	record := filepath.Join(data, "hooks", ".version")
+	if err := os.WriteFile(record, []byte("v0.0.1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr, err = runHooksWith(t, "install", "copilot", "--home", t.TempDir(), "--data-dir", data)
+	if code != 0 || err != nil || !strings.Contains(stderr, "conductor v0.0.1") || !strings.Contains(stderr, "conductor "+version.Version) {
+		t.Fatalf("another version: exit %d %v\n%s", code, err, stderr)
+	}
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, stderr, _ = runHooksWith(t, "status", "--data-dir", data); !strings.Contains(stderr, "did not record its version") {
+		t.Fatalf("no record:\n%s", stderr)
+	}
+}
+
+// A skill file of the user's own is the only step left: conductor hooks says
+// so and prints no settings snippet.
+func TestHooksInstallByHandPrintsOnlyWhatIsNeeded(t *testing.T) {
+	clearConductorEnv(t)
+	home := t.TempDir()
+	skill := filepath.Join(home, ".claude", "skills", "conductor", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("# mine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr, err := runHooksWith(t, "install", "claude", "--home", home, "--data-dir", t.TempDir())
+	if code != 1 || err != nil || !strings.Contains(stdout, "is not Conductor's skill") || strings.Contains(stdout, "notify --claude-hook") {
+		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
 	}
 }

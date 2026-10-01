@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
+import { agentIcon } from '~/utils/agentIcons'
 import { removalOf, removalText } from '~/utils/catalog'
 
 useHead({ title: 'Agents' })
@@ -140,7 +141,7 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <UCard v-for="a in agents" :key="a.id">
           <div class="flex items-start gap-3">
-            <UIcon :name="a.icon || 'i-lucide-terminal'" class="size-6 text-primary flex-none mt-0.5" />
+            <UIcon :name="agentIcon(a.icon)" class="size-6 text-primary flex-none mt-0.5" />
             <div class="min-w-0 flex-1">
               <div class="font-medium">{{ a.name }} <span class="text-xs text-muted font-mono">{{ a.id }}</span></div>
               <p v-if="a.description" class="text-sm text-muted">{{ a.description }}</p>

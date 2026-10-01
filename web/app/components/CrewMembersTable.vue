@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
+import { agentIcon } from '~/utils/agentIcons'
 import { argsFrom, memberNameError, startFrom, startValue, type DraftMember } from '~/utils/crews'
 
 /**
@@ -28,7 +29,7 @@ const cell = {
 }
 const cols = 'grid-cols-[1rem_minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[49rem]:grid-cols-[1rem_6.5rem_9.5rem_minmax(8rem,1fr)_7.5rem_8.5rem_1.5rem]'
 
-const agentItems = computed(() => props.agents.map((a) => ({ label: a.name, value: a.id, icon: a.icon || 'i-lucide-terminal' })))
+const agentItems = computed(() => props.agents.map((a) => ({ label: a.name, value: a.id, icon: agentIcon(a.icon) })))
 
 function agentOf(id: string): AgentInfo | undefined {
   return props.agents.find((a) => a.id === id)
@@ -224,7 +225,7 @@ async function moveBy(key: number, delta: number) {
         :class="cell.agent"
         :model-value="m.agentId"
         :items="agentsFor(m)"
-        :icon="agentOf(m.agentId)?.icon || 'i-lucide-terminal'"
+        :icon="agentIcon(agentOf(m.agentId)?.icon)"
         placeholder="Agent"
         :aria-label="`Agent for ${who(m, i)}`"
         class="w-full"

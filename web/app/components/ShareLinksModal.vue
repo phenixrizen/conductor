@@ -33,6 +33,7 @@ const description = computed(() =>
     : 'Anyone with the link joins with the role you pick. Revoking disconnects them.',
 )
 const toast = useToast()
+const copyText = useCopy()
 const links = ref<ShareLink[]>([])
 const loading = ref(false)
 const creating = ref(false)
@@ -88,13 +89,8 @@ async function create() {
   }
 }
 
-async function copy(url: string) {
-  try {
-    await navigator.clipboard.writeText(url)
-    toast.add({ title: 'Link copied', description: 'The token is shown once; keep it private.', icon: 'i-lucide-clipboard-check', color: 'success' })
-  } catch {
-    toast.add({ title: 'Copy failed', description: 'Select the link and copy it manually.', color: 'warning' })
-  }
+function copy(url: string) {
+  return copyText(url, 'Link copied', 'The token is shown once; keep it private.')
 }
 
 async function revoke(link: ShareLink) {

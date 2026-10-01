@@ -30,16 +30,7 @@ var claudeAssets = map[string]string{
 }
 
 func claudeSteps(hooksDir string) []step {
-	return []step{
-		{claudeSettings, func(h *homeDir) (bool, error) {
-			asset, err := assetFor(claudeAssets, hooksDir, "claude.json")
-			if err != nil {
-				return false, err
-			}
-			return mergeJSONHooks(h, claudeSettings, asset, claudeMarker)
-		}},
-		skillStep(hooksDir, claudeSkill),
-	}
+	return []step{mergeHooksStep(claudeAssets, hooksDir, "claude.json", claudeSettings, claudeMarker), skillStep(hooksDir, claudeSkill)}
 }
 
 func claudeAdapter() Adapter {

@@ -1,3 +1,5 @@
+import { AGENT_ICONS } from './app/utils/agentIcons'
+
 // Nuxt configuration for the Conductor workbench. The app is a client-only
 // SPA generated into internal/web/dist and embedded in the Go binary.
 export default defineNuxtConfig({
@@ -9,26 +11,13 @@ export default defineNuxtConfig({
   // bundled from @iconify-json/lucide. The scan finds the names in the app's
   // sources (.ts too: event icons are named in app/utils); the built-in
   // catalog's icons come from the server (internal/catalog/defaults.go), so
-  // they are listed. A catalog icon outside the bundle shows nothing.
+  // they are listed, in app/utils/agentIcons.ts. A catalog icon outside that
+  // list shows the generic agent icon (agentIcon).
   icon: {
     provider: 'none',
     clientBundle: {
       scan: { globInclude: ['app/**/*.{vue,ts}'] },
-      icons: [
-        'lucide:sparkles',
-        'lucide:code-xml',
-        'lucide:rocket',
-        'lucide:github',
-        'lucide:mouse-pointer-2',
-        'lucide:braces',
-        'lucide:pi',
-        'lucide:pi-square',
-        'lucide:git-commit',
-        'lucide:feather',
-        'lucide:zap',
-        'lucide:cpu',
-        'lucide:terminal',
-      ],
+      icons: AGENT_ICONS.map((name) => name.replace(/^i-lucide-/, 'lucide:')),
       sizeLimitKb: 256,
     },
   },
