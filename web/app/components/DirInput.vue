@@ -63,6 +63,8 @@ async function fetchNow() {
     truncated.value = r.truncated
     problem.value = ''
     listedFor = query
+    // The listing changed under the highlight: an arrow pressed while it was on its way no longer counts.
+    moved = false
   } catch (e) {
     if (n !== seq) return
     listedFor = undefined
