@@ -21,6 +21,16 @@ for the wire details.
   `docs/protocol.md` (Crew runs); hosted crews and worktree cleanup are below
   under Future features.
 
+## Delivered (2026-10-01)
+
+- **Round 3**: the deferred items of rounds 1 and 2 and the crew storage of
+  plan 1; then the sidebar rail, example crews, the working-directory picker
+  with the git check, agent availability, shell completion and fullscreen on
+  every page. See the README (Sidebar and keyboard shortcuts, Crews, Agent
+  catalog, Shell completion) and `docs/protocol.md` (`GET /api/paths`,
+  `GET /api/git/check`, `POST /api/crews/examples`, `available` and `site` on
+  `GET /api/catalog`). The round 3 decisions below describe what exists.
+
 ## Planned
 
 ### Client only (no protocol change)
@@ -225,13 +235,15 @@ open deferred item from rounds 1 and 2, then the features below.
 - **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES=1`)
   seeds example crews once: ids `example-todo-app`, `example-test-fixer`,
   `example-docs-writer`, `example-dependency-upgrade`; a crew whose id exists
-  is left alone. Members use the `claude` and `codex` built-ins with real
-  role prompts and start conditions (the todo app: a lead that plans, two
-  builders after the lead, a tester after the builders); `cwd` is the
-  server's default working directory; isolation `worktree`. The empty Crews
-  page offers "Load the examples", which calls `POST /api/crews/examples`
-  (admin, same seeding, same once-only rule). The examples are data, not
-  built-ins: editing or deleting them is normal.
+  is left alone. Members use the `claude` and `codex` built-ins with real role
+  prompts and start conditions (the todo app: a lead that plans, two builders
+  after the lead, a tester after the second builder, since a start condition
+  names one member; every member that starts after another begins by merging
+  that member's branch, `crew/$CONDUCTOR_RUN/<member>`, because a worktree
+  starts from `HEAD`); `cwd` is the server's default working directory;
+  isolation `worktree`. The empty Crews page offers "Load the examples", which
+  calls `POST /api/crews/examples` (admin, same seeding, same once-only rule).
+  The examples are data, not built-ins: editing or deleting them is normal.
 - **Working-directory autocomplete.** `GET /api/paths?prefix=<path>&limit=50`
   (admin) lists child directories of the longest existing directory in the
   prefix, confined to `allowedRoots` through the same resolution as
@@ -241,7 +253,7 @@ open deferred item from rounds 1 and 2, then the features below.
   directories a worktree crew can use. The crew editor and the Launch dialog
   use one `DirInput` combobox fed by it (debounced, keyboard navigable).
 - **Git check.** `GET /api/git/check?cwd=<path>` (admin) answers
-  `{inRepo, toplevel, hasCommit, message}` with the same rules the launch
+  `{inRepo, toplevel?, hasCommit, message}` with the same rules the launch
   uses (`git rev-parse` as argv, under the allowed roots). The crew editor
   shows the state beside the working directory and explains why Launch with
   worktree isolation would be refused; the launch handler's 409 stays as the
@@ -252,8 +264,8 @@ open deferred item from rounds 1 and 2, then the features below.
   per line, exit 0 and silent when the server is unreachable or the token is
   missing), using `CONDUCTOR_SERVER` and `CONDUCTOR_ADMIN_TOKEN` from the
   environment. `conductor completion install` appends one marked `source`
-  line to `~/.zshrc` or `~/.bashrc` (idempotent; refuses a file not owned by
-  the user). No new dependency.
+  line to `~/.zshrc` or `~/.bashrc` (idempotent; refuses a file, a link or a
+  directory not owned by the user). No new dependency.
 - **Fullscreen everywhere.** The document-fullscreen toggle that the wall and
   the carousel have (`useFullscreenToggle`, the `F` key, Alt+F in a terminal)
   moves to the layout: one button in every page header and one shortcut
@@ -269,8 +281,31 @@ open deferred item from rounds 1 and 2, then the features below.
 
 ### Open verification (round 3)
 
-- The example crews' role prompts against a live Claude Code and Codex.
-- The completion scripts in a real zsh and bash session.
+- The example crews' role prompts in a live run against Claude Code and Codex:
+  whether each `after` member's merge of its predecessor's branch works for
+  each agent, and whether the todo app's tester finds core's branch when it
+  waits for it. The git sequence was run by hand; no agent was.
+- The completion scripts in a real zsh and bash session. They were driven
+  through a pseudo-terminal with `zsh -f -i` and `bash --norc -i` (plain
+  `compinit`), not `zsh -ic` or `bash -ic` with a user's own rc files or a
+  framework such as oh-my-zsh, and `completion install` was run against scratch
+  files, never a real `~/.zshrc`. bash 3.2 (the one macOS ships) is untested
+  and may not support `source <(...)`.
+- The built-in agents' `site` URLs (twelve, in `internal/catalog/defaults.go`),
+  each opened in a browser by hand: they ship as best known and a test checks
+  their shape only.
+- Entering fullscreen with the `F` key and the header button in a real browser:
+  headless Chromium did not grant it, so the headless checks emulated the
+  Fullscreen API and counted the requests.
+- The picker, the rail and the Launch dialog's server tab on a real phone (the
+  slideover) and at 1024 px; they were only looked at in headless Chromium.
+- The sidebar's width across a Nuxt UI upgrade. Nuxt UI 4.11.2 has no size
+  model or event for `UDashboardSidebar`, so the width kept in localStorage
+  (`conductor.sidebar.size`) is read from the `--width` style on the sidebar's
+  root after a drag or a double-click, and the saved width starts it through
+  `defaultSize`; the headless check of this passed at 4.11.2 only.
+- Wording: the crew members table says "After X idle" where the engine and the
+  example prompts say "reports done". It is the same condition; pick one.
 
 ### Deferred items to close (plan 1 of round 3)
 

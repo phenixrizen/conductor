@@ -121,10 +121,22 @@ the footer says which session is next.
 
 ## Sidebar and keyboard shortcuts
 
-The sidebar hides completely with the panel button in its header or
-**Ctrl+B** (**⌘B** on a Mac); the choice is remembered per browser, and a
-button in every page's navbar brings it back. Press **?** (or use
-**Shortcuts** in the sidebar) for the list of shortcuts on the current screen.
+The sidebar collapses to an icon rail with the panel button in its header or
+**Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch
+button, a search button that opens the full sidebar on its filter, the pages
+and the sidebar's buttons as icons with tooltips (the Wall's count as an amber
+chip), and every session as its agent's initials with the amber dot when it
+needs you, the members of a running crew together under its name, which links
+to the crew view. Click one to open it. The panel button at the bottom of the
+rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width
+window, **/**, which then focuses the filter. The mode and the full sidebar's
+width are remembered per browser (localStorage keys `conductor.sidebar.mode`
+and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
+the rail). On a phone the sidebar is a drawer. **F** toggles fullscreen on
+every page (**Alt+F** in a terminal); every page header has the button (where
+the browser can do it), and the key is ignored while you type in a field or
+have a select focused. Press **?** (or use **Shortcuts** in the sidebar) for
+the list of shortcuts on the current screen.
 Plain keys reach the agent while a terminal has focus, so they only work
 outside it; hold **Alt** with the same key (**Alt+N**, **Alt+W**, **Alt+←**)
 to use a shortcut without leaving the terminal. Your display name defaults to
@@ -374,6 +386,32 @@ typed. Crews are saved one file each, `crews/<id>.json` in the data directory
 on the server only for now (members are ordinary server sessions, under
 `allowedRoots`); the **My machine** option is disabled.
 
+The working-directory field completes as you type: the server lists the
+directories under its allowed roots, at most 50 at a time (hidden ones once
+you type the dot), marking the ones that are git repositories with a commit,
+which a crew with worktrees needs. The editor says under the field whether
+the crew could launch there with worktrees; the launch itself still decides
+(`409 not_a_repo`). The Launch dialog's working directory completes the same
+way. A crew whose member's agent is not installed on the server is refused at
+launch (`invalid_crew`, naming the member).
+
+**Example crews.** `conductor serve --examples` (or `CONDUCTOR_EXAMPLES=1`)
+adds four example crews the first time: `example-todo-app` (a lead that
+plans, two builders after it, a tester after the second builder),
+`example-test-fixer`, `example-docs-writer` and `example-dependency-upgrade`,
+each using Claude Code and Codex, the server's default working directory and a
+worktree per member. They are ordinary crews once saved: edit or delete them
+freely. A crew whose id has a file is never touched, so edits survive the
+flag, and a deleted example comes back on the next `--examples`. The empty
+**Crews** page offers **Load the examples**, which does the same
+(`POST /api/crews/examples`). A worktree starts from the checkout's `HEAD`, so
+what an earlier member wrote is on its branch only: a member that starts after
+another begins by merging that member's branch (`crew/$CONDUCTOR_RUN/<member>`,
+the run's id being in its environment), and the todo app's tester merges the
+lead's and the second builder's, then waits for the first builder's and merges
+that too. The todo app writes files in its working directory, so point it at a
+fresh repository with one commit, not at a real project.
+
 A member starts `immediately` at launch, `after <member>` once that member,
 with its own prompt typed, first reports it is done (idle), or `manual`, when
 you press **Start now** on its tile. A member's role prompt is typed into its
@@ -446,6 +484,7 @@ nothing else happens.
 
 ```bash
 conductor crews                        # one line per saved crew: id, name, members
+conductor crews --ids                  # the ids only, one per line (for shell completion)
 conductor up <crew-id> [--open]        # launch a crew; prints the run, its URL and its view link
 ```
 
@@ -469,6 +508,23 @@ Limits:
 - Runs live in memory: the server keeps up to 100, and a restart forgets them
   (the worktrees stay). Saved crews survive.
 
+## Shell completion
+
+`conductor completion zsh` or `conductor completion bash` prints a completion
+script: subcommands, flags and their values, and for `conductor up` the crew
+ids, read from the server as you type through `conductor crews --ids` (which
+prints ids only, and nothing, with exit 0, when there is no admin token in
+`CONDUCTOR_ADMIN_TOKEN` or the server in `CONDUCTOR_SERVER` does not answer
+within two seconds). The ids are only ever offered as words: nothing the server
+answers is run by your shell, and an id not shaped like a crew's is dropped on
+both sides. Load it with `source <(conductor completion zsh)` in `~/.zshrc`
+(after `compinit`), or let `conductor completion install` append a line that
+does so, marked `# conductor completion`, to `~/.zshrc` or `~/.bashrc` (the
+shell from `$SHELL`, or `--shell`; the file from `--rc`); run again it changes
+nothing, and it refuses a file, a link or a directory that is not yours, naming
+it. After a zsh install it says the rc file must run `compinit` before that
+line.
+
 ## Configuration
 
 `conductor serve --config conductor.json` reads a JSON file; every field has a
@@ -490,6 +546,7 @@ Limits:
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
+| — | `CONDUCTOR_EXAMPLES` | off | `1` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
 
 ### Upgrading
 
@@ -558,19 +615,32 @@ generic agent icon.
 saved as `catalog.json` in the data directory (`dataDir`) and layered over the
 configured catalog at startup: an agent with the ID of a built-in or configured
 one replaces it, and deleting that entry brings the original back. Such an
-entry inherits what it leaves out: the original's `adapter` and `signal`, and
-every `env` value it holds as `***`, which the Agents page stores for a value
-the form did not change (or one equal to the original's), so a change to that
-value in the config file reaches it. Env keys it does not list are not
-inherited: an API client that omits `env` drops every value of the original,
-and a key the config file adds later does not reach the entry. An agent in the
-config file that replaces a built-in replaces it whole. Hiding an agent removes
-it from the launch dialog and lists it under **Hidden** on the Agents page, where **Restore** brings it back as it was; sessions already
+entry inherits what it leaves out: the original's `adapter`, `signal` and
+`site`, and every `env` value it holds as `***`, which the Agents page stores
+for a value the form did not change (or one equal to the original's), so a
+change to that value in the config file reaches it. Env keys it does not list
+are not inherited: an API client that omits `env` drops every value of the
+original, and a key the config file adds later does not reach the entry. An
+agent in the config file that replaces a built-in replaces it whole. Hiding an
+agent removes it from the launch dialog and lists it under **Hidden** on the
+Agents page, where **Restore** brings it back as it was; sessions already
 running are not affected. The config file is never written. The server
 refuses to start when `catalog.json` cannot be parsed or holds an invalid
 agent, rather than overwrite it. The form checks the command against the
 server's `PATH`, and an agent whose program is missing there can still be
 saved, for use with `conductor host`.
+
+**Installed agents.** The Agents page says which agents are installed on the
+server (the program of their command resolves there, checked on every visit
+and kept for 30 seconds) and links to the website of an agent that has one:
+the built-ins name theirs, and the form takes one (`site`, an `https://`
+address) for an agent you add. Any program of that name on the server's `PATH`
+counts, so the Go migration tool `goose` makes the Goose agent show as
+installed, and a command given as a relative path (`./agent.sh`) counts as
+installed, because it resolves in the session's directory. The Launch dialog's
+**Server** tab offers only the installed ones (**My machine** offers them all:
+what is installed there is your machine's business), the crew editor marks the
+others, and a crew whose member's agent is not installed is refused at launch.
 
 Every agent, from the config file or the UI, is held to the same limits: the ID
 matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
@@ -578,11 +648,13 @@ matches `[a-z0-9-]{1,32}`, the name is at most 60 characters, the description
 most 32 keys, `envPassthrough` (names of server environment variables the agent
 may inherit) at most 32 names, an `env` key or `envPassthrough` name is at most
 128 bytes and an `env` value at most 16384 bytes, `cwd` is at most 4096 bytes
-without NUL, `icon` matches `[a-z0-9][a-z0-9:-]{0,63}`, and a signal `pattern`
-(a regular expression) at most 200 bytes that does not match an empty line. An
-`adapter`, if an agent names one, matches `[a-z0-9-]{1,32}` and must be one
-Conductor has, in the config file (or the catalog file) as on the Agents page:
-the server refuses to start with an unknown one.
+without NUL, `icon` matches `[a-z0-9][a-z0-9:-]{0,63}`, `site` is an `https://`
+URL with a host name and a valid port, no user info or white space, of at most
+200 bytes, and a signal `pattern` (a regular expression) at most 200 bytes that
+does not match an empty line. An `adapter`, if an agent names one, matches
+`[a-z0-9-]{1,32}` and must be one Conductor has, in the config file (or the
+catalog file) as on the Agents page: the server refuses to start with an
+unknown one.
 
 ## Security model and limits
 

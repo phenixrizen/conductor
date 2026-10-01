@@ -85,8 +85,8 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
 
 | Package | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `version` |
-| `internal/cli` | flag parsing only |
+| `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
+| `internal/cli` | flag parsing, help and completion text (the completion table and scripts, the rc-file line); no business logic |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings) |
 | `internal/store` | atomic JSON documents in the data directory |
