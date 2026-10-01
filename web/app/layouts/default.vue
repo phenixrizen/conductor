@@ -57,15 +57,13 @@ const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
   { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
-  // The "New" tags are for this release only.
   {
     label: 'Crews',
     icon: 'i-lucide-users',
     to: '/crews',
     active: route.path.startsWith('/crews') || runRoute.value,
-    badge: { label: 'New', color: 'primary', variant: 'subtle' },
   },
-  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events', badge: { label: 'New', color: 'primary', variant: 'subtle' } },
+  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
 ])
 
 function toggleTheme() {
