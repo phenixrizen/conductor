@@ -284,8 +284,9 @@ watch(id, () => {
         <template #right>
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
-          <UButton label="Files" icon="i-lucide-folder-open" color="neutral" variant="outline" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles" />
-          <UButton label="Share" icon="i-lucide-share-2" @click="share = true" />
+          <!-- Icons only on a phone, as on the crew view: the labels would push the name off the bar. -->
+          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
+          <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
           <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
