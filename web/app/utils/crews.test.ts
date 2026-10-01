@@ -13,6 +13,7 @@ import {
   memberNameError,
   memberNameFrom,
   memberStatus,
+  pageAfterDelete,
   RUN_NAME_RETRY_MS,
   RunNameAsks,
   runActive,
@@ -361,6 +362,16 @@ describe('summaryOf', () => {
     const s = summaryOf(info)
     expect(s).toEqual({ id: info.id, name: info.name, cwd: info.cwd, where: info.where, isolation: info.isolation, members: info.members.map((m) => ({ name: m.name, agentId: m.agentId })), updatedAt: info.updatedAt })
     expect(JSON.stringify(s)).not.toContain('prompt')
+  })
+})
+
+describe('pageAfterDelete', () => {
+  it('steps back from a page the delete emptied, and only then', () => {
+    expect(pageAfterDelete(3, 0)).toBe(2)
+    expect(pageAfterDelete(2, 0)).toBe(1)
+    expect(pageAfterDelete(1, 0)).toBe(1)
+    expect(pageAfterDelete(2, 4)).toBe(2)
+    expect(pageAfterDelete(1, 99)).toBe(1)
   })
 })
 

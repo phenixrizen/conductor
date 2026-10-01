@@ -54,7 +54,10 @@ func migrate(st, dir *store.Store) (notices []error, err error) {
 		seen[c.ID] = true
 		doc.Crews[i] = c
 	}
-	migrated := freeName(path + ".migrated")
+	migrated, err := freeName(path + ".migrated")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	for _, c := range doc.Crews {
 		file := filepath.Join(dir.Dir(), c.ID+".json")
 		want, err := store.Encode(c)
@@ -94,14 +97,19 @@ func holds(p string, want []byte) bool {
 }
 
 // freeName returns p, or p.2, p.3 and so on, the first that does not exist.
-func freeName(p string) string {
+// An error other than "does not exist" is returned: it would come again.
+func freeName(p string) (string, error) {
 	for n := 1; ; n++ {
 		q := p
 		if n > 1 {
 			q = p + "." + strconv.Itoa(n)
 		}
-		if _, err := os.Lstat(q); errors.Is(err, fs.ErrNotExist) {
-			return q
+		_, err := os.Lstat(q)
+		if errors.Is(err, fs.ErrNotExist) {
+			return q, nil
+		}
+		if err != nil {
+			return "", err
 		}
 	}
 }

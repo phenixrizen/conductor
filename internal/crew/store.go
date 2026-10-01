@@ -80,14 +80,17 @@ type Store struct {
 	now func() time.Time
 
 	// mu serialises the writers, so that a derived ID is chosen and taken in
-	// one step, and guards sums.
+	// one step, and the readers with them, so that a read never meets a save
+	// of this server halfway; it guards sums.
 	mu sync.Mutex
 	// sums caches each file's summary by document name, with the size and
 	// time the file had when it was read: one whose size or time changed is
 	// read again. commit and Delete drop the entry of the file they change,
 	// so a save that keeps the size and the time (a rename to a name of the
 	// same length within the clock's tick) is listed at once; a hand edit
-	// that keeps both shows once either changes.
+	// that keeps both shows once either changes. Only what the file holds is
+	// cached: a crew, or why it cannot be used. A failure to read the file
+	// (its mode, say) may pass, and is not.
 	sums map[string]cached
 }
 
@@ -95,17 +98,20 @@ type cached struct {
 	size int64
 	mod  time.Time
 	sum  Summary
-	err  error // the file cannot be used: it is left out of the list
+	err  error // ErrUnreadable or ErrNotFound: the file is left out of the list
 }
+
+// loadLimit is store.Store.LoadLimit, which a test replaces.
+var loadLimit = (*store.Store).LoadLimit
 
 // NewStore opens the crews of the data directory st: crews/ in it, made 0700
 // when missing, after the crews.json of an older Conductor is moved there
 // (migrate). It reads every crew file once. problems lists, each naming its
 // files, what was left as it was: a crew of crews.json that was not moved
 // because its file exists and holds something else (crews.json.migrated
-// keeps it), and a crew file that cannot be used (left out; the other crews
-// load). err is fatal: a crews.json that cannot be moved, or a crews
-// directory that cannot be made or read.
+// keeps it), and a crew file that cannot be used or read (left out; the
+// other crews load). err is fatal: a crews.json that cannot be moved, or a
+// crews directory that cannot be made or read.
 func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 	dir, err := st.Sub(crewsDir)
 	if err != nil {
@@ -124,27 +130,36 @@ func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 	}
 	problems = notices
 	for _, e := range entries {
-		if c := s.summaryOf(e); c.err != nil {
-			problems = append(problems, fmt.Errorf("%s: %w", filepath.Join(dir.Dir(), e.Name), c.err))
+		c, err := s.summaryOf(e)
+		if err == nil {
+			err = c.err
+		}
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", filepath.Join(dir.Dir(), e.Name), err))
 		}
 	}
 	return s, problems, nil
 }
 
 // summaryOf returns the cached summary of the file e, read again when its size
-// or time changed. The caller holds s.mu.
-func (s *Store) summaryOf(e store.Entry) cached {
+// or time changed, or why the file cannot be used. A failure to read it is
+// the error, and is not cached. The caller holds s.mu.
+func (s *Store) summaryOf(e store.Entry) (cached, error) {
 	if c, ok := s.sums[e.Name]; ok && c.size == e.Size && c.mod.Equal(e.ModTime) {
-		return c
+		return c, nil
 	}
 	c := cached{size: e.Size, mod: e.ModTime}
-	if crew, err := s.read(strings.TrimSuffix(e.Name, ".json")); err != nil {
-		c.err = err
-	} else {
+	crew, err := s.read(strings.TrimSuffix(e.Name, ".json"))
+	switch {
+	case err == nil:
 		c.sum = crew.summary()
+	case errors.Is(err, ErrUnreadable), errors.Is(err, ErrNotFound):
+		c.err = err
+	default:
+		return cached{}, err
 	}
 	s.sums[e.Name] = c
-	return c
+	return c, nil
 }
 
 // read loads the crew with the given ID from its file and checks it as the
@@ -152,13 +167,20 @@ func (s *Store) summaryOf(e store.Entry) cached {
 // MaxEncoded bytes, a valid crew, the ID its file is named for. ErrNotFound
 // when there is no file, an error wrapping ErrUnreadable when it cannot be
 // used. A failure of the file system itself (a *fs.PathError, which names
-// the data directory) is neither: it is a read failure.
+// the data directory) is neither: it is a read failure. A file another was
+// renamed over as it was read (store.ErrChanged) is read again, once, and
+// counts as unusable only when that happens again. The caller holds s.mu, so
+// a save of this server never meets the read; a hand-made one may.
 func (s *Store) read(id string) (Crew, error) {
 	if !idPattern.MatchString(id) {
 		return Crew{}, ErrNotFound
 	}
 	var c Crew
-	ok, err := s.st.LoadLimit(id+".json", &c, MaxEncoded)
+	ok, err := loadLimit(s.st, id+".json", &c, MaxEncoded)
+	if errors.Is(err, store.ErrChanged) {
+		c = Crew{}
+		ok, err = loadLimit(s.st, id+".json", &c, MaxEncoded)
+	}
 	var pe *fs.PathError
 	switch {
 	case errors.As(err, &pe):
@@ -181,7 +203,7 @@ func (s *Store) read(id string) (Crew, error) {
 // List returns the summaries of the crews ordered by name, ignoring case,
 // then by ID: those from offset on, at most limit of them, and how many there
 // are in all. The directory is read each time. A file that cannot be used is
-// left out and counts in no total.
+// left out and counts in no total; one that cannot be read fails the list.
 func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,7 +215,11 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	all := make([]Summary, 0, len(entries))
 	for _, e := range entries {
 		seen[e.Name] = true
-		if c := s.summaryOf(e); c.err == nil {
+		c, err := s.summaryOf(e)
+		if err != nil {
+			return nil, 0, err
+		}
+		if c.err == nil {
 			all = append(all, c.sum)
 		}
 	}
@@ -219,6 +245,8 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 // there is none, an error wrapping ErrUnreadable when it cannot be used, a
 // symbolic link included (store.LoadLimit does not follow one).
 func (s *Store) Get(id string) (Crew, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.read(id)
 }
 
@@ -303,12 +331,13 @@ func (s *Store) Delete(id string) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	taken, err := s.taken()
+	// Lstat, so that a link is there to delete whatever it names.
+	_, err := os.Lstat(filepath.Join(s.st.Dir(), id+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
-	}
-	if !taken[id] {
-		return false, nil
 	}
 	if err := s.st.Delete(id + ".json"); err != nil {
 		return false, fmt.Errorf("%w: delete %s.json: %w", ErrWrite, id, err)
@@ -334,8 +363,8 @@ func (s *Store) commit(c Crew) error {
 
 // taken returns the IDs that have an entry in the crews directory, usable or
 // not, a link included, so that no new crew takes the name of a file the
-// store cannot read and Delete removes such a file. It reads the directory
-// itself, since store.List leaves links out. The caller holds s.mu.
+// store cannot read. It reads the directory itself, since store.List leaves
+// links out. The caller holds s.mu.
 func (s *Store) taken() (map[string]bool, error) {
 	des, err := os.ReadDir(s.st.Dir())
 	if err != nil {

@@ -5,8 +5,8 @@ import { isEnded } from './attention'
 import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from './events'
 
 /**
- * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew as
- * listed (a CrewInfo, with id, createdAt and updatedAt) or members carrying page state can be passed as they are.
+ * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
+ * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt and updatedAt) or members carrying page state can be passed as they are.
  */
 export function toCrewInput(c: CrewInput): CrewInput {
   return {
@@ -127,6 +127,11 @@ export function argsFrom(text: string): string[] | undefined {
 /** A crew as the server would store it, for telling a draft from what is saved. */
 export function crewKey(c: CrewInput): string {
   return JSON.stringify(toCrewInput(c))
+}
+
+/** The page of the Crews list to show after a delete left `left` crews on page `page`: the one before, when the delete emptied a page past the first. */
+export function pageAfterDelete(page: number, left: number): number {
+  return left === 0 && page > 1 ? page - 1 : page
 }
 
 /** The summary GET /api/crews lists for `c`: what the list shows after a save, until the list is read again. */

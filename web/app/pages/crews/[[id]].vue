@@ -2,7 +2,7 @@
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { agentIcon } from '~/utils/agentIcons'
-import { crewKey, defaultCrew, holdViewLink, runActive, summaryOf, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, pageAfterDelete, runActive, summaryOf, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
 // The crews list and the editor of the selected crew. /crews/<id> selects a
@@ -269,6 +269,8 @@ async function confirmDelete() {
     deleteOpen.value = false
     toast.add({ title: 'Crew deleted', description: name, icon: 'i-lucide-trash-2', color: 'neutral' })
     router.replace('/crews')
+    // A page the delete emptied steps back, and its watcher reads it: the list never shows "No crews yet" while there are crews.
+    page.value = pageAfterDelete(page.value, crews.value.length)
   } catch (e) {
     fail('Delete failed', e)
   } finally {

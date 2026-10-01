@@ -10,7 +10,10 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -450,5 +453,138 @@ func TestASaveIsListedAtOnce(t *testing.T) {
 	}
 	if got := name(); got != "Carol" {
 		t.Fatalf("listed %q after a delete and a file put back by hand", got)
+	}
+}
+
+// Get reads a crew while it is saved and never takes it for unusable: Get
+// and a save take the store's lock, so the read never meets the rename (no
+// store.ErrChanged at all), and the crew read is the one or the other.
+func TestGetRacingAPutNeverSeesAnUnusableFile(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.Put(validCrew("c", "Crew 0")); err != nil {
+		t.Fatal(err)
+	}
+	real := loadLimit
+	t.Cleanup(func() { loadLimit = real })
+	var changed atomic.Int32
+	loadLimit = func(st *store.Store, name string, v any, limit int64) (bool, error) {
+		ok, err := real(st, name, v, limit)
+		if errors.Is(err, store.ErrChanged) {
+			changed.Add(1)
+		}
+		return ok, err
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := 1; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := s.Put(validCrew("c", fmt.Sprintf("Crew %d", i%2))); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for i := 0; i < 3000 && time.Now().Before(deadline); i++ {
+		if c, err := s.Get("c"); err != nil || c.ID != "c" {
+			t.Errorf("get %d: %q %v", i, c.ID, err)
+			break
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if n := changed.Load(); n != 0 {
+		t.Errorf("a read met a save %d times", n)
+	}
+}
+
+// A file that changes as it is read, another renamed into its place between
+// the check and the open (a save by hand, say), is read again, once: it
+// counts as unusable only when it changes again.
+func TestReadRetriesAFileThatChangedOnce(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.Put(validCrew("c", "Crew")); err != nil {
+		t.Fatal(err)
+	}
+	real := loadLimit
+	t.Cleanup(func() { loadLimit = real })
+	changes := 0
+	loadLimit = func(st *store.Store, name string, v any, limit int64) (bool, error) {
+		if changes > 0 {
+			changes--
+			return false, fmt.Errorf("store: %s %w", name, store.ErrChanged)
+		}
+		return real(st, name, v, limit)
+	}
+	changes = 1
+	if c, err := s.Get("c"); err != nil || c.Name != "Crew" {
+		t.Fatalf("changed once: %q %v", c.Name, err)
+	}
+	changes = 2
+	if _, err := s.Get("c"); !errors.Is(err, ErrUnreadable) || !strings.Contains(err.Error(), "changed while it was opened") {
+		t.Fatalf("changed twice: %v", err)
+	}
+}
+
+// A file the store cannot read for now (its mode, say) is a read failure, not
+// an unusable crew, and is not remembered as one: startup names it, the list
+// says it cannot read the crews, and once the file can be read again the crew
+// is listed, though the file kept its size and time.
+func TestAPassingReadFailureIsNotCached(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file of mode 0000")
+	}
+	_, st := newStore(t)
+	sub, err := st.Sub("crews")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.Save("c.json", validCrew("c", "Crew")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sub.Dir(), "c.json")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	s, problems, err := NewStore(st)
+	if err != nil || len(problems) != 1 || !strings.Contains(problems[0].Error(), path) || errors.Is(problems[0], ErrUnreadable) {
+		t.Fatalf("NewStore: %v %v", problems, err)
+	}
+	if _, _, err := s.List(0, 10); err == nil || errors.Is(err, ErrUnreadable) {
+		t.Fatalf("list: %v", err)
+	}
+	if _, err := s.Get("c"); err == nil || errors.Is(err, ErrUnreadable) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("get: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if page, total, err := s.List(0, 10); err != nil || total != 1 || page[0].ID != "c" {
+		t.Fatalf("list once readable: %v of %d, %v", ids(page), total, err)
+	}
+}
+
+// freeName stops at an error other than "not there": it does not loop.
+func TestFreeNameReportsWhatItCannotCheck(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Under a regular file, Lstat fails with "not a directory".
+	if name, err := freeName(filepath.Join(file, "crews.json.migrated")); err == nil {
+		t.Fatalf("freeName: %q", name)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x.migrated"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if name, err := freeName(filepath.Join(dir, "x.migrated")); err != nil || name != filepath.Join(dir, "x.migrated.2") {
+		t.Fatalf("freeName: %q %v", name, err)
 	}
 }

@@ -352,41 +352,53 @@ func TestCrewsList(t *testing.T) {
 	if stdout != want {
 		t.Fatalf("stdout:\n%q\nwant:\n%q", stdout, want)
 	}
-	if len(*seen) != 1 || (*seen)[0] != (request{http.MethodGet, "/api/crews", "offset=0&limit=500", "Bearer " + secretToken}) {
+	if len(*seen) != 1 || (*seen)[0] != (request{http.MethodGet, "/api/crews", "offset=0&limit=100", "Bearer " + secretToken}) {
 		t.Fatalf("requests: %+v", *seen)
 	}
 	noSecret(t, stdout, stderr)
 }
 
-// conductor crews asks for page after page until it has the total.
+// conductor crews asks for page after page until it has the total, and takes
+// a page of more than 1 MiB: crews with long working directories.
 func TestCrewsPagesThroughTheList(t *testing.T) {
 	clearConductorEnv(t)
 	var queries []string
+	cwd := strings.Repeat("d", 12000)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
 		var body strings.Builder
-		body.WriteString(`{"total":501,"crews":[`)
-		n := 500
-		if r.URL.Query().Get("offset") == "500" {
+		body.WriteString(`{"total":101,"crews":[`)
+		n := 100
+		if r.URL.Query().Get("offset") == "100" {
 			n = 1
 		}
 		for i := range n {
 			if i > 0 {
 				body.WriteString(",")
 			}
-			fmt.Fprintf(&body, `{"id":"c-%s-%d","name":"C","members":[]}`, r.URL.Query().Get("offset"), i)
+			fmt.Fprintf(&body, `{"id":"c-%s-%d","name":"C","cwd":"%s","members":[]}`, r.URL.Query().Get("offset"), i, cwd)
 		}
 		body.WriteString("]}")
 		w.Write([]byte(body.String()))
 	}))
 	t.Cleanup(srv.Close)
 	code, stdout, stderr, err := crews(t, "--server", srv.URL, "--token", secretToken)
-	if code != 0 || err != nil || strings.Count(stdout, "\n") != 501 || !strings.Contains(stdout, "c-500-0\t") {
+	if code != 0 || err != nil || strings.Count(stdout, "\n") != 101 || !strings.Contains(stdout, "c-100-0\t") {
 		t.Fatalf("exit %d %v\nstderr:\n%s", code, err, stderr)
 	}
-	if !slices.Equal(queries, []string{"offset=0&limit=500", "offset=500&limit=500"}) {
+	if !slices.Equal(queries, []string{"offset=0&limit=100", "offset=100&limit=100"}) {
 		t.Fatalf("queries %v", queries)
+	}
+}
+
+// A page of crews is still bounded: more than 4 MiB is refused.
+func TestCrewsOversizedReply(t *testing.T) {
+	clearConductorEnv(t)
+	srv, _ := stubServer(t, http.StatusOK, `{"total":1,"crews":[],"pad":"`+strings.Repeat("x", maxCrewsReply)+`"}`)
+	code, stdout, _, err := crews(t, "--server", srv.URL, "--token", secretToken)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "larger than 4 MiB") || stdout != "" {
+		t.Fatalf("exit %d %v\nstdout:\n%s", code, err, stdout)
 	}
 }
 

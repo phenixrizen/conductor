@@ -21,8 +21,12 @@ import (
 const (
 	// defaultServer is where conductor serve listens unless told otherwise.
 	defaultServer = "http://localhost:8080"
-	// maxReply bounds what is read of a reply: the crews and a run are small.
+	// maxReply bounds what is read of a reply: a run is small.
 	maxReply = 1 << 20
+	// maxCrewsReply bounds a page of crews, which the server bounds by count,
+	// not by bytes: a summary with a cwd of 4096 bytes and 12 members comes
+	// to about 26 KB once escaped, so a page of crewsPage at most 2.6 MB.
+	maxCrewsReply = 4 << 20
 )
 
 // requestTimeout bounds one request. conductor up waits for the launch reply,
@@ -142,7 +146,7 @@ func printableURL(s string) bool {
 }
 
 // crewsPage is how many crews conductor crews asks for at a time.
-const crewsPage = 500
+const crewsPage = 100
 
 // runCrews lists the saved crews, one per line.
 func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
@@ -182,7 +186,7 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 			Crews []crewLine `json:"crews"`
 			Total int        `json:"total"`
 		}
-		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), &reply); err != nil {
+		if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), &reply, maxCrewsReply); err != nil {
 			return 1, err
 		}
 		all = append(all, reply.Crews...)
@@ -244,8 +248,14 @@ type apiClient struct {
 
 // do sends one request without a body and decodes the 2xx reply into out. Any
 // other status is an error carrying the API's code and message. An error names
-// the server's host, never the path, the query or the token.
+// the server's host, never the path, the query or the token. A reply of more
+// than maxReply bytes is an error.
 func (c *apiClient) do(ctx context.Context, method, path string, out any) error {
+	return c.doLimit(ctx, method, path, out, maxReply)
+}
+
+// doLimit is do with a reply of at most limit bytes, a whole number of MiB.
+func (c *apiClient) doLimit(ctx context.Context, method, path string, out any, limit int) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
@@ -262,12 +272,12 @@ func (c *apiClient) do(ctx context.Context, method, path string, out any) error 
 		return c.transportError(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReply+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return c.transportError(err)
 	}
-	if len(body) > maxReply {
-		return fmt.Errorf("the reply from %s is larger than 1 MiB", c.host)
+	if len(body) > limit {
+		return fmt.Errorf("the reply from %s is larger than %d MiB", c.host, limit>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return c.statusError(resp.Status, body)

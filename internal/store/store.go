@@ -130,6 +130,11 @@ func (s *Store) Load(name string, v any) (bool, error) {
 	return true, nil
 }
 
+// ErrChanged is what LoadLimit's error wraps when the file it opened is not
+// the one it checked: another was renamed into its place in between, as a save
+// does. It passes: a caller may read again.
+var ErrChanged = errors.New("changed while it was opened")
+
 // LoadLimit is Load for a document of at most limit bytes. A larger one is an
 // error that says so, and is not read past the limit. Only a regular file is
 // read: a symbolic link, which List leaves out too, is refused rather than
@@ -160,8 +165,12 @@ func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error) {
 	defer f.Close()
 	// The file opened is the one checked: a link put in its place meanwhile
 	// is refused too.
-	if ofi, err := f.Stat(); err != nil || !os.SameFile(fi, ofi) {
-		return false, fmt.Errorf("store: %s changed while it was opened", name)
+	ofi, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(fi, ofi) {
+		return false, fmt.Errorf("store: %s %w", name, ErrChanged)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
