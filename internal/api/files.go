@@ -10,11 +10,14 @@ import (
 
 // fileDeny returns what no file read of a server session may reach, even
 // inside its working directory: the data directory, whose catalog.json holds
-// the agents' env secrets, the config file, which holds the admin token and
-// host tokens, and the catalog file (catalogPath), which can hold env secrets.
-// It names both the configured data directory and the one st writes to, should
-// the two ever differ. A directory is denied with everything in it, a file on
-// its own (see session.ResolvePath).
+// the agents' env secrets; the config file, which holds the admin token and
+// host tokens; and the catalog file (catalogPath), which can hold env secrets.
+// For each of the two files there is also a star entry (see
+// session.ResolvePath): beside it, every name that starts with its name,
+// ignoring case, such as the conductor.json.bak or conductor.json~ an editor
+// leaves. It names both the configured data directory and the one st writes
+// to, should the two ever differ. A directory is denied with everything in
+// it, a file on its own.
 func fileDeny(cfg *config.Config, st *store.Store) []string {
 	var deny []string
 	if cfg.DataDir != "" {
@@ -25,7 +28,7 @@ func fileDeny(cfg *config.Config, st *store.Store) []string {
 	}
 	for _, file := range []string{cfg.Path, cfg.CatalogPath} {
 		if file != "" {
-			deny = append(deny, file)
+			deny = append(deny, file, file+"*")
 		}
 	}
 	return deny

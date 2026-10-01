@@ -151,7 +151,8 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 // ResolvePath turns raw into an absolute path under root, following symlinks
 // and rejecting anything that escapes root, enters .git/objects or is one of
 // the deny entries or inside one (the server passes its data directory, its
-// config file and its catalog file).
+// config file and its catalog file, and a star entry for each of the two files,
+// see insideAny).
 func ResolvePath(root, raw string, deny []string) (string, error) {
 	if raw == "" {
 		raw = "."
@@ -207,16 +208,31 @@ func ResolvePath(root, raw string, deny []string) (string, error) {
 // everything in it, or a single file, which only real itself can match.
 // Entries are compared as files (os.SameFile), not by name, so neither a
 // symlink to one, a hard link to a denied file, nor another spelling on a
-// case-insensitive file system gets around the rule. An entry that does not
-// exist denies nothing and is skipped.
+// case-insensitive file system gets around the rule. An entry that ends in
+// "*" denies, in the directory it names, everything whose name starts with the
+// rest of its last element, ignoring case: "/etc/conductor/conductor.json*"
+// denies conductor.json.bak and Conductor.JSON~ there, and the directory is
+// compared as a file too. An entry that does not exist, or whose directory
+// does not, denies nothing and is skipped.
 func insideAny(real string, deny []string) bool {
+	type prefix struct {
+		dir  os.FileInfo
+		name string // lower case
+	}
 	var denied []os.FileInfo
+	var prefixes []prefix
 	for _, d := range deny {
+		if p, ok := strings.CutSuffix(d, "*"); ok {
+			if fi, err := os.Stat(filepath.Dir(p)); err == nil {
+				prefixes = append(prefixes, prefix{fi, strings.ToLower(filepath.Base(p))})
+			}
+			continue
+		}
 		if fi, err := os.Stat(d); err == nil {
 			denied = append(denied, fi)
 		}
 	}
-	if len(denied) == 0 {
+	if len(denied) == 0 && len(prefixes) == 0 {
 		return false
 	}
 	// Every ancestor counts, above root too: a session may run inside one.
@@ -225,6 +241,16 @@ func insideAny(real string, deny []string) bool {
 			for _, d := range denied {
 				if os.SameFile(fi, d) {
 					return true
+				}
+			}
+		}
+		if len(prefixes) > 0 {
+			if dir, err := os.Stat(filepath.Dir(p)); err == nil {
+				base := strings.ToLower(filepath.Base(p))
+				for _, pr := range prefixes {
+					if strings.HasPrefix(base, pr.name) && os.SameFile(dir, pr.dir) {
+						return true
+					}
 				}
 			}
 		}

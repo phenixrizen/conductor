@@ -601,6 +601,45 @@ func TestFileReadsNeverReachTheConfigOrCatalogFile(t *testing.T) {
 	}
 }
 
+// The copies an editor leaves beside the config file and the catalog file
+// (.bak, ~, .orig) are as secret as the files: no read reaches them, over
+// HTTP or in-band. The example config beside them still reads.
+func TestFileReadsNeverReachCopiesOfTheConfigOrCatalogFile(t *testing.T) {
+	var configFile, catalogFile string
+	e := newTestEnv(t, func(c *config.Config) {
+		configFile = filepath.Join(c.DefaultCwd, "conductor.json")
+		catalogFile = filepath.Join(c.DefaultCwd, "agents.json")
+		c.Path, c.CatalogPath = configFile, catalogFile
+	})
+	copies := []string{"conductor.json.bak", "conductor.json~", "CONDUCTOR.json.orig", "agents.json.bak", "agents.json~"}
+	for _, name := range append(copies, "conductor.example.json") {
+		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+	for _, p := range copies {
+		if status, got, code := e.getFile(id, view, p, "raw"); status != http.StatusForbidden || code != "denied" || strings.Contains(got, adminToken) {
+			t.Errorf("HTTP %q: %d %s", p, status, got)
+		}
+	}
+	if status, _, _ := e.getFile(id, view, "conductor.example.json", "raw"); status != http.StatusOK {
+		t.Fatalf("the example config: %d", status)
+	}
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range copies {
+		reqID := fmt.Sprintf("c%d", i)
+		c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p}))
+		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+			t.Errorf("file_get %q: %+v %q", p, h, b)
+		}
+	}
+}
+
 func TestUnknownRoutesAndNoUI(t *testing.T) {
 	e := newTestEnv(t, nil)
 	resp, _ := e.do("GET", "/api/nope", adminToken, nil)

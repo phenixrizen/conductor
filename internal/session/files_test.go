@@ -212,3 +212,38 @@ func TestResolvePathDenyListIgnoresSpelling(t *testing.T) {
 		}
 	}
 }
+
+// An entry ending in "*" denies, in its directory, every name that starts with
+// the rest of its last element, ignoring case: the copies an editor or a
+// person leaves beside a config file hold its secrets too. The files beside it
+// with other names still read, and an entry whose directory is gone denies
+// nothing.
+func TestResolvePathDeniesCopiesBesideADeniedFile(t *testing.T) {
+	root := setupTree(t)
+	for _, name := range []string{"conductor.json", "conductor.json.bak", "conductor.json~", "Conductor.JSON.orig", "conductor.example.json", "other.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(`{"adminToken":"secret"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "conductor.json.bak"), filepath.Join(root, "sub", "innocent.txt")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(root, "conductor.json")
+	deny := []string{cfg, cfg + "*"}
+	for _, p := range []string{"conductor.json", "conductor.json.bak", "conductor.json~", "Conductor.JSON.orig", "sub/innocent.txt", "conductor.json.swp"} {
+		if r, err := ResolvePath(root, p, deny); err == nil {
+			t.Errorf("%q: resolved to %s, want it denied", p, r)
+		}
+		if h, body := ReadPath(root, p, false, deny); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || body != nil {
+			t.Errorf("%q: %+v %q", p, h, body)
+		}
+	}
+	for _, p := range []string{"conductor.example.json", "other.json", ".", "sub/file.go"} {
+		if _, err := ResolvePath(root, p, deny); err != nil {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+	if _, err := ResolvePath(root, "other.json", []string{filepath.Join(root, "gone", "x.json*")}); err != nil {
+		t.Fatalf("an entry in a directory that does not exist: %v", err)
+	}
+}

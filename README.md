@@ -562,12 +562,13 @@ the server refuses to start with an unknown one.
   a curated `catalog` does not limit what the **Agents** page can add. Env
   values saved from the UI, secrets included, are stored in `catalog.json`
   (mode 0600) in the data directory. The file viewer of a server session never
-  serves that directory, the config file or the catalog file, but agents run
-  as the same user and can read them. Changing a built-in or configured agent
-  stores the form's command, cwd, icon, adapter and signal in full; only the
-  env values left unchanged follow the original, so a secret rotated in the
-  config file reaches the agent at the next start, while a value set on the
-  Agents page is stored in `catalog.json`.
+  serves that directory, the config file or the catalog file, nor a file beside
+  those two whose name starts with theirs (`conductor.json.bak`,
+  `conductor.json~`), but agents run as the same user and can read them.
+  Changing a built-in or configured agent stores the form's command, cwd, icon,
+  adapter and signal in full; only the env values left unchanged follow the
+  original, so a secret rotated in the config file reaches the agent at the
+  next start, while a value set on the Agents page is stored in `catalog.json`.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
 - Terminal output is not persisted. Sessions and links live in memory and are
