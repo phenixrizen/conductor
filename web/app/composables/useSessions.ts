@@ -173,8 +173,11 @@ export interface JoinInfo {
   label?: string
 }
 
-/** Why a broadcast skipped a member: waiting on a prompt, not running (no session yet, its prompt not typed yet, or ended), or not a member. */
-export type BroadcastSkipReason = 'needs_input' | 'not_running' | 'unknown'
+/**
+ * Why a broadcast skipped a member: waiting on a prompt, not running (no session yet, its prompt not typed yet, or ended), not a member, or
+ * typed without its Enter (a prompt came up during the pause before it; the line waits in the member's input).
+ */
+export type BroadcastSkipReason = 'needs_input' | 'not_running' | 'unknown' | 'no_enter'
 
 /** Reply of POST /api/runs/{run}/broadcast, both lists in the order asked. */
 export interface BroadcastResult {
@@ -253,6 +256,8 @@ export interface RunMember {
   endedAt?: string
   /** Why it ended before it ran: it could not start, or its process ended before its prompt was typed. */
   error?: string
+  /** Starting or running, and its session waits on a prompt (a trust question before its prompt, or its agent's question), as last read. */
+  needsInput?: boolean
   /**
    * GET /api/runs/{run} only: lines of tracked files its worktree adds and removes against the commit it began from,
    * committed or not (`git diff --shortstat <base>`; untracked files do not count, a branch merged into its own does).
@@ -275,6 +280,15 @@ export interface RunInfo {
   members: RunMember[]
   /** The run's own log, oldest first, at most 200 entries: launched, member started, prompt typed, run links created and revoked, stopped. */
   log: ActivityEntry[]
+  /**
+   * As last read: running while a member is pending, starting or running and none waits; needs_input while a starting or running member's
+   * session waits on a prompt (`needsInput` of them); stopped after a stop; finished once every member has ended. The live view is
+   * `runState` (utils/runs.ts), which brings it up to date with the sessions.
+   */
+  state: 'running' | 'needs_input' | 'stopped' | 'finished'
+  needsInput: number
+  /** The run's yolo choice, fixed at launch: every member, one added later included, follows it. */
+  yolo: boolean
 }
 
 export interface PathGit {

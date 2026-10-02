@@ -152,17 +152,17 @@ function memberSession(run: RunInfo, member: RunMember, sessions: readonly Sessi
 }
 
 /**
- * A member's state from the run as last read, brought up to date by its live session: a running member whose session waits on a prompt
- * `needs_input`, a member whose session ended `ended`, and a pending member whose session exists `starting`. A starting member is never
- * `needs_input`: its prompt is still to be typed.
+ * A member's state from the run as last read, brought up to date by its live session: a member whose session ended `ended`, a starting or
+ * running member whose session waits on a prompt `needs_input` (a starting one waits on its trust question: its prompt is held until a
+ * person answers), and a pending member whose session exists `starting`. Without a live session the run's own `needsInput` decides.
  */
 export function memberStatus(run: RunInfo, member: RunMember, sessions: readonly SessionInfo[]): MemberStatus {
   if (member.status === 'ended') return 'ended'
   const s = memberSession(run, member, sessions)
   if (s && isEnded(s.status)) return 'ended'
-  if (member.status === 'running') return s?.attention?.state === 'needs_input' ? 'needs_input' : 'running'
-  if (member.status === 'pending' && s) return 'starting'
-  return member.status
+  const waiting = s ? s.attention?.state === 'needs_input' : !!member.needsInput
+  if (member.status === 'pending') return s ? (waiting ? 'needs_input' : 'starting') : 'pending'
+  return waiting ? 'needs_input' : member.status
 }
 
 /** How many members wait on a prompt and how many others run (memberStatus). */
@@ -175,11 +175,6 @@ export function runCounts(run: RunInfo, sessions: readonly SessionInfo[]): { nee
     else if (st === 'running') running++
   }
   return { needs, running }
-}
-
-/** Whether a run still goes: not stopped, and a member has not ended. */
-export function runActive(run: RunInfo): boolean {
-  return !run.stoppedAt && run.members.some((m) => m.status !== 'ended')
 }
 
 /** One line of the crew activity card. */
@@ -234,6 +229,7 @@ const SKIP_REASON: Record<BroadcastSkipReason, string> = {
   needs_input: 'waiting on a prompt',
   not_running: 'not running',
   unknown: 'not a member',
+  no_enter: 'typed, no Enter: a question came up',
 }
 
 /** The toast after a broadcast: how many got the line, who, and who was skipped and why. */
@@ -307,38 +303,32 @@ export function takeViewLink(runId: string, now = Date.now()): { url: string; tt
   return { url: held.url, ttlSeconds: held.ttlSeconds }
 }
 
-/** How long a run name that could not be read waits before it is asked for again. */
-export const RUN_NAME_RETRY_MS = 5_000
-
-/**
- * Which run names the layout reads: each once, and again after a failure once RUN_NAME_RETRY_MS has passed; never again once the server
- * says it does not have the run (gone), as it does for a run forgotten past the kept-runs limit whose member sessions are still listed.
- */
-export class RunNameAsks {
-  /** By run: when it may be asked again; Infinity while asked or read. */
-  private next = new Map<string, number>()
-  /** The runs the server does not have: never asked again. */
-  private never = new Set<string>()
-  shouldAsk(id: string, now = Date.now()): boolean {
-    if (this.never.has(id)) return false
-    const at = this.next.get(id)
-    if (at !== undefined && now < at) return false
-    this.next.set(id, Infinity)
-    return true
-  }
-  failed(id: string, now = Date.now()): void {
-    if (!this.never.has(id)) this.next.set(id, now + RUN_NAME_RETRY_MS)
-  }
-  gone(id: string): void {
-    this.never.add(id)
-    this.next.delete(id)
-  }
-}
-
 /** A run link's member tile: its label and classes, from what its terminal last reported (`heard`), else the run's own status. */
 export function joinTileStatus(m: Pick<JoinRunMember, 'status'>, heard?: { status?: string; attention?: string }): { label: string; cls: string; dot: string } {
   const st = heard?.status ?? m.status
   if (heard?.attention === 'needs_input' && (st === 'running' || st === 'starting')) return { label: 'Needs input', cls: 'text-warning', dot: 'bg-warning' }
   if (st === 'running') return { label: 'Running', cls: 'text-success', dot: 'bg-success' }
   return { label: st.replace('_', ' '), cls: 'text-muted', dot: 'bg-neutral-400' }
+}
+
+/** A member as the broadcast bar weighs it: whether its session runs, and whether that session waits on a prompt. */
+export interface BroadcastMember {
+  name: string
+  live: boolean
+  waiting: boolean
+}
+
+/**
+ * The crew view's broadcast selection. Every member whose session runs is selected unless the person unticked it (`choices`, by name: the
+ * person's own ticks and unticks, which outlast every read of the run and every run event); a member that starts later is selected as it
+ * appears. `selected` is what the bar sends, in the run's order; `sending` the selected members the server will type into; `waiting` the
+ * selected members it will skip because their sessions wait on a prompt.
+ */
+export function broadcastSelection(members: readonly BroadcastMember[], choices: Readonly<Record<string, boolean>>): { selected: string[]; sending: string[]; waiting: string[] } {
+  const selected = members.filter((m) => choices[m.name] ?? m.live)
+  return {
+    selected: selected.map((m) => m.name),
+    sending: selected.filter((m) => m.live && !m.waiting).map((m) => m.name),
+    waiting: selected.filter((m) => m.live && m.waiting).map((m) => m.name),
+  }
 }

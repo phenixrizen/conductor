@@ -1,13 +1,17 @@
-import type { SessionInfo } from './useSessions'
+import type { RunInfo, SessionInfo } from './useSessions'
+import { ApiError } from './useApi'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
 import type { SessionActivity } from '~/utils/protocol'
+import { RunStore } from '~/utils/runs'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
 const CHIME_GAP_MS = 1500
 let lastChime = 0
 let stopEvents: (() => void) | undefined
+/** The runs of the live store: one per app, made by the first useAttention. */
+let runStore: RunStore | undefined
 
 export interface AttentionSettings {
   notifications: boolean
@@ -89,6 +93,35 @@ export function useAttention() {
     void version.value
     return Array.from(store.value.sessions.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   })
+
+  // The runs, beside the sessions: read on every snapshot (a stream that
+  // starts, or starts again), when a run event names one, and when a member
+  // session of one changes status; never on a timer. A reply older than one
+  // already applied is dropped (RunStore's tickets).
+  const runsVersion = useState<number>('attentionRunsVersion', () => 0)
+  const runs: RunStore = (runStore ??= new RunStore(
+    {
+      get: (id) =>
+        api.getRun(id).catch((e) => {
+          if (e instanceof ApiError && e.status === 404) return null
+          throw e
+        }),
+      list: () => api.listRuns(),
+    },
+    () => runsVersion.value++,
+  ))
+  /** Every run the server keeps, newest first. */
+  const runList = computed<RunInfo[]>(() => {
+    void runsVersion.value
+    return runs.list()
+  })
+  /** The runs' names by id, for the sidebar's run headers. */
+  const runNames = computed<Record<string, string>>(() => Object.fromEntries(runList.value.map((r) => [r.id, r.name])))
+  /** The run with this id as last read, if the store has it. */
+  function runOf(id: string): RunInfo | undefined {
+    void runsVersion.value
+    return runs.runs.get(id)
+  }
   const needsInput = computed(() => needingInput(sessions.value))
   const count = computed(() => needsInput.value.length)
   const connected = computed(() => store.value.connected)
@@ -112,6 +145,8 @@ export function useAttention() {
 
   function upsert(s: SessionInfo) {
     const prev = new Map(store.value.sessions)
+    // A member that starts, ends or goes changes its run as the run reports it.
+    if (s.crew && prev.get(s.id)?.status !== s.status) runs.schedule(s.crew.runId)
     store.value.sessions.set(s.id, s)
     react(prev, store.value.sessions)
     bump()
@@ -119,6 +154,8 @@ export function useAttention() {
   }
 
   function remove(id: string) {
+    const gone = store.value.sessions.get(id)
+    if (gone?.crew) runs.schedule(gone.crew.runId)
     store.value.sessions.delete(id)
     bump()
     events.forget(id)
@@ -225,10 +262,17 @@ export function useAttention() {
     if (!data.length) return
     try {
       const payload = JSON.parse(data.join('\n'))
-      if (event === 'snapshot') replaceAll(payload as SessionInfo[])
-      else if (event === 'session') upsert(payload as SessionInfo)
+      if (event === 'snapshot') {
+        replaceAll(payload as SessionInfo[])
+        // What changed while the stream was away: every run, once.
+        runs.readAll().catch(() => {})
+      } else if (event === 'session') upsert(payload as SessionInfo)
       else if (event === 'removed') remove((payload as { id: string }).id)
-      else if (event === 'activity') {
+      else if (event === 'run') {
+        const r = payload as { id: string; removed?: boolean }
+        if (r.removed) runs.remove(r.id)
+        else runs.schedule(r.id)
+      } else if (event === 'activity') {
         const { sessionId, ...entry } = payload as SessionActivity
         events.push(sessionId, entry)
       }
@@ -241,6 +285,8 @@ export function useAttention() {
     if (!admin.token.value) return
     try {
       replaceAll(await api.list())
+      // The fallback while the stream is down reads the runs with the sessions.
+      await runs.readAll()
       store.value.error = ''
     } catch (e) {
       store.value.error = (e as Error).message
@@ -262,6 +308,7 @@ export function useAttention() {
       () => {
         store.value.sessions = new Map()
         bump()
+        runs.clear()
         events.reset()
         stream()
       },
@@ -277,7 +324,17 @@ export function useAttention() {
     store.value.connected = false
   }
 
-  return { sessions, needsInput, count, connected, error, start, stop, refresh: poll }
+  /** Reads one run now (a page that shows it, as it opens); resolves to it, or null when the server does not have it. */
+  function refreshRun(id: string): Promise<RunInfo | null> {
+    return runs.read(id)
+  }
+
+  /** Takes a run an action answered with (a start, a stop, a member added): it is the newest there is. */
+  function applyRun(run: RunInfo) {
+    runs.apply(run)
+  }
+
+  return { sessions, needsInput, count, connected, error, start, stop, refresh: poll, runs: runList, runNames, runOf, refreshRun, applyRun }
 }
 
 /** Tab title prefix and favicon dot while sessions need input. Call once, in app.vue. */

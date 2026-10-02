@@ -4,6 +4,7 @@ import type { FeedEntry } from './events'
 import {
   argsFrom,
   broadcastByName,
+  broadcastSelection,
   broadcastSummary,
   crewFeed,
   crewKey,
@@ -14,9 +15,6 @@ import {
   memberNameFrom,
   memberStatus,
   pageAfterDelete,
-  RUN_NAME_RETRY_MS,
-  RunNameAsks,
-  runActive,
   runCounts,
   sidebarRunFor,
   startFrom,
@@ -107,6 +105,9 @@ const run = (members: RunMember[]): RunInfo => ({
   startedAt: '2026-09-29T10:00:00Z',
   members,
   log: [],
+  state: 'running',
+  needsInput: 0,
+  yolo: false,
 })
 
 describe('memberStatus', () => {
@@ -125,9 +126,15 @@ describe('memberStatus', () => {
     expect(memberStatus(r, member({ status: 'running', sessionId: 's1' }), [waiting])).toBe('needs_input')
   })
 
-  it('does not call a starting member needs_input: its prompt is still to be typed', () => {
-    const waiting = session({ crew, attention: { state: 'needs_input' } })
-    expect(memberStatus(r, member({ status: 'starting', sessionId: 's1' }), [waiting])).toBe('starting')
+  it('calls a starting member needs_input while its session waits: its trust question holds its prompt', () => {
+    const waiting = session({ crew, attention: { state: 'needs_input', source: 'trust' } })
+    expect(memberStatus(r, member({ status: 'starting', sessionId: 's1' }), [waiting])).toBe('needs_input')
+    expect(memberStatus(r, member({ status: 'starting', sessionId: 's1' }), [session({ crew })])).toBe('starting')
+  })
+
+  it("takes the run's own needsInput when no live session says otherwise", () => {
+    expect(memberStatus(r, member({ status: 'starting', needsInput: true }), [])).toBe('needs_input')
+    expect(memberStatus(r, member({ status: 'running', sessionId: 's1', needsInput: true }), [session({ crew })])).toBe('running')
   })
 
   it('finds the session by its crew tag before the run is read again', () => {
@@ -165,19 +172,11 @@ describe('runCounts', () => {
       session({ id: 'c', crew: tag('web') }),
       session({ id: 'e', crew: tag('logs'), attention: { state: 'needs_input' } }),
     ]
-    expect(runCounts(r, live)).toEqual({ needs: 1, running: 2 })
+    expect(runCounts(r, live)).toEqual({ needs: 2, running: 2 })
   })
 
   it('is zero for a run with nothing running', () => {
     expect(runCounts(run([member({ status: 'ended' })]), [])).toEqual({ needs: 0, running: 0 })
-  })
-})
-
-describe('runActive', () => {
-  it('is true while the run is not stopped and a member has not ended', () => {
-    expect(runActive(run([member({ status: 'ended' }), member({ name: 'b', status: 'pending' })]))).toBe(true)
-    expect(runActive(run([member({ status: 'ended' })]))).toBe(false)
-    expect(runActive({ ...run([member({ status: 'pending' })]), stoppedAt: '2026-09-29T11:00:00Z' })).toBe(false)
   })
 })
 
@@ -432,41 +431,30 @@ describe('holdViewLink', () => {
   })
 })
 
-describe('RunNameAsks', () => {
-  it('asks once, and again after a failure once the retry time has passed', () => {
-    const asks = new RunNameAsks()
-    expect(asks.shouldAsk('r1', 0)).toBe(true)
-    expect(asks.shouldAsk('r1', 1)).toBe(false)
-    asks.failed('r1', 10)
-    expect(asks.shouldAsk('r1', 10 + RUN_NAME_RETRY_MS - 1)).toBe(false)
-    expect(asks.shouldAsk('r1', 10 + RUN_NAME_RETRY_MS)).toBe(true)
-    expect(asks.shouldAsk('r2', 0)).toBe(true)
-  })
-
-  it('never asks again for a run the server does not have, whatever fails later', () => {
-    vi.useFakeTimers()
-    try {
-      const asks = new RunNameAsks()
-      expect(asks.shouldAsk('r1')).toBe(true)
-      asks.failed('r1')
-      vi.advanceTimersByTime(RUN_NAME_RETRY_MS)
-      expect(asks.shouldAsk('r1')).toBe(true)
-      asks.gone('r1')
-      asks.failed('r1')
-      vi.advanceTimersByTime(RUN_NAME_RETRY_MS * 100)
-      expect(asks.shouldAsk('r1')).toBe(false)
-      expect(asks.shouldAsk('r2')).toBe(true)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-})
-
 describe('joinTileStatus', () => {
   it("prefers what the tile's terminal reported, and flags a prompt", () => {
     expect(joinTileStatus({ status: 'running' }, { attention: 'needs_input' })).toMatchObject({ label: 'Needs input' })
     expect(joinTileStatus({ status: 'starting' }, { status: 'running' })).toMatchObject({ label: 'Running' })
     expect(joinTileStatus({ status: 'ended' }, { attention: 'needs_input' })).toMatchObject({ label: 'ended' })
     expect(joinTileStatus({ status: 'pending' })).toMatchObject({ label: 'pending', cls: 'text-muted' })
+  })
+})
+
+describe('broadcastSelection', () => {
+  const m = (name: string, live = true, waiting = false) => ({ name, live, waiting })
+
+  it('selects every member whose session runs, and none that has none', () => {
+    expect(broadcastSelection([m('lead'), m('core'), m('tests', false)], {})).toEqual({ selected: ['lead', 'core'], sending: ['lead', 'core'], waiting: [] })
+  })
+
+  it('keeps an untick through every read, and selects a member that starts later', () => {
+    const choices = { core: false }
+    expect(broadcastSelection([m('lead'), m('core'), m('tests', false)], choices).selected).toEqual(['lead'])
+    expect(broadcastSelection([m('lead'), m('core'), m('tests')], choices).selected).toEqual(['lead', 'tests'])
+  })
+
+  it('keeps a tick on a member with no session yet, and sends only to those the server will type into', () => {
+    const r = broadcastSelection([m('lead', true, true), m('core'), m('tests', false)], { tests: true })
+    expect(r).toEqual({ selected: ['lead', 'core', 'tests'], sending: ['core'], waiting: ['lead'] })
   })
 })

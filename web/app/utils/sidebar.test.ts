@@ -12,6 +12,7 @@ import {
   readSidebarSize,
   runOpen,
   sessionOpen,
+  sidebarGroups,
   sidebarSessions,
   writeSidebarMode,
   writeSidebarSize,
@@ -173,5 +174,30 @@ describe('railGroups', () => {
 
   it('shows a starting session with the idle dot', () => {
     expect(railGroups([session({ status: 'starting' })])[0]!.items[0]!.dot).toBe('idle')
+  })
+})
+
+describe('sidebarGroups', () => {
+  it('puts the sessions of no run first in each section, then one group per run under its name', () => {
+    const list = [
+      session({ id: 'a', name: 'alone', createdAt: '2026-10-01T09:05:00Z' }),
+      session({ id: 'b', crew: { runId: 'r1', crewId: 'api-sweep', member: 'core' }, createdAt: '2026-10-01T09:04:00Z' }),
+      session({ id: 'c', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z' } }),
+      session({ id: 'd', crew: { runId: 'r2', crewId: 'docs', member: 'w' }, createdAt: '2026-10-01T09:03:00Z' }),
+      session({ id: 'e', crew: { runId: 'r1', crewId: 'api-sweep', member: 'tests' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
+    ]
+    const g = sidebarGroups(list, { r1: 'API sweep' })
+    const shape = (k: 'needs' | 'running' | 'exited') => g[k].map((x) => [x.key, x.label, x.sessions.map((s) => s.id)])
+    expect(shape('needs')).toEqual([['needs:r1', 'API sweep', ['c']]])
+    expect(shape('running')).toEqual([
+      ['running:', undefined, ['a']],
+      ['running:r1', 'API sweep', ['b']],
+      ['running:r2', 'docs', ['d']],
+    ])
+    expect(shape('exited')).toEqual([['exited:r1', 'API sweep', ['e']]])
+  })
+
+  it('has empty sections for no sessions', () => {
+    expect(sidebarGroups([])).toEqual({ needs: [], running: [], exited: [] })
   })
 })

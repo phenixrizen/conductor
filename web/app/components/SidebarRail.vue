@@ -16,10 +16,9 @@ const attention = useAttention()
 const events = useEvents()
 const launch = useLaunchModal()
 const route = useRoute()
-const runNames = useState<Record<string, string>>('crewRunNames', () => ({}))
 
 const shown = computed(() => sidebarSessions(attention.sessions.value, props.runId))
-const names = computed(() => (props.runId && props.runName ? { ...runNames.value, [props.runId]: props.runName } : runNames.value))
+const names = computed(() => (props.runId && props.runName ? { ...attention.runNames.value, [props.runId]: props.runName } : attention.runNames.value))
 const groups = computed(() => railGroups(shown.value, names.value))
 const needsDot = computed(() => needsDotShown(events.routes.value))
 </script>

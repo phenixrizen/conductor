@@ -2,7 +2,8 @@
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { agentIcon } from '~/utils/agentIcons'
-import { crewKey, defaultCrew, holdViewLink, pageAfterDelete, runActive, summaryOf, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, pageAfterDelete, summaryOf, toCrewInput, toDraft, type DraftCrew } from '~/utils/crews'
+import { runLive, runState } from '~/utils/runs'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
 // The crews list and the editor of the selected crew. /crews/<id> selects a
@@ -39,7 +40,6 @@ const unreadable = ref('')
 const crewLoading = ref<string>()
 const agents = useState<AgentInfo[]>('crewAgents', () => [])
 const drafts = useState<Record<string, DraftCrew>>('crewDrafts', () => ({}))
-const runs = ref<RunInfo[]>([])
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
@@ -64,7 +64,7 @@ async function refresh() {
   }
   loading.value = true
   try {
-    const [list, a, r] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE), api.catalog(), api.listRuns()])
+    const [list, a] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE), api.catalog()])
     // A page past the end (crews deleted elsewhere) moves back to the last one, and its watcher reads it.
     const last = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
     if (page.value > last) {
@@ -74,7 +74,6 @@ async function refresh() {
     crews.value = list.crews
     total.value = list.total
     agents.value = a
-    runs.value = r
     error.value = ''
     loaded.value = true
     await loadSelected()
@@ -111,14 +110,6 @@ async function loadSelected() {
 }
 watch(page, refresh)
 
-async function refreshRuns() {
-  try {
-    runs.value = await api.listRuns()
-  } catch {
-    /* the badges keep what they showed */
-  }
-}
-
 // A draft for the crew on screen, seeded from the crew read in full once it is read; /crews moves to the first crew of the page.
 watch(
   [selectedKey, crews, full, loaded],
@@ -145,14 +136,14 @@ function isDirty(key: string): boolean {
   return !c || crewKey(d) !== crewKey(c)
 }
 
-/** Runs of the crew in the server's memory, newest first. */
+/** Runs of the crew in the server's memory, newest first, from the live store: run events keep them current. */
 function runsOf(id: string): RunInfo[] {
-  return runs.value.filter((r) => r.crewId === id)
+  return id ? live.runs.value.filter((r) => r.crewId === id) : []
 }
 
 function status(key: string): { label: string; color: 'warning' | 'success' | 'neutral' } {
   if (isDirty(key)) return { label: 'Draft changes', color: 'warning' }
-  if (runsOf(key).some(runActive)) return { label: 'Running', color: 'success' }
+  if (runsOf(key).some((r) => runLive(runState(r, live.sessions.value).state))) return { label: 'Running', color: 'success' }
   return { label: 'Ready', color: 'neutral' }
 }
 
@@ -346,7 +337,7 @@ async function launch() {
       return
     }
     const { run, viewLink } = launched
-    runs.value = [run, ...runs.value.filter((r) => r.id !== run.id)]
+    live.applyRun(run)
     const ttl = c.viewLinkTtlSeconds ?? 0
     if (c.openAfterLaunch) {
       if (viewLink) holdViewLink(run.id, viewLink.url, ttl)
@@ -377,20 +368,6 @@ async function launch() {
   }
 }
 
-// "Running" follows the live store: when a crew member's session starts or
-// ends, the runs are read again. Nothing polls.
-const crewSessions = computed(() =>
-  live.sessions.value
-    .filter((s) => s.crew)
-    .map((s) => `${s.id}:${s.status}`)
-    .join(','),
-)
-let runsTimer: number | undefined
-watch(crewSessions, () => {
-  window.clearTimeout(runsTimer)
-  runsTimer = window.setTimeout(refreshRuns, 300)
-})
-
 let tick: number | undefined
 onMounted(() => {
   mounted = true
@@ -401,7 +378,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   mounted = false
   window.clearInterval(tick)
-  window.clearTimeout(runsTimer)
 })
 watch(
   () => admin.token.value,
@@ -435,33 +411,35 @@ watch(routeId, loadSelected)
       <div class="flex min-h-full flex-col md:flex-row">
         <nav class="flex flex-none flex-col gap-2 border-b border-default p-4 md:w-60 md:border-b-0 md:border-r" aria-label="Crews" data-crew-list>
           <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
-          <NuxtLink
-            v-for="item in list"
-            :key="item.key || 'new'"
-            :to="item.to"
-            class="flex flex-col gap-1.5 rounded-md p-3 transition-colors"
-            :class="item.key === selectedKey ? 'bg-default ring ring-default shadow-xs' : 'hover:bg-elevated/60'"
-            :aria-current="item.key === selectedKey ? 'page' : undefined"
-            data-crew-item
-          >
-            <span class="flex items-center gap-2">
-              <span class="truncate text-sm font-semibold text-highlighted">{{ item.crew.name || 'Untitled crew' }}</span>
-              <UBadge :label="status(item.key).label" :color="status(item.key).color" variant="subtle" size="sm" class="ml-auto flex-none" />
-            </span>
-            <span class="flex flex-wrap gap-1">
-              <template v-for="(m, i) in item.crew.members" :key="i">
-                <span v-if="agentOf(m.agentId)?.icon" class="grid size-6 place-items-center rounded-md bg-elevated text-primary" :title="`${m.name} · ${agentOf(m.agentId)?.name}`">
-                  <UIcon :name="agentIcon(agentOf(m.agentId)!.icon)" class="size-3.5" />
-                </span>
-                <SessionAvatar v-else :agent-id="m.agentId" />
-              </template>
-            </span>
-            <!-- The directory is cut short on its own line; what follows always shows whole. -->
-            <span class="flex min-w-0 flex-col font-mono text-[11px] text-muted" data-crew-meta>
-              <span class="truncate" :title="meta(item.crew, item.key || undefined).cwd">{{ meta(item.crew, item.key || undefined).cwd }}</span>
-              <span>{{ meta(item.crew, item.key || undefined).rest }}</span>
-            </span>
-          </NuxtLink>
+          <!-- A crew's runs follow its link, not inside it: a link holds no other link. -->
+          <div v-for="item in list" :key="item.key || 'new'" class="flex flex-col gap-1" data-crew-entry>
+            <NuxtLink
+              :to="item.to"
+              class="flex flex-col gap-1.5 rounded-md p-3 transition-colors"
+              :class="item.key === selectedKey ? 'bg-default ring ring-default shadow-xs' : 'hover:bg-elevated/60'"
+              :aria-current="item.key === selectedKey ? 'page' : undefined"
+              data-crew-item
+            >
+              <span class="flex items-center gap-2">
+                <span class="truncate text-sm font-semibold text-highlighted">{{ item.crew.name || 'Untitled crew' }}</span>
+                <UBadge :label="status(item.key).label" :color="status(item.key).color" variant="subtle" size="sm" class="ml-auto flex-none" />
+              </span>
+              <span class="flex flex-wrap gap-1">
+                <template v-for="(m, i) in item.crew.members" :key="i">
+                  <span v-if="agentOf(m.agentId)?.icon" class="grid size-6 place-items-center rounded-md bg-elevated text-primary" :title="`${m.name} · ${agentOf(m.agentId)?.name}`">
+                    <UIcon :name="agentIcon(agentOf(m.agentId)!.icon)" class="size-3.5" />
+                  </span>
+                  <SessionAvatar v-else :agent-id="m.agentId" />
+                </template>
+              </span>
+              <!-- The directory is cut short on its own line; what follows always shows whole. -->
+              <span class="flex min-w-0 flex-col font-mono text-[11px] text-muted" data-crew-meta>
+                <span class="truncate" :title="meta(item.crew, item.key || undefined).cwd">{{ meta(item.crew, item.key || undefined).cwd }}</span>
+                <span>{{ meta(item.crew, item.key || undefined).rest }}</span>
+              </span>
+            </NuxtLink>
+            <CrewRuns :runs="runsOf(item.key)" :sessions="live.sessions.value" :now="now" class="px-1" />
+          </div>
           <p v-if="loaded && !list.length" class="px-1 text-sm text-muted">No crews yet.</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="mt-2 self-center" />
         </nav>

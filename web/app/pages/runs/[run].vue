@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
-import { ApiError } from '~/composables/useApi'
-import { crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
+import { broadcastSelection, crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 
 // The crew view: a tile for every member of one run, its activity and a
-// broadcast bar. Sessions come from the live store (useAttention); the run
-// itself, for member states, branches and diff stats, is read on arrival,
-// when a member's session starts or ends, and every 10 s while this page is
-// open: the diff stats are nowhere else.
+// broadcast bar. Sessions and the run come from the live store (useAttention):
+// the run, with its member states, branches and diff stats, is read as the page
+// opens and again whenever a run event or a member session's change says it
+// changed. Nothing polls.
 
 const route = useRoute()
 const router = useRouter()
@@ -20,18 +19,18 @@ const toast = useToast()
 const { create } = useTerminalTransport()
 
 const runId = computed(() => String(route.params.run))
-const run = ref<RunInfo | null>(null)
+/** The run as the live store last read it. */
+const run = computed<RunInfo | null>(() => live.runOf(runId.value) ?? null)
 const error = ref('')
 const gone = ref(false)
 const now = ref(Date.now())
-/** Run names by id, for the sidebar's header (layouts/default.vue). */
-const runNames = useState<Record<string, string>>('crewRunNames', () => ({}))
 /** The view link of the launch that opened this page, shown once: it lives in this page alone and goes with it, or when dismissed. */
 const launchLink = ref(takeViewLink(String(route.params.run)))
 const copy = useCopy()
 
 useHead({ title: computed(() => run.value?.name || 'Crew') })
 
+/** Reads the run as the page opens: its diff stats are read with it. Later reads are the live store's. */
 async function load() {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
@@ -39,33 +38,22 @@ async function load() {
   }
   const id = runId.value
   try {
-    const r = await api.getRun(id)
+    const r = await live.refreshRun(id)
     if (id !== runId.value) return
-    run.value = r
     error.value = ''
-    gone.value = false
-    if (runNames.value[r.id] !== r.name) runNames.value = { ...runNames.value, [r.id]: r.name }
+    gone.value = !r
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) gone.value = true
-    else error.value = (e as Error).message
+    if (id === runId.value) error.value = (e as Error).message
   }
 }
 
+/** An action (add, start, stop) answered with the run as it is now. */
 function changed(r: RunInfo) {
-  run.value = r
-  load()
+  live.applyRun(r)
 }
 
 /** The run's sessions in the live store. */
 const sessions = computed(() => live.sessions.value.filter((s) => s.crew?.runId === runId.value))
-
-// Read the run again when one of its sessions appears, changes status or goes.
-const sessionsKey = computed(() => sessions.value.map((s) => `${s.id}:${s.status}`).join(','))
-let reloadTimer: number | undefined
-watch(sessionsKey, () => {
-  window.clearTimeout(reloadTimer)
-  reloadTimer = window.setTimeout(load, 300)
-})
 
 interface Tile {
   name: string
@@ -88,19 +76,31 @@ const tiles = computed<Tile[]>(() => {
 
 const counts = computed(() => (run.value ? runCounts(run.value, live.sessions.value) : { needs: 0, running: 0 }))
 
-// Broadcast selection, by member name.
-const selected = ref<Set<string>>(new Set())
-function toggle(name: string, on: boolean | 'indeterminate') {
-  const next = new Set(selected.value)
-  if (on === true) next.add(name)
-  else next.delete(name)
-  selected.value = next
+// Broadcast selection: every member whose session runs, unless the person
+// unticked it; a member that starts later is selected as it appears. Only the
+// person's own ticks are kept (choices), so no read of the run and no run
+// event clears one; another run starts afresh.
+const choices = ref<Record<string, boolean>>({})
+const selection = computed(() =>
+  broadcastSelection(
+    tiles.value.map((t) => ({
+      name: t.name,
+      live: !!t.session && (t.session.status === 'running' || t.session.status === 'starting'),
+      waiting: t.session?.attention?.state === 'needs_input',
+    })),
+    choices.value,
+  ),
+)
+function isSelected(name: string) {
+  return selection.value.selected.includes(name)
 }
-const selectedNames = computed(() => tiles.value.map((t) => t.name).filter((n) => selected.value.has(n)))
+function toggle(name: string, on: boolean | 'indeterminate') {
+  choices.value = { ...choices.value, [name]: on === true }
+}
 
 watch(runId, () => {
-  run.value = null
-  selected.value = new Set()
+  choices.value = {}
+  gone.value = false
   load()
 })
 
@@ -174,20 +174,15 @@ const gridStyle = computed(() =>
     : { gridTemplateColumns: `repeat(${layout.value.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.value.rows}, minmax(0, 1fr))` },
 )
 
-let poll: number | undefined
 let tick: number | undefined
 onMounted(() => {
   live.start()
   load()
-  poll = window.setInterval(() => {
-    if (document.visibilityState === 'visible') load()
-  }, 10000)
+  // The clock of the header's "up 5 min": no read of the server.
   tick = window.setInterval(() => (now.value = Date.now()), 30000)
 })
 onBeforeUnmount(() => {
-  window.clearInterval(poll)
   window.clearInterval(tick)
-  window.clearTimeout(reloadTimer)
 })
 watch(() => admin.token.value, load)
 </script>
@@ -230,7 +225,7 @@ watch(() => admin.token.value, load)
             <template v-for="t in tiles" :key="t.session?.id ?? `m-${t.name}`">
               <SessionTile v-if="t.session" :session="t.session" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">
                 <template #leading>
-                  <UCheckbox :model-value="selected.has(t.name)" :aria-label="`Select ${t.name} for the broadcast`" @update:model-value="toggle(t.name, $event)" />
+                  <UCheckbox :model-value="isSelected(t.name)" :aria-label="`Select ${t.name} for the broadcast`" data-broadcast-pick @update:model-value="toggle(t.name, $event)" />
                 </template>
                 <template #footer>
                   <span class="truncate" data-branch>{{ footer(t).where }}</span>
@@ -261,7 +256,7 @@ watch(() => admin.token.value, load)
           </div>
         </div>
         <div class="flex-none px-3 pb-3">
-          <BroadcastBar :run-id="runId" :members="selectedNames" :disabled="!run || !!run.stoppedAt" />
+          <BroadcastBar :run-id="runId" :members="selection.selected" :will-type="selection.sending.length" :waiting="selection.waiting.length" :disabled="!run || !!run.stoppedAt" />
         </div>
       </template>
     </template>
