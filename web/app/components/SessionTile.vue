@@ -3,7 +3,12 @@ import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { isEnded } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
+import { TILE_FONT_SIZE } from '~/utils/tile'
 
+/**
+ * A session as a live tile: its terminal fits the tile and takes keys in place (a click on it focuses it); the full view is one action
+ * away: the open button, a double-click on the header, or Enter or Space on the tile's frame when the frame itself has the focus.
+ */
 const props = defineProps<{
   session: SessionInfo
   createTransport: () => TerminalTransport
@@ -30,24 +35,27 @@ const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${prop
       <slot name="leading" />
     </div>
     <div
-      class="group flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      :class="needsInput ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented'"
-      role="button"
+      class="group flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      :class="needsInput ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented focus-within:border-accented'"
+      role="group"
       tabindex="0"
       data-session-tile
-      :aria-label="`Open ${props.session.name}`"
-      @click="emit('select')"
-      @keydown.enter.prevent="emit('select')"
-      @keydown.space.prevent="emit('select')"
+      :data-session-id="props.session.id"
+      :aria-label="`${props.session.name}: a live terminal. Enter opens it in full.`"
+      @keydown.enter.self.prevent="emit('select')"
+      @keydown.space.self.prevent="emit('select')"
     >
-      <div class="flex items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs shrink-0" :class="$slots.leading && 'pl-8'">
+      <div class="flex cursor-pointer items-center gap-2 border-b border-default px-2.5 py-1 text-xs shrink-0 select-none" :class="$slots.leading && 'pl-8'" data-tile-header @dblclick="emit('select')">
         <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(props.session.agentId) }}</span>
         <span class="font-semibold truncate flex-1 text-[13px]">{{ props.session.name }}</span>
         <EventMarkBadge :session-id="props.session.id" />
         <span class="flex items-center gap-1.5 text-[11.5px]" :class="status.cls"><span v-if="status.dot" class="size-[7px] rounded-full" :class="status.dot" aria-hidden="true" />{{ status.label }}</span>
+        <UTooltip text="Open in full (or double-click here)">
+          <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${props.session.name}`" data-tile-open @click.stop="emit('select')" />
+        </UTooltip>
       </div>
-      <div class="flex-1 min-h-0 pointer-events-none">
-        <TerminalView :create-transport="props.createTransport" read-only fit="scale" compact :auto-focus="false" />
+      <div class="flex-1 min-h-0" data-tile-terminal>
+        <TerminalView :create-transport="props.createTransport" fit="tile" compact :auto-focus="false" :font-size="TILE_FONT_SIZE" :scrollback="0" />
       </div>
       <div class="flex items-center gap-2 border-t border-default px-2.5 py-1 font-mono text-[11px] text-muted shrink-0">
         <slot name="footer">

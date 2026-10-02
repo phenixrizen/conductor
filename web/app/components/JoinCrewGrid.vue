@@ -4,10 +4,13 @@ import type { Role } from '~/utils/protocol'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { joinTileStatus } from '~/utils/crews'
 import { agentInitials } from '~/utils/sessions'
+import { TILE_FONT_SIZE } from '~/utils/tile'
 
 /**
- * The member tiles of a run link: a live, read-only terminal for each member that runs, a placeholder for the rest. Opening one is the
- * page's to do. What the tiles heard is the page's too (v-model:heard), so it outlasts the grid while a member is open in full.
+ * The member tiles of a run link: a live terminal for each member that runs, a placeholder for the rest. With a control link a tile
+ * fits its pane and takes keys in place, as on the wall; with a view link it shows the member's screen scaled, at the member's size, and
+ * asks for none. Opening one in full is the page's to do. What the tiles heard is the page's too (v-model:heard), so it outlasts the grid
+ * while a member is open in full.
  */
 const props = defineProps<{
   members: JoinRunMember[]
@@ -30,6 +33,8 @@ function hear(name: string, patch: { status?: string; attention?: string }) {
 function open(m: JoinRunMember) {
   if (m.sessionId) emit('open', m, latest[m.name])
 }
+/** A control link types into the tiles; a view link only watches them. */
+const interactive = computed(() => props.role === 'control')
 </script>
 
 <template>
@@ -37,35 +42,38 @@ function open(m: JoinRunMember) {
     <template v-for="m in members" :key="m.name">
       <div
         v-if="m.sessionId"
-        class="flex min-h-0 cursor-pointer flex-col overflow-hidden rounded-lg border bg-elevated/40 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary"
-        :class="heard[m.name]?.attention === 'needs_input' ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented'"
-        role="button"
+        class="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary"
+        :class="[heard[m.name]?.attention === 'needs_input' ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented', !interactive && 'cursor-pointer']"
+        :role="interactive ? 'group' : 'button'"
         tabindex="0"
-        :aria-label="`Open ${m.name}`"
+        :aria-label="interactive ? `${m.name}: a live terminal. Enter opens it in full.` : `Open ${m.name}`"
         :data-member="m.name"
-        @click="open(m)"
-        @keydown.enter.prevent="open(m)"
-        @keydown.space.prevent="open(m)"
+        @click="!interactive && open(m)"
+        @keydown.enter.self.prevent="open(m)"
+        @keydown.space.self.prevent="open(m)"
       >
-        <div class="flex flex-none items-center gap-2 border-b border-default px-2.5 py-1.5 text-xs">
+        <div class="flex flex-none cursor-pointer select-none items-center gap-2 border-b border-default px-2.5 py-1 text-xs" @dblclick="open(m)">
           <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(m.agentId) }}</span>
           <span class="flex-1 truncate text-[13px] font-semibold">{{ m.name }}</span>
           <span class="flex items-center gap-1.5 text-[11.5px]" :class="joinTileStatus(m, heard[m.name]).cls"><span class="size-[7px] rounded-full" :class="joinTileStatus(m, heard[m.name]).dot" aria-hidden="true" />{{ joinTileStatus(m, heard[m.name]).label }}</span>
+          <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${m.name}`" data-tile-open @click.stop="open(m)" />
         </div>
-        <div class="pointer-events-none min-h-0 flex-1">
+        <div class="min-h-0 flex-1" :class="!interactive && 'pointer-events-none'">
           <TerminalView
             :create-transport="props.transportFor(m)"
-            read-only
-            fit="scale"
+            :read-only="!interactive"
+            :fit="interactive ? 'tile' : 'scale'"
             compact
             :auto-focus="false"
+            :font-size="interactive ? TILE_FONT_SIZE : 13"
+            :scrollback="interactive ? 0 : 5000"
             @status="(s) => hear(m.name, { status: s })"
             @attention="(a) => hear(m.name, { attention: a.state })"
           />
         </div>
         <div class="flex flex-none items-center gap-2 border-t border-default px-2.5 py-1 font-mono text-[11px] text-muted">
           <span class="truncate">{{ props.agentName(m.agentId) }}</span>
-          <span class="ml-auto flex-none">{{ role === 'control' ? 'open to type' : 'open' }}</span>
+          <span class="ml-auto flex-none">{{ interactive ? 'type here · double-click to open' : 'open' }}</span>
         </div>
       </div>
       <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="m.name">

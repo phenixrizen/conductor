@@ -131,6 +131,12 @@ html, body, #__nuxt {
   transform-origin: 0 0;
 }
 
+/* Tile mode: the terminal fits the tile; while another viewer has made the
+   session larger, TerminalView scales it down from the top left corner. */
+.terminal-tile .xterm {
+  transform-origin: 0 0;
+}
+
 /* Scrollbars are hidden in every pane; the mouse wheel still scrolls. */
 .terminal-host .xterm-viewport {
   scrollbar-width: none;
