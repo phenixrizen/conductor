@@ -53,7 +53,7 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	}
 	yolo := spec.Yolo
 	ref := spec.Ref
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo}, &ref)
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom}, &ref)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -437,6 +437,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "member_started", err.Error())
 	case errors.Is(err, crew.ErrRunStopped):
 		writeError(w, http.StatusConflict, "run_stopped", err.Error())
+	case errors.Is(err, crew.ErrMemberRunning):
+		writeError(w, http.StatusConflict, "still_running", err.Error())
 	case errors.As(err, &aerr):
 		writeError(w, aerr.status, aerr.Code, err.Error())
 	default:

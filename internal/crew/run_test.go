@@ -30,6 +30,7 @@ type launchCall struct {
 	env                map[string]string
 	ref                session.CrewRef
 	yolo               bool
+	resume             string
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -75,7 +76,7 @@ func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
 	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume})
 	err, block := f.fail[name], f.block[name]
 	f.mu.Unlock()
 	if err != nil {

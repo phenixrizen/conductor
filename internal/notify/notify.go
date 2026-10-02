@@ -46,6 +46,12 @@ type Request struct {
 	URL   string `json:"url,omitempty"`
 	To    string `json:"to,omitempty"`
 	Tool  string `json:"tool,omitempty"`
+	// AgentSession is the agent's own session id, as its hook payload names
+	// it (Claude Code's session_id, Codex's thread-id…), and Turn says the
+	// payload reports a turn: a prompt taken or finished. They go with an
+	// attention state only; the server keeps the id for Resume.
+	AgentSession string `json:"agentSession,omitempty"`
+	Turn         bool   `json:"turn,omitempty"`
 }
 
 // eventBody is what the events route reads: the same report under its own
@@ -129,6 +135,14 @@ func Send(ctx context.Context, url, token string, req Request) error {
 		}
 		if status < 300 {
 			return nil
+		}
+		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn) && req.Event == "" {
+			// A server older than the agent-session fields: the state alone.
+			req.AgentSession, req.Turn = "", false
+			if body, err = json.Marshal(req); err != nil {
+				return err
+			}
+			continue
 		}
 		failed := fmt.Errorf("notify: server returned %d: %s", status, msg)
 		if status != http.StatusTooManyRequests || !req.attentionWord() || attempt >= len(retryDelays) {

@@ -84,6 +84,8 @@ type Options struct {
 	ConfirmSubmit bool
 	// ConfirmWait is that wait; ConfirmWait when zero.
 	ConfirmWait time.Duration
+	// Launched is what the session was launched with, for Resume.
+	Launched Launched
 }
 
 // patternQuiet is how long the output must stay silent before the last line is
@@ -577,6 +579,10 @@ func (s *Local) Info() Info {
 	defer s.mu.Unlock()
 	info := s.info
 	info.Viewers = s.hub.Count()
+	if info.AgentSession != nil {
+		as := *info.AgentSession
+		info.AgentSession = &as
+	}
 	return info
 }
 

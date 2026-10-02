@@ -13,6 +13,10 @@ type attentionRequest struct {
 	Message string           `json:"message"`
 	Kind    string           `json:"kind"`
 	Options []session.Option `json:"options"`
+	// AgentSession and Turn: the agent's own session id its report names,
+	// and whether the report is of a turn (Resume).
+	AgentSession string `json:"agentSession"`
+	Turn         bool   `json:"turn"`
 }
 
 // eventRequest is the body of POST /api/sessions/{id}/events. Type is one of
@@ -177,8 +181,15 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_state", "state must be needs_input, working, done or clear")
 		return
 	}
+	if len(req.AgentSession) > session.MaxAgentSessionID {
+		writeError(w, http.StatusBadRequest, "invalid_request", "agentSession is longer than 128 bytes")
+		return
+	}
 	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options) {
 		return
+	}
+	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
+		s.captureAgentSession(local, req.AgentSession, req.Turn)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"attention": d.Info().Attention})
 }

@@ -190,9 +190,9 @@ func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
 		flag, stdin, path string
 		body              map[string]any
 	}{
-		{"--copilot-hook", `{"sessionId":"s","stopReason":"end_turn"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "kind": "done"}},
+		{"--copilot-hook", `{"sessionId":"s","stopReason":"end_turn"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "kind": "done", "agentSession": "s", "turn": true}},
 		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "edit a.go"}},
-		{"--agy-hook", `{"terminationReason":"completed"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "message": "completed", "kind": "done"}},
+		{"--agy-hook", `{"terminationReason":"completed"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "message": "completed", "kind": "done", "turn": true}},
 		{"--goose-hook", `{"event":"PostToolUse","tool_name":"shell"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "shell"}},
 		{"--codex-hook", `{"hook_event_name":"PermissionRequest","tool_name":"shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "needs_input", "message": "Allow shell?", "kind": "permission"}},
 		{"--claude-hook", `{"hook_event_name":"PermissionDenied","tool_name":"Bash"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_denied", "tool": "Bash"}},

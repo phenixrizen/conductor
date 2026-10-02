@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -223,5 +224,66 @@ func TestAHandoffTypedWithoutItsEnterIsNotTypedAgain(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if w := typed(p); slices.ContainsFunc(w, func(s string) bool { return strings.Contains(s, "handlers") }) {
 		t.Fatalf("typed again: %q", w)
+	}
+}
+
+// ResumeMember starts an ended member again, as the member, in its directory:
+// with an agent session id it resumes it and types no prompt; without one it
+// starts anew and types the prompt again. A member that runs, or one of a
+// stopped run, is refused.
+func TestResumeMember(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), manual("qa", "Check it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", "x"); !errors.Is(err, ErrMemberRunning) {
+		t.Fatalf("running: %v", err)
+	}
+	if _, err := e.ResumeMember(t.Context(), run.ID, "qa", ""); !errors.Is(err, ErrMemberRunning) {
+		t.Fatalf("pending: %v", err)
+	}
+	lead, p := fl.member("lead")
+	p.End(0)
+	<-lead.Ended()
+	id, err := e.ResumeMember(t.Context(), run.ID, "lead", "3f80c8bd-0000-4000-8000-000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := memberState(t, e, run.ID, "lead")
+	fl.mu.Lock()
+	call := fl.calls[len(fl.calls)-1]
+	fl.mu.Unlock()
+	if m.SessionID != id || m.Status != MemberRunning || call.resume != "3f80c8bd-0000-4000-8000-000000000001" || call.cwd != "/work" {
+		t.Fatalf("resumed: %+v %+v", m, call)
+	}
+	_, p2 := fl.member("lead")
+	time.Sleep(100 * time.Millisecond)
+	if w := typed(p2); len(w) != 0 {
+		t.Fatalf("a resumed member was typed %q", w)
+	}
+	got, _ := e.Get(run.ID)
+	if !logged(got, "lead resumed its conversation") {
+		t.Fatalf("log %+v", got.Log)
+	}
+	// Anew: the prompt again.
+	l2, _ := fl.member("lead")
+	_, p2 = fl.member("lead")
+	p2.End(0)
+	<-l2.Ended()
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, p3 := fl.member("lead")
+	if got := waitTyped(t, p3, 5*time.Second); got != "Plan it.\r" {
+		t.Fatalf("anew: typed %q", got)
+	}
+	if err := e.Stop(t.Context(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", ""); !errors.Is(err, ErrRunStopped) {
+		t.Fatalf("stopped: %v", err)
 	}
 }

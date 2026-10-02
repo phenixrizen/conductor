@@ -30,6 +30,7 @@ type ClaudeHook struct {
 	LastAssistantMessage string          `json:"last_assistant_message"`
 	ToolName             string          `json:"tool_name"`
 	Error                json.RawMessage `json:"error"`
+	SessionID            string          `json:"session_id"`
 }
 
 // MapClaudeHook turns a Claude Code hook payload into an attention update, or
@@ -41,6 +42,15 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
 	}
+	req, ok = mapClaudeHook(h)
+	if ok && req.Event == "" {
+		req.AgentSession = truncate(h.SessionID, 128)
+		req.Turn = h.HookEventName == "Stop" || h.HookEventName == "UserPromptSubmit"
+	}
+	return req, ok
+}
+
+func mapClaudeHook(h ClaudeHook) (req Request, ok bool) {
 	switch h.HookEventName {
 	case "PermissionRequest":
 		msg := strings.TrimSpace(h.Message)
@@ -94,6 +104,7 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 type CodexPayload struct {
 	Type                 string   `json:"type"`
 	LastAssistantMessage string   `json:"last-assistant-message"`
+	ThreadID             string   `json:"thread-id"`
 	InputMessages        []string `json:"input-messages"`
 }
 
@@ -122,7 +133,7 @@ func MapCodex(raw []byte) (req Request, ok bool) {
 		if msg == "" {
 			msg = "Codex finished its turn"
 		}
-		return Request{State: "done", Message: msg, Kind: "done"}, true
+		return Request{State: "done", Message: msg, Kind: "done", AgentSession: truncate(p.ThreadID, 128), Turn: true}, true
 	}
 	return Request{}, false
 }
@@ -136,13 +147,14 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 		HookEventName        string `json:"hook_event_name"`
 		ToolName             string `json:"tool_name"`
 		LastAssistantMessage string `json:"last_assistant_message"`
+		SessionID            string `json:"session_id"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
 	}
 	switch h.HookEventName {
 	case "Stop":
-		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done"}, true
+		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
 	case "PostToolUse":
 		return Request{Event: "tool_use", Tool: h.ToolName}, true
 	case "PermissionRequest":
@@ -174,6 +186,7 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 		StopReason       *string         `json:"stopReason"`
 		Prompt           *string         `json:"prompt"`
 		Error            json.RawMessage `json:"error"`
+		SessionID        string          `json:"sessionId"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
@@ -207,9 +220,9 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 	case "posttooluse":
 		return Request{Event: "tool_use", Tool: h.ToolName}, true
 	case "agentstop":
-		return Request{State: "done", Kind: "done"}, true
+		return Request{State: "done", Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
 	case "userpromptsubmitted":
-		return Request{State: "working"}, true
+		return Request{State: "working", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
 	}
 	return Request{}, false
 }
@@ -219,16 +232,17 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 // name, not its path, which could fill the 100 bytes the server keeps).
 func MapCursorHook(raw []byte) (req Request, ok bool) {
 	var h struct {
-		HookEventName string `json:"hook_event_name"`
-		ToolName      string `json:"tool_name"`
-		FilePath      string `json:"file_path"`
+		HookEventName  string `json:"hook_event_name"`
+		ToolName       string `json:"tool_name"`
+		FilePath       string `json:"file_path"`
+		ConversationID string `json:"conversation_id"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
 	}
 	switch h.HookEventName {
 	case "stop":
-		return Request{State: "done", Kind: "done"}, true
+		return Request{State: "done", Kind: "done", AgentSession: truncate(h.ConversationID, 128), Turn: true}, true
 	case "postToolUse":
 		return Request{Event: "tool_use", Tool: h.ToolName}, true
 	case "afterFileEdit":
@@ -250,6 +264,7 @@ func MapAgyHook(raw []byte) (req Request, ok bool) {
 			Name string `json:"name"`
 		} `json:"toolCall"`
 		TerminationReason *string `json:"terminationReason"`
+		ConversationID    string  `json:"conversationId"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
@@ -258,7 +273,7 @@ func MapAgyHook(raw []byte) (req Request, ok bool) {
 	case h.ToolCall != nil:
 		return Request{Event: "tool_use", Tool: h.ToolCall.Name}, true
 	case h.TerminationReason != nil:
-		return Request{State: "done", Message: truncate(strings.TrimSpace(*h.TerminationReason), 200), Kind: "done"}, true
+		return Request{State: "done", Message: truncate(strings.TrimSpace(*h.TerminationReason), 200), Kind: "done", AgentSession: truncate(h.ConversationID, 128), Turn: true}, true
 	}
 	return Request{}, false
 }

@@ -885,3 +885,84 @@ func TestDefaultYoloRecipes(t *testing.T) {
 		}
 	}
 }
+
+// A session recipe is bounded like a command, places {id} as a whole argument
+// once, says how the id is known, and anchors an id pattern that cannot match
+// an empty id or one that reads as a flag. The empty recipe disables an
+// inherited one.
+func TestSessionRecipeValidation(t *testing.T) {
+	good := SessionRecipe{StartArgs: []string{"--session-id", IDArg}, ResumeArgs: []string{"--resume", IDArg}, IDPattern: `^[0-9a-f-]{36}$`}
+	a := Agent{ID: "x", Name: "X", Command: []string{"x"}, Session: &good}
+	if err := validate(a); err != nil {
+		t.Fatal(err)
+	}
+	for name, r := range map[string]SessionRecipe{
+		"no resume args":       {StartArgs: good.StartArgs, IDPattern: good.IDPattern, ResumeArgs: []string{"--resume"}},
+		"{id} twice":           {StartArgs: good.StartArgs, IDPattern: good.IDPattern, ResumeArgs: []string{IDArg, IDArg}},
+		"{id} inside an arg":   {StartArgs: good.StartArgs, IDPattern: good.IDPattern, ResumeArgs: []string{"--resume=" + IDArg}},
+		"no way to the id":     {IDPattern: good.IDPattern, ResumeArgs: good.ResumeArgs},
+		"unanchored pattern":   {IDFrom: "hook", IDPattern: `[0-9a-f]+`, ResumeArgs: good.ResumeArgs},
+		"pattern takes a flag": {IDFrom: "hook", IDPattern: `^.+$`, ResumeArgs: good.ResumeArgs},
+		"pattern takes empty":  {IDFrom: "hook", IDPattern: `^[a-z]*$`, ResumeArgs: good.ResumeArgs},
+		"bad policy":           {IDFrom: "hook", IDPolicy: "newest", IDPattern: good.IDPattern, ResumeArgs: good.ResumeArgs},
+		"bad idFrom":           {IDFrom: "screen", IDPattern: good.IDPattern, ResumeArgs: good.ResumeArgs},
+		"bad newId":            {StartArgs: good.StartArgs, NewID: "ulid", IDPattern: good.IDPattern, ResumeArgs: good.ResumeArgs},
+		"NUL":                  {StartArgs: good.StartArgs, IDPattern: good.IDPattern, ResumeArgs: []string{"--resume\x00", IDArg}},
+		"too many args":        {StartArgs: good.StartArgs, IDPattern: good.IDPattern, ResumeArgs: append(slices.Repeat([]string{"-x"}, 16), IDArg)},
+	} {
+		b := a
+		b.Session = &r
+		if err := validate(b); err == nil || !strings.Contains(err.Error(), "session") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	b := a
+	b.Session = &SessionRecipe{}
+	if err := validate(b); err != nil || !b.Session.Empty() || !(*SessionRecipe)(nil).Empty() {
+		t.Fatalf("the empty recipe: %v", err)
+	}
+	if got := Expand([]string{"resume", IDArg, "-c", "x={id}y"}, "abc"); !slices.Equal(got, []string{"resume", "abc", "-c", "x={id}y"}) {
+		t.Fatalf("Expand: %q", got)
+	}
+}
+
+// The built-ins' session recipes, as the resume research found them (the
+// adapter matrix says which are verified live): the agents whose ids reach
+// Conductor only through a plugin, and the shell, have none yet.
+func TestDefaultSessionRecipes(t *testing.T) {
+	with := map[string][]string{
+		"claude":  {"--resume", IDArg},
+		"codex":   {"resume", IDArg, "-c", `tui.resume_cwd="session"`},
+		"agy":     {"--conversation", IDArg},
+		"copilot": {"--session-id", IDArg},
+		"cursor":  {"--resume", IDArg},
+		"pi":      {"--session-id", IDArg},
+		"goose":   {"session", "--resume", "--name", IDArg},
+	}
+	for _, a := range defaults() {
+		want, ok := with[a.ID]
+		if !ok {
+			if !a.Session.Empty() {
+				t.Errorf("%s has a recipe: %+v", a.ID, a.Session)
+			}
+			continue
+		}
+		if a.Session.Empty() || !slices.Equal(a.Session.ResumeArgs, want) {
+			t.Errorf("%s: %+v", a.ID, a.Session)
+		}
+	}
+	claude, _ := Default().Get("claude")
+	re := regexp.MustCompile(claude.Session.IDPattern)
+	if !re.MatchString("3f80c8bd-0000-4000-8000-000000000001") || re.MatchString("--dangerously-skip-permissions") {
+		t.Fatal("claude's id pattern")
+	}
+	codex, _ := Default().Get("codex")
+	if codex.Session.IDPolicy != "lowest" || codex.Session.IDFrom != "hook" || len(codex.Session.StartArgs) != 0 {
+		t.Fatalf("codex: %+v", codex.Session)
+	}
+	if c := Default(); c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "claude", Name: "C", Command: []string{"claude"}}}}) != nil {
+		t.Fatal("overlay")
+	} else if a, _ := c.Get("claude"); a.Session.Empty() {
+		t.Fatal("a saved override that leaves the recipe out lost the built-in's")
+	}
+}

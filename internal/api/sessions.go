@@ -34,6 +34,9 @@ type createSessionRequest struct {
 	// Yolo overrides the server's yolo default for this launch: nil follows
 	// it, false launches without the agent's yolo recipe, true with it.
 	Yolo *bool `json:"yolo,omitempty"`
+	// resume, set by Resume, is the agent session id the launch resumes with
+	// the agent's recipe; resumedFrom the session it resumes or relaunches.
+	resume, resumedFrom string
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -133,7 +136,21 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	applied := yolo && !agent.Yolo.Empty()
 	extra, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), sig, applied)
-	argv := append(append([]string{}, agent.Command...), req.Args...)
+	// The agent's own session: resumed by its recipe, or named at launch when
+	// the recipe lets Conductor choose; its arguments go right after the
+	// command, as Codex resumes with a subcommand.
+	argv := append([]string{}, agent.Command...)
+	var agentSession *session.AgentSession
+	switch r := agent.Session; {
+	case req.resume != "":
+		argv = append(argv, catalog.Expand(r.ResumeArgs, req.resume)...)
+		agentSession = &session.AgentSession{ID: req.resume, Resumable: true, Source: session.AgentSessionResumed}
+	case !r.Empty() && len(r.StartArgs) > 0:
+		id := newAgentSessionID(r.NewID)
+		argv = append(argv, catalog.Expand(r.StartArgs, id)...)
+		agentSession = &session.AgentSession{ID: id, Source: session.AgentSessionSet}
+	}
+	argv = append(argv, req.Args...)
 	var yoloEnv map[string]string
 	if applied {
 		argv = append(argv, agent.Yolo.Args...)
@@ -188,18 +205,20 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
 	}
 	info := session.Info{
-		ID:        id,
-		Name:      name,
-		Kind:      session.KindServer,
-		AgentID:   agent.ID,
-		Command:   argv,
-		Cwd:       cwd,
-		Status:    session.StatusRunning,
-		Cols:      cols,
-		Rows:      rows,
-		Branch:    session.GitBranch(cwd),
-		Yolo:      applied,
-		CreatedAt: time.Now().UTC(),
+		ID:           id,
+		Name:         name,
+		Kind:         session.KindServer,
+		AgentID:      agent.ID,
+		Command:      argv,
+		Cwd:          cwd,
+		Status:       session.StatusRunning,
+		Cols:         cols,
+		Rows:         rows,
+		Branch:       session.GitBranch(cwd),
+		Yolo:         applied,
+		AgentSession: agentSession,
+		ResumedFrom:  req.resumedFrom,
+		CreatedAt:    time.Now().UTC(),
 	}
 	if crewRef != nil {
 		ref := *crewRef
@@ -217,6 +236,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Pattern:         pattern,
 		TrustPattern:    trust,
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
+		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},
 	})
 	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {

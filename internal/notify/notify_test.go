@@ -273,3 +273,27 @@ func TestSendRetriesWithinItsBudget(t *testing.T) {
 		t.Fatalf("%v after %v", err, time.Since(start))
 	}
 }
+
+// A server that predates the agent-session fields refuses them as unknown:
+// the state goes again without them, once.
+func TestSendDropsTheAgentSessionForAnOlderServer(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if _, ok := body["agentSession"]; ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"json: unknown field \"agentSession\""}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+"/api/sessions/s1/attention", "tok", Request{State: "done", AgentSession: "s1", Turn: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[1]["state"] != "done" || bodies[1]["agentSession"] != nil || bodies[1]["turn"] != nil {
+		t.Fatalf("bodies %v", bodies)
+	}
+}

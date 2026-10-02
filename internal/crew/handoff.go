@@ -44,13 +44,27 @@ func handoffText(from, message string) string {
 // hook hands them. The change of a member's session wakes the handoffs
 // waiting for that member: a prompt cleared, by the agent or an admin,
 // records no entry, only a change. A session outside the runs costs nothing.
+// It also keeps the agent session the change carries on the member.
 func (e *Engine) OnChange(info session.Info) {
 	if info.Crew == nil {
 		return
 	}
-	if v, ok := e.bySession.Load(info.ID); ok {
-		v.(sessionMember).m.poke()
+	v, ok := e.bySession.Load(info.ID)
+	if !ok {
+		return
 	}
+	sm := v.(sessionMember)
+	if info.AgentSession != nil {
+		// Kept on the member, for a resume once the session has left the
+		// server.
+		e.mu.Lock()
+		if sm.m.state.SessionID == info.ID {
+			as := *info.AgentSession
+			sm.m.state.AgentSession = &as
+		}
+		e.mu.Unlock()
+	}
+	sm.m.poke()
 }
 
 // poke wakes the goroutine typing m's handoffs, if one runs. It takes no lock.

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -50,6 +51,10 @@ type Agent struct {
 	// most 200 bytes, never matching an empty text; empty in a saved
 	// override takes the replaced agent's.
 	TrustPrompt string `json:"trustPrompt,omitempty"`
+	// Session is the agent's session recipe: how Conductor names the agent's
+	// own session and resumes it. nil in a saved override takes the replaced
+	// agent's; an empty recipe ({}) has none, so Resume relaunches plainly.
+	Session *SessionRecipe `json:"session,omitempty"`
 }
 
 // Yolo is an agent's yolo recipe: Args go after the agent's command and the
@@ -70,6 +75,63 @@ func (y *Yolo) clone() *Yolo {
 		return nil
 	}
 	return &Yolo{Args: slices.Clone(y.Args), Env: maps.Clone(y.Env)}
+}
+
+// SessionRecipe is how Conductor names an agent's own session (its
+// conversation) and resumes it. "{id}" is a whole argument, never part of
+// one: it stands for a fresh id in StartArgs and for the stored id in
+// ResumeArgs, which go right after the agent's command (Codex resumes with a
+// subcommand).
+type SessionRecipe struct {
+	// StartArgs choose the id at launch: "{id}" becomes a fresh one (NewID).
+	// Empty: the agent chooses, and reports it (IDFrom).
+	StartArgs []string `json:"startArgs,omitempty"`
+	// NewID is how a fresh id is made: "uuid" (the default) or "name"
+	// ("cdr-" and a uuid).
+	NewID string `json:"newId,omitempty"`
+	// IDFrom is "hook" when the agent's hook reports carry its id
+	// (internal/notify reads it), "" when only StartArgs set it.
+	IDFrom string `json:"idFrom,omitempty"`
+	// IDPolicy says which of the ids the agent reports is its session's:
+	// "latest" (the default), or "lowest" (Codex, whose title thread
+	// reports too).
+	IDPolicy string `json:"idPolicy,omitempty"`
+	// ResumeArgs resume the stored id: "{id}" is it.
+	ResumeArgs []string `json:"resumeArgs,omitempty"`
+	// IDPattern is the shape of the agent's ids: anchored RE2 (^…$), at most
+	// 200 bytes. An id that does not match, or does not begin with a letter
+	// or a digit, is never stored nor passed.
+	IDPattern string `json:"idPattern,omitempty"`
+	// ResumeNeedsCwd says the agent resumes only in the directory the session
+	// ran in: when that is gone, Resume is refused rather than run elsewhere.
+	ResumeNeedsCwd bool `json:"resumeNeedsCwd,omitempty"`
+}
+
+// Empty reports whether r is no recipe: nil, or nothing to resume with.
+func (r *SessionRecipe) Empty() bool { return r == nil || len(r.ResumeArgs) == 0 }
+
+// IDArg is the placeholder of a recipe's id.
+const IDArg = "{id}"
+
+// Expand returns args with each IDArg element replaced by id.
+func Expand(args []string, id string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if a == IDArg {
+			a = id
+		}
+		out[i] = a
+	}
+	return out
+}
+
+func (r *SessionRecipe) clone() *SessionRecipe {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.StartArgs, c.ResumeArgs = slices.Clone(r.StartArgs), slices.Clone(r.ResumeArgs)
+	return &c
 }
 
 // Signal kinds (Signal.Kind).
@@ -290,6 +352,11 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: trustPrompt: %w", a.ID, err)
 		}
 	}
+	if a.Session != nil {
+		if err := validateSession(*a.Session); err != nil {
+			return fmt.Errorf("agent %s: session: %w", a.ID, err)
+		}
+	}
 	if len(a.EnvPassthrough) > maxEnvPassthrough {
 		return fmt.Errorf("agent %s: too many envPassthrough entries (at most %d)", a.ID, maxEnvPassthrough)
 	}
@@ -328,6 +395,65 @@ func validateYolo(y Yolo) error {
 		if strings.ContainsRune(v, 0) || len(v) > maxYoloValue {
 			return fmt.Errorf("env %s: the value must be at most %d bytes without NUL", k, maxYoloValue)
 		}
+	}
+	return nil
+}
+
+// validateSession holds a session recipe to the bounds of a command: at most
+// 16 arguments of at most 4096 bytes without NUL each way, "{id}" a whole
+// argument, once in ResumeArgs and once in StartArgs when it has any; a known
+// NewID, IDFrom and IDPolicy; a way to know the id (StartArgs or IDFrom); and
+// an anchored IDPattern that matches neither an empty id nor one that begins
+// with a dash. The empty recipe, which disables an inherited one, passes.
+func validateSession(r SessionRecipe) error {
+	if reflect.ValueOf(r).IsZero() {
+		return nil
+	}
+	count := func(name string, args []string, need bool) error {
+		if len(args) > maxYoloArgs {
+			return fmt.Errorf("too many %s (at most %d)", name, maxYoloArgs)
+		}
+		n := 0
+		for i, a := range args {
+			if a == "" || strings.ContainsRune(a, 0) || len(a) > maxCommandArg {
+				return fmt.Errorf("%s[%d] must be 1 to %d bytes without NUL", name, i, maxCommandArg)
+			}
+			if a == IDArg {
+				n++
+			} else if strings.Contains(a, IDArg) {
+				return fmt.Errorf("%s[%d]: %s must be a whole argument", name, i, IDArg)
+			}
+		}
+		if (need || len(args) > 0) && n != 1 {
+			return fmt.Errorf("%s must hold %s once", name, IDArg)
+		}
+		return nil
+	}
+	if err := count("resumeArgs", r.ResumeArgs, true); err != nil {
+		return err
+	}
+	if err := count("startArgs", r.StartArgs, false); err != nil {
+		return err
+	}
+	switch {
+	case r.NewID != "" && r.NewID != "uuid" && r.NewID != "name":
+		return fmt.Errorf("newId must be uuid or name")
+	case r.IDFrom != "" && r.IDFrom != "hook":
+		return fmt.Errorf("idFrom must be hook or empty")
+	case r.IDPolicy != "" && r.IDPolicy != "latest" && r.IDPolicy != "lowest":
+		return fmt.Errorf("idPolicy must be latest or lowest")
+	case len(r.StartArgs) == 0 && r.IDFrom == "":
+		return fmt.Errorf("startArgs or idFrom must say how the id is known")
+	}
+	if len(r.IDPattern) > maxSignalPattern || !strings.HasPrefix(r.IDPattern, "^") || !strings.HasSuffix(r.IDPattern, "$") {
+		return fmt.Errorf("idPattern must be anchored (^…$), at most %d bytes", maxSignalPattern)
+	}
+	re, err := regexp.Compile(r.IDPattern)
+	if err != nil {
+		return fmt.Errorf("idPattern: %w", err)
+	}
+	if re.MatchString("") || re.MatchString("-x") || re.MatchString("--x") {
+		return fmt.Errorf("idPattern must not match an empty id or one that begins with a dash")
 	}
 	return nil
 }
@@ -474,6 +600,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.TrustPrompt == "" {
 			a.TrustPrompt = prev.TrustPrompt
 		}
+		if a.Session == nil {
+			a.Session = prev.Session.clone()
+		}
 	}
 	for k, v := range a.Env {
 		pv, inPrev := prev.Env[k]
@@ -519,6 +648,7 @@ func (a Agent) clone() Agent {
 		a.Signal = &s
 	}
 	a.Yolo = a.Yolo.clone()
+	a.Session = a.Session.clone()
 	return a
 }
 

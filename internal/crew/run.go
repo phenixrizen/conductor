@@ -45,6 +45,9 @@ type LaunchSpec struct {
 	// Yolo is the run's yolo choice, fixed when the run was made: the agent's
 	// yolo recipe is applied when it has one.
 	Yolo bool
+	// Resume, when set, is the agent session the launch resumes with its
+	// agent's recipe (ResumeMember); ResumedFrom the session it follows.
+	Resume, ResumedFrom string
 }
 
 // Member states (MemberState.Status).
@@ -90,6 +93,7 @@ var (
 	ErrMemberNotFound = errors.New("no such member in the run")
 	ErrMemberStarted  = errors.New("the member has started already")
 	ErrRunStopped     = errors.New("the run is stopped")
+	ErrMemberRunning  = errors.New("the member is still running")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
@@ -122,6 +126,9 @@ type MemberState struct {
 	// session waits on a prompt: a trust question before its prompt, or a
 	// question of its agent's.
 	NeedsInput bool `json:"needsInput,omitempty"`
+	// AgentSession is the agent's own session in the member's latest session,
+	// kept when that session has left the server: what ResumeMember resumes.
+	AgentSession *session.AgentSession `json:"agentSession,omitempty"`
 	// Diff is set by GetWithDiffs for a member with a worktree: tracked
 	// changes against the base, uncommitted included.
 	Diff *Diff `json:"diff,omitempty"`
@@ -1237,4 +1244,94 @@ func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
 		return true, false, false
 	}
 	return false, capped, false
+}
+
+// ResumeMember starts an ended member of a run again, in its working
+// directory (its worktree and branch, which stay), as a session that resumes
+// the agent session resume names with the agent's recipe, or, with resume
+// "", as a fresh one: then its role prompt is typed again once it is ready,
+// as at its first start; a resumed agent has its conversation, and gets no
+// prompt. It returns the new session's ID once the session exists. A member
+// still starting or running is refused (ErrMemberRunning), and so is one of a
+// stopped run (ErrRunStopped).
+func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (string, error) {
+	e.mu.Lock()
+	r, ok := e.runs[runID]
+	if !ok {
+		e.mu.Unlock()
+		return "", ErrRunNotFound
+	}
+	m := r.member(name)
+	var err error
+	switch {
+	case m == nil:
+		err = ErrMemberNotFound
+	case r.stopping:
+		err = ErrRunStopped
+	case m.state.Status == MemberPending:
+		err = ErrMemberRunning
+	case m.state.Status != MemberEnded && !e.ended(m):
+		err = ErrMemberRunning
+	}
+	if err != nil {
+		e.mu.Unlock()
+		return "", err
+	}
+	old := m.state.SessionID
+	cwd := r.cwd
+	if r.isolation == IsolationWorktree && m.state.Worktree != "" {
+		cwd = filepath.Join(m.state.Worktree, r.prefix)
+	}
+	m.state.Status = MemberStarting
+	r.starts.Add(1)
+	r.touch()
+	e.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(r.ctx, cancel)()
+	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
+		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
+		Resume: resume, ResumedFrom: old})
+	if err != nil {
+		r.starts.Done()
+		e.fail(r, m, err)
+		return "", fmt.Errorf("member %s: %w", quote(name), err)
+	}
+	id := local.Info().ID
+	started := time.Now().UTC()
+	e.mu.Lock()
+	if old != "" {
+		e.bySession.Delete(old)
+	}
+	m.state.SessionID, m.state.Started, m.state.Ended, m.state.Err = id, &started, nil, ""
+	e.bySession.Store(id, sessionMember{r, m})
+	if resume != "" {
+		m.state.Status = MemberRunning
+		r.note(session.ActivityStatus, "%s resumed its conversation", name)
+	} else {
+		// A new conversation: its prompt is typed again, and only a done
+		// after that prompt counts.
+		m.prompted, m.promptedAt = false, time.Time{}
+		r.note(session.ActivityStatus, "%s started anew", name)
+	}
+	e.mu.Unlock()
+	if resume != "" {
+		r.starts.Done()
+		m.poke()
+		return id, nil
+	}
+	go e.finish(r, m, local) // types its prompt again, and ends the start
+	return id, nil
+}
+
+// ended reports whether m's session has ended or is gone, as refresh shows
+// it. The caller holds e.mu; it reads the session, which never calls into the
+// engine while it holds its lock.
+func (e *Engine) ended(m *member) bool {
+	if m.state.SessionID == "" {
+		return false
+	}
+	l, ok := e.lookup(m.state.SessionID)
+	return !ok || l.Info().Status.Ended()
 }

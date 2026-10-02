@@ -1,5 +1,8 @@
 package catalog
 
+// uuidPattern is the shape of a UUID as the agents print it.
+const uuidPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+
 // defaults lists the built-in agents: one for each agent Conductor has a hook
 // adapter for (internal/agents), with the signal its adapter reports
 // through and its website as best known (to be checked in a browser: the
@@ -23,6 +26,8 @@ func defaults() []Agent {
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-skip-permissions"}},
 			TrustPrompt: `Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust\?`,
+			// Verified live (2.1.287).
+			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
 		},
 		{
 			ID:          "codex",
@@ -36,6 +41,8 @@ func defaults() []Agent {
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
 			TrustPrompt: `Trust\s*this\s*folder\?`,
+			// Verified live (0.159.0); the id is captured, never chosen.
+			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},
 		},
 		{
 			ID:          "agy",
@@ -49,6 +56,8 @@ func defaults() []Agent {
 			// Antigravity fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
 			Yolo:   &Yolo{Args: []string{"--dangerously-skip-permissions"}},
+			// Verified live in print mode (1.2.14).
+			Session: &SessionRecipe{IDFrom: "hook", ResumeArgs: []string{"--conversation", IDArg}, IDPattern: uuidPattern, ResumeNeedsCwd: true},
 		},
 		{
 			ID:          "copilot",
@@ -61,6 +70,8 @@ func defaults() []Agent {
 			Adapter:     "copilot",
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--yolo"}, Env: map[string]string{"COPILOT_ALLOW_ALL": "true"}},
+			// Verified live (1.0.59).
+			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--session-id", IDArg}, IDPattern: uuidPattern},
 		},
 		{
 			ID:          "cursor",
@@ -75,6 +86,8 @@ func defaults() []Agent {
 			// line says so.
 			Signal: &Signal{Kind: SignalPattern, Pattern: `^› $`},
 			Yolo:   &Yolo{Args: []string{"--yolo", "--trust"}},
+			// From docs.
+			Session: &SessionRecipe{IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern, ResumeNeedsCwd: true},
 		},
 		{
 			ID:          "opencode",
@@ -98,6 +111,8 @@ func defaults() []Agent {
 			Site:        "https://github.com/badlogic/pi-mono",
 			Adapter:     "pi",
 			Signal:      &Signal{Kind: SignalHook},
+			// From source and docs.
+			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, ResumeArgs: []string{"--session-id", IDArg}, IDPattern: `^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`, ResumeNeedsCwd: true},
 		},
 		{
 			ID:          "omp",
@@ -135,6 +150,8 @@ func defaults() []Agent {
 			// Goose fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
 			Yolo:   &Yolo{Env: map[string]string{"GOOSE_MODE": "auto"}},
+			// From source and docs.
+			Session: &SessionRecipe{StartArgs: []string{"session", "--name", IDArg}, NewID: "name", ResumeArgs: []string{"session", "--resume", "--name", IDArg}, IDPattern: `^cdr-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, ResumeNeedsCwd: true},
 		},
 		{
 			ID:          "amp",

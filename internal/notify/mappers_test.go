@@ -169,3 +169,52 @@ func sameRequest(a, b Request) bool {
 	return a.State == b.State && a.Message == b.Message && a.Kind == b.Kind && len(a.Options) == len(b.Options) &&
 		a.Event == b.Event && a.URL == b.URL && a.To == b.To && a.Tool == b.Tool
 }
+
+// The mappers carry the agent's own session id on an attention state, and
+// say when the payload is of a turn: Claude Code's session_id, Codex's
+// thread-id. Codex's title thread reports nothing.
+func TestMappersCarryTheAgentSession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		got  func() (Request, bool)
+		id   string
+		turn bool
+	}{
+		{"claude stop", func() (Request, bool) {
+			return MapClaudeHook([]byte(`{"hook_event_name":"Stop","session_id":"3f80c8bd-0000-4000-8000-000000000001"}`))
+		}, "3f80c8bd-0000-4000-8000-000000000001", true},
+		{"claude notification", func() (Request, bool) {
+			return MapClaudeHook([]byte(`{"hook_event_name":"Notification","message":"hi","session_id":"s1"}`))
+		}, "s1", false},
+		{"codex turn", func() (Request, bool) {
+			return MapCodex([]byte(`{"type":"agent-turn-complete","thread-id":"01a0fc72-f99b-7331-aec3-818001309536","input-messages":["reply READY"],"last-assistant-message":"READY"}`))
+		}, "01a0fc72-f99b-7331-aec3-818001309536", true},
+	} {
+		req, ok := tc.got()
+		if !ok || req.AgentSession != tc.id || req.Turn != tc.turn {
+			t.Errorf("%s: %+v %v", tc.name, req, ok)
+		}
+	}
+	for name, got := range map[string]func() (Request, bool){
+		"codex hook": func() (Request, bool) { return MapCodexHook([]byte(`{"hook_event_name":"Stop","session_id":"t1"}`)) },
+		"copilot": func() (Request, bool) {
+			return MapCopilotHook([]byte(`{"hook_event_name":"agentStop","sessionId":"t1"}`))
+		},
+		"cursor": func() (Request, bool) {
+			return MapCursorHook([]byte(`{"hook_event_name":"stop","conversation_id":"t1"}`))
+		},
+		"agy": func() (Request, bool) {
+			return MapAgyHook([]byte(`{"terminationReason":"done","conversationId":"t1"}`))
+		},
+	} {
+		if req, ok := got(); !ok || req.AgentSession != "t1" || !req.Turn {
+			t.Errorf("%s: %+v %v", name, req, ok)
+		}
+	}
+	if req, _ := MapClaudeHook([]byte(`{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"s1"}`)); req.AgentSession != "" {
+		t.Errorf("an event carried the id: %+v", req)
+	}
+	if _, ok := MapCodex([]byte(`{"type":"agent-turn-complete","thread-id":"01a0fc76-4817","input-messages":["Generate a concise, single-line task title for this conversation"]}`)); ok {
+		t.Error("the title thread's turn was mapped")
+	}
+}
