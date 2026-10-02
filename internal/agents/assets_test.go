@@ -56,6 +56,9 @@ func TestWriteAssetsWritesEveryAsset(t *testing.T) {
 				}
 			}
 			b, _ := os.ReadFile(p)
+			if commandless[rel] {
+				continue
+			}
 			if strings.Contains(string(b), "{{BIN}}") || !strings.Contains(string(b), "/opt/conductor") {
 				t.Fatalf("%s:\n%s", rel, b)
 			}
@@ -198,7 +201,7 @@ func TestAdaptersNameTheBinaryTheAssetsWereWrittenFor(t *testing.T) {
 			t.Fatalf("%s: status disagrees with the install it made", id)
 		}
 	}
-	argv, _ := InjectFor("codex", hooks, catalog.Signal{Kind: "hook"})
+	argv, _ := InjectFor("codex", hooks, catalog.Signal{Kind: "hook"}, false)
 	if len(argv) != 4 || argv[1] != `notify=["/opt/conductor-1.0/conductor","notify","--codex"]` {
 		t.Fatalf("codex launch: %q", argv)
 	}
@@ -481,6 +484,10 @@ func commands(v any) []string {
 	return out
 }
 
+// commandless lists the assets that run no command: settings without hooks
+// (TestClaudeYoloSettings checks what they hold).
+var commandless = map[string]bool{"claude-yolo-only.json": true}
+
 var jsConst = regexp.MustCompile(`(?m)^const CONDUCTOR = (".*");$`)
 
 // The binary path is the one thing in an asset that is not fixed text. A path
@@ -497,6 +504,9 @@ func TestAssetsEscapeTheBinaryPath(t *testing.T) {
 			b, err := os.ReadFile(filepath.Join(hooks, filepath.FromSlash(rel)))
 			if err != nil || strings.Contains(string(b), "{{BIN}}") {
 				t.Fatalf("%s: %v\n%s", rel, err, b)
+			}
+			if commandless[rel] {
+				continue
 			}
 			switch path.Ext(rel) {
 			case ".json":
@@ -528,13 +538,13 @@ func TestAssetsEscapeTheBinaryPath(t *testing.T) {
 
 	useBin(t, bin)
 	hook := catalog.Signal{Kind: "hook"}
-	argv, _ := InjectFor("codex", hooks, hook)
+	argv, _ := InjectFor("codex", hooks, hook, false)
 	var notify []string
 	value, ok := strings.CutPrefix(argv[1], "notify=")
 	if !ok || json.Unmarshal([]byte(value), &notify) != nil || !slices.Equal(notify, []string{bin, "notify", "--codex"}) {
 		t.Fatalf("codex notify %q", argv)
 	}
-	_, env := InjectFor("aider", hooks, hook)
+	_, env := InjectFor("aider", hooks, hook, false)
 	if got := runShell(t, env["AIDER_NOTIFICATIONS_COMMAND"], out); got != "notify\n--state\nneeds_input\n--message\naider is waiting\n" {
 		t.Fatalf("aider command ran with %q", got)
 	}

@@ -32,6 +32,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	dev := fs.Bool("dev", false, "allow the Nuxt dev server origin and CORS from localhost")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	examples := fs.Bool("examples", false, "seed the example crews once (env CONDUCTOR_EXAMPLES=1); a crew whose id exists is left alone")
+	yolo := fs.Bool("yolo", false, "launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise (env CONDUCTOR_YOLO=1)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -66,6 +67,12 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	}
 	if *examples {
 		cfg.Examples = true
+	}
+	if *yolo {
+		cfg.Yolo = true
+	}
+	if cfg.Yolo {
+		log.Warn("yolo is on: agents launch with their yolo recipes and skip their permission prompts (Codex's also drops its sandbox)")
 	}
 	if cfg.AdminToken == "" {
 		tok, _ := share.NewToken()

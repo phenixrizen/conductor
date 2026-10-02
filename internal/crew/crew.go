@@ -90,17 +90,21 @@ type Member struct {
 
 // Crew is a saved team of agents. The server sets ID, CreatedAt and UpdatedAt.
 type Crew struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	Goal               string    `json:"goal"`
-	Cwd                string    `json:"cwd"`
-	Where              string    `json:"where"`     // server | host
-	Isolation          string    `json:"isolation"` // none | worktree
-	OpenAfterLaunch    bool      `json:"openAfterLaunch"`
-	ViewLinkTTLSeconds int64     `json:"viewLinkTtlSeconds,omitempty"` // a launch creates a view link that lasts this long; none when 0
-	Members            []Member  `json:"members"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Goal               string `json:"goal"`
+	Cwd                string `json:"cwd"`
+	Where              string `json:"where"`     // server | host
+	Isolation          string `json:"isolation"` // none | worktree
+	OpenAfterLaunch    bool   `json:"openAfterLaunch"`
+	ViewLinkTTLSeconds int64  `json:"viewLinkTtlSeconds,omitempty"` // a launch creates a view link that lasts this long; none when 0
+	// Yolo overrides the server's yolo default for the crew's runs: nil
+	// follows it, false launches every member without its agent's yolo
+	// recipe, true with it. A launch fixes the choice on the run.
+	Yolo      *bool     `json:"yolo,omitempty"`
+	Members   []Member  `json:"members"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Limits enforced by Validate. There is no limit on the number of crews.

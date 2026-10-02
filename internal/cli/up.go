@@ -103,12 +103,14 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 	if err != nil {
 		return 2, err
 	}
-	// The reply is read for the run's ID alone: fields this version does not
+	// The reply is read for the run's ID and yolo alone: fields this version does not
 	// know (a newer server adds them) are ignored on purpose, so no
 	// DisallowUnknownFields here.
 	var reply struct {
 		Run struct {
 			ID string `json:"id"`
+			// Yolo: the run's members launch with their agents' yolo recipes.
+			Yolo bool `json:"yolo"`
 		} `json:"run"`
 		// Only when the crew asks for a view link: its URL, the token in it.
 		ViewLink *struct {
@@ -129,6 +131,9 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 		} else {
 			fmt.Fprintln(stderr, "conductor up: the reply's view link is not an http(s) URL; not printed")
 		}
+	}
+	if reply.Run.Yolo {
+		fmt.Fprintln(stdout, "yolo: its members skip their permission prompts")
 	}
 	if *open {
 		// The run is running whether or not a browser opens: a note, not a failure.

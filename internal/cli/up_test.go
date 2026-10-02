@@ -540,3 +540,14 @@ func TestCrewsIDsGivesUpQuickly(t *testing.T) {
 		t.Fatalf("exit %d %v %q after %s", code, err, stdout, took)
 	}
 }
+
+// A run launched with yolo says so on a line of its own.
+func TestUpSaysWhenTheRunIsYolo(t *testing.T) {
+	clearConductorEnv(t)
+	srv, _ := stubServer(t, http.StatusCreated, `{"run":{"id":"r-1","yolo":true}}`)
+	code, stdout, stderr, err := up(t, "crew-1", "--server", srv.URL, "--token", secretToken)
+	want := "run r-1\n" + srv.URL + "/runs/r-1\nyolo: its members skip their permission prompts\n"
+	if code != 0 || err != nil || stdout != want {
+		t.Fatalf("exit %d %v\nstdout:\n%q\nwant:\n%q\nstderr:\n%s", code, err, stdout, want, stderr)
+	}
+}

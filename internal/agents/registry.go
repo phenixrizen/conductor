@@ -64,6 +64,28 @@ func All() []Adapter {
 	return out
 }
 
+// TrustArgsFor returns the arguments that trust the directories dirs gives
+// for one launch of the adapter agentID (Adapter.TrustArgs), nil when it has
+// none or there are no directories. dirs is called only for an adapter that
+// trusts per launch: it asks git.
+func TrustArgsFor(agentID string, dirs func() []string) []string {
+	a, ok := Get(agentID)
+	if !ok || a.TrustArgs == nil {
+		return nil
+	}
+	if d := dirs(); len(d) > 0 {
+		return a.TrustArgs(d)
+	}
+	return nil
+}
+
+// ConfirmsSubmit reports whether the adapter agentID reports taking a prompt
+// with the agent's signal (Adapter.ConfirmsSubmit, through its hooks).
+func ConfirmsSubmit(agentID string, sig catalog.Signal) bool {
+	a, ok := Get(agentID)
+	return ok && a.ConfirmsSubmit && sig.Kind == catalog.SignalHook
+}
+
 // clone returns a copy of a that shares no map or slice with the registry.
 func (a Adapter) clone() Adapter {
 	a.Assets = maps.Clone(a.Assets)
@@ -73,19 +95,31 @@ func (a Adapter) clone() Adapter {
 
 // InjectFor returns the flags to append to an agent's command and the
 // environment to add to its session, for the adapter agentID and the agent's
-// signal. Only the "hook" signal is wired at launch; any other signal, an
-// unknown or empty adapter, an adapter with no launch route and a hooks dir
-// that is not absolute (the flags name files in it, and a relative path would
-// be read from the session's working directory) all give nil, nil.
-func InjectFor(agentID string, hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
-	if sig.Kind != catalog.SignalHook || !filepath.IsAbs(hooksDir) {
+// signal. Only the "hook" signal is wired at launch, except with yolo (the
+// agent's yolo recipe applied) for an adapter with YoloInject, which takes
+// Inject's place whatever the signal. Any other signal, an unknown or empty
+// adapter, an adapter with no launch route and a hooks dir that is not
+// absolute (the flags name files in it, and a relative path would be read
+// from the session's working directory) all give nil, nil.
+func InjectFor(agentID string, hooksDir string, sig catalog.Signal, yolo bool) ([]string, map[string]string) {
+	if !filepath.IsAbs(hooksDir) {
 		return nil, nil
 	}
 	for _, a := range registry {
-		if a.ID != agentID || a.Inject == nil {
+		if a.ID != agentID {
 			continue
 		}
-		argv, env := a.Inject(hooksDir, sig)
+		inject := a.Inject
+		switch {
+		case yolo && a.YoloInject != nil:
+			inject = a.YoloInject
+		case sig.Kind != catalog.SignalHook:
+			return nil, nil
+		}
+		if inject == nil {
+			return nil, nil
+		}
+		argv, env := inject(hooksDir, sig)
 		if len(argv) == 0 {
 			argv = nil
 		}

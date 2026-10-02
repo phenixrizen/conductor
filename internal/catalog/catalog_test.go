@@ -768,3 +768,120 @@ func TestOverlayInheritsTheSite(t *testing.T) {
 		t.Fatalf("codex: %q", a.Site)
 	}
 }
+
+// A yolo recipe is bounded like the command and the environment it adds to,
+// and never names Conductor's own variables, which BuildEnv would drop.
+func TestYoloValidation(t *testing.T) {
+	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}, Yolo: &Yolo{Args: []string{"--yes"}, Env: map[string]string{"X_MODE": "auto"}}}
+	if err := validate(ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, y := range []Yolo{
+		{Args: []string{""}},
+		{Args: []string{"a\x00b"}},
+		{Args: []string{strings.Repeat("a", 4097)}},
+		{Args: slices.Repeat([]string{"-y"}, 17)},
+		{Env: map[string]string{"CONDUCTOR_NOTIFY_TOKEN": "x"}},
+		{Env: map[string]string{"BAD NAME": "x"}},
+		{Env: map[string]string{"X": strings.Repeat("v", 4097)}},
+		{Env: map[string]string{"X": "a\x00"}},
+	} {
+		a := ok
+		a.Yolo = &y
+		if err := validate(a); err == nil || !strings.Contains(err.Error(), "yolo") {
+			t.Errorf("%+v: %v", y, err)
+		}
+	}
+	empty := ok
+	empty.Yolo = &Yolo{}
+	if err := validate(empty); err != nil || !empty.Yolo.Empty() || !(*Yolo)(nil).Empty() {
+		t.Fatalf("an empty recipe: %v", err)
+	}
+	bad := ok
+	bad.TrustPrompt = ".*"
+	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "trustPrompt") {
+		t.Fatalf("a trust prompt matching nothing: %v", err)
+	}
+}
+
+// A saved override that leaves the recipe out takes the replaced agent's, an
+// empty one has none, and one of its own replaces it whole; the trust prompt
+// is inherited too. Redacted leaves the recipe as it is: its values are
+// flags, not secrets.
+func TestOverlayInheritsTheYoloRecipe(t *testing.T) {
+	c := Default()
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{
+		{ID: "claude", Name: "Claude, mine", Command: []string{"claude"}},
+		{ID: "codex", Name: "Codex", Command: []string{"codex"}, Yolo: &Yolo{}},
+		{ID: "copilot", Name: "Copilot", Command: []string{"copilot"}, Yolo: &Yolo{Args: []string{"--allow-all-tools"}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	claude, _ := c.Get("claude")
+	if claude.Yolo == nil || !slices.Equal(claude.Yolo.Args, []string{"--dangerously-skip-permissions"}) || claude.TrustPrompt == "" {
+		t.Fatalf("claude: %+v %q", claude.Yolo, claude.TrustPrompt)
+	}
+	if codex, _ := c.Get("codex"); !codex.Yolo.Empty() {
+		t.Fatalf("codex: %+v", codex.Yolo)
+	}
+	copilot, _ := c.Get("copilot")
+	if !slices.Equal(copilot.Yolo.Args, []string{"--allow-all-tools"}) || copilot.Yolo.Env != nil {
+		t.Fatalf("copilot: %+v", copilot.Yolo)
+	}
+	if r := copilot.Redacted(); r.Yolo == nil || r.Yolo.Env != nil || !slices.Equal(r.Yolo.Args, copilot.Yolo.Args) {
+		t.Fatalf("redacted: %+v", r.Yolo)
+	}
+	base, _ := Default().Get("copilot")
+	if r := base.Redacted(); r.Yolo.Env["COPILOT_ALLOW_ALL"] != "true" {
+		t.Fatalf("a recipe's env is not a secret: %+v", r.Yolo)
+	}
+	cp := c.Clone()
+	got, _ := cp.Get("claude")
+	got.Yolo.Args[0] = "changed"
+	if again, _ := c.Get("claude"); again.Yolo.Args[0] != "--dangerously-skip-permissions" {
+		t.Fatal("a clone shares the recipe")
+	}
+}
+
+// The built-ins' recipes, as the yolo research found them (docs/features.md,
+// the adapter matrix): pi and the shell have none.
+func TestDefaultYoloRecipes(t *testing.T) {
+	want := map[string]Yolo{
+		"claude":   {Args: []string{"--dangerously-skip-permissions"}},
+		"codex":    {Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
+		"agy":      {Args: []string{"--dangerously-skip-permissions"}},
+		"copilot":  {Args: []string{"--yolo"}, Env: map[string]string{"COPILOT_ALLOW_ALL": "true"}},
+		"cursor":   {Args: []string{"--yolo", "--trust"}},
+		"opencode": {Args: []string{"--auto"}},
+		"omp":      {Args: []string{"--yolo"}},
+		"aider":    {Args: []string{"--yes-always"}},
+		"goose":    {Env: map[string]string{"GOOSE_MODE": "auto"}},
+		"amp":      {Args: []string{"--dangerously-allow-all"}},
+		"dsh":      {Env: map[string]string{"DSH_PERMISSION_MODE": "danger-full-access"}},
+	}
+	for _, a := range defaults() {
+		w, ok := want[a.ID]
+		if !ok {
+			if !a.Yolo.Empty() {
+				t.Errorf("%s has a recipe: %+v", a.ID, a.Yolo)
+			}
+			continue
+		}
+		if a.Yolo == nil || !slices.Equal(a.Yolo.Args, w.Args) || !maps.Equal(a.Yolo.Env, w.Env) {
+			t.Errorf("%s: %+v, want %+v", a.ID, a.Yolo, w)
+		}
+	}
+	// The words the CLIs drew in the prompt investigation's captures (Claude
+	// Code 2.1.287, Codex 0.159.0), as the trust watcher reads a screen: each
+	// escape sequence a space.
+	for id, tc := range map[string]struct{ screen, words string }{
+		"claude": {"root/c1 Quick safety check: Is this a project you created or one you trust? (Like your own code", "Is this a project you created or one you trust?"},
+		"codex":  {"root/x1 Trust this folder? Codex can read, edit, and run files here", "Trust this folder?"},
+	} {
+		a, _ := Default().Get(id)
+		re, err := CompilePattern(a.TrustPrompt)
+		if words := tc.words; err != nil || re.FindString(tc.screen) != words {
+			t.Errorf("%s's trust prompt %q does not find %q: %v", id, a.TrustPrompt, tc.words, err)
+		}
+	}
+}

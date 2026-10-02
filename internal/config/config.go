@@ -109,6 +109,10 @@ type Config struct {
 	Webhooks []Webhook `json:"webhooks"`
 	// Dev relaxes origin checks for the Nuxt dev server on localhost:3000.
 	Dev bool `json:"dev"`
+	// Yolo launches every agent with its yolo recipe (catalog.Agent.Yolo),
+	// unless a launch or a crew says otherwise: CONDUCTOR_YOLO, conductor
+	// serve --yolo.
+	Yolo bool `json:"yolo"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -214,6 +218,12 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	}
 	if v := getenv("CONDUCTOR_EXAMPLES"); v == "1" || v == "true" {
 		cfg.Examples = true
+	}
+	switch getenv("CONDUCTOR_YOLO") {
+	case "1", "true":
+		cfg.Yolo = true
+	case "0", "false":
+		cfg.Yolo = false
 	}
 	for key, dst := range map[string]*int{
 		"CONDUCTOR_SCROLLBACK_BYTES":        &cfg.ScrollbackBytes,

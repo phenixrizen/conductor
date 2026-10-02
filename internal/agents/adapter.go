@@ -21,6 +21,20 @@ type Adapter struct {
 	// Inject returns extra argv and env for a launch, given the hooks dir. Empty
 	// when the agent has no launch-time route.
 	Inject func(hooksDir string, sig catalog.Signal) (argv []string, env map[string]string)
+	// YoloInject, when set, takes Inject's place for a launch with the
+	// agent's yolo recipe applied, whatever the signal: Claude Code honours
+	// only the last --settings, so the key that skips its bypass-permissions
+	// warning rides in the hooks settings file, or in a file of its own when
+	// the hooks are not wired.
+	YoloInject func(hooksDir string, sig catalog.Signal) (argv []string, env map[string]string)
+	// TrustArgs, when set, returns the arguments that trust dirs for one
+	// launch without writing the agent's configuration (Codex's -c projects
+	// override). A launch adds them only with the yolo recipe applied.
+	TrustArgs func(dirs []string) []string
+	// ConfirmsSubmit says the agent's hooks report working as it takes a
+	// prompt (Claude Code's UserPromptSubmit): with the hook signal, a role
+	// prompt not taken within session.ConfirmWait gets one more Enter.
+	ConfirmsSubmit bool
 	// Install merges Conductor's hooks into the agent's own config under home
 	// and, for an agent that reads skills, copies the Conductor skill there.
 	// Idempotent. Returns the files it touched, none when nothing changed;

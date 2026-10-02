@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -338,5 +339,28 @@ func TestPickerHoldsTheCanWorktreeMessage(t *testing.T) {
 	}
 	if got := string(m[1]); got != msgCanWorktree {
 		t.Fatalf("GIT_CAN_WORKTREE is %q, msgCanWorktree %q", got, msgCanWorktree)
+	}
+}
+
+// RepoRoots names a repository's top and, for a linked worktree, the main
+// repository's top too; outside a repository, the directory itself.
+func TestRepoRoots(t *testing.T) {
+	repo := newRepo(t)
+	sub := filepath.Join(repo, "pkg")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := RepoRoots(t.Context(), sub); !slices.Equal(got, []string{repo}) {
+		t.Fatalf("below the top: %q", got)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", "-q", "-b", "side", wt)
+	wt, _ = filepath.EvalSymlinks(wt)
+	if got := RepoRoots(t.Context(), wt); !slices.Equal(got, []string{wt, repo}) {
+		t.Fatalf("a worktree: %q", got)
+	}
+	plain := t.TempDir()
+	if got := RepoRoots(t.Context(), plain); !slices.Equal(got, []string{plain}) {
+		t.Fatalf("no repository: %q", got)
 	}
 }

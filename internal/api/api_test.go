@@ -825,7 +825,7 @@ func TestCreateSessionInjectsTheAdapter(t *testing.T) {
 func TestCreateSessionAdapterEnvYieldsToTheAgent(t *testing.T) {
 	t.Setenv("AIDER_NOTIFICATIONS", "from-the-server")
 	e := newTestEnv(t, nil)
-	_, env := agents.InjectFor("aider", filepath.Join(e.srv.cfg.DataDir, "hooks"), catalog.Signal{Kind: "hook"})
+	_, env := agents.InjectFor("aider", filepath.Join(e.srv.cfg.DataDir, "hooks"), catalog.Signal{Kind: "hook"}, false)
 	command := env["AIDER_NOTIFICATIONS_COMMAND"]
 	if !strings.Contains(command, " notify --state needs_input") {
 		t.Fatalf("aider's command %q", command)

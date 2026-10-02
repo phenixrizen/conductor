@@ -15,6 +15,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/crew"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -30,6 +31,9 @@ type createSessionRequest struct {
 	Args    []string `json:"args"`
 	Cols    uint16   `json:"cols"`
 	Rows    uint16   `json:"rows"`
+	// Yolo overrides the server's yolo default for this launch: nil follows
+	// it, false launches without the agent's yolo recipe, true with it.
+	Yolo *bool `json:"yolo,omitempty"`
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -118,16 +122,44 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// environment under the agent's own, so a variable the agent sets keeps
 	// its value. The hooks are the assets `conductor serve` wrote at startup.
 	// What the request sets (a crew's GOAL) goes over both.
-	extra, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), sig)
-	argv := append(append(append([]string{}, agent.Command...), req.Args...), extra...)
+	// Yolo: the launch's choice, else the server's; applied when the agent
+	// has a recipe, whose arguments follow the user's and whose environment
+	// goes over the agent's own, through the same filtered environment, never
+	// with Conductor's own variables. An agent with a trust override (Codex)
+	// trusts the launch's repository for this launch alone.
+	yolo := s.cfg.Yolo
+	if req.Yolo != nil {
+		yolo = *req.Yolo
+	}
+	applied := yolo && !agent.Yolo.Empty()
+	extra, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), sig, applied)
+	argv := append(append([]string{}, agent.Command...), req.Args...)
+	var yoloEnv map[string]string
+	if applied {
+		argv = append(argv, agent.Yolo.Args...)
+		yoloEnv = agent.Yolo.Env
+		argv = append(argv, agents.TrustArgsFor(agent.Adapter, func() []string {
+			ctx, cancel := context.WithTimeout(context.Background(), gitCheckTimeout)
+			defer cancel()
+			return crew.RepoRoots(ctx, cwd)
+		})...)
+	}
+	argv = append(argv, extra...)
 	env := agent.Env
-	if len(adapterEnv) > 0 || len(req.Env) > 0 {
+	if len(adapterEnv) > 0 || len(yoloEnv) > 0 || len(req.Env) > 0 {
 		env = maps.Clone(adapterEnv)
 		if env == nil {
 			env = map[string]string{}
 		}
 		maps.Copy(env, agent.Env)
+		maps.Copy(env, yoloEnv)
 		maps.Copy(env, req.Env)
+	}
+	var trust *regexp.Regexp
+	if agent.TrustPrompt != "" {
+		if trust, err = catalog.CompilePattern(agent.TrustPrompt); err != nil {
+			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's trust prompt is invalid")
+		}
 	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
@@ -166,6 +198,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Cols:      cols,
 		Rows:      rows,
 		Branch:    session.GitBranch(cwd),
+		Yolo:      applied,
 		CreatedAt: time.Now().UTC(),
 	}
 	if crewRef != nil {
@@ -182,6 +215,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		OnChange:        s.localChange,
 		OnActivity:      s.events.activity,
 		Pattern:         pattern,
+		TrustPattern:    trust,
+		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
 	})
 	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {
@@ -190,9 +225,18 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		_ = local.Stop(ctx)
 		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
 	}
-	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", proc.PID())
+	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", proc.PID(), "yolo", applied)
+	if yolo && !applied {
+		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
+	}
 	s.events.publish(local.Info())
 	return local, nil
+}
+
+// noYoloRecipe is the notice of a launch with yolo on whose agent has no yolo
+// recipe: it is launched as it would be without.
+func noYoloRecipe(agent catalog.Agent) string {
+	return "yolo is on, but " + agent.Name + " has no yolo recipe: launched without one"
 }
 
 // localChange is the OnChange hook of a server session: the change goes to

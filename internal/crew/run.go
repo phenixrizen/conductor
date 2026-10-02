@@ -31,7 +31,20 @@ import (
 // to set in the process (GOAL); ref tags the session and gives its process
 // CONDUCTOR_CREW, CONDUCTOR_RUN and CONDUCTOR_MEMBER.
 type Launcher interface {
-	Launch(ctx context.Context, agentID, name, cwd string, args []string, env map[string]string, ref session.CrewRef) (*session.Local, error)
+	Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error)
+}
+
+// LaunchSpec is a member's session as the engine asks a Launcher for it.
+type LaunchSpec struct {
+	AgentID, Name, Cwd string
+	Args               []string
+	// Env holds variables to set in the process: GOAL.
+	Env map[string]string
+	// Ref tags the session with its run.
+	Ref session.CrewRef
+	// Yolo is the run's yolo choice, fixed when the run was made: the agent's
+	// yolo recipe is applied when it has one.
+	Yolo bool
 }
 
 // Member states (MemberState.Status).
@@ -121,6 +134,9 @@ type Run struct {
 	StartedAt time.Time     `json:"startedAt"`
 	StoppedAt *time.Time    `json:"stoppedAt,omitempty"`
 	Members   []MemberState `json:"members"`
+	// Yolo is the run's yolo choice, fixed at launch: every member, one added
+	// or started later included, is launched with it.
+	Yolo bool `json:"yolo"`
 	// Log is the run's own log, oldest first: launched, member started,
 	// prompt typed, handoff queued, delivered or dropped, stopped, and the
 	// rest docs/protocol.md lists. At most maxRunLog entries.
@@ -171,6 +187,8 @@ type sessionMember struct {
 // run is a launch of a crew. Engine.mu guards what changes after it is made.
 type run struct {
 	id, crewID, name, goal, cwd, isolation string
+	// yolo is the run's yolo choice, fixed when it is made.
+	yolo bool
 	// prefix is where cwd lies in its repository, with worktrees: a member
 	// works in <worktree>/<prefix>.
 	prefix    string
@@ -353,7 +371,7 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 func (e *Engine) add(c Crew, prefix string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
-		startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
+		yolo: c.Yolo != nil && *c.Yolo, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
 	immediate := 0
 	for _, m := range c.Members {
 		r.members = append(r.members, newMember(m))
@@ -463,8 +481,8 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 			return nil, err
 		}
 	}
-	ref := session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}
-	local, err := e.launcher.Launch(ctx, m.def.AgentID, name, cwd, slices.Clone(m.def.Args), map[string]string{"GOAL": r.goal}, ref)
+	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
+		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo})
 	if err != nil {
 		return nil, err
 	}
@@ -1012,7 +1030,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 
 // snapshot copies r, with the members' diffs when withDiffs. The caller holds e.mu.
 func (r *run) snapshot(withDiffs bool) Run {
-	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation,
+	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		Log: append([]session.ActivityEntry{}, r.log...)}
 	for _, m := range r.members {

@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"strings"
+
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
 
@@ -74,6 +76,17 @@ func codexAdapter() Adapter {
 		ID:     "codex",
 		Name:   "Codex CLI",
 		Assets: codexAssets,
+		// The per-launch trust override Codex takes in place of the trust
+		// saved in config.toml: -c projects={"<dir>"={trust_level="trusted"}}
+		// (the dotted -c form does not skip the question). Applied only with
+		// the yolo recipe.
+		TrustArgs: func(dirs []string) []string {
+			parts := make([]string, 0, len(dirs))
+			for _, d := range dirs {
+				parts = append(parts, tomlString(d)+`={trust_level="trusted"}`)
+			}
+			return []string{"-c", "projects={" + strings.Join(parts, ",") + "}"}
+		},
 		Inject: func(hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
 			bin, err := binPath()
 			if err != nil {

@@ -83,7 +83,9 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	for _, a := range list {
 		out = append(out, entry(a, cat, s.base, installed))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden})
+	// yoloDefault is the server's yolo choice, which a launch or a crew that
+	// says nothing follows.
+	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden, "yoloDefault": s.cfg.Yolo})
 }
 
 // handleSaveAgent adds an agent to the overlay, or replaces the agent with the

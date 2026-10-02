@@ -42,13 +42,20 @@ const (
 
 // Launch starts the session of a crew member through createLocalSession, the
 // path POST /api/sessions takes (crew.Launcher). An error is an *apiError.
-func (s *Server) Launch(ctx context.Context, agentID, name, cwd string, args []string, env map[string]string, ref session.CrewRef) (*session.Local, error) {
+func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Local, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: agentID, Name: name, Cwd: cwd, Args: args, Env: env}, &ref)
+	yolo := spec.Yolo
+	ref := spec.Ref
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo}, &ref)
 	if aerr != nil {
 		return nil, aerr
+	}
+	if yolo && !local.Info().Yolo {
+		if a, ok := s.Catalog().Get(spec.AgentID); ok {
+			s.runs.Note(ref.RunID, session.ActivityStatus, spec.Name+": "+noYoloRecipe(a))
+		}
 	}
 	return local, nil
 }
@@ -135,6 +142,12 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.Cwd = cwd
+	// The run's yolo choice: the crew's, else the server's, fixed now.
+	yolo := s.cfg.Yolo
+	if c.Yolo != nil {
+		yolo = *c.Yolo
+	}
+	c.Yolo = &yolo
 	ctx, cancel := runContext(r)
 	defer cancel()
 	run, release, err := s.runs.LaunchHeld(ctx, c)

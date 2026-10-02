@@ -741,3 +741,28 @@ func TestExamplesComesFromTheEnvironmentOnly(t *testing.T) {
 		t.Fatalf("a config file with examples should be rejected as an unknown field: %v", err)
 	}
 }
+
+// yolo comes from the config file, and CONDUCTOR_YOLO overrides it either way.
+func TestYoloFromTheFileAndTheEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.json")
+	if err := os.WriteFile(path, []byte(`{"yolo": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		file, env string
+		want      bool
+	}{
+		{"", "", false},
+		{path, "", true},
+		{"", "1", true},
+		{"", "true", true},
+		{path, "0", false},
+		{path, "false", false},
+		{"", "yes", false},
+	} {
+		t.Setenv("CONDUCTOR_YOLO", tc.env)
+		if cfg, err := Load(tc.file); err != nil || cfg.Yolo != tc.want {
+			t.Errorf("file %q, CONDUCTOR_YOLO=%q: %v %v", tc.file, tc.env, cfg.Yolo, err)
+		}
+	}
+}

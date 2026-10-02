@@ -5,7 +5,10 @@ package catalog
 // through and its website as best known (to be checked in a browser: the
 // open verification of round 3 in docs/features.md), then a login shell.
 // Operators can override any entry by ID or disable the whole set with
-// disableDefaults.
+// disableDefaults. Each built-in carries the yolo recipe the research found
+// (docs/features.md, the adapter matrix: what each disables, verified live or
+// from docs) and, for Claude Code and Codex, the words of its trust question
+// as drawn by Claude Code 2.1.287 and Codex 0.159.0.
 func defaults() []Agent {
 	return []Agent{
 		{
@@ -18,6 +21,8 @@ func defaults() []Agent {
 			Site:        "https://claude.com/claude-code",
 			Adapter:     "claude",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--dangerously-skip-permissions"}},
+			TrustPrompt: `Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust\?`,
 		},
 		{
 			ID:          "codex",
@@ -29,6 +34,8 @@ func defaults() []Agent {
 			Site:        "https://developers.openai.com/codex/cli",
 			Adapter:     "codex",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
+			TrustPrompt: `Trust\s*this\s*folder\?`,
 		},
 		{
 			ID:          "agy",
@@ -41,6 +48,7 @@ func defaults() []Agent {
 			Adapter:     "agy",
 			// Antigravity fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
+			Yolo:   &Yolo{Args: []string{"--dangerously-skip-permissions"}},
 		},
 		{
 			ID:          "copilot",
@@ -52,6 +60,7 @@ func defaults() []Agent {
 			Site:        "https://github.com/features/copilot/cli",
 			Adapter:     "copilot",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--yolo"}, Env: map[string]string{"COPILOT_ALLOW_ALL": "true"}},
 		},
 		{
 			ID:          "cursor",
@@ -65,6 +74,7 @@ func defaults() []Agent {
 			// The CLI fires no event while it waits: its prompt on the last
 			// line says so.
 			Signal: &Signal{Kind: SignalPattern, Pattern: `^› $`},
+			Yolo:   &Yolo{Args: []string{"--yolo", "--trust"}},
 		},
 		{
 			ID:          "opencode",
@@ -76,6 +86,7 @@ func defaults() []Agent {
 			Site:        "https://opencode.ai",
 			Adapter:     "opencode",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--auto"}},
 		},
 		{
 			ID:          "pi",
@@ -98,6 +109,7 @@ func defaults() []Agent {
 			Site:        "https://github.com/can1357/oh-my-pi",
 			Adapter:     "omp",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--yolo"}},
 		},
 		{
 			ID:          "aider",
@@ -109,6 +121,7 @@ func defaults() []Agent {
 			Site:        "https://aider.chat",
 			Adapter:     "aider",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--yes-always"}},
 		},
 		{
 			ID:          "goose",
@@ -121,6 +134,7 @@ func defaults() []Agent {
 			Adapter:     "goose",
 			// Goose fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
+			Yolo:   &Yolo{Env: map[string]string{"GOOSE_MODE": "auto"}},
 		},
 		{
 			ID:          "amp",
@@ -132,6 +146,7 @@ func defaults() []Agent {
 			Site:        "https://ampcode.com",
 			Adapter:     "amp",
 			Signal:      &Signal{Kind: SignalHook},
+			Yolo:        &Yolo{Args: []string{"--dangerously-allow-all"}},
 		},
 		{
 			ID:          "dsh",
@@ -144,6 +159,7 @@ func defaults() []Agent {
 			Adapter:     "dsh",
 			// Its plugin is installed by hand, if at all: nothing is assumed.
 			Signal: &Signal{Kind: SignalNone},
+			Yolo:   &Yolo{Env: map[string]string{"DSH_PERMISSION_MODE": "danger-full-access"}},
 		},
 		{
 			ID:          "shell",

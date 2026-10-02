@@ -59,7 +59,10 @@ type Info struct {
 	Branch string `json:"branch,omitempty"`
 	// Crew names the crew run the session is a member of; nil for a session
 	// launched on its own.
-	Crew      *CrewRef  `json:"crew,omitempty"`
+	Crew *CrewRef `json:"crew,omitempty"`
+	// Yolo says the session was launched with its agent's yolo recipe
+	// applied (the agent has one, and yolo was on for the launch).
+	Yolo      bool      `json:"yolo,omitempty"`
 	Attention Attention `json:"attention"`
 	// LastAnswer is who most recently cleared a needs-input prompt by typing.
 	LastAnswer *Answer    `json:"lastAnswer,omitempty"`

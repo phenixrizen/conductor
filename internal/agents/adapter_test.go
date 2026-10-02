@@ -32,15 +32,15 @@ func TestWriteAssetsAndInjectClaude(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), `"/opt/conductor notify --claude-hook"`) || strings.Contains(string(b), "{{BIN}}") {
 		t.Fatalf("asset: %v %s", err, b)
 	}
-	argv, env := InjectFor("claude", dir, catalog.Signal{Kind: "hook"})
+	argv, env := InjectFor("claude", dir, catalog.Signal{Kind: "hook"}, false)
 	if len(argv) != 2 || argv[0] != "--settings" || argv[1] != filepath.Join(dir, "claude.json") || len(env) != 0 {
 		t.Fatalf("inject: %v %v", argv, env)
 	}
-	argv, _ = InjectFor("claude", dir, catalog.Signal{Kind: "hook", ToolEvents: true})
+	argv, _ = InjectFor("claude", dir, catalog.Signal{Kind: "hook", ToolEvents: true}, false)
 	if argv[1] != filepath.Join(dir, "claude-tools.json") {
 		t.Fatalf("tool events: %v", argv)
 	}
-	if argv, env := InjectFor("claude", dir, catalog.Signal{Kind: "bell"}); argv != nil || env != nil {
+	if argv, env := InjectFor("claude", dir, catalog.Signal{Kind: "bell"}, false); argv != nil || env != nil {
 		t.Fatal("bell signal must not inject")
 	}
 }
@@ -72,7 +72,7 @@ func TestInstallClaudeIsIdempotentAndPreservesUserHooks(t *testing.T) {
 }
 
 func TestInjectUnknownAdapterIsNoop(t *testing.T) {
-	if argv, env := InjectFor("", t.TempDir(), catalog.Signal{Kind: "hook"}); argv != nil || env != nil {
+	if argv, env := InjectFor("", t.TempDir(), catalog.Signal{Kind: "hook"}, false); argv != nil || env != nil {
 		t.Fatal("no adapter must inject nothing")
 	}
 }
@@ -139,7 +139,7 @@ func TestInjectForEachAdapter(t *testing.T) {
 		{"omp", nil, nil}, {"goose", nil, nil}, {"amp", nil, nil}, {"dsh", nil, nil},
 	}
 	for _, c := range cases {
-		argv, env := InjectFor(c.id, dir, hook)
+		argv, env := InjectFor(c.id, dir, hook, false)
 		if !slices.Equal(argv, c.argv) || !maps.Equal(env, c.env) || (argv == nil) != (c.argv == nil) || (env == nil) != (c.env == nil) {
 			t.Errorf("%s: argv %q env %q, want %q %q", c.id, argv, env, c.argv, c.env)
 		}
@@ -155,7 +155,7 @@ func TestInjectOnlyForTheHookSignal(t *testing.T) {
 	dir := t.TempDir()
 	for _, a := range All() {
 		for _, kind := range []string{"bell", "pattern", "none", ""} {
-			if argv, env := InjectFor(a.ID, dir, catalog.Signal{Kind: kind, ToolEvents: true}); argv != nil || env != nil {
+			if argv, env := InjectFor(a.ID, dir, catalog.Signal{Kind: kind, ToolEvents: true}, false); argv != nil || env != nil {
 				t.Errorf("%s with signal %q injected %q %q", a.ID, kind, argv, env)
 			}
 		}
@@ -167,7 +167,7 @@ func TestInjectOnlyForTheHookSignal(t *testing.T) {
 func TestInjectNeedsAnAbsoluteHooksDir(t *testing.T) {
 	for _, dir := range []string{"", "hooks", "./data/hooks"} {
 		for _, id := range []string{"claude", "codex", "pi", "aider"} {
-			if argv, env := InjectFor(id, dir, catalog.Signal{Kind: "hook"}); argv != nil || env != nil {
+			if argv, env := InjectFor(id, dir, catalog.Signal{Kind: "hook"}, false); argv != nil || env != nil {
 				t.Errorf("%s with hooks dir %q injected %q %q", id, dir, argv, env)
 			}
 		}
@@ -883,5 +883,51 @@ func TestSnippetNeededOnlyForStepsOtherThanTheSkill(t *testing.T) {
 	d, _ := Get("dsh")
 	if _, err := d.Install(home, t.TempDir()); !SnippetNeeded(err) {
 		t.Fatalf("dsh: %v", err)
+	}
+}
+
+func TestClaudeYoloSettings(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		sig  catalog.Signal
+		want string
+	}{
+		{catalog.Signal{Kind: "hook"}, "claude-yolo.json"},
+		{catalog.Signal{Kind: "hook", ToolEvents: true}, "claude-tools-yolo.json"},
+		{catalog.Signal{Kind: "bell"}, "claude-yolo-only.json"},
+	} {
+		argv, env := InjectFor("claude", dir, tc.sig, true)
+		if !slices.Equal(argv, []string{"--settings", filepath.Join(dir, tc.want)}) || env != nil {
+			t.Errorf("%+v: %v %v", tc.sig, argv, env)
+		}
+	}
+	for _, name := range []string{"claude-yolo.json", "claude-tools-yolo.json", "claude-yolo-only.json"} {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(claudeAssets[name]), &doc); err != nil || doc["skipDangerousModePermissionPrompt"] != true {
+			t.Errorf("%s: %v %v", name, doc, err)
+		}
+		if _, hooks := doc["hooks"]; hooks == (name == "claude-yolo-only.json") {
+			t.Errorf("%s: hooks %v", name, hooks)
+		}
+	}
+	if argv, _ := InjectFor("codex", dir, catalog.Signal{Kind: "bell"}, true); argv != nil {
+		t.Errorf("codex has no yolo injection: %v", argv)
+	}
+}
+
+// Codex's per-launch trust: one -c projects override naming each directory as
+// a TOML string, so a path with quotes or backslashes cannot break out of it.
+func TestCodexTrustArgs(t *testing.T) {
+	got := TrustArgsFor("codex", func() []string { return []string{"/work/repo", `/odd "dir"\x`} })
+	want := []string{"-c", `projects={"/work/repo"={trust_level="trusted"},"/odd \"dir\"\\x"={trust_level="trusted"}}`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q", got)
+	}
+	asked := false
+	if TrustArgsFor("codex", func() []string { return nil }) != nil || TrustArgsFor("claude", func() []string { asked = true; return []string{"/x"} }) != nil || asked {
+		t.Fatal("trust args without directories, or for an agent with none")
+	}
+	if !ConfirmsSubmit("claude", catalog.Signal{Kind: "hook"}) || ConfirmsSubmit("claude", catalog.Signal{Kind: "bell"}) || ConfirmsSubmit("codex", catalog.Signal{Kind: "hook"}) {
+		t.Fatal("ConfirmsSubmit")
 	}
 }

@@ -27,6 +27,7 @@ type launchCall struct {
 	args               []string
 	env                map[string]string
 	ref                session.CrewRef
+	yolo               bool
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -65,9 +66,10 @@ func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	return e, fl
 }
 
-func (f *fakeLauncher) Launch(ctx context.Context, agentID, name, cwd string, args []string, env map[string]string, ref session.CrewRef) (*session.Local, error) {
+func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
+	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{agentID, name, cwd, slices.Clone(args), maps.Clone(env), ref})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo})
 	err, block := f.fail[name], f.block[name]
 	f.mu.Unlock()
 	if err != nil {
@@ -78,7 +80,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, agentID, name, cwd string, ar
 		return nil, ctx.Err()
 	}
 	p := sessiontest.NewFakeProc()
-	info := session.Info{ID: session.NewID(), Name: name, AgentID: agentID, Cwd: cwd, Crew: &ref, Cols: 80, Rows: 24}
+	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
@@ -1422,5 +1424,30 @@ func TestIfKeptRunsUnderTheLockOfAKeptRun(t *testing.T) {
 	}
 	if e.IfKept("nope", func() { t.Error("f ran for a run the engine does not have") }) {
 		t.Fatal("IfKept reported a run the engine does not have")
+	}
+}
+
+// A run's yolo choice is fixed when it is made: every member, one added
+// later included, is launched with it.
+func TestAYoloRunLaunchesEveryMemberWithIt(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	on := true
+	c := testCrew(immediate("lead", "Plan it."))
+	c.Yolo = &on
+	run, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.Yolo {
+		t.Fatalf("run %+v", run)
+	}
+	if err := e.AddMember(t.Context(), run.ID, immediate("qa", "Check it.")); err != nil {
+		t.Fatal(err)
+	}
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	if len(fl.calls) != 2 || !fl.calls[0].yolo || !fl.calls[1].yolo {
+		t.Fatalf("calls %+v", fl.calls)
 	}
 }

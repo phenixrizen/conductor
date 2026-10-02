@@ -331,3 +331,32 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	return stdout.String(), nil
 }
+
+// RepoRoots returns the directories a per-launch trust names for dir: the top
+// of its git working tree and, for a linked worktree, the main repository's
+// top too, where an agent that trusts by repository looks (Codex resolves a
+// worktree to its main repository). Not in a repository, or git missing or
+// failing, it is dir alone. Each path is absolute; none is repeated.
+func RepoRoots(ctx context.Context, dir string) []string {
+	// --git-common-dir may answer relative to dir (git before 2.31 has no
+	// --path-format=absolute).
+	out, err := git(ctx, dir, "rev-parse", "--show-toplevel", "--git-common-dir")
+	if err != nil {
+		return []string{dir}
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || !filepath.IsAbs(lines[0]) {
+		return []string{dir}
+	}
+	roots := []string{lines[0]}
+	common := lines[1]
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	if filepath.Base(common) == ".git" {
+		if main := filepath.Dir(common); main != lines[0] {
+			roots = append(roots, main)
+		}
+	}
+	return roots
+}

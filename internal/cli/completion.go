@@ -95,7 +95,7 @@ func completionSpec() []commandSpec {
 	}
 	return []commandSpec{
 		// Every flag serve takes, and no other: TestCompletionSpecMatchesEveryFlag checks it.
-		{name: "serve", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}}},
+		{name: "serve", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}}},
 		{name: "host", flags: []flagSpec{{name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--name", kind: flagValue}, {name: "--host-name", kind: flagValue}, {name: "--agent", kind: flagValue}, {name: "--cwd", kind: flagFile}, {name: "--relay-only"}, {name: "--no-local"}, {name: "--stun", kind: flagValue}, {name: "--scrollback", kind: flagValue}, {name: "--file-view", kind: flagEnum, values: []string{"view", "control", "off"}}, {name: "--signal-pattern", kind: flagValue}, {name: "--log-level", kind: flagEnum, values: levels}}},
 		{name: "notify", flags: notifyFlags},
 		{name: "up", flags: api(flagSpec{name: "--open"}), crewID: true},

@@ -39,6 +39,37 @@ type Agent struct {
 	// Signal says how the agent reports that it needs input; nil means the
 	// bell default (see EffectiveSignal).
 	Signal *Signal `json:"signal,omitempty"`
+	// Yolo is the agent's yolo recipe: what a launch with yolo on adds to
+	// skip the agent's permission prompts. nil in a saved override takes the
+	// replaced agent's; an empty recipe ({}) has none, so yolo does nothing
+	// for the agent.
+	Yolo *Yolo `json:"yolo,omitempty"`
+	// TrustPrompt matches the agent's workspace-trust question in the text of
+	// its screen (escape sequences read as spaces): while it shows, a crew
+	// run types no prompt and the session needs a person's answer. RE2, at
+	// most 200 bytes, never matching an empty text; empty in a saved
+	// override takes the replaced agent's.
+	TrustPrompt string `json:"trustPrompt,omitempty"`
+}
+
+// Yolo is an agent's yolo recipe: Args go after the agent's command and the
+// launch's own arguments, Env over the agent's own environment, through the
+// same filtered environment (never as Conductor's own variables).
+type Yolo struct {
+	Args []string          `json:"args,omitempty"`
+	Env  map[string]string `json:"env,omitempty"`
+}
+
+// Empty reports whether y adds nothing to a launch: nil, or no arguments and
+// no environment.
+func (y *Yolo) Empty() bool { return y == nil || (len(y.Args) == 0 && len(y.Env) == 0) }
+
+// clone returns a copy of y that shares nothing with it.
+func (y *Yolo) clone() *Yolo {
+	if y == nil {
+		return nil
+	}
+	return &Yolo{Args: slices.Clone(y.Args), Env: maps.Clone(y.Env)}
 }
 
 // Signal kinds (Signal.Kind).
@@ -110,8 +141,11 @@ const (
 	maxCommandArg     = 4096 // bytes in one command element
 	maxEnvKeys        = 32   // entries in env
 	maxEnvPassthrough = 32   // entries in envPassthrough
-	maxSignalPattern  = 200  // bytes in a signal pattern
+	maxSignalPattern  = 200  // bytes in a signal pattern or a trust prompt
 	maxSite           = 200  // bytes in site
+	maxYoloArgs       = 16   // elements in yolo.args
+	maxYoloEnv        = 16   // entries in yolo.env
+	maxYoloValue      = 4096 // bytes in a yolo.env value
 )
 
 const (
@@ -246,6 +280,16 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: signal: %w", a.ID, err)
 		}
 	}
+	if a.Yolo != nil {
+		if err := validateYolo(*a.Yolo); err != nil {
+			return fmt.Errorf("agent %s: yolo: %w", a.ID, err)
+		}
+	}
+	if a.TrustPrompt != "" {
+		if _, err := CompilePattern(a.TrustPrompt); err != nil {
+			return fmt.Errorf("agent %s: trustPrompt: %w", a.ID, err)
+		}
+	}
 	if len(a.EnvPassthrough) > maxEnvPassthrough {
 		return fmt.Errorf("agent %s: too many envPassthrough entries (at most %d)", a.ID, maxEnvPassthrough)
 	}
@@ -255,6 +299,34 @@ func validate(a Agent) error {
 		}
 		if !envNamePattern.MatchString(name) {
 			return fmt.Errorf("agent %s: invalid envPassthrough entry %q", a.ID, name)
+		}
+	}
+	return nil
+}
+
+// validateYolo bounds a yolo recipe like the command and the environment it
+// adds to: at most 16 arguments of at most 4096 bytes without NUL, at most 16
+// variables, each named like an envPassthrough entry, never CONDUCTOR_*,
+// whose values have at most 4096 bytes without NUL. Its errors carry no agent
+// id; validate adds it.
+func validateYolo(y Yolo) error {
+	if len(y.Args) > maxYoloArgs {
+		return fmt.Errorf("too many args (at most %d)", maxYoloArgs)
+	}
+	for i, arg := range y.Args {
+		if arg == "" || strings.ContainsRune(arg, 0) || len(arg) > maxCommandArg {
+			return fmt.Errorf("args[%d] must be 1 to %d bytes without NUL", i, maxCommandArg)
+		}
+	}
+	if len(y.Env) > maxYoloEnv {
+		return fmt.Errorf("too many env entries (at most %d)", maxYoloEnv)
+	}
+	for k, v := range y.Env {
+		if len(k) > maxEnvKey || !envNamePattern.MatchString(k) || strings.HasPrefix(k, "CONDUCTOR_") {
+			return fmt.Errorf("invalid env name %q", cut(k))
+		}
+		if strings.ContainsRune(v, 0) || len(v) > maxYoloValue {
+			return fmt.Errorf("env %s: the value must be at most %d bytes without NUL", k, maxYoloValue)
 		}
 	}
 	return nil
@@ -375,7 +447,7 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 }
 
 // inherit returns a, an agent saved over prev (had says there was one), with
-// what it leaves to prev filled in: an adapter, a signal or a site it omits,
+// what it leaves to prev filled in: an adapter, a signal, a site, a yolo recipe or a trust prompt it omits,
 // and every env value it holds as RedactedValue. The Agents page stores the
 // mask for a key whose value the editor did not change, so a value changed in
 // the config reaches the agent. A value equal to prev's counts as the mask: it
@@ -395,6 +467,12 @@ func inherit(a, prev Agent, had bool) Agent {
 		}
 		if a.Site == "" {
 			a.Site = prev.Site
+		}
+		if a.Yolo == nil {
+			a.Yolo = prev.Yolo.clone()
+		}
+		if a.TrustPrompt == "" {
+			a.TrustPrompt = prev.TrustPrompt
 		}
 	}
 	for k, v := range a.Env {
@@ -440,6 +518,7 @@ func (a Agent) clone() Agent {
 		s := *a.Signal
 		a.Signal = &s
 	}
+	a.Yolo = a.Yolo.clone()
 	return a
 }
 

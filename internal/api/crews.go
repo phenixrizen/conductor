@@ -35,6 +35,7 @@ type crewInput struct {
 	Isolation          string        `json:"isolation"`
 	OpenAfterLaunch    bool          `json:"openAfterLaunch"`
 	ViewLinkTTLSeconds int64         `json:"viewLinkTtlSeconds"`
+	Yolo               *bool         `json:"yolo"`
 	Members            []crew.Member `json:"members"`
 }
 
@@ -193,7 +194,7 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 	}
 	c := crew.Crew{
 		Name: in.Name, Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
-		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Members: in.Members,
+		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members,
 	}
 	trimmed := c
 	trimmed.Name = strings.TrimSpace(c.Name)

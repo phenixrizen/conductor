@@ -2,6 +2,7 @@ package agents
 
 import (
 	"path/filepath"
+	"slices"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
@@ -18,15 +19,34 @@ const (
 )
 
 func claudeHooks(events ...string) string {
-	entry := `{"hooks":[{"type":"command","command":"{{BIN}} notify --claude-hook"}]}`
-	return jsonAsset(`{"hooks":{` + hookLists(entry, events...) + `}}`)
+	return jsonAsset(`{` + claudeHookList(events...) + `}`)
 }
 
+// claudeHookList is the "hooks" member of a settings file for events.
+func claudeHookList(events ...string) string {
+	entry := `{"hooks":[{"type":"command","command":"{{BIN}} notify --claude-hook"}]}`
+	return `"hooks":{` + hookLists(entry, events...) + `}`
+}
+
+// claudeYoloKey skips the warning Claude Code shows before its first launch
+// with --dangerously-skip-permissions (the yolo recipe). Claude Code honours
+// only the last --settings, so it goes in the file that carries the hooks.
+const claudeYoloKey = `"skipDangerousModePermissionPrompt":true`
+
+var (
+	claudeEvents      = []string{"Notification", "Stop", "UserPromptSubmit", "PermissionRequest", "PermissionDenied"}
+	claudeToolsEvents = append(slices.Clone(claudeEvents), "PostToolUse", "PostToolUseFailure", "SubagentStop")
+)
+
 var claudeAssets = map[string]string{
-	"claude.json": claudeHooks("Notification", "Stop", "UserPromptSubmit", "PermissionRequest", "PermissionDenied"),
+	"claude.json": claudeHooks(claudeEvents...),
 	// Tool events are chatty: a signal asks for them with toolEvents.
-	"claude-tools.json": claudeHooks("Notification", "Stop", "UserPromptSubmit", "PermissionRequest", "PermissionDenied",
-		"PostToolUse", "PostToolUseFailure", "SubagentStop"),
+	"claude-tools.json": claudeHooks(claudeToolsEvents...),
+	// The same with the yolo key, for a launch with the yolo recipe, and the
+	// key alone for one whose hooks are not wired.
+	"claude-yolo.json":       jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeEvents...) + `}`),
+	"claude-tools-yolo.json": jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeToolsEvents...) + `}`),
+	"claude-yolo-only.json":  jsonAsset(`{` + claudeYoloKey + `}`),
 }
 
 func claudeSteps(hooksDir string) []step {
@@ -45,6 +65,17 @@ func claudeAdapter() Adapter {
 			}
 			return []string{"--settings", filepath.Join(hooksDir, settings)}, nil
 		},
+		YoloInject: func(hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
+			settings := "claude-yolo-only.json"
+			switch {
+			case sig.Kind == catalog.SignalHook && sig.ToolEvents:
+				settings = "claude-tools-yolo.json"
+			case sig.Kind == catalog.SignalHook:
+				settings = "claude-yolo.json"
+			}
+			return []string{"--settings", filepath.Join(hooksDir, settings)}, nil
+		},
+		ConfirmsSubmit: true,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, claudeSteps(hooksDir)...)
 		},
