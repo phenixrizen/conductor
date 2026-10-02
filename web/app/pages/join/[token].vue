@@ -25,7 +25,7 @@ const fileOpen = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 const pathInput = ref('')
-const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any>; sendInput: (t: string) => boolean } | null>(null)
+const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
@@ -132,7 +132,7 @@ function backToCrew() {
 }
 
 function reply(text: string) {
-  if (!terminal.value?.sendInput(text + '\r')) toast.add({ title: 'Not connected', color: 'warning' })
+  if (!terminal.value?.submit(text)) toast.add({ title: 'Not connected', color: 'warning' })
 }
 
 function option(index: number) {

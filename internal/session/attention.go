@@ -34,6 +34,7 @@ const (
 	SourcePattern = "pattern" // the last line of the screen matched Options.Pattern
 	SourceInput   = "input"
 	SourceAdmin   = "admin"
+	SourceTrust   = "trust" // the agent's workspace-trust question is on the screen (Options.TrustPattern)
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can

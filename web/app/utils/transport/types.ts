@@ -18,6 +18,11 @@ export interface TerminalTransport {
   /** `hello` 0 × 0 (FOLLOW_SIZE) follows the session's size; a controller's other size sets it. */
   connect(hello: { cols: number; rows: number }): Promise<Welcome>
   sendInput(data: Uint8Array): void
+  /**
+   * Submits a line as a reply box does: the owner types it (as a paste when the program asks for one) and presses
+   * Enter 250 ms later, so that a TUI takes the Enter as Enter. Controllers only; at most MAX_SUBMIT bytes.
+   */
+  submit(text: string): void
   resize(cols: number, rows: number): void
   ping(): void
   requestFile(path: string, stat?: boolean): Promise<FileResponse>

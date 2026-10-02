@@ -264,7 +264,14 @@ function sendInput(text: string): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, sendInput, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+/** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open. */
+function submit(text: string): boolean {
+  if (!transport || transport.state.value !== 'open') return false
+  transport.submit(text)
+  return true
+}
+
+defineExpose({ connect, disconnect, requestFile, sendInput, submit, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({

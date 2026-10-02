@@ -172,6 +172,9 @@ func (t *LineTracker) backspace() {
 	t.line = t.line[:n]
 }
 
+// Reset forgets the line, not the place in an escape sequence.
+func (t *LineTracker) Reset() { t.line = t.line[:0] }
+
 // Last returns the text of the last line, at most 4096 bytes of its end.
 func (t *LineTracker) Last() string {
 	line := t.line
@@ -179,6 +182,60 @@ func (t *LineTracker) Last() string {
 		line = line[len(line)-maxLine:]
 	}
 	return string(line)
+}
+
+// maxScreenTail bounds the text ScreenTail keeps.
+const maxScreenTail = 1024
+
+// ScreenTail keeps the end of a terminal stream's text for a pattern that
+// spans what a TUI draws with cursor moves between its words (a dialog drawn
+// cell by cell): each escape sequence and each control character reads as one
+// space, a run of white space as one space, and only the last 1024 bytes are
+// kept. It keeps its place in a sequence split between two writes.
+type ScreenTail struct {
+	esc escScanner
+	buf []byte // grows to 2*maxScreenTail, then keeps its last maxScreenTail bytes
+}
+
+// Write adds a chunk of the stream.
+func (t *ScreenTail) Write(chunk []byte) {
+	for _, b := range chunk {
+		if !t.esc.text(b) || b <= ' ' || b == 0x7f {
+			if n := len(t.buf); n > 0 && t.buf[n-1] != ' ' {
+				t.push(' ')
+			}
+			continue
+		}
+		t.push(b)
+	}
+}
+
+func (t *ScreenTail) push(b byte) {
+	if len(t.buf) >= 2*maxScreenTail {
+		n := copy(t.buf, t.buf[len(t.buf)-maxScreenTail:])
+		t.buf = t.buf[:n]
+	}
+	t.buf = append(t.buf, b)
+}
+
+// Last returns the text kept, at most its last 1024 bytes.
+func (t *ScreenTail) Last() string {
+	b := t.buf
+	if len(b) > maxScreenTail {
+		b = b[len(b)-maxScreenTail:]
+	}
+	return string(b)
+}
+
+// Reset forgets the text kept, not the place in an escape sequence.
+func (t *ScreenTail) Reset() { t.buf = t.buf[:0] }
+
+// textTracker is what a PatternWatcher matches: the last line (LineTracker)
+// or the end of the screen's text (ScreenTail).
+type textTracker interface {
+	Write(chunk []byte)
+	Last() string
+	Reset()
 }
 
 // PatternWatcher follows a terminal stream and calls fire with the last line
@@ -200,7 +257,7 @@ type PatternWatcher struct {
 	fireMu sync.Mutex
 
 	mu      sync.Mutex // guards the rest
-	tracker LineTracker
+	tracker textTracker
 	timer   *time.Timer
 	last    time.Time // of the last Feed
 	feeds   uint64    // Feeds so far
@@ -212,7 +269,13 @@ type PatternWatcher struct {
 // goroutine, one call at a time. It may call Feed; it must not call Stop, which
 // waits for it.
 func NewPatternWatcher(re *regexp.Regexp, quiet time.Duration, fire func(line string)) *PatternWatcher {
-	return &PatternWatcher{re: re, quiet: quiet, fire: fire}
+	return &PatternWatcher{re: re, quiet: quiet, fire: fire, tracker: &LineTracker{}}
+}
+
+// NewScreenWatcher is NewPatternWatcher matching the end of the screen's text
+// (ScreenTail) rather than its last line: fire gets that text.
+func NewScreenWatcher(re *regexp.Regexp, quiet time.Duration, fire func(text string)) *PatternWatcher {
+	return &PatternWatcher{re: re, quiet: quiet, fire: fire, tracker: &ScreenTail{}}
 }
 
 // Feed adds a chunk of the stream and restarts the quiet period. It never
@@ -253,6 +316,15 @@ func (w *PatternWatcher) expire() {
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
 	}
+}
+
+// Reset forgets the text fed so far: the next fire needs a match in what is
+// fed from now on.
+func (w *PatternWatcher) Reset() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tracker.Reset()
+	w.checked = w.feeds
 }
 
 // Stop ends the watching. When it returns no fire is running and none will

@@ -90,7 +90,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 
 // "Priya is typing…": anyone else whose last input is under four seconds old.
 const now = ref(Date.now())
@@ -186,7 +186,7 @@ async function stop() {
 }
 
 function reply(text: string) {
-  if (!terminal.value?.sendInput(text + '\r')) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+  if (!terminal.value?.submit(text)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
 }
 
 function option(index: number) {

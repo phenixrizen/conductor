@@ -8,9 +8,13 @@ import (
 	"time"
 )
 
-// quiet is Options for a session under test: no log.
+// quiet is Options for a session under test: no log and, unless set, a short
+// pause before a submission's Enter.
 func quiet(o Options) Options {
 	o.Log = slog.New(slog.DiscardHandler)
+	if o.SubmitPause == 0 {
+		o.SubmitPause = 30 * time.Millisecond
+	}
 	return o
 }
 

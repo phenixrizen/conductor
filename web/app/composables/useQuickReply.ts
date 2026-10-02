@@ -1,11 +1,12 @@
 import { encodeText, FOLLOW_SIZE } from '~/utils/protocol'
+import type { TerminalTransport } from '~/utils/transport/types'
 import type { SessionInfo } from './useSessions'
 
 /**
- * Sends input to a session without opening its terminal: a short-lived
- * control connection over the existing transports (relay for hosted sessions,
- * so no WebRTC negotiation). The hello follows the session's size
- * (FOLLOW_SIZE), so the round trip never resizes it.
+ * Sends to a session without opening its terminal: a short-lived control connection over the existing transports
+ * (relay for hosted sessions, so no WebRTC negotiation). The hello follows the session's size (FOLLOW_SIZE), so the
+ * round trip never resizes it. `reply` submits a line (the owner types it and presses Enter 250 ms later, which a TUI
+ * takes as Enter); `send` writes keys as they are, for a quick-reply option such as a digit.
  */
 export function useQuickReply() {
   const { create } = useTerminalTransport()
@@ -19,14 +20,15 @@ export function useQuickReply() {
     sending.value = next
   }
 
-  async function send(session: SessionInfo, text: string, opts: { token?: string } = {}): Promise<void> {
+  async function over(session: SessionInfo, token: string | undefined, act: (t: TerminalTransport) => void): Promise<void> {
     if (sending.value.has(session.id)) return
     mark(session.id, true)
-    const t = create({ sessionId: session.id, token: opts.token ?? admin.token.value, kind: session.kind, forceRelay: true })
+    const t = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true })
     try {
       const welcome = await t.connect(FOLLOW_SIZE)
       if (welcome.role !== 'control') throw new Error('This link is view-only')
-      t.sendInput(encodeText(text))
+      act(t)
+      // The owner finishes a submission after the connection goes; this only lets the frame leave.
       await new Promise((r) => setTimeout(r, 150))
     } finally {
       t.close()
@@ -34,5 +36,13 @@ export function useQuickReply() {
     }
   }
 
-  return { send, sending }
+  function send(session: SessionInfo, input: string, opts: { token?: string } = {}): Promise<void> {
+    return over(session, opts.token, (t) => t.sendInput(encodeText(input)))
+  }
+
+  function reply(session: SessionInfo, text: string, opts: { token?: string } = {}): Promise<void> {
+    return over(session, opts.token, (t) => t.submit(text))
+  }
+
+  return { send, reply, sending }
 }

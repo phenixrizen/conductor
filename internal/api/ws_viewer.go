@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -102,6 +103,10 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 	}
 }
 
+// submitTimeout bounds a submit message's submission: its turn, the pause
+// and its Enter.
+const submitTimeout = 10 * time.Second
+
 func (s *Server) sendInputError(sub *session.Subscription, local *session.Local, err error) {
 	switch {
 	case errors.Is(err, session.ErrReadOnly):
@@ -152,6 +157,25 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 				Error: &proto.ErrorInfo{Code: code, Message: err.Error()}}, nil); encErr == nil {
 				local.Send(sub, frame)
 			}
+		}
+	case proto.CtlSubmit:
+		var m proto.Submit
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		if len(m.Text) > proto.MaxSubmit {
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "submit text too long"))
+			return true
+		}
+		// The submission goes on when the client goes: a reply box closes its
+		// connection once it has sent, and a line cut in its pause would wait
+		// without its Enter. The read loop waits for it, so what the client
+		// sends next comes after it.
+		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+		_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
+		cancel()
+		if err != nil {
+			s.sendInputError(sub, local, err)
 		}
 	case proto.CtlHello:
 		// duplicate hello is harmless

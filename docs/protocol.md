@@ -37,6 +37,7 @@ Client → owner:
 | `resize` | `cols, rows` | Controllers only; 1–500 |
 | `ping` | `ts` | Answered with `pong` |
 | `file_get` | `reqId, path, stat?` | Answered with a FILE frame |
+| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile. The reply boxes use it; keys typed into the terminal stay INPUT |
 
 Owner → client:
 
@@ -92,7 +93,7 @@ If the channel has not opened after `relayTimeoutMs`, or ICE fails, the viewer
 sends `relay`. After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
-View-role INPUT and `resize` are dropped by the server before they reach the host.
+View-role INPUT, `resize` and `submit` are dropped by the server before they reach the host (`read_only`).
 
 ## Host control connection
 

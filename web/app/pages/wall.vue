@@ -125,7 +125,7 @@ function fail(title: string) {
 }
 
 function reply(s: SessionInfo, text: string) {
-  quick.send(s, text + '\r').catch(fail(`Reply to ${s.name} failed`))
+  quick.reply(s, text).catch(fail(`Reply to ${s.name} failed`))
 }
 
 function option(s: SessionInfo, index: number) {

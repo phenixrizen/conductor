@@ -70,6 +70,10 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: resize[1:]}); !errors.Is(err, session.ErrReadOnly) {
 		t.Fatalf("view resize: %v", err)
 	}
+	submit := proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "x"})
+	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: submit[1:]}); !errors.Is(err, session.ErrReadOnly) {
+		t.Fatalf("view submit: %v", err)
+	}
 	ping := proto.MustControl(proto.Ping{T: proto.CtlPing})
 	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: ping[1:]}); err != nil {
 		t.Fatalf("view ping: %v", err)

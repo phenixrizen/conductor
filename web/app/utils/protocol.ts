@@ -19,6 +19,9 @@ export const ProtoVersion = 1
  */
 export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
 
+/** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
+export const MAX_SUBMIT = 4096
+
 export const CloseCode = {
   Normal: 1000,
   GoingAway: 1001,

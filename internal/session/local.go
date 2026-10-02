@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -66,6 +67,24 @@ type Options struct {
 	// agents that neither run hooks nor ring the bell; a TUI that redraws
 	// without pause never goes quiet and is not served by it.
 	Pattern *regexp.Regexp
+	// TrustPattern, when set, matches the agent's workspace-trust question in
+	// the text of its screen, each escape sequence read as a space
+	// (ScreenTail), after patternQuiet without output other than title
+	// updates. A match marks the session needs_input (source "trust", kind
+	// "prompt", the matched words as the message) unless it waits already,
+	// until the first submission's Enter: the run engine types no prompt
+	// while it shows, and a person answers the question.
+	TrustPattern *regexp.Regexp
+	// SubmitPause is the pause between a submission's text and its Enter;
+	// SubmitPause when zero.
+	SubmitPause time.Duration
+	// ConfirmSubmit says the agent reports taking a prompt (Claude Code's
+	// UserPromptSubmit hook reports working): a submission that asks for it
+	// (Submission.Confirm) and is not taken within ConfirmWait gets one more
+	// Enter.
+	ConfirmSubmit bool
+	// ConfirmWait is that wait; ConfirmWait when zero.
+	ConfirmWait time.Duration
 }
 
 // patternQuiet is how long the output must stay silent before the last line is
@@ -93,11 +112,21 @@ type Local struct {
 	dropped        atomic.Uint64
 	scanner        Scanner
 	pattern        *PatternWatcher // nil without Options.Pattern
+	trust          *PatternWatcher // nil without Options.TrustPattern
 	lastBell       time.Time
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
 	ended chan struct{}
+
+	// submitting holds a token while a submission runs (Submit): one at a
+	// time per session.
+	submitting chan struct{}
+	// paste follows the program's bracketed-paste mode (Submit, BracketedPaste).
+	paste pasteMode
+	// attnChanged is closed and replaced, under mu, on every attention change:
+	// Submit waits on it for the agent to take a prompt.
+	attnChanged chan struct{}
 }
 
 // NewLocal wraps a started process and begins pumping its output.
@@ -120,6 +149,12 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if opts.StopGrace <= 0 {
 		opts.StopGrace = 5 * time.Second
 	}
+	if opts.SubmitPause <= 0 {
+		opts.SubmitPause = SubmitPause
+	}
+	if opts.ConfirmWait <= 0 {
+		opts.ConfirmWait = ConfirmWait
+	}
 	if info.Status == "" {
 		info.Status = StatusRunning
 	}
@@ -134,9 +169,15 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		log:   opts.Log.With("session", info.ID),
 		info:  info,
 		ended: make(chan struct{}),
+
+		submitting:  make(chan struct{}, 1),
+		attnChanged: make(chan struct{}),
 	}
 	if opts.Pattern != nil {
 		s.pattern = NewPatternWatcher(opts.Pattern, patternQuiet, s.firePattern)
+	}
+	if opts.TrustPattern != nil {
+		s.trust = NewScreenWatcher(opts.TrustPattern, patternQuiet, s.fireTrust)
 	}
 	go s.pump()
 	return s
@@ -149,14 +190,24 @@ func (s *Local) pump() {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			// Output that only sets the window title (a spinner in it) does
+			// not count as output for the quiet the run engine and the
+			// trust watcher wait for.
+			title := titleOnly.Match(chunk)
 			s.mu.Lock()
 			s.ring.Write(chunk)
 			s.hub.Broadcast(proto.Encode(proto.TypeOutput, chunk))
-			s.lastOutput = time.Now()
+			if !title {
+				s.lastOutput = time.Now()
+			}
 			s.mu.Unlock()
+			s.paste.feed(chunk)
 			s.scanOutput(chunk)
 			if s.pattern != nil {
 				s.pattern.Feed(chunk)
+			}
+			if s.trust != nil && !title {
+				s.trust.Feed(chunk)
 			}
 		}
 		if err != nil {
@@ -185,6 +236,9 @@ func (s *Local) markEnded(status Status) {
 	if s.pattern != nil {
 		s.pattern.Stop()
 	}
+	if s.trust != nil {
+		s.trust.Stop()
+	}
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		s.mu.Unlock()
@@ -198,6 +252,7 @@ func (s *Local) markEnded(status Status) {
 	cleared := s.info.Attention.State != AttentionNone
 	if cleared {
 		s.info.Attention = Attention{}
+		s.signalAttention()
 	}
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
@@ -330,6 +385,24 @@ func (s *Local) firePattern(line string) {
 	s.setAttention(AttentionNeedsInput, promptMessage(line), SourcePattern, KindPrompt, nil, unlessWaiting)
 }
 
+// fireTrust is the trust watcher's fire: the agent's workspace-trust question
+// is on the screen, text its last ScreenTail. The session needs input, with
+// the question's words, unless it waits already.
+func (s *Local) fireTrust(text string) {
+	words := s.opts.TrustPattern.FindString(text)
+	if words == "" {
+		return
+	}
+	s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, nil, unlessWaiting)
+}
+
+// signalAttention wakes whoever waits for an attention change (Submit). The
+// caller holds s.mu.
+func (s *Local) signalAttention() {
+	close(s.attnChanged)
+	s.attnChanged = make(chan struct{})
+}
+
 // promptMessage is the attention message for the prompt on a line. A message
 // is cut at MaxAttentionMessage bytes from its start, and it is the end of a
 // long line that says what the agent waits for, so the line is trimmed at its
@@ -431,6 +504,7 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 		att.Since = &now
 	}
 	s.info.Attention = att
+	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
 	s.mu.Unlock()
 	if state != AttentionNone {
@@ -633,9 +707,10 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	return err
 }
 
-// ErrTextTooLong refuses text to type longer than an INPUT frame may carry,
-// proto.MaxInput bytes: nothing was written.
-var ErrTextTooLong = fmt.Errorf("session: text to type is longer than %d bytes", proto.MaxInput)
+// ErrTextTooLong refuses text longer than one INPUT frame carries: Type's
+// with its line break over proto.MaxInput bytes, a submission's over
+// MaxSubmitText once cleaned. Nothing was written.
+var ErrTextTooLong = errors.New("session: text to type is longer than one input frame")
 
 // Type writes text to the process as a controller typing it would, for what
 // Conductor types itself: a crew member's prompt. No subscription is behind
@@ -669,9 +744,11 @@ func (s *Local) TypeUnlessWaiting(text, byName string) (typed bool, err error) {
 
 // write writes data to the process, for sub, a controller's subscription, or,
 // with sub nil, for Type as byName. It answers the needs_input prompt that was
-// showing when it began, and records an input entry when it does, or always
-// for Type. With skipWhileWaiting it writes nothing while that prompt shows,
-// and reports whether it wrote.
+// showing when it began (answer), and records an input entry when it does, or
+// always for Type. A controller's write that is only a terminal's report
+// answers nothing. With skipWhileWaiting it writes nothing while that prompt
+// shows, and reports whether it wrote. (Task 4 replaces Type and this with
+// Submit.)
 func (s *Local) write(data []byte, sub *Subscription, byName string, skipWhileWaiting bool) (bool, error) {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
@@ -691,44 +768,63 @@ func (s *Local) write(data []byte, sub *Subscription, byName string, skipWhileWa
 	if _, err := s.proc.Write(data); err != nil {
 		return false, err
 	}
-	if sub != nil && isTerminalReport(data) {
+	if sub == nil {
+		s.Record(ActivityEntry{Type: ActivityInput, ByName: byName, Message: strings.TrimRight(string(data), "\r\n")})
+		s.answer(promptSince, "", byName, false, true)
+		return true, nil
+	}
+	if isTerminalReport(data) {
 		// A terminal's own report (xterm answering a cursor position query)
 		// is written and answers nothing; nor is it a person typing.
 		return true, nil
 	}
-	by := ""
-	if sub != nil {
-		by, byName = sub.ID, sub.Name
-		// Presence: stamp the typist and refresh the roster at most every 2 s.
-		now := time.Now().UnixMilli()
-		if prev := sub.lastInput.Swap(now); now-prev > 2000 {
-			s.mu.Lock()
-			s.hub.Broadcast(s.viewersFrame())
-			s.mu.Unlock()
-		}
+	s.stampTyping(sub)
+	s.answer(promptSince, sub.ID, sub.Name, true, bytes.IndexByte(data, '\r') >= 0)
+	return true, nil
+}
+
+// stampTyping marks sub as typing now and refreshes the roster at most every
+// 2 s (presence).
+func (s *Local) stampTyping(sub *Subscription) {
+	now := time.Now().UnixMilli()
+	if prev := sub.lastInput.Swap(now); now-prev > 2000 {
+		s.mu.Lock()
+		s.hub.Broadcast(s.viewersFrame())
+		s.mu.Unlock()
 	}
-	// First reply wins: the check, the answer record and the clear all happen
-	// in one critical section so two concurrent typists cannot both claim the
-	// prompt.
+}
+
+// answer settles the needs_input prompt a write answered: the one stamped
+// promptSince, when it is still showing, is cleared and recorded as answered
+// by by (a subscriber ID, "" for Conductor) and byName. A trust question is
+// answered only by a write with Enter in it (enter): an arrow key that moves
+// its selection leaves it showing, so that no prompt is typed into it. First
+// reply wins: the check, the answer and the clear share one critical
+// section, so two concurrent typists cannot both claim the prompt. With
+// record, an input entry with the question records the answer.
+func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter bool) {
 	s.mu.Lock()
-	waiting := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Since == promptSince
-	question := s.info.Attention.Message
+	att := s.info.Attention
+	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || att.Source != SourceTrust)
+	question := att.Message
 	if waiting {
 		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
 	s.mu.Unlock()
-	switch {
-	case sub == nil:
-		s.Record(ActivityEntry{Type: ActivityInput, ByName: byName, Message: strings.TrimRight(string(data), "\r\n")})
-	case waiting:
+	if !waiting {
+		return
+	}
+	if att.Source == SourceTrust && s.trust != nil {
+		// What showed the question is behind: only a new one counts.
+		s.trust.Reset()
+	}
+	if record {
 		s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: question})
 	}
-	if waiting {
-		s.notifyChange()
-	}
-	return true, nil
+	s.notifyChange()
 }
 
 // Resize applies the latest-controller-wins policy and broadcasts the result.

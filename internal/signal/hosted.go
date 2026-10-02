@@ -454,7 +454,7 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 		case proto.TypeInput:
 			return session.ErrReadOnly
 		case proto.TypeControl:
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize {
+			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit {
 				return session.ErrReadOnly
 			}
 		}

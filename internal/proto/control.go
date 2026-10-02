@@ -13,6 +13,7 @@ const (
 	CtlResize  = "resize"
 	CtlPing    = "ping"
 	CtlFileGet = "file_get"
+	CtlSubmit  = "submit"
 
 	// owner -> client
 	CtlAttention = "attention"
@@ -85,6 +86,18 @@ type Resize struct {
 	Rows uint16 `json:"rows"`
 	By   string `json:"by,omitempty"`
 }
+
+// Submit asks the owner to submit Text as a line, as a reply box does: the
+// text, as a paste when the program asks for one, then Enter on its own after
+// a pause (session.Local.Submit). Controllers only; Text is at most MaxSubmit
+// bytes.
+type Submit struct {
+	T    string `json:"t"`
+	Text string `json:"text"`
+}
+
+// MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
+const MaxSubmit = 4096
 
 // Ping and Pong carry an opaque client timestamp.
 type Ping struct {

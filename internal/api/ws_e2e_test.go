@@ -998,3 +998,30 @@ func TestAHelloOfZeroFollowsTheSessionsSize(t *testing.T) {
 		}
 	}
 }
+
+// A submit message types its text and then Enter, apart, for a controller;
+// a view link's is refused, and an over-long one is a bad frame.
+func TestSubmitMessageTypesALine(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	ctl := dialViewer(t, e, id, adminToken)
+	ctl.hello(0, 0)
+	ctl.expectControl(proto.CtlReady)
+	ctl.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "hello there"}))
+	ctl.expectOutput("hello there")
+	if e.local(id).Info().Attention.State != "" {
+		t.Fatal("attention changed")
+	}
+	ctl.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: strings.Repeat("x", proto.MaxSubmit+1)}))
+	if m := ctl.expectControl(proto.CtlError); m["code"] != proto.ErrCodeBadFrame {
+		t.Fatalf("long: %v", m)
+	}
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	v := dialViewer(t, e, id, lo["token"].(string))
+	v.hello(0, 0)
+	v.expectControl(proto.CtlReady)
+	v.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "nope"}))
+	if m := v.expectControl(proto.CtlError); m["code"] != proto.ErrCodeReadOnly {
+		t.Fatalf("view: %v", m)
+	}
+}
