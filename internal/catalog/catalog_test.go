@@ -731,10 +731,16 @@ func TestSiteValidation(t *testing.T) {
 	}
 }
 
-// Every built-in but the shell names a website of the right shape (an https
-// URL with a host, which validate checks); whether each is the agent's real
-// site is checked by hand (docs/features.md, open verification of round 3).
+// Every built-in but Shell names its website, held to the site rule. The
+// three a check on 2026-10-02 found moved are pinned where they live now:
+// developers.openai.com/codex/cli redirects to learn.chatgpt.com, Goose's
+// docs left block.github.io, and github.com/deepseek-ai/dsh is a 404.
 func TestDefaultsHaveSites(t *testing.T) {
+	moved := map[string]string{
+		"codex": "https://learn.chatgpt.com/docs/codex/cli",
+		"goose": "https://goose-docs.ai",
+		"dsh":   "https://github.com/deepseek-ai/deepseek-harness",
+	}
 	for _, a := range defaults() {
 		if a.ID == "shell" {
 			if a.Site != "" {
@@ -744,6 +750,9 @@ func TestDefaultsHaveSites(t *testing.T) {
 		}
 		if a.Site == "" {
 			t.Errorf("%s: no site", a.ID)
+		}
+		if want, ok := moved[a.ID]; ok && a.Site != want {
+			t.Errorf("%s: site %q, want %q", a.ID, a.Site, want)
 		}
 		if err := validate(a); err != nil {
 			t.Errorf("%s: %v", a.ID, err)

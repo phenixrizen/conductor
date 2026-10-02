@@ -36,7 +36,7 @@ func defaults() []Agent {
 			Command:     []string{"codex"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-code-xml",
-			Site:        "https://developers.openai.com/codex/cli",
+			Site:        "https://learn.chatgpt.com/docs/codex/cli",
 			Adapter:     "codex",
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
@@ -145,7 +145,7 @@ func defaults() []Agent {
 			Command:     []string{"goose"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-feather",
-			Site:        "https://block.github.io/goose/",
+			Site:        "https://goose-docs.ai",
 			Adapter:     "goose",
 			// Goose fires no event while it waits for the user.
 			Signal: &Signal{Kind: SignalBell},
@@ -172,7 +172,7 @@ func defaults() []Agent {
 			Command:     []string{"dsh"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-cpu",
-			Site:        "https://github.com/deepseek-ai/dsh",
+			Site:        "https://github.com/deepseek-ai/deepseek-harness",
 			Adapter:     "dsh",
 			// Its plugin is installed by hand, if at all: nothing is assumed.
 			Signal: &Signal{Kind: SignalNone},
