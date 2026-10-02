@@ -39,6 +39,8 @@ const unreadable = ref('')
 /** The id of the crew being read in full: the editor shows a loading state meanwhile, never "No crew has the id". */
 const crewLoading = ref<string>()
 const agents = useState<AgentInfo[]>('crewAgents', () => [])
+/** The server's yolo default, for the editor's select. */
+const yoloDefault = useState<boolean>('crewYoloDefault', () => false)
 const drafts = useState<Record<string, DraftCrew>>('crewDrafts', () => ({}))
 const loading = ref(false)
 const loaded = ref(false)
@@ -64,7 +66,7 @@ async function refresh() {
   }
   loading.value = true
   try {
-    const [list, a] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE), api.catalog()])
+    const [list, a] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE), api.catalogInfo()])
     // A page past the end (crews deleted elsewhere) moves back to the last one, and its watcher reads it.
     const last = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
     if (page.value > last) {
@@ -73,7 +75,8 @@ async function refresh() {
     }
     crews.value = list.crews
     total.value = list.total
-    agents.value = a
+    agents.value = a.agents
+    yoloDefault.value = a.yoloDefault
     error.value = ''
     loaded.value = true
     await loadSelected()
@@ -450,6 +453,7 @@ watch(routeId, loadSelected)
             :key="selectedKey"
             v-model="draft"
             :agents="agents"
+            :yolo-default="yoloDefault"
             :dirty="isDirty(selectedKey!)"
             :saving="saving"
             :launching="launching"

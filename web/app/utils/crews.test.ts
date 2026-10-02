@@ -63,6 +63,12 @@ describe('toCrewInput', () => {
     })
   })
 
+  it("carries the crew's yolo choice, and leaves it out to follow the server's default", () => {
+    expect(wire(toCrewInput({ ...info, yolo: true })).yolo).toBe(true)
+    expect(wire(toCrewInput({ ...info, yolo: false })).yolo).toBe(false)
+    expect(wire(toCrewInput(info))).not.toHaveProperty('yolo')
+  })
+
   it('keeps only the known fields of members and their start', () => {
     const edited = { ...lead, key: 7, start: { when: 'manual' as const, expanded: true } }
     expect(wire(toCrewInput({ ...info, members: [edited] })).members).toEqual([

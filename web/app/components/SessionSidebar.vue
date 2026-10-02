@@ -88,6 +88,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               <div class="flex items-center gap-1.5">
                 <span class="truncate text-sm font-semibold">{{ s.name }}</span>
                 <EventMarkBadge :session-id="s.id" />
+                <YoloBadge v-if="s.yolo" icon />
                 <span v-if="needsDot" class="ml-auto size-2 rounded-full bg-warning flex-none" aria-hidden="true" />
               </div>
               <span class="truncate text-xs">{{ s.attention?.message || 'Waiting for input' }}</span>
@@ -113,6 +114,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               <div class="flex items-center gap-1.5 min-w-0">
                 <span class="truncate text-sm font-medium">{{ s.name }}</span>
                 <EventMarkBadge :session-id="s.id" />
+                <YoloBadge v-if="s.yolo" icon />
               </div>
               <span class="truncate font-mono text-[11px] text-muted">{{ sessionMeta(s, now) }}</span>
             </div>
@@ -125,22 +127,25 @@ onBeforeUnmount(() => window.clearInterval(tick))
         <h3 class="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted">Exited · {{ count('exited') }}</h3>
         <div v-for="g in groups.exited" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="g.runId ?? ''">
           <SidebarRunHeader v-if="g.runId && runHeaders" :run-id="g.runId" :label="g.label" />
-          <NuxtLink
-            v-for="s in g.sessions"
-            :key="s.id"
-            :to="`/sessions/${s.id}`"
-            class="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 opacity-75 transition-colors"
-            :class="[active(s.id) ? 'bg-default border border-default shadow-xs opacity-100' : 'hover:bg-elevated/60', g.runId && runHeaders && 'ml-2']"
-          >
-            <SessionAvatar :agent-id="s.agentId" dashed />
-            <div class="min-w-0 flex-1 flex flex-col">
-              <div class="flex items-center gap-1.5 min-w-0">
-                <span class="truncate text-sm font-medium">{{ s.name }}</span>
-                <EventMarkBadge :session-id="s.id" />
+          <!-- The resume button sits beside the row's link, not in it: a link holds no button. -->
+          <div v-for="s in g.sessions" :key="s.id" class="flex items-center gap-1" :class="g.runId && runHeaders && 'ml-2'">
+            <NuxtLink
+              :to="`/sessions/${s.id}`"
+              class="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-1.5 opacity-75 transition-colors"
+              :class="active(s.id) ? 'bg-default border border-default shadow-xs opacity-100' : 'hover:bg-elevated/60'"
+            >
+              <SessionAvatar :agent-id="s.agentId" dashed />
+              <div class="min-w-0 flex-1 flex flex-col">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <span class="truncate text-sm font-medium">{{ s.name }}</span>
+                  <EventMarkBadge :session-id="s.id" />
+                  <YoloBadge v-if="s.yolo" icon />
+                </div>
+                <span class="truncate font-mono text-[11px] text-muted">{{ exitLabel(s) }}</span>
               </div>
-              <span class="truncate font-mono text-[11px] text-muted">{{ exitLabel(s) }}</span>
-            </div>
-          </NuxtLink>
+            </NuxtLink>
+            <ResumeButton v-if="s.kind === 'server'" :session="s" icon-only size="xs" />
+          </div>
         </div>
       </section>
     </div>

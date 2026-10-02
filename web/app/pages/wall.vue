@@ -205,6 +205,7 @@ onMounted(() => {
           <template v-if="focusId && focused">
             <UButton label="Open page" icon="i-lucide-square-terminal" color="neutral" variant="soft" :to="`/sessions/${focused.id}`" />
             <UButton v-if="isActive(focused)" label="Stop" icon="i-lucide-square" color="error" variant="soft" @click="stop(focused)" />
+            <ResumeButton v-else-if="focused.kind === 'server'" :session="focused" />
           </template>
           <FullscreenButton />
         </template>

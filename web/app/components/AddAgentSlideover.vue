@@ -8,7 +8,8 @@ import { slugId } from '~/utils/argv'
  * Add an agent to the catalog, or edit one (`agent` set). Saving replaces the
  * agent with the same ID on the server, so an edit sends the whole agent:
  * fields this form has no control for (working directory, icon, adapter, the
- * tool-events flag) are carried over from the agent being edited.
+ * tool-events flag, the trust prompt, the session recipe) are carried over
+ * from the agent being edited.
  */
 const props = defineProps<{
   agent?: AgentInfo
@@ -107,6 +108,12 @@ function addEnv() {
 }
 function removeEnv(rowUid: number) {
   form.env = form.env.filter((r) => r.uid !== rowUid)
+}
+function addYoloEnv() {
+  form.yoloEnv.push({ uid: uid(), key: '', value: '' })
+}
+function removeYoloEnv(rowUid: number) {
+  form.yoloEnv = form.yoloEnv.filter((r) => r.uid !== rowUid)
 }
 
 // The hook card needs an adapter to report through; until adapters can be
@@ -247,6 +254,29 @@ async function testLaunch() {
             <p v-if="shown.env" class="text-sm text-error">{{ shown.env }}</p>
             <UButton label="Add variable" icon="i-lucide-plus" size="xs" color="neutral" variant="ghost" class="self-start" @click="addEnv" />
           </div>
+        </div>
+
+        <div class="text-sm" data-yolo-recipe>
+          <div class="font-medium text-default">Yolo recipe</div>
+          <p class="mt-1 text-xs text-muted">
+            What a launch with yolo on adds so the agent skips its permission prompts: arguments after the command, variables over its own.
+            Shown as they are: put no secret here.
+          </p>
+          <USwitch v-model="form.yoloNone" label="No yolo recipe" description="Yolo leaves this agent as it is, with a notice." size="sm" class="mt-2" />
+          <template v-if="!form.yoloNone">
+            <div class="mt-2">
+              <ArgvInput v-model="form.yoloArgs" v-model:pending="form.yoloPending" placeholder="--dangerously-skip-permissions" :invalid="!!shown.yolo" />
+            </div>
+            <div class="mt-2 flex flex-col gap-2">
+              <div v-for="row in form.yoloEnv" :key="row.uid" class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2">
+                <UInput v-model="row.key" placeholder="NAME" size="sm" aria-label="Yolo variable name" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
+                <UInput v-model="row.value" placeholder="value" size="sm" aria-label="Yolo variable value" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
+                <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Remove ${row.key || 'variable'}`" @click="removeYoloEnv(row.uid)" />
+              </div>
+              <UButton label="Add variable" icon="i-lucide-plus" size="xs" color="neutral" variant="ghost" class="self-start" @click="addYoloEnv" />
+            </div>
+          </template>
+          <p v-if="shown.yolo" class="mt-1 text-sm text-error">{{ shown.yolo }}</p>
         </div>
 
         <USwitch v-model="form.allowArgs" label="Accept extra arguments" description="The Launch dialog can append arguments to this command." />

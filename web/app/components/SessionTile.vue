@@ -49,7 +49,9 @@ const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${prop
         <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(props.session.agentId) }}</span>
         <span class="font-semibold truncate flex-1 text-[13px]">{{ props.session.name }}</span>
         <EventMarkBadge :session-id="props.session.id" />
+        <YoloBadge v-if="props.session.yolo" icon />
         <span class="flex items-center gap-1.5 text-[11.5px]" :class="status.cls"><span v-if="status.dot" class="size-[7px] rounded-full" :class="status.dot" aria-hidden="true" />{{ status.label }}</span>
+        <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay icon-only size="xs" />
         <UTooltip text="Open in full (or double-click here)">
           <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${props.session.name}`" data-tile-open @click.stop="emit('select')" />
         </UTooltip>

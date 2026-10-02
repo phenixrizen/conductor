@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { AGENT_ID_PATTERN, MASK, agentPayload, commandCheck, commandOf, formErrors, formFromAgent, signalOut, siteError } from './agentForm'
+import { AGENT_ID_PATTERN, MASK, agentPayload, commandCheck, commandOf, formErrors, formFromAgent, signalOut, siteError, yoloOut } from './agentForm'
 import { slugId } from './argv'
 
 function counter() {
@@ -147,5 +147,44 @@ describe('commandCheck', () => {
   })
   it('says a lookup that took too long was not judged', () => {
     expect(commandCheck({ found: false, unknown: 'timeout' }, 'aider')).toEqual({ state: 'slow' })
+  })
+})
+
+describe('the yolo recipe', () => {
+  const copilot: AgentInfo = {
+    id: 'copilot',
+    name: 'Copilot CLI',
+    command: ['copilot'],
+    allowArgs: true,
+    yolo: { args: ['--yolo'], env: { COPILOT_ALLOW_ALL: 'true' } },
+    trustPrompt: 'Do you trust',
+    session: { startArgs: ['--session-id', '{id}'], resumeArgs: ['--session-id', '{id}'], idPattern: '^x$' },
+  }
+
+  it('round-trips a recipe, and carries the trust prompt and the session recipe the form has no control for', () => {
+    const f = formFromAgent(copilot, counter())
+    expect(f.yoloArgs).toEqual(['--yolo'])
+    expect(f.yoloEnv.map((r) => [r.key, r.value])).toEqual([['COPILOT_ALLOW_ALL', 'true']])
+    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', session: copilot.session })
+  })
+
+  it('saves {} for no recipe, and nothing for empty fields, which keeps a built-in recipe', () => {
+    const f = formFromAgent(copilot, counter())
+    expect(yoloOut({ ...f, yoloNone: true })).toEqual({})
+    expect(yoloOut({ ...f, yoloArgs: [], yoloEnv: [] })).toBeUndefined()
+    expect(formFromAgent({ ...copilot, yolo: {} }, counter()).yoloNone).toBe(true)
+  })
+
+  it('counts what is typed and not yet an argument', () => {
+    const f = { ...formFromAgent(undefined, counter()), yoloPending: '--yes "a b"' }
+    expect(yoloOut(f)).toEqual({ args: ['--yes', 'a b'] })
+  })
+
+  it("refuses what the server refuses: Conductor's variables, bad names, an open quote", () => {
+    const ok = () => ({ ...formFromAgent(undefined, counter()), name: 'X', id: 'x', command: ['x'] })
+    expect(formErrors({ ...ok(), yoloEnv: [{ uid: 1, key: 'CONDUCTOR_TOKEN', value: 'x' }] }).yolo).toBeTruthy()
+    expect(formErrors({ ...ok(), yoloEnv: [{ uid: 1, key: 'BAD NAME', value: 'x' }] }).yolo).toBeTruthy()
+    expect(formErrors({ ...ok(), yoloPending: '"open' }).yolo).toBeTruthy()
+    expect(formErrors({ ...ok(), yoloEnv: [{ uid: 1, key: 'GOOSE_MODE', value: 'auto' }] })).toEqual({})
   })
 })

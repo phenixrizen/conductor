@@ -58,6 +58,10 @@ watch(
 // The live store is the source of truth for attention (it is what the sidebar
 // shows); the terminal's own attention message arrives a moment earlier.
 const stored = computed(() => live.sessions.value.find((s) => s.id === id.value))
+/** The session as the live store has it, else as read: its yolo badge and its agent session follow the stream. */
+const current = computed(() => stored.value ?? session.value)
+const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
+const copy = useCopy()
 watch(
   () => stored.value?.attention,
   (a) => {
@@ -277,11 +281,25 @@ watch(id, () => {
               <span class="truncate text-[15px] font-semibold">{{ session?.name || 'Session' }}</span>
               <AttentionBadge :attention="attention" />
               <SessionStatusBadge v-if="session && session.status !== 'running'" :status="session.status" :exit-code="session.exitCode" />
+              <YoloBadge v-if="current?.yolo" />
             </div>
-            <span class="truncate font-mono text-[11.5px] text-muted">{{ meta }}</span>
+            <span class="flex min-w-0 items-center gap-2 font-mono text-[11.5px] text-muted">
+              <span class="truncate">{{ meta }}</span>
+              <button
+                v-if="current?.agentSession"
+                type="button"
+                class="hidden max-w-40 flex-none truncate hover:text-default md:inline"
+                :title="`The agent's own session (${current.agentSession.source}): ${current.agentSession.id}. Click to copy.`"
+                data-agent-session
+                @click="copy(current.agentSession.id, 'Agent session copied')"
+              >
+                {{ current.agentSession.id }}
+              </button>
+            </span>
           </div>
         </template>
         <template #right>
+          <ResumeButton v-if="ended && current" :session="current" />
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
           <!-- Icons only on a phone, as on the crew view: the labels would push the name off the bar. -->

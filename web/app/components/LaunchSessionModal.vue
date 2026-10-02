@@ -4,6 +4,7 @@ import { ApiError } from '~/composables/useApi'
 import { serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
+import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ launched: [session: SessionInfo] }>()
@@ -18,8 +19,11 @@ const loading = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const knownHosted = ref<Set<string>>(new Set())
+/** The server's yolo default (GET /api/catalog). */
+const yoloDefault = ref(false)
 
-const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: string; cwd: string; args: string }>({ agentId: '', runsOn: 'server', name: '', cwd: '', args: '' })
+/** `yolo` is this launch's own choice; undefined follows the server's default. */
+const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: string; cwd: string; args: string; yolo?: boolean }>({ agentId: '', runsOn: 'server', name: '', cwd: '', args: '' })
 
 const selected = computed(() => agents.value.find((a) => a.id === state.agentId))
 /** The server tab offers the agents installed on the server; My machine offers every agent: what is installed there is the host's. */
@@ -34,8 +38,11 @@ watch(open, async (v) => {
   error.value = ''
   knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
   loading.value = true
+  state.yolo = undefined
   try {
-    agents.value = await api.catalog()
+    const info = await api.catalogInfo()
+    agents.value = info.agents
+    yoloDefault.value = info.yoloDefault
     if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
   } catch (e) {
     error.value = (e as Error).message
@@ -43,6 +50,15 @@ watch(open, async (v) => {
     loading.value = false
   }
 })
+
+// Yolo: the launch's switch shows the server's default until it is moved;
+// the preview shows what the recipe adds, and an agent without one says so.
+const yolo = computed({
+  get: () => effectiveYolo(state.yolo, yoloDefault.value),
+  set: (on: boolean) => (state.yolo = on === yoloDefault.value ? undefined : on),
+})
+const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : []))
+const yoloView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
 
 const server = computed(() => httpBase.value || (import.meta.client ? location.origin : ''))
 const command = computed(() => {
@@ -87,6 +103,7 @@ async function submit() {
       name: state.name || undefined,
       cwd: state.cwd || undefined,
       args: selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : undefined,
+      yolo: state.yolo,
     })
     toast.add({ title: 'Session started', description: session.name, color: 'success', icon: 'i-lucide-play' })
     emit('launched', session)
@@ -146,6 +163,18 @@ async function submit() {
           <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args" hint="appended to the command">
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />
           </UFormField>
+          <div class="flex flex-col gap-1.5" data-launch-yolo>
+            <USwitch
+              v-model="yolo"
+              label="Yolo"
+              :description="state.yolo === undefined ? `The server's default (${yoloDefault ? 'on' : 'off'})` : 'For this launch'"
+              data-yolo-switch
+            />
+            <p v-if="yoloView.notice" class="flex items-center gap-1.5 text-xs text-warning" data-yolo-missing><UIcon name="i-lucide-triangle-alert" class="size-3.5 flex-none" />{{ yoloView.notice }}</p>
+            <p v-else-if="yoloView.applies" class="text-xs text-muted">
+              Skips its permission prompts: <code class="font-mono" data-yolo-argv>{{ yoloView.argv.join(' ') }}</code><template v-if="yoloView.env.length"> with {{ yoloView.env.join(', ') }}</template>
+            </p>
+          </div>
         </template>
 
         <template v-else>

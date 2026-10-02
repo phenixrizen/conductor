@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentInput, AgentSignal, CommandCheckReply } from '~/composables/useSessions'
+import type { AgentInfo, AgentInput, AgentSignal, CommandCheckReply, YoloRecipe } from '~/composables/useSessions'
 import { hasOpenQuote, splitArgs } from './argv'
 
 /** What GET /api/catalog shows in place of every stored env value (catalog.RedactedValue). Sent back, it keeps the stored value. */
@@ -17,6 +17,19 @@ export interface EnvRow {
   masked: boolean
 }
 
+/** One variable of the yolo recipe: shown as it is, never masked (a mode switch, not a secret). */
+export interface YoloRow {
+  uid: number
+  key: string
+  value: string
+}
+
+/** The server's rule for a yolo variable's name (validateYolo in internal/catalog): never one of Conductor's own. */
+export const YOLO_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** At most this many yolo arguments, and as many variables (internal/catalog). */
+export const MAX_YOLO = 16
+
 /** The add-agent form. `pendingCommand` is what is typed in the command field and not yet an argument. */
 export interface AgentForm {
   name: string
@@ -30,9 +43,15 @@ export interface AgentForm {
   allowArgs: boolean
   signal: SignalKind
   pattern: string
+  /** The yolo recipe: its arguments, what is typed and not yet one, and its variables. */
+  yoloArgs: string[]
+  yoloPending: string
+  yoloEnv: YoloRow[]
+  /** "No yolo recipe": saved as `{}`, which also drops a built-in's. */
+  yoloNone: boolean
 }
 
-export type Field = 'name' | 'id' | 'command' | 'pattern' | 'env' | 'site'
+export type Field = 'name' | 'id' | 'command' | 'pattern' | 'env' | 'site' | 'yolo'
 
 /** The form for `a`, or an empty one. Stored env values come in masked, by name; passthrough names follow as rows without a value. */
 export function formFromAgent(a: AgentInfo | undefined, uid: () => number): AgentForm {
@@ -52,7 +71,31 @@ export function formFromAgent(a: AgentInfo | undefined, uid: () => number): Agen
     allowArgs: a?.allowArgs ?? true,
     signal: a?.signal?.kind ?? 'bell',
     pattern: a?.signal?.pattern ?? '',
+    yoloArgs: [...(a?.yolo?.args ?? [])],
+    yoloPending: '',
+    yoloEnv: Object.entries(a?.yolo?.env ?? {})
+      .sort(([x], [y]) => x.localeCompare(y))
+      .map(([key, value]) => ({ uid: uid(), key, value })),
+    yoloNone: !!a?.yolo && !a.yolo.args?.length && !Object.keys(a.yolo.env ?? {}).length,
   }
+}
+
+/** The yolo arguments the form holds: its arguments, then what is typed and not yet one. */
+export function yoloArgsOf(f: Pick<AgentForm, 'yoloArgs' | 'yoloPending'>): string[] {
+  return [...f.yoloArgs, ...splitArgs(f.yoloPending)]
+}
+
+/**
+ * The yolo recipe to save: `{}` for "No yolo recipe"; the arguments and variables when there are any; else nothing, so that an agent that
+ * replaces a built-in keeps the built-in's and a new agent has none.
+ */
+export function yoloOut(f: Pick<AgentForm, 'yoloArgs' | 'yoloPending' | 'yoloEnv' | 'yoloNone'>): YoloRecipe | undefined {
+  if (f.yoloNone) return {}
+  const args = yoloArgsOf(f)
+  const env: Record<string, string> = {}
+  for (const r of f.yoloEnv) if (r.key.trim()) env[r.key.trim()] = r.value
+  if (!args.length && !Object.keys(env).length) return undefined
+  return { args: args.length ? args : undefined, env: Object.keys(env).length ? env : undefined }
 }
 
 /** The argv the form holds: its arguments, then what is typed and not yet one. */
@@ -94,6 +137,14 @@ export function formErrors(f: AgentForm): Partial<Record<Field, string>> {
     if (seen.has(key)) e.env = `${key} is listed twice`
     seen.add(key)
     if (!r.masked && r.value === MASK) e.env = `${key}: ${MASK} stands for a stored value; type the real value`
+  }
+  if (!f.yoloNone) {
+    const yoloKeys = f.yoloEnv.map((r) => r.key.trim()).filter(Boolean)
+    if (hasOpenQuote(f.yoloPending)) e.yolo = 'Close the quote in the yolo arguments, or remove it'
+    else if (yoloArgsOf(f).length > MAX_YOLO || yoloKeys.length > MAX_YOLO) e.yolo = `At most ${MAX_YOLO} yolo arguments and ${MAX_YOLO} variables`
+    else if (yoloKeys.some((k) => !YOLO_ENV_NAME.test(k) || k.startsWith('CONDUCTOR_'))) e.yolo = "A yolo variable's name is letters, digits and _, not starting with a digit nor CONDUCTOR_"
+    else if (new Set(yoloKeys).size !== yoloKeys.length) e.yolo = 'A yolo variable is listed twice'
+    else if (f.yoloEnv.some((r) => !r.key.trim() && r.value)) e.yolo = 'Give every yolo variable a name'
   }
   return e
 }
@@ -137,6 +188,10 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
     icon: prev?.icon,
     adapter: prev?.adapter,
     signal: signalOut(f.signal, f.pattern, prev?.signal),
+    yolo: yoloOut(f),
+    // What the form has no control for comes from the agent edited.
+    trustPrompt: prev?.trustPrompt,
+    session: prev?.session,
   }
 }
 

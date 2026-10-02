@@ -28,6 +28,44 @@ export interface SessionInfo {
   lastAnswer?: { by?: string; byName: string; at: string; message?: string }
   createdAt: string
   endedAt?: string
+  /** Launched with its agent's yolo recipe applied: the agent skips its permission prompts. Missing when no recipe was applied. */
+  yolo?: boolean
+  /** The agent's own session (its conversation), when its agent has a session recipe: what Resume resumes. */
+  agentSession?: AgentSession
+  /** The session this one resumed or relaunched. */
+  resumedFrom?: string
+}
+
+/** An agent's own session as Conductor knows it: the id it chose at launch (`set`), the one the agent's hooks reported (`hook`), or the one a resume took up (`resumed`). */
+export interface AgentSession {
+  id: string
+  /** The agent has had a turn: there is a conversation to resume. Before one, Resume relaunches plainly. */
+  resumable: boolean
+  source: 'set' | 'hook' | 'resumed'
+}
+
+/** What a launch with yolo on adds to the agent's: arguments after its command and the launch's own, variables over its own. Not secret: shown as they are. */
+export interface YoloRecipe {
+  args?: string[]
+  env?: Record<string, string>
+}
+
+/** How Conductor names an agent's own session and resumes it (catalog.SessionRecipe); `{id}` stands for the id, a whole argument. */
+export interface SessionRecipe {
+  startArgs?: string[]
+  newId?: 'uuid' | 'name'
+  idFrom?: 'hook'
+  idPolicy?: 'latest' | 'lowest'
+  resumeArgs?: string[]
+  idPattern?: string
+  resumeNeedsCwd?: boolean
+}
+
+/** Reply of the resume routes: the new session, whether it resumed the agent's conversation, and why not when it did not. */
+export interface ResumeResult {
+  session: SessionInfo
+  resumed: boolean
+  notice?: string
 }
 
 /** How an agent tells Conductor it needs a human. No signal means the bell default. */
@@ -62,6 +100,12 @@ export interface AgentInfo {
   available?: boolean
   /** The agent's website, an https URL, when known: a built-in's, or what was saved with the agent. */
   site?: string
+  /** Its yolo recipe; `{}` is none. Missing: no recipe. */
+  yolo?: YoloRecipe
+  /** RE2 matched against its screen's text: its workspace-trust question, while which a crew types no prompt. */
+  trustPrompt?: string
+  /** Its session recipe, for Resume. */
+  session?: SessionRecipe
 }
 
 /** Body of POST /api/catalog: the whole agent, replacing any agent with the same id. */
@@ -84,6 +128,10 @@ export interface AgentInput {
   site?: string
   adapter?: string
   signal?: AgentSignal
+  /** Left out, an agent that replaces a built-in keeps the built-in's; `{}` has none. */
+  yolo?: YoloRecipe
+  trustPrompt?: string
+  session?: SessionRecipe
 }
 
 /** Body of POST /api/sessions/{id}/events: something the agent did, or an attention word. */
@@ -220,6 +268,8 @@ export interface CrewInfo {
   openAfterLaunch: boolean
   /** Lifetime of the view link a launch creates; none when missing. */
   viewLinkTtlSeconds?: number
+  /** Overrides the server's yolo default for the crew's runs: missing follows it. A launch fixes the choice on the run. */
+  yolo?: boolean
   /** At most 12. The whole crew is at most 1 MiB as its file. */
   members: CrewMember[]
   createdAt: string
@@ -258,6 +308,8 @@ export interface RunMember {
   error?: string
   /** Starting or running, and its session waits on a prompt (a trust question before its prompt, or its agent's question), as last read. */
   needsInput?: boolean
+  /** The agent session of its latest session, kept once that session has left the server: what its Resume resumes. */
+  agentSession?: AgentSession
   /**
    * GET /api/runs/{run} only: lines of tracked files its worktree adds and removes against the commit it began from,
    * committed or not (`git diff --shortstat <base>`; untracked files do not count, a branch merged into its own does).
@@ -332,10 +384,18 @@ export function useSessions() {
   return {
     list: () => request<{ sessions: SessionInfo[] }>('/api/sessions').then((r) => r.sessions ?? []),
     get: (id: string, token?: string) => request<{ session: SessionInfo; role: Role; links?: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}`, { token }),
-    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number }) =>
+    /** `yolo` overrides the server's default for this launch; left out, the default holds. */
+    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean }) =>
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
+    /** Starts an ended session again: resumed with its agent's recipe when it has had a turn, else relaunched (`notice` says why). */
+    resumeSession: (id: string) => request<ResumeResult>(`/api/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
+    /** Starts an ended member of a run again, in its worktree, as the session route does for its session. */
+    resumeRunMember: (runId: string, name: string) =>
+      request<ResumeResult>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/resume`, { method: 'POST' }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
+    /** The launchable agents and the server's yolo default (`yolo` in its config, CONDUCTOR_YOLO, serve --yolo). */
+    catalogInfo: () => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
     /** The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back. */
     catalogWithHidden: () =>
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),

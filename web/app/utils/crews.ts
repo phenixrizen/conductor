@@ -17,6 +17,7 @@ export function toCrewInput(c: CrewInput): CrewInput {
     isolation: c.isolation,
     openAfterLaunch: c.openAfterLaunch,
     viewLinkTtlSeconds: c.viewLinkTtlSeconds,
+    yolo: c.yolo,
     members: c.members.map(toCrewMember),
   }
 }

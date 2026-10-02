@@ -4,6 +4,7 @@ import { draftMember, memberNameError, memberNameFrom, type DraftCrew } from '~/
 import { isActive } from '~/utils/attention'
 import { gitCheckLine, type GitCheckView } from '~/utils/dirInput'
 import { shortCwd } from '~/utils/sessions'
+import { yoloChoice, yoloFromChoice, type YoloChoice } from '~/utils/yolo'
 
 /**
  * One crew as a form: its name, goal, working directory, where it runs,
@@ -11,7 +12,7 @@ import { shortCwd } from '~/utils/sessions'
  * launches, duplicates and deletes it; the editor only changes the draft.
  */
 const crew = defineModel<DraftCrew>({ required: true })
-const props = defineProps<{ agents: AgentInfo[]; dirty: boolean; saving?: boolean; launching?: boolean }>()
+const props = defineProps<{ agents: AgentInfo[]; dirty: boolean; saving?: boolean; launching?: boolean; yoloDefault?: boolean }>()
 const emit = defineEmits<{ save: []; discard: []; duplicate: []; launch: []; delete: [] }>()
 
 const live = useAttention()
@@ -67,6 +68,18 @@ const isolationItems = [
   { label: 'Git worktree per agent', value: 'worktree' },
   { label: 'Shared working directory', value: 'none' },
 ]
+
+// Yolo for the crew's runs: the server's default, or on, or off. A launch
+// fixes the choice on the run, so members started later follow it.
+const yoloItems = computed<Array<{ label: string; value: YoloChoice }>>(() => [
+  { label: `Yolo: the server's default (${props.yoloDefault ? 'on' : 'off'})`, value: 'default' },
+  { label: 'Yolo on: skip permission prompts', value: 'on' },
+  { label: 'Yolo off', value: 'off' },
+])
+const yolo = computed({
+  get: () => yoloChoice(crew.value.yolo),
+  set: (c: YoloChoice) => (crew.value = { ...crew.value, yolo: yoloFromChoice(c) }),
+})
 
 const viewLink = computed({
   get: () => !!crew.value.viewLinkTtlSeconds,
@@ -200,6 +213,7 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
         <USelect :model-value="crew.isolation" :items="isolationItems" aria-label="Isolation" class="w-full" @update:model-value="set('isolation', $event as DraftCrew['isolation'])" />
         <USwitch :model-value="crew.openAfterLaunch" label="Open the crew view after launch" size="sm" @update:model-value="set('openAfterLaunch', $event)" />
         <USwitch v-model="viewLink" :label="viewLinkLabel" size="sm" />
+        <USelect v-model="yolo" :items="yoloItems" aria-label="Yolo" class="w-full" data-crew-yolo />
       </div>
     </div>
 
