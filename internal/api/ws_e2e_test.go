@@ -969,3 +969,32 @@ func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 		})
 	}
 }
+
+// Over the WebSocket a hello of (0, 0) follows the session's size, as does a
+// view link's hello of any size and an out-of-range pair; a controller's sets
+// it, as before. The role comes from the token alone.
+func TestAHelloOfZeroFollowsTheSessionsSize(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	ctl := dialViewer(t, e, id, adminToken)
+	ctl.hello(148, 57)
+	ctl.expectControl(proto.CtlWelcome)
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	for _, tc := range []struct {
+		token      string
+		cols, rows uint16
+	}{
+		{adminToken, 0, 0},
+		{lo["token"].(string), 120, 40},
+		{adminToken, 501, 40},
+	} {
+		c := dialViewer(t, e, id, tc.token)
+		c.hello(tc.cols, tc.rows)
+		if w := c.expectControl(proto.CtlWelcome); w["cols"] != float64(148) || w["rows"] != float64(57) {
+			t.Fatalf("hello %dx%d: welcome %v", tc.cols, tc.rows, w)
+		}
+		if info := e.local(id).Info(); info.Cols != 148 || info.Rows != 57 {
+			t.Fatalf("hello %dx%d resized the session to %dx%d", tc.cols, tc.rows, info.Cols, info.Rows)
+		}
+	}
+}

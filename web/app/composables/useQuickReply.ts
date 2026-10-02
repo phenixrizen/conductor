@@ -1,11 +1,11 @@
-import { encodeText } from '~/utils/protocol'
+import { encodeText, FOLLOW_SIZE } from '~/utils/protocol'
 import type { SessionInfo } from './useSessions'
 
 /**
  * Sends input to a session without opening its terminal: a short-lived
  * control connection over the existing transports (relay for hosted sessions,
- * so no WebRTC negotiation). The attach uses the session's own size so the
- * PTY is not resized by the round trip.
+ * so no WebRTC negotiation). The hello follows the session's size
+ * (FOLLOW_SIZE), so the round trip never resizes it.
  */
 export function useQuickReply() {
   const { create } = useTerminalTransport()
@@ -24,7 +24,7 @@ export function useQuickReply() {
     mark(session.id, true)
     const t = create({ sessionId: session.id, token: opts.token ?? admin.token.value, kind: session.kind, forceRelay: true })
     try {
-      const welcome = await t.connect({ cols: session.cols || 80, rows: session.rows || 24 })
+      const welcome = await t.connect(FOLLOW_SIZE)
       if (welcome.role !== 'control') throw new Error('This link is view-only')
       t.sendInput(encodeText(text))
       await new Promise((r) => setTimeout(r, 150))

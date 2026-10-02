@@ -15,6 +15,7 @@ export interface TerminalTransport {
   readonly state: Ref<TransportState>
   /** Last measured ping/pong round trip in ms; null until the first pong. */
   readonly rtt: Ref<number | null>
+  /** `hello` 0 × 0 (FOLLOW_SIZE) follows the session's size; a controller's other size sets it. */
   connect(hello: { cols: number; rows: number }): Promise<Welcome>
   sendInput(data: Uint8Array): void
   resize(cols: number, rows: number): void

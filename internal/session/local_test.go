@@ -910,3 +910,46 @@ func TestLastOutputAtFollowsTheOutput(t *testing.T) {
 		t.Fatalf("second output at %v, first at %v", second, first)
 	}
 }
+
+// A hello's size: a controller's two dimensions in range set the PTY's, as
+// they always did; (0, 0) follows it, and so does an out-of-range pair; a
+// viewer's never changes it. The welcome carries the size that holds.
+func TestAHelloOfZeroFollowsTheSize(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	for _, tc := range []struct {
+		role       Role
+		cols, rows uint16
+		resized    bool
+	}{
+		{RoleControl, 0, 0, false},
+		{RoleControl, 0, 40, false},
+		{RoleControl, 501, 40, false},
+		{RoleView, 148, 57, false},
+		{RoleControl, 148, 57, true},
+		{RoleControl, 0, 0, false},
+	} {
+		sink := newChanSink(false)
+		if _, err := s.Attach("", tc.role, "", tc.cols, tc.rows, sink); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitFrames(t, 1)
+		w := decodeControl(t, sink.frame(0))
+		select {
+		case got := <-p.resize:
+			if !tc.resized || got != [2]uint16{tc.cols, tc.rows} {
+				t.Fatalf("%s %dx%d resized the PTY to %v", tc.role, tc.cols, tc.rows, got)
+			}
+		case <-time.After(20 * time.Millisecond):
+			if tc.resized {
+				t.Fatalf("%s %dx%d did not resize the PTY", tc.role, tc.cols, tc.rows)
+			}
+		}
+		info := s.Info()
+		if w["cols"] != float64(info.Cols) || w["rows"] != float64(info.Rows) {
+			t.Fatalf("welcome %v, session %dx%d", w, info.Cols, info.Rows)
+		}
+	}
+	if info := s.Info(); info.Cols != 148 || info.Rows != 57 {
+		t.Fatalf("size %dx%d", info.Cols, info.Rows)
+	}
+}

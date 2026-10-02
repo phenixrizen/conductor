@@ -33,7 +33,7 @@ Client → owner:
 
 | `t` | Fields | Notes |
 |---|---|---|
-| `hello` | `proto:1, cols, rows, client, name?` | Must be the first frame, within 5 s. `name` is the display name other viewers see (≤ 160 bytes on the wire; cleaned to ≤ 40 runes, control characters stripped, empty → `guest`) |
+| `hello` | `proto:1, cols, rows, client, name?` | Must be the first frame, within 5 s. `cols, rows`: a controller's two values in 1–500 set the session's size (see Resize policy); `0, 0` follows the session's size and changes nothing, as does any other pair out of range; a viewer's never changes it. The size never decides the role, which comes from the token. `name` is the display name other viewers see (≤ 160 bytes on the wire; cleaned to ≤ 40 runes, control characters stripped, empty → `guest`) |
 | `resize` | `cols, rows` | Controllers only; 1–500 |
 | `ping` | `ts` | Answered with `pong` |
 | `file_get` | `reqId, path, stat?` | Answered with a FILE frame |
@@ -64,7 +64,14 @@ too many viewers, `4410` session or host gone.
 
 The most recent resize from any `control` client wins and is broadcast to every
 attached client, which resizes its terminal to match. `view` clients never
-resize. Attaching as a controller applies the client's size immediately.
+resize. Attaching as a controller applies the client's size immediately, unless its
+`hello` says `0, 0`: a viewer that shows the session scaled at the session's
+own size (the view-only run tiles, a quick reply) follows the size and never
+resets it. A terminal's automatic reports (a cursor position report, device
+attributes, focus in and out, colour replies; at most 256 bytes, nothing else
+in the frame) are written to the process like any INPUT but do not answer the
+prompt the session waits on. When a session's process ends, its attention is
+cleared in the same change that sets `exited` or `stopped`.
 
 ## Hosted sessions: signaling and relay
 

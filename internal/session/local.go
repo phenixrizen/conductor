@@ -191,6 +191,14 @@ func (s *Local) markEnded(status Status) {
 		return
 	}
 	s.info.Status = status
+	// An ended session needs nothing: what it waited on goes with its
+	// process, in the critical section that ends it, so nothing ever sees an
+	// ended session that still needs input. Its history stays in the activity
+	// log.
+	cleared := s.info.Attention.State != AttentionNone
+	if cleared {
+		s.info.Attention = Attention{}
+	}
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
 	var exitCode *int
@@ -201,6 +209,9 @@ func (s *Local) markEnded(status Status) {
 		exitCode = &code
 		s.info.ExitCode = exitCode
 	default:
+	}
+	if cleared {
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
 	frame := proto.MustControl(proto.Status{T: proto.CtlStatus, Status: string(status), ExitCode: exitCode})
 	s.hub.Broadcast(frame)
@@ -542,7 +553,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
 	}
-	if role == RoleControl && proto.ValidDimension(cols) && proto.ValidDimension(rows) && !s.info.Status.Ended() {
+	// The hello's size: a controller's sets the PTY's, (0, 0) follows it
+	// (proto.HelloSize). The role comes from the token, never from the hello.
+	if role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended() {
 		if cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
 				s.info.Cols, s.info.Rows = cols, rows
@@ -677,6 +690,11 @@ func (s *Local) write(data []byte, sub *Subscription, byName string, skipWhileWa
 	}
 	if _, err := s.proc.Write(data); err != nil {
 		return false, err
+	}
+	if sub != nil && isTerminalReport(data) {
+		// A terminal's own report (xterm answering a cursor position query)
+		// is written and answers nothing; nor is it a person typing.
+		return true, nil
 	}
 	by := ""
 	if sub != nil {

@@ -618,9 +618,15 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 	h.mu.Lock()
 	h.info.Status = status
 	h.info.ExitCode = exitCode
-	if status.Ended() && h.info.EndedAt == nil {
-		now := time.Now().UTC()
-		h.info.EndedAt = &now
+	if status.Ended() {
+		if h.info.EndedAt == nil {
+			now := time.Now().UTC()
+			h.info.EndedAt = &now
+		}
+		// An ended session needs nothing, whatever the host said before. A
+		// host that only went away (host_disconnected) may come back: its
+		// session keeps its state.
+		h.info.Attention = session.Attention{}
 	}
 	h.mu.Unlock()
 	h.notifyChange()

@@ -752,3 +752,23 @@ func TestHostActivityCarriesTheAttentionStateOfAnAttentionEntry(t *testing.T) {
 		t.Fatalf("the hook got %d entries with states %q, want %q", len(rec.got), rec.states, want)
 	}
 }
+
+// A hosted session that ends needs nothing: the host's last attention goes
+// with the status that ends it. A disconnected host's session keeps its
+// state, since the host may come back.
+func TestAnEndedHostedSessionNeedsNothing(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	if err := hs.SetAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, false); err != nil {
+		t.Fatal(err)
+	}
+	hs.HostDisconnected(conn)
+	if st := hs.Info().Attention.State; st != session.AttentionNeedsInput {
+		t.Fatalf("a disconnected host's session lost its prompt: %q", st)
+	}
+	code := 0
+	hs.HostStatus(session.StatusExited, &code)
+	if info := hs.Info(); info.Status != session.StatusExited || info.Attention.State != session.AttentionNone {
+		t.Fatalf("ended: %+v", info)
+	}
+}

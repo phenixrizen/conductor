@@ -13,6 +13,12 @@ export const FrameType = {
 
 export const ProtoVersion = 1
 
+/**
+ * A hello of 0 × 0 follows the session's size (proto.HelloSize): a scaled tile or a quick reply never resizes a
+ * session. Any other size a controller sends sets it, latest controller wins (docs/protocol.md, Resize policy).
+ */
+export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
+
 export const CloseCode = {
   Normal: 1000,
   GoingAway: 1001,

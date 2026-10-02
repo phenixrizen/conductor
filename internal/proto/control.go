@@ -223,6 +223,18 @@ func ValidDimension(v uint16) bool {
 	return v >= 1 && v <= MaxTerminalDimension
 }
 
+// HelloSize reports whether a hello's size asks for a size: two dimensions in
+// 1–MaxTerminalDimension do, and a controller's hello sets the session to it
+// (latest controller wins). (0, 0) is the hello of a viewer that shows the
+// session at the session's size, a scaled tile or a quick reply: it follows
+// the current size and changes nothing, and so does any other pair (a zero
+// with a nonzero, a dimension over 500), as such a hello always did. A resize
+// message has no such case: there zero is invalid. The size never decides the
+// role, which comes from the token on both transports.
+func HelloSize(cols, rows uint16) bool {
+	return ValidDimension(cols) && ValidDimension(rows)
+}
+
 // NewError builds an encoded error control frame.
 func NewError(code, message string) []byte {
 	return MustControl(ErrorMsg{T: CtlError, Code: code, Message: message})

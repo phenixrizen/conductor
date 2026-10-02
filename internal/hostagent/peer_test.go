@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/session/sessiontest"
 )
 
 // loopbackViewer connects a browser-like pion peer to p: the viewer creates the
@@ -272,4 +274,41 @@ func TestSettleDoesNotWaitForWebRTCViewersOnceCancelled(t *testing.T) {
 	if took := time.Since(start); took > 500*time.Millisecond {
 		t.Fatalf("settle took %v after the host was cancelled", took)
 	}
+}
+
+// A viewer's hello over the host's transports follows the same rule as on the
+// server: (0, 0) follows the session's size, a view link's size is never
+// applied, and a controller's two dimensions in range set it. The role is the
+// one the server gave the peer, whatever the hello says.
+func TestAPeersHelloOfZeroFollowsTheSize(t *testing.T) {
+	proc := sessiontest.NewFakeProc()
+	local := session.NewLocal(session.Info{ID: "s", Cols: 148, Rows: 57}, proc, session.Options{Log: slog.New(slog.DiscardHandler)})
+	t.Cleanup(func() { proc.End(0) })
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: slog.New(slog.DiscardHandler), sendHook: func(any) {}}
+	for i, tc := range []struct {
+		role       session.Role
+		cols, rows uint16
+		want       [2]uint16
+	}{
+		{session.RoleControl, 0, 0, [2]uint16{0, 0}},
+		{session.RoleView, 80, 24, [2]uint16{0, 0}},
+		{session.RoleControl, 0, 24, [2]uint16{0, 0}},
+		{session.RoleControl, 100, 30, [2]uint16{100, 30}},
+	} {
+		p := newPeer(a, fmt.Sprintf("%016x", i), tc.role, "", "")
+		p.startRelay()
+		p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: tc.cols, Rows: tc.rows})})
+		if c, r := proc.Size(); [2]uint16{c, r} != tc.want {
+			t.Fatalf("%s %dx%d: PTY %dx%d", tc.role, tc.cols, tc.rows, c, r)
+		}
+		p.close()
+	}
+}
+
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
