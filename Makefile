@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web lint fmt generate docker clean
+.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e lint fmt generate docker clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -64,6 +64,9 @@ test: ## race-enabled Go tests
 	go test -race -count=1 ./...
 
 test-web: web-typecheck ## frontend checks
+
+test-e2e: web-build build-go ## Playwright suite (web/e2e): the built server with stub agents, in Chromium 1117
+	cd web && npm run typecheck:e2e && npm run test:e2e
 
 lint: ## gofmt and go vet
 	@out="$$(gofmt -l $(GO_FILES))"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi

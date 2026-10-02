@@ -1,0 +1,24 @@
+{
+  "iceServers": [],
+  "catalog": {
+    "disableDefaults": false,
+    "agents": [
+      {
+        "id": "claude",
+        "name": "Claude Code (e2e stub)",
+        "description": "web/e2e/stub-agent.sh in place of Claude Code: the example crews run without the real agent.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": false,
+        "signal": { "kind": "none" }
+      },
+      {
+        "id": "codex",
+        "name": "Codex CLI (e2e stub)",
+        "description": "web/e2e/stub-agent.sh in place of Codex: the example crews run without the real agent.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": false,
+        "signal": { "kind": "none" }
+      }
+    ]
+  }
+}

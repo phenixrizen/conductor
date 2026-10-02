@@ -5,6 +5,8 @@ internal/web/dist/*
 web/node_modules/
 web/.nuxt/
 web/.output/
+web/playwright-report/
+web/test-results/
 web/.data/
 web/dist
 *.log

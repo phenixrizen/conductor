@@ -55,6 +55,7 @@ npm --prefix web run typecheck
 npm --prefix web test          # vitest (link detection)
 make web-build                 # nuxt generate + copy into internal/web/dist
 make build-go                  # embeds whatever is in internal/web/dist
+make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
 python3 scripts/brand_assets.py --check
 ```
 
@@ -74,6 +75,8 @@ reported limitation, not a pass.
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
 | shiki | 4.4.3 |
 | @iconify-json/lucide (icon client bundle) | 1.2.137 |
+| @playwright/test (e2e; Chromium revision 1117, 125.0.6422.26) | 1.44.1 |
+| @types/node (e2e type check) | 22.20.5 |
 
 Upgrade deliberately and update this table.
 
