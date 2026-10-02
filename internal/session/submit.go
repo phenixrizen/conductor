@@ -89,7 +89,10 @@ type SubmitResult struct {
 //     prompt, and returns a zero result.
 //   - The Enter answers the prompt that was showing when Submit began, as
 //     typing does; a prompt raised during the pause (one with a new Since) is
-//     never answered: the Enter is left out.
+//     never answered: the Enter is left out. In a session with a trust
+//     watcher the pause ends only once the watcher has looked at what was
+//     drawn since the text (awaitTrustLook), so a trust question drawn
+//     during the pause holds the Enter back too.
 //   - It records one input entry: always, with the text, for what Conductor
 //     types; for a controller's reply, the question it answered, when it
 //     answered one.
@@ -130,6 +133,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		return res, nil
 	}
 	byName := CleanName(sub.ByName)
+	typedAt := time.Now()
 	if text != "" {
 		data := text
 		if s.paste.on() {
@@ -151,6 +155,14 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		case <-s.ended:
 			t.Stop()
 			return res, ErrSessionEnded
+		}
+	}
+	if res.Typed && s.trust != nil {
+		// A trust question drawn during the pause is found by the screen
+		// watcher only once the screen has been quiet for patternQuiet: let
+		// it look at what was drawn since the text before the Enter.
+		if err := s.awaitTrustLook(ctx, typedAt); err != nil {
+			return res, err
 		}
 	}
 	s.mu.Lock()
@@ -185,6 +197,46 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		res.Reentered = s.enterAgain()
 	}
 	return res, nil
+}
+
+// trustLookBudget bounds how long Submit waits, before its Enter, for the
+// trust watcher to look at what the program drew since the text: the echo of
+// a paste moves the output, and a program that keeps drawing is not held up
+// for longer than this.
+const trustLookBudget = 2 * time.Second
+
+// awaitTrustLook waits until the trust watcher has had its quiet period
+// (patternQuiet) after the last output that came since typedAt, so that a
+// trust question drawn during the pause has raised needs_input before the
+// Enter is written; at most trustLookBudget, or until ctx or the session ends.
+func (s *Local) awaitTrustLook(ctx context.Context, typedAt time.Time) error {
+	deadline := time.Now().Add(trustLookBudget)
+	for {
+		last := s.LastOutputAt()
+		if !last.After(typedAt) {
+			return nil
+		}
+		wait := time.Until(last.Add(patternQuiet + 50*time.Millisecond))
+		if wait <= 0 {
+			return nil
+		}
+		if left := time.Until(deadline); left < wait {
+			if left <= 0 {
+				return nil
+			}
+			wait = left
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err()
+		case <-s.ended:
+			t.Stop()
+			return ErrSessionEnded
+		}
+	}
 }
 
 // confirmed waits up to Options.ConfirmWait for the agent to show that it

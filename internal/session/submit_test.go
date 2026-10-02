@@ -379,3 +379,28 @@ func TestATrustQuestionIsAnsweredByEnter(t *testing.T) {
 	p.outW.Write([]byte("Trust this folder?"))
 	waitTrust()
 }
+
+// A trust question drawn during the pause, which the screen watcher finds
+// only once the screen is quiet, leaves the Enter out: the text waits, the
+// question shows with its words, and nothing accepts it.
+func TestSubmitLeavesTheEnterOutForATrustQuestionDrawnDuringThePause(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)}))
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	var once sync.Once
+	p.onWrite = func() {
+		// The text arrives: the dialog is drawn before the Enter would be.
+		once.Do(func() {
+			go p.outW.Write([]byte("\x1b[2;3HFolder access\r\nTrust this folder?\r\n› 1. Trust and continue"))
+		})
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Reply READY", ByName: "crew"})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	noWrite(t, p, 100*time.Millisecond)
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceTrust || att.Message != "Trust this folder?" {
+		t.Fatalf("attention %+v", att)
+	}
+}
