@@ -25,6 +25,19 @@ sequenceDiagram
 bounded queue; exceeding 1 MiB of backlog evicts it as a slow consumer, and the
 client reconnects to get a fresh replay.
 
+`Local.Submit` is the one way Conductor types into a session (a crew member's
+prompt, a handoff, a broadcast) and the way a reply box's `submit` message is
+typed: the text, as a bracketed paste while the program has that mode on (the
+pump follows `ESC[?2004h`/`ESC[?2004l`), then, 250 ms later, a carriage return
+written on its own, one submission at a time per session, with no lock held
+across the pause (which, in a session with a trust watcher, lasts until the
+watcher has looked at what was drawn since the text), cancellable, and never
+written twice. A person's INPUT stays
+raw. The same pump treats output that only sets the window title as no output,
+watches the screen's text for the agent's workspace-trust question
+(`Options.TrustPattern`), and an INPUT that is only a terminal's automatic
+reports answers nothing. A session that ends clears its attention as it ends.
+
 ## Developer-hosted sessions
 
 ```mermaid
@@ -68,16 +81,27 @@ shell) and starts the member in its own worktree under
 `<cwd>/.conductor/worktrees`; it never removes one. A launch returns once the
 sessions exist; a goroutine per member, on the run's own context, then waits
 until the session is ready (its agent reports `needs_input` or `done`, or its
-output goes quiet) and types the role prompt with `Local.Type`. The engine
+output goes quiet, and it is not between two screens of its start), held while
+a trust question shows, and submits the role prompt with `Local.Submit`,
+stamping the member prompted just before the carriage return. The engine
 listens through two hooks that never wait: a sink on the activity fan-out
 (`Engine.OnActivity`, beside the webhooks) sees every entry of every session,
 starts the `after` members when a member first reports `done` and takes a
 member's `handoff` events, and the session change hook (`Engine.OnChange`,
 chained after the SSE publish) wakes the handoffs queued for a member when it
 leaves `needs_input`: a prompt that is cleared records no entry, only a change.
-Handoffs and broadcasts are typed with `Local.TypeUnlessWaiting`, which looks
-at the attention state in the same step that finds the prompt a write would
-answer, so neither ever answers a prompt. Runs live in memory, as sessions do;
+Handoffs and broadcasts are submitted unless the session waits, a look at the
+attention state made in the same step that finds the prompt a write would
+answer, and a prompt raised during the pause keeps their carriage return back,
+so neither ever answers a prompt. What changes in a run without a session
+change (a member reserved, started, prompted or ended, an entry in its log, a
+stop) is reported through `Engine.OnRunChange`, under the engine's lock and
+without waiting, as a `run` event on `/api/events`, and a forgotten run as one
+with `removed`; the browser's live store reads the run again, so no page
+polls. A run's state (running, needs input, stopped, finished) is derived each
+time it is read. `Engine.ResumeMember` starts an ended member again in its
+worktree, resuming its agent's own session through the agent's session recipe
+when it can. Runs live in memory, as sessions do;
 run links are share-store links scoped to a run (`Link.RunID`), which the
 server resolves to the run's member sessions through `Engine.MemberOf`.
 
@@ -88,17 +112,18 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
 | `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
 | `internal/cli` | flag parsing, help and completion text (the completion table and scripts, the rc-file line); no business logic |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
-| `internal/catalog` | launchable agents (argv arrays, never shell strings) |
+| `internal/catalog` | launchable agents (argv arrays, never shell strings), their yolo, trust and session recipes |
 | `internal/store` | atomic JSON documents in the data directory |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
-| `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`) |
+| `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
-| `internal/session` | ring buffer, fan-out hub, `Local` session, registry, bounded file reads |
+| `internal/session` | ring buffer, fan-out hub, `Local` session (submissions, attention, trust watcher, the agent's own session), registry, bounded file reads |
 | `internal/share` | share tokens (random, hashed at rest) and revocation |
 | `internal/signal` | hosted sessions: host connections, viewer brokering, relay |
 | `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets |
 | `internal/hostagent` | `conductor host`: control connection, pion peers, relay, local terminal |
+| `internal/notify` | `conductor notify`: reports from inside a session; hook payload mappers, the agent's own session id among what they read |
 | `internal/web` | embedded SPA with index fallback |
 | `web/` | Nuxt 4 + Nuxt UI 4 + xterm 6 workbench |
 
@@ -117,6 +142,11 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
   appended element-wise only for agents that allow it. Server sessions get an
   allowlisted environment; `CONDUCTOR_*` from the server's own environment never
   reaches a child, and Conductor sets only the few a session needs itself.
+- Yolo recipes are catalog data, applied as argv and through the filtered
+  environment; they run agents without their permission prompts (Codex's
+  without its sandbox) as the server's user. An agent session id is passed to
+  an agent only as one argument, after matching its agent's pattern and
+  beginning with a letter or a digit.
 - Server session working directories must resolve under `allowedRoots` after
   symlink evaluation. File reads are confined to the session directory. In
   server sessions they never reach the data directory, the config file or the
@@ -131,6 +161,8 @@ server resolves to the run's member sessions through `Engine.MemberOf`.
 Sessions, links and crew runs remain in memory, while the data directory
 (`dataDir`) holds UI-managed state as JSON files, saved crews included. A
 server restart ends server sessions and forgets links and runs (worktrees and
-their branches stay on disk). Hosted sessions survive a brief server outage
+their branches stay on disk), and with them what Resume needs: an ended session
+can be resumed while it is listed, a crew member while its run is kept. Hosted
+sessions survive a brief server outage
 through the host's reconnect-and-resume secret only while the server process is
 alive.

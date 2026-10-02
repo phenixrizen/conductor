@@ -112,21 +112,21 @@ that order.
 
 ### Agent adapter matrix
 
-| Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping |
-|---|---|---|---|---|---|---|
-| Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — |
-| Codex CLI | `codex` | `notify` (agent-turn-complete) + `tui.notification_method="bel"` | same | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape |
-| Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse`/`PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path |
-| Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options |
-| Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today |
-| OpenCode | `opencode` | plugin `permission.asked`, `session.idle` | `session.idle` | `tool.execute.after`, `session.error` | launch: `OPENCODE_CONFIG_DIR=<hooks/opencode>` if additive, else file: `~/.config/opencode/plugins/conductor.ts` | whether `OPENCODE_CONFIG_DIR` adds to or replaces the default dir |
-| pi | `pi` | `agent_end` | `agent_end` | `tool_call`/`tool_result` | launch: `--extension <hooks/pi-conductor.ts>` | — |
-| oh-my-pi | `omp` | as pi | as pi | as pi | file: `extensions:` entry in `~/.omp/agent/config.yml` | pi extension API compatibility (issue #2166) |
-| aider | `aider` | `--notifications-command` | same | none | launch: `AIDER_NOTIFICATIONS=true`, `AIDER_NOTIFICATIONS_COMMAND` | confirmations (`(Y)es/(N)o`) need the pattern detector |
-| Goose | `goose` | bell / pattern (no waiting event yet) | `Stop` | `PostToolUse` | file: `~/.agents/plugins/conductor/hooks/hooks.json` | — |
-| Amp | `amp` | `agent.end` (in-process plugin) | `agent.end` | `tool.call`/`tool.result` | file: `~/.config/amp/plugins/conductor/` | plugin API surface |
-| DeepSeek Harness | `dsh` (with the TUI plugin) | plugin events `question-asked`, `permission-requested` | `session completed/failed` | none | file: dsh plugin | developer preview; plugin API changes |
-| Shell / anything | any argv | bell / OSC / pattern | exit | none | — | — |
+| Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping | Yolo recipe (what it turns off) | Trust prompt | Session recipe (id; resume) |
+|---|---|---|---|---|---|---|---|---|---|
+| Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options); `idle_prompt` (a minute at rest) is done, not a question (round 4) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — | `--dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in the `--settings` file (every permission prompt; `.git`, `.claude` writable; deny rules hold; the trust question stays) — live, 2.1.287 | `Is this a project you created or one you trust?` — live; no per-launch trust: trust the repository once (its worktrees follow) | set `--session-id {uuid}`, then hook `session_id` (latest); `--resume {id}` — live |
+| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`) and the `PermissionRequest` hook; the end of a turn is done, not a question (round 4) | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
+| Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse`/`PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path | `--dangerously-skip-permissions` (tool permission requests; its trust dialog stays, trusted per exact path) — help | — | not settable; hook `conversationId` (installed hooks only); `--conversation {id}`, same directory — live (`-p`) |
+| Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options | `--yolo`, `COPILOT_ALLOW_ALL=true` (every tool, path and URL; the env var also skips its trust question; deny rules win) — live, 1.0.59 | — (the recipe skips it) | set `--session-id {uuid}`, hook `sessionId`; `--session-id {id}` — live (the hook's `sessionId` not live) |
+| Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today | `--yolo --trust` (command and MCP approvals; `--trust` skips workspace trust) — docs | — (the recipe skips it) | not settable; hook `conversation_id` (installed hooks only); `--resume {id}`, same directory — docs |
+| OpenCode | `opencode` | plugin `permission.asked`, `session.idle` | `session.idle` | `tool.execute.after`, `session.error` | launch: `OPENCODE_CONFIG_DIR=<hooks/opencode>` if additive, else file: `~/.config/opencode/plugins/conductor.ts` | whether `OPENCODE_CONFIG_DIR` adds to or replaces the default dir | `--auto` (every permission not explicitly denied) — docs | — | none this round (plugin capture deferred): Relaunch |
+| pi | `pi` | `agent_end` | `agent_end` | `tool_call`/`tool_result` | launch: `--extension <hooks/pi-conductor.ts>` | — | none: pi has no permission system | — | set `--session-id {uuid}`; `--session-id {id}`, same directory — source |
+| oh-my-pi | `omp` | as pi | as pi | as pi | file: `extensions:` entry in `~/.omp/agent/config.yml` | pi extension API compatibility (issue #2166) | `--yolo` (approvals unless a deny policy matches; its default already) — docs | — | none this round (plugin capture deferred): Relaunch |
+| aider | `aider` | `--notifications-command` | same | none | launch: `AIDER_NOTIFICATIONS=true`, `AIDER_NOTIFICATIONS_COMMAND` | confirmations (`(Y)es/(N)o`) need the pattern detector | `--yes-always` (every confirmation, shell commands included) — docs | — | none this round (its handle is a chat-history file): Relaunch |
+| Goose | `goose` | bell / pattern (no waiting event yet) | `Stop` | `PostToolUse` | file: `~/.agents/plugins/conductor/hooks/hooks.json` | — | `GOOSE_MODE=auto` (tool approvals; its default already) — docs | — | set `session --name cdr-{uuid}`; `session --resume --name {id}`, same directory — source |
+| Amp | `amp` | `agent.end` (in-process plugin) | `agent.end` | `tool.call`/`tool.result` | file: `~/.config/amp/plugins/conductor/` | plugin API surface | `--dangerously-allow-all` (every tool approval; the flag in the rebuilt CLI unconfirmed) — docs | — | none this round (plugin capture deferred): Relaunch |
+| DeepSeek Harness | `dsh` (with the TUI plugin) | plugin events `question-asked`, `permission-requested` | `session completed/failed` | none | file: dsh plugin | developer preview; plugin API changes | `DSH_PERMISSION_MODE=danger-full-access` (its sandbox and every approval) — source | — | none (unverified): Relaunch |
+| Shell / anything | any argv | bell / OSC / pattern | exit | none | — | — | none | — | none: Relaunch |
 
 ### Open verification (round 2)
 
@@ -142,6 +142,10 @@ that order.
   cannot tell that dialog from the prompt, so the dialog may take the typed
   prompt. Launch a crew of `claude` members with worktrees in a repository
   Claude Code has not trusted and see whether the prompts land.
+  Answered in round 4: the dialog appears even with the bypass flag, and the
+  typed Enter answered it (Claude Code chose "No, exit"); the run now holds
+  the prompt while the question shows (Crew runs in `docs/protocol.md`), and a
+  worktree of a trusted repository asks nothing.
 - **Crews: long one-line role prompts.** A role prompt is typed as one line,
   its line breaks and tabs made spaces as a handoff's or a broadcast's are,
   with a carriage return at the end, so no agent takes the second line of a
@@ -150,6 +154,9 @@ that order.
   characters) as one message, rather than truncating it or treating a fast
   burst of input as a paste; bracketed paste stays the deferred fix for agents
   that need it.
+  Answered in round 4: Codex took every one-write prompt as a paste (a
+  newline, not Enter) and Claude Code any over 800 bytes; prompts, handoffs,
+  broadcasts and replies now go in as a bracketed paste and a separate Enter.
 - **Crews: end to end.** In a git checkout under the allowed roots, create the
   crew `api-sweep` with worktree isolation and the members `lead` (`claude`,
   immediately), `core` (`claude`, immediately) and `tests` (`shell`, after
@@ -302,7 +309,8 @@ open deferred item from rounds 1 and 2, then the features below.
   and may not support `source <(...)`.
 - The built-in agents' `site` URLs (twelve, in `internal/catalog/defaults.go`),
   each opened in a browser by hand: they ship as best known and a test checks
-  their shape only.
+  their shape only. On 2026-10-02 three were found moved and fixed (codex,
+  goose, dsh, now pinned by the test); the other nine are still to open.
 - Real fullscreen entry with the `F` key and the header button is unverified:
   headless Chromium does not grant it, so the headless checks emulated the
   Fullscreen API and counted the requests.
@@ -552,4 +560,57 @@ resume, and Codex's review of this section).
 
 ### Open verification (round 4)
 
-Filled in by Task 10 of `docs/round4-plan.md`: what only a person can check.
+What only a person can check, beside the plan's automated checks:
+
+- The live run of Task 4 (a one-member crew per agent, a handoff and a
+  broadcast, short and long, in a fresh worktree) passed against Claude Code
+  2.1.287 and Codex 0.159.0 on 2026-10-02 (`PASS live4`, no second Enter
+  needed). Claude Code answered the 1400-byte broadcast by saying it would
+  not act on an instruction that came as pasted content, with the word in
+  its reply, so the check counted it: a long line pasted into Claude Code may
+  be read as text to discuss, not to run. Repeat it against Codex 0.160 (already on this
+  machine's daemon) and the next Claude Code: their paste handling and their
+  trust questions' words (`trustPrompt`) can change.
+- The live Playwright spec (`CONDUCTOR_E2E_LIVE=1`, Task 9) passed on
+  2026-10-02 against the same versions in a repository both agents trust. Its
+  first run found Codex's trust question drawn during the 250 ms before the
+  prompt's Enter, which accepted it and saved the trust: a submission into a
+  session with a `trustPrompt` now waits for the screen watcher's look before
+  its Enter (`internal/session/submit.go`). Repeat the spec in a repository
+  Codex has not trusted: the member must be held with the question, and
+  `~/.codex/config.toml` must gain nothing.
+- The interactive tiles with the WebGL renderer in a real browser: the
+  headless checks run without WebGL2, so they measured the DOM renderer.
+- The yolo recipes taken from documentation, each against the real CLI:
+  Amp's `--dangerously-allow-all` in the rebuilt CLI, OpenCode's TUI `--auto`,
+  Cursor's `--yolo --trust` together, Antigravity's exact-path trust on 1.2.x,
+  aider's `--yes-always`, Goose's `GOOSE_MODE=auto`, oh-my-pi's `--yolo` and
+  DeepSeek Harness's `DSH_PERMISSION_MODE`.
+- The session recipes taken from documentation or source: Goose's
+  `session --name` in the current Block CLI, Cursor's resume of a chat it
+  reported, pi's `--session-id`, Antigravity's interactive `--conversation`, and
+  Copilot's hook `sessionId` (its launch-time `--session-id` was checked live).
+- Codex's hidden title thread: its notify is now ignored by its first input;
+  check on a long first turn that no false "needs input" shows meanwhile, and
+  that the resumed conversation is the user's, not the title thread's.
+- Codex's "Hooks need review" dialog: with Conductor's `~/.codex/hooks.json`
+  installed and not yet trusted, Codex 0.159 opens it at start; a crew
+  member's prompt is held only if its words match the trust prompt, which they
+  do not. Trust the hooks once in Codex before a crew run.
+- The trust hold's flow in the workbench: a member in a never-trusted
+  repository shows the question, a person answers in its terminal, the prompt
+  then runs. Esc (Codex quits) ends the member, as an early exit.
+- A member of a stopped run cannot be resumed in this round (`409
+  run_stopped`); decide whether Resume should reopen the run.
+
+### Deferred (round 4)
+
+- Capturing the agent's session id through the plugin agents (OpenCode,
+  oh-my-pi, pi's mid-process changes, Amp, DeepSeek Harness): their plugins
+  would pass it to `conductor notify`; until then they relaunch.
+- A resume record that outlives `exitedRetention` (a bounded store in the data
+  directory), so that a session can be resumed after it leaves the list.
+- Yolo and Resume for hosted sessions (`conductor host`).
+- Resuming a member of a stopped run, which would reopen the run.
+- `conductor up --resume <run>`.
+- aider's chat-history file as its session handle.

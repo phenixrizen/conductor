@@ -9,15 +9,15 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 |---|---|
 | `cmd/conductor` | entry point (`serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version`) |
 | `internal/cli` | flags, help and completion text; no business logic |
-| `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog |
+| `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog with each agent's yolo, trust and session recipes |
 | `internal/store` | atomic JSON documents in the data directory (`dataDir`) |
 | `internal/agents` | per-agent hook adapters: assets under `dataDir/hooks`, launch injection, on-demand install into the agent's own config, hook payload mappers |
 | `internal/crew` | crews (saved teams of agents) and their runs: model, persistence in `crews/<id>.json`, run engine |
 | `internal/proto` | binary framing and JSON messages |
-| `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention |
+| `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention, submissions (a paste, then Enter: the one way Conductor types into a session), the agent's own session |
 | `internal/share`, `internal/signal`, `internal/api` | share tokens; hosted-session brokering; HTTP + WebSocket surface |
 | `internal/hostagent` | `conductor host`: pion WebRTC peers, relay sink, local terminal |
-| `internal/notify` | `conductor notify`: attention and event reports from inside a session; hook payload mappers (Claude Code, Codex, agy, Copilot, Cursor, Goose) |
+| `internal/notify` | `conductor notify`: attention and event reports from inside a session; hook payload mappers (Claude Code, Codex, agy, Copilot, Cursor, Goose), the agent's own session id among what they read |
 | `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `docs/` | `protocol.md`, `architecture.md`, `features.md` (scope and deferred work), `design/brand.md` |

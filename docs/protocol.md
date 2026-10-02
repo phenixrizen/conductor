@@ -156,7 +156,8 @@ removed after 60 s without the host.
 Each session carries `attention{state, message, source, since, kind?, options?}`
 in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
 Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `pattern` (the
-screen-pattern detector, below), `input` (cleared by a controller typing).
+screen-pattern detector, below), `trust` (the agent's workspace-trust
+question, below), `input` (cleared by a controller typing).
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
@@ -180,7 +181,23 @@ or `ESC ] 777 ; notify ; title ; body ST` (urxvt style) marks the session
 does not. Bursts are limited to one change per 500 ms. Successful input from a
 `control` client clears the `needs_input` state that was showing when the input
 began. One raised while the input was being written (a process that answers at
-once, an echo that rings the bell) is left for the next input.
+once, an echo that rings the bell) is left for the next input. An input that is
+only a terminal's own automatic reports, at most 256 bytes of them, is written
+and clears nothing, nor stamps its viewer as typing: a cursor position report
+(`ESC[<row>;<col>R`, with or without `?`), a status report (`ESC[0n`…`ESC[3n`),
+device attributes (`ESC[?…c`, `ESC[>…c`), a mode report (`ESC[?<mode>;<n>$y`),
+a window report (`ESC[<n>;…t`), a colour query's reply (`ESC]4;…`, `ESC]10;`
+to `ESC]12;` with `rgb:…`, ended by BEL or ST), a DCS reply such as XTVERSION
+(`ESC P >|… ESC \`), or focus in and out (`ESC[I`, `ESC[O`): a browser's xterm
+answers Codex's cursor position query after every turn, and that answer is not
+a person answering Codex. A trust question (`source:"trust"`) is cleared only
+by an input with a carriage return in it, so an arrow key that moves its
+selection leaves it showing. When a session's process exits or is stopped, its
+attention state is cleared in the step that makes it `exited` or `stopped`, and
+viewers get an `attention` message with the empty state: an ended session never
+shows `needs_input`, and its activity log keeps the entries. A hosted session's
+state is cleared when its host reports it ended; a host that disconnects leaves
+it as it was, since the host may come back.
 
 An agent with no hook and no bell can be given a screen pattern instead: a
 catalog signal `{"kind": "pattern", "pattern": "<RE2>"}` for server sessions,
@@ -199,8 +216,24 @@ Output that never pauses (a spinner, a TUI that redraws continuously) never
 gives the 500 ms of silence, so such an agent is not served by a pattern. A
 host reports the change to the server like any other attention change.
 
+An agent's catalog entry can carry a `trustPrompt`, the words of its
+workspace-trust question (RE2, at most 200 bytes, not matching an empty text).
+A server session of that agent keeps the end of its screen's text, each escape
+sequence and control character read as one space and every run of white space
+as one, its last 1024 bytes, so that words a TUI draws with cursor moves
+between them still read as a sentence. After 500 ms without output, output
+that only sets the window title (OSC 0 or 2) not counting, the text is matched
+against the pattern; a match marks the session `needs_input` with
+`source:"trust"`, `kind:"prompt"` and the matched words as `message`, unless
+it is `needs_input` already. Watching ends with the session's first
+submission (below). Once a controller answers the question with Enter, only the
+question drawn again raises it again. The built-ins carry the questions of
+Claude Code 2.1.287 (`Is this a project you created or one you trust?`) and
+Codex 0.159.0 (`Trust this folder?`). It exists for crew runs: a member's
+prompt is never typed while it shows (see Crew runs).
+
 Explicit updates: `POST /api/sessions/{id}/attention` with
-`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?}` and
+`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?}` and
 `Authorization: Bearer <agent token>` (or the admin token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`, which `conductor notify` reads, and `CONDUCTOR_BIN`,
@@ -219,20 +252,68 @@ a session sees for itself (the bell, an OSC notification, the screen pattern)
 spends no token, and a change of state a session applies always records its
 `attention` activity entry: a state that shows has its entry (see Events).
 
+`agentSession` is the agent's own session id as its hook payload names it, at
+most 128 bytes (`400 invalid_request` past that), and `turn` says the payload
+reports a turn: a prompt taken or a turn finished. They change no attention:
+for a server session whose agent's `session` recipe takes ids from its hooks
+(`idFrom: "hook"`, see HTTP API), an id that begins with a letter or a digit,
+holds only letters, digits and `._:-`, and matches the recipe's `idPattern`
+becomes the session's `agentSession.id` when it has none, and afterwards as the
+recipe's `idPolicy` says: `latest` takes each new id, `lowest` keeps the
+smallest (Codex's hidden title thread reports with a later id than the
+conversation's). `turn` makes it `resumable`. Any other id is dropped without
+an error, and a hosted session ignores both fields. `conductor notify` fills
+them from Claude Code's `session_id` (with `turn` on `Stop` and
+`UserPromptSubmit`), Codex's notify `thread-id` (every
+`agent-turn-complete`; the turn of the hidden thread that names a Codex
+conversation, whose first input begins `Generate a concise, single-line task
+title`, is not reported at all), Copilot's `sessionId`, Cursor's
+`conversation_id` and Antigravity's `conversationId`. A server that refuses
+the two fields as unknown (an older one) gets the report again without them.
+
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
-hosted sessions, `hostUser`. `GET /api/sessions/{id}/links` adds `active`
-to every link: the number of viewers currently attached through it.
+hosted sessions, `hostUser`. A server session carries `yolo: true` when its
+launch applied its agent's yolo recipe (absent otherwise, an agent without a
+recipe included), `agentSession{id, resumable, source}` once Conductor knows
+the agent's own session (`source` `set` when Conductor chose the id at launch,
+`hook` when the agent reported it, `resumed` when this session resumed it;
+`resumable` once the agent has reported a turn, and always for a resumed one),
+and `resumedFrom`, the session it resumed or relaunched.
+`GET /api/sessions/{id}/links` adds `active` to every link: the number of
+viewers currently attached through it.
 
 When a controller's input clears `needs_input`, the session records
 `lastAnswer{by, byName, at, message}` in its `Info` (the prompt that was
-answered and who answered it) and an `input` activity entry. What Conductor
-types itself (a crew member's prompt, a handoff or a broadcast), at most 32
-KiB with its line break as an `INPUT` frame, clears `needs_input` the same way
-and always records an `input` entry, `byName` `crew` (for a broadcast, the
-admin's display name) and the text typed, less its line break, as `message`,
-cut to the 500 bytes of Events (the terminal gets all of it); a handoff or a
-broadcast is never typed while the session is `needs_input` (see Crew runs).
+answered and who answered it) and an `input` activity entry.
+
+What Conductor types itself (a crew member's prompt, a handoff or a
+broadcast) and a reply sent with the `submit` control message are submitted as
+a terminal sends a paste and then a key press, one submission at a time per
+session. The text has each line break, carriage return and tab made a space,
+every other control character (escape among them) and any invalid UTF-8
+dropped, and its surrounding space trimmed; once cleaned it is at most 32756
+bytes. It is written wrapped in `ESC[200~` and `ESC[201~` while the program
+has bracketed paste on (the session follows `ESC[?2004h` and `ESC[?2004l` in
+the output, as a terminal does, a sequence split between two reads included),
+and as it is otherwise; then, 250 ms later, a carriage return is written on its
+own. A TUI that reads a text and its carriage return in one read takes the
+carriage return as part of a paste (Codex's paste-burst detector makes it a
+newline; Claude Code collapses a read of over 800 bytes into a pasted block),
+so written apart it is Enter. The carriage return answers the `needs_input`
+that showed when the submission began, as typing does; when a new one comes up
+during the 250 ms, it is left out, and the text, already written, waits in the
+program's input and is never written again; in a session with a `trustPrompt`
+the pause lasts until the screen watcher has had its 500 ms look at what was
+drawn since the text (at most 2 s more), so a trust question drawn then holds
+the carriage return back too. No lock of the session is held
+across the pause, and a person's keystrokes (INPUT) are written as they come,
+not held back. What Conductor submits always records one `input` entry as the
+text is written, `byName` `crew` (for a broadcast, the admin's display name)
+and the text as `message`, cut to the 500 bytes of Events (the terminal gets
+all of it); a `submit` reply records the answer as a controller's input does.
+A handoff or a broadcast is never submitted while the session is
+`needs_input` (see Crew runs).
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
 run (see Crew runs), and no `crew` otherwise.
@@ -411,41 +492,43 @@ its run, and on no other.
 |---|---|---|
 | `GET /api/health` | none | liveness: `ok`, `version`, `commit`, `sessions` |
 | `GET /api/whoami` | admin | OS user running the server (the default display name) |
-| `GET /api/catalog` | admin | `{agents, hidden}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's) |
-| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal` or `site` takes those of the agent it replaces; `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
+| `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows |
+| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and `"yolo": {}` or `"session": {}` says it has none; `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command}`, reply `{found, path?, unknown?}`: whether `command[0]` resolves on the server (`exec.LookPath`), asked now and kept 30 s for the `available` of `GET /api/catalog`; nothing is run, and a missing program is `found:false`, not an error; `unknown` (with `found:false`) says the server did not judge the program, which `available` counts as installed: `relative` for a relative `command[0]` with a path separator, resolved at launch in the session's directory and not looked up here, and `timeout` when the lookup does not answer within 2 s (its answer is kept when it lands) |
 | `GET /api/paths` | admin | `prefix` (≤ 4096 bytes, no NUL; a relative one resolves against the server's own working directory, as a session's `cwd` does) and `limit` (a positive integer, default 50, at most 50: more counts as 50) in the query; reply `{dir, entries, truncated}`: `dir` is the longest leading part of `prefix` that is an existing directory under an allowed root (symbolic links resolved, as a session's `cwd` is checked; the server's default working directory for an empty `prefix`), `entries` its child directories whose names start with the path element typed after `dir` (all of them when `prefix` names a directory), in name order, at most `limit` of the first 2000 entries the directory gives, hidden ones only when that element starts with a dot (a lone `.` after the last separator included), a symbolic link only when it leads to a directory under an allowed root, each `{name, path, git: {repo, commits}}` (`repo`: in a git working tree; `commits`: its `HEAD` is a commit; a child with no `.git` of its own carries its parent's marks, a symbolic link its target's; neither without `git` on the server; git is asked at most once per entry, one call at a time), `truncated` when more match than `limit`, when the directory has more than 2000 entries (the rest are not read), when the listing stopped at a symbolic link (the one after 50 that led nowhere usable, or any once the deadline has passed), or when the deadline passed before every entry was marked; the 5 s deadline covers the whole request, and when it passes after the directory is found the listing keeps its entries, the git marks not yet asked for left false and `truncated` set, which is not an error; a directory the server cannot read lists nothing (`200`, no entries); the listing and the git check below refuse a chain of symbolic links longer than the kernel follows (about 40), which a launch's own resolution of a `cwd` would still accept; `400 invalid_cwd` when no part of `prefix` is such a directory, its message naming the allowed roots (`no directory in the prefix is under the allowed roots: <root>, <root>`), which the picker shows as it is; `400 invalid_request` for a bad `prefix` or `limit`; `500 list_failed` when the deadline passes before the directory is found (a prefix of very many elements through symbolic links); the path asked about is logged at debug level only |
 | `GET /api/git/check` | admin | `cwd` in the query (≤ 4096 bytes, no NUL; the server's default working directory when empty; resolved as the listing resolves it); reply `{inRepo, toplevel?, hasCommit, message}` by the rules a launch with `isolation: worktree` applies (`git -C <cwd> rev-parse`, under the allowed roots): `inRepo` when `cwd` is in a git working tree, `toplevel` its top, left out when it is not under an allowed root (a root may lie inside a repository, and a repository's `core.worktree` can name any directory), `hasCommit` when `HEAD` is a commit, `message` the words the launch's refusal would use, or that worktrees can be made: that `cwd` is in no repository, or in one with no commit, or that `git` is not installed (then `inRepo:false`), or, for a repository git refuses (owned by another user, unreadable), `git cannot use the working directory's repository:` and git's first line of stderr, which may name a configuration file or a repository path outside the roots; in a repository with a commit, a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, which the launch refuses first, answers `inRepo:true, hasCommit:true` with that refusal in `message`, so `message` is the verdict, not the two booleans; a preview: the launch's own refusal stays the authority (`409 not_a_repo`, or `400 invalid_crew` for the symbolic link); `400 invalid_cwd` as for a session; `500 git_failed` when git does not answer within 5 s (another failure to run it answers `200` with git's message) |
 | `GET /api/crews` | admin | `{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId}], updatedAt}`; `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory |
-| `GET /api/crews/{id}` | admin | one crew in full, `{crew}`, shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, members, createdAt, updatedAt}`, a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
+| `GET /api/crews/{id}` | admin | one crew in full, `{crew}`, shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, yolo?, members, createdAt, updatedAt}` (`yolo` absent: the server's default; `true` or `false`: the crew's own choice), a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
 | `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt` and `updatedAt`, which the server sets and rejects like any unknown field; the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; reply `201 {crew}`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `503 store_unavailable` when there is no data directory |
 | `POST /api/crews/examples` | admin | seed the example crews (`example-todo-app`, `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`), as `conductor serve --examples` (or `CONDUCTOR_EXAMPLES` set to `1` or `true`) does at startup: each is saved unless an entry named `<id>.json` exists in `crews/`, usable or not (a symbolic link included), which is left alone whatever it holds; reply `200 {added, skipped}`, the ids each way in that order, each a list (`[]` when none); their `cwd` is the server's default working directory, their members use the `claude` and `codex` built-ins (not checked against the catalog: the launch checks), `where` is `server` and `isolation` `worktree`; each member that starts `after` another has a role prompt that begins by merging that member's branch, `crew/$CONDUCTOR_RUN/<member>`; `503 store_unavailable` without a data directory; `500 store_failed` when the directory cannot be read or a crew cannot be saved (the ones saved before it stay) |
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create; `id` and `createdAt` never change, `updatedAt` is now; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 1 MiB; `404` when unknown; `409 crew_unreadable` when its file cannot be used |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory |
-| `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory |
+| `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first, each with its `state` and `needsInput` (see Crew runs) |
 | `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}` and the run's `log`, whose entries Crew runs lists; `404` when unknown |
-| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32767 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
+| `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32756 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
 | `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
+| `POST /api/runs/{run}/members/{name}/resume` | admin | resume an ended member of the run (no body), in its working directory, its worktree and branch kept: a session tagged with the run that resumes the member's last `agentSession` with its agent's `session` recipe when the agent has one and the session was `resumable` (`resumed: true`; no prompt is typed, its conversation has it), and otherwise a fresh one whose role prompt is typed again once it is ready (`resumed: false`, with a `notice`); the member is `running` with the new `sessionId` (or `starting` until that prompt), noted in the run log; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; `404` for an unknown run or member; `409 still_running` for a member that is pending, starting or running; `409 run_stopped`; `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when the member's agent is no longer in the catalog; a session that cannot be created answers as at launch, the member `ended` with its `error` |
 | `POST /api/runs/{run}/stop` | admin | stop every member's session; reply `{run}` with `stoppedAt`; the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
-| `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running` or `unknown` (see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
+| `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; `404` when unknown |
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` as for a session link; it grants its role on the session of every member of the run, a member added later included (see Crew runs); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installable, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installable` is true for an adapter with a file to install into (`POST …/install` can do something); `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `changed` (files already written) and `snippet`, which is present only when what is left by hand is the agent's hooks, not a skill file (the message says what to do about a `SKILL.md` of the user's own); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
-| `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?}`, reply `201` with the session `Info` |
+| `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?}`, reply `201` with the session `Info`; `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`) |
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links` |
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list |
+| `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name, working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`; `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; otherwise as `POST /api/sessions` answers |
 | `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers |
 | `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` |
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204`; revoking a revoked link answers `204` and records nothing |
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
-| `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
+| `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
 | `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone` |
@@ -457,8 +540,9 @@ when the file cannot be parsed or an agent in it is invalid. An env value of an
 entry that equals the replaced agent's is saved back as `***` at startup (once;
 a failure to save stops the server), as a save stores it. An entry of
 `catalog.json` with the ID of a built-in or configured agent replaces it but
-inherits what it leaves out (`adapter`, `signal`, `site`, `***` env values and
-env values equal to the replaced agent's); env keys it does not list are not
+inherits what it leaves out (`adapter`, `signal`, `site`, `yolo`,
+`trustPrompt`, `session`, `***` env values and env values equal to the
+replaced agent's; `"yolo": {}` and `"session": {}` say it has none); env keys it does not list are not
 inherited, so an API client that omits `env` drops every value of the replaced
 agent, and a key the config adds later does not reach it. An agent in the
 config file that replaces a built-in replaces it whole. Agents are
@@ -470,7 +554,21 @@ NUL, `icon` matching `^[a-z0-9][a-z0-9:-]{0,63}$`, `site` an `https://` URL
 with a host name, a valid port if any and no user info or white space, at most
 200 bytes, `adapter` matching `^[a-z0-9-]{1,32}$` and naming an adapter
 Conductor has, an `env` key or `envPassthrough` name at most 128 bytes and an
-`env` value at most 16384 bytes.
+`env` value at most 16384 bytes. A `yolo` recipe: at most 16 `args` of 1 to
+4096 bytes without NUL, at most 16 `env` variables named like an
+`envPassthrough` name and never `CONDUCTOR_*`, each value at most 4096 bytes
+without NUL. A `trustPrompt`: as a signal `pattern`. A `session` recipe: at
+most 16 `startArgs` and 16 `resumeArgs` of 1 to 4096 bytes without NUL, `{id}`
+only as a whole argument, once in `resumeArgs` and once in `startArgs` when it
+has any; `newId` `uuid` (the default) or `name` (`cdr-` and a UUID); `idFrom`
+`hook` or absent; `idPolicy` `latest` (the default) or `lowest`; `startArgs`
+or `idFrom: "hook"`, so that the id can be known; `idPattern` anchored with `^`
+and `$`, at most 200 bytes, matching neither an empty id nor one that begins
+with a dash; `resumeNeedsCwd` documents an agent that resumes only in the
+directory its session ran in (a resume always runs there). The recipe's
+arguments go right after the agent's command, before the launch's `args`, so
+that Codex resumes with its subcommand. The empty recipe `{}` passes and means
+none.
 
 The crew routes keep each crew in a file of its own, `crews/<id>.json` in the
 data directory, written whole (a temp file renamed into place). The list is
@@ -501,9 +599,11 @@ space is trimmed), `goal` at most 2000 characters, `cwd` at most 4096 bytes;
 takes for a branch (no `..`, no `.` or `.lock` at the end), an `agentId`
 matching `^[a-z0-9-]{1,32}$` that the catalog has when the crew is saved or
 copied, a `prompt` of at most 4000 characters that, with the goal in place of
-`$GOAL` and `${GOAL}`, is at most 32767 bytes (it is typed as one line, which
-changes no length, with a carriage return, and a session takes at most 32 KiB
-at once), and at most 32 `args` of at most 4096 bytes, 8 KiB in all; `start.when` is `immediately`, `after` or
+`$GOAL` and `${GOAL}`, is at most 32756 bytes (it is submitted as one line,
+which changes no length, inside the 12 bytes of the bracketed-paste markers,
+and a session takes at most 32 KiB at once), and at most 32 `args` of at most
+4096 bytes, 8 KiB in all; `yolo`, when present, is `true` or `false`;
+`start.when` is `immediately`, `after` or
 `manual`, `start.member`, set with `after` alone, names another member of the crew, and
 following `start.member` from member to member never goes round in a cycle.
 A crew's file, as the server writes it with its `id` and times, is at most
@@ -542,15 +642,33 @@ A launch, a start or an added member answers once the member's session exists;
 the member is `starting` until its prompt is typed, then `running`. A member is
 ready for its prompt when its agent reports `needs_input` or `done`, or after
 one second without output that follows its first output and at least two seconds
-after its start, checked every 250 ms; after 60 seconds the prompt is typed
-anyway and the run log says so. The prompt, `$GOAL` and `${GOAL}` replaced by
-the goal, is typed as one line, as a handoff and a broadcast are (each line
-break, carriage return and tab, in the prompt or in the goal, becomes a space;
-the crew keeps the prompt as written), with a carriage return at the end; a
-`done` the member reports as its prompt is written counts for the members
-after it, and one whose `attention` entry is stamped no later than the prompt
-was typed never does, however late the entry reaches the run: it is the idle
-state the prompt answered. A member whose process ends first gets no prompt: it
+after its start, checked every 250 ms. Output that only sets the window title
+(OSC 0 or 2: a spinner in the title) is not output for this. A program that
+has turned bracketed paste on and then off again is between screens (Claude
+Code does so while it loads, and what is typed then loses its Enter) and is not
+ready until it turns it on again or reports `needs_input` or `done`. After 60
+seconds the prompt is typed anyway and the run log says so. A trust question on
+the member's screen (`source:"trust"`, see Attention) holds the prompt
+instead: the member's session shows `needs_input` with the question's words,
+the run log says once that the member asks it, the 60 seconds do not run, and
+once a person has answered it with Enter the wait for readiness starts over.
+The prompt, `$GOAL` and `${GOAL}` replaced by the goal, is one line, as a
+handoff and a broadcast are (each line break, carriage return and tab, in the
+prompt or in the goal, becomes a space; the crew keeps the prompt as written),
+submitted as Attention describes: the text, as a bracketed paste while the
+program has that mode on, then a carriage return 250 ms later. For an agent
+whose hooks report `working` as it takes a prompt (Claude Code with the `hook`
+signal), a prompt not taken within 3 seconds of its carriage return (no change
+of attention, other than typing's, stamped after it) gets one more carriage
+return, unless the session is `needs_input` by then; the run log says so. The
+member is prompted as its carriage return is written: a `done` whose
+`attention` entry is stamped after that counts for the members after it, and
+one stamped before it never does, however late the entry reaches the run: it
+is the idle state the prompt has not reached. When a question comes up during
+the 250 ms (a new `needs_input`), the carriage return is left out: the text
+waits in the agent's input, is never typed again, the member is `running` and
+prompted as of then, and the run log says to press Enter in its terminal once
+the question is answered. A member whose process ends first gets no prompt: it
 is `ended` with its exit in `error`, and the run goes on; a member whose prompt
 cannot be typed ends alone, its session stopped, the reason in `error`. When a
 member's session cannot be created at launch, the ones started are stopped and
@@ -558,9 +676,18 @@ no run is kept; when the run is stopped while its sessions start, it stays,
 stopped. A member whose start fails in a run that goes on stays in the run,
 `ended`, and keeps its name: `POST /api/runs/{run}/members`
 with that name is refused as a name used twice. A run is `{id, crewId, name,
-goal, cwd, isolation, startedAt, stoppedAt?, members, log}`, a member `{name,
-agentId, start, sessionId?, branch?, worktree?, status, startedAt?, endedAt?,
-error?, diff?}` with `status` `pending`, `starting`, `running` or `ended`;
+goal, cwd, isolation, startedAt, stoppedAt?, members, log, state, needsInput,
+yolo}`, a member `{name, agentId, start, sessionId?, branch?, worktree?,
+status, startedAt?, endedAt?, error?, needsInput?, agentSession?, diff?}` with
+`status` `pending`, `starting`, `running` or `ended`. A run's `state` is
+derived as it is read: `stopped` once stopped; `finished` when every member
+has ended and none is pending; `needs_input` while the session of a starting
+or running member is `needs_input` (`needsInput` counts them, and each such
+member has `needsInput: true`); `running` otherwise (a member's `done` keeps it
+running: a done agent is idle, not gone). `yolo` is the run's yolo choice,
+fixed at launch. A member's `agentSession` is the one its latest session last
+showed (see Attention), kept after that session leaves the server, for
+`POST /api/runs/{run}/members/{name}/resume`;
 `diff` counts the lines of tracked files the member's worktree adds and removes
 against the commit it began from, committed or not (`git diff --shortstat
 <base> --`, read at most every 10 s, the last value kept when a read fails);
@@ -571,9 +698,10 @@ forgets the oldest with nothing running.
 
 A `handoff` event a member reports (see Events) goes to the member of its run
 that `to` names. When that member is `running` and not `needs_input`,
-Conductor types `Handoff from <member>: <message>` and a carriage return into
-its session, recorded as an `input` entry by `crew`, as a prompt is; the line
-breaks and tabs the message keeps become spaces, so a handoff is one line.
+Conductor submits `Handoff from <member>: <message>` into its session (the
+text, then its carriage return 250 ms later, as a prompt is), recorded as an
+`input` entry by `crew`; the line breaks and tabs the message keeps become
+spaces, so a handoff is one line.
 While the member waits for input, or is still `starting`, the handoff waits
 for it: at most 10 wait per member, and another drops the oldest. They are
 typed in order, one line each, once the member runs and no longer waits for
@@ -582,7 +710,9 @@ prompt cleared records no entry, only a change) and when the member starts
 running. The session looks at `needs_input` in the same step in which it
 finds the prompt an input would answer, so a handoff never answers a prompt:
 one the session shows when a handoff is about to be typed sends the handoff
-back to the head of the queue, and one raised while it is written stays.
+back to the head of the queue, and one raised in the 250 ms before its
+carriage return leaves the handoff typed without it, noted in the run log and
+never typed again.
 A handoff to a name no member of the run has, to the member that reports it,
 or to a member with no session yet or whose session has ended, is only noted
 in the run log, and so is each waiting handoff dropped when its member's
@@ -594,7 +724,10 @@ that `members` names, a name given twice once, or into every member when it
 is empty. The text has its line breaks and tabs made spaces, as a handoff's
 message has, its other control characters dropped and surrounding space
 trimmed; what is left must not be empty or over 4096 bytes (`400
-invalid_request`). It is typed with a carriage return and recorded as an
+invalid_request`). It is submitted to the members together, each as a prompt
+is (the text, then its carriage return 250 ms later), and the submissions go on
+for up to 15 s when the client goes away, so that none is cut between its text
+and its carriage return; each is recorded as an
 `input` entry by `byName`, cleaned as a viewer's display name is (`guest` when
 empty; the web client sends the display name, or the server's user from
 `GET /api/whoami` when none is set). A member is skipped, and listed in `skipped` with the reason, when its
@@ -603,9 +736,12 @@ at its state in the same step in which it finds the prompt the text would
 answer, so a broadcast never answers a prompt), when it is not `running`
 (`not_running`: `pending`, `starting` with its prompt not typed yet, or
 `ended`), or when no member of the run has the name (`unknown`). A write to a
-member's process that fails, as it does when the process has just exited, is
-reported as `not_running` too; the server logs it, without the text. `sent`
-and `skipped` keep the order of `members`, or of the run.
+member's process that fails before the text is written, as it does when the
+process has just exited, is reported as `not_running` too; the server logs it,
+without the text. A member where a question comes up in the 250 ms before the
+carriage return, or whose carriage return cannot be written, gets the text
+without it (`no_enter`). `sent` and `skipped` keep the order of `members`, or
+of the run.
 
 A run link (`POST /api/runs/{run}/links`) grants its role on the session of
 every member of the run, one added later included, and on no other session:
@@ -634,11 +770,18 @@ whose `message` is one of these:
 | member joined | `status` | `<member> joined the run` (added mid-run) |
 | not ready | `status` | `<member> was not ready after 1m0s: typing its prompt anyway` |
 | prompt typed | `status` | `typed <member>'s prompt` |
+| trust question | `status` | `<member> asks "<question>": answer it in <member>'s terminal; its prompt waits`, once each time the question holds the prompt |
+| prompt without its Enter | `error` | `typed <member>'s prompt without its Enter: <member> waits on a question; answer it, then press Enter in its terminal` |
+| Enter again | `status` | `pressed Enter again for <member>: it did not report taking its prompt within 3s` |
+| no yolo recipe | `status` | `<member>: yolo is on, but <agent name> has no yolo recipe: launched without one` |
+| resumed | `status` | `<member> resumed its conversation` |
+| relaunched | `status` | `<member> started anew` (its prompt is typed again once it is ready) |
 | ended before its prompt | `status` | `<member> ended before its prompt was typed: <how it ended>` |
 | could not start | `error` | `<member> could not start: <why>` |
 | done | `status` | `<member> is done: starting <members>` |
 | handoff queued | `status` | `handoff queued from <a> to <b>: <b> is waiting for input`, or `: <b> has not had its prompt yet`; see below |
 | handoff delivered | `status` | `handoff delivered from <a> to <b>` |
+| handoff without its Enter | `error` | `handoff from <a> to <b> typed without its Enter: <b> waits on a question; answer it, then press Enter in its terminal`, or `: <the error>` when the run stopped or the write failed during the pause |
 | handoff dropped | `error` | `handoff dropped from <a> to <b>: <why>`, where why is `10 already waiting` (the oldest waiting is dropped), `<b> is not running`, `the run is stopped` or the error writing it |
 | handoff to unknown member | `error` | `handoff to unknown member "<name>" from <a>` |
 | handoff to itself | `error` | `handoff to itself from <a>` |
@@ -664,8 +807,19 @@ at most 100 links; the server keeps 100 runs, and a launch past that forgets
 the oldest with nothing running, never one whose launch has not answered yet;
 at most 10 handoffs wait for a member; a broadcast is at most 4096 bytes once
 made one line; and whatever Conductor
-types into a session, a prompt, a handoff or a broadcast, is one write of at
-most 32 KiB with its carriage return. A launch, a start or an added member has
-2 minutes to make its worktrees and start its sessions, and a stop 30 seconds.
+submits into a session, a prompt, a handoff or a broadcast, is one write of at
+most 32756 bytes (32 KiB with the paste markers) and then its carriage return,
+250 ms later. A launch, a start, an added or resumed member has 2 minutes to
+make its worktrees and start its sessions, a broadcast's submissions 15
+seconds, and a stop 30 seconds.
 A member's diff is read at most every 10 s, four reads at a time, and a member
 not ready for its prompt gets it after 60 s.
+
+An ended member can be resumed (`POST /api/runs/{run}/members/{name}/resume`,
+or `POST /api/sessions/{id}/resume` on its session): a new session in its
+working directory, its worktree and branch untouched, tagged with the run and
+launched with the run's yolo choice. It resumes the member's agent session
+when the agent has a `session` recipe and that session had a turn, and gets no
+prompt; otherwise it starts anew and its role prompt is typed again once it is
+ready, and only a `done` after that prompt counts for the members after it. A
+member of a stopped run is not resumed (`409 run_stopped`).

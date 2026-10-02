@@ -61,7 +61,14 @@ is waiting (type an answer, or press the numbered buttons a Claude Code
 permission prompt offers), and an inspector with **People** (who is attached,
 their role and link, who is typing), **Files** (the file browser) and
 **Activity** (joins, answers, signals and link changes). The header names the
-agent, where it runs, the working directory and the git branch.
+agent, where it runs, the working directory and the git branch, shows a
+**yolo** badge for a session launched with its agent's yolo recipe (see
+[Yolo](#yolo)) and the agent's own session id when Conductor knows it (click
+to copy); an ended session offers **Resume** or **Relaunch** (see
+[Resume and relaunch](#resume-and-relaunch)). A reply typed in a reply bar
+goes in as Conductor types a crew prompt: the text, then Enter on its own a
+quarter of a second later, so that an agent that reads a fast burst as a paste
+still runs it.
 
 ## Sharing
 
@@ -94,15 +101,21 @@ could read the catalog's env secrets and the admin token.
 
 `/wall` is a grid of live tiles, one per active session, sized so that every
 session fits on screen without scrolling; tiles shrink as sessions are added.
-Each tile shows the session's whole screen scaled down. The chips in the
+Each tile is the session's terminal at the tile's size, filling it: the last
+viewer that attaches or resizes sets a session's size, so opening the wall
+sizes each session to its tile, opening a session's page sizes it to that
+page, and coming back to the grid sizes it to its tile again. Click into a
+tile and type: the keys go to that session, the plain-key shortcuts pause
+while the tile has focus and the **Alt** chords still work. The chips in the
 header filter tiles (**All**, **Needs you**, **Running**). A queue on the left
 lists every session waiting for input with its prompt: answer from there
 (**J**/**K** select, **Enter** types a reply) without opening the session,
-and see who answered what under **Answered**. Click a tile and it expands in
-place to a full-size, typeable terminal (`/wall?focus=<id>`, so the view is
-linkable); **Esc**, the back arrow or the browser's Back button return to the
-grid, and **Open page** goes to the full session page. The fullscreen button
-turns a spare monitor into a status wall.
+and see who answered what under **Answered**. The expand button in a tile's
+header, a double-click on the header, or **Enter** on a tile whose frame has
+keyboard focus expands it in place to a full-size terminal (`/wall?focus=<id>`,
+so the view is linkable); **Esc**, the back arrow or the browser's Back button
+return to the grid, and **Open page** goes to the full session page. The
+fullscreen button turns a spare monitor into a status wall.
 
 ## The carousel
 
@@ -127,7 +140,12 @@ button, a search button that opens the full sidebar on its filter, the pages
 and the sidebar's buttons as icons with tooltips (the Wall's count as an amber
 chip), and every session as its agent's initials with the amber dot when it
 needs you, the members of a running crew together under its name, which links
-to the crew view. Click one to open it. The panel button at the bottom of the
+to the crew view. The full sidebar groups them the same way: inside each
+section (**Needs you**, **Running**, **Exited**) the sessions of no crew come
+first, then one group per crew run under a header naming the run, which links
+to its crew view. A session launched with yolo carries the **yolo** badge
+there, and an ended one a **Resume** (or **Relaunch**) button. Click one to
+open it. The panel button at the bottom of the
 rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width
 window, **/**, which then focuses the filter. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`
@@ -180,6 +198,14 @@ warns and goes on when it cannot set the modes of the files in a `hooks/` of
 its own (0600 files in a 0700 directory); a `hooks/` that belongs to another
 user stops it before anything is written there, root included, since those
 files choose the commands agents run.
+
+**At rest is done, not a question.** An agent that finished its turn and waits
+for its next line reports `done`, whatever its hooks call it: Codex's
+`agent-turn-complete` and Claude Code's `idle_prompt` notification (sent after
+a minute at rest) both do, as Claude Code's `Stop` does. Needs input is kept
+for a real question: a permission request, a dialog, the bell. A crew relies
+on this: a handoff or a broadcast is typed only into a member that is not
+waiting on a question, and an idle member is not.
 
 **Installed on demand.** The other agents read hooks only from their own
 config, and so do the agents above when something other than Conductor starts
@@ -419,13 +445,42 @@ A member starts `immediately` at launch, `after <member>` once that member,
 with its own prompt typed, first reports it is done (idle), or `manual`, when
 you press **Start now** on its tile. A member's role prompt is typed into its
 terminal as one line (line breaks and tabs become spaces, as in a handoff or a
-broadcast; the crew keeps the prompt as you wrote it), with Enter, once the
-agent is ready for it: it reports that it waits
-for input or is done, or, at least two seconds after the start, its output has
-been quiet for a second. After 60 seconds the prompt is typed anyway and the
-run's log says so. Every member's process sees `CONDUCTOR_CREW` (the crew's id),
-`CONDUCTOR_RUN` (the run's id), `CONDUCTOR_MEMBER` (its name) and `GOAL`, next
-to the usual `CONDUCTOR_SESSION_ID` and notify variables.
+broadcast; the crew keeps the prompt as you wrote it) once the agent is ready
+for it: it reports that it waits for input or is done, or, at least two
+seconds after the start, its output has been quiet for a second. An agent that
+only animates a spinner in its window title counts as quiet, and one between
+two screens of its start (Claude Code turns bracketed paste off while it
+loads) is waited for. Conductor types the prompt as a terminal pastes text:
+the text, as a bracketed paste when the agent asks for one, then Enter on its
+own 250 ms later, so that Codex (which reads a fast burst of keys with Enter
+in it as a paste) and Claude Code (which collapses a long one) both run it;
+handoffs, broadcasts and the reply bars go in the same way. Claude Code reports
+taking a prompt: when it has not within 3 seconds, Enter is pressed once more
+and the run's log says so. A question that comes up in the 250 ms before the
+Enter keeps the Enter back: the text waits in the agent's input, nothing is
+typed twice, and the run's log tells you to press Enter once you have answered. For Claude Code
+and Codex, whose trust question Conductor watches for on the screen, the pause
+lasts until the screen has been quiet long enough for the watcher to have looked
+at what was drawn since the text (at most two seconds more), so a trust
+question drawn in that moment holds the Enter back too.
+After 60 seconds the prompt is typed anyway and the run's log says so, except
+while a trust question shows (see below). Every member's process sees
+`CONDUCTOR_CREW` (the crew's id), `CONDUCTOR_RUN` (the run's id),
+`CONDUCTOR_MEMBER` (its name) and `GOAL`, next to the usual
+`CONDUCTOR_SESSION_ID` and notify variables.
+
+**Trust the repository once.** Claude Code and Codex ask whether to trust a
+folder the first time they start in it, yolo or not, and a worktree of a
+repository they trust asks nothing. Before a crew's first run in a repository,
+including the fresh one the todo-app example wants, open `claude` and `codex`
+there once and accept. A member that meets the question anyway is held, never
+typed into: its tile and the sidebar show that it needs you, with the
+question's words, the run's log says so once, and its prompt is typed after
+you answer it in its terminal with Enter (an arrow key that moves the
+selection does not count as an answer). With yolo on, Codex is trusted for that
+launch alone, through `-c projects={…}` naming the repository, and nothing is
+written to `~/.codex/config.toml`; Claude Code has no such option, so trust it
+once yourself.
 
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch
@@ -447,27 +502,54 @@ worktree remove` and `git branch -d` once you have merged what you want. With
 
 **The crew view.** `/runs/<id>` shows a live tile for every member, with its
 branch and a diff count (`+12 −3`), a feed of the members' events and the run's
-own log, and how many members need input. The diff counts the lines of tracked
-files the member's worktree adds and removes against the commit it began from,
-committed or not; untracked files are not counted, and the numbers refresh at
-most every 10 seconds. A member that has not started yet shows a placeholder,
-and a pending one offers **Start now**. The header has **Add agent** (a member
-joins the run), **Share crew** and **Stop all**; stopping ends every session
-and leaves the worktrees.
+own log, and how many members need input. A tile is the member's terminal at
+the tile's size, as on the wall: click into it and type; its expand button, or
+a double-click on its header, opens the session's page. The diff counts the
+lines of tracked files the member's worktree adds and removes against the
+commit it began from, committed or not; untracked files are not counted, and
+the numbers are read again when the run changes, at most every 10 seconds. The
+page follows the run through the event stream and polls nothing. A member that
+has not started yet shows a placeholder, a pending one offers **Start now**,
+and an ended one **Resume** (see [Resume and relaunch](#resume-and-relaunch)).
+The header has **Add agent** (a member joins the run), **Share crew** and
+**Stop all**; stopping ends every session and leaves the worktrees.
 
-- **Broadcast.** Tick the tiles of the members you want and type one line into
-  all of them at once. A member that waits on a prompt is skipped, so the line
-  cannot answer it by accident, as is one that is not running; the toast names
-  who got the line and who was skipped, and why. Each line is recorded as an
-  input in the member's activity under your display name, or the server's
-  user when you have not set one.
+- **Broadcast.** Every member with a session is ticked, and one that starts
+  later is ticked when its tile appears; untick the ones to leave out (the
+  ticks stay when the page reads the run again). Type one line and it goes into
+  all of them at once. The button counts the members the line will reach and
+  says apart how many it will skip because they wait on a prompt: such a member
+  is skipped, so the line cannot answer it by accident, as is one that is not
+  running, and one where a question comes up in the 250 ms before its Enter
+  keeps the line in its input without Enter. The toast names who got the line
+  and who was skipped, and why. Each line is recorded as an input in the
+  member's activity under your display name, or the server's user when you
+  have not set one.
 - **Share crew** creates a run link with the **View** or **Control** role. It
   grants that role on the session of every member of the run, members added
   later included, and on no other session; the join page lists the members.
+  With a **Control** link their tiles take keys as the crew view's do; with a
+  **View** link each tile shows the member's whole screen scaled to fit, and
+  never resizes the session.
   Revoking it disconnects everyone who came in through it. A crew saved with
   **Create a view link (8h)** gets a view-only link, labelled `launch`, when it
   is launched. Its URL is shown once on the crew view and printed by `conductor
   up`; nothing shows it again.
+
+**Runs on the Crews page.** Each crew in the list shows its runs, newest
+first: the run's name and age, its state (**Running**; **Needs input** with
+how many members wait; **Stopped** after a stop; **Finished** once every member
+has ended and none is pending; a member that reports it is done keeps its run
+running, for a done agent is idle, not gone), a member's error beside it, the
+members as their agents' avatars with a dot for each one's status (pending,
+starting, running, needs input, ended), **Open** for the crew view and **Stop**
+while it runs; five at first, **Show more** for the rest. The crew's badge
+reads **Running** while one of its runs is running or needs input
+(**Draft changes** wins while you edit). The page follows the runs through the
+event stream, as the crew view and the sidebar do. A crew's **Yolo** setting
+(the server's default, on or off; see [Yolo](#yolo)) is fixed on the run when
+it is launched, so every member, one started or added later included, follows
+it.
 
 **Handoffs.** A member passes work to another with an event, which the
 [Conductor skill](#events-and-hooks) teaches the agent to send:
@@ -477,8 +559,11 @@ and leaves the worktrees.
 ```
 
 Conductor types `Handoff from core: /v1/users is ready` into the member named
-by `--to`, on one line, as soon as that member is running and not waiting on a
-prompt. Up to 10 handoffs wait for a member; past that the oldest is dropped.
+by `--to`, on one line and as a prompt is typed (the text, then Enter on its
+own), as soon as that member is running and not waiting on a prompt; a
+question that comes up before the Enter keeps the line in its input without
+Enter, noted in the run's log. Up to 10 handoffs wait for a member; past that
+the oldest is dropped.
 A handoff to a name that is not in the run, or to a member that has not
 started, is noted in the run's log and
 nothing else happens.
@@ -502,7 +587,8 @@ Limits:
 - No limit on the number of crews (the Crews page and `conductor crews` page
   through them); 12 members a crew, and a run takes no more than that.
 - Name 60 characters, goal 2000, role prompt 4000; with the goal in it a prompt
-  is at most 32 KiB, the most a session takes in one write.
+  is at most 32756 bytes, what one write carries with the paste markers around
+  it.
 - 32 extra arguments a member, 8 KiB in all; 1 MiB for a whole crew as its file;
   request bodies of 2 MiB on the crew routes.
 - A broadcast line is at most 4096 bytes.
@@ -511,10 +597,86 @@ Limits:
 - Runs live in memory: the server keeps up to 100, and a restart forgets them
   (the worktrees stay). Saved crews survive.
 
+## Yolo
+
+With yolo on (`"yolo": true` in the config, `CONDUCTOR_YOLO` set to `1` or
+`true`, or `conductor serve --yolo`), every agent the server launches skips its
+permission prompts, and the server says so in a warning at startup.
+`CONDUCTOR_YOLO` set to `0` or `false` turns the config file's `yolo` off. A
+launch overrides the server: the Launch dialog has a **Yolo** switch, and
+`POST /api/sessions` takes `yolo: true` or `false`; so does a crew (the
+editor's **Yolo** select: the server's default, on or off). Each built-in
+carries a yolo recipe, arguments put after its command and your extra
+arguments, and variables set in its environment through the same filtered
+environment as its own `env` (a recipe cannot set `CONDUCTOR_*`):
+
+| Agent | Recipe | What it turns off |
+|---|---|---|
+| Claude Code | `--dangerously-skip-permissions`; the warning Claude Code shows before its first such launch is skipped through the hooks settings file | every permission prompt; protected paths such as `.git` and `.claude` become writable; deny rules still apply |
+| Codex CLI | `--dangerously-bypass-approvals-and-sandbox`, and the repository trusted for this launch | every approval **and the sandbox**: the agent reaches the network and the whole filesystem as the server's user |
+| Antigravity | `--dangerously-skip-permissions` | every tool permission request |
+| Copilot CLI | `--yolo`, `COPILOT_ALLOW_ALL=true` | every tool, path and URL prompt, and its folder-trust question |
+| Cursor CLI | `--yolo --trust` | command and MCP approvals, and its workspace-trust question |
+| OpenCode | `--auto` | every permission that is not explicitly denied |
+| oh-my-pi | `--yolo` | approvals, unless a deny policy matches (already its default) |
+| aider | `--yes-always` | every confirmation, shell commands included |
+| Goose | `GOOSE_MODE=auto` | tool approvals (already its default) |
+| Amp | `--dangerously-allow-all` | every tool approval |
+| DeepSeek Harness | `DSH_PERMISSION_MODE=danger-full-access` | its sandbox and every approval |
+
+pi has no permission system to skip and Shell has nothing to ask, so they have
+no recipe. The recipes of Claude Code, Codex and Copilot were checked against
+the real CLIs; the others come from their documentation (the adapter matrix in
+[docs/features.md](docs/features.md) says which). A session launched with its
+agent's recipe shows a **yolo** badge in its header, its tile and the sidebar:
+the badge means Conductor applied the recipe, not that no question can appear
+(a trust question still can; see Crews). An agent without a recipe is launched
+as it would be without yolo, with a note in its activity (and, for a crew
+member, in the run's log) and no badge. Edit a recipe on the Agents page
+(**Yolo recipe**) or in the catalog (`"yolo": {"args": [...], "env": {...}}`):
+a saved agent that replaces a built-in and leaves `yolo` out keeps the
+built-in's, and `"yolo": {}` gives it none. Sessions started with
+`conductor host` take no yolo in this version.
+
+## Resume and relaunch
+
+An ended session (exited or stopped) offers **Resume** in its header, on its
+tile on the crew view (the wall's grid shows only running sessions, so on the
+wall it is in the expanded view's header), on its row in the sidebar's
+**Exited** section, and on an ended member's tile on the crew view. Resume
+starts a new session with the same agent, name, working directory, arguments
+and yolo choice and, for a crew member, the same run, branch and worktree,
+launched with the agent's resume arguments for its own session id:
+
+| Agent | Its session id | Resumed with |
+|---|---|---|
+| Claude Code | chosen by Conductor at launch: `--session-id <uuid>` | `--resume <id>` |
+| Codex CLI | reported by its notify payload (`thread-id`) | `codex resume <id>` |
+| Copilot CLI | chosen by Conductor at launch: `--session-id <uuid>` | `--session-id <id>` |
+| Antigravity | reported by its hooks (`conversationId`), once they are installed | `--conversation <id>` |
+| Cursor CLI | reported by its hooks (`conversation_id`), once they are installed | `--resume <id>` |
+| pi | chosen by Conductor at launch: `--session-id <uuid>` | `--session-id <id>` |
+| Goose | chosen by Conductor at launch: `goose session --name cdr-<uuid>` | `goose session --resume --name <id>` |
+
+The agent's conversation comes back; its permission mode and model come from
+the new launch, which applies the yolo recipe again when the session had it.
+An agent without a recipe (OpenCode, oh-my-pi, aider, Amp, DeepSeek Harness,
+Shell), or one that has had no turn yet (Claude Code keeps nothing to resume
+until it has been prompted), offers **Relaunch** instead: a fresh session, and
+the toast says it started anew; a crew member that is relaunched gets its role
+prompt again, while a resumed one gets none, since its conversation has it. The
+original arguments are passed again, so a prompt given as an argument
+(`claude "fix the tests"`) is sent again as well. One running session holds a
+conversation: resuming it a second time while that one runs is refused. Resume
+is there while the ended session is listed (`exitedRetention`, 10 minutes by
+default) and, for a crew member, while the server keeps the run; a member of a
+stopped run, and a hosted session, cannot be resumed in this version.
+
 ## Shell completion
 
 `conductor completion zsh` or `conductor completion bash` prints a completion
-script: subcommands, flags and their values, and for `conductor up` the crew
+script: subcommands, flags (`conductor serve`'s `--examples` and `--yolo`
+among them) and their values, and for `conductor up` the crew
 ids, read from the server as you type through `conductor crews --ids` (which
 prints ids only, and nothing, with exit 0, when there is no admin token in
 `CONDUCTOR_ADMIN_TOKEN` or the server in `CONDUCTOR_SERVER` does not answer
@@ -552,6 +714,7 @@ file must run `compinit` before that line.
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
+| `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |
 
 ### Upgrading
 
@@ -620,8 +783,10 @@ generic agent icon.
 saved as `catalog.json` in the data directory (`dataDir`) and layered over the
 configured catalog at startup: an agent with the ID of a built-in or configured
 one replaces it, and deleting that entry brings the original back. Such an
-entry inherits what it leaves out: the original's `adapter`, `signal` and
-`site`, and every `env` value it holds as `***`, which the Agents page stores
+entry inherits what it leaves out: the original's `adapter`, `signal`, `site`,
+`yolo` recipe, `trustPrompt` and `session` recipe (an explicit `"yolo": {}` or
+`"session": {}` says it has none), and every `env` value it holds as `***`,
+which the Agents page stores
 for a value the form did not change (or one equal to the original's), so a
 change to that value in the config file reaches it. Env keys it does not list
 are not inherited: an API client that omits `env` drops every value of the
@@ -663,7 +828,17 @@ URL with a host name and a valid port, no user info or white space, of at most
 does not match an empty line. An `adapter`, if an agent names one, matches
 `[a-z0-9-]{1,32}` and must be one Conductor has, in the config file (or the
 catalog file) as on the Agents page: the server refuses to start with an
-unknown one.
+unknown one. A `yolo` recipe has at most 16 `args` of 1 to 4096 bytes without
+NUL and at most 16 `env` variables, each named like an `envPassthrough` name
+but never `CONDUCTOR_*`, with a value of at most 4096 bytes; its values are
+shown as they are, not masked: they are switches, not secrets. A `trustPrompt`
+(the words of the agent's workspace-trust question, which holds a crew prompt)
+is held to the rules of a signal pattern. A `session` recipe has at most 16
+`startArgs` and 16 `resumeArgs` of 1 to 4096 bytes, `{id}` a whole argument and
+once in each list that has any, `newId` `uuid` or `name`, `idFrom` `hook` or
+nothing, `idPolicy` `latest` or `lowest`, startArgs or `idFrom` to say how the
+id is known, and an `idPattern` anchored with `^` and `$`, at most 200 bytes,
+that matches neither an empty id nor one that begins with a dash.
 
 ## Security model and limits
 
@@ -690,6 +865,13 @@ unknown one.
   next start, while a value set on the Agents page is stored in `catalog.json`.
 - Server sessions run with an allowlisted environment and a working directory
   under `allowedRoots`. Hosted sessions run as you, with your environment.
+- Yolo launches agents without their permission prompts, as the user running
+  `conductor serve`, and Codex's recipe turns its sandbox off too: turn it on
+  only on a server whose allowed roots you would let an agent change unasked.
+  Recipes are catalog data, held to the catalog's limits, passed as arguments
+  and through the filtered environment. An agent session id that Resume passes
+  to an agent must match its agent's `idPattern` and begin with a letter or a
+  digit, so it can never read as a flag, and goes in as one argument.
 - Terminal output is not persisted. Sessions and links live in memory and are
   lost on restart; hosted sessions reconnect and resume while the server is up.
 - WebRTC needs UDP between the browser and the host; otherwise the relay is
@@ -704,7 +886,13 @@ make web-dev    # Nuxt dev server on :3000 proxying /api and /ws to :8080
 make test       # go test -race ./...
 make lint       # gofmt + go vet
 npm --prefix web run typecheck && npm --prefix web test
+make test-e2e   # builds bin/conductor, then the Playwright suite (web/e2e) against a stub agent
 ```
+The end-to-end suite starts its own server with its own home, data directory
+and port, and a catalog whose `claude` and `codex` are a stub script; its
+live test, which drives the real `claude` and `codex` with a tiny prompt,
+runs only with `CONDUCTOR_E2E_LIVE=1` and both on the `PATH`.
+
 
 If the Nuxt dev proxy does not upgrade WebSockets in your setup, run the dev
 server with `NUXT_PUBLIC_API_BASE=http://localhost:8080`.
