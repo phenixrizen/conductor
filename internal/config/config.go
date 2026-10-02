@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -69,7 +70,10 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 type Config struct {
 	// Listen is the TCP address the HTTP server binds to.
 	Listen string `json:"listen"`
-	// PublicURL is the externally reachable base URL used to build share links.
+	// PublicURL is the externally reachable base URL used to build share
+	// links and the agents' notify URL. While it is unset or names localhost
+	// (PublicURLIsLocal), a share link takes the address its request came
+	// through instead: the address the workbench was opened at.
 	PublicURL string `json:"publicUrl"`
 	// AdminToken protects launch and management routes. Generated when empty.
 	AdminToken string `json:"adminToken"`
@@ -273,6 +277,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("publicUrl must not be empty"))
 	}
 	c.PublicURL = strings.TrimRight(c.PublicURL, "/")
+	if u, err := url.Parse(c.PublicURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, errors.New("publicUrl must be an http or https URL with a host"))
+	}
 	if c.ScrollbackBytes < 4096 || c.ScrollbackBytes > 64<<20 {
 		errs = append(errs, errors.New("scrollbackBytes must be between 4096 and 67108864"))
 	}
@@ -579,4 +586,20 @@ func evalExisting(p string) (string, error) {
 func within(path, dir string) bool {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// PublicURLIsLocal reports whether PublicURL names this machine alone
+// (localhost, 127.0.0.1 or ::1), as the default and the example config do: a
+// link built on it would not reach anyone else, so share links take the
+// address their request came through instead (internal/api).
+func (c *Config) PublicURLIsLocal() bool {
+	u, err := url.Parse(c.PublicURL)
+	if err != nil {
+		return true
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "", "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }

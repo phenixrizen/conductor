@@ -766,3 +766,21 @@ func TestYoloFromTheFileAndTheEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// publicUrl names this machine alone by default and in the example config:
+// a share link built on it would reach no one else, so it reads as local.
+func TestPublicURLIsLocal(t *testing.T) {
+	for u, want := range map[string]bool{
+		"http://localhost:8080": true, "http://127.0.0.1:8080": true, "http://[::1]:8080": true, "HTTP://LOCALHOST": true,
+		"https://conductor.example.com": false, "http://192.168.1.20:8080": false, "http://conductor.lan": false,
+	} {
+		if got := (&Config{PublicURL: u}).PublicURLIsLocal(); got != want {
+			t.Errorf("%s: local %v, want %v", u, got, want)
+		}
+	}
+	cfg := Defaults()
+	cfg.PublicURL = "localhost:8080"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a publicUrl without a scheme passed")
+	}
+}

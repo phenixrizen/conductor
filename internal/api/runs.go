@@ -166,7 +166,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("crew launched", "crew", c.ID, "run", run.ID)
 	reply := map[string]any{"run": run}
 	if c.ViewLinkTTLSeconds > 0 {
-		if view := s.launchViewLink(run.ID, time.Duration(c.ViewLinkTTLSeconds)*time.Second); view != nil {
+		if view := s.launchViewLink(r, run.ID, time.Duration(c.ViewLinkTTLSeconds)*time.Second); view != nil {
 			reply["viewLink"] = view
 			// The run as it is now: its log has the link's entry.
 			if now, ok := s.runs.Get(run.ID); ok {
@@ -182,7 +182,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 // token is in the launch reply and nowhere else. A link the store refuses
 // does not fail the launch, which has happened: it is logged and noted in
 // the run's log, and the reply has no viewLink.
-func (s *Server) launchViewLink(runID string, ttl time.Duration) map[string]any {
+func (s *Server) launchViewLink(r *http.Request, runID string, ttl time.Duration) map[string]any {
 	var (
 		link  *share.Link
 		token string
@@ -197,7 +197,7 @@ func (s *Server) launchViewLink(runID string, ttl time.Duration) map[string]any 
 		return nil
 	}
 	s.runs.Note(runID, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
-	return s.linkReply(link, token)
+	return s.linkReply(r, link, token)
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {

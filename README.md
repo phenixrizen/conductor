@@ -74,11 +74,25 @@ still runs it.
 
 On a session page press **Share** and create a link with the **View** (watch
 and open files) or **Control** (types into the agent, answers prompts) role,
-with a label and an expiry. The link URL is `<publicUrl>/join/<token>` and the
+with a label and an expiry. The link URL is `<base>/join/<token>` and the
 token is shown once. Guests type a display name before joining; nothing
 connects until they press **Join**, so a fetched link never exposes terminal
-content. Revoking a link disconnects everyone using it. Set `publicUrl` to the
-address your teammates use.
+content. Revoking a link disconnects everyone using it.
+
+The base is the address you opened the workbench at (`http://192.168.1.20:8080`,
+a tunnel's URL, a reverse proxy's host, with the scheme and host the proxy
+forwards in `X-Forwarded-Proto` and `X-Forwarded-Host`), unless `publicUrl`
+names another machine, in which case it is `publicUrl`; the default and the
+example config name `localhost`, which no one else can reach, so they do not
+count. Whoever you send the link to must reach the server at that address:
+`listen` binds every interface by default, so a teammate on your network needs
+only your machine's address and an open port, and anyone beyond it needs a
+tunnel or a reverse proxy in front of the server (and then `publicUrl` set to
+its public URL, or its forwarded headers). Under WSL2 the port is Windows's to
+expose: `netsh interface portproxy` or `networkingMode=mirrored` in
+`.wslconfig`, plus a firewall rule. The ICE servers play no part in a link:
+they let a browser reach a session hosted with `conductor host` directly over
+WebRTC once the join page has loaded from the server.
 
 ## Clickable links and file viewer
 
@@ -700,7 +714,7 @@ file must run `compinit` before that line.
 | Key | Env | Default | Purpose |
 |---|---|---|---|
 | `listen` | `CONDUCTOR_LISTEN` | `:8080` | bind address |
-| `publicUrl` | `CONDUCTOR_PUBLIC_URL` | `http://localhost:8080` | base for share links |
+| `publicUrl` | `CONDUCTOR_PUBLIC_URL` | `http://localhost:8080` | base for share links and the agents' notify URL; while it names localhost, a share link takes the address its request came through instead (see Sharing) |
 | `adminToken` | `CONDUCTOR_ADMIN_TOKEN` | generated | protects management routes |
 | `hostTokens` | `CONDUCTOR_HOST_TOKENS` | admin token only | tokens accepted from `conductor host` |
 | `allowedRoots` | `CONDUCTOR_ALLOWED_ROOTS` | current directory | where server sessions may run |

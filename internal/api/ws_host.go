@@ -69,7 +69,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	for _, srv := range s.cfg.ICEServers {
 		ice = append(ice, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
 	}
-	registered, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.cfg.PublicURL, Resumed: resumed, ICEServers: ice})
+	registered, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice})
 	if err := writeText(ctx, c, registered); err != nil {
 		return
 	}

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/crew"
@@ -55,7 +57,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
-	s.writeLink(w, link, token)
+	s.writeLink(w, r, link, token)
 }
 
 // readLinkRequest reads and checks the body of a link creation. It writes the
@@ -91,17 +93,53 @@ func writeLinkError(w http.ResponseWriter, err error, tooMany string) {
 
 // writeLink answers a link just created: 201 {link, token, url}, the token
 // shown this once and the URL the join page's.
-func (s *Server) writeLink(w http.ResponseWriter, link *share.Link, token string) {
-	writeJSON(w, http.StatusCreated, s.linkReply(link, token))
+func (s *Server) writeLink(w http.ResponseWriter, r *http.Request, link *share.Link, token string) {
+	writeJSON(w, http.StatusCreated, s.linkReply(r, link, token))
 }
 
-// linkReply is a link just created as a reply carries it: {link, token, url}.
-func (s *Server) linkReply(link *share.Link, token string) map[string]any {
+// linkReply is a link just created as a reply carries it: {link, token, url},
+// the URL on the base publicBase gives for r.
+func (s *Server) linkReply(r *http.Request, link *share.Link, token string) map[string]any {
 	return map[string]any{
 		"link":  link,
 		"token": token,
-		"url":   s.cfg.PublicURL + "/join/" + url.PathEscape(token),
+		"url":   s.publicBase(r) + "/join/" + url.PathEscape(token),
 	}
+}
+
+// forwardedHost matches what a Host header or a reverse proxy's
+// X-Forwarded-Host may carry: a host name or address, with a port.
+var forwardedHost = regexp.MustCompile(`^[A-Za-z0-9.\-]+(?::\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](?::\d{1,5})?$`)
+
+// publicBase is the base URL a share link made for r is built on: publicUrl
+// when it names another machine, and otherwise (unset, or localhost, as the
+// default and the example config have it) the address r came through, which
+// is the address the workbench was opened at: the scheme r arrived with (or
+// the one a reverse proxy sets in X-Forwarded-Proto) and r's Host (or
+// X-Forwarded-Host). A request whose host is missing or malformed falls back
+// to publicUrl.
+func (s *Server) publicBase(r *http.Request) string {
+	if r == nil || !s.cfg.PublicURLIsLocal() {
+		return s.cfg.PublicURL
+	}
+	first := func(header string) string {
+		return strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get(header), ",")[0]))
+	}
+	host := first("X-Forwarded-Host")
+	if host == "" {
+		host = strings.ToLower(r.Host)
+	}
+	if !forwardedHost.MatchString(host) {
+		return s.cfg.PublicURL
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if p := first("X-Forwarded-Proto"); p == "http" || p == "https" {
+		scheme = p
+	}
+	return scheme + "://" + host
 }
 
 // handleCreateRunLink creates a link to a crew run: its role on the session
@@ -132,7 +170,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
-	s.writeLink(w, link, token)
+	s.writeLink(w, r, link, token)
 }
 
 // handleListRunLinks lists a run's links, each with the viewers attached
