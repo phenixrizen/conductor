@@ -375,3 +375,181 @@ Crew storage (replaces the single `crews.json` and the 50-crew cap):
 - An existing `crews.json` is split into per-crew files on the first start and renamed `crews.json.migrated`.
 
 Accepted as documented limitations (not changed): hosted crews stay future work.
+
+## Round 4: crews in view, prompts that run, interactive tiles, yolo, e2e (planned 2026-10-01)
+
+Asked by the user after running round 3 on 2026-10-01; decided the same day.
+One plan, `docs/round4-plan.md`, built on the research in `docs/round4/`
+(the prompt investigation, the terminal fill, the yolo flags, session
+resume, and Codex's review of this section).
+
+### Decisions
+
+- **Runs on the Crews page.** Each crew in the list shows its runs (newest
+  first, from `GET /api/runs`): the run's name and age, a status (running,
+  needs input with a count, stopped, finished), the members as avatars with
+  their status (pending, starting, running, needs input, ended), and a link
+  to the crew view; the crew's badge keeps "Running" when any run is active.
+  Runs stay in memory on the server as today (no persistence; the engine
+  keeps at least the active runs and evicts idle ones past 100). A run's
+  state is: running while a member is starting or running; needs input when
+  a running member's session needs it; stopped after a stop; finished when
+  every member ended and none is pending (a member's `done` report keeps it
+  running — a done agent is idle, not gone); a member's error shows beside
+  the state. Run changes that no session change carries (a member going
+  from starting to running or failing to start, an all-manual launch, a stop
+  of a sessionless run, eviction, a log entry) reach the browser through the
+  existing `/api/events` stream as a bounded `run` event (`{id}` to re-read,
+  or `{id, removed: true}`), coalesced on the client; the one live store
+  keeps the runs, every page reads them, and an older reply never replaces a
+  newer one. No polling anywhere, including the crew view's 10 s re-read,
+  which goes.
+- **The sidebar groups sessions by crew run everywhere.** The full sidebar
+  does what the rail already does: inside each section (needs you, running,
+  exited) the sessions with no run come first, then one group per run with a
+  header naming the run (linking to the crew view) and its member sessions.
+  The run-only variant on a member's session page and on the crew view stays.
+  One grouping helper in `web/app/utils/sidebar.ts` serves both.
+- **A typed prompt runs.** When the engine types a member's role prompt, a
+  handoff or a broadcast into Claude Code or Codex, the agent runs it without
+  a person pressing Enter. The investigation against the real CLIs (2026-10-01)
+  found the cause: the text and its carriage return went out in one write, so
+  each TUI read the return as part of a paste — Codex on every prompt (its
+  paste-burst detector), Claude Code for text over about 800 characters or
+  typed before its input is up (startup pauses of up to 0.95 s beat the
+  one-second-quiet check). The fix verified end to end on both: the text as a
+  bracketed paste, then the carriage return as a separate write 250 ms later;
+  for Claude Code, no typing between its screens and one more Enter if the
+  member has not reported working within 3 s. The mechanism is one serialised
+  submission routine in
+  `internal/session` used by every automatic typing path (the prompt,
+  handoffs, broadcasts; a person's own keystrokes stay raw): it writes the
+  text and the Enter as the agent needs them (bracketed paste and a separate
+  carriage return after a short pause are the leading candidates — Codex's
+  TUI turns an Enter inside a fast burst into a newline), holds no session
+  or engine lock across the pause, rechecks that no prompt appeared in
+  between, is cancellable, never re-sends a prompt after an uncertain
+  result, and marks the member prompted when the Enter is written so a
+  `done` from before it never starts a dependant. It is verified live
+  against both agents on this machine before the plan closes, with an
+  agent's response as the proof (not the echo): the initial prompt, a
+  handoff and a broadcast, short and long, in a fresh worktree. A trust
+  dialog is never typed into: in a never-trusted repository the typed Enter
+  answered it (Claude Code chose "No, exit"; Codex chose "Trust and continue"
+  and saved the trust), so the member's output is watched for each agent's
+  dialog text, the prompt is held, the member shows "needs you" with the
+  dialog's words, and typing resumes after a person answers; a worktree of a
+  trusted repository shows no dialog, so the README says to trust the
+  repository once (Codex can be trusted per launch through its config
+  override when yolo is on; Claude Code has no safe equivalent). The web's
+  reply boxes (the quick reply, the broadcast bar) go through the same
+  routine so a person's reply runs too. A terminal's automatic report
+  (xterm answering Codex's cursor-position query) no longer counts as input
+  that clears a member's needs-input state. Whatever first-run or workspace-trust dialog
+  an agent shows in a fresh worktree is handled so that the prompt is not lost;
+  if that needs a per-agent setting (a pre-trusted directory, a flag), the
+  adapter carries it and the README says so.
+- **Tiles are interactive, and they fill their width.** On the wall and on
+  the crew view, a member's tile is a live terminal a person can type into in
+  place: clicking the tile focuses its terminal, keys go to the session, and
+  the full view is still one action away (a button on the tile or a
+  double-click). The investigation found why tiles leave 16–37 % of their
+  width blank: a tile renders the PTY's grid scaled to fit (the PTY's aspect
+  ratio, not the tile's), and its hello carries xterm's default 80×24, which
+  the server applies for an admin viewer, so opening the wall resets every
+  session to 80×24. Only more columns can fill a tile, so a tile fits its own
+  pane and sizes the PTY the way the full view does: the PTY follows the
+  latest viewer that attached or resized, tile or full view (latest controller
+  wins, unchanged), a tile re-asserts its size when it becomes visible again
+  (after the full view closes), and two viewers open at once alternate only
+  when one attaches or resizes, never continuously. The scaled rendering
+  stays for view-only links (the join page's run tiles when the link grants
+  view), and a scaled viewer's hello carries no size — `cols: 0, rows: 0`
+  means "take the PTY's size" (a protocol change in `internal/proto`,
+  `web/app/utils/protocol.ts` and `docs/protocol.md`, with its limit and a
+  test), so no viewer resets a session by accident again. Plain-key
+  shortcuts pause while a tile's terminal has focus, as in the full view; the
+  Alt chords still pass through. A headless check measures the unused width
+  on the wall and the crew view at two viewport sizes (under one cell) and
+  that a session seeded at a large size is sized by the tile that last
+  fitted it, never reset to the 80×24 default; the hello rule is: `(0, 0)`
+  means "follow the current size", anything else is two values in 1–500 as
+  today, zero stays invalid in a resize message, and an older client's
+  nonzero hello keeps its meaning. Hello sizing never grants control: the
+  role still comes from the token on both transports.
+- **A global yolo flag.** `yolo: true` in the config, `CONDUCTOR_YOLO=1` and
+  `conductor serve --yolo` make every launched agent skip its permission
+  prompts: each built-in carries its recipe (arguments appended to the
+  command and environment set at launch, as researched per agent), a saved
+  agent can edit it, and an agent with no recipe is launched as before with a
+  notice. The server default can be overridden per launch (the Launch dialog
+  and `POST /api/sessions` take `yolo`) and per crew (the crew editor; the
+  members follow it). A session shows a "yolo" badge in its header, the wall
+  tile and the sidebar when it runs that way. The recipe goes through the
+  single launch path in `createLocalSession` as argv and env (argv arrays,
+  never shell text; the recipe's env goes through the same allowlisted
+  environment as the agent's own env, never the privileged inject map),
+  bounded like the catalog's other fields, documented per agent in the
+  adapter matrix with what each flag really disables (Codex's bypass also
+  drops its sandbox). Inheritance: a launch or crew with no `yolo` follows
+  the server default, `false` disables, `true` enables; a crew's effective
+  choice is fixed when the run is created so members started later follow
+  it; a saved agent that omits the recipe inherits its base's, an explicit
+  empty recipe disables it, an explicit recipe replaces it whole. The badge
+  means "Conductor applied this agent's recipe", not that no dialog can ever
+  appear; an agent without a recipe gets a notice and no badge. Hosted
+  sessions (`conductor host`) are out of this round's scope.
+- **Playwright tests for the example crews.** An in-repo suite
+  (`web/e2e/`, `@playwright/test` pinned to the version matching the cached
+  Chromium, a `make test-e2e` target, a CI job that installs Chromium) starts
+  a built server with its own data directory and a test config whose catalog
+  overrides the `claude` and `codex` ids with a stub agent script: the stub
+  prints a banner, reads the prompt line, echoes it, runs the merge the
+  example prompts ask for (recognising only the expected `crew/<run>/<member>`
+  targets built from validated ids, run as argv, never evaluating prompt
+  text), commits a file on its branch, reports done
+  through `"${CONDUCTOR_BIN:-conductor}" notify`, and answers handoffs the
+  same way. The tests load the examples, launch the todo app in a scratch
+  repository, and assert on the crew view, the Crews page (the run under its
+  crew with member statuses), the sidebar grouping, the wall (typing into a
+  tile reaches the session), and the feed (prompt typed and run, handoffs,
+  starts in order, the merges succeeding), plus the other three examples
+  launching. One live test, skipped unless `CONDUCTOR_E2E_LIVE=1` and the real
+  `claude`/`codex` are on the PATH, launches a one-member crew per agent with
+  a tiny prompt and asserts the agent answered without a person pressing
+  Enter.
+- **An ended session needs nothing.** When a session's process exits or is
+  killed, its attention state is cleared at the same moment its status
+  becomes exited or stopped (the needs-you count, the badges, the dots and
+  the sidebar section follow; the activity log keeps the prompt's history).
+  Today the state lingers, so a killed agent keeps saying "needs input".
+- **Agent sessions are named and resumable.** Each built-in agent carries a
+  session recipe alongside its yolo recipe: how Conductor sets the agent's
+  own session identity at launch where the CLI allows it (Claude Code
+  `--session-id`, Goose's named sessions, …), where to capture it when it
+  cannot be set (the hook payloads Conductor already receives, or the
+  agent's own session store), and the arguments that resume that identity.
+  The identity is stored on the Conductor session (`agentSession`, in the
+  session info and on the stream) and shown in the header. An exited or
+  stopped session offers **Resume** (its header, the wall tile, the sidebar's
+  exited section, and a crew member on the crew view): a new Conductor
+  session with the same agent, name, working directory, arguments, yolo
+  choice and crew membership (a member keeps its branch and worktree),
+  launched with the agent's resume arguments for the stored identity; an
+  agent without a recipe is relaunched plainly and the UI says so. Ids are
+  validated per agent and passed as argv, never shell text; the per-agent
+  facts come from the research report and are marked verified or from docs
+  in the adapter matrix.
+- **Broadcast goes to everyone by default.** On the crew view the broadcast
+  bar sends to the members ticked beside their tiles; the selection started
+  empty and was reset to empty on every re-read of the run, so the button
+  always read "Send to 0". The selection now defaults to every member with a
+  live session, a member that starts later is selected when it appears, an
+  untick survives re-reads and run events, and the button's count is the
+  number of selected members the server will type into (those waiting on a
+  prompt are counted separately as "N waiting skipped", since the server
+  skips them). The run view's reload never clears the selection.
+
+### Open verification (round 4)
+
+Filled in by Task 10 of `docs/round4-plan.md`: what only a person can check.

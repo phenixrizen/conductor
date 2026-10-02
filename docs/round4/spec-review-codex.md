@@ -1,0 +1,112 @@
+# Round 4: Codex's review of the spec
+
+Codex CLI's critique of the Round 4 section of `docs/features.md` as it stood on 2026-10-01 (read-only). Its code links point into this checkout at `2c9c220`, so their line numbers are of that commit; its `docs/features.md` links are to the uncommitted Round 4 text of that day.
+
+Reviewed the **latest Round 4 text**, including its revision that control tiles resize the PTY and scaled viewers send `0×0` hellos. The design is feasible, but needs decisions on submission, run notifications, and sizing guarantees before implementation.
+
+## 1. Feasibility problems
+
+1. **“Ready” does not mean the prompt editor is ready.** `readyAt` accepts any `needs_input`, `done`, or sufficiently quiet output; after 60 seconds the engine types anyway. A trust, login, or permission dialog satisfies those conditions. Increasing the delay cannot resolve this distinction. Adapter startup handling needs an explicit outcome: ready, blocked, or failed.  
+   Evidence: [run.go:1085](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:1085), [run.go:500](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:500).
+
+2. **Splitting text and Enter changes concurrency semantics.** Currently `Type` performs one process write. A pause introduces an interval during which another broadcast, handoff, or human can insert bytes. The existing session mutex protects attention bookkeeping, not a complete input transaction. All automatic typing paths need one serialized, cancellable submission mechanism.  
+   Evidence: [local.go:637](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:637), [local.go:662](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:662), [handoff.go:170](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/handoff.go:170), [runs.go:352](/home/nater/go/src/github.com/phenixrizen/conductor/internal/api/runs.go:352).
+
+3. **Session-triggered refresh cannot keep runs accurate without polling.** The Crews watcher observes only `id:status`, excluding attention. More seriously, `starting → running`, failed starts without sessions, all-manual launches, run eviction, and stopping a sessionless run can occur without a corresponding session change. Run log entries are stored without publishing run events. Add explicit run invalidation through the existing SSE connection.  
+   Evidence: [crews/[[id]].vue:380](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/pages/crews/[[id]].vue:380), [run.go:523](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:523), [run.go:411](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:411), [events.go:57](/home/nater/go/src/github.com/phenixrizen/conductor/internal/api/events.go:57).
+
+4. **The run status vocabulary exceeds the API model.** Runs have no aggregate status; members have no `needs_input` state. The browser derives attention from sessions. `done` does not end a member process, and `runActive` includes pending members. Also, “100-run bound” is inaccurate: active runs are exempt, so the count can exceed 100. The crew badge currently prioritizes “Draft changes” over “Running.”  
+   Evidence: [run.go:113](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:113), [run.go:846](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:846), [crews.ts:159](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/utils/crews.ts:159), [crews.ts:181](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/utils/crews.ts:181), [crews/[[id]].vue:153](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/pages/crews/[[id]].vue:153).
+
+5. **The revised tile acceptance criteria conflict unless qualified.** A control tile intentionally replaces a large PTY size with its measured size. Therefore “a large session is not reset by a tile” must mean *not accidentally reset to default 80×24*. Likewise, differently sized viewers cannot all retain a gap below one cell while following one shared PTY size. Apply that assertion to the viewer that last fitted the PTY.  
+   Evidence: [features.md:421](/home/nater/go/src/github.com/phenixrizen/conductor/docs/features.md:421), [features.md:433](/home/nater/go/src/github.com/phenixrizen/conductor/docs/features.md:433), [local.go:716](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:716).
+
+6. **Tile interaction requires more than removing `read-only`.** The wrapper intercepts Enter/Space and navigation clicks; terminal pointer events are disabled. In `TerminalView`, measuring, initial fitting, post-connect resizing, welcome sizing, and focus all depend on `readOnly`. Separate permission from sizing mode. Join tiles have their own implementation and need the same treatment.  
+   Evidence: [SessionTile.vue:32](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/SessionTile.vue:32), [TerminalView.vue:106](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/TerminalView.vue:106), [TerminalView.vue:235](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/TerminalView.vue:235), [JoinCrewGrid.vue:38](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/JoinCrewGrid.vue:38).
+
+7. **Yolo is broader than the existing injection interface.** `InjectFor` runs only for hook signals; putting yolo or trust handling there would silently omit bell/pattern/none agents. `Inject` also receives no cwd, so directory-specific trust preparation needs additional launch context. “Every launched agent” cannot include hosted agents through `createLocalSession`: hosts launch separately and have no catalog.  
+   Evidence: [registry.go:80](/home/nater/go/src/github.com/phenixrizen/conductor/internal/agents/registry.go:80), [adapter.go:21](/home/nater/go/src/github.com/phenixrizen/conductor/internal/agents/adapter.go:21), [sessions.go:57](/home/nater/go/src/github.com/phenixrizen/conductor/internal/api/sessions.go:57), [hostagent/hooks.go:14](/home/nater/go/src/github.com/phenixrizen/conductor/internal/hostagent/hooks.go:14).
+
+8. **Sidebar reuse needs a richer helper and name loading.** `railGroups` discards session metadata that the full sidebar needs. Run names are fetched only for the currently selected run, so grouping everywhere otherwise shows crew IDs. On the Crews page, run links cannot simply be inserted inside the existing enclosing `NuxtLink`.  
+   Evidence: [sidebar.ts:124](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/utils/sidebar.ts:124), [SessionSidebar.vue:85](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/SessionSidebar.vue:85), [default.vue:105](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/layouts/default.vue:105), [crews/[[id]].vue:438](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/pages/crews/[[id]].vue:438).
+
+## 2. Gaps
+
+- **What does “finished” mean?** Recommend: every member ended; `done` means an idle, reusable agent. Pending members keep a run active until started or stopped. Display member errors beside the aggregate status rather than implying successful completion.
+
+- **How do run-only changes reach every browser?** Recommend: bounded `run_changed`/forgotten invalidations on the existing SSE stream, followed by coalesced reads. Refresh runs after reconnect snapshots; prevent older HTTP responses replacing newer results. Activity events alone are insufficient because they may be dropped. [events.go:113](/home/nater/go/src/github.com/phenixrizen/conductor/internal/api/events.go:113).
+
+- **How does yolo inheritance distinguish omitted from false?** Recommend nullable launch/crew overrides: omitted inherits, false disables, true enables. Resolve and retain the crew’s effective choice when creating the run so delayed and subsequently added members follow it. The current launcher has no such parameter. [run.go:33](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:33).
+
+- **What does the yolo badge certify?** Recommend “Conductor applied this recipe,” not a guarantee that no dialog can appear. Unsupported agents get a visible notice and no effective-yolo badge. Limit this round’s server default to server-launched sessions.
+
+- **How are recipes inherited, cleared, and combined?** Recommend omitted saved recipes inherit; an explicit empty recipe disables inheritance; explicit recipes replace the whole recipe. Preserve config-file replacement semantics. Specify argv placement around `--`, conflicting options, and env precedence; do not assume every CLI uses last-option-wins. [catalog.go:146](/home/nater/go/src/github.com/phenixrizen/conductor/internal/catalog/catalog.go:146), [catalog.go:386](/home/nater/go/src/github.com/phenixrizen/conductor/internal/catalog/catalog.go:386).
+
+- **What happens when startup cannot be automated?** Recommend retain the unsent prompt and expose the specific startup requirement; never type it into an unidentified dialog. Define authentication/onboarding prerequisites separately from workspace trust and yolo permission bypass.
+
+- **What precisely does a zero-size hello mean?** Recommend only `(0,0)` means “follow current size”; otherwise both dimensions must be 1–500. Keep zero invalid for resize messages. Define reappearance as an actual pane activation/remount/visibility transition, not receipt of another viewer’s resize. [control.go:221](/home/nater/go/src/github.com/phenixrizen/conductor/internal/proto/control.go:221).
+
+- **What proves submission?** Recommend an agent response or submission acknowledgment, not PTY echo, successful `Write`, or “typed prompt” in the feed. Cover initial prompts, handoffs, and broadcasts in both real agents, including long text and fresh worktrees. The proposed tiny initial-prompt test alone cannot close the broader requirement. [features.md:402](/home/nater/go/src/github.com/phenixrizen/conductor/docs/features.md:402), [features.md:461](/home/nater/go/src/github.com/phenixrizen/conductor/docs/features.md:461).
+
+## 3. Risks
+
+**Security**
+
+- Keep recipes as bounded argv/env data through `pty.BuildEnv`; never merge recipe env into its privileged `inject` map. That map bypasses filtering for `CONDUCTOR_*` and loader variables. Extend deep cloning, redaction, masked-value round trips, and validation to recipe fields. Encode generated TOML/JSON values—including cwd—rather than interpolating them. [env.go:15](/home/nater/go/src/github.com/phenixrizen/conductor/internal/pty/env.go:15), [catalog.go:435](/home/nater/go/src/github.com/phenixrizen/conductor/internal/catalog/catalog.go:435), [catalog.go:469](/home/nater/go/src/github.com/phenixrizen/conductor/internal/catalog/catalog.go:469).
+- Codex’s `--yolo` disables sandboxing as well as approvals; Conductor’s allowed roots constrain launch/file-view paths, not the child’s execution permissions. Document each recipe’s actual effect. [Official CLI reference](https://developers.openai.com/codex/cli/reference/).
+- Hello sizing must never grant control. Continue deriving role from authentication on WS and host paths; test forged input/resize from view links. [ws_viewer.go:29](/home/nater/go/src/github.com/phenixrizen/conductor/internal/api/ws_viewer.go:29), [peer.go:254](/home/nater/go/src/github.com/phenixrizen/conductor/internal/hostagent/peer.go:254).
+- The stub must not `eval` prompt fragments. Recognize only the example’s expected merge targets, construct branch names from validated run/member identifiers, and execute argv. Isolate HOME, git configuration, hooks, data, repository, ports, and credentials. Use the injected absolute `CONDUCTOR_BIN`. [examples.go:32](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/examples.go:32).
+
+**Concurrency**
+
+- Serialize complete automated submissions against each other and human input without holding `Local.mu` or `Engine.mu` over delays. Recheck attention before submission; a permission dialog appearing between text and Enter must not be accepted accidentally. Define partial-write/cancellation outcomes so retrying cannot duplicate a prompt.
+- `markPrompted` currently runs **before** writing. Moving to two writes widens the interval in which an unrelated `done` can start dependants. Tie the timestamp to submission while preserving immediate responses; an existing test explicitly covers `done` before `Type` returns. [run.go:510](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:510), [run_test.go:1283](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run_test.go:1283).
+- Resize broadcasts must update rendering without generating resize requests. Fit only for local pane changes/activation, debounce them, and ignore hidden/zero-sized panes. Test two differently sized controllers plus many followers, including WebRTC and relay. [TerminalView.vue:186](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/TerminalView.vue:186), [TerminalView.vue:316](/home/nater/go/src/github.com/phenixrizen/conductor/web/app/components/TerminalView.vue:316).
+
+**Compatibility**
+
+- Retain protocol v1 and existing nonzero hello behavior. `(0,0)` already avoids attach resizing because `AttachWith` requires two valid dimensions; welcome returns the current PTY size. Formalize and test this behavior in both transports. [local.go:545](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:545), [local.go:560](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:560).
+- Old control clients sending `80×24` will still resize sessions. The server cannot distinguish their accidental default from an intentional size. Narrow “no viewer resets a session” to updated clients.
+- A line-reading stub will pass the current broken TUI submission mechanism. It also needs explicit `working → done` transitions, deterministic handoffs, and a bounded wait for core’s completed commit: the tester waits only for cli, and core’s branch exists before core finishes. [examples.go:34](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/examples.go:34), [local.go:413](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:413).
+
+## 4. Proposed task breakdown
+
+Paths below are repository-relative; **new** marks proposed files.
+
+| # | Task and files | Required tests/evidence | Dependencies and parallel work |
+|---|---|---|---|
+| 1 | Resolve submission/startup and recipe contracts. `docs/features.md`, `README.md`, adapter matrix; investigate `internal/agents/{codex,claude}.go`. | Record exact CLI versions and PTY behavior for raw burst, bracketed paste, separate Enter, fresh worktree, and first yolo launch. | First; determines tasks 2–3. |
+| 2 | Implement yolo data and launch resolution. `internal/config`, `internal/cli/serve.go`, `internal/catalog`, `internal/crew/{crew,run}.go`, `internal/api/{catalog,sessions,runs}.go`, session metadata. | Explicit false versus omission; delayed/added members; unsupported recipe; overlay clearing; env filtering/redaction; argv boundaries; old JSON. | After 1; parallel with 6 and 8. |
+| 3 | Implement shared submission and startup handling. `internal/session/local.go`, `internal/crew/{run,handoff}.go`, `internal/api/runs.go`, `internal/agents`. | Concurrent broadcast/handoff/input; attention during pause; cancellation/partial write; immediate `done`; size limits; real-agent regression. | After 1; coordinate shared edits with 2 and 4. |
+| 4 | Formalize hello sizing. `internal/proto`, `internal/session/local.go`, `internal/api/ws_viewer.go`, `internal/hostagent/peer.go`, `web/app/utils/{protocol.ts,transport/*}`, `docs/protocol.md`. | Old hello, `(0,0)`, mixed-zero/oversized dimensions, view-role rejection, welcome size; WS/WebRTC/relay parity. | Independent contract after 1; serialize `local.go` edits with 3. |
+| 5 | Make tiles interactive and fit correctly. `TerminalView.vue`, `SessionTile.vue`, `JoinCrewGrid.vue`, `wall.vue`, `runs/[run].vue`, terminal CSS/shortcuts. | Focus, Enter/Space, paste, navigation button, view/control links, reappearance; two-controller stability; geometry at two viewports after fonts load. | After 4; parallel with 6–8. |
+| 6 | Publish run changes and centralize status derivation. `internal/crew/run.go`, `internal/api/{events,runs,server}.go`, `useAttention.ts`, `useSessions.ts`, `utils/crews.ts`, protocol documentation. | Sessionless launches/stops, failed starts, prompt completion, eviction, reconnect, attention-only changes, stale responses. | After decisions in 1; parallel with 2 and 8. |
+| 7 | Add run rows, shared grouping, and yolo controls/badges. `crews/[[id]].vue`, `SessionSidebar.vue`, `SidebarRail.vue`, `sidebar.ts`, layout/name cache, `CrewEditor.vue`, `LaunchSessionModal.vue`, agent editor/form utilities, session headers. | Status precedence; mixed sections; multiple runs per crew; run-only sidebar; names without prior run visit; inheritance round trips; accessible links. | After 2 and 6; parallel with 5 and 8. |
+| 8 | Build isolated Playwright harness and stub. **New** `web/e2e/*`, `web/playwright.config.ts`; `web/package.json`, lockfile, `Makefile`, CI. | Fixture isolation/cleanup, no real-agent fallback, bounded merges and handoffs, server readiness. Verify exact Playwright/browser pairing; cached Chromium revision is 1117. | Can run alongside implementation once contracts settle. |
+| 9 | Add acceptance suites and close verification. `web/e2e/*`, CI, `docs/features.md`. | Four examples; todo ordering/merges/handoffs; run rows/sidebar/feed; tile typing/geometry; both live CLIs across all typing paths; all AGENTS.md checks. | After 2–8. Stub CI and opt-in live execution remain distinct gates. |
+
+Ensure `web-build` completes **before** `build-go`; the latter embeds whatever already exists. The E2E job can consume the existing binary artifact. [Makefile:32](/home/nater/go/src/github.com/phenixrizen/conductor/Makefile:32), [ci.yml:47](/home/nater/go/src/github.com/phenixrizen/conductor/.github/workflows/ci.yml:47).
+
+## 5. Typed prompts: established behavior and inference
+
+**Conductor — verified in this repository.** Initial prompts, handoffs, and broadcasts append `\r`; `Local.write` sends the bytes in one process write. Role prompts are flattened to one line. A successful write records delivery, not submission or execution. [run.go:515](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/run.go:515), [local.go:678](/home/nater/go/src/github.com/phenixrizen/conductor/internal/session/local.go:678), [crew.go:329](/home/nater/go/src/github.com/phenixrizen/conductor/internal/crew/crew.go:329).
+
+**Codex 0.159 — verified in its public source, not through introspection or a live test.** The installed npm package reports `0.159.0`; I inspected the matching release source.
+
+- Fast unbracketed characters activate paste-burst handling. Its constants include an 8 ms character interval and a 120 ms Enter-suppression window. Enter during an active burst becomes a newline. Thus one `prompt + "\r"` write can leave an unsubmitted draft. These are input-processing timings, not guaranteed PTY-write timings. [paste_burst.rs:159](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/bottom_pane/paste_burst.rs#L159), [chat_composer.rs:3633](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3633).
+- Explicit paste inserts text, normalizes embedded CR to newline, and clears burst state. It does **not** submit. Source tests demonstrate a subsequent Enter submits both small and large pastes; therefore 120 ms is not an inherent requirement after a processed explicit paste. [paste_input.rs:118](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/bottom_pane/chat_composer/paste_input.rs#L118), [chat_composer.rs:9026](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/bottom_pane/chat_composer.rs#L9026).
+- Startup has authentication and directory-trust handling. The trust widget consumes keys and Enter as a dialog confirmation; it is not the composer. Trust resolution can target the repository root. Do not assume every fresh worktree has independent trust, or that yolo resolves it. [lib.rs:1824](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/lib.rs#L1824), [trust_directory.rs:209](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/onboarding/trust_directory.rs#L209), [onboarding_screen.rs:189](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/tui/src/onboarding/onboarding_screen.rs#L189).
+
+**Claude Code — documented behavior versus inference.** Its documentation distinguishes pasted multiline content from submission, documents workspace-trust prompts in untrusted folders, and documents a separate first-use bypass-permissions warning. Permission bypass does not promise removal of every interaction. [Terminal configuration](https://code.claude.com/docs/en/terminal-config), [Security](https://code.claude.com/docs/en/security), [Permission modes](https://code.claude.com/docs/en/permission-modes).
+
+I did **not** inspect Claude’s parser implementation or reproduce its behavior here. Treat “a single write ending in CR is classified as paste” and any exact required delay as hypotheses to test on the installed version. Bracketed paste should insert text without submitting; Enter must arrive outside its delimiters.
+
+**Recommended submission sequence:**
+
+1. Establish that the actual composer is available; finish supported startup handling before sending prompt bytes.
+2. Through the shared submission routine, send `ESC[200~` + prompt + `ESC[201~` for adapters verified to support bracketed paste.
+3. Send a separate `\r` after the paste is processed. A roughly 200 ms pause is a reasonable experimental starting point for compatibility, **not a correctness guarantee**: PTYs do not preserve application write boundaries.
+4. Preserve serialization and cancellation across the sequence; record submission once. Never blindly resend the entire prompt after an uncertain result.
+5. Verify an actual response for short and long prompts, handoffs, broadcasts, and fresh worktrees. Keep raw human `Input` behavior intact.
+
+No files were changed and no tests or live CLI sessions were run during this review.
