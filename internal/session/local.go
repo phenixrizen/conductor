@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -698,58 +697,14 @@ func (s *Local) Detach(sub *Subscription) {
 	}
 }
 
-// Input forwards keystrokes from a controller.
+// Input forwards keystrokes from a controller, raw. They answer the
+// needs_input prompt that was showing as they were written, unless they are
+// only a terminal's own report (isTerminalReport: xterm answering a cursor
+// position query), which is written and answers nothing.
 func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
-	_, err := s.write(data, sub, "", false)
-	return err
-}
-
-// ErrTextTooLong refuses text longer than one INPUT frame carries: Type's
-// with its line break over proto.MaxInput bytes, a submission's over
-// MaxSubmitText once cleaned. Nothing was written.
-var ErrTextTooLong = errors.New("session: text to type is longer than one input frame")
-
-// Type writes text to the process as a controller typing it would, for what
-// Conductor types itself: a crew member's prompt. No subscription is behind
-// it. Like Input it answers the needs_input prompt that was showing when it
-// began, recording lastAnswer by byName, which is cleaned as a display name.
-// Unlike Input it always records an input entry, by byName and with the text,
-// less its trailing line break, as the message: what Conductor types is its
-// own, where a person's keystrokes are recorded only as the prompt they
-// answered. Text longer than proto.MaxInput bytes, its line break included, is
-// refused with ErrTextTooLong. It returns ErrSessionEnded once the session has
-// ended.
-func (s *Local) Type(text, byName string) error {
-	if len(text) > proto.MaxInput {
-		return ErrTextTooLong
-	}
-	_, err := s.write([]byte(text), nil, CleanName(byName), false)
-	return err
-}
-
-// TypeUnlessWaiting is Type for what must never answer a prompt, such as a
-// handoff between crew members: when the session is needs_input it writes,
-// records and changes nothing and returns typed false. The look at the state
-// is the one that finds the prompt the text would answer, so a prompt raised
-// after it, while the text is written, is not answered by the text either.
-func (s *Local) TypeUnlessWaiting(text, byName string) (typed bool, err error) {
-	if len(text) > proto.MaxInput {
-		return false, ErrTextTooLong
-	}
-	return s.write([]byte(text), nil, CleanName(byName), true)
-}
-
-// write writes data to the process, for sub, a controller's subscription, or,
-// with sub nil, for Type as byName. It answers the needs_input prompt that was
-// showing when it began (answer), and records an input entry when it does, or
-// always for Type. A controller's write that is only a terminal's report
-// answers nothing. With skipWhileWaiting it writes nothing while that prompt
-// shows, and reports whether it wrote. (Task 4 replaces Type and this with
-// Submit.)
-func (s *Local) write(data []byte, sub *Subscription, byName string, skipWhileWaiting bool) (bool, error) {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	// The prompt this input answers is the one on the screen as it is typed.
@@ -757,31 +712,24 @@ func (s *Local) write(data []byte, sub *Subscription, byName string, skipWhileWa
 	// may raise the next one meanwhile, and typing must not clear that one.
 	// Each attention change gets a new Since, which tells the prompts apart.
 	promptSince := s.info.Attention.Since
-	showing := s.info.Attention.State == AttentionNeedsInput
 	s.mu.Unlock()
 	if ended {
-		return false, ErrSessionEnded
-	}
-	if skipWhileWaiting && showing {
-		return false, nil
+		return ErrSessionEnded
 	}
 	if _, err := s.proc.Write(data); err != nil {
-		return false, err
-	}
-	if sub == nil {
-		s.Record(ActivityEntry{Type: ActivityInput, ByName: byName, Message: strings.TrimRight(string(data), "\r\n")})
-		s.answer(promptSince, "", byName, false, true)
-		return true, nil
+		return err
 	}
 	if isTerminalReport(data) {
-		// A terminal's own report (xterm answering a cursor position query)
-		// is written and answers nothing; nor is it a person typing.
-		return true, nil
+		return nil
 	}
 	s.stampTyping(sub)
 	s.answer(promptSince, sub.ID, sub.Name, true, bytes.IndexByte(data, '\r') >= 0)
-	return true, nil
+	return nil
 }
+
+// ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
+// bytes once cleaned: nothing was written.
+var ErrTextTooLong = fmt.Errorf("session: text to submit is longer than %d bytes", MaxSubmitText)
 
 // stampTyping marks sub as typing now and refreshes the roster at most every
 // 2 s (presence).

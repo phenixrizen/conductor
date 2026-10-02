@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +45,10 @@ type fakeLauncher struct {
 	// engine does, on the goroutine that recorded it: it may hold the entry
 	// back, as a goroutine the scheduler leaves waiting would.
 	beforeActivity func(sessionID string, e session.ActivityEntry)
+	// trust, when set, is every session's trust prompt (Options.TrustPattern).
+	trust *regexp.Regexp
+	// pause is every session's pause before an Enter; 5 ms when zero.
+	pause time.Duration
 
 	mu     sync.Mutex
 	calls  []launchCall
@@ -81,7 +87,8 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	}
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
-	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change})
+	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
+		SubmitPause: cmp.Or(f.pause, 5*time.Millisecond), TrustPattern: f.trust})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
 	f.mu.Unlock()
@@ -162,28 +169,58 @@ func manual(name, prompt string) Member {
 	return Member{Name: name, AgentID: "shell", Prompt: prompt, Start: Start{When: StartManual}}
 }
 
-// typed returns what a process has been written so far, without waiting.
+// typed returns what a process has been submitted so far, without waiting:
+// the writes joined, cut after each carriage return, so that a text and the
+// Enter written after it read as one "text\r"; a text still waiting for its
+// Enter comes last, without one.
 func typed(p *sessiontest.FakeProc) []string {
-	var out []string
+	var all string
 	for {
 		select {
 		case b := <-p.Input:
-			out = append(out, string(b))
+			all += string(b)
+			continue
 		default:
-			return out
 		}
+		break
 	}
+	var out []string
+	for all != "" {
+		i := strings.IndexByte(all, '\r')
+		if i < 0 {
+			return append(out, all)
+		}
+		out, all = append(out, all[:i+1]), all[i+1:]
+	}
+	return out
 }
 
-// waitTyped waits up to d for the next write to a process.
+// waitTyped waits up to d for the next submission to a process: the writes up
+// to and including the next carriage return, joined.
 func waitTyped(t *testing.T, p *sessiontest.FakeProc, d time.Duration) string {
 	t.Helper()
-	select {
-	case b := <-p.Input:
-		return string(b)
-	case <-time.After(d):
-		t.Fatalf("nothing typed within %v", d)
-		return ""
+	got, ok := readSubmission(p, d)
+	if !ok {
+		t.Fatalf("no whole submission within %v (got %q)", d, got)
+	}
+	return got
+}
+
+// readSubmission reads writes to p until one ends with a carriage return,
+// for up to d, and returns them joined; ok is false when d ran out.
+func readSubmission(p *sessiontest.FakeProc, d time.Duration) (string, bool) {
+	deadline := time.After(d)
+	var got string
+	for {
+		select {
+		case b := <-p.Input:
+			got += string(b)
+			if strings.HasSuffix(got, "\r") {
+				return got, true
+			}
+		case <-deadline:
+			return got, false
+		}
 	}
 }
 
@@ -352,7 +389,7 @@ func TestAfterConditionStartsOnFirstDone(t *testing.T) {
 	}
 	// core's prompt waits until the engine has taken that done, so that the
 	// done comes before the prompt as the engine sees them.
-	e.await = func(ctx context.Context, l *session.Local) error {
+	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
 		if l.Info().Name == "core" {
 			select {
 			case <-idle:
@@ -360,7 +397,7 @@ func TestAfterConditionStartsOnFirstDone(t *testing.T) {
 				return ctx.Err()
 			}
 		}
-		return awaitReady(ctx, l)
+		return awaitReady(ctx, l, held)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "Test $GOAL.", "core")))
 	if err != nil {
@@ -442,12 +479,8 @@ func TestAfterConditionIgnoresADoneThatPredatesThePrompt(t *testing.T) {
 		}
 		// Held back until core's prompt has been typed.
 		_, p := fl.member("core")
-		select {
-		case b := <-p.Input:
-			prompt <- string(b)
-		case <-time.After(10 * time.Second):
-			prompt <- ""
-		}
+		got, _ := readSubmission(p, 10*time.Second)
+		prompt <- got
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
 	if err != nil {
@@ -927,7 +960,7 @@ func TestStopEndsAStartInProgress(t *testing.T) {
 // the run log says so.
 func TestNotReadyAfterTheCapTypesAnyway(t *testing.T) {
 	e, fl := newEngine(t)
-	e.await = func(context.Context, *session.Local) error { return errNotReady }
+	e.await = func(context.Context, *session.Local, func(string)) error { return errNotReady }
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
 	if err != nil {
 		t.Fatal(err)
@@ -945,7 +978,7 @@ func TestNotReadyAfterTheCapTypesAnyway(t *testing.T) {
 // A member without a prompt runs as soon as its session starts.
 func TestAMemberWithoutAPromptRunsAtOnce(t *testing.T) {
 	e, fl := newEngine(t)
-	e.await = func(context.Context, *session.Local) error {
+	e.await = func(context.Context, *session.Local, func(string)) error {
 		t.Error("waited for a member with no prompt to be ready")
 		return nil
 	}
@@ -966,27 +999,33 @@ func TestReadiness(t *testing.T) {
 	start := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) time.Time { return start.Add(d) }
 	s := time.Second
+	needs, done, working, none := session.AttentionNeedsInput, session.AttentionDone, session.AttentionWorking, session.AttentionNone
 	for _, tc := range []struct {
-		name          string
-		state         session.AttentionState
-		lastOutput    time.Time
-		now           time.Time
-		ready, capped bool
+		name                string
+		rd                  readiness
+		now                 time.Time
+		ready, capped, hold bool
 	}{
-		{"waiting for input at once", session.AttentionNeedsInput, time.Time{}, at(0), true, false},
-		{"done at once", session.AttentionDone, time.Time{}, at(s / 2), true, false},
-		{"working, output still coming", session.AttentionWorking, at(4500 * time.Millisecond), at(5 * s), false, false},
-		{"working, but quiet", session.AttentionWorking, at(0), at(5 * s), true, false},
-		{"no output yet", session.AttentionNone, time.Time{}, at(5 * s), false, false},
-		{"output still coming", session.AttentionNone, at(4500 * time.Millisecond), at(5 * s), false, false},
-		{"quiet, but too early", session.AttentionNone, at(0), at(1500 * time.Millisecond), false, false},
-		{"quiet for a second at two seconds", session.AttentionNone, at(s), at(2 * s), true, false},
-		{"never quiet", session.AttentionNone, at(60 * s), at(60 * s), false, true},
-		{"no output ever", session.AttentionNone, time.Time{}, at(61 * s), false, true},
+		{"waiting for input at once", readiness{state: needs, source: session.SourceAPI}, at(0), true, false, false},
+		{"done at once", readiness{state: done}, at(s / 2), true, false, false},
+		{"working, output still coming", readiness{state: working, lastOutput: at(4500 * time.Millisecond)}, at(5 * s), false, false, false},
+		{"working, but quiet", readiness{state: working, lastOutput: at(0)}, at(5 * s), true, false, false},
+		{"no output yet", readiness{state: none}, at(5 * s), false, false, false},
+		{"output still coming", readiness{state: none, lastOutput: at(4500 * time.Millisecond)}, at(5 * s), false, false, false},
+		{"quiet, but too early", readiness{state: none, lastOutput: at(0)}, at(1500 * time.Millisecond), false, false, false},
+		{"quiet for a second at two seconds", readiness{state: none, lastOutput: at(s)}, at(2 * s), true, false, false},
+		{"never quiet", readiness{state: none, lastOutput: at(60 * s)}, at(60 * s), false, true, false},
+		{"no output ever", readiness{state: none}, at(61 * s), false, true, false},
+		{"bracketed paste on: a prompt", readiness{state: none, lastOutput: at(s), pasteSeen: true, pasteOn: true}, at(2 * s), true, false, false},
+		{"bracketed paste on, then off: between screens", readiness{state: none, lastOutput: at(s), pasteSeen: true}, at(5 * s), false, false, false},
+		{"between screens past the cap", readiness{state: none, lastOutput: at(s), pasteSeen: true}, at(61 * s), false, true, false},
+		{"between screens, but asking", readiness{state: needs, source: session.SourceAPI, pasteSeen: true}, at(s), true, false, false},
+		{"a trust question", readiness{state: needs, source: session.SourceTrust, lastOutput: at(0)}, at(5 * s), false, false, true},
+		{"a trust question past the cap", readiness{state: needs, source: session.SourceTrust}, at(90 * s), false, false, true},
 	} {
-		ready, capped := readyAt(tc.state, tc.lastOutput, start, tc.now)
-		if ready != tc.ready || capped != tc.capped {
-			t.Errorf("%s: ready %v capped %v, want %v %v", tc.name, ready, capped, tc.ready, tc.capped)
+		ready, capped, hold := readyAt(tc.rd, start, tc.now)
+		if ready != tc.ready || capped != tc.capped || hold != tc.hold {
+			t.Errorf("%s: ready %v capped %v hold %v, want %v %v %v", tc.name, ready, capped, hold, tc.ready, tc.capped, tc.hold)
 		}
 	}
 }
@@ -1234,11 +1273,11 @@ func TestAPromptFailureEndsOnlyThatMember(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.onLaunch = askAtOnce
 	boom := errors.New("boom")
-	e.await = func(ctx context.Context, l *session.Local) error {
+	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
 		if l.Info().Crew.Member == "lead" {
 			return boom
 		}
-		return awaitReady(ctx, l)
+		return awaitReady(ctx, l, held)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
 	if err != nil {
@@ -1267,7 +1306,7 @@ func TestAPromptFailureEndsOnlyThatMember(t *testing.T) {
 // exit, not as a failure to write.
 func TestAnExitAsThePromptIsTypedIsAnEarlyExit(t *testing.T) {
 	e, fl := newEngine(t)
-	e.await = func(_ context.Context, l *session.Local) error {
+	e.await = func(_ context.Context, l *session.Local, _ func(string)) error {
 		_, p := fl.member(l.Info().Crew.Member)
 		p.End(3)
 		return nil
@@ -1290,7 +1329,7 @@ func TestADoneAsThePromptIsTypedCounts(t *testing.T) {
 			return
 		}
 		l.SetAttention(session.AttentionNeedsInput, "what next?", session.SourceAPI)
-		<-p.Input // the prompt: done at once
+		readSubmission(p, 10*time.Second) // the prompt and its Enter: done at once
 		l.SetAttention(session.AttentionDone, "finished", session.SourceAPI)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))

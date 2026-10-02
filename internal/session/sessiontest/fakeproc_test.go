@@ -23,10 +23,10 @@ func TestFakeProcRunsASession(t *testing.T) {
 	if err := p.Print("ready> "); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Type("go\r", "crew"); err != nil {
+	if _, err := s.Submit(t.Context(), session.Submission{Text: "go", ByName: "crew"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(<-p.Input); got != "go\r" {
+	if got := string(<-p.Input) + string(<-p.Input); got != "go\r" {
 		t.Fatalf("typed %q", got)
 	}
 	p.End(3)

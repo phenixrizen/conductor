@@ -125,9 +125,9 @@ func (r *run) noteQueued(m *member, why string) {
 	}
 }
 
-// deliver types the handoffs waiting for m into l, its session, in order and
-// each with a carriage return, once m runs, one at a time with
-// session.Local.TypeUnlessWaiting: a handoff l takes while it waits for input
+// deliver submits the handoffs waiting for m into l, its session, in order,
+// once m runs, one at a time with session.Local.Submit (UnlessWaiting: a
+// paste, then Enter): a handoff l takes while it waits for input
 // goes back to the head of the queue, and every handoff waiting is noted as
 // queued. Otherwise it waits to be woken (poke). It ends once none waits;
 // when the run stops, or l or m ends, the handoffs left are dropped, each
@@ -167,16 +167,22 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		m.handoffs = slices.Delete(m.handoffs, 0, 1)
 		e.mu.Unlock()
 
-		typed, err := l.TypeUnlessWaiting(h.text+"\r", typedBy)
+		res, err := l.Submit(r.ctx, session.Submission{Text: h.text, ByName: typedBy, UnlessWaiting: true})
 		if e.tried != nil {
-			e.tried(m.def.Name, typed)
+			e.tried(m.def.Name, res.Typed)
 		}
 		e.mu.Lock()
 		switch {
-		case err != nil:
+		case err != nil && !res.Typed:
 			r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, m.def.Name, err)
-		case typed:
+		case err != nil:
+			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %v", h.from, m.def.Name, err)
+		case res.Entered:
 			r.note(session.ActivityStatus, "handoff delivered from %s to %s", h.from, m.def.Name)
+		case res.Typed:
+			// A question came up during the pause: the text waits in the
+			// agent's input, and is never typed again.
+			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %s waits on a question; answer it, then press Enter in its terminal", h.from, m.def.Name, m.def.Name)
 		default:
 			// Waiting for input: back to the head, the oldest again.
 			m.handoffs = slices.Insert(m.handoffs, 0, h)
@@ -186,7 +192,7 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			r.noteQueued(m, "is waiting for input")
 		}
 		e.mu.Unlock()
-		if err == nil && !typed {
+		if err == nil && !res.Typed {
 			waitWake(r, m, l)
 		}
 	}

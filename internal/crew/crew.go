@@ -16,7 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/store"
 )
 
@@ -347,12 +347,13 @@ func typedPromptLen(prompt, goal string) int {
 }
 
 // checkTypedPrompt checks that m's prompt, with goal in place of $GOAL, made
-// one line and with a carriage return (typedPrompt), fits what a session
-// takes at once (session.Local.Type): a member never fails to start for the
-// size of its prompt. The error matches ErrInvalid.
+// one line (typedPrompt), fits what a session submits at once
+// (session.MaxSubmitText, the paste markers around it in one INPUT frame): a
+// member never fails to start for the size of its prompt. The error matches
+// ErrInvalid.
 func (m Member) checkTypedPrompt(goal string) error {
-	if n := typedPromptLen(m.Prompt, goal); n > proto.MaxInput {
-		return invalidf("member %s: the prompt with the goal in place of $GOAL is %d bytes, more than %d", quote(m.Name), n-1, proto.MaxInput-1)
+	if n := typedPromptLen(m.Prompt, goal) - 1; n > session.MaxSubmitText {
+		return invalidf("member %s: the prompt with the goal in place of $GOAL is %d bytes, more than %d", quote(m.Name), n, session.MaxSubmitText)
 	}
 	return nil
 }

@@ -21,7 +21,7 @@ func TestMapClaudeHook(t *testing.T) {
 		ok    bool
 	}{
 		{`{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Allow Bash?"}`, "needs_input", "Allow Bash?", true},
-		{`{"hook_event_name":"Notification","notification_type":"idle_prompt"}`, "needs_input", "idle prompt", true},
+		{`{"hook_event_name":"Notification","notification_type":"idle_prompt"}`, "done", "idle prompt", true},
 		{`{"hook_event_name":"Notification","notification_type":"auth_success"}`, "working", "auth success", true},
 		{`{"hook_event_name":"Stop","last_assistant_message":"All done."}`, "done", "All done.", true},
 		{`{"hook_event_name":"UserPromptSubmit"}`, "working", "", true},
@@ -38,7 +38,7 @@ func TestMapClaudeHook(t *testing.T) {
 
 func TestMapCodex(t *testing.T) {
 	req, ok := MapCodex([]byte(`{"type":"agent-turn-complete","last-assistant-message":"Need a decision"}`))
-	if !ok || req.State != "needs_input" || req.Message != "Need a decision" {
+	if !ok || req.State != "done" || req.Message != "Need a decision" {
 		t.Fatalf("%+v %v", req, ok)
 	}
 	if _, ok := MapCodex([]byte(`{"type":"other"}`)); ok {
@@ -114,10 +114,16 @@ func TestMapClaudeHookStopIsDoneKind(t *testing.T) {
 	}
 }
 
-func TestMapCodexIsPromptKind(t *testing.T) {
+// The end of a Codex turn is done, as Claude Code's Stop is: the agent is
+// idle, and a crew's handoffs and broadcasts are typed into it.
+func TestMapCodexIsDoneKind(t *testing.T) {
 	req, _ := MapCodex([]byte(`{"type":"agent-turn-complete","last-assistant-message":"Need a decision"}`))
-	if req.Kind != "prompt" {
+	if req.State != "done" || req.Kind != "done" {
 		t.Fatalf("%+v", req)
+	}
+	// The hidden thread that titles the conversation (live, Codex 0.159) is not a turn of the user's.
+	if _, ok := MapCodex([]byte(`{"type":"agent-turn-complete","input-messages":["Generate a concise, single-line task title for this conversation"],"last-assistant-message":"Reply READY"}`)); ok {
+		t.Fatal("the title thread's turn mapped")
 	}
 }
 

@@ -118,10 +118,22 @@ type MemberState struct {
 	// Err says why a member ended before it ran: it could not start, or its
 	// process ended before its prompt was typed.
 	Err string `json:"error,omitempty"`
+	// NeedsInput is set when the member is starting or running and its
+	// session waits on a prompt: a trust question before its prompt, or a
+	// question of its agent's.
+	NeedsInput bool `json:"needsInput,omitempty"`
 	// Diff is set by GetWithDiffs for a member with a worktree: tracked
 	// changes against the base, uncommitted included.
 	Diff *Diff `json:"diff,omitempty"`
 }
+
+// Run states (Run.State), derived each time a run is read (refresh).
+const (
+	RunRunning    = "running"     // a member is pending, starting or running, and none waits on a prompt
+	RunNeedsInput = "needs_input" // the session of a starting or running member waits on a prompt
+	RunStopped    = "stopped"     // stopped (Stop): its sessions were stopped
+	RunFinished   = "finished"    // every member ended, and none is pending
+)
 
 // Run is a launch of a crew as the engine reports it.
 type Run struct {
@@ -137,6 +149,11 @@ type Run struct {
 	// Yolo is the run's yolo choice, fixed at launch: every member, one added
 	// or started later included, is launched with it.
 	Yolo bool `json:"yolo"`
+	// State is the run's state (RunRunning…), NeedsInput how many members'
+	// sessions wait on a prompt. A member's done keeps a run running: a done
+	// agent is idle, not gone.
+	State      string `json:"state"`
+	NeedsInput int    `json:"needsInput"`
 	// Log is the run's own log, oldest first: launched, member started,
 	// prompt typed, handoff queued, delivered or dropped, stopped, and the
 	// rest docs/protocol.md lists. At most maxRunLog entries.
@@ -148,8 +165,10 @@ type Run struct {
 type Engine struct {
 	launcher Launcher
 	lookup   func(sessionID string) (*session.Local, bool)
-	// await waits for a member's session to be ready: awaitReady, but for tests.
-	await func(ctx context.Context, l *session.Local) error
+	// await waits for a member's session to be ready, calling held with the
+	// question once each time a trust question holds the prompt: awaitReady,
+	// but for tests.
+	await func(ctx context.Context, l *session.Local, held func(question string)) error
 	// now is the clock of the diff cache.
 	now func() time.Time
 	// excludeMu keeps two launches from writing a repository's info/exclude
@@ -170,6 +189,13 @@ type Engine struct {
 	// not call the engine or wait. Set it before the first launch.
 	OnForget func(runID string)
 
+	// OnRunChange is called with the ID of a run each time something a read
+	// of it shows changes that no session change carries: a member reserved,
+	// started, running or ended, an entry in its log, a stop. It runs under
+	// mu, so it must not call the engine or wait. Set it before the first
+	// launch.
+	OnRunChange func(runID string)
+
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
@@ -189,6 +215,8 @@ type run struct {
 	id, crewID, name, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
+	// changed is the engine's OnRunChange, or nil.
+	changed func(runID string)
 	// prefix is where cwd lies in its repository, with worktrees: a member
 	// works in <worktree>/<prefix>.
 	prefix    string
@@ -371,7 +399,7 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 func (e *Engine) add(c Crew, prefix string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
-		yolo: c.Yolo != nil && *c.Yolo, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
+		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
 	immediate := 0
 	for _, m := range c.Members {
 		r.members = append(r.members, newMember(m))
@@ -423,7 +451,15 @@ func (r *run) reserve(m *member) bool {
 	}
 	m.state.Status = MemberStarting
 	r.starts.Add(1)
+	r.touch()
 	return true
+}
+
+// touch tells OnRunChange that r changed. The caller holds e.mu.
+func (r *run) touch() {
+	if r.changed != nil {
+		r.changed(r.id)
+	}
 }
 
 // note appends an entry to r's log, cleaned like a session's entries, and
@@ -434,6 +470,7 @@ func (r *run) note(typ, format string, args ...any) {
 		r.log = slices.Delete(r.log, 0, len(r.log)-maxRunLog+1)
 	}
 	r.log = append(r.log, entry)
+	r.touch()
 }
 
 // launch makes m's worktree, when r has them, and starts m's session, in
@@ -503,17 +540,24 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 	return local, nil
 }
 
-// prompt waits for m's session to be ready and types m's prompt, the goal in
-// it, as one line (typedPrompt), and m is running; a member without a prompt
-// runs at once. A session that ends first gets no prompt: m ends, with how its
-// process ended. An error means the start failed: ctx ended or the prompt
-// could not be written.
+// prompt waits for m's session to be ready and submits m's prompt, the goal
+// in it, as one line (typedPrompt), and m is running; a member without a
+// prompt runs at once. A trust question on the member's screen holds the
+// prompt until a person answers it (awaitReady), noted once in the run log
+// each time. m is prompted as the Enter is written, so a done the agent
+// reported before it never starts the members after m. A session that ends
+// first gets no prompt: m ends, with how its process ended. An error means
+// the start failed: ctx ended or the prompt could not be written.
 func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.Local) error {
 	name := m.def.Name
 	text := typedPrompt(m.def.Prompt, r.goal)
 	hasPrompt := strings.TrimSpace(text) != ""
 	if hasPrompt {
-		err := e.await(ctx, local)
+		err := e.await(ctx, local, func(question string) {
+			e.mu.Lock()
+			r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its prompt waits", name, quote(question), name)
+			e.mu.Unlock()
+		})
 		switch {
 		case errors.Is(err, errNotReady):
 			e.mu.Lock()
@@ -525,24 +569,37 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		case err != nil:
 			return err
 		}
-		// Prompted before the write: a done the agent reports as it takes the
-		// prompt, before Type returns, counts.
-		e.mu.Lock()
-		m.markPrompted()
-		e.mu.Unlock()
-		if err := local.Type(text+"\r", typedBy); err != nil {
+		res, err := local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, BeforeEnter: func() {
+			e.mu.Lock()
+			m.markPrompted()
+			e.mu.Unlock()
+		}})
+		if err != nil {
 			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
 				e.endedEarly(r, m, local)
 				return nil
 			}
 			return fmt.Errorf("typing its prompt: %w", err)
 		}
+		e.mu.Lock()
+		switch {
+		case !res.Entered:
+			// A question came up during the pause: the prompt waits in the
+			// agent's input, and is never typed again.
+			m.markPrompted()
+			r.note(session.ActivityError, "typed %s's prompt without its Enter: %s waits on a question; answer it, then press Enter in its terminal", name, name)
+		case res.Reentered:
+			r.note(session.ActivityStatus, "pressed Enter again for %s: it did not report taking its prompt within %v", name, session.ConfirmWait)
+		}
+		e.mu.Unlock()
 	}
 	e.mu.Lock()
 	m.markPrompted()
 	m.state.Status = MemberRunning
 	if hasPrompt {
 		r.note(session.ActivityStatus, "typed %s's prompt", name)
+	} else {
+		r.touch()
 	}
 	e.mu.Unlock()
 	m.poke() // the handoffs waiting for its prompt may go
@@ -1046,45 +1103,95 @@ func (r *run) snapshot(withDiffs bool) Run {
 }
 
 // refresh shows as ended the running members of out whose session has ended
-// or is gone from the server. A member still starting is left to its start,
-// which ends it with the reason. It looks the sessions up: the caller does
-// not hold e.mu.
+// or is gone from the server, marks the starting and running members whose
+// session waits on a prompt, and derives the run's state (runState). A member
+// still starting is left to its start, which ends it with the reason. It
+// looks the sessions up: the caller does not hold e.mu.
 func (e *Engine) refresh(out *Run) {
 	for i := range out.Members {
 		m := &out.Members[i]
-		if m.SessionID == "" || m.Status != MemberRunning {
+		if m.SessionID == "" || (m.Status != MemberRunning && m.Status != MemberStarting) {
 			continue
 		}
 		l, ok := e.lookup(m.SessionID)
 		if !ok {
-			m.Status = MemberEnded
+			if m.Status == MemberRunning {
+				m.Status = MemberEnded
+			}
 			continue
 		}
-		if info := l.Info(); info.Status.Ended() {
-			m.Status, m.Ended = MemberEnded, info.EndedAt
+		info := l.Info()
+		if info.Status.Ended() {
+			if m.Status == MemberRunning {
+				m.Status, m.Ended = MemberEnded, info.EndedAt
+			}
+			continue
+		}
+		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput
+	}
+	out.State, out.NeedsInput = runState(*out)
+}
+
+// runState is a run's state and how many of its members wait on a prompt:
+// stopped once stopped; finished when every member has ended and none is
+// pending; needs_input while the session of a starting or running member
+// waits on a prompt; running otherwise. web/app/utils/runs.ts derives the
+// same from the run and the live sessions.
+func runState(r Run) (string, int) {
+	needs, ended := 0, 0
+	for _, m := range r.Members {
+		switch {
+		case m.Status == MemberEnded:
+			ended++
+		case m.NeedsInput:
+			needs++
 		}
 	}
+	switch {
+	case r.StoppedAt != nil:
+		return RunStopped, needs
+	case ended == len(r.Members):
+		return RunFinished, 0
+	case needs > 0:
+		return RunNeedsInput, needs
+	}
+	return RunRunning, 0
 }
 
 // awaitReady waits until l is ready for its prompt (readyAt), looking every
-// readyPoll. After readyCap it returns errNotReady, and the prompt is typed
-// anyway; once the session has ended it returns session.ErrSessionEnded.
-func awaitReady(ctx context.Context, l *session.Local) error {
+// readyPoll. While a trust question shows it calls held with the question,
+// once until the question goes, and the wait starts over when it goes: the
+// cap does not run meanwhile, so a prompt is never typed into the question.
+// After readyCap it returns errNotReady, and the prompt is typed anyway; once
+// the session has ended it returns session.ErrSessionEnded.
+func awaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
 	start := time.Now()
 	tick := time.NewTicker(readyPoll)
 	defer tick.Stop()
+	holding := false
 	for {
 		select {
 		case <-l.Ended():
 			return session.ErrSessionEnded
 		default:
 		}
-		ready, capped := readyAt(l.Info().Attention.State, l.LastOutputAt(), start, time.Now())
-		if ready {
+		att := l.Info().Attention
+		seen, on := l.BracketedPaste()
+		now := time.Now()
+		ready, capped, hold := readyAt(readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}, start, now)
+		switch {
+		case hold:
+			if !holding {
+				held(att.Message)
+			}
+			holding = true
+			start = now // once it is answered, the wait starts over
+		case ready:
 			return nil
-		}
-		if capped {
+		case capped:
 			return errNotReady
+		default:
+			holding = false
 		}
 		select {
 		case <-ctx.Done():
@@ -1096,16 +1203,38 @@ func awaitReady(ctx context.Context, l *session.Local) error {
 	}
 }
 
-// readyAt says whether a session is ready for its prompt at now, a wait that
-// began at start: its agent reports that it waits for input or is done, or
-// its output (last at lastOutput, zero before any) has been quiet for
-// readyQuiet and readyMin has passed. capped is the wait reaching readyCap.
-func readyAt(state session.AttentionState, lastOutput, start, now time.Time) (ready, capped bool) {
-	if state == session.AttentionNeedsInput || state == session.AttentionDone {
-		return true, false
+// readiness is what readyAt looks at of a session.
+type readiness struct {
+	state  session.AttentionState
+	source string
+	// lastOutput is when the output last moved (title updates aside), zero
+	// before any.
+	lastOutput time.Time
+	// pasteSeen and pasteOn are the program's bracketed-paste mode
+	// (session.Local.BracketedPaste).
+	pasteSeen, pasteOn bool
+}
+
+// readyAt says whether a session is ready for its prompt at now, in a wait
+// that began at start. A trust question on its screen holds the prompt (hold).
+// It is ready when its agent reports that it waits for input or is done, or
+// when its output has been quiet for readyQuiet and readyMin has passed, but
+// never while the program has turned bracketed paste on and then off again:
+// it is between screens (Claude Code while it starts), and what is typed then
+// loses its Enter. capped is the wait reaching readyCap.
+func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
+	if rd.state == session.AttentionNeedsInput && rd.source == session.SourceTrust {
+		return false, false, true
 	}
-	if !lastOutput.IsZero() && now.Sub(lastOutput) >= readyQuiet && now.Sub(start) >= readyMin {
-		return true, false
+	if rd.state == session.AttentionNeedsInput || rd.state == session.AttentionDone {
+		return true, false, false
 	}
-	return false, now.Sub(start) >= readyCap
+	capped = now.Sub(start) >= readyCap
+	if rd.pasteSeen && !rd.pasteOn {
+		return false, capped, false
+	}
+	if !rd.lastOutput.IsZero() && now.Sub(rd.lastOutput) >= readyQuiet && now.Sub(start) >= readyMin {
+		return true, false, false
+	}
+	return false, capped, false
 }

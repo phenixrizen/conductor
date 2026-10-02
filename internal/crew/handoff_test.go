@@ -276,7 +276,7 @@ func TestHandoffToAMemberThatIsNotRunning(t *testing.T) {
 func TestHandoffWaitsForThePrompt(t *testing.T) {
 	e, fl := newEngine(t)
 	release := make(chan struct{})
-	e.await = func(ctx context.Context, l *session.Local) error {
+	e.await = func(ctx context.Context, l *session.Local, _ func(string)) error {
 		if l.Info().Crew.Member == "tests" {
 			select {
 			case <-release:

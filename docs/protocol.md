@@ -240,8 +240,10 @@ run (see Crew runs), and no `crew` otherwise.
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
 header-authenticated `fetch`: `snapshot` with the full list first, then
-`session` per change, `removed{id}` when a session leaves the registry, and
-`activity` for every activity entry, see Events).
+`session` per change, `removed{id}` when a session leaves the registry,
+`activity` for every activity entry, see Events, and `run{id}` when a crew run
+changes in a way no session change carries, or `run{id, removed: true}` when
+the server forgets it, see Crew runs).
 
 ## Events
 
@@ -445,7 +447,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`) and of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone` |
 
 The catalog routes persist their changes as `catalog.json` in the data

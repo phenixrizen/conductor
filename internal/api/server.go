@@ -169,7 +169,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if live := s.links.DeleteRun(runID); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}
+		s.events.run(runID, true)
 	}
+	// What a session change does not carry of a run reaches the browsers as
+	// a run event, which they read the run again for.
+	s.runs.OnRunChange = func(runID string) { s.events.run(runID, false) }
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
 	// it, and its handoff is typed into the member it names. OnActivity never

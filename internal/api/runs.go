@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/crew"
-	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
 )
@@ -38,7 +38,12 @@ const (
 	skipNeedsInput = "needs_input" // its session waits on a prompt, which the text must not answer
 	skipNotRunning = "not_running" // it is not running: no session yet, its prompt not typed yet, or ended
 	skipUnknown    = "unknown"     // no member of the run has the name
+	skipNoEnter    = "no_enter"    // typed, but a prompt came up before its Enter: the line waits in its input
 )
+
+// broadcastTimeout bounds a broadcast's submissions, which go on when the
+// client goes away: one cut in its pause would leave a line without its Enter.
+const broadcastTimeout = 15 * time.Second
 
 // Launch starts the session of a crew member through createLocalSession, the
 // path POST /api/sessions takes (crew.Launcher). An error is an *apiError.
@@ -298,12 +303,14 @@ func broadcastLine(text string) string {
 	}, text))
 }
 
-// handleBroadcast types a line into the members of a run a request names, or
-// into every member: 200 {sent, skipped}, both in the order asked, a name
-// given twice typed once. It is typed with a carriage return, as
-// Local.TypeUnlessWaiting types, recorded as input by the admin's display
-// name. A member whose session waits on a prompt is skipped (needs_input), as
-// is one not running (not_running) and a name no member has (unknown).
+// handleBroadcast submits a line into the members of a run a request names,
+// or into every member: 200 {sent, skipped}, both in the order asked, a name
+// given twice typed once. Each member's line goes in as Local.Submit types
+// (a paste, then Enter 250 ms later), all at once, recorded as input by the
+// admin's display name. A member whose session waits on a prompt is skipped
+// (needs_input), as is one not running (not_running), a name no member has
+// (unknown), and one whose Enter was left out because a prompt came up during
+// the pause (no_enter): its line waits in its input, never typed again.
 func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	var req broadcastRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -315,7 +322,7 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	case line == "":
 		writeError(w, http.StatusBadRequest, "invalid_request", "text is empty")
 		return
-	case len(line) > maxBroadcast || len(line)+1 > proto.MaxInput:
+	case len(line) > maxBroadcast:
 		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("text is longer than %d bytes", maxBroadcast))
 		return
 	}
@@ -331,25 +338,42 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	byName := session.CleanName(req.ByName)
-	sent, skipped := []string{}, []broadcastSkip{}
+	var unique []string
 	seen := map[string]bool{}
 	for _, name := range names {
-		if seen[name] {
-			continue
+		if !seen[name] {
+			seen[name] = true
+			unique = append(unique, name)
 		}
-		seen[name] = true
-		if reason := s.broadcastTo(run, name, line+"\r", byName); reason != "" {
-			skipped = append(skipped, broadcastSkip{Member: name, Reason: reason})
-		} else {
+	}
+	// Each member's submission pauses before its Enter: they go together,
+	// one per member, and the reply keeps the order asked.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), broadcastTimeout)
+	defer cancel()
+	reasons := make([]string, len(unique))
+	var wg sync.WaitGroup
+	for i, name := range unique {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reasons[i] = s.broadcastTo(ctx, run, name, line, byName)
+		}()
+	}
+	wg.Wait()
+	sent, skipped := []string{}, []broadcastSkip{}
+	for i, name := range unique {
+		if reasons[i] == "" {
 			sent = append(sent, name)
+		} else {
+			skipped = append(skipped, broadcastSkip{Member: name, Reason: reasons[i]})
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "skipped": skipped})
 }
 
-// broadcastTo types text into the member of run with the given name, unless
+// broadcastTo submits line into the member of run with the given name, unless
 // its session waits on a prompt, and returns why it did not, or "".
-func (s *Server) broadcastTo(run crew.Run, name, text, byName string) string {
+func (s *Server) broadcastTo(ctx context.Context, run crew.Run, name, line, byName string) string {
 	i := slices.IndexFunc(run.Members, func(m crew.MemberState) bool { return m.Name == name })
 	if i < 0 {
 		return skipUnknown
@@ -362,16 +386,21 @@ func (s *Server) broadcastTo(run crew.Run, name, text, byName string) string {
 	if !ok {
 		return skipNotRunning
 	}
-	typed, err := local.TypeUnlessWaiting(text, byName)
+	res, err := local.Submit(ctx, session.Submission{Text: line, ByName: byName, UnlessWaiting: true})
 	switch {
-	case err != nil:
+	case err != nil && !res.Typed:
 		// It ended, or the write failed as its process went.
 		if !errors.Is(err, session.ErrSessionEnded) {
 			s.log.Warn("broadcast: could not type into a member", "run", run.ID, "member", name, "err", err)
 		}
 		return skipNotRunning
-	case !typed:
+	case err != nil:
+		s.log.Warn("broadcast: typed into a member without its Enter", "run", run.ID, "member", name, "err", err)
+		return skipNoEnter
+	case !res.Typed:
 		return skipNeedsInput
+	case !res.Entered:
+		return skipNoEnter
 	}
 	return ""
 }

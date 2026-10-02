@@ -136,7 +136,37 @@ func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state ses
 
 // removed announces that a session left the registry.
 func (h *eventHub) removed(id string) {
-	msg := []byte("event: removed\ndata: " + fmt.Sprintf("{\"id\":%q}", id) + "\n\n")
+	h.broadcast([]byte("event: removed\ndata: " + fmt.Sprintf("{\"id\":%q}", id) + "\n\n"))
+}
+
+// runEvent is the data of a `run` event: the run to read again, or, with
+// Removed, the run the server forgot. It carries no more than the ID, so it
+// is at most maxRunEvent bytes whatever happened to the run.
+type runEvent struct {
+	ID      string `json:"id"`
+	Removed bool   `json:"removed,omitempty"`
+}
+
+// maxRunEvent bounds a run event's data: a run ID is a crew ID (at most 40
+// characters, crew.ValidID) and 9 more.
+const maxRunEvent = 128
+
+// run announces that a run changed in a way no session change carries
+// (crew.Engine.OnRunChange), or, removed, that the engine forgot it
+// (OnForget). Like a session change it is state a client cannot do without: a
+// client that cannot keep up is dropped and starts over from a snapshot. It
+// runs under the engine's lock and never waits.
+func (h *eventHub) run(id string, removed bool) {
+	b, err := json.Marshal(runEvent{ID: id, Removed: removed})
+	if err != nil || len(b) > maxRunEvent {
+		return
+	}
+	h.broadcast([]byte("event: run\ndata: " + string(b) + "\n\n"))
+}
+
+// broadcast queues msg for every client; a client that cannot keep up is
+// dropped.
+func (h *eventHub) broadcast(msg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for ch := range h.clients {

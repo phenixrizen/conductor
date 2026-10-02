@@ -230,3 +230,24 @@ func TestEventHubActivityCarriesTheAttentionState(t *testing.T) {
 		}
 	}
 }
+
+// A run event names the run and nothing more, and is dropped, never cut,
+// past its bound.
+func TestEventHubRunEvent(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	h.run("api-sweep-0123abcd", false)
+	h.run("api-sweep-0123abcd", true)
+	h.run(strings.Repeat("x", maxRunEvent), false)
+	for _, want := range []string{
+		"event: run\ndata: {\"id\":\"api-sweep-0123abcd\"}\n\n",
+		"event: run\ndata: {\"id\":\"api-sweep-0123abcd\",\"removed\":true}\n\n",
+	} {
+		if got := string(<-ch); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+	if len(ch) != 0 {
+		t.Fatalf("an event over %d bytes was sent", maxRunEvent)
+	}
+}

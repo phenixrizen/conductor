@@ -67,6 +67,11 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 			return Request{State: "working", Message: truncate(msg, 200)}, true
 		case "permission_prompt":
 			return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
+		case "idle_prompt":
+			// Claude Code at rest after its turn ("Claude is waiting for your
+			// input", sent after a minute idle) asks nothing: it is done, as
+			// its Stop said, and a crew's handoffs and broadcasts reach it.
+			return Request{State: "done", Message: truncate(msg, 200), Kind: "done"}, true
 		}
 		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "prompt"}, true
 	case "Stop":
@@ -87,11 +92,22 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 
 // CodexPayload is the subset of the Codex notify payload we use.
 type CodexPayload struct {
-	Type                 string `json:"type"`
-	LastAssistantMessage string `json:"last-assistant-message"`
+	Type                 string   `json:"type"`
+	LastAssistantMessage string   `json:"last-assistant-message"`
+	InputMessages        []string `json:"input-messages"`
 }
 
-// MapCodex turns a Codex notify payload into an attention update.
+// codexTitlePrompt begins what Codex asks the hidden thread that names a
+// conversation (live, codex 0.159): its turn reports through notify like a
+// turn of the user's, with a thread id of its own, and is not one.
+const codexTitlePrompt = "Generate a concise, single-line task title"
+
+// MapCodex turns a Codex notify payload into an attention update: the end of
+// a turn is done, as Claude Code's Stop is (a finished agent is idle, waiting
+// for its next line, and a crew types handoffs and broadcasts into it); what
+// Codex asks a person comes through its bell and its hooks. The turn of the
+// hidden thread that titles a conversation is not the user's, and maps to
+// nothing.
 func MapCodex(raw []byte) (req Request, ok bool) {
 	var p CodexPayload
 	if json.Unmarshal(raw, &p) != nil {
@@ -99,11 +115,14 @@ func MapCodex(raw []byte) (req Request, ok bool) {
 	}
 	switch p.Type {
 	case "agent-turn-complete":
+		if len(p.InputMessages) > 0 && strings.HasPrefix(p.InputMessages[0], codexTitlePrompt) {
+			return Request{}, false
+		}
 		msg := truncate(strings.TrimSpace(p.LastAssistantMessage), 200)
 		if msg == "" {
 			msg = "Codex finished its turn"
 		}
-		return Request{State: "needs_input", Message: msg, Kind: "prompt"}, true
+		return Request{State: "done", Message: msg, Kind: "done"}, true
 	}
 	return Request{}, false
 }
