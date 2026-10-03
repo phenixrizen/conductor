@@ -17,7 +17,7 @@ func TestSkillText(t *testing.T) {
 	if !ok || !closed {
 		t.Fatalf("no frontmatter:\n%s", Skill)
 	}
-	if want := "name: conductor\ndescription: Report progress, artifacts, blockers and handoffs to Conductor while working in a Conductor session"; front != want {
+	if want := "name: conductor\ndescription: Report progress, artifacts, blockers and handoffs to Conductor, and form a crew around your session, while working in a Conductor session"; front != want {
 		t.Fatalf("frontmatter:\n%s\nwant\n%s", front, want)
 	}
 	// The marker that makes the file Conductor's comes first after it.
@@ -31,7 +31,12 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" notify --event artifact --url <url>`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to <member> --message "…"`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "…"`,
-		"ever call notify outside a Conductor session; the command exits silently there",
+		`"${CONDUCTOR_BIN:-conductor}" crew create crew.json --self lead --open`,
+		`"${CONDUCTOR_BIN:-conductor}" crew status`,
+		`"${CONDUCTOR_BIN:-conductor}" crew add member.json`,
+		`"${CONDUCTOR_BIN:-conductor}" crew link --label "for the PR"`,
+		"ever call notify or crew outside a Conductor session; the commands exit silently there",
+		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the skill does not say %q", want)
@@ -71,10 +76,17 @@ func TestWriteAssetsWritesTheSkill(t *testing.T) {
 // Claude Code and Codex have their own directory, pi and Goose read the
 // shared ~/.agents/skills.
 var skillFor = map[string]string{
-	"claude": ".claude/skills/conductor/SKILL.md",
-	"codex":  ".codex/skills/conductor/SKILL.md",
-	"pi":     ".agents/skills/conductor/SKILL.md",
-	"goose":  ".agents/skills/conductor/SKILL.md",
+	"claude":   ".claude/skills/conductor/SKILL.md",
+	"codex":    ".codex/skills/conductor/SKILL.md",
+	"agy":      ".gemini/antigravity-cli/skills/conductor/SKILL.md",
+	"copilot":  ".agents/skills/conductor/SKILL.md",
+	"cursor":   ".agents/skills/conductor/SKILL.md",
+	"opencode": ".agents/skills/conductor/SKILL.md",
+	"pi":       ".agents/skills/conductor/SKILL.md",
+	"omp":      ".agents/skills/conductor/SKILL.md",
+	"goose":    ".agents/skills/conductor/SKILL.md",
+	"amp":      ".agents/skills/conductor/SKILL.md",
+	"dsh":      ".agents/skills/conductor/SKILL.md",
 }
 
 // Install copies the skill for the agents that read skills, and for no other,
@@ -88,8 +100,8 @@ func TestInstallCopiesTheSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range All() {
-		if _, reads := skillFor[a.ID]; a.InstallsSkill != reads {
-			t.Errorf("%s: InstallsSkill is %v", a.ID, a.InstallsSkill)
+		if rel, reads := skillFor[a.ID]; a.InstallsSkill() != reads || a.SkillPath != rel {
+			t.Errorf("%s: InstallsSkill %v, SkillPath %q", a.ID, a.InstallsSkill(), a.SkillPath)
 		}
 		if a.Install == nil || a.ID == "dsh" {
 			continue
@@ -187,6 +199,69 @@ func TestInstallLeavesTheUsersOwnSkillAlone(t *testing.T) {
 		}
 		if ok, _ := a.Status(home); !ok {
 			t.Fatalf("%s: status after the install", name)
+		}
+	}
+}
+
+// InstallSkill, what a launch runs, puts the skill where the agent reads it
+// (SkillPath) and nowhere else, changes nothing the second time, keeps a
+// SKILL.md of the user's own (ErrByHand) and does nothing for an agent
+// without a skills directory or an unknown one. DeepSeek Harness included:
+// its hooks are by hand, its skill is not.
+func TestInstallSkillForEveryAdapterThatReadsSkills(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	hooks := t.TempDir()
+	for _, a := range All() {
+		rel, reads := skillFor[a.ID]
+		t.Run(a.ID, func(t *testing.T) {
+			home := t.TempDir()
+			path, changed, err := InstallSkill(a.ID, home, hooks)
+			if !reads {
+				if path != "" || changed || err != nil {
+					t.Fatalf("%s reads no skills: %q %v %v", a.ID, path, changed, err)
+				}
+				if entries, _ := os.ReadDir(home); len(entries) != 0 {
+					t.Fatalf("home has %v", entries)
+				}
+				return
+			}
+			want := filepath.Join(home, filepath.FromSlash(rel))
+			if path != want || !changed || err != nil {
+				t.Fatalf("install: %q %v %v, want %q", path, changed, err, want)
+			}
+			if b, err := os.ReadFile(want); err != nil || string(b) != Skill {
+				t.Fatalf("%s: %v\n%s", want, err, b)
+			}
+			if path, changed, err := InstallSkill(a.ID, home, hooks); path != want || changed || err != nil {
+				t.Fatalf("second install: %q %v %v", path, changed, err)
+			}
+			mine := "---\nname: conductor\ndescription: mine\n---\n\nMine.\n"
+			os.WriteFile(want, []byte(mine), 0o600)
+			if path, changed, err := InstallSkill(a.ID, home, hooks); path != want || changed || !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), want) {
+				t.Fatalf("the user's own: %q %v %v", path, changed, err)
+			}
+			if b, _ := os.ReadFile(want); string(b) != mine {
+				t.Fatalf("the user's skill changed:\n%s", b)
+			}
+		})
+	}
+	if path, changed, err := InstallSkill("", t.TempDir(), hooks); path != "" || changed || err != nil {
+		t.Fatalf("no adapter: %q %v %v", path, changed, err)
+	}
+	if path, changed, err := InstallSkill("nope", t.TempDir(), hooks); path != "" || changed || err != nil {
+		t.Fatalf("unknown adapter: %q %v %v", path, changed, err)
+	}
+}
+
+// SkillFile names the skill under an absolute hooks dir, and nothing under
+// a relative one or none.
+func TestSkillFile(t *testing.T) {
+	if got := SkillFile("/data/hooks"); got != filepath.Join("/data/hooks", "skills", "conductor", "SKILL.md") {
+		t.Fatalf("got %q", got)
+	}
+	for _, dir := range []string{"", "hooks", "./hooks"} {
+		if got := SkillFile(dir); got != "" {
+			t.Fatalf("%q: got %q", dir, got)
 		}
 	}
 }

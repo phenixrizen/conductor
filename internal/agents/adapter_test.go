@@ -183,14 +183,14 @@ var installed = map[string]struct {
 }{
 	"claude":   {[]string{".claude/settings.json", skillFor["claude"]}, ".claude/settings.json"},
 	"codex":    {[]string{".codex/config.toml", ".codex/hooks.json", skillFor["codex"]}, ".codex/config.toml"},
-	"agy":      {[]string{".gemini/config/hooks.json"}, ".gemini/config/hooks.json"},
-	"copilot":  {[]string{".copilot/hooks/conductor.json"}, ".copilot/hooks/conductor.json"},
-	"cursor":   {[]string{".cursor/hooks.json"}, ".cursor/hooks.json"},
-	"opencode": {[]string{".config/opencode/plugins/conductor.ts"}, ".config/opencode/plugins/conductor.ts"},
+	"agy":      {[]string{".gemini/config/hooks.json", skillFor["agy"]}, ".gemini/config/hooks.json"},
+	"copilot":  {[]string{".copilot/hooks/conductor.json", skillFor["copilot"]}, ".copilot/hooks/conductor.json"},
+	"cursor":   {[]string{".cursor/hooks.json", skillFor["cursor"]}, ".cursor/hooks.json"},
+	"opencode": {[]string{".config/opencode/plugins/conductor.ts", skillFor["opencode"]}, ".config/opencode/plugins/conductor.ts"},
 	"pi":       {[]string{".pi/agent/extensions/conductor.ts", skillFor["pi"]}, ".pi/agent/extensions/conductor.ts"},
-	"omp":      {[]string{".omp/agent/config.yml", ".omp/agent/extensions/conductor.ts"}, ".omp/agent/extensions/conductor.ts"},
+	"omp":      {[]string{".omp/agent/extensions/conductor.ts", skillFor["omp"], ".omp/agent/config.yml"}, ".omp/agent/extensions/conductor.ts"},
 	"goose":    {[]string{".agents/plugins/conductor/hooks/hooks.json", skillFor["goose"]}, ".agents/plugins/conductor/hooks/hooks.json"},
-	"amp":      {[]string{".config/amp/plugins/conductor/index.ts"}, ".config/amp/plugins/conductor/index.ts"},
+	"amp":      {[]string{".config/amp/plugins/conductor/index.ts", skillFor["amp"]}, ".config/amp/plugins/conductor/index.ts"},
 }
 
 func under(home string, rels ...string) []string {
@@ -439,7 +439,7 @@ func TestInstallAgyMergesItsOwnKey(t *testing.T) {
 	os.WriteFile(path, []byte(mine), 0o600)
 	a, _ := Get("agy")
 	touched, err := a.Install(home, t.TempDir())
-	if err != nil || !slices.Equal(touched, []string{path}) {
+	if err != nil || !slices.Equal(sorted(touched), under(home, ".gemini/config/hooks.json", skillFor["agy"])) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	b, _ := os.ReadFile(path)
@@ -470,7 +470,7 @@ func TestInstallCursorMergesIntoHooksJSON(t *testing.T) {
 	os.MkdirAll(filepath.Dir(path), 0o700)
 	os.WriteFile(path, []byte(`{"version":1,"hooks":{"stop":[{"command":"say done"}],"beforeShellExecution":[{"command":"./guard.sh"}]}}`), 0o600)
 	a, _ := Get("cursor")
-	if touched, err := a.Install(home, t.TempDir()); err != nil || !slices.Equal(touched, []string{path}) {
+	if touched, err := a.Install(home, t.TempDir()); err != nil || !slices.Equal(sorted(touched), under(home, ".cursor/hooks.json", skillFor["cursor"])) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	b, _ := os.ReadFile(path)
@@ -509,7 +509,7 @@ func TestInstallOmpAddsItsExtensionToTheList(t *testing.T) {
 	os.WriteFile(config, []byte("theme: dark\nextensions:\n  - /x/a.ts\n\nmodel: y\n"), 0o600)
 	a, _ := Get("omp")
 	touched, err := a.Install(home, t.TempDir())
-	if err != nil || !slices.Equal(sorted(touched), sorted([]string{config, ext})) {
+	if err != nil || !slices.Equal(sorted(touched), sorted(under(home, ".omp/agent/config.yml", ".omp/agent/extensions/conductor.ts", skillFor["omp"]))) {
 		t.Fatalf("install: %q %v", touched, err)
 	}
 	want := "theme: dark\nextensions:\n  - /x/a.ts\n  # conductor\n  - \"" + ext + "\"\n\nmodel: y\n"
@@ -536,16 +536,16 @@ func TestInstallOmpAddsItsExtensionToTheList(t *testing.T) {
 	}
 }
 
-// DeepSeek Harness is a developer preview: Install writes nothing and points
-// at the snippet.
+// DeepSeek Harness is a developer preview: Install writes the skill alone
+// and points at the snippet for the plugin.
 func TestInstallDshIsByHand(t *testing.T) {
 	a, _ := Get("dsh")
 	home := t.TempDir()
 	touched, err := a.Install(home, t.TempDir())
-	if len(touched) != 0 || !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), "snippet") || !strings.Contains(err.Error(), "developer preview") {
+	if !slices.Equal(touched, under(home, skillFor["dsh"])) || !errors.Is(err, ErrByHand) || !strings.Contains(err.Error(), "snippet") || !strings.Contains(err.Error(), "developer preview") {
 		t.Fatalf("install: %q %v", touched, err)
 	}
-	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+	if entries, _ := os.ReadDir(home); len(entries) != 1 || entries[0].Name() != ".agents" {
 		t.Fatalf("home has %v", entries)
 	}
 	if !a.Experimental || slices.Contains(a.Events, "experimental") {
@@ -615,8 +615,9 @@ func TestInstallDoesNotFollowLinksOutOfHome(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, ".copilot")); err != nil {
 		t.Fatal(err)
 	}
+	// The hooks stay by hand; the skill, under another directory, goes in.
 	copilot, _ := Get("copilot")
-	if touched, err := copilot.Install(home, t.TempDir()); err == nil || len(touched) != 0 {
+	if touched, err := copilot.Install(home, t.TempDir()); !errors.Is(err, ErrByHand) || !slices.Equal(touched, under(home, skillFor["copilot"])) {
 		t.Fatalf("directory link out of home: %q %v", touched, err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "hooks")); !errors.Is(err, os.ErrNotExist) {
@@ -631,7 +632,7 @@ func TestInstallDoesNotFollowLinksOutOfHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	touched, err := copilot.Install(home, t.TempDir())
-	if err != nil || !slices.Equal(touched, []string{filepath.Join(home, ".copilot", "hooks", "conductor.json")}) {
+	if err != nil || !slices.Equal(sorted(touched), under(home, ".copilot/hooks/conductor.json", skillFor["copilot"])) {
 		t.Fatalf("link within home: %q %v", touched, err)
 	}
 	if _, err := os.Stat(filepath.Join(dotfiles, "hooks", "conductor.json")); err != nil {

@@ -54,9 +54,12 @@ type Server struct {
 	lookups *lookupCache
 	probes  *probeCache
 	// home is the server user's home directory: the integrations routes
-	// report and install the agents' hooks there, and nowhere else. Empty
-	// when it is unknown.
-	home string
+	// report and install the agents' hooks there, and nowhere else, and a
+	// launch puts the Conductor skill there (skillDone: the adapters tried
+	// since the server started, one attempt each). Empty when it is unknown.
+	home      string
+	skillMu   sync.Mutex
+	skillDone map[string]bool
 	// instance identifies this process on /api/health, for the reach
 	// self-check; reach and certs are what SetReach gave (see reach.go).
 	instance string
@@ -159,22 +162,23 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home = ""
 	}
 	s := &Server{
-		cfg:      cfg,
-		base:     base,
-		overlay:  overlay,
-		catalog:  effective,
-		registry: session.NewRegistry(cfg.MaxSessions),
-		links:    share.NewStore(),
-		limiter:  newRateLimiter(5, 20),
-		log:      log,
-		web:      web,
-		store:    st,
-		crews:    crews,
-		fileDeny: fileDeny(cfg, st),
-		lookups:  newLookupCache(),
-		probes:   newProbeCache(),
-		home:     home,
-		instance: newInstance(),
+		cfg:       cfg,
+		base:      base,
+		overlay:   overlay,
+		catalog:   effective,
+		registry:  session.NewRegistry(cfg.MaxSessions),
+		links:     share.NewStore(),
+		limiter:   newRateLimiter(5, 20),
+		log:       log,
+		web:       web,
+		store:     st,
+		crews:     crews,
+		fileDeny:  fileDeny(cfg, st),
+		lookups:   newLookupCache(),
+		probes:    newProbeCache(),
+		home:      home,
+		skillDone: map[string]bool{},
+		instance:  newInstance(),
 	}
 	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }

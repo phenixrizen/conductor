@@ -751,6 +751,11 @@ branch `design/crews-graph`.
 
 ### Open verification (round 5)
 
+- The skills directories: Cursor, Copilot, OpenCode, oh-my-pi and Amp read
+  `~/.agents/skills` and the Antigravity CLI `~/.gemini/antigravity-cli/skills`
+  by their vendors' docs (read 2026-10-03); DeepSeek Harness reads
+  `~/.agents/skills` by third-party guides only. Each agent, launched from
+  Conductor, should list the `conductor` skill (`/skills` or its equivalent).
 - A link `https://<public ip>/join/<token>` opened from a phone on mobile
   data: the padlock, the join page, the terminal live. The server's self-check
   cannot prove it.

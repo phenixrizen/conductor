@@ -1,5 +1,7 @@
 package agents
 
+import "errors"
+
 // DeepSeek Harness takes TUI plugins, but it is a developer preview whose
 // plugin interface still changes: Conductor generates the plugin and leaves
 // installing it to the user, and the Events page marks it experimental.
@@ -42,11 +44,15 @@ func dshAdapter() Adapter {
 		Name:   "DeepSeek Harness",
 		Assets: dshAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
-			return nil, byHand("DeepSeek Harness is a developer preview whose plugin interface still changes; add Conductor's plugin from the snippet to dsh yourself")
+			// The skill goes in; the plugin stays by hand.
+			touched, err := install(home, skillStep(hooksDir, agentsSkill))
+			return touched, errors.Join(err, byHand("DeepSeek Harness is a developer preview whose plugin interface still changes; add Conductor's plugin from the snippet to dsh yourself"))
 		},
 		Snippet: func(hooksDir string) string {
 			return snippetOf(dshAssets, hooksDir, "dsh-conductor.js")
 		},
+		// dsh scans ~/.agents/skills among its user skill directories (its guides; verify against a release).
+		SkillPath:    agentsSkill,
 		Events:       []string{"needs_input", "done", "error"},
 		Experimental: true,
 	}

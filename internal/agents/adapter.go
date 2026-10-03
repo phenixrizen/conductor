@@ -41,9 +41,11 @@ type Adapter struct {
 	// what it leaves to the user comes back as an error wrapping ErrByHand.
 	// nil when the agent has no file route.
 	Install func(home, hooksDir string) ([]string, error)
-	// InstallsSkill is true for an agent that reads skills: its Install also
-	// copies the Conductor skill.
-	InstallsSkill bool
+	// SkillPath is where the agent reads the Conductor skill under home, the
+	// SKILL.md itself, slash-separated, for an agent that reads skills: its
+	// Install copies the skill there, and so does a launch (InstallSkill).
+	// Empty for an agent that reads none (aider).
+	SkillPath string
 	// Status is a dry run of Install on home: installed is true when Install
 	// would change nothing and leave nothing to do by hand, so an install
 	// that is partial or names another binary reads as not installed; where
@@ -61,6 +63,10 @@ type Adapter struct {
 	// output); nil when Conductor does not know it yet.
 	Probe *Probe
 }
+
+// InstallsSkill reports whether the agent reads skills: its Install, and a
+// launch, bring the Conductor skill (SkillPath).
+func (a Adapter) InstallsSkill() bool { return a.SkillPath != "" }
 
 // ErrByHand wraps what Install leaves to the user: a file it would have to
 // overwrite or cannot merge into, or an agent it does not edit at all. The

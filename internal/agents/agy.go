@@ -18,13 +18,17 @@ var agyAssets = map[string]string{
 }
 
 func agySteps(hooksDir string) []step {
-	return []step{{agyHooks, func(h *homeDir) (bool, error) {
+	return []step{agyHooksStep(hooksDir), skillStep(hooksDir, agySkill)}
+}
+
+func agyHooksStep(hooksDir string) step {
+	return step{agyHooks, func(h *homeDir) (bool, error) {
 		asset, err := assetFor(agyAssets, hooksDir, "agy-hooks.json")
 		if err != nil {
 			return false, err
 		}
 		return setJSONKey(h, agyHooks, asset, agyKey)
-	}}}
+	}}
 }
 
 func agyAdapter() Adapter {
@@ -43,6 +47,8 @@ func agyAdapter() Adapter {
 		Snippet: func(hooksDir string) string {
 			return snippetOf(agyAssets, hooksDir, "agy-hooks.json")
 		},
-		Events: []string{"done", "tool_use"},
+		// The Antigravity CLI reads its global skills from ~/.gemini/antigravity-cli/skills and a workspace's .agents/skills, not ~/.agents/skills (antigravity.google/docs/skills).
+		SkillPath: agySkill,
+		Events:    []string{"done", "tool_use"},
 	}
 }

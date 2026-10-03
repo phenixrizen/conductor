@@ -216,7 +216,13 @@ func TestHooksInstallByHand(t *testing.T) {
 		if code != 1 || !strings.Contains(stdout, tc.note) || !strings.Contains(stdout, tc.snippet) {
 			t.Fatalf("%s: exit %d %v\nstdout:\n%s\nstderr:\n%s", tc.id, code, err, stdout, stderr)
 		}
-		if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		// DeepSeek Harness reads skills: Conductor's goes in; aider gets nothing.
+		entries, _ := os.ReadDir(home)
+		if tc.id == "dsh" {
+			if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "conductor", "SKILL.md")); err != nil || len(entries) != 1 {
+				t.Fatalf("%s: the skill: %v, home has %v", tc.id, err, entries)
+			}
+		} else if len(entries) != 0 {
 			t.Fatalf("%s wrote %v", tc.id, entries)
 		}
 	}

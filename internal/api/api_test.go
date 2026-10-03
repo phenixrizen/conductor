@@ -90,6 +90,11 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A launch installs the skill in the server user's home: a test's home
+	// is its own (one with no known home keeps none).
+	if srv.home != "" {
+		srv.home = t.TempDir()
+	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() {
 		hs.Close()
@@ -2683,7 +2688,7 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 		t.Fatalf("integrations %v, want %v", ids, want)
 	}
 	fields := []string{"events", "experimental", "id", "installable", "installed", "installsSkill", "launchInjection", "name", "snippet", "where"}
-	skillReaders := []string{"claude", "codex", "pi", "goose"}
+	skillReaders := []string{"claude", "codex", "agy", "copilot", "cursor", "opencode", "pi", "omp", "goose", "amp", "dsh"}
 	for _, id := range ids {
 		it := list[id]
 		if keys := slices.Sorted(maps.Keys(it)); !slices.Equal(keys, fields) {
@@ -2722,7 +2727,7 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 	}
 
 	resp, out = e.do("POST", "/api/integrations/copilot/install", adminToken, nil)
-	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out["changed"], []any{copilotFile}) {
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out["changed"], []any{copilotFile, filepath.Join(home, ".agents", "skills", "conductor", "SKILL.md")}) {
 		t.Fatalf("install: %d %v", resp.StatusCode, out)
 	}
 	if b, err := os.ReadFile(copilotFile); err != nil || !strings.Contains(string(b), " notify --copilot-hook") {
@@ -2752,7 +2757,8 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound || errorCode(out) != "not_found" {
 		t.Fatalf("unknown integration: %d %v", resp.StatusCode, out)
 	}
-	// Only the server user's home was written, and only copilot's file.
+	// Only the server user's home was written, and only copilot's file and
+	// the skill it reads.
 	var written []string
 	filepath.WalkDir(home, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
@@ -2760,7 +2766,7 @@ func TestIntegrationsListAndInstall(t *testing.T) {
 		}
 		return err
 	})
-	if !slices.Equal(written, []string{copilotFile}) {
+	if !slices.Equal(written, []string{filepath.Join(home, ".agents", "skills", "conductor", "SKILL.md"), copilotFile}) {
 		t.Fatalf("home holds %q", written)
 	}
 }

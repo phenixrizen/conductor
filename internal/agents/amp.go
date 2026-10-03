@@ -34,6 +34,10 @@ export default function (amp) {
 `,
 }
 
+func ampSteps(hooksDir string) []step {
+	return append(copyAssetDir(ampAssets, hooksDir, "amp/conductor/", ampDir), skillStep(hooksDir, agentsSkill))
+}
+
 func ampAdapter() Adapter {
 	return Adapter{
 		ID:   "amp",
@@ -42,11 +46,13 @@ func ampAdapter() Adapter {
 		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(?:amp\s+)?v?(\d+\.\d+\.\d+)`)},
 		Assets: ampAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, copyAssetDir(ampAssets, hooksDir, "amp/conductor/", ampDir)...)
+			return install(home, ampSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return statusOf(home, ampDir+"index.ts", copyAssetDir(ampAssets, "", "amp/conductor/", ampDir)...)
+			return statusOf(home, ampDir+"index.ts", ampSteps("")...)
 		},
+		// Amp reads ~/.agents/skills (and ~/.config/amp/skills, ~/.claude/skills; ampcode.com/docs/customize/skills).
+		SkillPath: agentsSkill,
 		Snippet: func(hooksDir string) string {
 			return snippetOf(ampAssets, hooksDir, "amp/conductor/index.ts")
 		},

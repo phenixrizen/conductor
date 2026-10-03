@@ -64,7 +64,7 @@ func piAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, piSteps(hooksDir)...)
 		},
-		InstallsSkill: true,
+		SkillPath: agentsSkill,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, piExtension, piSteps("")...)
 		},

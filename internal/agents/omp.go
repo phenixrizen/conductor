@@ -18,6 +18,7 @@ var ompAssets = map[string]string{"omp-conductor.ts": piScript}
 func ompSteps(hooksDir string) []step {
 	return []step{
 		copyAsset(ompAssets, hooksDir, "omp-conductor.ts", ompExtension),
+		skillStep(hooksDir, agentsSkill),
 		{ompConfig, func(h *homeDir) (bool, error) {
 			cur, _, err := h.read(ompConfig)
 			if err != nil {
@@ -54,6 +55,8 @@ func ompAdapter() Adapter {
 		Snippet: func(hooksDir string) string {
 			return snippetOf(ompAssets, hooksDir, "omp-conductor.ts")
 		},
-		Events: []string{"done", "tool_use"},
+		// oh-my-pi reads ~/.agents/skills among the user locations it takes (its own is ~/.omp/agent/skills; omp.sh/docs/skills).
+		SkillPath: agentsSkill,
+		Events:    []string{"done", "tool_use"},
 	}
 }

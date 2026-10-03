@@ -50,6 +50,10 @@ export const ConductorPlugin = async ({ $ }) => {
 `,
 }
 
+func opencodeSteps(hooksDir string) []step {
+	return []step{copyAsset(opencodeAssets, hooksDir, "opencode/plugins/conductor.ts", opencodePlugin), skillStep(hooksDir, agentsSkill)}
+}
+
 func opencodeAdapter() Adapter {
 	return Adapter{
 		ID:   "opencode",
@@ -58,11 +62,13 @@ func opencodeAdapter() Adapter {
 		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(?:opencode\s+)?v?(\d+\.\d+\.\d+)\s*$`)},
 		Assets: opencodeAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, copyAsset(opencodeAssets, hooksDir, "opencode/plugins/conductor.ts", opencodePlugin))
+			return install(home, opencodeSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return statusOf(home, opencodePlugin, copyAsset(opencodeAssets, "", "opencode/plugins/conductor.ts", opencodePlugin))
+			return statusOf(home, opencodePlugin, opencodeSteps("")...)
 		},
+		// OpenCode reads ~/.agents/skills (and ~/.config/opencode/skills, ~/.claude/skills; opencode.ai/docs/skills).
+		SkillPath: agentsSkill,
 		Snippet: func(hooksDir string) string {
 			return snippetOf(opencodeAssets, hooksDir, "opencode/plugins/conductor.ts")
 		},

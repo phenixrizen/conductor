@@ -12,6 +12,10 @@ var copilotAssets = map[string]string{
 		"notification", "agentStop", "userPromptSubmitted", "postToolUse", "errorOccurred") + `}}`),
 }
 
+func copilotSteps(hooksDir string) []step {
+	return []step{copyAsset(copilotAssets, hooksDir, "copilot.json", copilotFile), skillStep(hooksDir, agentsSkill)}
+}
+
 func copilotAdapter() Adapter {
 	return Adapter{
 		ID:   "copilot",
@@ -20,11 +24,13 @@ func copilotAdapter() Adapter {
 		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)copilot.*?(\d+\.\d+\.\d+)`)},
 		Assets: copilotAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
-			return install(home, copyAsset(copilotAssets, hooksDir, "copilot.json", copilotFile))
+			return install(home, copilotSteps(hooksDir)...)
 		},
 		Status: func(home string) (bool, string) {
-			return statusOf(home, copilotFile, copyAsset(copilotAssets, "", "copilot.json", copilotFile))
+			return statusOf(home, copilotFile, copilotSteps("")...)
 		},
+		// The Copilot CLI reads ~/.agents/skills (and ~/.copilot/skills; docs.github.com, "About agent skills").
+		SkillPath: agentsSkill,
 		Snippet: func(hooksDir string) string {
 			return snippetOf(copilotAssets, hooksDir, "copilot.json")
 		},

@@ -60,7 +60,7 @@ const host = computed(() => {
   }
 })
 
-// The skill has no install of its own: it comes with the hooks of the agents that read skills.
+// The skill has no install of its own: a launch puts it in place, and so do the hooks of the agents that read skills.
 const skillReaders = computed(() => integrations.value.filter((i) => i.installsSkill))
 /** Their names as prose: "Claude Code, Codex, pi and Goose". */
 const skillReaderNames = computed(() => {
@@ -111,8 +111,9 @@ const skillCommands = [
               <code>conductor</code> on the <code>PATH</code> where it is unset.
             </p>
             <p class="text-sm text-muted">
-              The skill installs together with the hooks of {{ skillReaderNames }}: <b class="text-default">Install on this machine</b> on their cards
-              puts it in their skills directory.
+              Every agent that reads skills gets it when it is first launched after the server starts, in its skills directory in the server user's
+              home ({{ skillReaderNames }}); <b class="text-default">Install on this machine</b> on their cards puts it there too, with the hooks.
+              Every session names the server's copy in <code>CONDUCTOR_SKILL</code>.
             </p>
             <div v-if="skillReaders.length" class="flex flex-wrap gap-1.5">
               <UBadge

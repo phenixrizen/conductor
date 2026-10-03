@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/agents"
 )
 
 // fakeSelf fakes the session's self-service routes and records what came in.
@@ -142,5 +144,27 @@ func TestCrewCommandsAreSilentOutsideASession(t *testing.T) {
 	var errb bytes.Buffer
 	if code, _ := runCrew(context.Background(), nil, strings.NewReader(""), io.Discard, &errb); code != 2 || !strings.Contains(errb.String(), "Usage") {
 		t.Fatalf("no args: %d %q", code, errb.String())
+	}
+}
+
+// The skill teaches every crew subcommand there is, with the binary the
+// session names, and the completion table agrees on the subcommands.
+func TestSkillNamesEveryCrewCommand(t *testing.T) {
+	var words []string
+	for _, c := range completionSpec() {
+		if c.name == "crew" {
+			words = c.words
+		}
+	}
+	if len(words) == 0 {
+		t.Fatal("no crew words in the completion table")
+	}
+	for _, w := range words {
+		if !strings.Contains(agents.Skill, `"${CONDUCTOR_BIN:-conductor}" crew `+w) {
+			t.Errorf("the skill does not teach crew %s", w)
+		}
+		if !strings.Contains(crewUsage, "conductor crew "+w) {
+			t.Errorf("the usage does not list crew %s", w)
+		}
 	}
 }

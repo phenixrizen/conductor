@@ -187,6 +187,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// The binary the hooks run, for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
 	inject := pty.Inject(id, notifyURL, agentToken, bin)
+	// Its agent's id (what a crew it forms names for itself) and the skill
+	// (for an agent without a skills directory to read); the skill goes
+	// into the agent's own skills directory first.
+	inject["CONDUCTOR_AGENT"] = agent.ID
+	hooksDir := agents.HooksDir(s.cfg.DataDir)
+	if skill := agents.SkillFile(hooksDir); skill != "" {
+		inject["CONDUCTOR_SKILL"] = skill
+	}
+	s.installSkillAtLaunch(agent.Adapter, hooksDir)
 	if crewRef != nil {
 		// BuildEnv keeps CONDUCTOR_* out of env: these travel with Inject's.
 		inject["CONDUCTOR_CREW"] = crewRef.CrewID
@@ -354,4 +363,32 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d.Info())
+}
+
+// installSkillAtLaunch puts the Conductor skill where the adapter's agent
+// reads skills, in the server user's home, once per adapter since the
+// server started (agents.installSkill, on by default): a SKILL.md of the
+// user's own is left to them, said once in the log. Nothing here stops the
+// launch.
+func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
+	if adapter == "" || s.home == "" || !s.cfg.InstallSkill() {
+		return
+	}
+	s.skillMu.Lock()
+	done := s.skillDone[adapter]
+	s.skillDone[adapter] = true
+	s.skillMu.Unlock()
+	if done {
+		return
+	}
+	path, changed, err := agents.InstallSkill(adapter, s.home, hooksDir)
+	switch {
+	case path == "":
+	case errors.Is(err, agents.ErrByHand):
+		s.log.Info("the agent's skills directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
+	case err != nil:
+		s.log.Warn("skill install failed", "adapter", adapter, "path", path, "err", err)
+	case changed:
+		s.log.Info("skill installed", "adapter", adapter, "path", path)
+	}
 }

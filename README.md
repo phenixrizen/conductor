@@ -312,14 +312,27 @@ as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
 agent to report on its own: progress (`--event progress --message "4/7
 handlers"`), an artifact such as a pull request (`--event artifact --url …`),
 a handoff to another crew member (`--event handoff --to …`) and a decision it
-cannot make (`--state needs_input`). Installing the hooks for Claude Code,
-Codex, pi or Goose also puts the skill in their skills directory
-(`~/.claude/skills/conductor/`, `~/.codex/skills/conductor/`, or
-`~/.agents/skills/conductor/` for pi and Goose), and the server keeps a copy
-in `hooks/skills/conductor/SKILL.md`. Its commands run
+cannot make (`--state needs_input`); and to form a crew around its own
+session when the work splits (`conductor crew`, see
+[Agents that form crews](#crews)). Every agent that reads skills gets it
+without asking: the first time an agent is launched after the server starts,
+the skill is put in that agent's skills directory in the server user's home
+(`~/.claude/skills/conductor/` for Claude Code, `~/.codex/skills/conductor/`
+for Codex, `~/.gemini/antigravity-cli/skills/conductor/` for the Antigravity
+CLI, and `~/.agents/skills/conductor/`, the directory of the Agent Skills
+convention, for pi, Goose, Cursor, Copilot, OpenCode, oh-my-pi, Amp and
+DeepSeek Harness; aider reads none), one attempt per agent per server start,
+and a `SKILL.md` of your own there is never touched (the log says so once).
+`agents.installSkill: false` or `CONDUCTOR_AGENT_INSTALL_SKILL=0` turns that
+off; installing the hooks (`conductor hooks install`, the Events page) puts
+the skill in place too. The server keeps its copy in
+`hooks/skills/conductor/SKILL.md`, and every session names it in
+`CONDUCTOR_SKILL`, so an agent with no skills directory can be told to read
+`$CONDUCTOR_SKILL` (a crew's member prompt can say so). Its commands run
 `"${CONDUCTOR_BIN:-conductor}"`: every session carries `CONDUCTOR_BIN`, the
-absolute path of the binary its hooks run, while the manual snippets below
-assume `conductor` on the `PATH`.
+absolute path of the binary its hooks run, and `CONDUCTOR_AGENT`, the id of
+its agent in the catalog, while the manual snippets below assume `conductor`
+on the `PATH`.
 
 <details>
 <summary>Wiring the hooks by hand</summary>
@@ -833,6 +846,8 @@ file must run `compinit` before that line.
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, adminToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
+| `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
+| `agents.installSkill` | `CONDUCTOR_AGENT_INSTALL_SKILL` (`1`/`true` on, `0`/`false` off) | `true` | a launch puts the Conductor skill in the agent's skills directory, in the server user's home, once per agent per server start (see [The Conductor skill](#events-and-hooks)) |
 | `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |
 | `reach.mode` | `CONDUCTOR_REACH` | `auto` | how the server finds out it can be reached from outside its network: `auto` asks a STUN server for the public address and, once there is a TLS listener, maps its port on the router (UPnP IGD, PCP or NAT-PMP, renewed and deleted on shutdown; plain http is never mapped); `manual` asks for the address only, for a port you forwarded yourself; `off` asks nothing. `GET /api/reach` reports the result; the Share dialog says what a link reaches |
 | `reach.publicPort` | `CONDUCTOR_REACH_PUBLIC_PORT` | `443` | the port on the public address for the TLS listener: mapped in `auto`, forwarded by you in `manual` |

@@ -130,6 +130,12 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "in_a_run", "the session is a member of a run already; add members to it instead")
 		return
 	}
+	// The self member's agent is this session's: an empty one means that.
+	for i := range in.Members {
+		if in.Members[i].Name == strings.TrimSpace(in.Self) && in.Members[i].AgentID == "" {
+			in.Members[i].AgentID = info.AgentID
+		}
+	}
 	yolo := info.Yolo
 	c := crew.Crew{Name: strings.TrimSpace(in.Name), Goal: in.Goal, Cwd: info.Cwd, Where: crew.WhereServer, Isolation: cmp.Or(in.Isolation, crew.IsolationNone), Yolo: &yolo, Members: in.Members}
 	if err := c.Validate(); err != nil {

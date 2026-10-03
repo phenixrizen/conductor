@@ -17,7 +17,7 @@ var cursorAssets = map[string]string{
 }
 
 func cursorSteps(hooksDir string) []step {
-	return []step{mergeHooksStep(cursorAssets, hooksDir, "cursor-hooks.json", cursorHooks, cursorMarker)}
+	return []step{mergeHooksStep(cursorAssets, hooksDir, "cursor-hooks.json", cursorHooks, cursorMarker), skillStep(hooksDir, agentsSkill)}
 }
 
 func cursorAdapter() Adapter {
@@ -36,6 +36,8 @@ func cursorAdapter() Adapter {
 		Snippet: func(hooksDir string) string {
 			return snippetOf(cursorAssets, hooksDir, "cursor-hooks.json")
 		},
-		Events: []string{"done", "tool_use"},
+		// Cursor reads ~/.agents/skills (and ~/.cursor/skills, ~/.claude/skills, ~/.codex/skills; cursor.com/docs/context/skills).
+		SkillPath: agentsSkill,
+		Events:    []string{"done", "tool_use"},
 	}
 }

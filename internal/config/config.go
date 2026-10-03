@@ -103,7 +103,15 @@ type Agents struct {
 	// (docs/protocol.md): a scoped grant on the session's agent token, never
 	// the admin token. On by default.
 	SelfService *bool `json:"selfService,omitempty"`
+	// InstallSkill puts the Conductor skill where an agent reads skills, in
+	// the server user's home, when the agent is first launched after the
+	// server starts (one attempt per adapter; a SKILL.md of the user's own
+	// is left alone). On by default.
+	InstallSkill *bool `json:"installSkill,omitempty"`
 }
+
+// InstallSkill reports whether a launch installs the skill (Agents.InstallSkill, on by default).
+func (c *Config) InstallSkill() bool { return c.Agents.InstallSkill == nil || *c.Agents.InstallSkill }
 
 // SelfService reports whether agents may serve themselves (Agents.SelfService, on by default).
 func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.Agents.SelfService }
@@ -447,6 +455,14 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	case "0", "false":
 		off := false
 		cfg.Agents.SelfService = &off
+	}
+	switch getenv("CONDUCTOR_AGENT_INSTALL_SKILL") {
+	case "1", "true":
+		on := true
+		cfg.Agents.InstallSkill = &on
+	case "0", "false":
+		off := false
+		cfg.Agents.InstallSkill = &off
 	}
 	str("CONDUCTOR_RENDEZVOUS_SERVER", &cfg.Rendezvous.Server)
 	str("CONDUCTOR_RENDEZVOUS_TOKEN", &cfg.Rendezvous.Token)

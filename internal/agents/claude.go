@@ -82,7 +82,7 @@ func claudeAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, claudeSteps(hooksDir)...)
 		},
-		InstallsSkill: true,
+		SkillPath: claudeSkill,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},

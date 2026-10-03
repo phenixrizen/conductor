@@ -63,7 +63,7 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 			Events:          a.Events,
 			LaunchInjection: a.Inject != nil,
 			Installable:     a.Install != nil && a.Status != nil,
-			InstallsSkill:   a.InstallsSkill,
+			InstallsSkill:   a.InstallsSkill(),
 			Experimental:    a.Experimental,
 		}
 		if it.Events == nil {

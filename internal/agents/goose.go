@@ -31,7 +31,7 @@ func gooseAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, gooseSteps(hooksDir)...)
 		},
-		InstallsSkill: true,
+		SkillPath: agentsSkill,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, gooseDir+"hooks/hooks.json", gooseSteps("")...)
 		},

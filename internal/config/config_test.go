@@ -927,3 +927,37 @@ func TestRendezvousConfig(t *testing.T) {
 		}
 	}
 }
+
+// The agents' switches: self-service and the launch-time skill install are
+// on unless the config or the environment turns them off.
+func TestAgentSwitchesAndEnv(t *testing.T) {
+	cfg := Defaults()
+	if !cfg.SelfService() || !cfg.InstallSkill() {
+		t.Fatal("off by default")
+	}
+	for _, tc := range []struct {
+		env     map[string]string
+		self    bool
+		install bool
+	}{
+		{map[string]string{"CONDUCTOR_AGENT_SELF_SERVICE": "0"}, false, true},
+		{map[string]string{"CONDUCTOR_AGENT_INSTALL_SKILL": "false"}, true, false},
+		{map[string]string{"CONDUCTOR_AGENT_SELF_SERVICE": "true", "CONDUCTOR_AGENT_INSTALL_SKILL": "1"}, true, true},
+		{map[string]string{"CONDUCTOR_AGENT_SELF_SERVICE": "maybe"}, true, true},
+	} {
+		cfg := Defaults()
+		if err := applyEnv(cfg, func(k string) string { return tc.env[k] }); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.SelfService() != tc.self || cfg.InstallSkill() != tc.install {
+			t.Errorf("%v: self %v install %v", tc.env, cfg.SelfService(), cfg.InstallSkill())
+		}
+	}
+	off := false
+	cfg = Defaults()
+	cfg.Agents.InstallSkill = &off
+	cfg.Agents.SelfService = &off
+	if cfg.SelfService() || cfg.InstallSkill() {
+		t.Fatal("the config does not turn them off")
+	}
+}
