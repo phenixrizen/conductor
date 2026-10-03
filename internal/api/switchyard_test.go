@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -208,5 +209,93 @@ func TestOriginMatches(t *testing.T) {
 		if got := originMatches(origin, patterns); got != want {
 			t.Errorf("%q: %v", origin, got)
 		}
+	}
+}
+
+// A switchyard with a relay bound slows a host that streams more than it:
+// every frame still arrives, in order, but no faster than the bound.
+func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.RelayKBps = 256
+	})
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	v := dialViewer(t, e, host.sessionID, adminToken)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
+	v.send(relay)
+	for {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("waiting for relay_ok: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+			break
+		}
+	}
+	host.expect(proto.HostRelayStart)
+	// 1 MiB in 64 frames of 16 KiB: past the burst of 512 KiB, the rest
+	// drains at 256 KiB/s, so the whole takes two seconds or more.
+	const frames = 64
+	chunk := bytes.Repeat([]byte("q"), 16<<10)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	go func() {
+		for i := 0; i < frames; i++ {
+			env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, chunk))
+			if err := host.c.Write(ctx, websocket.MessageBinary, env); err != nil {
+				return
+			}
+		}
+	}()
+	got := 0
+	for got < frames {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("after %d frames: %v", got, err)
+		}
+		if f.Type != proto.TypeOutput {
+			continue
+		}
+		if !bytes.Equal(f.Payload, chunk) {
+			t.Fatalf("frame %d is not whole: %d bytes", got, len(f.Payload))
+		}
+		got++
+	}
+	if took := time.Since(start); took < 1500*time.Millisecond {
+		t.Fatalf("1 MiB went through in %v with a bound of 256 KiB/s", took)
+	}
+}
+
+// A byte bucket refills at its rate and allows a burst of twice it; a take
+// past the burst is cut to the burst (one frame never waits forever).
+func TestByteBucket(t *testing.T) {
+	b := newByteBucket(1000)
+	if b.burst != 2000 || b.tokens != 2000 {
+		t.Fatalf("%+v", b)
+	}
+	ctx := t.Context()
+	start := time.Now()
+	if err := b.take(ctx, 1500); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatal("a take within the burst waited")
+	}
+	// 500 left: 1000 more need half a second.
+	if err := b.take(ctx, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d < 400*time.Millisecond {
+		t.Fatalf("waited %v, want about 500 ms", d)
+	}
+	// Cancelled while waiting.
+	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := b.take(cctx, 2000); err == nil {
+		t.Fatal("a cancelled wait returned no error")
 	}
 }

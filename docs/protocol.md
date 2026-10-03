@@ -93,7 +93,10 @@ If the channel has not opened after `relayTimeoutMs`, or ICE fails, the viewer
 sends `relay`. A switchyard without a relay (`switchyard.relay: false`)
 answers a CONTROL `error{code:"relay_off"}` instead and keeps the connection,
 so the viewer stays on its WebRTC attempt; such a switchyard also refuses a
-host that registers with `relayOnly` (close 1002, `relay_off`). After `relay_ok` the same WebSocket carries terminal frames: the
+host that registers with `relayOnly` (close 1002, `relay_off`). With
+`switchyard.relayKBps` set, a host's relayed output is read no faster than
+that many KiB a second (a burst of twice it): the host is slowed by its own
+connection, and every frame still arrives whole and in order. After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
 View-role INPUT, `resize` and `submit` are dropped by the server before they reach the host (`read_only`).

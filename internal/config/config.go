@@ -112,6 +112,11 @@ type Switchyard struct {
 	// default; off, such a viewer gets relay_off and a relayOnly host is
 	// refused.
 	Relay *bool `json:"relay,omitempty"`
+	// RelayKBps bounds what one host connection may send through the relay,
+	// in kilobytes a second (the host's output to all of its viewers; a
+	// burst of twice that is allowed): a public switchyard's protection
+	// against a session that streams. 0, the default, is no bound.
+	RelayKBps int `json:"relayKBps,omitempty"`
 	// AllowedOrigins are the browser origins that may fetch the join route
 	// and open a hosted session's WebSocket from another page, as host
 	// patterns (host[:port], * wildcards; no scheme): the desktop app's own
@@ -513,6 +518,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		cfg.Switchyard.Relay = &off
 	}
 	list("CONDUCTOR_SWITCHYARD_ORIGINS", &cfg.Switchyard.AllowedOrigins)
+	if err := num("CONDUCTOR_SWITCHYARD_RELAY_KBPS", &cfg.Switchyard.RelayKBps); err != nil {
+		return err
+	}
 	if err := num("CONDUCTOR_ICE_UDP_PORT", &cfg.ICE.UDPPort); err != nil {
 		return err
 	}
@@ -591,6 +599,9 @@ func (c *Config) Validate() error {
 		if _, err := netip.ParseAddr(c.ICE.PublicIP); err != nil {
 			errs = append(errs, fmt.Errorf("ice.publicIp must be an IP address, got %q", c.ICE.PublicIP))
 		}
+	}
+	if c.Switchyard.RelayKBps < 0 || c.Switchyard.RelayKBps > 1<<20 {
+		errs = append(errs, errors.New("switchyard.relayKBps must be between 0 and 1048576"))
 	}
 	for _, o := range c.Switchyard.AllowedOrigins {
 		if strings.TrimSpace(o) == "" || strings.Contains(o, "://") {

@@ -67,6 +67,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	info := hs.Info()
 	hc := &hostConnState{base: s.publicBase(r)}
+	if s.cfg.Switchyard.Enabled && s.cfg.Switchyard.RelayKBps > 0 {
+		hc.relay = newByteBucket(s.cfg.Switchyard.RelayKBps * 1024)
+	}
 	s.log.Info("host registered", "session", info.ID, "host", info.HostName, "resumed", resumed)
 	defer func() {
 		hs.HostDisconnected(conn)
@@ -127,6 +130,12 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 				c.Close(proto.CloseProtocolError, "bad relay envelope")
 				return
 			}
+			// A switchyard's bound on relayed output: the host waits for it.
+			if hc.relay != nil {
+				if err := hc.relay.take(ctx, len(data)); err != nil {
+					return
+				}
+			}
 			if inner.Type == proto.TypeInput {
 				continue // hosts never send input to viewers
 			}
@@ -147,10 +156,50 @@ func writeText(ctx context.Context, c *websocket.Conn, b []byte) error {
 }
 
 // hostConnState is what one host connection keeps between its messages:
-// the base its links take and when it last asked for links.
+// the base its links take, when it last asked for links, and the bucket
+// its relayed output drains (nil without a bound).
 type hostConnState struct {
 	base      string
 	linkTimes []time.Time
+	relay     *byteBucket
+}
+
+// byteBucket is a token bucket of bytes: rate a second, burst at most.
+// take waits, as long as ctx allows, until n bytes are there, so a host
+// that streams more than the bound is slowed rather than cut off: the
+// server reads its connection no faster than the bucket refills, and TCP
+// does the rest.
+type byteBucket struct {
+	rate, burst float64
+	tokens      float64
+	last        time.Time
+}
+
+func newByteBucket(bytesPerSecond int) *byteBucket {
+	r := float64(bytesPerSecond)
+	return &byteBucket{rate: r, burst: 2 * r, tokens: 2 * r, last: time.Now()}
+}
+
+func (b *byteBucket) take(ctx context.Context, n int) error {
+	for {
+		now := time.Now()
+		b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
+		b.last = now
+		need := float64(n)
+		if need > b.burst {
+			need = b.burst
+		}
+		if b.tokens >= need {
+			b.tokens -= need
+			return nil
+		}
+		wait := time.Duration((need - b.tokens) / b.rate * float64(time.Second))
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // handleHostMessage dispatches a JSON message from the host; false is fatal.
