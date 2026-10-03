@@ -45,6 +45,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(proto.CloseProtocolError, "register expected")
 		return
 	}
+	if reg.Session.RelayOnly && s.cfg.Switchyard.Enabled && !s.cfg.SwitchyardRelay() {
+		c.Close(proto.CloseProtocolError, "relay_off: this switchyard does not relay")
+		return
+	}
 	conn := signal.NewHostConn()
 	hs, resumed, err := s.hosts.Register(reg, conn)
 	if err != nil {

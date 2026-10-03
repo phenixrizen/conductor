@@ -154,6 +154,21 @@ when it can. Runs live in memory, as sessions do;
 run links are share-store links scoped to a run (`Link.RunID`), which the
 server resolves to the run's member sessions through `Engine.MemberOf`.
 
+## Switchyard
+
+A switchyard is the server in a mode (`config.Switchyard`): the signaling
+hub, the host route, the share links, the join route, the events stream and
+the workbench, with the launching routes answering `403 switchyard` and no
+catalog or agents needed. Other Conductors publish their sessions to it
+through the host protocol (`rendezvous`), `conductor host` does the same,
+and viewers join by links minted there; the terminal goes over WebRTC
+between the viewer and the publisher, through the switchyard's relay only
+when ICE fails and the relay is on (`switchyard.relay`). The desktop app's
+workbench, served from a loopback address, may join from its own page: the
+join route answers the switchyard's allowed origins across origins and the
+session WebSocket accepts them. What a switchyard carries is signaling and
+the relayed terminals, so one small machine with a certificate serves many.
+
 ## Desktop shell
 
 `desktop/` is an Electron shell around the same binary: it starts

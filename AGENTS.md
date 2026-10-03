@@ -7,7 +7,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 
 | Path | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point (`serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version`) |
+| `cmd/conductor` | entry point (`serve`, `switchyard`, `host`, `notify`, `crew`, `hooks`, `skill`, `up`, `crews`, `completion`, `version`) |
 | `internal/cli` | flags, help and completion text; no business logic |
 | `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog with each agent's yolo, trust and session recipes |
 | `internal/store` | atomic JSON documents in the data directory (`dataDir`) |

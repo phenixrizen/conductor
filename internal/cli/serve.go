@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/agents"
@@ -45,6 +46,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	yolo := fs.Bool("yolo", false, "launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise (env CONDUCTOR_YOLO=1)")
 	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, adminToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
+	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -82,6 +84,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	if *yolo {
 		cfg.Yolo = true
+	}
+	if *switchyard {
+		cfg.Switchyard.Enabled = true
 	}
 	if cfg.Yolo {
 		log.Warn("yolo is on: agents launch with their yolo recipes and skip their permission prompts (Codex's also drops its sandbox)")
@@ -123,6 +128,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	srv, err := api.New(cfg, cat, log, ui, st)
 	if err != nil {
 		return 1, err
+	}
+	if cfg.Switchyard.Enabled {
+		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}
 	if cfg.Examples {
 		added, skipped, err := srv.SeedExampleCrews()

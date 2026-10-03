@@ -19,6 +19,10 @@ func (s *Server) acceptOptions() *websocket.AcceptOptions {
 	if s.cfg.Dev {
 		opts.OriginPatterns = append(opts.OriginPatterns, "localhost:*", "127.0.0.1:*")
 	}
+	// A switchyard takes the desktop app's own workbench as a viewer.
+	if s.cfg.Switchyard.Enabled {
+		opts.OriginPatterns = append(opts.OriginPatterns, s.cfg.SwitchyardOrigins()...)
+	}
 	return opts
 }
 
@@ -325,6 +329,12 @@ func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *si
 		}
 		return fail(hs.ForwardICE(v, m.Candidate))
 	case proto.SigRelay:
+		if s.cfg.Switchyard.Enabled && !s.cfg.SwitchyardRelay() {
+			// A switchyard without a relay: the viewer is told, and stays
+			// on its WebRTC attempt.
+			_ = sink.WriteFrame(proto.NewError(proto.ErrCodeRelayOff, "this switchyard does not relay: the terminal connects peer to peer or not at all"))
+			return true
+		}
 		if err := hs.StartRelay(v); err != nil {
 			return fail(err)
 		}

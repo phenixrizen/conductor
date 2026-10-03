@@ -674,3 +674,19 @@ func TestServeExitsWhenStdinCloses(t *testing.T) {
 		t.Fatalf("not logged:\n%s", logs.String())
 	}
 }
+
+// conductor switchyard is serve with --switchyard: the server says so as it
+// starts, and its health route reports the mode.
+func TestSwitchyardCommandServes(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, `{"adminToken": "t", "dataDir": "`+filepath.Join(dir, "state")+`"}`)
+	logs := serveUntilListening(t, "--config", cfg, "--switchyard")
+	if lines := logLines(logs, "switchyard: coordinating hosted sessions", "relay=true"); len(lines) != 1 {
+		t.Fatalf("no switchyard line:\n%s", logs)
+	}
+	var stderr bytes.Buffer
+	if code, err := Run(t.Context(), []string{"switchyard", "-h"}, strings.NewReader(""), io.Discard, &stderr); code != 0 || err != nil || !strings.Contains(stderr.String(), "-switchyard") {
+		t.Fatalf("switchyard -h: %d %v\n%s", code, err, stderr.String())
+	}
+}

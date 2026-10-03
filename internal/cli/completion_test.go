@@ -203,7 +203,7 @@ func TestCompletionIDShapeIsValidID(t *testing.T) {
 func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 	ctx := t.Context()
 	helps := map[string][][]string{
-		"serve": {{"serve", "-h"}}, "host": {{"host", "-h"}}, "notify": {{"notify", "-h"}}, "up": {{"up", "-h"}}, "crews": {{"crews", "-h"}},
+		"serve": {{"serve", "-h"}}, "switchyard": {{"switchyard", "-h"}}, "host": {{"host", "-h"}}, "notify": {{"notify", "-h"}}, "up": {{"up", "-h"}}, "crews": {{"crews", "-h"}},
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
 		"skill": {{"skill", "-h"}}, "crew": {{"crew", "create", "-h"}},
 	}

@@ -76,6 +76,7 @@ func completionSpec() []commandSpec {
 	api := func(more ...flagSpec) []flagSpec {
 		return append([]flagSpec{{name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}}, more...)
 	}
+	serveFlags := []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}, {name: "--print-listen"}, {name: "--exit-on-stdin-close"}, {name: "--switchyard"}}
 	notifyFlags := []flagSpec{
 		{name: "--state", kind: flagEnum, values: []string{"needs_input", "working", "done", "clear"}},
 		{name: "--message", kind: flagValue},
@@ -96,7 +97,8 @@ func completionSpec() []commandSpec {
 	}
 	return []commandSpec{
 		// Every flag serve takes, and no other: TestCompletionSpecMatchesEveryFlag checks it.
-		{name: "serve", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}, {name: "--print-listen"}, {name: "--exit-on-stdin-close"}}},
+		{name: "serve", flags: serveFlags},
+		{name: "switchyard", flags: serveFlags},
 		{name: "host", flags: []flagSpec{{name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--name", kind: flagValue}, {name: "--host-name", kind: flagValue}, {name: "--agent", kind: flagValue}, {name: "--cwd", kind: flagFile}, {name: "--relay-only"}, {name: "--no-local"}, {name: "--stun", kind: flagValue}, {name: "--scrollback", kind: flagValue}, {name: "--file-view", kind: flagEnum, values: []string{"view", "control", "off"}}, {name: "--signal-pattern", kind: flagValue}, {name: "--log-level", kind: flagEnum, values: levels}}},
 		{name: "notify", flags: notifyFlags},
 		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},

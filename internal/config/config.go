@@ -96,6 +96,36 @@ type ACME struct {
 	Profile string `json:"profile"`
 }
 
+// Switchyard is Conductor as a coordinator alone: it takes hosted sessions
+// from other Conductors and conductor host, brokers their signaling and,
+// when Relay is on, relays the terminal for the pairs ICE cannot connect;
+// it launches nothing (no sessions, crews, runs or catalog of its own).
+type Switchyard struct {
+	Enabled bool `json:"enabled"`
+	// Relay serves viewers through this server when WebRTC fails. On by
+	// default; off, such a viewer gets relay_off and a relayOnly host is
+	// refused.
+	Relay *bool `json:"relay,omitempty"`
+	// AllowedOrigins are the browser origins that may fetch the join route
+	// and open a hosted session's WebSocket from another page, as host
+	// patterns (host[:port], * wildcards; no scheme): the desktop app's own
+	// workbench, served from a loopback address. Loopback with any port by
+	// default.
+	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
+}
+
+// SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).
+func (c *Config) SwitchyardRelay() bool { return c.Switchyard.Relay == nil || *c.Switchyard.Relay }
+
+// SwitchyardOrigins are the origins a switchyard answers cross-origin: the
+// configured ones, else loopback with any port.
+func (c *Config) SwitchyardOrigins() []string {
+	if len(c.Switchyard.AllowedOrigins) > 0 {
+		return c.Switchyard.AllowedOrigins
+	}
+	return []string{"127.0.0.1:*", "localhost:*"}
+}
+
 // Agents holds what agents may do on their own, with their session's token.
 type Agents struct {
 	// SelfService lets an agent form a crew around its own session, add
@@ -235,6 +265,9 @@ type Config struct {
 	Rendezvous Rendezvous `json:"rendezvous"`
 	// Agents: what agents may do on their own.
 	Agents Agents `json:"agents"`
+	// Switchyard, when enabled, makes this server a coordinator of hosted
+	// sessions that launches nothing (conductor switchyard).
+	Switchyard Switchyard `json:"switchyard"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -456,6 +489,18 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		off := false
 		cfg.Agents.SelfService = &off
 	}
+	if v := getenv("CONDUCTOR_SWITCHYARD"); v == "1" || v == "true" {
+		cfg.Switchyard.Enabled = true
+	}
+	switch getenv("CONDUCTOR_SWITCHYARD_RELAY") {
+	case "1", "true":
+		on := true
+		cfg.Switchyard.Relay = &on
+	case "0", "false":
+		off := false
+		cfg.Switchyard.Relay = &off
+	}
+	list("CONDUCTOR_SWITCHYARD_ORIGINS", &cfg.Switchyard.AllowedOrigins)
 	switch getenv("CONDUCTOR_AGENT_INSTALL_SKILL") {
 	case "1", "true":
 		on := true
@@ -522,6 +567,11 @@ func (c *Config) Validate() error {
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))
+	}
+	for _, o := range c.Switchyard.AllowedOrigins {
+		if strings.TrimSpace(o) == "" || strings.Contains(o, "://") {
+			errs = append(errs, fmt.Errorf("switchyard.allowedOrigins: %q must be a host pattern such as 127.0.0.1:* (no scheme)", o))
+		}
 	}
 	switch c.FileView {
 	case FileViewView, FileViewControl, FileViewOff:

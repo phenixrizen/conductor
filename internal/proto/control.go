@@ -34,6 +34,7 @@ const (
 	ErrCodeHelloTimeout     = "hello_timeout"
 	ErrCodeRevoked          = "revoked"
 	ErrCodeSessionEnded     = "session_ended"
+	ErrCodeRelayOff         = "relay_off" // a switchyard without a relay refused the viewer's relay request
 	ErrCodeHostDisconnected = "host_disconnected"
 	ErrCodeFileDenied       = "file_denied"
 	ErrCodeTooManyRequests  = "too_many_requests"

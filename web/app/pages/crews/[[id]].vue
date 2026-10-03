@@ -21,6 +21,8 @@ const api = useSessions()
 const admin = useAdminToken()
 const toast = useToast()
 const live = useAttention()
+const serverHost = useServerHost()
+serverHost.load()
 
 /** The key of a crew never saved in `drafts`. */
 const NEW = ''
@@ -414,6 +416,7 @@ watch(routeId, loadSelected)
       <div class="flex min-h-full flex-col md:flex-row">
         <nav class="flex flex-none flex-col gap-2 border-b border-default p-4 md:w-60 md:border-b-0 md:border-r" aria-label="Crews" data-crew-list>
           <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
+          <UAlert v-if="serverHost.switchyard.value" color="neutral" variant="subtle" icon="i-lucide-train-track" title="This server is a switchyard" description="It launches no crews: run them from a Conductor of your own and share them here." data-switchyard-notice />
           <!-- A crew's runs follow its link, not inside it: a link holds no other link. -->
           <div v-for="item in list" :key="item.key || 'new'" class="flex flex-col gap-1" data-crew-entry>
             <NuxtLink

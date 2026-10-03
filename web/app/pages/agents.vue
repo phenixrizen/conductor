@@ -139,6 +139,7 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
     </template>
     <template #body>
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-4" />
+      <UAlert v-if="serverHost.switchyard.value" color="neutral" variant="subtle" icon="i-lucide-train-track" title="This server is a switchyard" description="It coordinates hosted sessions from other Conductors and launches nothing of its own: the catalog here is not used." class="mb-4" data-switchyard-notice />
       <p class="text-sm text-muted mb-4">
         Agents come from the server catalog: the built-in entries, the <code>catalog</code> section of the config file and whatever you add here, which the server keeps in its data directory. Commands are argv arrays; nothing goes through a shell.
       </p>

@@ -102,6 +102,33 @@ channel of a hosted session directly over WebRTC once the join page has loaded
 from the server; it carries no data and does not make the server's page
 reachable, which only a forwarded port, a public address or a proxy does.
 
+### Switchyard
+
+When no one's machine is reachable, a small public Conductor run as a
+**switchyard** introduces them: every Conductor publishes its sessions to it
+(`rendezvous.server` and `rendezvous.token`, one of its host tokens), viewers
+join by links minted there, and the terminal goes over WebRTC between the
+viewer and the publishing machine, through the switchyard's relay only for
+the pairs ICE cannot connect. The switchyard launches nothing of its own:
+
+```bash
+CONDUCTOR_HOST_TOKENS=a-host-token CONDUCTOR_TLS_ACME=1 CONDUCTOR_TLS_ACME_EMAIL=you@example.com conductor switchyard --listen :80
+```
+
+`conductor switchyard` is `conductor serve --switchyard`: the sessions,
+crews, runs, catalog and integrations routes answer `403 switchyard`, the
+Agents and Crews pages say so, and everything about hosted sessions, links
+and the events stream works as on any server. `switchyard.relay: false`
+(`CONDUCTOR_SWITCHYARD_RELAY=0`) turns the relay off: a viewer whose WebRTC
+fails is told `relay_off` and a host that would use the relay alone is
+refused. `switchyard.allowedOrigins` (host patterns, `127.0.0.1:*` and
+`localhost:*` by default) lets the desktop app's own workbench join from its
+loopback page: the join route answers those origins across origins and the
+session WebSocket accepts them. A switchyard needs what any public server
+does: a public address or a mapped port, and a certificate ([TLS](#tls)).
+Its load is signaling, a few kilobytes per connection, plus the relayed
+terminals; the smallest VPS carries hundreds.
+
 ### TLS
 
 A link that leaves your network should be `https`. The server serves the
@@ -881,6 +908,9 @@ file must run `compinit` before that line.
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, adminToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
+| `switchyard.enabled` | `CONDUCTOR_SWITCHYARD` (`1`/`true`), or `conductor switchyard` | `false` | coordinate hosted sessions and launch nothing: the launching routes answer `403 switchyard` (see [Switchyard](#switchyard)) |
+| `switchyard.relay` | `CONDUCTOR_SWITCHYARD_RELAY` (`1`/`true` on, `0`/`false` off) | `true` | on a switchyard, relay the terminal for viewers whose WebRTC fails; off, they get `relay_off` and relay-only hosts are refused |
+| `switchyard.allowedOrigins` | `CONDUCTOR_SWITCHYARD_ORIGINS` (comma-separated host patterns) | `127.0.0.1:*`, `localhost:*` | the browser origins a switchyard answers across origins on the join route and accepts on a hosted session's WebSocket: the desktop app's own workbench |
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
 | `agents.installSkill` | `CONDUCTOR_AGENT_INSTALL_SKILL` (`1`/`true` on, `0`/`false` off) | `true` | a launch puts the Conductor skill in the agent's skills directory, in the server user's home, once per agent per server start (see [The Conductor skill](#events-and-hooks)) |
 | `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |

@@ -14,6 +14,7 @@ const usage = `conductor - shared agent terminals
 
 Usage:
   conductor serve [flags]      run the web server
+  conductor switchyard [flags] run a coordinator of hosted sessions that launches nothing
   conductor host [flags] -- <command...>
                                host a local terminal session
   conductor notify [flags]     report "needs input" from inside a session
@@ -45,6 +46,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	switch args[0] {
 	case "serve":
 		return runServe(ctx, args[1:], stdin, stdout, stderr)
+	case "switchyard":
+		return runServe(ctx, append([]string{"--switchyard"}, args[1:]...), stdin, stdout, stderr)
 	case "host":
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":

@@ -961,3 +961,24 @@ func TestAgentSwitchesAndEnv(t *testing.T) {
 		t.Fatal("the config does not turn them off")
 	}
 }
+
+// The switchyard mode and its relay and origins come from the config or
+// the environment; origins are host patterns, never URLs.
+func TestSwitchyardConfig(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Switchyard.Enabled || !cfg.SwitchyardRelay() || strings.Join(cfg.SwitchyardOrigins(), ",") != "127.0.0.1:*,localhost:*" {
+		t.Fatalf("defaults: %+v %v", cfg.Switchyard, cfg.SwitchyardOrigins())
+	}
+	env := map[string]string{"CONDUCTOR_SWITCHYARD": "1", "CONDUCTOR_SWITCHYARD_RELAY": "0", "CONDUCTOR_SWITCHYARD_ORIGINS": "app.example:*, other.example"}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Switchyard.Enabled || cfg.SwitchyardRelay() || strings.Join(cfg.SwitchyardOrigins(), ",") != "app.example:*,other.example" {
+		t.Fatalf("env: %+v %v", cfg.Switchyard, cfg.SwitchyardOrigins())
+	}
+	cfg = Defaults()
+	cfg.Switchyard.AllowedOrigins = []string{"http://app.example"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "switchyard.allowedOrigins") {
+		t.Fatalf("a URL passed as an origin pattern: %v", err)
+	}
+}

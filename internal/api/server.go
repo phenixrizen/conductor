@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -270,45 +272,45 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
-	mux.HandleFunc("GET /api/catalog", s.requireAdmin(s.handleCatalog))
-	mux.HandleFunc("POST /api/catalog", s.requireAdmin(s.handleSaveAgent))
-	mux.HandleFunc("POST /api/catalog/check", s.requireAdmin(s.handleCheckCommand))
-	mux.HandleFunc("DELETE /api/catalog/{id}", s.requireAdmin(s.handleDeleteAgent))
-	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.requireAdmin(s.handleUnhideAgent))
-	mux.HandleFunc("GET /api/crews", s.requireAdmin(s.handleListCrews))
-	mux.HandleFunc("GET /api/crews/{id}", s.requireAdmin(s.handleGetCrew))
-	mux.HandleFunc("POST /api/crews", s.requireAdmin(s.handleCreateCrew))
-	mux.HandleFunc("POST /api/crews/examples", s.requireAdmin(s.handleSeedExamples))
-	mux.HandleFunc("PUT /api/crews/{id}", s.requireAdmin(s.handleUpdateCrew))
-	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))
-	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.requireAdmin(s.handleDuplicateCrew))
-	mux.HandleFunc("POST /api/crews/{id}/launch", s.requireAdmin(s.handleLaunchCrew))
-	mux.HandleFunc("GET /api/crews/{id}/runs", s.requireAdmin(s.handleCrewRuns))
-	mux.HandleFunc("GET /api/paths", s.requireAdmin(s.handleListPaths))
-	mux.HandleFunc("GET /api/git/check", s.requireAdmin(s.handleGitCheck))
-	mux.HandleFunc("GET /api/runs", s.requireAdmin(s.handleListRuns))
-	mux.HandleFunc("GET /api/runs/{run}", s.requireAdmin(s.handleGetRun))
-	mux.HandleFunc("POST /api/runs/{run}/members", s.requireAdmin(s.handleAddRunMember))
-	mux.HandleFunc("POST /api/runs/{run}/members/{name}/start", s.requireAdmin(s.handleStartRunMember))
-	mux.HandleFunc("POST /api/runs/{run}/stop", s.requireAdmin(s.handleStopRun))
-	mux.HandleFunc("POST /api/runs/{run}/resume", s.requireAdmin(s.handleResumeRun))
-	mux.HandleFunc("POST /api/runs/{run}/members/{name}/resume", s.requireAdmin(s.handleResumeRunMember))
-	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.requireAdmin(s.handleBroadcast))
-	mux.HandleFunc("GET /api/runs/{run}/links", s.requireAdmin(s.handleListRunLinks))
-	mux.HandleFunc("POST /api/runs/{run}/links", s.requireAdmin(s.handleCreateRunLink))
-	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.requireAdmin(s.handleRevokeRunLink))
-	mux.HandleFunc("GET /api/integrations", s.requireAdmin(s.handleIntegrations))
-	mux.HandleFunc("POST /api/integrations/{id}/install", s.requireAdmin(s.handleInstallIntegration))
+	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
+	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
+	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
+	mux.HandleFunc("DELETE /api/catalog/{id}", s.launching(s.handleDeleteAgent))
+	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.launching(s.handleUnhideAgent))
+	mux.HandleFunc("GET /api/crews", s.launching(s.handleListCrews))
+	mux.HandleFunc("GET /api/crews/{id}", s.launching(s.handleGetCrew))
+	mux.HandleFunc("POST /api/crews", s.launching(s.handleCreateCrew))
+	mux.HandleFunc("POST /api/crews/examples", s.launching(s.handleSeedExamples))
+	mux.HandleFunc("PUT /api/crews/{id}", s.launching(s.handleUpdateCrew))
+	mux.HandleFunc("DELETE /api/crews/{id}", s.launching(s.handleDeleteCrew))
+	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.launching(s.handleDuplicateCrew))
+	mux.HandleFunc("POST /api/crews/{id}/launch", s.launching(s.handleLaunchCrew))
+	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
+	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
+	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
+	mux.HandleFunc("GET /api/runs", s.launching(s.handleListRuns))
+	mux.HandleFunc("GET /api/runs/{run}", s.launching(s.handleGetRun))
+	mux.HandleFunc("POST /api/runs/{run}/members", s.launching(s.handleAddRunMember))
+	mux.HandleFunc("POST /api/runs/{run}/members/{name}/start", s.launching(s.handleStartRunMember))
+	mux.HandleFunc("POST /api/runs/{run}/stop", s.launching(s.handleStopRun))
+	mux.HandleFunc("POST /api/runs/{run}/resume", s.launching(s.handleResumeRun))
+	mux.HandleFunc("POST /api/runs/{run}/members/{name}/resume", s.launching(s.handleResumeRunMember))
+	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.launching(s.handleBroadcast))
+	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
+	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
+	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))
+	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
+	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
-	mux.HandleFunc("POST /api/sessions", s.requireAdmin(s.handleCreateSession))
+	mux.HandleFunc("POST /api/sessions", s.launching(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	// What an agent may do with its own session's token (selfservice.go).
-	mux.HandleFunc("POST /api/sessions/{id}/crew", s.handleSelfCrew)
-	mux.HandleFunc("POST /api/sessions/{id}/run/members", s.handleSelfAddMember)
-	mux.HandleFunc("GET /api/sessions/{id}/run", s.handleSelfRun)
+	mux.HandleFunc("POST /api/sessions/{id}/crew", s.launchingAny(s.handleSelfCrew))
+	mux.HandleFunc("POST /api/sessions/{id}/run/members", s.launchingAny(s.handleSelfAddMember))
+	mux.HandleFunc("GET /api/sessions/{id}/run", s.launchingAny(s.handleSelfRun))
 	mux.HandleFunc("POST /api/sessions/{id}/links/agent", s.handleSelfLink)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
-	mux.HandleFunc("POST /api/sessions/{id}/resume", s.requireAdmin(s.handleResumeSession))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))
 	mux.HandleFunc("DELETE /api/sessions/{id}/links/{linkId}", s.requireAdmin(s.handleRevokeLink))
@@ -345,17 +347,14 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 		}
-		if s.cfg.Dev {
-			origin := r.Header.Get("Origin")
-			if origin != "" && isDevOrigin(origin) {
-				h.Set("Access-Control-Allow-Origin", origin)
-				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				h.Set("Vary", "Origin")
-				if r.Method == http.MethodOptions {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
+		if origin := r.Header.Get("Origin"); origin != "" && s.crossOriginAllowed(origin, r.URL.Path) {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			h.Set("Vary", "Origin")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
 			}
 		}
 		rw := &statusWriter{ResponseWriter: w, status: 200}
@@ -371,6 +370,53 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// launching wraps an admin route that launches or edits what is launched
+// (sessions, crews, runs, the catalog, the integrations): a switchyard has
+// none of it and answers 403 switchyard.
+func (s *Server) launching(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAdmin(s.launchingAny(next))
+}
+
+// launchingAny is launching for a route with its own authentication.
+func (s *Server) launchingAny(next http.HandlerFunc) http.HandlerFunc {
+	if !s.cfg.Switchyard.Enabled {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusForbidden, "switchyard", "this server coordinates hosted sessions and launches none")
+	}
+}
+
+// crossOriginAllowed reports whether a browser page at origin may call path
+// from another origin: any localhost origin and any path in dev mode (the
+// Nuxt dev server), and, on a switchyard, its allowed origins (loopback by
+// default: the desktop app's own workbench) for the join route alone. The
+// WebSocket routes check origins on their own (acceptOptions).
+func (s *Server) crossOriginAllowed(origin, path string) bool {
+	if s.cfg.Dev && isDevOrigin(origin) {
+		return true
+	}
+	if s.cfg.Switchyard.Enabled && strings.HasPrefix(path, "/api/join/") {
+		return originMatches(origin, s.cfg.SwitchyardOrigins())
+	}
+	return false
+}
+
+// originMatches reports whether origin's host matches one of the patterns,
+// in the form the WebSocket accept takes (host[:port], with * wildcards).
+func originMatches(origin string, patterns []string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	for _, p := range patterns {
+		if ok, err := path.Match(p, u.Host); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 func isDevOrigin(origin string) bool {
@@ -405,7 +451,8 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 // handleWhoAmI tells an admin which OS user runs the server: the workbench
 // uses it as the default display name. It is a label, not authentication.
 func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"user": serverUser()})
+	host, _ := os.Hostname()
+	writeJSON(w, http.StatusOK, map[string]any{"user": serverUser(), "host": host, "switchyard": s.cfg.Switchyard.Enabled})
 }
 
 // serverUser is the OS user running this process, bounded to 64 bytes.
@@ -428,11 +475,13 @@ func serverUser() string {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"version":  version.Version,
-		"commit":   version.Commit,
-		"sessions": s.registry.Count(),
-		"instance": s.instance,
+		"ok":         true,
+		"version":    version.Version,
+		"commit":     version.Commit,
+		"sessions":   s.registry.Count(),
+		"instance":   s.instance,
+		"switchyard": s.cfg.Switchyard.Enabled,
+		"relay":      !s.cfg.Switchyard.Enabled || s.cfg.SwitchyardRelay(),
 	})
 }
 
