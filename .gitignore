@@ -12,3 +12,8 @@ web/dist
 *.log
 .DS_Store
 .superpowers/
+
+# desktop shell
+desktop/node_modules/
+desktop/dist/
+desktop/release/

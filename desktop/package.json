@@ -1,0 +1,23 @@
+{
+  "name": "conductor-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Conductor as a desktop app: an Electron shell around the conductor server",
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dist": "npm run build && electron-builder --config electron-builder.yml",
+    "dist:dir": "npm run build && electron-builder --config electron-builder.yml --dir"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

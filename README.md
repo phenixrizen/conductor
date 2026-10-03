@@ -735,6 +735,20 @@ its kept worktree and branch, without a new prompt (its next done starts the
 members after it), while the others start afresh under their start rules;
 the new run names the old one it resumed, and the old one names it.
 
+## Desktop app
+
+Conductor also runs as a desktop app (macOS, Linux as deb, rpm and
+AppImage, Windows through WSL 2): an Electron shell that starts the server
+on a free loopback port with an admin token minted for the run, opens the
+workbench in a window signed in with it, keeps the server in the tray when
+the window closes, and stops it when the app quits. Its **Settings** page
+holds what the server starts with (the data directory, the allowed roots,
+the default directory, yolo, reach) and restarts the server when those
+change; **Open in browser** opens the same server in your browser, signed
+in. On Windows the server runs inside your WSL 2 distribution (the app sets
+it up on first run; the agents are the ones installed there). `make
+desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
+
 ## Shell completion
 
 `conductor completion zsh` or `conductor completion bash` prints a completion

@@ -22,6 +22,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `internal/notify` | `conductor notify`: attention and event reports from inside a session; hook payload mappers (Claude Code, Codex, agy, Copilot, Cursor, Goose), the agent's own session id among what they read |
 | `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
+| `desktop/` | the Electron shell: starts `conductor serve` with a minted token and the settings it keeps, the handshake, health and restarts, the bridge the workbench reads the token from, WSL 2 on Windows |
 | `docs/` | `protocol.md`, `architecture.md`, `features.md` (scope and deferred work), `design/brand.md` |
 
 `internal/session.Local` is shared by the server and the host. Anything that
@@ -60,6 +61,7 @@ make build-go                  # embeds whatever is in internal/web/dist
 make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
 make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
 make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
+make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
@@ -93,6 +95,7 @@ reported limitation, not a pass.
 | shiki | 4.4.3 |
 | @iconify-json/lucide (icon client bundle) | 1.2.137 |
 | @playwright/test (e2e; Chromium revision 1117, 125.0.6422.26) | 1.44.1 |
+| electron / electron-builder (desktop) | 44.5.1 / 26.15.3 |
 | @types/node (e2e type check) | 22.20.5 |
 
 Upgrade deliberately and update this table.

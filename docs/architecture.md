@@ -149,6 +149,22 @@ when it can. Runs live in memory, as sessions do;
 run links are share-store links scoped to a run (`Link.RunID`), which the
 server resolves to the run's member sessions through `Engine.MemberOf`.
 
+## Desktop shell
+
+`desktop/` is an Electron shell around the same binary: it starts
+`conductor serve --listen 127.0.0.1:0 --print-listen --exit-on-stdin-close`
+with the settings it keeps (`userData/settings.json`: data directory,
+allowed roots, default directory, yolo, reach) as `CONDUCTOR_*` variables,
+an admin token minted for the run in the environment, and the login shell's
+PATH so the agents are found; reads the handshake line from stdout; opens the
+workbench in a window whose preload exposes the token through a
+context-isolated bridge (`window.conductorDesktop`); polls the server's
+health and restarts it with backoff; and stops it by closing its stdin when
+the app quits. Navigation stays on the server's origin, other links open in
+the system browser, and "Open in browser" carries the token in a URL
+fragment the workbench takes and drops. On Windows the shell runs the Linux
+binary inside a WSL 2 distribution. `desktop/README.md` has the layout.
+
 ## Packages
 
 | Package | Responsibility |

@@ -7,6 +7,7 @@ const { hasToken, clear } = useAdminToken()
 const showToken = ref(false)
 const colorMode = useColorMode()
 const attention = useAttention()
+const desktop = useDesktop()
 const alerts = useAttentionSettings()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
@@ -112,6 +113,7 @@ const nav = computed<NavigationMenuItem[]>(() => [
     active: route.path.startsWith('/crews') || runRoute.value,
   },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
+  ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
 
 // On the rail Nuxt UI's collapsed menu hides the links' labels and the Wall's

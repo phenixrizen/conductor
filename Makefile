@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes lint lint-static vuln fmt generate docker clean
+.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test lint lint-static vuln fmt generate docker clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -70,6 +70,15 @@ test-e2e: web-build build-go ## Playwright suite (web/e2e): the built server wit
 
 test-live: build-go ## the live tier: the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO names a repository they trust; keys in ANTHROPIC_API_KEY / OPENAI_API_KEY or their logins)
 	cd web && CONDUCTOR_E2E_LIVE=1 npx playwright test e2e/live.spec.ts
+
+desktop-install: ## npm ci for the desktop shell (Electron)
+	cd desktop && npm ci
+
+desktop-dev: build-go ## run the desktop app against the checkout's bin/conductor
+	cd desktop && npm run start
+
+desktop-test: ## the desktop shell's type check and unit tests
+	cd desktop && npm run typecheck && npm test
 
 PEBBLE_VERSION ?= v2.10.1
 test-pebble: ## certificates from Let's Encrypt's Pebble (installs it with go install when missing)

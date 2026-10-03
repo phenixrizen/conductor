@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Conductor server log</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #0f1613; color: #e6ebe7; }
+      pre { margin: 0; padding: 12px 16px; white-space: pre-wrap; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <pre id="log"></pre>
+    <script>
+      const pre = document.getElementById('log')
+      window.conductorLog?.onLine((line) => {
+        pre.textContent += line + '\n'
+        if (pre.textContent.length > 2_000_000) pre.textContent = pre.textContent.slice(-1_500_000)
+        window.scrollTo(0, document.body.scrollHeight)
+      })
+    </script>
+  </body>
+</html>
