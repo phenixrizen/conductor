@@ -61,6 +61,13 @@ type Server struct {
 	reachMu  sync.Mutex
 	reach    reachSource
 	certs    certSource
+	// publisher publishes sessions to a rendezvous (SetPublisher); published
+	// holds the publications by session id, pubGone the ids that left before
+	// their publication landed (see publish.go).
+	pubMu     sync.Mutex
+	publisher Publisher
+	published map[string]PublishedSession
+	pubGone   map[string]bool
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and
@@ -195,6 +202,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.registry.OnRemove = func(id string) {
 		s.links.DeleteSession(id)
 		s.events.removed(id)
+		s.unpublish(id)
 	}
 	s.links.OnRevoke = func(sessionID, linkID string) {
 		if d, ok := s.registry.Get(sessionID); ok {
@@ -443,6 +451,27 @@ func (s *Server) Shutdown(ctx context.Context) {
 			local.CloseAll(errShuttingDown)
 		}
 	})
+	// The publications end with their sessions; wait for them to tell the
+	// rendezvous, all at once, as long as ctx allows.
+	s.pubMu.Lock()
+	pubs := make([]PublishedSession, 0, len(s.published))
+	for _, p := range s.published {
+		pubs = append(pubs, p)
+	}
+	s.published = nil
+	s.pubMu.Unlock()
+	if len(pubs) > 0 {
+		var wg sync.WaitGroup
+		for _, p := range pubs {
+			wg.Go(p.Stop)
+		}
+		stopped := make(chan struct{})
+		go func() { wg.Wait(); close(stopped) }()
+		select {
+		case <-stopped:
+		case <-ctx.Done():
+		}
+	}
 	s.hosts.CloseAll()
 	// What the server started on its own (the viewers of a forgotten run's
 	// links being closed) ends before Shutdown returns, or ctx does.

@@ -901,3 +901,29 @@ func TestTLSEnvOverrides(t *testing.T) {
 		t.Fatalf("CONDUCTOR_TLS_ACME=1: %v %+v", err, plain.TLS)
 	}
 }
+
+func TestRendezvousConfig(t *testing.T) {
+	cfg := Defaults()
+	env := map[string]string{"CONDUCTOR_RENDEZVOUS_SERVER": "https://team.example.net/", "CONDUCTOR_RENDEZVOUS_TOKEN": "tok", "CONDUCTOR_RENDEZVOUS_HOST_NAME": "office", "CONDUCTOR_RENDEZVOUS_RELAY_ONLY": "1"}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Rendezvous; r.Server != "https://team.example.net" || r.Token != "tok" || r.HostName != "office" || !r.RelayOnly {
+		t.Fatalf("%+v", r)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"no token":   func(c *Config) { c.Rendezvous.Server = "https://team.example.net" },
+		"bad url":    func(c *Config) { c.Rendezvous = Rendezvous{Server: "team.example.net", Token: "t"} },
+		"itself":     func(c *Config) { c.Rendezvous = Rendezvous{Server: c.PublicURL, Token: "t"} },
+		"token only": func(c *Config) { c.Rendezvous.Token = "t" },
+	} {
+		c := Defaults()
+		mutate(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

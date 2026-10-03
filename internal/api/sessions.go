@@ -232,7 +232,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Transport:       proto.TransportWS,
 		Log:             s.log,
 		OnChange:        s.localChange,
-		OnActivity:      s.events.activity,
+		OnActivity:      s.localActivity,
 		Pattern:         pattern,
 		TrustPattern:    trust,
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
@@ -250,6 +250,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
 	}
 	s.events.publish(local.Info())
+	s.publish(local)
 	return local, nil
 }
 
@@ -266,6 +267,9 @@ func noYoloRecipe(agent catalog.Agent) string {
 func (s *Server) localChange(info session.Info) {
 	s.events.publish(info)
 	s.runs.OnChange(info)
+	if pub := s.publishedOf(info.ID); pub != nil {
+		pub.OnChange(info)
+	}
 }
 
 func (s *Server) nextCounter() int {

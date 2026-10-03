@@ -96,6 +96,22 @@ type ACME struct {
 	Profile string `json:"profile"`
 }
 
+// Rendezvous names a public Conductor this server publishes its sessions
+// to, through the host protocol, so they can be shared from there when this
+// server cannot be reached from outside (carrier-grade NAT, a corporate
+// network, WSL2 without mirrored networking).
+type Rendezvous struct {
+	// Server is the public Conductor's URL (http(s)://host[:port]).
+	Server string `json:"server"`
+	// Token is one of its host tokens (hostTokens, or its admin token).
+	Token string `json:"token"`
+	// HostName labels this server there; the machine's name when empty.
+	HostName string `json:"hostName"`
+	// RelayOnly serves viewers through the rendezvous's relay only, without
+	// WebRTC.
+	RelayOnly bool `json:"relayOnly"`
+}
+
 // ACME challenges.
 const (
 	ChallengeTLSALPN = "tls-alpn-01"
@@ -195,6 +211,8 @@ type Config struct {
 	Reach Reach `json:"reach"`
 	// TLS: the TLS listener and where its certificate comes from.
 	TLS TLS `json:"tls"`
+	// Rendezvous: a public Conductor to publish sessions to.
+	Rendezvous Rendezvous `json:"rendezvous"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -408,6 +426,12 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 			}
 		}
 	}
+	str("CONDUCTOR_RENDEZVOUS_SERVER", &cfg.Rendezvous.Server)
+	str("CONDUCTOR_RENDEZVOUS_TOKEN", &cfg.Rendezvous.Token)
+	str("CONDUCTOR_RENDEZVOUS_HOST_NAME", &cfg.Rendezvous.HostName)
+	if v := getenv("CONDUCTOR_RENDEZVOUS_RELAY_ONLY"); v == "1" || v == "true" {
+		cfg.Rendezvous.RelayOnly = true
+	}
 	str("CONDUCTOR_REACH", &cfg.Reach.Mode)
 	str("CONDUCTOR_REACH_STUN", &cfg.Reach.STUNServer)
 	if err := num("CONDUCTOR_REACH_PUBLIC_PORT", &cfg.Reach.PublicPort); err != nil {
@@ -510,6 +534,18 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("reach needs a STUN server: reach.stunServer, or a stun: URL in iceServers"))
 	}
 	errs = append(errs, c.validateTLS()...)
+	if r := &c.Rendezvous; r.Server != "" || r.Token != "" {
+		r.Server = strings.TrimRight(r.Server, "/")
+		if u, err := url.Parse(r.Server); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, errors.New("rendezvous.server must be an http or https URL with a host"))
+		}
+		if r.Token == "" {
+			errs = append(errs, errors.New("rendezvous.token is needed: a host token of the rendezvous"))
+		}
+		if r.Server == c.PublicURL {
+			errs = append(errs, errors.New("rendezvous.server must be another server, not this one's publicUrl"))
+		}
+	}
 	hookErrs, warnings := c.validateWebhooks()
 	errs = append(errs, hookErrs...)
 	c.warnings = warnings

@@ -94,7 +94,7 @@ what reaches whom:
 | on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address. With `reach.mode` `auto` (the default) the server learns its public address from STUN and, once it has a TLS listener with a certificate, maps that port on the router and builds links on `https://<public address>`; until then links keep the address you opened the workbench at, and the Share dialog says so. `GET /api/reach` reports the state. A mapping is reported as mapped, never as reachable: the server's own check through the public address is refused by most home routers, so open a link once from a phone on mobile data |
 | on your machine under WSL2 | Windows must expose the port: `netsh interface portproxy` or `networkingMode=mirrored` in `.wslconfig`, plus a firewall rule |
 | on a machine with a public address, or behind a reverse proxy | anyone, at `publicUrl` or the proxy's forwarded host |
-| behind carrier-grade NAT or a corporate network | a tunnel or a reverse proxy in front of the server; or keep the session on your machine with `conductor host` against a server anyone can reach |
+| behind carrier-grade NAT or a corporate network | `rendezvous`: this server publishes every session to a public Conductor through the host protocol, where it is listed as hosted by this machine and shared from; or a tunnel or a reverse proxy in front of the server; or `conductor host` from your machine against a server anyone can reach |
 
 The ICE servers play no part in a link. STUN tells a browser or a `conductor
 host` its own public address and port so the two can connect the terminal
@@ -779,6 +779,7 @@ file must run `compinit` before that line.
 | `tls.acme.challenge` | `CONDUCTOR_TLS_ACME_CHALLENGE` | `tls-alpn-01` | `tls-alpn-01` (answered on the TLS listener through the mapped 443), `http-01` (on the plain listener through a mapped 80: `reach.publicPort80`) or `dns-01` (names only, through `dnsProvider`) |
 | `tls.acme.dnsProvider`, `tls.acme.dnsEnv` | `CONDUCTOR_TLS_ACME_DNS_PROVIDER`, `CONDUCTOR_TLS_ACME_DNS_ENV` (`K=V,K=V`) | none | `cloudflare`, `exec` or `httpreq`, with its settings under lego's names (`CLOUDFLARE_DNS_API_TOKEN`, `EXEC_PATH`, `HTTPREQ_ENDPOINT`, …); never logged or shown |
 | `tls.acme.caDirectory`, `tls.acme.profile` | `CONDUCTOR_TLS_ACME_CA`, `CONDUCTOR_TLS_ACME_PROFILE` | Let's Encrypt; `shortlived` for IP addresses | the ACME directory (`https`), and the certificate profile |
+| `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | none | a public Conductor every session is published to, through the host protocol (as `conductor host` does), with one of its host tokens; the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published |
 | `tls.certFile`, `tls.keyFile` | `CONDUCTOR_TLS_CERT_FILE`, `CONDUCTOR_TLS_KEY_FILE` | none | a certificate of your own (PEM, with its chain), re-read when the files change; exclusive with `tls.acme` |
 
 ### Upgrading

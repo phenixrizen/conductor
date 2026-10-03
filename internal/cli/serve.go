@@ -20,7 +20,9 @@ import (
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/certs"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/reach"
+	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
 	"github.com/phenixrizen/conductor/internal/store"
 	"github.com/phenixrizen/conductor/internal/version"
@@ -165,6 +167,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		go func() { errCh <- httpSrv.Serve(tlsLn) }()
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)
+	if rv := cfg.Rendezvous; rv.Server != "" {
+		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rv.Server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Log: log}})
+		log.Info("sessions are published to the rendezvous", "server", rv.Server)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -189,6 +195,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		log.Warn("http shutdown", "err", err)
 	}
 	return 0, nil
+}
+
+// uplinkPublisher adapts hostagent.Uplink to api.Publisher.
+type uplinkPublisher struct{ u *hostagent.Uplink }
+
+func (p uplinkPublisher) Publish(ctx context.Context, local *session.Local) (api.PublishedSession, error) {
+	return p.u.Publish(ctx, local)
 }
 
 // startTLS makes the certificate manager and the TLS listener: a certificate
