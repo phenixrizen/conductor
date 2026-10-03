@@ -560,48 +560,73 @@ resume, and Codex's review of this section).
 
 ### Open verification (round 4)
 
-What only a person can check, beside the plan's automated checks:
+Round 5 gave each of these a test tier (`docs/round5-plan.md`, Phase B).
+What runs where:
 
-- The live run of Task 4 (a one-member crew per agent, a handoff and a
-  broadcast, short and long, in a fresh worktree) passed against Claude Code
-  2.1.287 and Codex 0.159.0 on 2026-10-02 (`PASS live4`, no second Enter
-  needed). Claude Code answered the 1400-byte broadcast by saying it would
-  not act on an instruction that came as pasted content, with the word in
-  its reply, so the check counted it: a long line pasted into Claude Code may
-  be read as text to discuss, not to run. Repeat it against Codex 0.160 (already on this
-  machine's daemon) and the next Claude Code: their paste handling and their
-  trust questions' words (`trustPrompt`) can change.
-- The live Playwright spec (`CONDUCTOR_E2E_LIVE=1`, Task 9) passed on
-  2026-10-02 against the same versions in a repository both agents trust. Its
-  first run found Codex's trust question drawn during the 250 ms before the
-  prompt's Enter, which accepted it and saved the trust: a submission into a
-  session with a `trustPrompt` now waits for the screen watcher's look before
-  its Enter (`internal/session/submit.go`). Repeat the spec in a repository
-  Codex has not trusted: the member must be held with the question, and
-  `~/.codex/config.toml` must gain nothing.
-- The interactive tiles with the WebGL renderer in a real browser: the
-  headless checks run without WebGL2, so they measured the DOM renderer.
-- The yolo recipes taken from documentation, each against the real CLI:
-  Amp's `--dangerously-allow-all` in the rebuilt CLI, OpenCode's TUI `--auto`,
-  Cursor's `--yolo --trust` together, Antigravity's exact-path trust on 1.2.x,
-  aider's `--yes-always`, Goose's `GOOSE_MODE=auto`, oh-my-pi's `--yolo` and
-  DeepSeek Harness's `DSH_PERMISSION_MODE`.
-- The session recipes taken from documentation or source: Goose's
-  `session --name` in the current Block CLI, Cursor's resume of a chat it
-  reported, pi's `--session-id`, Antigravity's interactive `--conversation`, and
-  Copilot's hook `sessionId` (its launch-time `--session-id` was checked live).
-- Codex's hidden title thread: its notify is now ignored by its first input;
-  check on a long first turn that no false "needs input" shows meanwhile, and
-  that the resumed conversation is the user's, not the title thread's.
-- Codex's "Hooks need review" dialog: with Conductor's `~/.codex/hooks.json`
-  installed and not yet trusted, Codex 0.159 opens it at start; a crew
-  member's prompt is held only if its words match the trust prompt, which they
-  do not. Trust the hooks once in Codex before a crew run.
-- The trust hold's flow in the workbench: a member in a never-trusted
-  repository shows the question, a person answers in its terminal, the prompt
-  then runs. Esc (Codex quits) ends the member, as an early exit.
-- A member of a stopped run cannot be resumed in this round (`409
-  run_stopped`); decide whether Resume should reopen the run.
+**In CI, against the stub agent (`make test-e2e`, web/e2e):**
+
+- The interactive tiles (item 1): `tiles.spec.ts` measures every tile on the
+  crew view and the wall (less than a cell beside its grid), types into a
+  focused wall tile without leaving the wall, and sends the Alt chords to
+  the page. `webgl-probe.spec.ts` records that Chromium 1117 headless has no
+  WebGL2 whatever flags it is given (`--use-gl=angle` with
+  `--use-angle=swiftshader`, `--enable-unsafe-swiftshader`, `--use-gl=egl`
+  were tried), so the tiles are measured with the DOM renderer and
+  `data-renderer` says which; the WebGL look in a real browser stays by
+  hand.
+- The trust hold (item 2): `trust.spec.ts`, with the `codex-untrusted` stub
+  drawing "Trust this folder?": held with the question on the API and the
+  Crews page, arrows keep it, Enter in the terminal answers it and the stub
+  saves the trust as Codex does; with yolo the override makes the question
+  not appear and nothing is saved; a broadcast into a held member waits.
+- Resume (item 3): `resume.spec.ts`: a Claude-shaped session resumed with
+  `--resume <id>` and its transcript, one without a turn relaunched afresh,
+  a crew member resumed in its kept worktree and branch without a second
+  prompt, a Codex-shaped session resumed by its captured thread, a gone
+  working directory refused, and (item 8) an ended member of a stopped run
+  resumed in place, and Resume run as a new run.
+- Codex's hidden title thread (item 6): `title-thread.spec.ts`, with the
+  stub reporting the title turn first: no false needs input, the user's
+  thread captured, one done.
+- The identity probe: `identity.spec.ts` (the stubs named by their version
+  output, the goose impostor named and refused).
+
+**Nightly, on the network and against freshly installed CLIs
+(`.github/workflows/nightly.yml`):**
+
+- The built-in sites (item 7): `make test-network`, each site answering
+  within its own domain; passed on 2026-10-03 from this machine.
+- The recipe flags (items 4 and 5, as far as a help text tells): `make
+  test-recipes`, each CLI's `--version` matched by its adapter's probe and
+  every flag of its yolo, session and injection recipes found in its help
+  (or its subcommand's); the version and help outputs are uploaded so an
+  unverified probe pattern can be closed with real text. On 2026-10-03 this
+  machine identified Claude Code 2.1.288, Codex 0.159.0, Antigravity 1.2.14
+  and Copilot 1.0.91 with every flag in their help, and named the goose on
+  its PATH as the Go migrations tool.
+
+**Live, with test accounts (`make test-live`, `.github/workflows/live.yml`,
+the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
+
+- `live.spec.ts`, for Claude Code and Codex: a typed prompt answered
+  without a person pressing Enter (Codex's title thread raising no false
+  needs input); the trust question held in a repository the agent has not
+  seen and answered by Enter in its terminal (the live check of the
+  `trustPrompt` words and of what Enter selects); yolo (Codex asks nothing
+  and saves nothing; Claude Code still asks); a conversation resumed after
+  its session ended, which still knows the word it was told. Round 4's own
+  live run (`PASS live4`, the spec 2 of 2) passed on 2026-10-02 against
+  Claude Code 2.1.287 and Codex 0.159.0.
+
+**Still by hand:**
+
+- The WebGL renderer's look in a real browser (headless Chromium has none).
+- Antigravity's and DeepSeek Harness's recipes and trust dialogs (no
+  automatable sign-in), Copilot's hook `sessionId`, and the recipes of the
+  CLIs the nightly job cannot install.
+- Codex's "Hooks need review" dialog on a machine where Conductor's
+  `~/.codex/hooks.json` is not yet trusted: trust the hooks once in Codex
+  before a crew run.
 
 ### Deferred (round 4)
 
@@ -611,8 +636,8 @@ What only a person can check, beside the plan's automated checks:
 - A resume record that outlives `exitedRetention` (a bounded store in the data
   directory), so that a session can be resumed after it leaves the list.
 - Yolo and Resume for hosted sessions (`conductor host`).
-- Resuming a member of a stopped run, which would reopen the run.
-- `conductor up --resume <run>`.
+- `conductor up --resume <run>` (the API has `POST /api/runs/{run}/resume`
+  since round 5).
 - aider's chat-history file as its session handle.
 
 ## Round 5: sharing without configuration, a test tier, agent identity, desktop, the skill and the crew graph (planned 2026-10-03)

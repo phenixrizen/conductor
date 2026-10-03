@@ -59,6 +59,7 @@ make web-build                 # nuxt generate + copy into internal/web/dist
 make build-go                  # embeds whatever is in internal/web/dist
 make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
 make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
+make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
@@ -66,8 +67,12 @@ make test-recipes              # the recipe flags against the CLIs on this machi
 python3 scripts/brand_assets.py --check
 ```
 
-Run the narrowest package tests while iterating, then the full set before
-finishing. A check that cannot run (no Docker, no network, no browser) is a
+The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
+impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
+`STUB_REPORT`, keeps a transcript per agent session, and draws the trust
+question with `STUB_TRUST_DIALOG=1`; `web/e2e/conductor.e2e.json` wires it
+with the real recipes. Run the narrowest package tests while iterating, then
+the full set before finishing. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
 
 ## Pinned versions
