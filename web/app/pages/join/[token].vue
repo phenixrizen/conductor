@@ -4,6 +4,7 @@ import type { Attention, TransportKind } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileViewer.vue'
 import { parseLocation } from '~/utils/links'
+import { joinServer } from '~/utils/invite'
 
 definePageMeta({ layout: 'bare' })
 
@@ -14,6 +15,15 @@ const identity = useIdentity()
 const { create } = useTerminalTransport()
 
 const token = computed(() => String(route.params.token))
+/** The server this page talks to for the link: another one (an invite's switchyard, `?server=`) or its own (''). */
+const server = computed(() => joinServer(String(route.query.server ?? '')))
+const serverHost = computed(() => {
+  try {
+    return server.value ? new URL(server.value).host : ''
+  } catch {
+    return ''
+  }
+})
 const info = ref<JoinInfo | null>(null)
 const error = ref('')
 const joined = ref(false)
@@ -79,7 +89,7 @@ const hostedBy = computed(() => {
 // presses Join, so a fetched link never exposes terminal content.
 async function fetchInfo() {
   try {
-    info.value = await api.join(token.value)
+    info.value = await api.join(token.value, server.value)
     if (info.value.session) status.value = info.value.session.status
     error.value = ''
   } catch (e) {
@@ -99,11 +109,11 @@ function join() {
 
 function createTransport() {
   const s = current.value!
-  return create({ sessionId: s.id, token: token.value, kind: s.kind, name: identity.name.value })
+  return create({ sessionId: s.id, token: token.value, kind: s.kind, name: identity.name.value, server: server.value })
 }
 
 function tileTransport(m: JoinRunMember) {
-  return () => create({ sessionId: m.sessionId!, token: token.value, kind: 'server', name: identity.name.value })
+  return () => create({ sessionId: m.sessionId!, token: token.value, kind: 'server', name: identity.name.value, server: server.value })
 }
 
 function openMember(m: JoinRunMember, heard?: { status?: string; attention?: string }) {

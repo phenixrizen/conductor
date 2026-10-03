@@ -17,6 +17,7 @@ import { createWindow, restrictPermissions } from './window'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
+import { inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
 import { RELEASES_URL, startUpdater, updateChannel } from './updater'
 
 const dev = !app.isPackaged
@@ -31,6 +32,18 @@ function sourceBinary(): string {
 function iconPath(): string {
   return join(resources, app.isPackaged ? 'icon.png' : 'build/icon.png')
 }
+
+// The invite scheme: conductor://<switchyard>/join/<token> opens here.
+if (app.isPackaged || process.platform !== 'linux') app.setAsDefaultProtocolClient('conductor')
+let openUrlInvite: Invite | null = null
+let pendingInvite: ((inv: Invite) => void) | null = null
+app.on('open-url', (e, url) => {
+  e.preventDefault()
+  const inv = parseInvite(url)
+  if (!inv) return
+  if (pendingInvite) pendingInvite(inv)
+  else openUrlInvite = inv
+})
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -128,6 +141,14 @@ async function run() {
   let quitting = false
   const origin = () => supervisor.status.url || 'http://127.0.0.1'
 
+  /** openInvite opens the app's own join page for an invite: it signals to the server the invite names (a switchyard). */
+  const openInvite = (inv: Invite) => {
+    log('main', `invite: joining through ${inv.server}`)
+    const w = show()
+    void w.loadURL(origin() + invitePath(inv))
+    w.focus()
+  }
+  pendingInvite = (inv) => openInvite(inv)
   const show = () => {
     if (main && !main.isDestroyed()) {
       main.show()
@@ -202,15 +223,23 @@ async function run() {
     showLog()
     return
   }
+  // An invite the app was started with (Windows and Linux pass it in argv; macOS through open-url, taken below or before this point).
+  const first = inviteInArgv(process.argv) ?? openUrlInvite
+  if (first) openInvite(first)
+  else show()
   tray = createTray({ icon: iconPath(), show, openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
-  show()
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
   log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
   void startUpdater(channel, logs, (version) => {
     void dialog.showMessageBox({ type: 'info', title: 'Conductor', message: `Conductor ${version} is downloaded`, detail: 'It installs when you quit the app.' })
   })
 
-  app.on('second-instance', () => show().focus())
+  app.on('second-instance', (_e, argv) => {
+    const w = show()
+    w.focus()
+    const inv = inviteInArgv(argv)
+    if (inv) openInvite(inv)
+  })
   app.on('activate', () => show())
   app.on('window-all-closed', () => {
     if (!settings.closeToTray) app.quit()

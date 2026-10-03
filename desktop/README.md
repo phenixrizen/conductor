@@ -66,6 +66,14 @@ again (an elevated `netsh`, fixed arguments) when it is missing. Plain
 share links to the local server still need Windows to expose the HTTP port
 (`netsh interface portproxy`); through a switchyard nothing more is needed.
 
+**Invites.** The app registers the `conductor:` URL scheme (electron-builder
+`protocols`, `setAsDefaultProtocolClient`). An invite,
+`conductor://<switchyard>/join/<token>`, reaches a running app through
+`second-instance` (Windows, Linux) or `open-url` (macOS), or starts it; the
+app opens its own workbench at `/join/<token>?server=https://<switchyard>`,
+which signals to the switchyard from the app's page (`src/invite.ts` has
+the parser, the same rules as the web's `utils/invite.ts`).
+
 ## What stays by hand
 
 The packaged app on each platform (dmg, deb, rpm, AppImage, nsis) and the

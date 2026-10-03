@@ -4,6 +4,9 @@ copyright: Copyright © 2026 the Conductor authors
 directories:
   output: release
   buildResources: build
+protocols:
+  - name: Conductor invite
+    schemes: [conductor]
 files:
   - dist/**/*
   - static/**/*

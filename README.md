@@ -134,6 +134,18 @@ does: a public address or a mapped port, and a certificate ([TLS](#tls)).
 Its load is signaling, a few kilobytes per connection, plus the relayed
 terminals; the smallest VPS carries hundreds.
 
+**Invites.** Every link reply carries the same link as an invite,
+`conductor://<host>/join/<token>` (`?http=1` for a plain-http server, which
+only a loopback one may be). The desktop app registers the scheme: an
+invite opens the app's own join page, which fetches the link from the
+server named and connects the session there, so no page is loaded from
+the switchyard. A link made on a machine that publishes to a switchyard
+is minted there (over the host connection: `link` and `link_created` in
+`docs/protocol.md`), so its URL and invite are the switchyard's. The Share
+dialog shows both, with a copy button each; the join page takes `?server=`
+(an `https://` origin, or `http://` on loopback) for the same thing in a
+browser.
+
 ### TLS
 
 A link that leaves your network should be `https`. The server serves the

@@ -39,7 +39,7 @@ const links = ref<ShareLink[]>([])
 const loading = ref(false)
 const creating = ref(false)
 const error = ref('')
-const created = ref<{ url: string; role: Role; label?: string } | null>(null)
+const created = ref<{ url: string; role: Role; label?: string; invite?: string; remote?: boolean } | null>(null)
 /** The server's reach report, read when the modal opens; null when it could not be read. */
 const reach = ref<ReachInfo | null>(null)
 const createdReach = computed(() => (created.value ? linkReach(created.value.url, reach.value) : null))
@@ -87,7 +87,7 @@ async function create() {
   error.value = ''
   try {
     const res = await routes().create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
-    created.value = { url: res.url, role: res.link.role, label: res.link.label }
+    created.value = { url: res.url, role: res.link.role, label: res.link.label, invite: res.invite, remote: 'remote' in res && res.remote === true }
     form.label = ''
     await refresh()
     await copy(res.url)
@@ -166,6 +166,11 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
             <span class="flex-1 truncate font-mono text-xs" :title="created.url">{{ shortUrl(created.url) }}</span>
             <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
           </div>
+          <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
+            <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
+            <UButton label="Copy invite" size="sm" color="neutral" variant="outline" @click="copyText(created!.invite!, 'Invite copied', 'It opens in the Conductor app; the link opens in a browser.')" />
+          </div>
+          <span v-if="created.remote" class="text-xs text-muted" data-created-remote>Minted at the rendezvous: the link and the invite reach it, which hands the terminal to this machine.</span>
           <span class="text-xs text-secondary">Shown once. Copy it now; you can always make a new one.</span>
           <UAlert
             v-if="createdReach"

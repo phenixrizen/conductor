@@ -523,7 +523,7 @@ export function useSessions() {
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
     /** Creates a run link: its role on the session of every member of the run, those added later included. The token is shown this once. */
     createRunLink: (runId: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
-      request<{ link: ShareLink; token: string; url: string }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
+      request<{ link: ShareLink; token: string; url: string; invite?: string }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
     /** Revokes a run link, closing every viewer attached through it. */
     revokeRunLink: (runId: string, linkId: string) =>
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
@@ -552,11 +552,13 @@ export function useSessions() {
     installIntegration: (id: string) =>
       request<{ changed: string[] }>(`/api/integrations/${encodeURIComponent(id)}/install`, { method: 'POST' }).then((r) => r.changed ?? []),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),
+    /** The token is shown this once; `invite` is the same link for the desktop app; `remote` says a rendezvous minted it (no token here). */
     createLink: (id: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
-      request<{ link: ShareLink; token: string; url: string }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),
+      request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),
     revokeLink: (id: string, linkId: string) =>
       request<void>(`/api/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
-    join: (token: string) => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token }),
+    /** The link's session or run, from this server, or from `server` (a switchyard, utils/invite.ts joinServer) with no admin token. */
+    join: (token: string, server = '') => request<JoinInfo>(`/api/join/${encodeURIComponent(token)}`, { token, base: server || undefined }),
     /**
      * Sets a session's attention state as the admin. 429 `rate_limited` means the session's limit of 20 reports a second, 40 at once, which its
      * events share, is used up: nothing changed.

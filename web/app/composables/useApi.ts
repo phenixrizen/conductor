@@ -37,10 +37,10 @@ export function useApi() {
   const { httpBase } = useApiBase()
   const admin = useAdminToken()
 
-  async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string> } = {}): Promise<T> {
+  async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string } = {}): Promise<T> {
     const token = opts.token ?? admin.token.value
     try {
-      return await $fetch<T>(httpBase.value + path, {
+      return await $fetch<T>((opts.base ?? httpBase.value) + path, {
         method: (opts.method ?? 'GET') as 'GET',
         body: opts.body as Record<string, unknown> | undefined,
         query: opts.query,

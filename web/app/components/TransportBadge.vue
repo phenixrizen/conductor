@@ -43,5 +43,5 @@ const icon = computed(() => {
 </script>
 
 <template>
-  <UBadge :label="label" :icon="icon" :color="color" variant="subtle" size="sm" class="font-mono" />
+  <UBadge :data-transport-kind="kind" :data-transport-state="state" :label="label" :icon="icon" :color="color" variant="subtle" size="sm" class="font-mono" />
 </template>
