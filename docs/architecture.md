@@ -185,6 +185,13 @@ the system browser, and "Open in browser" carries the token in a URL
 fragment the workbench takes and drops. On Windows the shell runs the Linux
 binary inside a WSL 2 distribution. `desktop/README.md` has the layout.
 
+On Windows the shell also runs a UDP forwarder in front of the server in
+WSL (its default NAT mode left as it is): one port on Windows, each remote
+peer carried to the distribution on a socket of its own, the server
+advertising the Windows address (`ice.udpPort`, `ice.publicIp`). The shell
+registers the `conductor:` scheme: an invite opens its own join page with
+`?server=`, which signals to the switchyard named.
+
 ## Packages
 
 | Package | Responsibility |

@@ -648,6 +648,56 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 6: switchyard, invites the app opens itself, and ICE from WSL without mirrored networking (2026-10-03)
+
+Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
+
+### Decisions
+
+- **Mirrored networking is never required or recommended.** It changes WSL
+  for Docker and every other tool. The desktop app on Windows runs a UDP
+  forwarder (a NAT in user space) in front of the server in WSL, which puts
+  every WebRTC connection on one UDP port (7877) and advertises the Windows
+  LAN address; ICE then crosses one NAT, the router's. The installer adds
+  the firewall rule when it can; Settings offers it through one elevated
+  `netsh` with fixed arguments.
+- **Switchyard is Conductor in a mode.** `conductor switchyard` keeps the
+  signaling hub, the host route, the links, the join route, the events
+  stream and the workbench, answers `403 switchyard` on everything that
+  launches, and relays only when `switchyard.relay` is on. Its load is
+  signaling and the relayed terminals; one small machine serves many.
+- **An invite is a share link the app opens itself.** Every link reply
+  carries `conductor://<host>/join/<token>`; the app registers the scheme
+  and opens its own join page with `?server=`, which fetches the link from
+  the server named (loopback origins answered across origins, the session
+  WebSocket accepted from them) and connects there. A machine that publishes
+  to a switchyard mints its links there over the host connection (`link`,
+  `link_created`), so the URL and the invite are the switchyard's.
+- **Round 5 stands.** A reachable server with a certificate is still the
+  path for a machine with a public address; switchyard is the path for the
+  rest.
+
+### Open verification (round 6)
+
+- Two desktop apps on two home networks through a switchyard on a VPS, one
+  of them from WSL in NAT mode: the invite opens the app, the terminal
+  connects direct (the transport badge says WebRTC) and falls back to the
+  relay when a router refuses. The e2e suite proves the relay path on one
+  machine; the direct path needs two networks.
+- The installer's firewall rule on a per-user install (no administrator):
+  the rule is left to Settings, which must add it with one prompt.
+- The `conductor:` scheme registered by each installer (NSIS, dmg, deb,
+  rpm, AppImage) and an invite clicked in a browser reaching a running app.
+
+### Deferred
+
+- The paste-invite (manual signaling with no server at all) for two apps:
+  ICE candidates gathered without trickle and exchanged by hand. Works for
+  most home-to-home pairs, fails behind carrier NAT without a relay.
+- Switchyard rosters and invite lifetimes beyond the share store's: who is
+  online, invites that name a person.
+- A relay quota per host on a switchyard, for a public one.
+
 ## Round 5: sharing without configuration, a test tier, agent identity, desktop, the skill and the crew graph (planned 2026-10-03)
 
 Asked by the user after running round 4 on 2026-10-03; decided the same day.

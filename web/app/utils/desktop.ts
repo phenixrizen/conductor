@@ -8,6 +8,9 @@ export interface DesktopSettings {
   closeToTray: boolean
   wslDistro: string
   wslWindowsHome: boolean
+  switchyardServer: string
+  switchyardToken: string
+  switchyardName: string
 }
 
 export interface DesktopServerState {

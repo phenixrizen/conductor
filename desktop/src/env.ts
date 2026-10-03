@@ -17,6 +17,11 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, to
   out.CONDUCTOR_DEFAULT_CWD = settings.defaultCwd
   out.CONDUCTOR_YOLO = settings.yolo ? '1' : '0'
   out.CONDUCTOR_REACH = settings.reach
+  if (settings.switchyardServer) {
+    out.CONDUCTOR_RENDEZVOUS_SERVER = settings.switchyardServer.replace(/\/+$/, '')
+    out.CONDUCTOR_RENDEZVOUS_TOKEN = settings.switchyardToken
+    if (settings.switchyardName) out.CONDUCTOR_RENDEZVOUS_HOST_NAME = settings.switchyardName
+  }
   if (!out.HOME && base.HOME) out.HOME = base.HOME
   return out
 }

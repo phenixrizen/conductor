@@ -49,3 +49,22 @@ describe('server environment', () => {
     expect(SERVE_ARGS).toEqual(['serve', '--listen', '127.0.0.1:0', '--print-listen', '--exit-on-stdin-close'])
   })
 })
+
+describe('switchyard settings', () => {
+  it('validates the switchyard URL and token, and passes them to the server as its rendezvous', async () => {
+    const { defaultSettings, validate, serverAffecting } = await import('../src/settings')
+    const { serverEnv } = await import('../src/env')
+    const base = defaultSettings('/home/me', '/home/me/.config/conductor')
+    expect(validate(base)).toEqual([])
+    expect(validate({ ...base, switchyardServer: 'ftp://x' })).toContain('the switchyard must be an http(s) URL with a host and nothing after it')
+    expect(validate({ ...base, switchyardServer: 'https://switchyard.example.net' })).toContain('a switchyard needs one of its host tokens')
+    expect(validate({ ...base, switchyardServer: 'https://switchyard.example.net/', switchyardToken: 't' })).toEqual([])
+    expect(validate({ ...base, switchyardName: 'x'.repeat(65) })).toContain('the name at the switchyard is at most 64 characters')
+    const env = serverEnv({}, { ...base, switchyardServer: 'https://switchyard.example.net/', switchyardToken: 'sy-token', switchyardName: 'laptop' }, 'tok', '/usr/bin')
+    expect(env.CONDUCTOR_RENDEZVOUS_SERVER).toBe('https://switchyard.example.net')
+    expect(env.CONDUCTOR_RENDEZVOUS_TOKEN).toBe('sy-token')
+    expect(env.CONDUCTOR_RENDEZVOUS_HOST_NAME).toBe('laptop')
+    expect(serverEnv({}, base, 'tok', '/usr/bin').CONDUCTOR_RENDEZVOUS_SERVER).toBeUndefined()
+    expect(serverAffecting(base, { ...base, switchyardServer: 'https://switchyard.example.net', switchyardToken: 't' })).toBe(true)
+  })
+})

@@ -11,7 +11,7 @@ const toast = useToast()
 const serverHost = useServerHost()
 
 const settings = ref<DesktopSettings | null>(null)
-const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false })
+const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardServer: '', switchyardToken: '', switchyardName: '' })
 const saving = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
@@ -44,7 +44,7 @@ const reachItems = [
 const dirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
 const restarts = computed(() => {
   if (!settings.value) return false
-  const keys: Array<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome']
+  const keys: Array<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardServer', 'switchyardToken', 'switchyardName']
   return keys.some((k) => JSON.stringify(settings.value![k]) !== JSON.stringify(form[k]))
 })
 
@@ -136,6 +136,24 @@ onMounted(load)
               <UButton v-if="ice.firewall !== 'present'" label="Allow through the Windows firewall" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
               <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">One elevation prompt adds an inbound rule for UDP {{ ice.port }}.</span>
             </div>
+          </div>
+        </UCard>
+
+        <UCard data-switchyard-settings>
+          <template #header><h2 class="font-semibold">Switchyard</h2></template>
+          <div class="flex flex-col gap-4">
+            <p class="text-sm text-muted">
+              A public Conductor every session here is published to, so people elsewhere join by an invite: the terminal goes between their app and this machine, through the switchyard's relay only when it must. Leave empty to share from this machine alone.
+            </p>
+            <UFormField label="Switchyard" description="Its URL, https://switchyard.example.net.">
+              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.example.net" />
+            </UFormField>
+            <UFormField label="Host token" description="One of the switchyard's host tokens (its hostTokens setting).">
+              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" />
+            </UFormField>
+            <UFormField label="Shown there as" description="How this machine is named at the switchyard; its host name when empty.">
+              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" />
+            </UFormField>
           </div>
         </UCard>
 

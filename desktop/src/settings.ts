@@ -19,12 +19,18 @@ export interface DesktopSettings {
   wslDistro: string
   /** Windows: also allow /mnt/c/Users/<user> (slow, but where Windows projects live). */
   wslWindowsHome: boolean
+  /** The switchyard every session is published to (`https://host`), '' for none. */
+  switchyardServer: string
+  /** One of the switchyard's host tokens. */
+  switchyardToken: string
+  /** How this machine is named there; '' for its host name. */
+  switchyardName: string
 }
 
-export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome']
+export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardServer: '', switchyardToken: '', switchyardName: '' }
 }
 
 /** validate returns the problems with s, in words; none for good settings. */
@@ -36,6 +42,18 @@ export function validate(s: DesktopSettings): string[] {
   if (!s.defaultCwd || !isAbsolute(s.defaultCwd)) out.push('the default working directory must be an absolute path')
   else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => s.defaultCwd === r || s.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) out.push('the default working directory must lie under an allowed root')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
+  if (s.switchyardServer) {
+    let ok = false
+    try {
+      const u = new URL(s.switchyardServer)
+      ok = (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host && !u.search && !u.hash && !u.username
+    } catch {
+      ok = false
+    }
+    if (!ok) out.push('the switchyard must be an http(s) URL with a host and nothing after it')
+    if (!s.switchyardToken) out.push('a switchyard needs one of its host tokens')
+  }
+  if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')
   return out
 }
 
