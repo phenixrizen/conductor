@@ -17,7 +17,6 @@ import (
 const (
 	stunRTO     = 500 * time.Millisecond
 	stunTimeout = 3 * time.Second
-	stunMaxPkt  = 1500
 	stunPort    = "3478"
 )
 
@@ -40,48 +39,20 @@ func publicAddr(ctx context.Context, server string, rto time.Duration) (netip.Ad
 	}
 	ctx, cancel := context.WithTimeout(ctx, stunTimeout)
 	defer cancel()
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "udp", hostport)
+	req := stun.MustBuild(stun.TransactionID, stun.BindingRequest, stun.Fingerprint)
+	var addr netip.AddrPort
+	err = udpExchange(ctx, hostport, req.Raw, rto, func(b []byte) (bool, error) {
+		a, ok, err := readBinding(req, b)
+		addr = a
+		return ok, err
+	})
 	if err != nil {
+		if errors.Is(err, errNoAnswer) {
+			err = fmt.Errorf("%w (%w)", errSTUNNoAnswer, ctx.Err())
+		}
 		return netip.AddrPort{}, fmt.Errorf("stun %s: %w", hostport, err)
 	}
-	defer conn.Close()
-	deadline, _ := ctx.Deadline()
-	_ = conn.SetDeadline(deadline)
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
-	defer stop()
-
-	req := stun.MustBuild(stun.TransactionID, stun.BindingRequest, stun.Fingerprint)
-	buf := make([]byte, stunMaxPkt)
-	next := time.Now()
-	for {
-		if !time.Now().Before(next) {
-			if _, err := conn.Write(req.Raw); err != nil {
-				return netip.AddrPort{}, fmt.Errorf("stun %s: %w", hostport, err)
-			}
-			next = time.Now().Add(rto)
-			rto *= 2
-		}
-		_ = conn.SetReadDeadline(next)
-		n, err := conn.Read(buf)
-		if err != nil {
-			if ctx.Err() != nil {
-				return netip.AddrPort{}, fmt.Errorf("stun %s: %w (%w)", hostport, errSTUNNoAnswer, ctx.Err())
-			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				continue // retransmit
-			}
-			return netip.AddrPort{}, fmt.Errorf("stun %s: %w", hostport, err)
-		}
-		addr, ok, err := readBinding(req, buf[:n])
-		if err != nil {
-			return netip.AddrPort{}, fmt.Errorf("stun %s: %w", hostport, err)
-		}
-		if ok {
-			return addr, nil
-		}
-	}
+	return addr, nil
 }
 
 // readBinding reads one datagram as the answer to req. ok is false for a
