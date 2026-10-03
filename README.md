@@ -84,15 +84,23 @@ a tunnel's URL, a reverse proxy's host, with the scheme and host the proxy
 forwards in `X-Forwarded-Proto` and `X-Forwarded-Host`), unless `publicUrl`
 names another machine, in which case it is `publicUrl`; the default and the
 example config name `localhost`, which no one else can reach, so they do not
-count. Whoever you send the link to must reach the server at that address:
-`listen` binds every interface by default, so a teammate on your network needs
-only your machine's address and an open port, and anyone beyond it needs a
-tunnel or a reverse proxy in front of the server (and then `publicUrl` set to
-its public URL, or its forwarded headers). Under WSL2 the port is Windows's to
-expose: `netsh interface portproxy` or `networkingMode=mirrored` in
-`.wslconfig`, plus a firewall rule. The ICE servers play no part in a link:
-they let a browser reach a session hosted with `conductor host` directly over
-WebRTC once the join page has loaded from the server.
+count. Whoever you send the link to must reach the server at that address;
+what reaches whom:
+
+| The server runs | Who can open a link |
+|---|---|
+| on your machine, the link opened there | you |
+| on your machine, a teammate on the same network | them, at your machine's address and port (`listen` binds every interface) |
+| on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address; round 5 does both on its own, with a certificate for that address (`docs/features.md`, "Round 5") |
+| on your machine under WSL2 | Windows must expose the port: `netsh interface portproxy` or `networkingMode=mirrored` in `.wslconfig`, plus a firewall rule |
+| on a machine with a public address, or behind a reverse proxy | anyone, at `publicUrl` or the proxy's forwarded host |
+| behind carrier-grade NAT or a corporate network | a tunnel or a reverse proxy in front of the server; or keep the session on your machine with `conductor host` against a server anyone can reach |
+
+The ICE servers play no part in a link. STUN tells a browser or a `conductor
+host` its own public address and port so the two can connect the terminal
+channel of a hosted session directly over WebRTC once the join page has loaded
+from the server; it carries no data and does not make the server's page
+reachable, which only a forwarded port, a public address or a proxy does.
 
 ## Clickable links and file viewer
 

@@ -67,6 +67,35 @@ channel with backpressure, or a relay sink that wraps frames in RELAY envelopes)
 The server never sees terminal bytes on the WebRTC path and never runs the
 command.
 
+## Reachability
+
+What each piece does when a link crosses a network boundary:
+
+- **The server** serves the join page, brokers the WebRTC signalling of a
+  hosted session (offer, answer, candidates) and relays its terminal channel
+  when no direct path forms. Everything a guest does begins with an HTTP
+  request to it, so a link works only where the server is reachable.
+- **STUN** (the `iceServers`) answers a browser or a `conductor host` with its
+  own public address and port, so ICE can try a direct UDP path for the
+  terminal channel. It carries no data and does not make an HTTP page
+  reachable.
+- **TURN** (none configured) would relay the terminal channel through a public
+  relay; Conductor's own relay over the host's WebSocket does that job today.
+- **A forwarded port, a public address or a proxy** makes the server
+  reachable. That, and only that, makes a link open from outside.
+
+Round 5 (`docs/features.md`, `docs/round5-plan.md`) adds two packages so a
+machine behind a home router gets a public link with nothing configured:
+`internal/reach` asks STUN for the public address and maps the TLS port on
+the router through UPnP IGD, PCP or NAT-PMP (the plain port is never mapped),
+and `internal/certs` obtains a certificate from Let's Encrypt through lego for
+that address (or a configured domain) and serves it on a second listener.
+Share links take `https://<public address>/…` only once the port is mapped
+and the certificate is ready; until then they keep the address the request
+came through. A mapping is reported as "mapped", never "reachable": the
+server's own check through the public address is often refused by the router
+(no hairpinning), so a person on another network is the only proof.
+
 ## Crew runs
 
 A crew run is `internal/crew`'s `Engine`, and every member is an ordinary

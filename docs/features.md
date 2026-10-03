@@ -614,3 +614,132 @@ What only a person can check, beside the plan's automated checks:
 - Resuming a member of a stopped run, which would reopen the run.
 - `conductor up --resume <run>`.
 - aider's chat-history file as its session handle.
+
+## Round 5: sharing without configuration, a test tier, agent identity, desktop, the skill and the crew graph (planned 2026-10-03)
+
+Asked by the user after running round 4 on 2026-10-03; decided the same day.
+One plan, `docs/round5-plan.md`; the design of the crew graph and the charts
+is handed to Claude Design through `docs/design/crews-graph-brief.md` on the
+branch `design/crews-graph`.
+
+### Decisions
+
+- **STUN and ICE connect the terminal channel, not the link.** STUN gives a
+  browser or a `conductor host` its public address and port so ICE can form a
+  direct UDP path once the join page has loaded from the server; it carries
+  no data and makes no HTTP page reachable. What makes a link open from
+  outside is a reachable server: a forwarded port, a public address or a
+  proxy. Round 5 makes the first automatic.
+- **Reach is automatic everywhere, for the TLS port only.** `reach.mode` is
+  `auto` by default for `conductor serve` and the desktop app: the server
+  asks STUN for its public address and maps external 443 to its TLS listener
+  through UPnP IGD, then PCP, then NAT-PMP, all written against the RFCs with
+  the standard library and tested against loopback fakes; it renews the lease,
+  re-checks the address and unmaps on shutdown. The plain listener is never
+  mapped: plain http never leaves the network. `off` turns it off, `manual`
+  only discovers the address for a port the person forwarded. `GET /api/reach`
+  reports the state and the Share dialog says what a link reaches.
+- **No public link until the certificate is ready.** While the server has no
+  certificate for the public address, links keep the address the request came
+  through and the Share dialog says why. Precedence of a link's base: an
+  explicit non-local `publicUrl`; the discovered `https://<ip>` while mapped
+  and the certificate is ready; the request's address with forwarded headers
+  honoured; `publicUrl`. The notify URL agents get stays local.
+- **TLS through lego, ACME only.** `tls.acme` obtains a certificate from
+  Let's Encrypt through `go-acme/lego` as a library: for the STUN-discovered IP
+  address (an IP-address certificate, `shortlived` profile, six days, renewed
+  at two thirds of its life, `tls-alpn-01` on the mapped 443) or for configured
+  domains (`dns-01` through lego's providers, `http-01` on a mapped 80, or
+  `tls-alpn-01`). `tls.certFile`/`keyFile` serve a pair of the person's own.
+  Nothing self-signed, no fingerprint pinning, no redirect from plain http and
+  no HSTS (the plain listener serves the desktop window and local hosts). The
+  TLS listener is its own (`:8443` by default, mapped from 443). The
+  certificate manager serves nothing before the first issuance, so a handshake
+  fails cleanly rather than trusting a made-up certificate. Tested against
+  Let's Encrypt's Pebble in CI.
+- **Mapped is not verified.** The server's self-check through the public URL
+  reports "ok" or "unverified", never "unreachable": a router that does not
+  hairpin refuses the server's own request while a phone on mobile data gets
+  through. A person on another network is the proof, and the open
+  verification below asks for it.
+- **Local sessions publish to a rendezvous.** A server with `rendezvous`
+  configured publishes its sessions to a public Conductor through the host
+  protocol, one session per host connection as today; links for them are
+  minted on the rendezvous. TURN credential minting (coturn's static secret)
+  is optional and last.
+- **Every by-hand check gets a tier.** CI runs the stub-agent suites; a
+  weekly nightly runs the built-in sites on the network and the recipe flags
+  against freshly installed CLIs without accounts; a live tier with test
+  accounts (Claude Code and Codex first, keys in a reviewed GitHub
+  environment, cheapest models, one-word prompts) runs on a schedule or by
+  hand. The stub agent grows an identity, a transcript per session id, a
+  trust dialog and Codex- and Claude-shaped reports so the trust hold, resume,
+  the title thread, the tiles and the keyboard are tested in CI. Antigravity
+  and DeepSeek Harness stay by hand (no automatable sign-in).
+- **Agents are identified by their version output.** Each adapter carries a
+  probe (arguments and a pattern); the server runs it on the resolved program
+  with a timeout and bounds, caches the result and reports `identity` on the
+  catalog. The Agents page shows the name and version, names an impostor
+  (`goose` on the PATH that is the Go migrations tool), and a crew with a
+  misidentified member is refused at launch; a pending or failed probe refuses
+  nothing. A saved agent without an adapter is not probed.
+- **A stopped run resumes both ways.** Resume on an ended member of a stopped
+  run reopens the run in place once its stop has completed; "Resume run"
+  creates a new run of the crew in which every member with a resumable agent
+  session continues its conversation in its kept worktree and branch, and the
+  others start afresh under their start rules.
+- **Desktop: Electron, with Windows through WSL2.** A `desktop/` shell packages
+  the Go server (macOS dmg and zip, Linux deb, rpm and AppImage) and talks to it
+  through a one-line JSON handshake on stdout and a stdin that ends the server
+  when the shell dies; the admin token lives in memory for the shell's run.
+  Windows gets no native server: the installer bundles the Linux binary and runs
+  it inside the user's WSL2 distribution, with a first-run screen that explains
+  `wsl --install`; reach inside WSL2 needs mirrored networking and the app says
+  so.
+- **The skill reaches every agent, and an agent can form a crew around its
+  own session.** The skill is installed at launch for every adapter with a
+  skills directory (a file carrying the `conductor:skill` marker, never the
+  person's own), and every session gets `CONDUCTOR_SKILL`. A session's agent
+  token gains a scoped grant: form a crew around its own session (its cwd and
+  yolo, never more; the session becomes the first member), add a member to its
+  run, read its run, mint a view-only link to itself; two crews per session
+  per hour. An agent never holds the admin token. `conductor crew create|add|
+  status|link` wrap the routes; `--open` shows a toast with the run in the
+  workbench rather than navigating anyone. A needs-input report may carry
+  choices that viewers answer with one click.
+- **A crew graph and charts, with run records.** The run page and the crew
+  editor get a graph (Vue Flow): solid edges for "after X idle", dashed edges
+  for handoffs as they happen, one parent per node enforced while editing. A
+  run timeline draws each member's bar with its waits and handoffs. Runs that
+  end are recorded in `dataDir/runs/` (never terminal output) so the Crews
+  page charts a crew's last runs (Nuxt Charts); the Events page charts activity
+  per minute; the Wall shows sessions by attention state. No chart with fewer
+  than two points.
+
+### Open verification (round 5)
+
+- A link `https://<public ip>/join/<token>` opened from a phone on mobile
+  data: the padlock, the join page, the terminal live. The server's self-check
+  cannot prove it.
+- Router models beyond the loopback fakes: which answered UPnP IGD, PCP or
+  NAT-PMP, and which refused (list them here with the firmware).
+- IP-address certificates from the real Let's Encrypt (Pebble stands in for it
+  in CI): the rate limits and the renewal every few days over a week.
+- The first nightly run: every **verify** row of the plan closed with the real
+  CLI's help and version output.
+- The Windows installer on a machine with WSL2: the first-run screen without
+  WSL, the server in the distribution, the agents found, a link from Settings.
+- The crew graph, timeline and charts compared against the design hand-off at
+  1440 and 390 in both themes.
+
+### Deferred (round 5)
+
+- A multi-session host protocol (one `conductor host` serving several
+  sessions); round 5 publishes one session per connection.
+- TURN credential minting, unless a network needs it.
+- `conductor mcp`, the same actions as an MCP server for agents without a
+  skills directory.
+- Signing and notarisation of the desktop builds until the secrets exist; the
+  builds ship unsigned.
+- Resuming a run from its record after a server restart (the record holds the
+  agent session ids and worktrees it needs).
