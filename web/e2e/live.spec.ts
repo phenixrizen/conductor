@@ -30,6 +30,9 @@ const repo = process.env.CONDUCTOR_E2E_LIVE_REPO ?? ''
 const live = process.env.CONDUCTOR_E2E_LIVE === '1' && repo !== ''
 const PROMPT = 'Reply with the single word READY and nothing else'
 const TRUST_WORDS: Record<string, RegExp> = { claude: /project you created or one you trust/i, codex: /trust this folder/i }
+// What answers the trust question with "yes": Claude Code 2.1.288 highlights "No, exit" first, so its yes is Down then Enter
+// (verified in a PTY on 2026-10-03); Codex 0.159 highlights the trusting answer, so Enter alone.
+const TRUST_YES: Record<string, string[]> = { claude: ['ArrowDown', 'Enter'], codex: ['Enter'] }
 const MODEL_ENV: Record<string, Record<string, string>> = {
   // The cheapest model each agent takes from its environment (verify with each release).
   claude: { ANTHROPIC_MODEL: process.env.CONDUCTOR_E2E_LIVE_CLAUDE_MODEL ?? 'claude-haiku-4-5-20251001' },
@@ -122,12 +125,29 @@ async function signIn(page: Page, server: Started) {
   }, server.token)
 }
 
-async function pressInTerminal(page: Page, server: Started, sessionId: string, key: string) {
+async function pressInTerminal(page: Page, server: Started, sessionId: string, keys: string[]) {
   await page.goto(`${server.baseURL}/sessions/${encodeURIComponent(sessionId)}`)
   const screen = page.locator('.terminal-host .xterm-screen').first()
   await expect(screen).toBeVisible()
   await screen.click()
-  await page.keyboard.press(key)
+  for (const key of keys) {
+    await page.keyboard.press(key)
+    await page.waitForTimeout(300)
+  }
+}
+
+/** answerOrExit polls the member's answer; a member that ended before answering fails at once with what to check. */
+async function answerOrExit(api: Api, runId: string, read: () => Promise<string>, want: string, timeout: number) {
+  await expect
+    .poll(
+      async () => {
+        const m = member(await api.run(runId), 'solo')
+        if (m.status === 'ended') return `ENDED (${m.error || 'the agent exited'}: is it signed in? run it once by hand in the repository)`
+        return read()
+      },
+      { timeout, intervals: [1_000] },
+    )
+    .toContain(want)
 }
 
 function cleanup(api: Api, run: Run, repoDir: string) {
@@ -172,13 +192,17 @@ for (const agent of ['claude', 'codex']) {
       const run: Run = await api.launchCrew(crew.crew.id)
       try {
         let sawNeedsInput = false
-        await expect
-          .poll(async () => {
+        await answerOrExit(
+          api,
+          run.id,
+          async () => {
             const r = await api.run(run.id)
             if (member(r, 'solo').needsInput) sawNeedsInput = true
             return answerOf(api, run.id)
-          }, { timeout: 150_000, intervals: [250] })
-          .toContain('READY')
+          },
+          'READY',
+          150_000,
+        )
         const r = await api.run(run.id)
         expect(logged(r, "typed solo's prompt")).toBe(true)
         if (agent === 'codex') expect(sawNeedsInput, "Codex's title thread raises no false needs_input").toBe(false)
@@ -208,8 +232,8 @@ for (const agent of ['claude', 'codex']) {
         let r = await api.run(run.id)
         expect(logged(r, "typed solo's prompt")).toBe(false)
         expect(logged(r, 'solo asks')).toBe(true)
-        // Enter accepts the trust (the highlighted answer; verify with each release that it is the trusting one).
-        await pressInTerminal(page, server, solo!.id, 'Enter')
+        // The trusting answer (TRUST_YES): verify with each release which one is highlighted.
+        await pressInTerminal(page, server, solo!.id, TRUST_YES[agent]!)
         await expect
           .poll(async () => {
             r = await api.run(run.id)
@@ -218,8 +242,8 @@ for (const agent of ['claude', 'codex']) {
             return logged(r, "typed solo's prompt") ? 'typed' : 'held'
           }, { timeout: 60_000, intervals: [500] })
           .not.toBe('held')
-        expect(member(r, 'solo').status, 'Enter must trust, not exit').not.toBe('ended')
-        await expect.poll(() => answerOf(api, run.id), { timeout: 150_000, intervals: [1_000] }).toContain('READY')
+        expect(member(r, 'solo').status, `${TRUST_YES[agent]!.join('+')} must trust, not exit`).not.toBe('ended')
+        await answerOrExit(api, run.id, () => answerOf(api, run.id), 'READY', 150_000)
       } finally {
         await cleanup(api, run, server.untrusted)
         await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
@@ -249,7 +273,7 @@ for (const agent of ['claude', 'codex']) {
           const solo = await api.session(member(await api.run(run.id), 'solo').sessionId ?? '')
           expect(solo.command).toContain('--dangerously-bypass-approvals-and-sandbox')
           expect((solo.command ?? []).some((a) => a.startsWith('projects={') && a.includes('trust_level="trusted"'))).toBe(true)
-          await expect.poll(() => answerOf(api, run.id), { timeout: 150_000, intervals: [1_000] }).toContain('READY')
+          await answerOrExit(api, run.id, () => answerOf(api, run.id), 'READY', 150_000)
           const after = existsSync(toml) ? readFileSync(toml, 'utf8') : ''
           expect(after.includes(server.untrusted), 'config.toml gains no trust entry').toBe(false)
           expect(after === before || !after.includes(server.untrusted)).toBe(true)
@@ -274,7 +298,7 @@ for (const agent of ['claude', 'codex']) {
       const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', crewBody('resume', repo, 'Remember the word PINEAPPLE. Reply with the single word OK and nothing else', null, 'worktree'))
       const run: Run = await api.launchCrew(crew.crew.id)
       try {
-        await expect.poll(() => answerOf(api, run.id), { timeout: 150_000, intervals: [1_000] }).toContain('OK')
+        await answerOrExit(api, run.id, () => answerOf(api, run.id), 'OK', 150_000)
         const first = member(await api.run(run.id), 'solo')
         await expect.poll(async () => (await api.session(first.sessionId ?? '')).agentSession?.resumable, { timeout: 30_000 }).toBe(true)
         await api.stopSession(first.sessionId ?? '')
@@ -287,8 +311,11 @@ for (const agent of ['claude', 'codex']) {
         expect(next.branch).toBe(first.branch)
         const resumed = await api.session(next.sessionId ?? '')
         expect(resumed.agentSession?.source).toBe('resumed')
+        // A resumed member is running at once, but its agent takes a few seconds to show its prompt and no hook says when
+        // (docs/features.md, deferred: a readiness wait for resumed members); a broadcast typed into it meanwhile is lost.
+        await new Promise((f) => setTimeout(f, 10_000))
         await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/broadcast`, { text: 'Which word did I ask you to remember? Reply with that word only' })
-        await expect.poll(() => answerOf(api, run.id), { timeout: 150_000, intervals: [1_000] }).toContain('PINEAPPLE')
+        await answerOrExit(api, run.id, () => answerOf(api, run.id), 'PINEAPPLE', 150_000)
       } finally {
         await cleanup(api, run, repo)
         await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)

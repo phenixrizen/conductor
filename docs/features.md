@@ -627,6 +627,14 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
 - Codex's "Hooks need review" dialog on a machine where Conductor's
   `~/.codex/hooks.json` is not yet trusted: trust the hooks once in Codex
   before a crew run.
+- The live tier on 2026-10-03 from this machine: Claude Code 2.1.288 passed
+  the typed prompt and the yolo check; its trust question highlights "No,
+  exit" first, so the trusting answer is Down then Enter (the spec presses
+  that; Codex's is Enter alone). Codex's rows failed because its login had
+  expired (`Error: account/read failed … unauthorized (401)` at start): a
+  `codex login` and a rerun are due. A resumed Claude Code member answered
+  the word it was told (PINEAPPLE) once the broadcast waited for it to be
+  ready.
 
 ### Deferred (round 4)
 
@@ -764,6 +772,12 @@ branch `design/crews-graph`.
   1440 and 390 in both themes.
 
 ### Deferred (round 5)
+
+- A readiness wait for a resumed member: it is `running` the moment its
+  session exists, while its agent takes a few seconds to show its prompt and
+  no hook reports that, so a handoff or broadcast typed into it meanwhile
+  can be lost (the live spec waits ten seconds). The start path's readiness
+  wait (`awaitReady`) could hold the member at `starting` until then.
 
 - A multi-session host protocol (one `conductor host` serving several
   sessions); round 5 publishes one session per connection.
