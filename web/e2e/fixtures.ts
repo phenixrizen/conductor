@@ -29,8 +29,15 @@ export interface Session {
   id: string
   name: string
   status: string
+  command?: string[]
+  cwd?: string
+  cols?: number
   crew?: { runId: string; crewId: string; member: string }
-  attention?: { state: string; message?: string }
+  attention?: { state: string; message?: string; source?: string; kind?: string }
+  /** The agent's own session (its conversation), as the server captured or chose it. */
+  agentSession?: { id: string; resumable?: boolean; source?: string }
+  /** The session this one resumed or relaunched. */
+  resumedFrom?: string
 }
 
 /**
@@ -79,6 +86,21 @@ export class Api {
 
   session(id: string) {
     return this.ok<{ session: Session }>('GET', `/api/sessions/${encodeURIComponent(id)}`).then((r) => r.session)
+  }
+
+  /** Stops a running session (a second call on an ended one removes it). */
+  stopSession(id: string) {
+    return this.call('DELETE', `/api/sessions/${encodeURIComponent(id)}`)
+  }
+
+  /** Resumes (or relaunches) an ended session; the reply is the new session. */
+  resumeSession(id: string) {
+    return this.call<{ session?: Session; resumed?: boolean; notice?: string; error?: { code: string; message: string } }>('POST', `/api/sessions/${encodeURIComponent(id)}/resume`)
+  }
+
+  /** Resumes an ended member of a run. */
+  resumeMember(runId: string, name: string) {
+    return this.call<{ run?: Run; error?: { code: string; message: string } }>('POST', `/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/resume`)
   }
 }
 
