@@ -192,7 +192,7 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		case err != nil:
 			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %v", h.from, m.def.Name, err)
 		case res.Entered:
-			r.note(session.ActivityStatus, "handoff delivered from %s to %s", h.from, m.def.Name)
+			r.noteHandoff(h.from, m.def.Name)
 		case res.Typed:
 			// A question came up during the pause: the text waits in the
 			// agent's input, and is never typed again.

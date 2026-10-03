@@ -61,16 +61,18 @@ type Summary struct {
 	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
-// MemberSummary is a member as a Summary lists it.
+// MemberSummary is a member as a Summary lists it: its name, agent and
+// start rule (the Crews page draws the crew's shape from the rules).
 type MemberSummary struct {
 	Name    string `json:"name"`
 	AgentID string `json:"agentId"`
+	Start   Start  `json:"start"`
 }
 
 func (c Crew) summary() Summary {
 	members := make([]MemberSummary, 0, len(c.Members))
 	for _, m := range c.Members {
-		members = append(members, MemberSummary{Name: m.Name, AgentID: m.AgentID})
+		members = append(members, MemberSummary{Name: m.Name, AgentID: m.AgentID, Start: m.Start})
 	}
 	return Summary{ID: c.ID, Name: c.Name, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, UpdatedAt: c.UpdatedAt}
 }

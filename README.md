@@ -622,6 +622,21 @@ event stream, as the crew view and the sidebar do. A crew's **Yolo** setting
 it is launched, so every member, one started or added later included, follows
 it.
 
+**The graph.** The crew view has a **Graph** tab beside the tile grid: one
+node per member (agent, name, status dot, a needs-input badge, branch and
+diff, Start now or Resume where they apply), solid edges for "starts after X
+is idle" and dashed, moving edges for the handoffs delivered in this run,
+with a count and the last message on hover. Roots sit on the left (or on top:
+the direction and the handoff switch are remembered by the browser), a click
+selects, a double click or Enter opens the member's session. The crew editor
+has the same graph as a second mode of the members section: drag from a
+member's right handle to another's left and that one starts after it; the ×
+on an edge removes the rule (the member starts immediately); a node's menu
+sets a rule by hand or removes the member. A member waits for at most one
+other, so a second parent, a self edge and a cycle are refused with a word
+on why. On a phone the graph is a list indented by depth with the same
+badges, and the Crews list shows each crew's shape in miniature.
+
 **Handoffs.** A member passes work to another with an event, which the
 [Conductor skill](#events-and-hooks) teaches the agent to send:
 

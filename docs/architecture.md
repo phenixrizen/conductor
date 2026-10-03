@@ -143,7 +143,12 @@ stop) is reported through `Engine.OnRunChange`, under the engine's lock and
 without waiting, as a `run` event on `/api/events`, and a forgotten run as one
 with `removed`; the browser's live store reads the run again, so no page
 polls. A run's state (running, needs input, stopped, finished) is derived each
-time it is read. `Engine.ResumeMember` starts an ended member again in its
+time it is read. The run log's note of a delivered handoff carries the two
+members as fields (`byName`, `to`), which the crew graph on the run page
+draws as dashed edges beside the solid "after" edges of the start rules; the
+layout is the client's (`web/app/utils/crewGraph.ts`: column by depth in the
+forest the rules form, row by crew order), and the editor's graph holds the
+same rules as the server (one parent, no self edge, no cycle) before a save. `Engine.ResumeMember` starts an ended member again in its
 worktree, resuming its agent's own session through the agent's session recipe
 when it can. Runs live in memory, as sessions do;
 run links are share-store links scoped to a run (`Link.RunID`), which the

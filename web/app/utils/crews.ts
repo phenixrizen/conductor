@@ -137,7 +137,7 @@ export function pageAfterDelete(page: number, left: number): number {
 
 /** The summary GET /api/crews lists for `c`: what the list shows after a save, until the list is read again. */
 export function summaryOf(c: CrewInfo): CrewSummary {
-  return { id: c.id, name: c.name, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId })), updatedAt: c.updatedAt }
+  return { id: c.id, name: c.name, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
 }
 
 /** A member's state as the run view shows it (memberStatus). */

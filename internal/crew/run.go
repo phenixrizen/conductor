@@ -642,7 +642,20 @@ func (r *run) touch() {
 // note appends an entry to r's log, cleaned like a session's entries, and
 // drops the oldest past maxRunLog. The caller holds e.mu.
 func (r *run) note(typ, format string, args ...any) {
-	entry := session.CleanEntry(session.ActivityEntry{At: time.Now().UTC(), Type: typ, Message: fmt.Sprintf(format, args...)})
+	r.record(session.ActivityEntry{Type: typ, Message: fmt.Sprintf(format, args...)})
+}
+
+// noteHandoff notes a handoff delivered from one member to another, with
+// the two as fields (byName, to) beside the words, so a client draws it
+// without reading the text. The caller holds e.mu.
+func (r *run) noteHandoff(from, to string) {
+	r.record(session.ActivityEntry{Type: session.ActivityStatus, Message: fmt.Sprintf("handoff delivered from %s to %s", from, to), ByName: from, To: to})
+}
+
+// record is note with the entry given: its time is now. The caller holds e.mu.
+func (r *run) record(entry session.ActivityEntry) {
+	entry.At = time.Now().UTC()
+	entry = session.CleanEntry(entry)
 	if len(r.log) >= maxRunLog {
 		r.log = slices.Delete(r.log, 0, len(r.log)-maxRunLog+1)
 	}

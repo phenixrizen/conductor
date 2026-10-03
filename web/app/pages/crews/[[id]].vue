@@ -435,6 +435,7 @@ watch(routeId, loadSelected)
                   <SessionAvatar v-else :agent-id="m.agentId" />
                 </template>
               </span>
+              <CrewGraphThumb v-if="item.crew.members.length > 1" :members="item.crew.members" :width="120" :height="36" />
               <!-- The directory is cut short on its own line; what follows always shows whole. -->
               <span class="flex min-w-0 flex-col font-mono text-[11px] text-muted" data-crew-meta>
                 <span class="truncate" :title="meta(item.crew, item.key || undefined).cwd">{{ meta(item.crew, item.key || undefined).cwd }}</span>

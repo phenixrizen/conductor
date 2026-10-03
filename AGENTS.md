@@ -93,6 +93,7 @@ reported limitation, not a pass.
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
 | shiki | 4.4.3 |
+| @vue-flow/core (+ background, controls) | 1.48.2 (1.3.2, 1.1.3) |
 | @iconify-json/lucide (icon client bundle) | 1.2.137 |
 | @playwright/test (e2e; Chromium revision 1117, 125.0.6422.26) | 1.44.1 |
 | electron / electron-builder (desktop) | 44.5.1 / 26.15.3 |

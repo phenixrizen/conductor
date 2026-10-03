@@ -2,6 +2,9 @@
 @import "@nuxt/ui";
 @import "@fontsource-variable/jetbrains-mono";
 @import "@xterm/xterm/css/xterm.css";
+@import "@vue-flow/core/dist/style.css";
+@import "@vue-flow/core/dist/theme-default.css";
+@import "@vue-flow/controls/dist/style.css";
 
 /* Conductor / The Switch palette (web/public/brand/tokens.css) as Tailwind scales. */
 @theme static {

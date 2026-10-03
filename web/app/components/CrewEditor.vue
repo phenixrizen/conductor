@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftCrew } from '~/utils/crews'
+import { withStart } from '~/utils/crewGraph'
+import type { CrewStart } from '~/composables/useSessions'
 import { isActive } from '~/utils/attention'
 import { gitCheckLine, type GitCheckView } from '~/utils/dirInput'
 import { shortCwd } from '~/utils/sessions'
@@ -17,6 +19,7 @@ const emit = defineEmits<{ save: []; discard: []; duplicate: []; launch: []; del
 
 const live = useAttention()
 const api = useSessions()
+const toast = useToast()
 // The agent select names the server's host beside an agent not installed there.
 const serverHost = useServerHost()
 serverHost.load()
@@ -131,6 +134,30 @@ function onWhereKey(e: KeyboardEvent) {
 }
 
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => emit('delete') }]])
+
+// The members as a table, or as the graph of their start rules: dragging an
+// edge sets "after", its × removes the rule, a node's menu sets it by hand.
+// The server's rules hold while drawing (one parent, no cycle): a refused
+// drag says why.
+const membersView = ref<'table' | 'graph'>('table')
+const membersViewItems = [
+  { label: 'Table', value: 'table', icon: 'i-lucide-table' },
+  { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
+]
+const selectedMember = ref('')
+function setStart(name: string, start: CrewStart) {
+  set('members', withStart(crew.value.members, name, start))
+}
+/** Removes a member from the graph; the members that started after it start immediately, as the table does. */
+function removeMember(name: string) {
+  set(
+    'members',
+    crew.value.members.filter((m) => m.name !== name).map((m) => (m.start.when === 'after' && m.start.member === name ? { ...m, start: { when: 'immediately' as const } } : m)),
+  )
+}
+function refused(message: string) {
+  toast.add({ title: 'That rule cannot be drawn', description: message, icon: 'i-lucide-triangle-alert', color: 'warning' })
+}
 </script>
 
 <template>
@@ -221,7 +248,17 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
       Each agent works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The working directory must be in a git repository with a commit.
     </p>
 
-    <CrewMembersTable :model-value="crew.members" :agents="agents" :host="serverHost.host.value" @update:model-value="set('members', $event)" @add="addMember" @add-from-session="pickOpen = true" />
+    <div class="flex flex-col gap-3" data-crew-members>
+      <UTabs v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="self-start" data-members-view />
+      <CrewMembersTable v-if="membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" @update:model-value="set('members', $event)" @add="addMember" @add-from-session="pickOpen = true" />
+      <template v-else>
+        <CrewGraph :members="crew.members" editable :selected="selectedMember" @select="selectedMember = $event" @set-start="setStart" @remove="removeMember" @refused="refused" />
+        <div class="flex flex-wrap gap-x-4 gap-y-1">
+          <UButton label="Add agent" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!agents.length || crew.members.length >= 12" @click="addMember" />
+          <UButton label="Add from a running session" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="crew.members.length >= 12" @click="pickOpen = true" />
+        </div>
+      </template>
+    </div>
 
     <UModal v-model:open="pickOpen" title="Add from a running session" description="Its agent becomes a new member, and its working directory the crew's when the crew has none yet.">
       <template #body>

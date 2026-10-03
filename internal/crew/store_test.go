@@ -101,7 +101,7 @@ func TestListPagesThroughTheDirectory(t *testing.T) {
 	}
 	page, _, _ = s.List(0, 1)
 	want := Summary{ID: "c6", Name: "Crew 0", Cwd: "/srv/api", Where: "server", Isolation: "worktree",
-		Members: []MemberSummary{{Name: "lead", AgentID: "claude"}, {Name: "tests", AgentID: "shell"}}, UpdatedAt: validCrew("", "").UpdatedAt}
+		Members: []MemberSummary{{Name: "lead", AgentID: "claude", Start: Start{When: "immediately"}}, {Name: "tests", AgentID: "shell", Start: Start{When: "after", Member: "lead"}}}, UpdatedAt: validCrew("", "").UpdatedAt}
 	if !reflect.DeepEqual(page[0], want) {
 		t.Fatalf("summary %+v, want %+v", page[0], want)
 	}

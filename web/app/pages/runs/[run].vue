@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import { broadcastSelection, crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
+import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 
 // The crew view: a tile for every member of one run, its activity and a
@@ -113,6 +114,37 @@ const memberOf = computed(() => {
 })
 const feed = computed(() => crewFeed(events.entries.value, run.value?.log ?? [], memberOf.value))
 
+// The view: the tile grid, or the graph of the members and their handoffs. The choice is this browser's.
+const VIEW_KEY = 'conductor.runView'
+type RunView = 'grid' | 'graph'
+function readView(): RunView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'graph' ? 'graph' : 'grid'
+  } catch {
+    return 'grid'
+  }
+}
+const view = ref<RunView>(readView())
+watch(view, (v) => {
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    /* storage refused: the choice lasts the page */
+  }
+})
+const viewItems = [
+  { label: 'Grid', value: 'grid', icon: 'i-lucide-layout-grid' },
+  { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
+]
+const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
+const handoffs = computed(() => handoffsOf(run.value?.log ?? [], events.entries.value, memberOf.value))
+const selectedMember = ref('')
+/** A node opened (Enter, a double click, Open): the member's session page, as a tile's select does. */
+function openMember(name: string) {
+  const t = tiles.value.find((x) => x.name === name)
+  if (t?.session) router.push(`/sessions/${t.session.id}`)
+}
+
 function transportFor(s: SessionInfo) {
   return () => create({ sessionId: s.id, token: admin.token.value, kind: s.kind })
 }
@@ -220,7 +252,25 @@ watch(() => admin.token.value, load)
       </div>
 
       <template v-else>
-        <div ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
+        <div class="flex flex-none items-center px-3 pt-3">
+          <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
+        </div>
+        <div v-if="view === 'graph'" class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-run-graph>
+          <CrewGraph
+            :members="run?.members ?? []"
+            :states="states"
+            :handoffs="handoffs"
+            :run-id="runId"
+            :stopped="!!run?.stoppedAt"
+            :selected="selectedMember"
+            :now="now"
+            fill
+            @select="selectedMember = $event"
+            @open="openMember"
+            @start="startMember"
+          />
+        </div>
+        <div v-else ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
           <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>
             <template v-for="t in tiles" :key="t.session?.id ?? `m-${t.name}`">
               <SessionTile v-if="t.session" :session="t.session" :create-transport="transportFor(t.session)" :data-member="t.name" @select="router.push(`/sessions/${t.session.id}`)">

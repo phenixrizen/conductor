@@ -365,7 +365,7 @@ describe('toDraft and crewKey', () => {
 describe('summaryOf', () => {
   it('keeps what the list shows and drops the prompts', () => {
     const s = summaryOf(info)
-    expect(s).toEqual({ id: info.id, name: info.name, cwd: info.cwd, where: info.where, isolation: info.isolation, members: info.members.map((m) => ({ name: m.name, agentId: m.agentId })), updatedAt: info.updatedAt })
+    expect(s).toEqual({ id: info.id, name: info.name, cwd: info.cwd, where: info.where, isolation: info.isolation, members: info.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: info.updatedAt })
     expect(JSON.stringify(s)).not.toContain('prompt')
   })
 })

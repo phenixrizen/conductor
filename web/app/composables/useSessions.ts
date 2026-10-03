@@ -305,7 +305,7 @@ export interface CrewSummary {
   cwd: string
   where: 'server' | 'host'
   isolation: 'none' | 'worktree'
-  members: Array<{ name: string; agentId: string }>
+  members: Array<{ name: string; agentId: string; start: CrewStart }>
   updatedAt: string
 }
 

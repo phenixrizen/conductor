@@ -424,7 +424,7 @@ func TestStoreReturnsCopies(t *testing.T) {
 	if got, _ := s.Get("api"); !reflect.DeepEqual(got, validCrew("api", "API")) {
 		t.Fatalf("the stored crew changed: %+v", got)
 	}
-	want := []MemberSummary{{Name: "lead", AgentID: "claude"}, {Name: "tests", AgentID: "shell"}}
+	want := []MemberSummary{{Name: "lead", AgentID: "claude", Start: Start{When: "immediately"}}, {Name: "tests", AgentID: "shell", Start: Start{When: "after", Member: "lead"}}}
 	if again, _, _ := s.List(0, 10); !reflect.DeepEqual(again[0].Members, want) {
 		t.Fatalf("the cached summary changed: %+v", again[0].Members)
 	}

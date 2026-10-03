@@ -69,7 +69,7 @@ export class Api {
   }
 
   crew(id: string) {
-    return this.ok<{ crew: { id: string; cwd: string; members: Array<{ name: string }> } }>('GET', `/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew)
+    return this.ok<{ crew: { id: string; cwd: string; members: Array<{ name: string; start?: { when: string; member?: string } }> } }>('GET', `/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew)
   }
 
   launchCrew(id: string) {

@@ -90,6 +90,18 @@ func TestHandoffTypedOrQueued(t *testing.T) {
 	if entries := crewEntries(tests); len(entries) != 2 || entries[1].Message != "Handoff from lead: the handlers are in" {
 		t.Fatalf("tests records %+v", entries)
 	}
+	// The run log's note carries who sent it and who got it as fields (the
+	// crew graph draws handoffs from them).
+	r, _ := e.Get(run.ID)
+	var delivered []session.ActivityEntry
+	for _, entry := range r.Log {
+		if strings.HasPrefix(entry.Message, "handoff delivered") {
+			delivered = append(delivered, entry)
+		}
+	}
+	if len(delivered) != 1 || delivered[0].Type != session.ActivityStatus || delivered[0].ByName != "lead" || delivered[0].To != "tests" {
+		t.Fatalf("delivered notes %+v", delivered)
+	}
 
 	// Waiting on a permission prompt: both wait, noted as they are found
 	// waiting.
