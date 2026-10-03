@@ -100,8 +100,14 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 		hs.Close()
 	})
 	// Webhooks are delivered by goroutines of their own: they stop before the
-	// endpoints a test started for them close.
-	t.Cleanup(func() { srv.webhooks.close(context.Background()) })
+	// endpoints a test started for them close; and what the server started on
+	// its own (a run's record) lands before the test's directories go.
+	t.Cleanup(func() {
+		srv.webhooks.close(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.WaitBackground(ctx)
+	})
 	return &testEnv{t: t, srv: srv, http: hs, root: root, client: hs.Client()}
 }
 

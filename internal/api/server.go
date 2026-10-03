@@ -212,7 +212,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			return nil, err
 		}
 		s.records = records
-		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) })
+		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
@@ -263,6 +263,25 @@ func (s *Server) track(f func()) {
 		return
 	}
 	s.bg.Go(f)
+}
+
+// WaitBackground waits, as long as ctx allows, for the goroutines the
+// server started on its own (track): a run's record being written, the
+// viewers of a forgotten run's links being closed. Shutdown does the same
+// at its end; tests call it before their directories go.
+func (s *Server) WaitBackground(ctx context.Context) {
+	s.bgMu.Lock()
+	s.bgDone = true
+	s.bgMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // Handler returns the routed handler with middleware applied.

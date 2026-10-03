@@ -172,14 +172,19 @@ func (e *Engine) noteEnd(runID string) {
 	e.OnEnd(r)
 }
 
-// RecordEnds wires OnEnd to rs: each run that ends is saved, in a goroutine
-// of its own, and a save that fails is logged by warn.
-func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error)) {
+// RecordEnds wires OnEnd to rs: each run that ends is saved on a goroutine
+// of its own, started through run (the server's tracked goroutines, which
+// its shutdown waits for; a plain go when nil), and a save that fails is
+// logged by warn.
+func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run func(func())) {
+	if run == nil {
+		run = func(f func()) { go f() }
+	}
 	e.OnEnd = func(r Run) {
-		go func() {
+		run(func() {
 			if err := rs.Save(r); err != nil && warn != nil {
 				warn(r.ID, err)
 			}
-		}()
+		})
 	}
 }

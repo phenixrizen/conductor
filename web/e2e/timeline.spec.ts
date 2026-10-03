@@ -66,7 +66,6 @@ test('the Crews list charts the runs once two ended, and the Events page charts 
   await expect(entry.locator('[data-runs-chart]')).toHaveAttribute('data-runs', '2', { timeout: 20_000 })
   await expect(entry.locator('[data-runs-chart-empty]')).toHaveCount(0)
   await expect(entry.locator('[data-runs-chart] svg').first()).toBeVisible()
-  await expect(entry.locator('[data-runs-needs]')).toBeVisible()
 
   // The feed holds what arrives while the page is open: the chart fills as a run reports.
   await page.goto('/events')

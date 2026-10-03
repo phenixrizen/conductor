@@ -54,7 +54,7 @@ func TestRunRecordIsWrittenWhenARunEnds(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.onLaunch = askAtOnce
 	rs, dir := newRecords(t)
-	e.RecordEnds(rs, func(runID string, err error) { t.Errorf("%s: %v", runID, err) })
+	e.RecordEnds(rs, func(runID string, err error) { t.Errorf("%s: %v", runID, err) }, nil)
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
 	if err != nil {
 		t.Fatal(err)
