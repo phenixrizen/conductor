@@ -45,6 +45,8 @@ type Server struct {
 	// records keeps the runs that ended, under runs/ in the data directory
 	// (crew.Records); nil without one.
 	records *crew.Records
+	// pastes are the paste-invite peers of each server session (paste.go).
+	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
 	// runOf answers the run a session is a member of, for run links (see
@@ -227,6 +229,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.links.DeleteSession(id)
 		s.events.removed(id)
 		s.unpublish(id)
+		s.pastes.closeAll(id)
 	}
 	s.links.OnRevoke = func(sessionID, linkID string) {
 		if d, ok := s.registry.Get(sessionID); ok {
@@ -332,6 +335,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))
+	mux.HandleFunc("POST /api/sessions/{id}/paste", s.requireAdmin(s.handlePaste))
+	mux.HandleFunc("GET /api/ice", s.handleICE)
 	mux.HandleFunc("DELETE /api/sessions/{id}/links/{linkId}", s.requireAdmin(s.handleRevokeLink))
 	mux.HandleFunc("GET /api/sessions/{id}/files", s.handleGetFile)
 	mux.HandleFunc("POST /api/sessions/{id}/attention", s.handleAttention)

@@ -441,6 +441,11 @@ export function useSessions() {
       request<ResumeResult>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/resume`, { method: 'POST' }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
+    /** Answers a viewer's paste invite (a cpi1 blob) for a server session: the answer blob, which the viewer pastes back. */
+    paste: (id: string, body: { offer: string; role: Role; label?: string }) =>
+      request<{ answer: string; role: Role }>(`/api/sessions/${encodeURIComponent(id)}/paste`, { method: 'POST', body }),
+    /** The STUN servers a viewer gathers its candidates with before it has any session (a paste invite's offer); no token needed. */
+    ice: () => request<{ stun: string[] }>('/api/ice', { token: '' }),
     /** A crew's runs, newest first: the live ones, then the records of those that ended (`live` counts the first). */
     crewRuns: (id: string) => request<{ runs: RunInfo[]; live: number }>(`/api/crews/${encodeURIComponent(id)}/runs`),
     /** The launchable agents and the server's yolo default (`yolo` in its config, CONDUCTOR_YOLO, serve --yolo). */

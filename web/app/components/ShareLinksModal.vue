@@ -46,6 +46,25 @@ const createdReach = computed(() => (created.value ? linkReach(created.value.url
 const reachColor: Record<string, 'success' | 'warning' | 'neutral' | 'info'> = { public: 'success', pending: 'warning', local: 'neutral', unknown: 'info' }
 
 const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '7200' })
+
+// A paste invite: the viewer's blob in, this session's answer out; no
+// server between the two once connected. Sessions alone, not runs.
+const paste = reactive<{ offer: string; role: Role; answer: string; busy: boolean; error: string }>({ offer: '', role: 'view', answer: '', busy: false, error: '' })
+async function answerPaste() {
+  if (!('sessionId' in props) || !props.sessionId) return
+  paste.busy = true
+  paste.error = ''
+  paste.answer = ''
+  try {
+    const res = await api.paste(props.sessionId, { offer: paste.offer, role: paste.role })
+    paste.answer = res.answer
+    await copyText(res.answer, 'Answer copied', 'Send it back to the viewer; the terminal connects when they paste it.')
+  } catch (e) {
+    paste.error = (e as Error).message
+  } finally {
+    paste.busy = false
+  }
+}
 const roles: Array<{ value: Role; label: string; description: string }> = [
   { value: 'view', label: 'View', description: "Watch output, open files. Can't type." },
   { value: 'control', label: 'Control', description: 'Types into the agent, answers prompts.' },
@@ -160,6 +179,23 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
           </div>
           <UButton label="Create link" type="submit" icon="i-lucide-link" :loading="creating" class="self-end" />
         </form>
+
+        <details v-if="'sessionId' in props && props.sessionId" class="rounded-md border border-default px-3.5 py-2" data-paste-invite>
+          <summary class="cursor-pointer text-sm font-semibold">Answer a paste invite</summary>
+          <div class="mt-2 flex flex-col gap-2">
+            <p class="text-xs text-muted">For a viewer no server can reach from here: they open <code>/paste</code> on any Conductor, send you their invite, you answer it here, and the terminal runs between the two machines alone.</p>
+            <UTextarea v-model="paste.offer" :rows="3" placeholder="cpi1.…" class="w-full font-mono text-[11px]" data-paste-offer-in />
+            <div class="flex items-center gap-2">
+              <USelect v-model="paste.role" :items="roles.map((r) => ({ label: r.label, value: r.value }))" class="w-36" />
+              <UButton label="Answer" icon="i-lucide-reply" size="sm" :loading="paste.busy" :disabled="!paste.offer.trim()" data-paste-answer-make @click="answerPaste" />
+            </div>
+            <UAlert v-if="paste.error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="paste.error" />
+            <template v-if="paste.answer">
+              <UTextarea :model-value="paste.answer" :rows="3" readonly class="w-full font-mono text-[11px]" data-paste-answer-out />
+              <UButton label="Copy answer" icon="i-lucide-clipboard" size="sm" class="self-start" @click="copyText(paste.answer, 'Answer copied')" />
+            </template>
+          </div>
+        </details>
 
         <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3">
           <div class="flex items-center gap-2.5">

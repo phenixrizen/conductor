@@ -676,6 +676,13 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
 - **Round 5 stands.** A reachable server with a certificate is still the
   path for a machine with a public address; switchyard is the path for the
   rest.
+- **Paste invites need no server at all.** `/paste` gathers a viewer's ICE
+  candidates without trickle into a blob; the session's side answers with
+  one (`POST /api/sessions/{id}/paste`, the Share dialog); the data channel
+  then runs machine to machine. Most home-to-home pairs connect; carrier
+  NAT and office networks do not, and there is no relay, so they take the
+  switchyard. A public switchyard may bound what a host relays
+  (`switchyard.relayKBps`).
 
 ### Open verification (round 6)
 
@@ -691,9 +698,6 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
 
 ### Deferred
 
-- The paste-invite (manual signaling with no server at all) for two apps:
-  ICE candidates gathered without trickle and exchanged by hand. Works for
-  most home-to-home pairs, fails behind carrier NAT without a relay.
 - Switchyard rosters and invite lifetimes beyond the share store's: who is
   online, invites that name a person.
 - A relay quota per host on a switchyard, for a public one.

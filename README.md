@@ -146,6 +146,19 @@ dialog shows both, with a copy button each; the join page takes `?server=`
 (an `https://` origin, or `http://` on loopback) for the same thing in a
 browser.
 
+### Paste invites
+
+With no server either side can reach, two blobs through any messenger do
+it: the viewer opens `/paste` on any Conductor (the app's workbench, a
+server of their own), makes an invite, and sends it; the person sharing
+opens the session's Share dialog, **Answer a paste invite**, pastes it, and
+sends the answer back; the viewer pastes that, and the terminal runs over
+WebRTC between the two machines with nothing in between. Each blob is the
+side's SDP with every ICE candidate gathered (`cpi1.…`, a few hundred
+bytes). It works for most home-to-home pairs; a carrier NAT or an office
+network on either side needs a switchyard, since there is no relay. A
+session keeps at most 16 such viewers; they go with the session.
+
 ### TLS
 
 A link that leaves your network should be `https`. The server serves the

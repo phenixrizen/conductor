@@ -24,6 +24,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/certs"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/hostagent"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/reach"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
@@ -132,6 +133,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if cfg.Switchyard.Enabled {
 		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}
+	// Paste invites: the session's side of a WebRTC connection with no
+	// server between the two, answered by the host agent's peer code.
+	srv.SetPasteAnswerer(func(ctx context.Context, local *session.Local, offer string, role session.Role, label string, ice []proto.ICEServer) (api.PastePeer, string, error) {
+		return hostagent.AnswerPaste(ctx, local, offer, hostagent.PasteOptions{Role: role, Name: label, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, ICEServers: ice, Log: log})
+	})
 	if cfg.Examples {
 		added, skipped, err := srv.SeedExampleCrews()
 		if err != nil {
