@@ -28,6 +28,7 @@ Usage:
                                put Conductor's hooks into an agent's own config
   conductor hooks status       show which agents have Conductor's hooks
   conductor skill              print the Conductor skill (SKILL.md)
+  conductor mcp                serve the skill's commands as MCP tools on stdio (registered with agents at launch)
   conductor completion zsh|bash
                                print a shell completion script
   conductor completion install [--shell zsh|bash] [--rc FILE]
@@ -52,6 +53,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":
 		return runNotify(ctx, args[1:], stdin, stdout, stderr)
+	case "mcp":
+		return runMcp(ctx, args[1:], stdin, stdout, stderr)
 	case "crew":
 		return runCrew(ctx, args[1:], stdin, stdout, stderr)
 	case "up":

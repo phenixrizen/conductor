@@ -18,8 +18,17 @@ import (
 // log), never a terminal's contents. At most maxRecords are kept; a save
 // past that drops the oldest by start time.
 type Records struct {
-	st *store.Store
-	mu sync.Mutex
+	st     *store.Store
+	mu     sync.Mutex
+	closed bool
+}
+
+// Close stops the records: a save after it is dropped (the server is
+// shutting down, or a test's directories are going).
+func (rs *Records) Close() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.closed = true
 }
 
 // maxRecords bounds the records kept.
@@ -47,6 +56,9 @@ func (rs *Records) Save(r Run) error {
 	}
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+	if rs.closed {
+		return nil
+	}
 	if err := rs.st.Save(r.ID+".json", r); err != nil {
 		return err
 	}

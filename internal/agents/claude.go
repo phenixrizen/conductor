@@ -48,6 +48,9 @@ var claudeAssets = map[string]string{
 	"claude-yolo.json":       jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeEvents...) + `}`),
 	"claude-tools-yolo.json": jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeToolsEvents...) + `}`),
 	"claude-yolo-only.json":  jsonAsset(`{` + claudeYoloKey + `}`),
+	// Conductor's MCP server, for --mcp-config (Claude Code 2.1.288 takes
+	// JSON files or strings; verified with --help).
+	"claude-mcp.json": jsonAsset(`{"mcpServers":{"conductor":{"command":"{{BIN}}","args":["mcp"]}}}`),
 }
 
 func claudeSteps(hooksDir string) []step {
@@ -83,6 +86,9 @@ func claudeAdapter() Adapter {
 			return install(home, claudeSteps(hooksDir)...)
 		},
 		SkillPath: claudeSkill,
+		MCP: func(hooksDir string) []string {
+			return []string{"--mcp-config", filepath.Join(hooksDir, "claude-mcp.json")}
+		},
 		Status: func(home string) (bool, string) {
 			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},

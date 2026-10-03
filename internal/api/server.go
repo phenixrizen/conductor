@@ -285,6 +285,10 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	// No record lands after this: the directories may be going.
+	if s.records != nil {
+		s.records.Close()
+	}
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -588,6 +592,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+	}
+	if s.records != nil {
+		s.records.Close()
 	}
 }
 

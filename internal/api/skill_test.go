@@ -87,3 +87,35 @@ func TestEverySessionCarriesTheSkillPathAndItsAgent(t *testing.T) {
 	c.hello(80, 24)
 	c.expectOutput("K=[" + filepath.Join(e.srv.cfg.DataDir, "hooks", "skills", "conductor", "SKILL.md") + "] A=[probe] END")
 }
+
+// agents.mcp false (CONDUCTOR_AGENT_MCP=0) launches without the MCP
+// registration; Codex gets its config overrides rather than a file.
+func TestLaunchRegistersTheMCPServerUnlessOff(t *testing.T) {
+	e := newTestEnv(t, nil)
+	hooks := filepath.Join(e.srv.cfg.DataDir, "hooks")
+	codex := agentBody("codex-like")
+	codex["adapter"] = "codex"
+	codex["probe"] = false
+	e.save(codex)
+	info := e.launch("codex-like", nil)
+	var got []string
+	for _, a := range info["command"].([]any) {
+		got = append(got, a.(string))
+	}
+	bin, _ := agents.Binary()
+	if n := len(got); n < 4 || got[n-4] != "-c" || got[n-3] != "mcp_servers.conductor.command=\""+bin+"\"" || got[n-2] != "-c" || got[n-1] != `mcp_servers.conductor.args=["mcp"]` {
+		t.Fatalf("codex command %q", got)
+	}
+	off := false
+	quiet := newTestEnv(t, func(c *config.Config) { c.Agents.MCP = &off })
+	claude := agentBody("claude-like")
+	claude["adapter"] = "claude"
+	claude["probe"] = false
+	quiet.save(claude)
+	info = quiet.launch("claude-like", nil)
+	for _, a := range info["command"].([]any) {
+		if a == "--mcp-config" || a == filepath.Join(hooks, "claude-mcp.json") {
+			t.Fatalf("mcp registered with agents.mcp off: %v", info["command"])
+		}
+	}
+}

@@ -739,6 +739,15 @@ Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default
 `conductor up` prints the run, the URL of its page and, for a crew set to create
 a view link, that link on a third line, `view <url>`.
 
+**MCP tools.** For agents that take an MCP server at launch, Claude Code
+(`--mcp-config`) and Codex (`-c mcp_servers.conductor.…`), every launch
+registers `conductor mcp`, a stdio server with the skill's commands as tools:
+`report`, `set_state`, `ask` (with choices), `form_crew`, `add_member`,
+`run_status` and `link`; outside a session the tools say so and do nothing.
+`agents.mcp: false` (`CONDUCTOR_AGENT_MCP=0`) turns the registration off.
+The server's launches register it; `conductor host` does not yet, and the
+other agents get the skill's commands alone.
+
 **Agents that form crews.** An agent running in a Conductor session can form a
 crew around its own session, from inside it, with no admin token: the session's
 own token (the one `conductor notify` uses) is accepted on four routes scoped to
@@ -947,6 +956,7 @@ file must run `compinit` before that line.
 | `switchyard.relayKBps` | `CONDUCTOR_SWITCHYARD_RELAY_KBPS` | `0` (no bound) | on a switchyard, how much one host may send through the relay a second, in KiB, with a burst of twice that: a host past it is slowed, never cut; a public switchyard's protection against a session that streams |
 | `switchyard.allowedOrigins` | `CONDUCTOR_SWITCHYARD_ORIGINS` (comma-separated host patterns) | `127.0.0.1:*`, `localhost:*` | the browser origins a switchyard answers across origins on the join route and accepts on a hosted session's WebSocket: the desktop app's own workbench |
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
+| `agents.mcp` | `CONDUCTOR_AGENT_MCP` (`1`/`true` on, `0`/`false` off) | `true` | register `conductor mcp` with agents that take an MCP server at launch (Claude Code, Codex), so the skill's reports and crew actions are tools |
 | `agents.installSkill` | `CONDUCTOR_AGENT_INSTALL_SKILL` (`1`/`true` on, `0`/`false` off) | `true` | a launch puts the Conductor skill in the agent's skills directory, in the server user's home, once per agent per server start (see [The Conductor skill](#events-and-hooks)) |
 | `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |
 | `reach.mode` | `CONDUCTOR_REACH` | `auto` | how the server finds out it can be reached from outside its network: `auto` asks a STUN server for the public address and, once there is a TLS listener, maps its port on the router (UPnP IGD, PCP or NAT-PMP, renewed and deleted on shutdown; plain http is never mapped); `manual` asks for the address only, for a port you forwarded yourself; `off` asks nothing. `GET /api/reach` reports the result; the Share dialog says what a link reaches |

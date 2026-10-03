@@ -93,6 +93,21 @@ func (a Adapter) clone() Adapter {
 	return a
 }
 
+// MCPFor returns the arguments that register Conductor's MCP server with
+// the agent of adapter agentID for one launch: nil for an adapter without a
+// way to at launch, an unknown adapter, or a hooks dir that is not absolute
+// (the arguments name a file in it).
+func MCPFor(agentID, hooksDir string) []string {
+	if !filepath.IsAbs(hooksDir) {
+		return nil
+	}
+	a, ok := Get(agentID)
+	if !ok || a.MCP == nil {
+		return nil
+	}
+	return a.MCP(hooksDir)
+}
+
 // InjectFor returns the flags to append to an agent's command and the
 // environment to add to its session, for the adapter agentID and the agent's
 // signal. Only the "hook" signal is wired at launch, except with yolo (the

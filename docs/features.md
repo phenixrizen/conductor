@@ -783,6 +783,12 @@ branch `design/crews-graph`.
   it inside the user's WSL2 distribution, with a first-run screen that explains
   `wsl --install`; reach inside WSL2 needs mirrored networking and the app says
   so.
+- **The skill's commands are also MCP tools.** `conductor mcp` serves
+  report, set_state, ask, form_crew, add_member, run_status and link on
+  stdio (JSON-RPC 2.0, one message a line); a server's launch registers it
+  with Claude Code (`--mcp-config`) and Codex (`-c mcp_servers.conductor.…`),
+  both verified against the CLIs on this machine; `agents.mcp` turns it off;
+  `conductor host` does not register it yet.
 - **The skill reaches every agent, and an agent can form a crew around its
   own session.** The skill is installed at launch for every adapter with a
   skills directory (a file carrying the `conductor:skill` marker, never the

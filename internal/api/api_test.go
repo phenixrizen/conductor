@@ -823,7 +823,8 @@ func TestCreateSessionInjectsTheAdapter(t *testing.T) {
 		}
 		e.save(body)
 		info := e.launch(tc.id, tc.args)
-		want := append(append(slices.Clone(script), tc.args...), tc.extra...)
+		// Every launch of an adapter that takes an MCP server registers Conductor's, whatever the signal.
+		want := append(append(append(slices.Clone(script), tc.args...), tc.extra...), "--mcp-config", filepath.Join(hooks, "claude-mcp.json"))
 		var got []string
 		for _, a := range info["command"].([]any) {
 			got = append(got, a.(string))
@@ -833,7 +834,7 @@ func TestCreateSessionInjectsTheAdapter(t *testing.T) {
 		}
 		c := dialViewer(t, e, info["id"].(string), adminToken)
 		c.hello(80, 24)
-		c.expectOutput("ARGS[" + strings.Join(append(slices.Clone(tc.args), tc.extra...), " ") + "]")
+		c.expectOutput("ARGS[" + strings.Join(append(append(slices.Clone(tc.args), tc.extra...), "--mcp-config", filepath.Join(hooks, "claude-mcp.json")), " ") + "]")
 	}
 }
 

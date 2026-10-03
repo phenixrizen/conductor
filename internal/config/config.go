@@ -149,7 +149,14 @@ type Agents struct {
 	// server starts (one attempt per adapter; a SKILL.md of the user's own
 	// is left alone). On by default.
 	InstallSkill *bool `json:"installSkill,omitempty"`
+	// MCP registers Conductor's MCP server (conductor mcp) with agents that
+	// take one at launch (Claude Code, Codex), so the skill's reports and
+	// crew actions are tools. On by default.
+	MCP *bool `json:"mcp,omitempty"`
 }
+
+// MCP reports whether launches register the MCP server (Agents.MCP, on by default).
+func (c *Config) MCP() bool { return c.Agents.MCP == nil || *c.Agents.MCP }
 
 // InstallSkill reports whether a launch installs the skill (Agents.InstallSkill, on by default).
 func (c *Config) InstallSkill() bool { return c.Agents.InstallSkill == nil || *c.Agents.InstallSkill }
@@ -525,6 +532,14 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		return err
 	}
 	str("CONDUCTOR_ICE_PUBLIC_IP", &cfg.ICE.PublicIP)
+	switch getenv("CONDUCTOR_AGENT_MCP") {
+	case "1", "true":
+		on := true
+		cfg.Agents.MCP = &on
+	case "0", "false":
+		off := false
+		cfg.Agents.MCP = &off
+	}
 	switch getenv("CONDUCTOR_AGENT_INSTALL_SKILL") {
 	case "1", "true":
 		on := true

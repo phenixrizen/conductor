@@ -266,3 +266,35 @@ func TestSkillFile(t *testing.T) {
 		}
 	}
 }
+
+// MCPFor registers Conductor's MCP server with the agents that take one at
+// launch, Claude Code by a config file and Codex by config overrides, and
+// with no other; a relative hooks dir gives nothing.
+func TestMCPForEachAdapter(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	dir := t.TempDir()
+	want := map[string][]string{
+		"claude": {"--mcp-config", filepath.Join(dir, "claude-mcp.json")},
+		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`},
+	}
+	for _, a := range All() {
+		got := MCPFor(a.ID, dir)
+		if !slices.Equal(got, want[a.ID]) {
+			t.Errorf("%s: %q, want %q", a.ID, got, want[a.ID])
+		}
+	}
+	if got := MCPFor("claude", "hooks"); got != nil {
+		t.Fatalf("relative hooks dir: %q", got)
+	}
+	if got := MCPFor("nope", dir); got != nil {
+		t.Fatalf("unknown adapter: %q", got)
+	}
+	hooks := t.TempDir()
+	if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(hooks, "claude-mcp.json"))
+	if err != nil || !strings.Contains(string(b), `"command": "/opt/conductor"`) || !strings.Contains(string(b), `"mcp"`) {
+		t.Fatalf("claude-mcp.json: %v\n%s", err, b)
+	}
+}

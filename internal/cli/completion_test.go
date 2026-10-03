@@ -205,7 +205,7 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 	helps := map[string][][]string{
 		"serve": {{"serve", "-h"}}, "switchyard": {{"switchyard", "-h"}}, "host": {{"host", "-h"}}, "notify": {{"notify", "-h"}}, "up": {{"up", "-h"}}, "crews": {{"crews", "-h"}},
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
-		"skill": {{"skill", "-h"}}, "crew": {{"crew", "create", "-h"}},
+		"skill": {{"skill", "-h"}}, "crew": {{"crew", "create", "-h"}}, "mcp": {{"mcp", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
 	for _, c := range completionSpec() {

@@ -932,8 +932,12 @@ func TestRendezvousConfig(t *testing.T) {
 // on unless the config or the environment turns them off.
 func TestAgentSwitchesAndEnv(t *testing.T) {
 	cfg := Defaults()
-	if !cfg.SelfService() || !cfg.InstallSkill() {
+	if !cfg.SelfService() || !cfg.InstallSkill() || !cfg.MCP() {
 		t.Fatal("off by default")
+	}
+	mcpOff := Defaults()
+	if err := applyEnv(mcpOff, func(k string) string { return map[string]string{"CONDUCTOR_AGENT_MCP": "0"}[k] }); err != nil || mcpOff.MCP() {
+		t.Fatalf("CONDUCTOR_AGENT_MCP=0: %v %v", err, mcpOff.MCP())
 	}
 	for _, tc := range []struct {
 		env     map[string]string

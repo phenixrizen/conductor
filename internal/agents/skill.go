@@ -32,6 +32,11 @@ doing without anyone reading the terminal: each report appears in the
 session's activity and on the Events page. You are in a Conductor session
 when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
+With Conductor's MCP server registered (Claude Code and Codex get it at
+launch), the same reports and crew actions are tools: report, set_state,
+ask, form_crew, add_member, run_status and link. Call those when you have
+them; the commands below do the same.
+
 ## When to report
 
 - Progress on a long task, at milestones rather than at every step:

@@ -62,6 +62,10 @@ type Adapter struct {
 	// Probe says how the agent identifies itself (its version flag and
 	// output); nil when Conductor does not know it yet.
 	Probe *Probe
+	// MCP returns the arguments that register Conductor's MCP server
+	// (conductor mcp) with the agent for one launch, given the hooks dir;
+	// nil for an agent Conductor cannot register it with at launch.
+	MCP func(hooksDir string) []string
 }
 
 // InstallsSkill reports whether the agent reads skills: its Install, and a

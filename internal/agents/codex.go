@@ -101,6 +101,15 @@ func codexAdapter() Adapter {
 			return install(home, codexSteps(hooksDir)...)
 		},
 		SkillPath: codexSkill,
+		// Codex takes an MCP server as config overrides: [mcp_servers.<name>]
+		// command and args (its config.toml; verified against codex mcp add).
+		MCP: func(hooksDir string) []string {
+			bin, err := binPath()
+			if err != nil {
+				return nil
+			}
+			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`}
+		},
 		Status: func(home string) (bool, string) {
 			return statusOf(home, codexConfig, codexSteps("")...)
 		},

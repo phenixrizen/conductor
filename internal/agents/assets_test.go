@@ -486,7 +486,9 @@ func commands(v any) []string {
 
 // commandless lists the assets that run no command: settings without hooks
 // (TestClaudeYoloSettings checks what they hold).
-var commandless = map[string]bool{"claude-yolo-only.json": true}
+// claude-mcp.json names the binary as a program with its arguments apart (an
+// MCP server entry), not a command line: its path is checked as JSON alone.
+var commandless = map[string]bool{"claude-yolo-only.json": true, "claude-mcp.json": true}
 
 var jsConst = regexp.MustCompile(`(?m)^const CONDUCTOR = (".*");$`)
 

@@ -165,6 +165,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		})...)
 	}
 	argv = append(argv, extra...)
+	// Conductor's MCP server, for the agents that take one at launch.
+	if s.cfg.MCP() {
+		argv = append(argv, agents.MCPFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir))...)
+	}
 	env := agent.Env
 	if len(adapterEnv) > 0 || len(yoloEnv) > 0 || len(req.Env) > 0 {
 		env = maps.Clone(adapterEnv)

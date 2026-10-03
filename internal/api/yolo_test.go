@@ -2,10 +2,12 @@ package api
 
 import (
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/config"
 )
 
@@ -126,12 +128,14 @@ func TestCodexTrustGoesWithYolo(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.saveYoloAgent("cx", "codex", map[string]any{"args": []string{"--bypass"}})
 	on := e.do2(map[string]any{"agentId": "cx", "yolo": true})
-	want := append(slices.Clone(yoloScript), "--bypass", "-c", `projects={"`+realRoot(t, e.root)+`"={trust_level="trusted"}}`)
+	// Codex's launches also register Conductor's MCP server, last.
+	mcp := agents.MCPFor("codex", filepath.Join(e.srv.cfg.DataDir, "hooks"))
+	want := append(append(slices.Clone(yoloScript), "--bypass", "-c", `projects={"`+realRoot(t, e.root)+`"={trust_level="trusted"}}`), mcp...)
 	if got := commandOf(on); !slices.Equal(got, want) {
 		t.Fatalf("command %q, want %q", got, want)
 	}
 	off := e.do2(map[string]any{"agentId": "cx"})
-	if got := commandOf(off); !slices.Equal(got, yoloScript) {
+	if got := commandOf(off); !slices.Equal(got, append(slices.Clone(yoloScript), mcp...)) {
 		t.Fatalf("without yolo: %q", got)
 	}
 }
