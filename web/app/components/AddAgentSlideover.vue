@@ -93,7 +93,7 @@ function scheduleCheck() {
   check.value = { state: 'pending' }
   checkTimer = setTimeout(async () => {
     try {
-      const r = await api.checkCommand(program)
+      const r = await api.checkCommand(program, props.agent?.adapter)
       if (seq === checkSeq) check.value = commandCheck(r, program)
     } catch {
       if (seq === checkSeq) check.value = { state: 'failed' }
@@ -215,7 +215,7 @@ async function testLaunch() {
           <ArgvInput v-model="form.command" v-model:pending="form.pendingCommand" placeholder="aider --model sonnet" :invalid="!!shown.command" />
           <template #help>
             <span v-if="check.state === 'pending'" class="flex items-center gap-1.5"><UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin" />Checking the server…</span>
-            <span v-else-if="check.state === 'found'" class="flex items-center gap-1.5 text-success"><UIcon name="i-lucide-check" class="size-3.5 flex-none" />Found on the server: <code class="font-mono">{{ check.path }}</code></span>
+            <span v-else-if="check.state === 'found'" class="flex items-center gap-1.5 text-success"><UIcon name="i-lucide-check" class="size-3.5 flex-none" />Found on the server: <code class="font-mono">{{ check.path }}</code><template v-if="check.identity"> · <span :class="check.identity.identified ? 'text-success' : check.identity.ran ? 'text-warning' : 'text-muted'" data-check-identity>{{ check.identity.identified ? `${check.identity.name} ${check.identity.version ?? ''}`.trim() : check.identity.ran ? `not identified as ${check.identity.name}: printed "${check.identity.output ?? ''}"` : check.identity.pending ? 'checking the version…' : (check.identity.error ?? 'the version check failed') }}</span></template></span>
             <span v-else-if="check.state === 'missing'" class="flex items-center gap-1.5 text-warning"><UIcon name="i-lucide-triangle-alert" class="size-3.5 flex-none" />Not found on the server; hosts may still have it</span>
             <span v-else-if="check.state === 'atLaunch'" class="flex items-center gap-1.5"><UIcon name="i-lucide-folder" class="size-3.5 flex-none" />Resolved at launch in the session's directory</span>
             <span v-else-if="check.state === 'slow'" class="flex items-center gap-1.5"><UIcon name="i-lucide-clock" class="size-3.5 flex-none" />The server took too long to look; a launch will tell</span>

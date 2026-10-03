@@ -58,6 +58,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, aerr)
 		return
 	}
+	if agent, ok := s.Catalog().Get(req.AgentID); ok {
+		s.noteIdentity(local, agent)
+	}
 	writeJSON(w, http.StatusCreated, local.Info())
 }
 

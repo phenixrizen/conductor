@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, isAvailable, notInstalled, notInstalledTitle, serverAgents } from './agents'
+import { agentItem, identity, isAvailable, misidentified, notInstalled, notInstalledTitle, serverAgents } from './agents'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
 
@@ -34,5 +34,32 @@ describe('agent availability', () => {
   it('says how the server judged it: a name on its PATH, any program of that name counting, or a path', () => {
     expect(notInstalledTitle('cursor-agent')).toBe("No program named cursor-agent is on the server's PATH (any program of that name counts as installed)")
     expect(notInstalledTitle('/opt/agent/bin/agent')).toBe('/opt/agent/bin/agent was not found on the server')
+  })
+})
+
+describe('agent identity', () => {
+  const probed = (over: Partial<NonNullable<AgentInfo['identity']>>) => ({ command: ['goose'], identity: { ran: true, identified: false, verified: false, name: 'Goose', ...over } })
+  it('names an identified agent with its version', () => {
+    const r = identity({ command: ['claude'], identity: { ran: true, identified: true, verified: true, name: 'Claude Code', version: '2.1.287' } }, 'build-1')
+    expect(r).toMatchObject({ state: 'ok', label: 'Claude Code 2.1.287' })
+    expect(r.title).toContain('claude on build-1 is Claude Code 2.1.287')
+  })
+  it('names an impostor by what it printed', () => {
+    const r = identity(probed({ impostor: true, output: 'goose version: v3.22.1' }), 'build-1')
+    expect(r.state).toBe('impostor')
+    expect(r.label).toBe('Not Goose')
+    expect(r.title).toContain('"goose version: v3.22.1"')
+    expect(misidentified(probed({ impostor: true }).identity)).toBe(true)
+  })
+  it('refuses nothing on an unverified pattern, and says pending, failed or unprobed', () => {
+    expect(identity(probed({ output: 'goose 1.0.0-beta' }), '').state).toBe('unidentified')
+    expect(misidentified(probed({ output: 'goose 1.0.0-beta' }).identity)).toBe(false)
+    expect(misidentified(probed({ verified: true }).identity)).toBe(true)
+    expect(identity(probed({ ran: false, pending: true }), '').state).toBe('pending')
+    expect(identity(probed({ ran: false, error: 'timeout' }), '').state).toBe('failed')
+    expect(identity({ command: ['sh'] }, '').state).toBe('unprobed')
+  })
+  it('marks a misidentified agent in a select', () => {
+    expect(agentItem(agent({ id: 'goose', name: 'Goose', available: true, identity: { ran: true, identified: false, impostor: true, verified: false, name: 'Goose' } }), 'build-1').label).toBe('Goose · not Goose on build-1')
   })
 })

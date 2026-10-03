@@ -106,6 +106,28 @@ export interface AgentInfo {
   trustPrompt?: string
   /** Its session recipe, for Resume. */
   session?: SessionRecipe
+  /** `false` turns the server's identity probe off for this agent. */
+  probe?: boolean
+  /** What the adapter's probe found the program on the server to be; absent for an agent that is not probed. */
+  identity?: Identity
+}
+
+/** The identity probe's answer: the program run with its version flag and its output matched against what the agent prints. */
+export interface Identity {
+  /** The probe ran and answered; `pending` says it is still under way (ask again). Neither, with `error`, when it could not run. */
+  ran: boolean
+  pending?: boolean
+  /** The program is the agent (`version` is what it said), or a known other program of the same name. */
+  identified: boolean
+  impostor?: boolean
+  /** The adapter's expectation was checked against the real CLI: then a program that matches nothing is not the agent. */
+  verified: boolean
+  /** The agent's name, as its adapter gives it. */
+  name?: string
+  version?: string
+  /** The first line the program printed, when it was not identified. */
+  output?: string
+  error?: string
 }
 
 /** Body of POST /api/catalog: the whole agent, replacing any agent with the same id. */
@@ -384,6 +406,8 @@ export interface CommandCheckReply {
   found: boolean
   path?: string
   unknown?: 'relative' | 'timeout'
+  /** With an adapter in the request: what its probe found the program to be. */
+  identity?: Identity
 }
 export interface PathsReply {
   dir: string
@@ -426,9 +450,9 @@ export function useSessions() {
     /** Takes a hidden id off the hidden list and returns its agent, back as it was; undefined when no agent has that id any more. */
     unhideAgent: (id: string) =>
       request<{ agent?: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}/unhide`, { method: 'POST' }).then((r) => r.agent),
-    /** Whether the program resolves on the server. Only the program is sent; nothing is run. */
-    checkCommand: (program: string) =>
-      request<CommandCheckReply>('/api/catalog/check', { method: 'POST', body: { command: [program] } }),
+    /** Whether the program resolves on the server; with an adapter, its identity probe runs on the program found (its version flag). */
+    checkCommand: (program: string, adapter?: string) =>
+      request<CommandCheckReply>('/api/catalog/check', { method: 'POST', body: { command: [program], ...(adapter ? { adapter } : {}) } }),
     /** One page of the saved crews' summaries, ordered by name, and how many there are in all. `limit` is 1 to 500. */
     listCrews: (offset = 0, limit = 100) =>
       request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),

@@ -2,6 +2,7 @@ package agents
 
 import (
 	"path/filepath"
+	"regexp"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 )
@@ -52,8 +53,10 @@ func piSteps(hooksDir string) []step {
 
 func piAdapter() Adapter {
 	return Adapter{
-		ID:     "pi",
-		Name:   "pi",
+		ID:   "pi",
+		Name: "pi",
+		// pi prints its version (verify).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(?:pi\s+)?v?(\d+\.\d+\.\d+)`)},
 		Assets: piAssets,
 		Inject: func(hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
 			return []string{"--extension", filepath.Join(hooksDir, "pi-conductor.ts")}, nil

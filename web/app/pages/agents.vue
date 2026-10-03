@@ -2,7 +2,10 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { isAvailable, notInstalled, notInstalledTitle } from '~/utils/agents'
+import { identity, isAvailable, notInstalled, notInstalledTitle } from '~/utils/agents'
+
+const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
+const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
 import { removalOf, removalText } from '~/utils/catalog'
 
 useHead({ title: 'Agents' })
@@ -149,6 +152,17 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
                 <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value)" :title="notInstalledTitle(a.command[0] ?? '')" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
+                <UBadge
+                  v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'"
+                  :label="identity(a, serverHost.host.value).label"
+                  :title="identity(a, serverHost.host.value).title"
+                  :icon="identityIcon[identity(a, serverHost.host.value).state]"
+                  :color="identityColor[identity(a, serverHost.host.value).state]"
+                  variant="subtle"
+                  size="sm"
+                  :data-identity="identity(a, serverHost.host.value).state"
+                  :data-version="a.identity?.version"
+                />
                 <UBadge :label="signalBadge(a).label" :title="signalBadge(a).title" color="neutral" variant="subtle" size="sm" />
                 <UBadge v-if="a.allowArgs" label="accepts args" color="neutral" variant="subtle" size="sm" />
                 <UBadge v-if="a.cwd" :label="a.cwd" color="neutral" variant="subtle" size="sm" />

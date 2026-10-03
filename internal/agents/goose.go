@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // Goose loads plugins from ~/.agents/plugins/<name>/, hooks from the plugin's
 // hooks/hooks.json. Conductor's plugin is a directory of its own there, which
 // Install copies whole, with the Conductor skill in ~/.agents/skills. Goose
@@ -19,8 +21,12 @@ func gooseSteps(hooksDir string) []step {
 
 func gooseAdapter() Adapter {
 	return Adapter{
-		ID:     "goose",
-		Name:   "Goose",
+		ID:   "goose",
+		Name: "Goose",
+		// Block's goose prints "goose <version>" (from its source; verify). The
+		// Go migrations tool of the same name prints "goose version: v3.x", seen
+		// on a PATH where it stood in for the agent: a known impostor.
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*goose\s+v?(\d+\.\d+\.\d+)`), Reject: regexp.MustCompile(`(?m)^\s*goose version:\s*v`)},
 		Assets: gooseAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, gooseSteps(hooksDir)...)

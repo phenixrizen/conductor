@@ -29,18 +29,25 @@ type catalogEntry struct {
 	Source    catalog.Source `json:"source,omitempty"`
 	Replaces  catalog.Source `json:"replaces,omitempty"`
 	Available bool           `json:"available"`
+	// Identity is what the adapter's probe found the program to be (see
+	// Identity); absent for an agent that is not probed.
+	Identity *Identity `json:"identity,omitempty"`
 }
 
 // entry is a as the routes show it, by the effective catalog cat, the
 // configured one, base, and installed, which says whether a program could
-// start on this server (the server's lookups).
-func entry(a catalog.Agent, cat, base catalog.Catalog, installed func(program string) bool) catalogEntry {
+// start on this server (the server's lookups), and identity, what its probe
+// found (nil for none).
+func entry(a catalog.Agent, cat, base catalog.Catalog, installed func(program string) bool, identity func(a catalog.Agent) *Identity) catalogEntry {
 	e := catalogEntry{Agent: a.Redacted(), Source: cat.Source(a.ID)}
 	if e.Source == catalog.SourceSaved {
 		e.Replaces = base.Source(a.ID)
 	}
 	if len(a.Command) > 0 {
 		e.Available = installed(a.Command[0])
+		if identity != nil {
+			e.Identity = identity(a)
+		}
 	}
 	return e
 }
@@ -51,12 +58,28 @@ func (s *Server) installedNow(ctx context.Context) func(program string) bool {
 	return func(program string) bool { return s.lookups.installed(ctx, program) }
 }
 
+// identityNow is the identity of one agent for one request's ctx: its
+// program looked up now, its probe run or read from the cache.
+func (s *Server) identityNow(ctx context.Context) func(a catalog.Agent) *Identity {
+	return func(a catalog.Agent) *Identity {
+		if len(a.Command) == 0 || relativePath(a.Command[0]) {
+			return nil
+		}
+		path, ok, known := s.lookups.found(ctx, a.Command[0])
+		if !ok || !known {
+			return nil
+		}
+		return s.identityOf(ctx, a, path, false)
+	}
+}
+
 // saveAgentRequest is the body of POST /api/catalog: an agent, as a client
 // builds it or as GET /api/catalog lists it. source, replaces and available,
 // which the listing adds, are taken and ignored, so an agent read there can be
 // sent back as it is; any other field the agent does not have is refused.
 type saveAgentRequest struct {
 	catalog.Agent
+	Identity  json.RawMessage `json:"identity,omitempty"`
 	Source    json.RawMessage `json:"source,omitempty"`
 	Replaces  json.RawMessage `json:"replaces,omitempty"`
 	Available json.RawMessage `json:"available,omitempty"`
@@ -77,11 +100,16 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			programs = append(programs, a.Command[0])
 		}
 	}
-	answers := s.lookups.warm(r.Context(), programs)
-	installed := func(program string) bool { return answers[program] }
+	answers := s.lookups.warmPaths(r.Context(), programs)
+	installed := func(program string) bool { return answers[program].installed }
+	// The probes of the agents found run together too (probeWorkers at a
+	// time); one that does not answer within probeWait is reported pending.
+	identity := func(a catalog.Agent) *Identity {
+		return s.identityOf(r.Context(), a, answers[a.Command[0]].path, false)
+	}
 	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
-		out = append(out, entry(a, cat, s.base, installed))
+		out = append(out, entry(a, cat, s.base, installed, identity))
 	}
 	// yoloDefault is the server's yolo choice, which a launch or a crew that
 	// says nothing follows.
@@ -118,7 +146,7 @@ func (s *Server) saveAgent(ctx context.Context, a catalog.Agent) (catalogEntry, 
 	if aerr != nil {
 		return catalogEntry{}, aerr
 	}
-	return entry(saved, cat, s.base, s.installedNow(ctx)), nil
+	return entry(saved, cat, s.base, s.installedNow(ctx), s.identityNow(ctx)), nil
 }
 
 // storeAgent is saveAgent's edit. It holds catalogEditMu from reading the
@@ -226,7 +254,7 @@ func (s *Server) unhideAgent(ctx context.Context, id string) (catalogEntry, bool
 	if aerr != nil {
 		return catalogEntry{}, false, aerr
 	}
-	return entry(a, cat, s.base, s.installedNow(ctx)), ok, nil
+	return entry(a, cat, s.base, s.installedNow(ctx), s.identityNow(ctx)), ok, nil
 }
 
 // unhide is unhideAgent's edit, under catalogEditMu: it returns the agent the
@@ -252,6 +280,10 @@ func (s *Server) unhide(id string) (catalog.Agent, catalog.Catalog, bool, *apiEr
 // checkCommandRequest is the body of POST /api/catalog/check.
 type checkCommandRequest struct {
 	Command []string `json:"command"`
+	// Adapter, when given, runs its identity probe on the program found,
+	// with Env as the agent's own variables; the reply carries `identity`.
+	Adapter string            `json:"adapter,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // handleCheckCommand reports whether the program a command starts resolves on
@@ -286,7 +318,17 @@ func (s *Server) handleCheckCommand(w http.ResponseWriter, r *http.Request) {
 	case !ok:
 		writeJSON(w, http.StatusOK, map[string]any{"found": false})
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"found": true, "path": path})
+		out := map[string]any{"found": true, "path": path}
+		if req.Adapter != "" {
+			if err := agents.CheckAdapter(req.Adapter); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				return
+			}
+			if id := s.identityOf(r.Context(), catalog.Agent{Command: req.Command, Adapter: req.Adapter, Env: req.Env}, path, true); id != nil {
+				out["identity"] = id
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

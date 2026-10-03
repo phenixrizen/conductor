@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // Amp loads in-process plugins from ~/.config/amp/plugins/<name>/. Conductor's
 // is a directory of its own there, which Install copies.
 
@@ -34,8 +36,10 @@ export default function (amp) {
 
 func ampAdapter() Adapter {
 	return Adapter{
-		ID:     "amp",
-		Name:   "Amp",
+		ID:   "amp",
+		Name: "Amp",
+		// Amp prints its version (verify).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(?:amp\s+)?v?(\d+\.\d+\.\d+)`)},
 		Assets: ampAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, copyAssetDir(ampAssets, hooksDir, "amp/conductor/", ampDir)...)

@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/crew"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -77,10 +78,11 @@ func (s *Server) lookupLocal(id string) (*session.Local, bool) {
 
 // checkLaunch reports the first member whose agent the catalog lacks, whose
 // agent's program is not installed on this server (installed, the server's
-// lookups), or who is given arguments its agent does not take, so that a
-// launch refuses it before any session starts. The error matches
-// crew.ErrInvalid.
-func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(program string) bool) error {
+// lookups), whose program the identity probe found to be another one
+// (identity, nil to skip; a pending or failed probe refuses nothing), or who
+// is given arguments its agent does not take, so that a launch refuses it
+// before any session starts. The error matches crew.ErrInvalid.
+func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(program string) bool, identity func(a catalog.Agent) *Identity) error {
 	if err := (crew.Crew{Members: members}).CheckAgents(cat); err != nil {
 		return err
 	}
@@ -88,6 +90,11 @@ func checkLaunch(members []crew.Member, cat catalog.Catalog, installed func(prog
 		a, _ := cat.Get(m.AgentID)
 		if !installed(a.Command[0]) {
 			return fmt.Errorf("%w: member %q: agent %q is not installed on the server (%s was not found)", crew.ErrInvalid, m.Name, m.AgentID, a.Command[0])
+		}
+		if identity != nil {
+			if id := identity(a); id != nil && id.Misidentified() {
+				return fmt.Errorf("%w: member %q: agent %q on the server is not %s (%s --version printed %q)", crew.ErrInvalid, m.Name, m.AgentID, id.Name, a.Command[0], id.Output)
+			}
 		}
 		if len(m.Args) > 0 && !a.AllowArgs {
 			return fmt.Errorf("%w: member %q: agent %q takes no extra arguments", crew.ErrInvalid, m.Name, m.AgentID)
@@ -111,6 +118,36 @@ func (s *Server) installedFor(ctx context.Context, cat catalog.Catalog, members 
 	}
 	answers := s.lookups.warm(ctx, programs)
 	return func(program string) bool { return answers[program] }
+}
+
+// identityFor runs (or reads) the identity probes of the members' agents
+// together, for checkLaunch: a probe not answered within probeWait is
+// pending, which refuses nothing.
+func (s *Server) identityFor(ctx context.Context, cat catalog.Catalog, members []crew.Member) func(a catalog.Agent) *Identity {
+	var programs []string
+	for _, m := range members {
+		if a, ok := cat.Get(m.AgentID); ok && len(a.Command) > 0 && a.Probed() && agents.ProbeFor(a.Adapter) != nil {
+			programs = append(programs, a.Command[0])
+		}
+	}
+	paths := s.lookups.warmPaths(ctx, programs)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	ids := map[string]*Identity{}
+	for _, m := range members {
+		a, ok := cat.Get(m.AgentID)
+		if !ok || len(a.Command) == 0 {
+			continue
+		}
+		wg.Go(func() {
+			id := s.identityOf(ctx, a, paths[a.Command[0]].path, false)
+			mu.Lock()
+			ids[a.ID] = id
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return func(a catalog.Agent) *Identity { return ids[a.ID] }
 }
 
 // runContext is the context of a launch or a start: the request's values,
@@ -137,7 +174,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cat := s.Catalog()
-	if err := checkLaunch(c.Members, cat, s.installedFor(r.Context(), cat, c.Members)); err != nil {
+	if err := checkLaunch(c.Members, cat, s.installedFor(r.Context(), cat, c.Members), s.identityFor(r.Context(), cat, c.Members)); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
@@ -227,7 +264,7 @@ func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cat := s.Catalog()
-	if err := checkLaunch([]crew.Member{m}, cat, s.installedFor(r.Context(), cat, []crew.Member{m})); err != nil {
+	if err := checkLaunch([]crew.Member{m}, cat, s.installedFor(r.Context(), cat, []crew.Member{m}), s.identityFor(r.Context(), cat, []crew.Member{m})); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}

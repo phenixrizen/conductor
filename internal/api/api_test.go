@@ -49,6 +49,12 @@ func newTestEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 // newTestEnvLogging is newTestEnv with the server logging to log.
 func newTestEnvLogging(t *testing.T, mutate func(*config.Config), log *slog.Logger) *testEnv {
 	t.Helper()
+	return newTestEnvAgents(t, mutate, log, nil)
+}
+
+// newTestEnvAgents is newTestEnvLogging with extra agents in the catalog.
+func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logger, extra []catalog.Agent) *testEnv {
+	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.AdminToken = adminToken
@@ -68,11 +74,11 @@ func newTestEnvLogging(t *testing.T, mutate func(*config.Config), log *slog.Logg
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append([]catalog.Agent{
 		{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}},
 		{ID: "sh", Name: "sh", Command: []string{"/bin/sh"}, AllowArgs: true},
 		{ID: "exit", Name: "exit", Command: []string{"/bin/sh", "-c", "exit 4"}},
-	}})
+	}, extra...)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2078,7 +2084,7 @@ func TestCatalogListsWhereEachAgentComesFrom(t *testing.T) {
 		t.Fatalf("unhide: %d %v", resp.StatusCode, out)
 	}
 	// An agent the catalog no longer lists has no source, rather than "".
-	if b, err := json.Marshal(entry(catalog.Agent{ID: "gone", Name: "gone", Command: []string{"x"}}, e.srv.Catalog(), e.srv.base, func(string) bool { return false })); err != nil || strings.Contains(string(b), `"source"`) {
+	if b, err := json.Marshal(entry(catalog.Agent{ID: "gone", Name: "gone", Command: []string{"x"}}, e.srv.Catalog(), e.srv.base, func(string) bool { return false }, nil)); err != nil || strings.Contains(string(b), `"source"`) {
 		t.Fatalf("entry of an unlisted agent: %s %v", b, err)
 	}
 }

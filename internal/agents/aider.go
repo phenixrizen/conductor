@@ -2,6 +2,7 @@ package agents
 
 import (
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"regexp"
 )
 
 // aider runs a notifications command, through the shell, whenever it waits
@@ -18,6 +19,8 @@ func aiderAdapter() Adapter {
 	return Adapter{
 		ID:   "aider",
 		Name: "aider",
+		// aider prints "aider 0.86.1" (from its docs; verify).
+		Probe: &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*aider\s+v?(\d+\.\d+\.\d+)`)},
 		Inject: func(hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
 			bin, err := binPath()
 			if err != nil {

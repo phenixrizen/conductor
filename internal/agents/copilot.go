@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // GitHub Copilot CLI loads every hook file in ~/.copilot/hooks/, so Conductor
 // keeps its hooks in a file of its own there and merges nothing.
 
@@ -12,8 +14,10 @@ var copilotAssets = map[string]string{
 
 func copilotAdapter() Adapter {
 	return Adapter{
-		ID:     "copilot",
-		Name:   "Copilot CLI",
+		ID:   "copilot",
+		Name: "Copilot CLI",
+		// The Copilot CLI names itself in its version line (verify).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)copilot.*?(\d+\.\d+\.\d+)`)},
 		Assets: copilotAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, copyAsset(copilotAssets, hooksDir, "copilot.json", copilotFile))

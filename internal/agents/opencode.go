@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // OpenCode loads plugins from the plugins/ directory of its config dir. At
 // launch OPENCODE_CONFIG_DIR=<hooks dir>/opencode would load Conductor's, but
 // only if that directory adds to the default config dir instead of replacing
@@ -50,8 +52,10 @@ export const ConductorPlugin = async ({ $ }) => {
 
 func opencodeAdapter() Adapter {
 	return Adapter{
-		ID:     "opencode",
-		Name:   "OpenCode",
+		ID:   "opencode",
+		Name: "OpenCode",
+		// OpenCode prints its version alone (from its docs; verify).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(?:opencode\s+)?v?(\d+\.\d+\.\d+)\s*$`)},
 		Assets: opencodeAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, copyAsset(opencodeAssets, hooksDir, "opencode/plugins/conductor.ts", opencodePlugin))

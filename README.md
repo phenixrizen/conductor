@@ -826,6 +826,20 @@ Built-in entries, one for each agent with a hook adapter (see
 `amp` and `dsh`, then `shell` (`/bin/bash -l`, which takes no extra
 arguments). Add your own or override an entry by ID:
 
+**Identity.** The catalog lists each agent as available when a program of
+its command's name is on the server's `PATH`; a name proves little (`goose`
+is also a Go migrations tool). For an agent with a hook adapter the server
+also runs the program with its version flag, argv only in a spartan
+environment, and matches the answer against what the agent prints: the
+**Agents** page then shows "Claude Code 2.1.287" or "Codex CLI 0.159.0",
+names an impostor by what it printed ("Not Goose: `goose version: v3.22.1`"),
+and a crew with one is refused at launch; a plain launch goes ahead with the
+note in the session's activity. Claude Code's and Codex's version lines were
+verified live; the other adapters' come from their documentation and refuse
+nothing until the nightly recipes job confirms them. `probe: false` on an
+agent turns the check off; `POST /api/catalog/check` runs it for an adapter.
+`GET /api/catalog` carries the result as `identity`.
+
 ```json
 {
   "catalog": {

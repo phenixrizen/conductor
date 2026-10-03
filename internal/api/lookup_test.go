@@ -391,7 +391,7 @@ func TestCheckLaunchTakesARelativeProgram(t *testing.T) {
 		}
 		members := []crew.Member{{Name: "m", AgentID: id}}
 		cat := e.srv.Catalog()
-		if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members)); err != nil {
+		if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members), nil); err != nil {
 			t.Fatalf("%s: %v", program, err)
 		}
 		_, out := e.do("POST", "/api/catalog/check", adminToken, map[string]any{"command": []string{program}})
@@ -493,7 +493,7 @@ func TestLookupsThatStallAnswerUnknownInTime(t *testing.T) {
 	}
 	start = time.Now()
 	cat := e.srv.Catalog()
-	if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members)); err != nil {
+	if err := checkLaunch(members, cat, e.srv.installedFor(t.Context(), cat, members), nil); err != nil {
 		t.Fatalf("a launch on stalled lookups: %v", err)
 	}
 	if took := time.Since(start); took > stalled*wait/2 {
@@ -510,7 +510,7 @@ func TestLookupsThatStallAnswerUnknownInTime(t *testing.T) {
 	if got := e.catalogAgent("stall-0"); got["available"] != false {
 		t.Fatalf("after the lookups landed: %v", got)
 	}
-	err := checkLaunch(members[:1], cat, e.srv.installedFor(t.Context(), cat, members[:1]))
+	err := checkLaunch(members[:1], cat, e.srv.installedFor(t.Context(), cat, members[:1]), nil)
 	if !errors.Is(err, crew.ErrInvalid) || !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("a launch after the lookups landed: %v", err)
 	}

@@ -57,6 +57,9 @@ type Adapter struct {
 	// Experimental marks an adapter for an agent whose hook interface is still
 	// changing (a developer preview); the Events page says so.
 	Experimental bool
+	// Probe says how the agent identifies itself (its version flag and
+	// output); nil when Conductor does not know it yet.
+	Probe *Probe
 }
 
 // ErrByHand wraps what Install leaves to the user: a file it would have to

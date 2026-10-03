@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -73,8 +74,10 @@ func codexSteps(hooksDir string) []step {
 
 func codexAdapter() Adapter {
 	return Adapter{
-		ID:     "codex",
-		Name:   "Codex CLI",
+		ID:   "codex",
+		Name: "Codex CLI",
+		// Verified live (0.159.0): `codex --version` prints "codex-cli 0.159.0".
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*codex-cli\s+(\d+\.\d+\.\d+)`), Verified: true},
 		Assets: codexAssets,
 		// The per-launch trust override Codex takes in place of the trust
 		// saved in config.toml: -c projects={"<dir>"={trust_level="trusted"}}

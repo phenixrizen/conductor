@@ -55,7 +55,15 @@ type Agent struct {
 	// own session and resumes it. nil in a saved override takes the replaced
 	// agent's; an empty recipe ({}) has none, so Resume relaunches plainly.
 	Session *SessionRecipe `json:"session,omitempty"`
+	// Probe, when false, turns the identity probe off for this agent (the
+	// server runs its adapter's version check otherwise). nil in a saved
+	// override takes the replaced agent's.
+	Probe *bool `json:"probe,omitempty"`
 }
+
+// Probed reports whether the identity probe runs for the agent: unless Probe
+// says false.
+func (a Agent) Probed() bool { return a.Probe == nil || *a.Probe }
 
 // Yolo is an agent's yolo recipe: Args go after the agent's command and the
 // launch's own arguments, Env over the agent's own environment, through the
@@ -603,6 +611,10 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.Session == nil {
 			a.Session = prev.Session.clone()
 		}
+		if a.Probe == nil && prev.Probe != nil {
+			v := *prev.Probe
+			a.Probe = &v
+		}
 	}
 	for k, v := range a.Env {
 		pv, inPrev := prev.Env[k]
@@ -649,6 +661,10 @@ func (a Agent) clone() Agent {
 	}
 	a.Yolo = a.Yolo.clone()
 	a.Session = a.Session.clone()
+	if a.Probe != nil {
+		v := *a.Probe
+		a.Probe = &v
+	}
 	return a
 }
 

@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // Cursor CLI reads its hooks from ~/.cursor/hooks.json, which Install merges
 // into. The CLI fires no event while it waits for the user: a catalog entry
 // for it watches the screen for its prompt instead (a pattern signal).
@@ -20,8 +22,10 @@ func cursorSteps(hooksDir string) []step {
 
 func cursorAdapter() Adapter {
 	return Adapter{
-		ID:     "cursor",
-		Name:   "Cursor CLI",
+		ID:   "cursor",
+		Name: "Cursor CLI",
+		// cursor-agent prints a date-shaped version (verify).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(\d{4}\.\d{2}\.\d{2}\S*)`)},
 		Assets: cursorAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, cursorSteps(hooksDir)...)

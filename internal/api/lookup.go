@@ -172,6 +172,41 @@ func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bo
 	return answers
 }
 
+// lookupAnswer is what warmPaths says of a program.
+type lookupAnswer struct {
+	installed bool   // as installed says
+	path      string // the resolved absolute path, when the lookup found one
+}
+
+// warmPaths is warm with the resolved paths: what the identity probes run.
+func (c *lookupCache) warmPaths(ctx context.Context, programs []string) map[string]lookupAnswer {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	answers := make(map[string]lookupAnswer, len(programs))
+	seen := map[string]bool{}
+	for _, p := range programs {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		wg.Go(func() {
+			a := lookupAnswer{installed: true}
+			if !relativePath(p) {
+				path, ok, known := c.found(ctx, p)
+				a.installed = ok || !known
+				if ok && known {
+					a.path = path
+				}
+			}
+			mu.Lock()
+			answers[p] = a
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return answers
+}
+
 // begin registers a lookup of program as the one under way, which later
 // askers wait for; the caller starts it (run). The caller holds c.mu.
 func (c *lookupCache) begin(program string) *lookupCall {

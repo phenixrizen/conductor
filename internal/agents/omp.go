@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // oh-my-pi runs pi's extensions. Its --extension flag is not reliable, so
 // nothing is injected: Install copies pi's extension into
 // ~/.omp/agent/extensions and lists it under extensions: in
@@ -38,8 +40,10 @@ func ompSteps(hooksDir string) []step {
 
 func ompAdapter() Adapter {
 	return Adapter{
-		ID:     "omp",
-		Name:   "oh-my-pi",
+		ID:   "omp",
+		Name: "oh-my-pi",
+		// oh-my-pi prints its version (verify); it must not pass as pi.
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)^\s*(?:omp|oh-my-pi)\s+v?(\d+\.\d+\.\d+)`)},
 		Assets: ompAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, ompSteps(hooksDir)...)

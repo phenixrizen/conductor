@@ -2,6 +2,7 @@ package agents
 
 import (
 	"path/filepath"
+	"regexp"
 	"slices"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -55,8 +56,10 @@ func claudeSteps(hooksDir string) []step {
 
 func claudeAdapter() Adapter {
 	return Adapter{
-		ID:     "claude",
-		Name:   "Claude Code",
+		ID:   "claude",
+		Name: "Claude Code",
+		// Verified live (2.1.287): `claude --version` prints "2.1.287 (Claude Code)".
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(\d+\.\d+\.\d+)\s*\(Claude Code\)`), Verified: true},
 		Assets: claudeAssets,
 		Inject: func(hooksDir string, sig catalog.Signal) ([]string, map[string]string) {
 			settings := "claude.json"

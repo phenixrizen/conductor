@@ -201,10 +201,10 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
  * relative program, resolved at launch in the session's directory; `slow`: a
  * lookup that took too long), which the catalog lists as available.
  */
-export type CommandCheck = { state: 'idle' | 'pending' | 'missing' | 'failed' | 'atLaunch' | 'slow' } | { state: 'found'; path: string }
+export type CommandCheck = { state: 'idle' | 'pending' | 'missing' | 'failed' | 'atLaunch' | 'slow' } | { state: 'found'; path: string; identity?: CommandCheckReply['identity'] }
 
 export function commandCheck(r: CommandCheckReply, program: string): CommandCheck {
-  if (r.found) return { state: 'found', path: r.path ?? program }
+  if (r.found) return { state: 'found', path: r.path ?? program, ...(r.identity ? { identity: r.identity } : {}) }
   if (r.unknown === 'relative') return { state: 'atLaunch' }
   if (r.unknown) return { state: 'slow' }
   return { state: 'missing' }

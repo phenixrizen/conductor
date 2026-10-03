@@ -49,8 +49,10 @@ type Server struct {
 	// inside a session's working directory (see fileDeny).
 	fileDeny []string
 	// lookups says, for 30 s at a time, whether the programs of the catalog's
-	// agents resolve on this server (see lookupCache).
+	// agents resolve on this server (see lookupCache); probes, for 10 min,
+	// what their version output says they are (see probeCache).
 	lookups *lookupCache
+	probes  *probeCache
 	// home is the server user's home directory: the integrations routes
 	// report and install the agents' hooks there, and nowhere else. Empty
 	// when it is unknown.
@@ -167,6 +169,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		crews:    crews,
 		fileDeny: fileDeny(cfg, st),
 		lookups:  newLookupCache(),
+		probes:   newProbeCache(),
 		home:     home,
 		instance: newInstance(),
 	}

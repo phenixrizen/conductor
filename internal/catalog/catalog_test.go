@@ -975,3 +975,35 @@ func TestDefaultSessionRecipes(t *testing.T) {
 		t.Fatal("a saved override that leaves the recipe out lost the built-in's")
 	}
 }
+
+// A saved override that leaves probe out takes the replaced agent's, and
+// one that turns it off keeps that off; clones share nothing.
+func TestOverlayInheritsProbe(t *testing.T) {
+	c := Default()
+	off := false
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{
+		{ID: "claude", Name: "Claude, mine", Command: []string{"claude"}},
+		{ID: "codex", Name: "Codex, quiet", Command: []string{"codex"}, Probe: &off},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	claude, _ := c.Get("claude")
+	if !claude.Probed() || claude.Probe != nil {
+		t.Fatalf("claude: %v", claude.Probe)
+	}
+	codex, _ := c.Get("codex")
+	if codex.Probed() {
+		t.Fatal("codex: the override's off was lost")
+	}
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex again", Command: []string{"codex"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := c.Get("codex"); again.Probed() {
+		t.Fatal("a later override without probe must take the replaced agent's off")
+	}
+	cl := codex.clone()
+	*cl.Probe = true
+	if codex.Probed() {
+		t.Fatal("clone shares the probe")
+	}
+}

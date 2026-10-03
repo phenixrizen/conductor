@@ -1,5 +1,7 @@
 package agents
 
+import "regexp"
+
 // Antigravity reads hooks from ~/.gemini/config/hooks.json, grouped under
 // named top-level keys; Conductor's group is "conductor". It has no launch
 // flag for them and no event for waiting on the user (the bell covers that),
@@ -27,8 +29,10 @@ func agySteps(hooksDir string) []step {
 
 func agyAdapter() Adapter {
 	return Adapter{
-		ID:     "agy",
-		Name:   "Antigravity",
+		ID:   "agy",
+		Name: "Antigravity",
+		// Antigravity prints its version (verify).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)^\s*(?:antigravity|agy)?\s*v?(\d+\.\d+\.\d+)`)},
 		Assets: agyAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, agySteps(hooksDir)...)
