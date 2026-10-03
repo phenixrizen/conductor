@@ -59,6 +59,10 @@ make web-build                 # nuxt generate + copy into internal/web/dist
 make build-go                  # embeds whatever is in internal/web/dist
 make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
 make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
+make lint-static               # staticcheck, pinned
+make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
+make test-network              # the built-in agents' sites on the network (nightly)
+make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
 ```
 
@@ -70,7 +74,9 @@ reported limitation, not a pass.
 
 | Dependency | Version |
 |---|---|
-| Go | `go 1.26` (module), toolchain 1.27 tested |
+| Go | `go 1.26` (module); CI takes the latest 1.26 patch (`~1.26.0`, check-latest), which the standard library's vulnerability fixes need |
+| honnef.co/go/tools (staticcheck, `make lint-static`) | v0.8.1 (2026.2.1) |
+| golang.org/x/vuln (govulncheck, `make vuln`) | v1.8.0 |
 | github.com/pion/webrtc/v4 | v4.2.21 |
 | github.com/creack/pty | v1.1.24 |
 | github.com/coder/websocket | v1.8.15 |

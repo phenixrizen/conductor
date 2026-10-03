@@ -297,7 +297,6 @@ func TestAttentionViaAgentTokenBellAndEvents(t *testing.T) {
 	if len(token) != 43 || !strings.HasSuffix(url, "/api/sessions/"+id+"/attention") {
 		t.Fatalf("env line %q", line)
 	}
-	url = e.http.URL + url[strings.Index(url, "/api/"):]
 
 	// Wrong token is rejected; the agent token works.
 	resp, out := e.do("POST", "/api/sessions/"+id+"/attention", "nope", map[string]any{"state": "needs_input"})

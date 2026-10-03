@@ -1,0 +1,78 @@
+name: nightly
+
+# What needs the network or a freshly installed CLI, run weekly and on
+# demand: the built-in agents' sites, the recipe flags against the real
+# CLIs (no accounts), and the vulnerability database.
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+  sites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # The latest patch of the go.mod line's minor: the standard library's
+          # fixes (govulncheck) land in patches.
+          go-version: '~1.26.0'
+          check-latest: true
+      - run: make test-network
+
+  recipes:
+    # Each CLI installed the way its vendor documents, then its --version
+    # and --help checked against the catalog's recipes. The installers are
+    # verified rows: one that stops working fails its row, not the others.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: claude, install: "npm install -g @anthropic-ai/claude-code" }
+          - { id: codex, install: "npm install -g @openai/codex" }
+          - { id: copilot, install: "npm install -g @github/copilot" }
+          - { id: opencode, install: "npm install -g opencode-ai" }
+          - { id: aider, install: "pipx install aider-chat" }
+          - { id: goose, install: "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash && echo \"$HOME/.local/bin\" >> $GITHUB_PATH" }
+          - { id: amp, install: "npm install -g @sourcegraph/amp" }
+          - { id: pi, install: "npm install -g @mariozechner/pi-coding-agent" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # The latest patch of the go.mod line's minor: the standard library's
+          # fixes (govulncheck) land in patches.
+          go-version: '~1.26.0'
+          check-latest: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: ${{ matrix.install }}
+      - run: mkdir -p recipes-out && CONDUCTOR_RECIPES_REQUIRE=${{ matrix.id }} CONDUCTOR_RECIPES_OUT=$PWD/recipes-out make test-recipes
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recipes-${{ matrix.id }}
+          path: recipes-out
+          if-no-files-found: ignore
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # The latest patch of the go.mod line's minor: the standard library's
+          # fixes (govulncheck) land in patches.
+          go-version: '~1.26.0'
+          check-latest: true
+      - run: make vuln

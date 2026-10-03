@@ -49,10 +49,6 @@ type pcp struct {
 	rto  time.Duration
 }
 
-func newPCP(gateway netip.Addr) pcp {
-	return pcp{addr: netip.AddrPortFrom(gateway, gatewayPort), rto: pcpRTO}
-}
-
 func newNonce() (n [12]byte) {
 	_, _ = rand.Read(n[:])
 	return n

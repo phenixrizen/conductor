@@ -341,5 +341,6 @@ func (w *PatternWatcher) Stop() {
 	// Taking the lock is the wait for a fire in flight; there is nothing to
 	// protect once it is ours.
 	w.fireMu.Lock()
+	//lint:ignore SA2001 the empty critical section is the wait
 	w.fireMu.Unlock()
 }

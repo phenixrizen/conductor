@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-pebble lint fmt generate docker clean
+.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-pebble test-network test-recipes lint lint-static vuln fmt generate docker clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -72,6 +72,20 @@ PEBBLE_VERSION ?= v2.10.1
 test-pebble: ## certificates from Let's Encrypt's Pebble (installs it with go install when missing)
 	@command -v pebble >/dev/null 2>&1 || [ -n "$$CONDUCTOR_PEBBLE" ] || go install github.com/letsencrypt/pebble/v2/cmd/pebble@$(PEBBLE_VERSION)
 	PATH="$$(go env GOPATH)/bin:$$PATH" go test -race -count=1 -tags pebble -run Pebble ./internal/certs/
+
+STATICCHECK_VERSION ?= v0.8.1
+GOVULNCHECK_VERSION ?= v1.8.0
+lint-static: ## staticcheck (pinned)
+	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
+
+vuln: ## govulncheck against the Go vulnerability database (needs the network)
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+test-network: ## the built-in agents' sites, on the network (nightly)
+	go test -race -count=1 -tags network -run Sites ./internal/catalog/
+
+test-recipes: ## the recipe flags against the CLIs on this machine (nightly; CONDUCTOR_RECIPES_REQUIRE names one that must be there)
+	go test -count=1 -tags recipes -run Recipe -v ./internal/catalog/
 
 lint: ## gofmt and go vet
 	@out="$$(gofmt -l $(GO_FILES))"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi

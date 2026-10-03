@@ -358,11 +358,11 @@ func TestExitedSessionReportsCode(t *testing.T) {
 func TestLinksAndJoin(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")
-	resp, out := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "admin"})
+	resp, _ := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "admin"})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad role: %d", resp.StatusCode)
 	}
-	resp, out = e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "qa"})
+	resp, out := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "qa"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create link: %d %v", resp.StatusCode, out)
 	}
@@ -371,7 +371,7 @@ func TestLinksAndJoin(t *testing.T) {
 	if !strings.HasPrefix(out["url"].(string), "http://example.test/join/") {
 		t.Fatalf("url %v", out["url"])
 	}
-	resp, out = e.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
+	_, out = e.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
 	links := out["links"].([]any)
 	if len(links) != 1 || links[0].(map[string]any)["label"] != "qa" {
 		t.Fatalf("list links %v", out)

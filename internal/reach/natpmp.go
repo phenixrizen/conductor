@@ -53,10 +53,6 @@ type natpmp struct {
 	rto  time.Duration
 }
 
-func newNATPMP(gateway netip.Addr) natpmp {
-	return natpmp{addr: netip.AddrPortFrom(gateway, gatewayPort), rto: pmpRTO}
-}
-
 // externalAddress asks the gateway for its public address.
 func (c natpmp) externalAddress(ctx context.Context) (netip.Addr, error) {
 	ctx, cancel := context.WithTimeout(ctx, pmpTimeout)
