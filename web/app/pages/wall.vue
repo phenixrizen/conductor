@@ -198,6 +198,7 @@ onMounted(() => {
               <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" @click="filter = 'needs'" />
               <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" @click="filter = 'running'" />
               <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
+              <AttentionDonut :sessions="attention.sessions.value" />
             </div>
           </div>
         </template>

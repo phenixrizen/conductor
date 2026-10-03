@@ -14,6 +14,9 @@ const serverHost = ref('')
 const webhooks = ref<WebhookInfo[]>([])
 const loading = ref(false)
 const error = ref('')
+// The clock of the activity chart's window.
+const now = ref(Date.now())
+let tick: number | undefined
 
 async function refresh() {
   if (!admin.hasToken.value) {
@@ -38,7 +41,9 @@ onMounted(() => {
   // The feed fills from the live store's stream; nothing here polls.
   attention.start()
   refresh()
+  tick = window.setInterval(() => (now.value = Date.now()), 15000)
 })
+onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, refresh)
 
 /**
@@ -131,6 +136,7 @@ const skillCommands = [
         <section class="flex min-w-0 flex-col gap-3" aria-labelledby="routing-heading">
           <h2 id="routing-heading" class="text-[11px] font-semibold uppercase tracking-wider text-muted">Routing</h2>
           <RoutingMatrix :routes="events.routes.value" :webhooks="webhooks" @update="events.setRoute" />
+          <ActivityChart :entries="events.entries.value" :now="now" />
           <EventFeed :entries="events.entries.value" />
         </section>
       </div>

@@ -5,7 +5,7 @@ import { AGENT_ICONS } from './app/utils/agentIcons'
 export default defineNuxtConfig({
   compatibilityDate: '2026-09-01',
   ssr: false,
-  modules: ['@nuxt/ui'],
+  modules: ['@nuxt/ui', 'nuxt-charts'],
   css: ['~/assets/css/main.css'],
   // The workbench never fetches icons at runtime: every icon it shows is
   // bundled from @iconify-json/lucide. The scan finds the names in the app's

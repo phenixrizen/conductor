@@ -65,6 +65,10 @@ func (e *Engine) OnChange(info session.Info) {
 		e.mu.Unlock()
 	}
 	sm.m.poke()
+	// The last member's session ending finishes the run.
+	if info.Status.Ended() {
+		e.noteEnd(sm.r.id)
+	}
 }
 
 // poke wakes the goroutine typing m's handoffs, if one runs. It takes no lock.

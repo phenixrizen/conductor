@@ -40,6 +40,9 @@ type Server struct {
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
+	// records keeps the runs that ended, under runs/ in the data directory
+	// (crew.Records); nil without one.
+	records *crew.Records
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
 	// runOf answers the run a session is a member of, for run links (see
@@ -201,6 +204,14 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// What a session change does not carry of a run reaches the browsers as
 	// a run event, which they read the run again for.
 	s.runs.OnRunChange = func(runID string) { s.events.run(runID, false) }
+	if st != nil {
+		records, err := crew.NewRecords(st)
+		if err != nil {
+			return nil, err
+		}
+		s.records = records
+		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) })
+	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
 	// it, and its handoff is typed into the member it names. OnActivity never
@@ -272,6 +283,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/crews/{id}", s.requireAdmin(s.handleDeleteCrew))
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.requireAdmin(s.handleDuplicateCrew))
 	mux.HandleFunc("POST /api/crews/{id}/launch", s.requireAdmin(s.handleLaunchCrew))
+	mux.HandleFunc("GET /api/crews/{id}/runs", s.requireAdmin(s.handleCrewRuns))
 	mux.HandleFunc("GET /api/paths", s.requireAdmin(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.requireAdmin(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.requireAdmin(s.handleListRuns))

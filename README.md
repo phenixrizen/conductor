@@ -637,6 +637,20 @@ other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
 badges, and the Crews list shows each crew's shape in miniature.
 
+**The timeline and the charts.** A **Timeline** tab beside the graph draws
+one bar per member from its start to its end or now, amber where its session
+waited for input (the feed's attention entries), a mark with a line to the
+other member's row for each handoff, and the run's stopped line; a hover
+reads the exact times. Runs that end (stopped or finished) are recorded as
+`runs/<id>.json` in the data directory (the run as the API answers it, never
+a terminal's contents; at most 500 kept) and read back after a restart, so
+the Crews list charts each crew's last twenty runs as bars (minutes,
+coloured by outcome, with how many members needed input), once there are two.
+The Events page charts the last hour's activity per minute (attention
+changes, reports, handoffs, tool calls, errors) once two events are in it,
+and the Wall's header shows its sessions by attention state as a small
+donut from two sessions on. Nothing is charted with fewer than two points.
+
 **Handoffs.** A member passes work to another with an event, which the
 [Conductor skill](#events-and-hooks) teaches the agent to send:
 
@@ -708,7 +722,8 @@ Limits:
 - 10 handoffs waiting for a member; 200 entries in a run's log; 100 links for a
   run.
 - Runs live in memory: the server keeps up to 100, and a restart forgets them
-  (the worktrees stay). Saved crews survive.
+  (the worktrees stay); the records of runs that ended survive, 500 at most.
+  Saved crews survive.
 
 ## Yolo
 

@@ -261,3 +261,46 @@ func (s *Server) handleSeedExamples(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("example crews seeded", "added", added, "skipped", skipped)
 	writeJSON(w, http.StatusOK, map[string]any{"added": added, "skipped": skipped})
 }
+
+// handleCrewRuns lists a crew's runs, newest first: the live ones the engine
+// holds, then the records of those that ended and left it (crew.Records,
+// kept under runs/ in the data directory), each as GET /api/runs/{run}
+// answers it. 404 for a crew that is neither saved nor recorded.
+func (s *Server) handleCrewRuns(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !crew.ValidID(id) {
+		writeError(w, http.StatusNotFound, "not_found", "no such crew")
+		return
+	}
+	live := []crew.Run{}
+	seen := map[string]bool{}
+	for _, run := range s.runs.List() {
+		if run.CrewID == id {
+			live = append(live, run)
+			seen[run.ID] = true
+		}
+	}
+	var recorded []crew.Run
+	if s.records != nil {
+		all, err := s.records.List(id)
+		if err != nil {
+			s.log.Warn("run records", "crew", id, "err", err)
+		}
+		for _, run := range all {
+			if !seen[run.ID] {
+				recorded = append(recorded, run)
+			}
+		}
+	}
+	known := len(live) > 0 || len(recorded) > 0
+	if !known && s.crews != nil {
+		if _, err := s.crews.Get(id); err == nil {
+			known = true
+		}
+	}
+	if !known {
+		writeError(w, http.StatusNotFound, "not_found", "no such crew")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": append(live, recorded...), "live": len(live)})
+}

@@ -208,6 +208,14 @@ type Engine struct {
 	// launch.
 	OnRunChange func(runID string)
 
+	// OnEnd is called with a run each time it ends: stopped (Stop), or
+	// finished, every member ended, as the change of the last member's
+	// session shows it (OnChange). It runs without the engine's lock, in
+	// the goroutine that stopped the run or reported the change, so it
+	// must not wait; RecordEnds sets it to save the run. Set it before the
+	// first launch.
+	OnEnd func(r Run)
+
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
@@ -1085,6 +1093,7 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// going: such a run is not reopened.
 	r.stopDone = ctx.Err() == nil
 	e.mu.Unlock()
+	e.noteEnd(r.id)
 	return errors.Join(errs...)
 }
 
@@ -1140,6 +1149,16 @@ func (e *Engine) idle(r *run) bool {
 		}
 	}
 	return true
+}
+
+// ForgetForTest drops a run as evict would, so a test sees the engine
+// without it (its record stays).
+func (e *Engine) ForgetForTest(runID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r, ok := e.runs[runID]; ok {
+		e.forget(r)
+	}
 }
 
 // forget drops r and the index of its sessions, and tells OnForget. The

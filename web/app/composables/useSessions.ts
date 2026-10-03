@@ -441,6 +441,8 @@ export function useSessions() {
       request<ResumeResult>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/resume`, { method: 'POST' }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
+    /** A crew's runs, newest first: the live ones, then the records of those that ended (`live` counts the first). */
+    crewRuns: (id: string) => request<{ runs: RunInfo[]; live: number }>(`/api/crews/${encodeURIComponent(id)}/runs`),
     /** The launchable agents and the server's yolo default (`yolo` in its config, CONDUCTOR_YOLO, serve --yolo). */
     catalogInfo: () => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
     /** The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back. */

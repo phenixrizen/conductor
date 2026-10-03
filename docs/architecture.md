@@ -224,7 +224,9 @@ binary inside a WSL 2 distribution. `desktop/README.md` has the layout.
 ## Persistence
 
 Sessions, links and crew runs remain in memory, while the data directory
-(`dataDir`) holds UI-managed state as JSON files, saved crews included. A
+(`dataDir`) holds UI-managed state as JSON files, saved crews included, and
+the records of runs that ended (`runs/<id>.json`, the run as the API answers
+it, 500 at most), which `GET /api/crews/{id}/runs` lists after the live runs. A
 server restart ends server sessions and forgets links and runs (worktrees and
 their branches stay on disk), and with them what Resume needs: an ended session
 can be resumed while it is listed, a crew member while its run is kept. Hosted

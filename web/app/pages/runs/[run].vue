@@ -116,10 +116,11 @@ const feed = computed(() => crewFeed(events.entries.value, run.value?.log ?? [],
 
 // The view: the tile grid, or the graph of the members and their handoffs. The choice is this browser's.
 const VIEW_KEY = 'conductor.runView'
-type RunView = 'grid' | 'graph'
+type RunView = 'grid' | 'graph' | 'timeline'
 function readView(): RunView {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'graph' ? 'graph' : 'grid'
+    const v = localStorage.getItem(VIEW_KEY)
+    return v === 'graph' || v === 'timeline' ? v : 'grid'
   } catch {
     return 'grid'
   }
@@ -135,6 +136,7 @@ watch(view, (v) => {
 const viewItems = [
   { label: 'Grid', value: 'grid', icon: 'i-lucide-layout-grid' },
   { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
+  { label: 'Timeline', value: 'timeline', icon: 'i-lucide-chart-gantt' },
 ]
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
 const handoffs = computed(() => handoffsOf(run.value?.log ?? [], events.entries.value, memberOf.value))
@@ -210,8 +212,8 @@ let tick: number | undefined
 onMounted(() => {
   live.start()
   load()
-  // The clock of the header's "up 5 min": no read of the server.
-  tick = window.setInterval(() => (now.value = Date.now()), 30000)
+  // The clock of the header's "up 5 min" and the timeline's open bars: no read of the server.
+  tick = window.setInterval(() => (now.value = Date.now()), 5000)
 })
 onBeforeUnmount(() => {
   window.clearInterval(tick)
@@ -269,6 +271,9 @@ watch(() => admin.token.value, load)
             @open="openMember"
             @start="startMember"
           />
+        </div>
+        <div v-else-if="view === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
+          <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />
         </div>
         <div v-else ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">
           <div class="grid h-full w-full gap-3" :class="narrow && 'h-auto'" :style="gridStyle" data-run-grid>

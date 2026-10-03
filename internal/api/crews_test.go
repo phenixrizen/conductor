@@ -1561,3 +1561,55 @@ func TestSeedExamplesOnce(t *testing.T) {
 		t.Fatalf("the edit was lost: %v", got)
 	}
 }
+
+// GET /api/crews/{id}/runs lists the crew's live runs first, then the
+// records of runs that ended; a run stopped through the API is recorded
+// under runs/ in the data directory and listed after the engine forgets it.
+func TestCrewRunsListsRecordsAndLiveRuns(t *testing.T) {
+	e := newTestEnv(t, nil)
+	members := []any{map[string]any{"name": "solo", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}}}
+	first := e.launchCrew(t, "records", members...)
+	resp, out := e.do("POST", "/api/runs/"+first+"/stop", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	crewID := out["run"].(map[string]any)["crewId"].(string)
+	file := filepath.Join(e.srv.cfg.DataDir, "runs", first+".json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(file); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no record at %s", file)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	resp, out = e.do("POST", "/api/crews/"+crewID+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("second launch: %d %v", resp.StatusCode, out)
+	}
+	second := out["run"].(map[string]any)["id"].(string)
+	resp, out = e.do("GET", "/api/crews/"+crewID+"/runs", adminToken, nil)
+	runs, _ := out["runs"].([]any)
+	if resp.StatusCode != http.StatusOK || len(runs) != 2 || out["live"] != 2.0 {
+		t.Fatalf("runs: %d %v", resp.StatusCode, out)
+	}
+	ids := []string{runs[0].(map[string]any)["id"].(string), runs[1].(map[string]any)["id"].(string)}
+	if ids[0] != second || ids[1] != first {
+		t.Fatalf("order %v, want %s then %s", ids, second, first)
+	}
+	// The engine forgets the stopped run: its record still lists it.
+	e.srv.runs.ForgetForTest(first)
+	resp, out = e.do("GET", "/api/crews/"+crewID+"/runs", adminToken, nil)
+	runs, _ = out["runs"].([]any)
+	if resp.StatusCode != http.StatusOK || len(runs) != 2 || out["live"] != 1.0 || runs[1].(map[string]any)["id"] != first || runs[1].(map[string]any)["state"] != "stopped" {
+		t.Fatalf("after forget: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("GET", "/api/crews/nope/runs", adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown crew: %d %v", resp.StatusCode, out)
+	}
+	if resp, _ := e.do("GET", "/api/crews/"+crewID+"/runs", "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", resp.StatusCode)
+	}
+}

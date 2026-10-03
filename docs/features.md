@@ -751,6 +751,11 @@ branch `design/crews-graph`.
 
 ### Open verification (round 5)
 
+- The crew graph, the run timeline and the charts at 1440 and 390 wide in
+  both themes, against the Claude Design hand-off on `design/crews-graph`
+  (Playwright checks the structure, not the look): the node and edge styles,
+  the handoff hover card, the editor's drag, the Crews list thumbnails, the
+  Events page's area chart and the Wall's donut.
 - The skills directories: Cursor, Copilot, OpenCode, oh-my-pi and Amp read
   `~/.agents/skills` and the Antigravity CLI `~/.gemini/antigravity-cli/skills`
   by their vendors' docs (read 2026-10-03); DeepSeek Harness reads

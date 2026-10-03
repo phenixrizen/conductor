@@ -443,6 +443,7 @@ watch(routeId, loadSelected)
               </span>
             </NuxtLink>
             <CrewRuns :runs="runsOf(item.key)" :sessions="live.sessions.value" :now="now" class="px-1" />
+            <CrewRunsChart v-if="item.key" :crew-id="item.key" :live="runsOf(item.key)" :now="now" class="px-1" />
           </div>
           <p v-if="loaded && !list.length" class="px-1 text-sm text-muted">No crews yet.</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="mt-2 self-center" />
