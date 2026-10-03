@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -85,7 +86,7 @@ func serveUntilListening(t *testing.T, args ...string) string {
 	var logs syncBuffer
 	done := make(chan error, 1)
 	go func() {
-		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), io.Discard, &logs)
+		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
 		if err == nil && code != 0 {
 			err = fmt.Errorf("exit code %d", code)
 		}
@@ -173,7 +174,7 @@ func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	var logs syncBuffer
-	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, io.Discard, &logs)
+	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
 	if strings.Contains(logs.String(), "conductor serving") {
 		t.Fatalf("serve listened with an unusable data directory:\n%s", logs.String())
 	}
@@ -292,7 +293,7 @@ func TestServeGoesOnWhenItCannotSetTheModesOfTheHookAssets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	var out syncBuffer
-	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, io.Discard, &out)
+	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &out)
 	if code != 1 || err == nil || !strings.Contains(err.Error(), "disk full") || strings.Contains(out.String(), "conductor serving") {
 		t.Fatalf("serve with assets it could not write: %d %v\n%s", code, err, out.String())
 	}
@@ -386,7 +387,7 @@ func TestServeWarnsAboutAWebhookHostThatDoesNotResolve(t *testing.T) {
 
 	private := strings.Replace(body, "nowhere.example", "internal.example", 1)
 	var stderr bytes.Buffer
-	code, err := runServe(t.Context(), []string{"--listen", "127.0.0.1:0", "--config", writeServeConfig(t, t.TempDir(), private)}, io.Discard, &stderr)
+	code, err := runServe(t.Context(), []string{"--listen", "127.0.0.1:0", "--config", writeServeConfig(t, t.TempDir(), private)}, strings.NewReader(""), io.Discard, &stderr)
 	if code != 1 || err == nil || !strings.Contains(err.Error(), "10.0.0.7 is a private address") {
 		t.Fatalf("a private webhook host: exit %d %v\n%s", code, err, stderr.String())
 	}
@@ -476,7 +477,7 @@ func serveWhile(t *testing.T, marker string, during func(logs string), args ...s
 	var logs syncBuffer
 	done := make(chan error, 1)
 	go func() {
-		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), io.Discard, &logs)
+		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
 		if err == nil && code != 0 {
 			err = fmt.Errorf("exit code %d", code)
 		}
@@ -567,5 +568,109 @@ func TestServeServesNothingOnTLSBeforeTheFirstCertificate(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(data, "tls")); err != nil || !fi.IsDir() {
 		t.Fatalf("the tls directory was not made: %v", err)
+	}
+}
+
+func TestLocalPublicURLFollowsTheBoundPort(t *testing.T) {
+	bound := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 43123}
+	cases := map[string]string{
+		"http://localhost:8080":      "http://localhost:43123",
+		"http://127.0.0.1:8080":      "http://127.0.0.1:43123",
+		"http://localhost":           "http://localhost:43123",
+		"https://team.example.net":   "https://team.example.net",
+		"https://team.example.net:1": "https://team.example.net:1",
+	}
+	for in, want := range cases {
+		local := strings.Contains(in, "localhost") || strings.Contains(in, "127.0.0.1")
+		if got := localPublicURL(in, local, bound); got != want {
+			t.Errorf("%s: got %s, want %s", in, got, want)
+		}
+	}
+	if got := localPublicURL("http://localhost:8080", true, nil); got != "http://localhost:8080" {
+		t.Errorf("no listener: %s", got)
+	}
+}
+
+func TestServePrintsTheListenHandshake(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	t.Cleanup(agents.ForgetBinary())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs syncBuffer
+	var out syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(out.String(), "\n") {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned: %v\n%s", err, logs.String())
+		case <-deadline:
+			t.Fatalf("no handshake:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	var h handshake
+	if err := json.Unmarshal([]byte(strings.SplitN(out.String(), "\n", 2)[0]), &h); err != nil {
+		t.Fatalf("handshake %q: %v", out.String(), err)
+	}
+	host, port, err := net.SplitHostPort(h.Listen)
+	if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
+		t.Fatalf("listen %q", h.Listen)
+	}
+	if h.PublicURL != "http://localhost:"+port || h.PID != os.Getpid() || h.Version == "" || len(h.AdminToken) < 32 || h.TLSListen != "" {
+		t.Fatalf("handshake %+v (port %s)", h, port)
+	}
+	if lines := logLines(logs.String(), "conductor serving", "publicUrl=http://localhost:"+port); len(lines) != 1 {
+		t.Fatalf("publicUrl did not follow the port:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), h.AdminToken) {
+		// The generated token is logged once by design (a developer signs in with it); the handshake does not change that.
+		t.Log("the generated token is in the log, as before")
+	}
+	cancel()
+	<-done
+}
+
+func TestServeExitsWhenStdinCloses(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	t.Cleanup(agents.ForgetBinary())
+	pr, pw := io.Pipe()
+	var logs syncBuffer
+	done := make(chan int, 1)
+	go func() {
+		code, _ := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg, "--exit-on-stdin-close"}, pr, io.Discard, &logs)
+		done <- code
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(logs.String(), "conductor serving") {
+		select {
+		case <-done:
+			t.Fatalf("serve returned early:\n%s", logs.String())
+		case <-deadline:
+			t.Fatalf("serve did not start:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	_ = pw.Close()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d:\n%s", code, logs.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("serve did not stop after stdin closed:\n%s", logs.String())
+	}
+	if lines := logLines(logs.String(), "stdin closed"); len(lines) != 1 {
+		t.Fatalf("not logged:\n%s", logs.String())
 	}
 }

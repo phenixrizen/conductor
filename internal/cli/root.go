@@ -42,7 +42,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	switch args[0] {
 	case "serve":
-		return runServe(ctx, args[1:], stdout, stderr)
+		return runServe(ctx, args[1:], stdin, stdout, stderr)
 	case "host":
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":

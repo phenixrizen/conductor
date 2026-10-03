@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,7 +34,7 @@ import (
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
 
-func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
+func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to a JSON config file")
@@ -41,6 +43,8 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	examples := fs.Bool("examples", false, "seed the example crews once (env CONDUCTOR_EXAMPLES=1); a crew whose id exists is left alone")
 	yolo := fs.Bool("yolo", false, "launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise (env CONDUCTOR_YOLO=1)")
+	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, adminToken?, tlsListen?} (for a parent process such as the desktop app)")
+	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -141,6 +145,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	if err != nil {
 		return 1, fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
+	// A local publicUrl follows the port the listener got (--listen :0, the
+	// desktop app): the agents' notify URL and local links reach the server.
+	// The API reads cfg live, so the change lands before any session starts.
+	cfg.PublicURL = localPublicURL(cfg.PublicURL, cfg.PublicURLIsLocal(), ln.Addr())
 	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(srv.Catalog().List()), "dataDir", cfg.DataDir)
 	if cfg.PublicURLIsLocal() {
 		log.Info("share links take the address the workbench is opened at; set publicUrl (CONDUCTOR_PUBLIC_URL) for a fixed one")
@@ -150,6 +158,8 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		log.Warn("no admin token configured; generated one for this run", "adminToken", cfg.AdminToken)
 	}
 
+	ctx, stdinCancel := context.WithCancel(ctx)
+	defer stdinCancel()
 	mctx, mcancel := context.WithCancel(ctx)
 	go srv.RunMaintenance(mctx)
 
@@ -167,6 +177,18 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		go func() { errCh <- httpSrv.Serve(tlsLn) }()
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)
+	if *printListen {
+		if err := printHandshake(stdout, cfg, ln, tlsLn); err != nil {
+			log.Warn("print-listen", "err", err)
+		}
+	}
+	if *exitOnStdinClose {
+		go func() {
+			_, _ = io.Copy(io.Discard, stdin)
+			log.Info("stdin closed; shutting down")
+			stdinCancel()
+		}()
+	}
 	if rv := cfg.Rendezvous; rv.Server != "" {
 		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rv.Server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Log: log}})
 		log.Info("sessions are published to the rendezvous", "server", rv.Server)
@@ -202,6 +224,61 @@ type uplinkPublisher struct{ u *hostagent.Uplink }
 
 func (p uplinkPublisher) Publish(ctx context.Context, local *session.Local) (api.PublishedSession, error) {
 	return p.u.Publish(ctx, local)
+}
+
+// handshake is the JSON line --print-listen writes once the listeners are
+// bound: what a parent process needs to open the workbench and sign in.
+type handshake struct {
+	Listen     string `json:"listen"`
+	PublicURL  string `json:"publicUrl"`
+	PID        int    `json:"pid"`
+	Version    string `json:"version"`
+	AdminToken string `json:"adminToken,omitempty"`
+	TLSListen  string `json:"tlsListen,omitempty"`
+}
+
+// printHandshake writes the handshake line. The admin token goes only when
+// the server generated it for this run (a configured one is the parent's
+// already); the line is for the parent's pipe, never a log.
+func printHandshake(w io.Writer, cfg *config.Config, ln, tlsLn net.Listener) error {
+	h := handshake{Listen: ln.Addr().String(), PublicURL: cfg.PublicURL, PID: os.Getpid(), Version: version.String()}
+	if cfg.GeneratedAdminToken {
+		h.AdminToken = cfg.AdminToken
+	}
+	if tlsLn != nil {
+		h.TLSListen = tlsLn.Addr().String()
+	}
+	b, err := json.Marshal(h)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(b))
+	return err
+}
+
+// localPublicURL is publicUrl with the port the listener got, when publicUrl
+// names this machine (local) and the listener was bound to another port
+// (--listen :0 took a free one): http://localhost:8080 with a listener on
+// 127.0.0.1:43123 becomes http://localhost:43123. A publicUrl that names
+// another machine, or one that cannot be parsed, is returned as it is.
+func localPublicURL(publicURL string, local bool, bound net.Addr) string {
+	if !local || bound == nil {
+		return publicURL
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Host == "" {
+		return publicURL
+	}
+	_, port, err := net.SplitHostPort(bound.String())
+	if err != nil || port == "" || port == "0" {
+		return publicURL
+	}
+	host := u.Hostname()
+	if host == "" {
+		host = "localhost"
+	}
+	u.Host = net.JoinHostPort(host, port)
+	return u.String()
 }
 
 // startTLS makes the certificate manager and the TLS listener: a certificate
