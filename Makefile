@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test lint lint-static vuln fmt generate docker clean
+.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -79,6 +79,20 @@ desktop-dev: build-go ## run the desktop app against the checkout's bin/conducto
 
 desktop-test: ## the desktop shell's type check and unit tests
 	cd desktop && npm run typecheck && npm test
+
+desktop-e2e: build-go ## the desktop shell's smoke in Electron (needs a display: xvfb-run on Linux)
+	cd desktop && npm run build && npm run test:e2e
+
+# The server binaries the packages bundle, under the names electron-builder's ${os}-${arch} macros give.
+desktop-binaries: ## cross-compile the server for the desktop packages (linux and mac, x64 and arm64)
+	@touch internal/web/dist/.gitkeep
+	@for t in linux/amd64/linux-x64 linux/arm64/linux-arm64 darwin/amd64/mac-x64 darwin/arm64/mac-arm64; do \
+	  goos=$${t%%/*}; rest=$${t#*/}; goarch=$${rest%%/*}; dir=bin/desktop/$${rest#*/}; mkdir -p $$dir; \
+	  CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -trimpath -ldflags "$(LDFLAGS)" -o $$dir/conductor ./cmd/conductor && echo "built $$dir/conductor"; \
+	done
+
+desktop-dist: web-build desktop-binaries ## package the desktop app for this platform (electron-builder; unsigned without the secrets)
+	cd desktop && npm run dist
 
 PEBBLE_VERSION ?= v2.10.1
 test-pebble: ## certificates from Let's Encrypt's Pebble (installs it with go install when missing)

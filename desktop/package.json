@@ -11,13 +11,17 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dist": "npm run build && electron-builder --config electron-builder.yml",
-    "dist:dir": "npm run build && electron-builder --config electron-builder.yml --dir"
+    "dist:dir": "npm run build && electron-builder --config electron-builder.yml --dir",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
     "electron": "44.5.1",
     "electron-builder": "26.15.3",
     "typescript": "5.9.3",
-    "vitest": "3.2.4"
-  }
+    "vitest": "3.2.4",
+    "@playwright/test": "1.44.1"
+  },
+  "author": "the Conductor authors",
+  "homepage": "https://github.com/phenixrizen/conductor"
 }

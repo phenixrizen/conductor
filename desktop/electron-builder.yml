@@ -1,0 +1,65 @@
+appId: dev.conductor.app
+productName: Conductor
+copyright: Copyright © 2026 the Conductor authors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - static/**/*
+  - package.json
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+  - from: static
+    to: static
+asar: true
+compression: normal
+publish:
+  provider: github
+  owner: phenixrizen
+  repo: conductor
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extraResources:
+    - from: ../bin/desktop/mac-${arch}/conductor
+      to: conductor
+  binaries:
+    - Contents/Resources/conductor
+dmg:
+  sign: false
+linux:
+  category: Development
+  maintainer: conductor@phenixrizen.dev
+  synopsis: Coding agents in shared terminals
+  target:
+    - target: deb
+      arch: [x64, arm64]
+    - target: rpm
+      arch: [x64, arm64]
+    - target: AppImage
+      arch: [x64, arm64]
+  extraResources:
+    - from: ../bin/desktop/linux-${arch}/conductor
+      to: conductor
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  extraResources:
+    # No Windows server: the Linux binary runs inside the user's WSL 2 distribution.
+    - from: ../bin/desktop/linux-x64/conductor
+      to: conductor-linux
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false

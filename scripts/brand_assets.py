@@ -155,6 +155,17 @@ def validate() -> None:
     print("SVG content, palette, text contrast, favicon and specimen references passed")
 
 
+def export_desktop_icons(destination: Path) -> None:
+    """The desktop app's icons: the full-bleed app icon rendered with ImageMagick (electron-builder makes icns and ico from a PNG)."""
+    import subprocess
+    destination.mkdir(parents=True, exist_ok=True)
+    source = ASSETS / "conductor-app-icon.svg"
+    for name, size in (("icon.png", 1024), ("icon-512.png", 512), ("tray.png", 64)):
+        output = destination / name
+        subprocess.run(["convert", "-background", "none", "-density", "384", str(source), "-resize", f"{size}x{size}", str(output)], check=True)
+        print(f"wrote {output}")
+
+
 def export_pngs(destination: Path) -> None:
     import cairosvg  # Optional export-only dependency; failures are reported below.
     destination.mkdir(parents=True, exist_ok=True)
@@ -174,7 +185,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Check without modifying SVGs")
     parser.add_argument("--png-dir", type=Path, help="Optional PNG export destination")
+    parser.add_argument("--desktop-icons", type=Path, help="Write the desktop app's icons (icon.png 1024, icon-512.png) from the app icon, with ImageMagick")
     args = parser.parse_args()
+    if args.desktop_icons:
+        export_desktop_icons(args.desktop_icons)
+        return 0
     try:
         master = ET.fromstring((ASSETS / "conductor-logo.svg").read_text(encoding="utf-8"))
         for name, content in variants(master).items():
