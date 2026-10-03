@@ -437,6 +437,11 @@ func (h *HostedSession) ForwardICE(v *Viewer, c proto.ICECandidate) error {
 	return h.toHost(proto.ViewerICE{T: proto.HostICE, ViewerID: v.ID, Candidate: c})
 }
 
+// Tell sends the host a message of the server's own (a link_created, an
+// error answering its request): ErrHostGone without a host, ErrSlowHost
+// when its queue is full.
+func (h *HostedSession) Tell(v any) error { return h.toHost(v) }
+
 // StartRelay switches a viewer to relay mode and tells the host.
 func (h *HostedSession) StartRelay(v *Viewer) error {
 	v.relay.Store(true)

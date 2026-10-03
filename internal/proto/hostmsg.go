@@ -14,6 +14,10 @@ const (
 	// both directions
 	HostAttention = "attention"
 	HostActivity  = "activity"
+	// HostLink asks the server for a share link to the session (a host
+	// behind a rendezvous mints its links there); HostLinkCreated answers.
+	HostLink        = "link"
+	HostLinkCreated = "link_created"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -171,3 +175,38 @@ type HostStopMsg struct {
 
 // MaxHostMessage bounds a host control text frame.
 const MaxHostMessage = 64 << 10
+
+// Limits of a host's link request.
+const (
+	MaxLinkLabel      = 120       // bytes
+	MaxLinkTTLSeconds = 24 * 3600 // a day
+	MaxLinkRequestID  = 32        // bytes
+	// LinkRequestsPerMinute is how many link requests a host connection may
+	// make a minute; past it the server answers error rate_limited.
+	LinkRequestsPerMinute = 5
+)
+
+// HostLinkMsg is a host's request for a share link to its session: the
+// role, how long the link lasts (the server's default when 0, at most a
+// day) and a label. RequestID ties the answer to the request.
+type HostLinkMsg struct {
+	T          string `json:"t"`
+	RequestID  string `json:"requestId"`
+	Role       string `json:"role"`
+	TTLSeconds int    `json:"ttlSeconds,omitempty"`
+	Label      string `json:"label,omitempty"`
+}
+
+// LinkCreated answers HostLinkMsg: the link's URL on the server's public
+// base, the same as an invite for the desktop app (conductor://…), and the
+// link as the server lists it. An error{requestId} answers a refused one.
+type LinkCreated struct {
+	T         string `json:"t"`
+	RequestID string `json:"requestId"`
+	URL       string `json:"url"`
+	Invite    string `json:"invite"`
+	LinkID    string `json:"linkId"`
+	Role      string `json:"role"`
+	Label     string `json:"label,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}

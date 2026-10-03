@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -120,5 +121,41 @@ func TestAPublishedServerSessionIsViewableAtTheRendezvous(t *testing.T) {
 	}
 	if !rd.Info().Status.Ended() {
 		t.Fatalf("rendezvous still shows %s", rd.Info().Status)
+	}
+}
+
+// A link to a published session is minted at the rendezvous, over the host
+// connection: its URL and invite are the rendezvous's, and the rendezvous
+// resolves it.
+func TestLinkOnAPublishedSessionIsMintedAtTheRendezvous(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "for the PR", "ttlSeconds": 3600})
+	url, _ := out["url"].(string)
+	if resp.StatusCode != http.StatusCreated || !strings.HasPrefix(url, "https://rendezvous.example.net/join/") || out["remote"] != true || out["token"] != nil {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(url, "https://rendezvous.example.net/join/")
+	if out["invite"] != "conductor://rendezvous.example.net/join/"+token {
+		t.Fatalf("invite %v", out["invite"])
+	}
+	link, _ := out["link"].(map[string]any)
+	if link["label"] != "for the PR" || link["role"] != "view" || link["remote"] != true {
+		t.Fatalf("link %v", link)
+	}
+	if resp, out := rendezvous.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
+		t.Fatalf("the rendezvous resolves it: %d %v", resp.StatusCode, out)
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); strings.Contains(fmt.Sprint(out), "for the PR") {
+		t.Fatalf("the local store kept a remote link: %v", out)
 	}
 }

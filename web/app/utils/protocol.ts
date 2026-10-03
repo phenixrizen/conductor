@@ -257,3 +257,35 @@ export function closeReason(code: number, reason: string): string {
   }
   return reason || `Connection closed (${code})`
 }
+
+/**
+ * Host control connection (`/ws/host`, docs/protocol.md): a host asks the
+ * server for a share link to its session and the server answers, or refuses
+ * with an `error` naming the request. The web never sends these; they are
+ * mirrored here with their limits, as every message is.
+ */
+export interface HostLinkMessage {
+  t: 'link'
+  /** ≤ 32 bytes. */
+  requestId: string
+  role: 'view' | 'control'
+  /** ≤ 86400 (a day). */
+  ttlSeconds?: number
+  /** ≤ 120 bytes. */
+  label?: string
+}
+
+export interface HostLinkCreatedMessage {
+  t: 'link_created'
+  requestId: string
+  url: string
+  /** `conductor://<host>/join/<token>`, which the desktop app opens itself. */
+  invite: string
+  linkId: string
+  role: 'view' | 'control'
+  label?: string
+  expiresAt?: string
+}
+
+/** A host connection may ask for this many links a minute. */
+export const HOST_LINK_REQUESTS_PER_MINUTE = 5

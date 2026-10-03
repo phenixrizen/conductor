@@ -108,13 +108,23 @@ Host → server: `register{proto, host{name,version,user?}, session{name,agentId
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`,
-`activity{sessionId,entry,state?}`.
+`activity{sessionId,entry,state?}`,
+`link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
+minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
+`ttlSeconds` ≤ 86400, at most 5 requests a minute per connection; one
+without a `requestId` is a protocol error).
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
-`activity{entry}` (an event reported through the API, for the host to record), `error`.
+`activity{entry}` (an event reported through the API, for the host to record),
+`link_created{requestId, url, invite, linkId, role, label?, expiresAt?}`
+(the link on the server's public base, and the same as an invite,
+`conductor://<host>/join/<token>` with `?http=1` for a plain-http base,
+which the desktop app opens itself), `error{code, message, requestId?}`
+(`requestId` names the link request a refusal answers: `invalid_role`,
+`invalid_request`, `rate_limited`, `link_refused`).
 
 `activity` carries one activity-log entry, the fields of the `activity`
 control message above (`entry` has its own `t`), in both directions. Host to
@@ -549,7 +559,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
 | `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers |
-| `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}`; `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
+| `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204`; revoking a revoked link answers `204` and records nothing |
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |

@@ -171,6 +171,9 @@ type ErrorMsg struct {
 	T       string `json:"t"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID names the host's link request an error answers (host
+	// control connection), empty otherwise.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // ErrorInfo is the nested error object used inside other messages.

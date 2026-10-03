@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -21,6 +22,8 @@ type PublishedSession interface {
 	Stop()
 	Base() string
 	ID() string
+	// Link mints a share link to the session at the rendezvous.
+	Link(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error)
 }
 
 // SetPublisher makes every server session created from now on published

@@ -46,6 +46,12 @@ type Published struct {
 	once   sync.Once
 }
 
+// Link asks the rendezvous for a share link to the session: its URL there,
+// the same as an invite, and the link's id, role, label and expiry.
+func (p *Published) Link(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {
+	return p.a.requestLink(ctx, role, ttl, label)
+}
+
 // Publish registers local with the rendezvous (ctx bounds the registration)
 // and serves its viewers until the session ends or Stop is called. It
 // returns once registered.

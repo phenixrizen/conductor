@@ -6,6 +6,8 @@ package hostagent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -226,6 +228,9 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
+	// links are the link requests waiting for the server's answer, by
+	// request id. Guarded by mu.
+	links map[string]chan linkAnswer
 
 	// activity carries the local session's activity entries to the server;
 	// statusQueued says the session's final (status) entry is in it.
@@ -687,12 +692,70 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			defer cancel()
 			_ = a.local.Stop(stopCtx)
 		}()
+	case proto.HostLinkCreated:
+		var m proto.LinkCreated
+		if json.Unmarshal(data, &m) == nil {
+			a.answerLink(m.RequestID, m, nil)
+		}
 	case proto.HostError:
 		var m proto.ErrorMsg
 		_ = json.Unmarshal(data, &m)
+		if m.RequestID != "" {
+			a.answerLink(m.RequestID, proto.LinkCreated{}, fmt.Errorf("%s: %s", m.Code, m.Message))
+			return nil
+		}
 		a.log.Warn("server error", "code", m.Code, "message", m.Message)
 	}
 	return nil
+}
+
+// linkAnswer is what a link request waits for.
+type linkAnswer struct {
+	link proto.LinkCreated
+	err  error
+}
+
+// requestLink asks the server for a share link to the session and waits
+// for its answer (link_created, or an error naming the request), at most
+// until ctx ends.
+func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return proto.LinkCreated{}, err
+	}
+	id := hex.EncodeToString(b[:])
+	ch := make(chan linkAnswer, 1)
+	a.mu.Lock()
+	if a.links == nil {
+		a.links = map[string]chan linkAnswer{}
+	}
+	a.links[id] = ch
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.links, id)
+		a.mu.Unlock()
+	}()
+	a.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: id, Role: role, TTLSeconds: int(ttl / time.Second), Label: label})
+	select {
+	case ans := <-ch:
+		return ans.link, ans.err
+	case <-ctx.Done():
+		return proto.LinkCreated{}, ctx.Err()
+	}
+}
+
+// answerLink hands the server's answer to the request waiting for it.
+func (a *agent) answerLink(id string, link proto.LinkCreated, err error) {
+	a.mu.Lock()
+	ch := a.links[id]
+	a.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- linkAnswer{link, err}:
+		default:
+		}
+	}
 }
 
 // send delivers a JSON message on the current control connection.

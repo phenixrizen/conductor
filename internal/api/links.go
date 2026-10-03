@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -49,6 +50,25 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 	req, ok := readLinkRequest(w, r)
 	if !ok {
+		return
+	}
+	// A session published to a rendezvous is viewed there: its links are
+	// minted there, over the host connection.
+	if pub := s.publishedOf(id); pub != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		res, err := pub.Link(ctx, string(req.Role), req.ttl(), req.Label)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not mint the link: "+err.Error())
+			return
+		}
+		s.recordLink(id, "link created at the rendezvous: "+linkLabelOr(res.Label)+" ("+res.Role+")")
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"link":   map[string]any{"id": res.LinkID, "role": res.Role, "label": res.Label, "expiresAt": res.ExpiresAt, "sessionId": id, "remote": true},
+			"url":    res.URL,
+			"invite": res.Invite,
+			"remote": true,
+		})
 		return
 	}
 	link, token, err := s.links.Create(id, req.Role, req.Label, req.ttl())
@@ -100,10 +120,12 @@ func (s *Server) writeLink(w http.ResponseWriter, r *http.Request, link *share.L
 // linkReply is a link just created as a reply carries it: {link, token, url},
 // the URL on the base publicBase gives for r.
 func (s *Server) linkReply(r *http.Request, link *share.Link, token string) map[string]any {
+	base := s.publicBase(r)
 	return map[string]any{
-		"link":  link,
-		"token": token,
-		"url":   s.publicBase(r) + "/join/" + url.PathEscape(token),
+		"link":   link,
+		"token":  token,
+		"url":    base + "/join/" + url.PathEscape(token),
+		"invite": inviteFor(base, token),
 	}
 }
 

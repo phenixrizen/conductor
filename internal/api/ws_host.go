@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"slices"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -63,6 +66,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := hs.Info()
+	hc := &hostConnState{base: s.publicBase(r)}
 	s.log.Info("host registered", "session", info.ID, "host", info.HostName, "resumed", resumed)
 	defer func() {
 		hs.HostDisconnected(conn)
@@ -129,7 +133,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			hs.HostRelayFrame(viewerID, inner)
 			continue
 		}
-		if !s.handleHostMessage(hs, data) {
+		if !s.handleHostMessage(hs, hc, data) {
 			c.Close(proto.CloseProtocolError, "bad host message")
 			return
 		}
@@ -142,8 +146,15 @@ func writeText(ctx context.Context, c *websocket.Conn, b []byte) error {
 	return c.Write(wctx, websocket.MessageText, b)
 }
 
+// hostConnState is what one host connection keeps between its messages:
+// the base its links take and when it last asked for links.
+type hostConnState struct {
+	base      string
+	linkTimes []time.Time
+}
+
 // handleHostMessage dispatches a JSON message from the host; false is fatal.
-func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
+func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, data []byte) bool {
 	t, err := proto.ParseHeader(data)
 	if err != nil {
 		return false
@@ -208,10 +219,58 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, data []byte) bool {
 		// entry of a type this server does not know (a newer host's) is
 		// dropped, not fatal.
 		hs.HostActivity(m.Entry, m.State)
+	case proto.HostLink:
+		var m proto.HostLinkMsg
+		if json.Unmarshal(data, &m) != nil || m.RequestID == "" || len(m.RequestID) > proto.MaxLinkRequestID {
+			return false
+		}
+		s.hostLink(hs, hc, m)
 	case proto.HostRegister:
 		return false
 	default:
 		s.log.Debug("ignoring unknown host message", "t", t)
 	}
 	return true
+}
+
+// hostLink mints a share link to the host's session on its request and
+// answers link_created, or error{requestId} for a refused one: a role that
+// is not view or control, a label over proto.MaxLinkLabel bytes, a lifetime
+// over a day, or more than proto.LinkRequestsPerMinute in a minute.
+func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.HostLinkMsg) {
+	refuse := func(code, msg string) {
+		_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: code, Message: msg, RequestID: m.RequestID})
+	}
+	now := time.Now()
+	hc.linkTimes = slices.DeleteFunc(hc.linkTimes, func(t time.Time) bool { return now.Sub(t) > time.Minute })
+	if len(hc.linkTimes) >= proto.LinkRequestsPerMinute {
+		refuse("rate_limited", "too many link requests; wait a minute")
+		return
+	}
+	role := session.Role(m.Role)
+	if !role.Valid() {
+		refuse("invalid_role", "role must be view or control")
+		return
+	}
+	if len(m.Label) > proto.MaxLinkLabel {
+		refuse("invalid_request", "label too long")
+		return
+	}
+	if m.TTLSeconds < 0 || m.TTLSeconds > proto.MaxLinkTTLSeconds {
+		refuse("invalid_request", "ttlSeconds out of range: a day at most")
+		return
+	}
+	hc.linkTimes = append(hc.linkTimes, now)
+	ttl := time.Duration(m.TTLSeconds) * time.Second
+	link, token, err := s.links.Create(hs.Info().ID, role, m.Label, ttl)
+	if err != nil {
+		refuse("link_refused", err.Error())
+		return
+	}
+	s.log.Info("link minted for a host", "session", hs.Info().ID, "role", role, "label", link.Label)
+	out := proto.LinkCreated{T: proto.HostLinkCreated, RequestID: m.RequestID, URL: hc.base + "/join/" + url.PathEscape(token), Invite: inviteFor(hc.base, token), LinkID: link.ID, Role: string(link.Role), Label: link.Label}
+	if link.ExpiresAt != nil {
+		out.ExpiresAt = link.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	_ = hs.Tell(out)
 }
