@@ -91,7 +91,7 @@ what reaches whom:
 |---|---|
 | on your machine, the link opened there | you |
 | on your machine, a teammate on the same network | them, at your machine's address and port (`listen` binds every interface) |
-| on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address; round 5 does both on its own, with a certificate for that address (`docs/features.md`, "Round 5") |
+| on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address. With `reach.mode` `auto` (the default) the server learns its public address from STUN and, once it has a TLS listener with a certificate, maps that port on the router and builds links on `https://<public address>`; until then links keep the address you opened the workbench at, and the Share dialog says so. `GET /api/reach` reports the state. A mapping is reported as mapped, never as reachable: the server's own check through the public address is refused by most home routers, so open a link once from a phone on mobile data |
 | on your machine under WSL2 | Windows must expose the port: `netsh interface portproxy` or `networkingMode=mirrored` in `.wslconfig`, plus a firewall rule |
 | on a machine with a public address, or behind a reverse proxy | anyone, at `publicUrl` or the proxy's forwarded host |
 | behind carrier-grade NAT or a corporate network | a tunnel or a reverse proxy in front of the server; or keep the session on your machine with `conductor host` against a server anyone can reach |
@@ -737,6 +737,10 @@ file must run `compinit` before that line.
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
 | `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |
+| `reach.mode` | `CONDUCTOR_REACH` | `auto` | how the server finds out it can be reached from outside its network: `auto` asks a STUN server for the public address and, once there is a TLS listener, maps its port on the router (UPnP IGD, PCP or NAT-PMP, renewed and deleted on shutdown; plain http is never mapped); `manual` asks for the address only, for a port you forwarded yourself; `off` asks nothing. `GET /api/reach` reports the result; the Share dialog says what a link reaches |
+| `reach.publicPort` | `CONDUCTOR_REACH_PUBLIC_PORT` | `443` | the port on the public address for the TLS listener: mapped in `auto`, forwarded by you in `manual` |
+| `reach.publicPort80` | `CONDUCTOR_REACH_PUBLIC_PORT_80` | `false` | also map port 80 to the plain listener, for an ACME `http-01` challenge |
+| `reach.stunServer` | `CONDUCTOR_REACH_STUN` | first `stun:` of `iceServers` | the STUN server that answers the public address |
 
 ### Upgrading
 

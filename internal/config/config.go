@@ -36,6 +36,32 @@ type ICEServer struct {
 	Credential string   `json:"credential,omitempty"`
 }
 
+// Reach says how the server finds out, and makes it so, that it can be
+// reached from outside its network (internal/reach).
+type Reach struct {
+	// Mode is auto (the default: the public address by STUN and the TLS
+	// port mapped on the gateway through UPnP, PCP or NAT-PMP), manual (the
+	// address by STUN only; the person forwarded PublicPort) or off.
+	Mode string `json:"mode"`
+	// PublicPort is the port on the public address that reaches the TLS
+	// listener: mapped in auto, forwarded by the person in manual. 443 by
+	// default.
+	PublicPort int `json:"publicPort"`
+	// PublicPort80 also maps port 80 to the plain listener, for an ACME
+	// http-01 challenge.
+	PublicPort80 bool `json:"publicPort80"`
+	// STUNServer answers the public address: a stun: URL or host:port. The
+	// first stun: URL of iceServers when empty.
+	STUNServer string `json:"stunServer"`
+}
+
+// Reach modes.
+const (
+	ReachOff    = "off"
+	ReachAuto   = "auto"
+	ReachManual = "manual"
+)
+
 // Duration is a time.Duration that unmarshals from a JSON string such as "10m".
 type Duration time.Duration
 
@@ -117,6 +143,8 @@ type Config struct {
 	// unless a launch or a crew says otherwise: CONDUCTOR_YOLO, conductor
 	// serve --yolo.
 	Yolo bool `json:"yolo"`
+	// Reach: the public address and the port mapping on the gateway.
+	Reach Reach `json:"reach"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -148,7 +176,24 @@ func Defaults() *Config {
 		ICEServers:           []ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 		RelayTimeoutMs:       8000,
 		FileView:             FileViewView,
+		Reach:                Reach{Mode: ReachAuto, PublicPort: 443},
 	}
+}
+
+// STUNServer is the server the reach lookup asks for the public address:
+// reach.stunServer, else the first stun: URL of iceServers, else "".
+func (c *Config) STUNServer() string {
+	if c.Reach.STUNServer != "" {
+		return c.Reach.STUNServer
+	}
+	for _, s := range c.ICEServers {
+		for _, u := range s.URLs {
+			if strings.HasPrefix(strings.ToLower(u), "stun:") {
+				return u
+			}
+		}
+	}
+	return ""
 }
 
 // Load reads path (optional), applies environment overrides and validates.
@@ -253,6 +298,17 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 		cfg.Webhooks = hooks
 	}
+	str("CONDUCTOR_REACH", &cfg.Reach.Mode)
+	str("CONDUCTOR_REACH_STUN", &cfg.Reach.STUNServer)
+	if err := num("CONDUCTOR_REACH_PUBLIC_PORT", &cfg.Reach.PublicPort); err != nil {
+		return err
+	}
+	switch getenv("CONDUCTOR_REACH_PUBLIC_PORT_80") {
+	case "1", "true":
+		cfg.Reach.PublicPort80 = true
+	case "0", "false":
+		cfg.Reach.PublicPort80 = false
+	}
 	if v := getenv("CONDUCTOR_ICE_SERVERS"); v != "" {
 		var servers []ICEServer
 		for _, u := range strings.Split(v, ",") {
@@ -331,6 +387,17 @@ func (c *Config) Validate() error {
 		if len(s.URLs) == 0 {
 			errs = append(errs, fmt.Errorf("iceServers[%d]: urls must not be empty", i))
 		}
+	}
+	switch c.Reach.Mode {
+	case ReachOff, ReachAuto, ReachManual:
+	default:
+		errs = append(errs, fmt.Errorf("reach.mode must be off, auto or manual, got %q", c.Reach.Mode))
+	}
+	if c.Reach.PublicPort < 1 || c.Reach.PublicPort > 65535 {
+		errs = append(errs, errors.New("reach.publicPort must be between 1 and 65535"))
+	}
+	if c.Reach.Mode != ReachOff && c.STUNServer() == "" {
+		errs = append(errs, errors.New("reach needs a STUN server: reach.stunServer, or a stun: URL in iceServers"))
 	}
 	hookErrs, warnings := c.validateWebhooks()
 	errs = append(errs, hookErrs...)

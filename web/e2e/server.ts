@@ -105,6 +105,7 @@ export async function startServer(o: {
       CONDUCTOR_ALLOWED_ROOTS: o.allowedRoot,
       CONDUCTOR_DEFAULT_CWD: o.defaultCwd,
       CONDUCTOR_ADMIN_TOKEN: token,
+      CONDUCTOR_REACH: 'off',
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
     },
     stdio: ['ignore', out, out],

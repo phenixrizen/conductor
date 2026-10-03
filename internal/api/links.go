@@ -112,14 +112,21 @@ func (s *Server) linkReply(r *http.Request, link *share.Link, token string) map[
 var forwardedHost = regexp.MustCompile(`^[A-Za-z0-9.\-]+(?::\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](?::\d{1,5})?$`)
 
 // publicBase is the base URL a share link made for r is built on: publicUrl
-// when it names another machine, and otherwise (unset, or localhost, as the
-// default and the example config have it) the address r came through, which
-// is the address the workbench was opened at: the scheme r arrived with (or
-// the one a reverse proxy sets in X-Forwarded-Proto) and r's Host (or
-// X-Forwarded-Host). A request whose host is missing or malformed falls back
-// to publicUrl.
+// when it names another machine; otherwise (unset, or localhost, as the
+// default and the example config have it) the public address reach found
+// and mapped, once a certificate for it is ready (discoveredBase); otherwise
+// the address r came through, which is the address the workbench was opened
+// at: the scheme r arrived with (or the one a reverse proxy sets in
+// X-Forwarded-Proto) and r's Host (or X-Forwarded-Host). A request whose
+// host is missing or malformed falls back to publicUrl.
 func (s *Server) publicBase(r *http.Request) string {
-	if r == nil || !s.cfg.PublicURLIsLocal() {
+	if !s.cfg.PublicURLIsLocal() {
+		return s.cfg.PublicURL
+	}
+	if base := s.discoveredBase(); base != "" {
+		return base
+	}
+	if r == nil {
 		return s.cfg.PublicURL
 	}
 	first := func(header string) string {

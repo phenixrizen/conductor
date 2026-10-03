@@ -343,6 +343,25 @@ export interface RunInfo {
   yolo: boolean
 }
 
+/** GET /api/reach: what the server knows about being reached from outside its network, and whether its TLS listener has a certificate. */
+export interface ReachInfo {
+  mode: 'off' | 'auto' | 'manual'
+  /** A port on the public address reaches the server (mapped on the router, or forwarded by hand in manual mode). "Mapped" is not "verified": see `verified`. */
+  mapped: boolean
+  method?: 'upnp' | 'pcp' | 'nat-pmp' | 'manual'
+  /** `https://<externalIp>[:port]`, the base links take once `tls.ready`. */
+  publicUrl?: string
+  externalIp?: string
+  externalPort?: number
+  listenPort?: number
+  expiresAt?: string
+  renewedAt?: string
+  /** `ok` when the server reached itself through the public URL, `unverified` when it did not (usual from inside the network). */
+  verified?: 'ok' | 'unverified'
+  error?: string
+  tls?: { mode: string; ready: boolean }
+}
+
 export interface PathGit {
   repo: boolean
   commits: boolean
@@ -475,6 +494,8 @@ export function useSessions() {
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
     whoami: () => request<{ user: string }>('/api/whoami'),
+    /** The server's reach: its public address, the mapped port and the certificate's readiness. */
+    reach: () => request<ReachInfo>('/api/reach'),
     /**
      * The child directories of the longest existing directory in `prefix`, under the allowed roots (symlinks resolved), at most 50 of the
      * first 2000 entries read, each marked when it is a git repository (`repo`) with a commit (`commits`). Hidden directories show once

@@ -13,6 +13,7 @@
   "relayTimeoutMs": 8000,
   "envPassthrough": [],
   "fileView": "view",
+  "reach": { "mode": "auto", "publicPort": 443, "publicPort80": false, "stunServer": "" },
   "dataDir": "",
   "catalog": {
     "disableDefaults": false,

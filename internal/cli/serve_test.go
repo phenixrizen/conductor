@@ -49,6 +49,8 @@ func clearConductorEnv(t *testing.T) {
 	// A home of the test's own: nothing a test starts reads or writes the
 	// user's ~/.conductor.
 	t.Setenv("HOME", t.TempDir())
+	// No STUN or gateway traffic from a test unless it asks for it.
+	t.Setenv("CONDUCTOR_REACH", "off")
 }
 
 // writeServeConfig writes body as conductor.json in dir and returns its path.
@@ -410,5 +412,24 @@ func TestServeSeedsTheExamplesOnce(t *testing.T) {
 	logs = serveUntilListening(t, "--config", cfg)
 	if lines := logLines(logs, "example crews"); len(lines) != 0 {
 		t.Fatalf("without the flag nothing is seeded:\n%s", logs)
+	}
+}
+
+func TestServeLogsTheReachResult(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "off"}}`, dir, dir, data))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "reach: off"); len(lines) != 1 {
+		t.Fatalf("off is not logged:\n%s", logs)
+	}
+	// Auto without a TLS listener only looks the address up; the lookup goes
+	// to the STUN server named, here one that answers nothing on loopback.
+	t.Setenv("CONDUCTOR_REACH", "auto")
+	cfg = writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "auto", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
+	logs = serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "reach: auto finds the public address"); len(lines) != 1 {
+		t.Fatalf("auto without TLS is not explained:\n%s", logs)
 	}
 }

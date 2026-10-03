@@ -180,7 +180,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
-	notifyURL := s.cfg.PublicURL + "/api/sessions/" + id + "/attention"
+	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
 	// The binary the hooks run, for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
 	inject := pty.Inject(id, notifyURL, agentToken, bin)

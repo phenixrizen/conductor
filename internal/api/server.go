@@ -3,6 +3,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,6 +55,12 @@ type Server struct {
 	// report and install the agents' hooks there, and nowhere else. Empty
 	// when it is unknown.
 	home string
+	// instance identifies this process on /api/health, for the reach
+	// self-check; reach and certs are what SetReach gave (see reach.go).
+	instance string
+	reachMu  sync.Mutex
+	reach    reachSource
+	certs    certSource
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and
@@ -153,6 +161,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		fileDeny: fileDeny(cfg, st),
 		lookups:  newLookupCache(),
 		home:     home,
+		instance: newInstance(),
 	}
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()
@@ -228,6 +237,7 @@ func (s *Server) track(f func()) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/catalog", s.requireAdmin(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.requireAdmin(s.handleSaveAgent))
@@ -384,7 +394,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version":  version.Version,
 		"commit":   version.Commit,
 		"sessions": s.registry.Count(),
+		"instance": s.instance,
 	})
+}
+
+// newInstance is a random id for this process (16 hex digits).
+func newInstance() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // RunMaintenance garbage-collects ended sessions until ctx is cancelled.

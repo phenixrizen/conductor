@@ -15,6 +15,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/reach"
 	"github.com/phenixrizen/conductor/internal/share"
 	"github.com/phenixrizen/conductor/internal/store"
 	"github.com/phenixrizen/conductor/internal/version"
@@ -140,6 +141,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 
 	mctx, mcancel := context.WithCancel(ctx)
 	go srv.RunMaintenance(mctx)
+	mapper := startReach(mctx, cfg, srv, log)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.Serve(ln) }()
@@ -157,11 +159,48 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	mcancel()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if mapper != nil {
+		closeCtx, ccancel := context.WithTimeout(context.Background(), 3*time.Second)
+		mapper.Close(closeCtx)
+		ccancel()
+	}
 	srv.Shutdown(shutdownCtx)
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown", "err", err)
 	}
 	return 0, nil
+}
+
+// startReach starts the reach mapper the config asks for and gives the server
+// its status: in auto, the public address by STUN and, once there is a TLS
+// listener to map, its port on the gateway (reachPorts); in manual, the
+// address only. Off starts nothing. The mapper runs until ctx ends; the
+// caller closes it to delete the mappings.
+func startReach(ctx context.Context, cfg *config.Config, srv *api.Server, log *slog.Logger) *reach.Mapper {
+	if cfg.Reach.Mode == config.ReachOff {
+		log.Info("reach: off; share links take the address the workbench is opened at")
+		return nil
+	}
+	ports := reachPorts(cfg)
+	m := reach.New(reach.Options{
+		Mode:       cfg.Reach.Mode,
+		Ports:      ports,
+		STUNServer: cfg.STUNServer(),
+		Verify:     reach.Verifier{Instance: srv.Instance()}.Verify,
+		Log:        log,
+	})
+	srv.SetReach(m, nil)
+	if cfg.Reach.Mode == config.ReachAuto && len(ports) == 0 {
+		log.Info("reach: auto finds the public address; nothing is mapped without a TLS listener, and share links take the address the workbench is opened at")
+	}
+	go m.Run(ctx)
+	return m
+}
+
+// reachPorts are the ports reach maps or reports: the TLS listener's, from
+// the public port, once there is one (none yet: plain http is never mapped).
+func reachPorts(cfg *config.Config) []reach.PortMap {
+	return nil
 }
 
 // exitCodeFromEnv is a helper for tests that want to run serve in-process.

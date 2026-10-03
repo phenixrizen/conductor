@@ -784,3 +784,40 @@ func TestPublicURLIsLocal(t *testing.T) {
 		t.Fatal("a publicUrl without a scheme passed")
 	}
 }
+
+func TestReachConfigBoundsAndEnv(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Reach.Mode != ReachAuto || cfg.Reach.PublicPort != 443 || cfg.STUNServer() != "stun:stun.l.google.com:19302" {
+		t.Fatalf("defaults %+v stun=%q", cfg.Reach, cfg.STUNServer())
+	}
+	env := map[string]string{"CONDUCTOR_REACH": "manual", "CONDUCTOR_REACH_PUBLIC_PORT": "8443", "CONDUCTOR_REACH_STUN": "stun:stun.example.net:3478", "CONDUCTOR_REACH_PUBLIC_PORT_80": "true"}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Reach.Mode != ReachManual || cfg.Reach.PublicPort != 8443 || !cfg.Reach.PublicPort80 || cfg.STUNServer() != "stun:stun.example.net:3478" {
+		t.Fatalf("env %+v", cfg.Reach)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"mode": func(c *Config) { c.Reach.Mode = "always" },
+		"port": func(c *Config) { c.Reach.PublicPort = 0 },
+		"no stun": func(c *Config) {
+			c.Reach.STUNServer = ""
+			c.ICEServers = []ICEServer{{URLs: []string{"turn:relay.example.net"}}}
+		},
+	} {
+		c := Defaults()
+		mutate(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	off := Defaults()
+	off.Reach.Mode = ReachOff
+	off.ICEServers = nil
+	if err := off.Validate(); err != nil {
+		t.Fatalf("off needs no STUN server: %v", err)
+	}
+}

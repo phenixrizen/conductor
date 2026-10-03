@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { ShareLink } from '~/composables/useSessions'
+import type { ReachInfo, ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
+import { linkReach } from '~/utils/reach'
 
 /** A session's links, or a crew run's: those open every member of the run, one added later included. Exactly one of the two is given. */
 type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
@@ -39,6 +40,10 @@ const loading = ref(false)
 const creating = ref(false)
 const error = ref('')
 const created = ref<{ url: string; role: Role; label?: string } | null>(null)
+/** The server's reach report, read when the modal opens; null when it could not be read. */
+const reach = ref<ReachInfo | null>(null)
+const createdReach = computed(() => (created.value ? linkReach(created.value.url, reach.value) : null))
+const reachColor: Record<string, 'success' | 'warning' | 'neutral' | 'info'> = { public: 'success', pending: 'warning', local: 'neutral', unknown: 'info' }
 
 const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '7200' })
 const roles: Array<{ value: Role; label: string; description: string }> = [
@@ -70,6 +75,10 @@ watch(open, (v) => {
   if (v) {
     created.value = null
     refresh()
+    api
+      .reach()
+      .then((r) => (reach.value = r))
+      .catch(() => (reach.value = null))
   }
 })
 
@@ -158,6 +167,16 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
             <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
           </div>
           <span class="text-xs text-secondary">Shown once. Copy it now; you can always make a new one.</span>
+          <UAlert
+            v-if="createdReach"
+            :color="reachColor[createdReach.level]"
+            variant="soft"
+            :icon="createdReach.level === 'public' ? 'i-lucide-globe' : createdReach.level === 'pending' ? 'i-lucide-hourglass' : 'i-lucide-house'"
+            :title="createdReach.title"
+            :description="createdReach.text"
+            :data-link-reach="createdReach.level"
+            class="mt-1"
+          />
         </div>
 
         <div>
