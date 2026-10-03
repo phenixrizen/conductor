@@ -36,6 +36,7 @@ describe('wsl', () => {
       calls.push(args)
       if (args[0] === '--status') return { ok: true, out: 'Default Version: 2' }
       if (args[0] === '-l') return { ok: true, out: LIST }
+      if (args.some((a) => a.includes('__HOME__'))) return { ok: true, out: 'motd\n__HOME__/home/me\n' }
       return { ok: true, out: '' }
     }
     expect(await wslAvailable('', fake)).toEqual({ ok: true, distro: 'Ubuntu-24.04' })
@@ -45,6 +46,8 @@ describe('wsl', () => {
     const install = calls[calls.length - 1]!
     expect(install.slice(0, 5)).toEqual(['-d', 'Ubuntu-24.04', '--exec', 'sh', '-c'])
     expect(install[install.length - 2]).toBe('/mnt/c/Program Files/Conductor/resources/conductor-linux')
+    expect(l.linuxHome()).toBe('/home/me')
+    expect(l.linuxEnv({ CONDUCTOR_ADMIN_TOKEN: 't', CONDUCTOR_DATA_DIR: 'C:\\x' }, true, 'C:\\Users\\me')).toEqual({ CONDUCTOR_ADMIN_TOKEN: 't', CONDUCTOR_DATA_DIR: '/home/me/.local/share/conductor/data', CONDUCTOR_ALLOWED_ROOTS: '/home/me,/mnt/c/Users/me', CONDUCTOR_DEFAULT_CWD: '/home/me' })
     expect(WslLauncher.linuxRoots(true, 'C:\\Users\\me')).toEqual(['$HOME', '/mnt/c/Users/me'])
   })
 })

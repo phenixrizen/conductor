@@ -749,6 +749,20 @@ in. On Windows the server runs inside your WSL 2 distribution (the app sets
 it up on first run; the agents are the ones installed there). `make
 desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
 
+**Windows.** There is no Windows build of the server: the installer bundles
+the Linux binary and the app runs it inside your WSL 2 distribution
+(`wsl --install` once, restart, open the distribution to make your user).
+The agents must be installed inside the distribution: the app finds them on
+its PATH, through your login shell, not on Windows's (`claude`, `codex`,
+`npm` from Windows under `/mnt/c` are flagged, not used). Projects under
+`/mnt/c` work but are slow; keep repositories in the distribution's home.
+Share links from inside WSL need `networkingMode=mirrored` in
+`%USERPROFILE%\.wslconfig` (the default NAT mode hides the distribution
+behind Windows); the Settings page says which mode is on. Closing the
+window keeps the server running in the tray; quitting the app stops it
+with `kill` inside the distribution, never `wsl --terminate`, so your
+other WSL shells are left alone.
+
 ## Shell completion
 
 `conductor completion zsh` or `conductor completion bash` prints a completion

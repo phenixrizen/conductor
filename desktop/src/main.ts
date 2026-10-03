@@ -70,7 +70,13 @@ async function run() {
   const supervisor = new ServerSupervisor({
     launcher,
     args: SERVE_ARGS,
-    env: () => serverEnv(process.env, settings, token, shellPath),
+    env: () => {
+      const env = serverEnv(process.env, settings, token, shellPath)
+      // Inside a WSL distribution the paths are its own: the server's data
+      // beside its binary, the Linux home as the root (and the Windows
+      // profile under /mnt when asked).
+      return launcher instanceof WslLauncher ? launcher.linuxEnv(env, settings.wslWindowsHome, process.env.USERPROFILE ?? '') : env
+    },
     log,
   })
   let main: BrowserWindow | null = null
@@ -149,7 +155,6 @@ async function run() {
   }
   tray = createTray({ icon: iconPath(), show, openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
   show()
-
   app.on('second-instance', () => show().focus())
   app.on('activate', () => show())
   app.on('window-all-closed', () => {
