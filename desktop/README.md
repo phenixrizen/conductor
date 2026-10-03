@@ -53,8 +53,18 @@ There is no Windows build of the server: the installer bundles the Linux
 binary and the shell runs it inside the user's WSL 2 distribution
 (`wsl.exe -d <distro> --exec sh -lc …` through the login shell, so the
 agents' PATH is theirs), after copying it into the distribution's home.
-Without WSL 2 the app shows the setup screen. Share links from inside WSL
-need `networkingMode=mirrored` in `%USERPROFILE%\.wslconfig`.
+Without WSL 2 the app shows the setup screen. WSL's default NAT mode is
+left as it is (mirrored networking is never asked for: it changes WSL for
+Docker and every other tool). For WebRTC the app runs a UDP forwarder on
+Windows (`src/udp-forwarder.ts`): the server inside the distribution puts
+every WebRTC connection on one UDP port (7877, `CONDUCTOR_ICE_UDP_PORT`)
+and advertises the Windows LAN address, the forwarder listens on that port
+on Windows and carries each remote peer to the distribution's address on a
+socket of its own, so ICE sees one NAT, the router's. The installer adds the
+inbound firewall rule for the port when it has the right; Settings offers it
+again (an elevated `netsh`, fixed arguments) when it is missing. Plain
+share links to the local server still need Windows to expose the HTTP port
+(`netsh interface portproxy`); through a switchyard nothing more is needed.
 
 ## What stays by hand
 

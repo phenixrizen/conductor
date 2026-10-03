@@ -15,6 +15,8 @@ const bridge = {
   openInBrowser: (): Promise<void> => ipcRenderer.invoke('conductor:openInBrowser'),
   showLog: (): Promise<void> => ipcRenderer.invoke('conductor:showLog'),
   serverState: () => ipcRenderer.invoke('conductor:serverState'),
+  ice: () => ipcRenderer.invoke('conductor:ice'),
+  allowIceFirewall: (): Promise<string> => ipcRenderer.invoke('conductor:allowIceFirewall'),
   versions: () => ipcRenderer.invoke('conductor:versions'),
   onServerState: (cb: (state: unknown) => void): (() => void) => {
     const handler = (_e: unknown, state: unknown) => cb(state)

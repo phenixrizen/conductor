@@ -97,7 +97,7 @@ what reaches whom:
 | on your machine, the link opened there | you |
 | on your machine, a teammate on the same network | them, at your machine's address and port (`listen` binds every interface) |
 | on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address. With `reach.mode` `auto` (the default) the server learns its public address from STUN and, once it has a TLS listener with a certificate, maps that port on the router and builds links on `https://<public address>`; until then links keep the address you opened the workbench at, and the Share dialog says so. `GET /api/reach` reports the state. A mapping is reported as mapped, never as reachable: the server's own check through the public address is refused by most home routers, so open a link once from a phone on mobile data |
-| on your machine under WSL2 | Windows must expose the port: `netsh interface portproxy` or `networkingMode=mirrored` in `.wslconfig`, plus a firewall rule |
+| on your machine under WSL2 | for a plain link, Windows must expose the port (`netsh interface portproxy` plus a firewall rule); through a switchyard, nothing: the desktop app forwards WebRTC into the distribution itself, and WSL's default NAT mode stays as it is |
 | on a machine with a public address, or behind a reverse proxy | anyone, at `publicUrl` or the proxy's forwarded host |
 | behind carrier-grade NAT or a corporate network | `rendezvous`: this server publishes every session to a public Conductor through the host protocol, where it is listed as hosted by this machine and shared from; or a tunnel or a reverse proxy in front of the server; or `conductor host` from your machine against a server anyone can reach |
 
@@ -863,9 +863,13 @@ The agents must be installed inside the distribution: the app finds them on
 its PATH, through your login shell, not on Windows's (`claude`, `codex`,
 `npm` from Windows under `/mnt/c` are flagged, not used). Projects under
 `/mnt/c` work but are slow; keep repositories in the distribution's home.
-Share links from inside WSL need `networkingMode=mirrored` in
-`%USERPROFILE%\.wslconfig` (the default NAT mode hides the distribution
-behind Windows); the Settings page says which mode is on. Closing the
+WSL's default NAT mode stays as it is (the app never asks for mirrored
+networking, which changes WSL for Docker and every other tool): for WebRTC
+the app forwards one UDP port into the distribution itself and the server
+advertises the Windows address, so sharing through a switchyard works from
+WSL with nothing to configure; the installer adds the firewall rule for the
+port, and the Settings page offers it when it is missing. A plain share link
+to the local server still needs Windows to expose the HTTP port. Closing the
 window keeps the server running in the tray; quitting the app stops it
 with `kill` inside the distribution, never `wsl --terminate`, so your
 other WSL shells are left alone.

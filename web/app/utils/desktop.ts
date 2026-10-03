@@ -20,6 +20,15 @@ export interface DesktopServerState {
 }
 
 /** The bridge the desktop shell's preload exposes as window.conductorDesktop (desktop/src/preload.ts). */
+export interface DesktopIceStatus {
+  forwarding: boolean
+  port: number
+  publicIp: string
+  wslAddress: string
+  firewall: 'present' | 'missing' | 'unknown'
+  reason?: string
+}
+
 export interface DesktopBridge {
   version: string
   platform: string
@@ -30,6 +39,10 @@ export interface DesktopBridge {
   openInBrowser(): Promise<void>
   showLog(): Promise<void>
   serverState(): Promise<DesktopServerState>
+  /** Windows: what the app forwards for WebRTC from WSL. */
+  ice(): Promise<DesktopIceStatus>
+  /** Windows: adds the firewall rule for the ICE port (one elevation prompt); the rule's state after. */
+  allowIceFirewall(): Promise<DesktopIceStatus['firewall']>
   versions(): Promise<{ app: string; electron: string; node: string; chrome: string; server: string }>
   onServerState(cb: (state: DesktopServerState) => void): () => void
 }

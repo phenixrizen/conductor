@@ -51,3 +51,32 @@ describe('wsl', () => {
     expect(WslLauncher.linuxRoots(true, 'C:\\Users\\me')).toEqual(['$HOME', '/mnt/c/Users/me'])
   })
 })
+
+describe('WebRTC from inside WSL', () => {
+  const fake = async (args: string[]) => {
+    if (args.includes('hostname')) return { ok: true, out: '172.26.16.42 fe80::1 \n' }
+    return { ok: true, out: '' }
+  }
+
+  it('reads the distribution address after a start, and passes the ICE variables only when forwarding', async () => {
+    const l = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: () => {}, run: fake })
+    expect(await l.address()).toBe('172.26.16.42')
+    const none = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: () => {}, run: async () => ({ ok: false, out: '' }) })
+    expect(await none.address()).toBe('')
+    const env = l.linuxEnv({ CONDUCTOR_ADMIN_TOKEN: 't' }, false, '', { port: 7877, publicIp: '192.168.1.127' })
+    expect(env.CONDUCTOR_ICE_UDP_PORT).toBe('7877')
+    expect(env.CONDUCTOR_ICE_PUBLIC_IP).toBe('192.168.1.127')
+    const plain = l.linuxEnv({ CONDUCTOR_ADMIN_TOKEN: 't' }, false, '')
+    expect(plain.CONDUCTOR_ICE_UDP_PORT).toBeUndefined()
+    expect(l.linuxEnv({}, false, '', { port: 7877, publicIp: '' }).CONDUCTOR_ICE_PUBLIC_IP).toBeUndefined()
+  })
+
+  it('the installer script adds the firewall rule for the ICE port and removes it', async () => {
+    const { readFileSync } = await import('node:fs')
+    const nsh = readFileSync(new URL('../build/installer.nsh', import.meta.url), 'utf8')
+    expect(nsh).toContain('customInstall')
+    expect(nsh).toContain('protocol=UDP localport=7877')
+    expect(nsh).toContain('customUnInstall')
+    expect(nsh).toContain('delete rule name="Conductor WebRTC (UDP 7877)"')
+  })
+})

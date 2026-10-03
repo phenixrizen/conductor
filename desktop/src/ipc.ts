@@ -2,6 +2,7 @@ import { app, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEven
 import { external } from './window'
 import { serverAffecting, validate, type DesktopSettings } from './settings'
 import type { ServerSupervisor, ServerStatus } from './server'
+import type { IceStatus } from './firewall'
 
 export interface IpcDeps {
   origin: () => string
@@ -11,6 +12,10 @@ export interface IpcDeps {
   showLog: () => void
   mainWindow: () => BrowserWindow | null
   serverVersion: () => string
+  /** What the app forwards for WebRTC from WSL (Windows), for Settings. */
+  ice: () => IceStatus
+  /** Adds the firewall rule for the ICE port through an elevated netsh; the rule's state after. */
+  allowIceFirewall: () => Promise<IceStatus['firewall']>
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -79,6 +84,11 @@ export function registerIpc(d: IpcDeps): void {
     }),
   )
   ipcMain.handle('conductor:serverState', guard((): ServerStatus => d.supervisor.status))
+  ipcMain.handle('conductor:ice', guard((): IceStatus => d.ice()))
+  ipcMain.handle(
+    'conductor:allowIceFirewall',
+    guard(() => d.allowIceFirewall()),
+  )
   ipcMain.handle(
     'conductor:versions',
     guard(() => ({ app: app.getVersion(), electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome, server: d.serverVersion() })),

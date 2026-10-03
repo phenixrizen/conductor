@@ -23,7 +23,11 @@ export async function wslAvailable(wanted: string, run = runWsl): Promise<{ ok: 
   return chooseDistro(parseList(list.out), wanted)
 }
 
-/** wslNetworkingMode reads .wslconfig: 'mirrored' lets the server map ports on the router; '' or 'nat' does not. */
+/**
+ * wslNetworkingMode reads .wslconfig: '' or 'nat' (the default) puts the distribution behind Hyper-V's NAT, which the app's UDP
+ * forwarder carries ICE through; 'mirrored' shares Windows' network stack, so nothing is forwarded. The app never asks for mirrored
+ * mode: it changes WSL for every other tool.
+ */
 export function wslNetworkingMode(home = homedir()): string {
   try {
     return parseWslconfigNetworking(readFileSync(join(home, '.wslconfig'), 'utf8'))
@@ -78,10 +82,29 @@ export class WslLauncher implements Launcher {
     return this.home
   }
 
-  /** linuxEnv rewrites the paths the server gets to the distribution's own: its data beside its binary, its home as the root. */
-  linuxEnv(env: Record<string, string>, windowsHome: boolean, userProfile: string): Record<string, string> {
+  /**
+   * address is the distribution's IPv4 address on Hyper-V's NAT (`hostname -I`, the first address), where the UDP forwarder sends
+   * ICE; it changes when WSL restarts, so it is read after each start of the server. Empty when the distribution cannot say.
+   */
+  async address(): Promise<string> {
+    const run = this.o.run ?? runWsl
+    const r = await run(['-d', this.o.distro, '--exec', 'hostname', '-I'], 15_000, this.o.exe)
+    const m = /(\d{1,3}(?:\.\d{1,3}){3})/.exec(r.out)
+    return r.ok && m ? m[1]! : ''
+  }
+
+  /**
+   * linuxEnv rewrites the paths the server gets to the distribution's own: its data beside its binary, its home as the root; with
+   * `ice`, the server puts every WebRTC connection on that UDP port and advertises the Windows address, the forwarder's.
+   */
+  linuxEnv(env: Record<string, string>, windowsHome: boolean, userProfile: string, ice?: { port: number; publicIp: string }): Record<string, string> {
     const home = this.home || '$HOME'
-    return { ...env, CONDUCTOR_DATA_DIR: `${home}/.local/share/conductor/data`, CONDUCTOR_ALLOWED_ROOTS: WslLauncher.linuxRoots(windowsHome, userProfile, home).join(','), CONDUCTOR_DEFAULT_CWD: home }
+    const out: Record<string, string> = { ...env, CONDUCTOR_DATA_DIR: `${home}/.local/share/conductor/data`, CONDUCTOR_ALLOWED_ROOTS: WslLauncher.linuxRoots(windowsHome, userProfile, home).join(','), CONDUCTOR_DEFAULT_CWD: home }
+    if (ice && ice.port > 0 && ice.publicIp) {
+      out.CONDUCTOR_ICE_UDP_PORT = String(ice.port)
+      out.CONDUCTOR_ICE_PUBLIC_IP = ice.publicIp
+    }
+    return out
   }
 
   spawn(args: string[], env: Record<string, string>): ChildProcess {

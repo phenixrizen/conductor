@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity } from '~/utils/agents'
-import type { DesktopSettings } from '~/utils/desktop'
+import type { DesktopIceStatus, DesktopSettings } from '~/utils/desktop'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -15,6 +15,21 @@ const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultC
 const saving = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
+/** Windows: what the app forwards for WebRTC from WSL (null elsewhere). */
+const ice = ref<DesktopIceStatus | null>(null)
+const allowing = ref(false)
+async function allowFirewall() {
+  const b = desktop.bridge.value
+  if (!b || !ice.value) return
+  allowing.value = true
+  try {
+    ice.value = { ...ice.value, firewall: await b.allowIceFirewall() }
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    allowing.value = false
+  }
+}
 const agents = ref<AgentInfo[]>([])
 const versions = ref<{ app: string; electron: string; node: string; chrome: string; server: string } | null>(null)
 const rootsText = computed({
@@ -41,6 +56,7 @@ async function load() {
     settings.value = s
     Object.assign(form, s)
     versions.value = await b.versions()
+    if (b.platform === 'win32') ice.value = await b.ice()
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -108,6 +124,20 @@ onMounted(load)
           :description="desktop.serverState.value.lastError || (desktop.serverState.value.version ? `conductor ${desktop.serverState.value.version}` : '')"
           data-server-state
         />
+        <UCard v-if="ice" data-ice-status>
+          <template #header><h2 class="font-semibold">WebRTC from WSL</h2></template>
+          <div class="flex flex-col gap-3 text-sm">
+            <p v-if="ice.forwarding">
+              The app forwards UDP port <code>{{ ice.port }}</code> on <code>{{ ice.publicIp }}</code> into the distribution at <code>{{ ice.wslAddress }}</code>, so a shared session connects peer to peer through your router only. WSL's own networking is left as it is.
+            </p>
+            <p v-else class="text-muted">Nothing is forwarded{{ ice.reason ? `: ${ice.reason}` : '' }}.</p>
+            <div v-if="ice.forwarding" class="flex flex-wrap items-center gap-2">
+              <UBadge :label="ice.firewall === 'present' ? 'firewall rule present' : ice.firewall === 'missing' ? 'firewall rule missing' : 'firewall rule unknown'" :color="ice.firewall === 'present' ? 'success' : ice.firewall === 'missing' ? 'warning' : 'neutral'" variant="subtle" data-ice-firewall />
+              <UButton v-if="ice.firewall !== 'present'" label="Allow through the Windows firewall" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="allowing" data-ice-allow @click="allowFirewall" />
+              <span v-if="ice.firewall !== 'present'" class="text-xs text-muted">One elevation prompt adds an inbound rule for UDP {{ ice.port }}.</span>
+            </div>
+          </div>
+        </UCard>
 
         <UCard>
           <template #header><h2 class="font-semibold">Where agents work</h2></template>

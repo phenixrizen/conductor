@@ -14,7 +14,9 @@ import { defaultSettings, loadSettings, saveSettings, type DesktopSettings } fro
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, restrictPermissions } from './window'
-import { WslLauncher, wslAvailable } from './launcher-wsl'
+import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
+import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
+import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { RELEASES_URL, startUpdater, updateChannel } from './updater'
 
 const dev = !app.isPackaged
@@ -68,6 +70,19 @@ async function run() {
   await launcher.prepare()
   const shellPath = mergePaths(await loginShellPath(process.env.SHELL ?? ''), process.env.PATH ?? '', homedir())
 
+  // WebRTC from inside WSL: in NAT mode (the default, left as it is) the
+  // app forwards one UDP port into the distribution and the server
+  // advertises the Windows LAN address; in mirrored mode nothing is needed.
+  const ice: IceStatus = { forwarding: false, port: ICE_UDP_PORT, publicIp: '', wslAddress: '', firewall: 'unknown' }
+  let forwarder: UdpForwarder | null = null
+  if (launcher instanceof WslLauncher) {
+    if (wslNetworkingMode() === 'mirrored') ice.reason = 'WSL is in mirrored networking mode: nothing to forward'
+    else {
+      ice.publicIp = windowsLanAddress()
+      if (!ice.publicIp) ice.reason = 'no LAN address found on this machine'
+    }
+  } else ice.reason = 'not Windows'
+  const wsl = launcher instanceof WslLauncher ? launcher : null
   const supervisor = new ServerSupervisor({
     launcher,
     args: SERVE_ARGS,
@@ -76,9 +91,37 @@ async function run() {
       // Inside a WSL distribution the paths are its own: the server's data
       // beside its binary, the Linux home as the root (and the Windows
       // profile under /mnt when asked).
-      return launcher instanceof WslLauncher ? launcher.linuxEnv(env, settings.wslWindowsHome, process.env.USERPROFILE ?? '') : env
+      return wsl ? wsl.linuxEnv(env, settings.wslWindowsHome, process.env.USERPROFILE ?? '', ice.publicIp ? { port: ice.port, publicIp: ice.publicIp } : undefined) : env
     },
     log,
+  })
+  /** After each start of the server inside WSL: the distribution's address of the moment, and the forwarder on it. */
+  const forwardIce = async () => {
+    if (!wsl || !ice.publicIp) return
+    const addr = await wsl.address()
+    if (!addr) {
+      log('main', 'udp forwarder: the distribution gave no address; WebRTC from WSL is off until the next start')
+      return
+    }
+    ice.wslAddress = addr
+    if (!forwarder) {
+      forwarder = new UdpForwarder({ port: ice.port, target: { host: addr, port: ice.port }, log: (l) => log('main', l) })
+      try {
+        await forwarder.start()
+        ice.forwarding = true
+      } catch (e) {
+        forwarder = null
+        ice.reason = (e as Error).message
+        log('main', `udp forwarder: ${(e as Error).message}; WebRTC from WSL is off`)
+        return
+      }
+    } else forwarder.retarget({ host: addr, port: ice.port })
+    log('main', `udp forwarder: ${ice.publicIp}:${ice.port} → ${addr}:${ice.port}`)
+    ice.firewall = await firewallRuleExists(ice.port)
+    if (ice.firewall === 'missing') log('main', `udp forwarder: no firewall rule for UDP ${ice.port}; Settings offers to add it`)
+  }
+  supervisor.on('state', (st) => {
+    if (st.state === 'running') void forwardIce()
   })
   let main: BrowserWindow | null = null
   let tray: Tray | null = null
@@ -129,6 +172,11 @@ async function run() {
     showLog,
     mainWindow: () => main,
     serverVersion: () => supervisor.status.version ?? '',
+    ice: () => ({ ...ice }),
+    allowIceFirewall: async () => {
+      if (await allowIceThroughFirewall(ice.port)) ice.firewall = await firewallRuleExists(ice.port)
+      return ice.firewall
+    },
   })
   restrictPermissions()
   Menu.setApplicationMenu(
@@ -171,6 +219,7 @@ async function run() {
     if (quitting) return
     quitting = true
     e.preventDefault()
+    forwarder?.stop()
     supervisor
       .stop()
       .catch(() => {})
