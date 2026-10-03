@@ -47,6 +47,9 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 	}
 	se := webrtc.SettingEngine{}
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6})
+	if err := applyICE(&se, p.a.opts.ICE); err != nil {
+		return err
+	}
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 	pc, err := api.NewPeerConnection(cfg)
 	if err != nil {

@@ -96,6 +96,12 @@ type ACME struct {
 	Profile string `json:"profile"`
 }
 
+// ICE is how published sessions gather their WebRTC candidates.
+type ICE struct {
+	UDPPort  int    `json:"udpPort"`
+	PublicIP string `json:"publicIp"`
+}
+
 // Switchyard is Conductor as a coordinator alone: it takes hosted sessions
 // from other Conductors and conductor host, brokers their signaling and,
 // when Relay is on, relays the terminal for the pairs ICE cannot connect;
@@ -268,6 +274,12 @@ type Config struct {
 	// Switchyard, when enabled, makes this server a coordinator of hosted
 	// sessions that launches nothing (conductor switchyard).
 	Switchyard Switchyard `json:"switchyard"`
+	// ICE is how this server's published sessions (Rendezvous) gather their
+	// WebRTC candidates: one UDP port for every connection and the address
+	// advertised as this machine's, for a forwarder in front of it (the
+	// desktop app on Windows, in front of WSL); zero lets pion gather as it
+	// does by default.
+	ICE ICE `json:"ice"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -501,6 +513,10 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		cfg.Switchyard.Relay = &off
 	}
 	list("CONDUCTOR_SWITCHYARD_ORIGINS", &cfg.Switchyard.AllowedOrigins)
+	if err := num("CONDUCTOR_ICE_UDP_PORT", &cfg.ICE.UDPPort); err != nil {
+		return err
+	}
+	str("CONDUCTOR_ICE_PUBLIC_IP", &cfg.ICE.PublicIP)
 	switch getenv("CONDUCTOR_AGENT_INSTALL_SKILL") {
 	case "1", "true":
 		on := true
@@ -567,6 +583,14 @@ func (c *Config) Validate() error {
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))
+	}
+	if c.ICE.UDPPort < 0 || c.ICE.UDPPort > 65535 {
+		errs = append(errs, errors.New("ice.udpPort must be between 0 and 65535"))
+	}
+	if c.ICE.PublicIP != "" {
+		if _, err := netip.ParseAddr(c.ICE.PublicIP); err != nil {
+			errs = append(errs, fmt.Errorf("ice.publicIp must be an IP address, got %q", c.ICE.PublicIP))
+		}
 	}
 	for _, o := range c.Switchyard.AllowedOrigins {
 		if strings.TrimSpace(o) == "" || strings.Contains(o, "://") {

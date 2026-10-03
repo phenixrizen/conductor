@@ -46,7 +46,10 @@ type Options struct {
 	Stdin       *os.File
 	Stdout      *os.File
 	// ICEServers override the servers handed out by the conductor server.
-	ICEServers      []proto.ICEServer
+	ICEServers []proto.ICEServer
+	// ICE is how the peers gather: one UDP port and an address to advertise
+	// (a forwarder's), or pion's defaults.
+	ICE             ICE
 	ScrollbackBytes int
 	MaxViewers      int
 	FileView        string

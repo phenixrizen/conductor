@@ -42,7 +42,12 @@ CONDUCTOR_HOST_TOKEN=host-token ./bin/conductor host --server http://localhost:8
 
 Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
-headless, or `--stun stun:host:3478` to override the ICE servers. An agent with
+headless, or `--stun stun:host:3478` to override the ICE servers.
+`--ice-udp-port 7877` puts every WebRTC connection on that one UDP port and
+`--ice-public-ip 192.168.1.20` advertises that address as the host's own
+(`CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP`): what a forwarder in
+front of the host needs, such as the desktop app's on Windows, which carries
+the port into WSL. An agent with
 no hooks and no bell can still raise the needs-input badge:
 `--signal-pattern '<regexp>'` (RE2, at most 200 bytes, not matching an empty
 line) is matched against the last line of the terminal after 500 ms without
@@ -926,6 +931,7 @@ file must run `compinit` before that line.
 | `tls.acme.dnsProvider`, `tls.acme.dnsEnv` | `CONDUCTOR_TLS_ACME_DNS_PROVIDER`, `CONDUCTOR_TLS_ACME_DNS_ENV` (`K=V,K=V`) | none | `cloudflare`, `exec` or `httpreq`, with its settings under lego's names (`CLOUDFLARE_DNS_API_TOKEN`, `EXEC_PATH`, `HTTPREQ_ENDPOINT`, …); never logged or shown |
 | `tls.acme.caDirectory`, `tls.acme.profile` | `CONDUCTOR_TLS_ACME_CA`, `CONDUCTOR_TLS_ACME_PROFILE` | Let's Encrypt; `shortlived` for IP addresses | the ACME directory (`https`), and the certificate profile |
 | `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | none | a public Conductor every session is published to, through the host protocol (as `conductor host` does), with one of its host tokens; the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published |
+| `ice.udpPort`, `ice.publicIp` | `CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP` | none | how this server's published sessions (`rendezvous`) gather their WebRTC candidates: one UDP port for every connection, and the address advertised as this machine's in place of its interfaces' own, for a forwarder in front of it (the desktop app on Windows, in front of WSL) |
 | `tls.certFile`, `tls.keyFile` | `CONDUCTOR_TLS_CERT_FILE`, `CONDUCTOR_TLS_KEY_FILE` | none | a certificate of your own (PEM, with its chain), re-read when the files change; exclusive with `tls.acme` |
 
 ### Upgrading

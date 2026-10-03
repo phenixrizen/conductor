@@ -88,6 +88,7 @@ reported limitation, not a pass.
 | github.com/creack/pty | v1.1.24 |
 | github.com/coder/websocket | v1.8.15 |
 | github.com/pion/stun/v4 (direct for the reach lookup) | v4.0.1 |
+| github.com/pion/ice/v4 (direct for the UDP mux type) | v4.4.4 |
 | github.com/go-acme/lego/v5 (core, tls-alpn-01, http-01, dns-01 with cloudflare, exec, httpreq) | v5.5.2 |
 | github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |

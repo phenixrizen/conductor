@@ -198,7 +198,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		}()
 	}
 	if rv := cfg.Rendezvous; rv.Server != "" {
-		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rv.Server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Log: log}})
+		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rv.Server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
 		log.Info("sessions are published to the rendezvous", "server", rv.Server)
 	}
 

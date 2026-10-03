@@ -25,7 +25,9 @@ type Uplink struct {
 	HostName  string
 	RelayOnly bool
 	// ICEServers override the rendezvous's.
-	ICEServers   []proto.ICEServer
+	ICEServers []proto.ICEServer
+	// ICE is how the peers gather (Options.ICE).
+	ICE          ICE
 	ReconnectMax time.Duration
 	Log          *slog.Logger
 }
@@ -58,7 +60,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	info := local.Info()
 	opts := Options{
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
-		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, ICEServers: u.ICEServers, ReconnectMax: u.ReconnectMax, Log: log,
+		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
 	}
 	if opts.HostName == "" {
 		opts.HostName, _ = os.Hostname()

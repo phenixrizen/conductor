@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -32,6 +33,8 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	relayOnly := fs.Bool("relay-only", false, "never use WebRTC; relay through the server")
 	noLocal := fs.Bool("no-local", false, "do not attach this terminal to the session")
 	stun := fs.String("stun", "", "comma separated ICE server URLs overriding the server's list")
+	iceUDPPort := fs.Int("ice-udp-port", envInt("CONDUCTOR_ICE_UDP_PORT"), "one UDP port for every WebRTC connection (env CONDUCTOR_ICE_UDP_PORT); 0 lets each connection pick its own")
+	icePublicIP := fs.String("ice-public-ip", envOr("CONDUCTOR_ICE_PUBLIC_IP", ""), "the address advertised as this host's own (env CONDUCTOR_ICE_PUBLIC_IP): a forwarder's, such as the desktop app's on Windows in front of WSL")
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
 	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
@@ -91,6 +94,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}
 	opts := hostagent.Options{
+		ICE:             hostagent.ICE{UDPPort: *iceUDPPort, PublicIP: *icePublicIP},
 		ServerURL:       *server,
 		Token:           *token,
 		Name:            *name,
@@ -128,4 +132,13 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envInt reads an integer from the environment; unset or unreadable is 0.
+func envInt(key string) int {
+	n, err := strconv.Atoi(os.Getenv(key))
+	if err != nil {
+		return 0
+	}
+	return n
 }
