@@ -43,6 +43,17 @@
         "session": { "idFrom": "hook", "idPolicy": "lowest", "resumeArgs": ["resume", "{id}", "-c", "tui.resume_cwd=\"session\""], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "resumeNeedsCwd": true }
       },
       {
+        "id": "asker",
+        "name": "Asker (e2e stub)",
+        "description": "The stub that asks a question with choices (notify --choices) as soon as it starts, for the quick-reply buttons.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_ASK": "Which database?", "STUB_CHOICES": "Postgres|SQLite|Keep both" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
         "id": "goose",
         "name": "Goose (e2e stub)",
         "description": "The stub answering `goose --version` as the Go migrations tool does: an impostor on the PATH, which the identity probe must name.",

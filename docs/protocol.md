@@ -163,8 +163,12 @@ question, below), `input` (cleared by a controller typing).
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
 expected), `done` (the agent finished its turn), or empty when unknown.
 `options` is at most 6 entries of `{label, input}`: `label` is shown on a
-button (≤ 60 runes) and `input` (≤ 16 bytes) is sent verbatim as an INPUT
+button (≤ 60 runes) and `input` (≤ 48 bytes) is sent verbatim as an INPUT
 frame when the human picks it. Clearing the state drops `kind` and `options`.
+`conductor notify --state needs_input --message "…" --choices "a|b|c"` (at most
+6 choices of 40 bytes) reports `kind:"prompt"` with one option per choice whose
+`input` is the choice and a CR, so a click types it as a line; the agent is
+told to name the choices in the terminal first, so a typed answer matches.
 `conductor notify --claude-hook` maps Claude Code `PermissionRequest` hooks
 (and `permission_prompt` notifications) to `kind:"permission"` with the
 options `Yes`/`1`, `Always for this session`/`2`, `No, explain…`/`3`; other

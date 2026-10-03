@@ -26,6 +26,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	link := fs.String("url", "", "with --event artifact: where the result lives")
 	to := fs.String("to", "", "with --event handoff: who the work goes to")
 	tool := fs.String("tool", "", "with --event tool_use, tool_denied or error: the tool involved")
+	choices := fs.String("choices", "", "with --state needs_input: answers to offer as buttons, separated by |, at most 6 of 40 bytes; a click types the choice as a line")
 	codex := fs.Bool("codex", false, "read a Codex notify payload from the last argument and map it")
 	// Each agent's hooks write their payload to stdin; the flag says whose it is.
 	type hookFlag struct {
@@ -39,7 +40,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	}
 	quiet := fs.Bool("quiet", true, "exit 0 silently when not running inside a conductor session")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] | --event E [--message M] [--url U] [--to T] [--tool N] | --<agent>-hook | --codex <json>")
+		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] | --<agent>-hook | --codex <json>")
 		fs.PrintDefaults()
 	}
 	// Agents' hooks run this command, and a hook runner reads exit 2 as
@@ -87,6 +88,23 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		}
 		return misuse, fmt.Errorf("%s only %s with --event: conductor notify --event E [--message M] [--url U] [--to T] [--tool N]", joinFlags(fields), verb)
 	}
+	// Choices go with a needs_input state of the agent's own, and nothing else.
+	var options []notify.Option
+	if *choices != "" {
+		switch {
+		case *event != "":
+			return misuse, errors.New("--choices goes with --state needs_input, not with --event")
+		case len(payload) > 0:
+			return misuse, fmt.Errorf("--choices goes with --state needs_input, not with %s", strings.Join(payload, " or "))
+		case *state != "needs_input":
+			return misuse, fmt.Errorf("--choices goes with --state needs_input, not with --state %s", *state)
+		}
+		opts, err := parseChoices(*choices)
+		if err != nil {
+			return misuse, err
+		}
+		options = opts
+	}
 	url, token, err := notify.FromEnv(os.Getenv)
 	if err != nil {
 		// A hook runner writes the payload whether or not there is a session
@@ -102,6 +120,10 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return 1, err
 	}
 	req := notify.Request{State: *state, Message: *message}
+	if len(options) > 0 {
+		req.Kind = "prompt"
+		req.Options = options
+	}
 	if *event != "" {
 		req = notify.Request{Event: *event, Message: *message, URL: *link, To: *to, Tool: *tool}
 	}
@@ -220,4 +242,35 @@ func readPayload(stdin io.Reader) ([]byte, error) {
 		}
 	}
 	return notify.ReadAllBounded(stdin)
+}
+
+// Bounds of --choices: how many, and the bytes of one (the typed line).
+const (
+	maxChoices    = 6
+	maxChoiceSize = 40
+)
+
+// parseChoices turns "a|b|c" into quick-reply options: the label is the
+// choice, the input is the choice and a carriage return, so a click types
+// it as a line. At most maxChoices, none empty, none over maxChoiceSize
+// bytes, none holding a control character.
+func parseChoices(s string) ([]notify.Option, error) {
+	parts := strings.Split(s, "|")
+	if len(parts) > maxChoices {
+		return nil, fmt.Errorf("--choices: %d choices, at most %d", len(parts), maxChoices)
+	}
+	out := make([]notify.Option, 0, len(parts))
+	for _, c := range parts {
+		c = strings.TrimSpace(c)
+		switch {
+		case c == "":
+			return nil, errors.New("--choices: an empty choice (a|b|c, each a word or a short phrase)")
+		case len(c) > maxChoiceSize:
+			return nil, fmt.Errorf("--choices: %q is longer than %d bytes", c, maxChoiceSize)
+		case strings.ContainsFunc(c, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+			return nil, fmt.Errorf("--choices: %q holds a control character", c)
+		}
+		out = append(out, notify.Option{Label: c, Input: c + "\r"})
+	}
+	return out, nil
 }

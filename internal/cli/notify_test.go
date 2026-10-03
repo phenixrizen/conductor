@@ -360,3 +360,56 @@ func TestHookModeKnowsEveryPayloadFlag(t *testing.T) {
 		t.Fatalf("payloadFlags %v", payloadFlags)
 	}
 }
+
+// --choices with --state needs_input posts kind prompt and one option per
+// choice whose input is the choice and a CR (a click types it as a line);
+// it refuses an event, a hook payload, another state, too many choices, an
+// empty one and a long one, and goes along with the session's silence.
+func TestNotifyChoices(t *testing.T) {
+	ns := startNotifyServer(t)
+	code, _, err := runNotifyWith(t, "", "--state", "needs_input", "--message", "Which database?", "--choices", "Postgres| SQLite |Keep both")
+	if code != 0 || err != nil || ns.calls != 1 || ns.path != "/api/sessions/s1/attention" {
+		t.Fatalf("exit %d %v, %d calls to %s", code, err, ns.calls, ns.path)
+	}
+	want := map[string]any{"state": "needs_input", "message": "Which database?", "kind": "prompt", "options": []any{
+		map[string]any{"label": "Postgres", "input": "Postgres\r"},
+		map[string]any{"label": "SQLite", "input": "SQLite\r"},
+		map[string]any{"label": "Keep both", "input": "Keep both\r"},
+	}}
+	if !reflect.DeepEqual(ns.body, want) {
+		t.Fatalf("body %v", ns.body)
+	}
+	// A misuse exits 2, or 1 from a hook's command line (a hook runner reads
+	// 2 as "block the agent").
+	for _, tc := range []struct {
+		args []string
+		word string
+		exit int
+	}{
+		{[]string{"--event", "progress", "--choices", "a|b"}, "not with --event", 2},
+		{[]string{"--claude-hook", "--choices", "a|b"}, "not with --claude-hook", 1},
+		{[]string{"--state", "done", "--choices", "a|b"}, "not with --state done", 2},
+		{[]string{"--choices", "a|b|c|d|e|f|g"}, "7 choices, at most 6", 2},
+		{[]string{"--choices", "a||b"}, "an empty choice", 2},
+		{[]string{"--choices", "a|" + strings.Repeat("x", 41)}, "longer than 40 bytes", 2},
+		{[]string{"--choices", "a|b\tc"}, "control character", 2},
+	} {
+		ns.calls = 0
+		code, _, err := runNotifyWith(t, "", tc.args...)
+		if code != tc.exit || err == nil || !strings.Contains(err.Error(), tc.word) || ns.calls != 0 {
+			t.Errorf("%v: exit %d %v, %d calls", tc.args, code, err, ns.calls)
+		}
+	}
+	// Six choices of forty bytes fit.
+	ns.calls = 0
+	long := strings.Repeat("y", 40)
+	if code, _, err := runNotifyWith(t, "", "--choices", strings.Join([]string{long, "b", "c", "d", "e", "f"}, "|")); code != 0 || err != nil || ns.calls != 1 {
+		t.Fatalf("six of forty: exit %d %v, %d calls", code, err, ns.calls)
+	}
+	// Outside a session: silent, like every notify.
+	t.Setenv("CONDUCTOR_NOTIFY_URL", "")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "")
+	if code, _, err := runNotifyWith(t, "", "--choices", "a|b"); code != 0 || err != nil {
+		t.Fatalf("outside: exit %d %v", code, err)
+	}
+}

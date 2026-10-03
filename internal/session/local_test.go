@@ -566,7 +566,7 @@ func TestSetAttentionFullBroadcastsOptionsAndInputClears(t *testing.T) {
 func TestCleanOptionsBounds(t *testing.T) {
 	in := make([]Option, 10)
 	for i := range in {
-		in[i] = Option{Label: strings.Repeat("l", 100), Input: strings.Repeat("i", 40)}
+		in[i] = Option{Label: strings.Repeat("l", 100), Input: strings.Repeat("i", 100)}
 	}
 	out := CleanOptions(in)
 	if len(out) != MaxAttentionOptions || len([]rune(out[0].Label)) != MaxOptionLabel || len(out[0].Input) != MaxOptionInput {

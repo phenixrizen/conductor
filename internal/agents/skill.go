@@ -54,6 +54,12 @@ when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
       "${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "…"
 
+- A question with a few answers: name them in the terminal on their own
+  line, then ask with the same words as choices, so one click types the
+  answer as a line (at most 6, each at most 40 characters):
+
+      "${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "Which database?" --choices "Postgres|SQLite|Keep both"
+
 ## Form a crew
 
 When the work splits into parts that can run side by side, such as a feature

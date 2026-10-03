@@ -306,13 +306,18 @@ OSC 9 / OSC 777 notification is detected with no configuration at all. A
 catalog signal of kind `pattern` watches the last line of the screen instead,
 as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
 --state needs_input --message "approve?"` from a script for anything else;
-`--state clear` resets it.
+`--state clear` resets it. A question with a few answers takes them as
+`--choices "Postgres|SQLite|Keep both"` (at most 6, each at most 40 bytes):
+the session tile, the wall queue and the run page show them as buttons, and
+a click types the choice into the session as a line, so an agent names the
+choices in its terminal first and gets the same words back.
 
 **The Conductor skill.** `conductor skill` prints a `SKILL.md` that teaches an
 agent to report on its own: progress (`--event progress --message "4/7
 handlers"`), an artifact such as a pull request (`--event artifact --url …`),
-a handoff to another crew member (`--event handoff --to …`) and a decision it
-cannot make (`--state needs_input`); and to form a crew around its own
+a handoff to another crew member (`--event handoff --to …`), a decision it
+cannot make (`--state needs_input`) and a question with a few answers
+(`--choices "a|b|c"`, answered with one click); and to form a crew around its own
 session when the work splits (`conductor crew`, see
 [Agents that form crews](#crews)). Every agent that reads skills gets it
 without asking: the first time an agent is launched after the server starts,

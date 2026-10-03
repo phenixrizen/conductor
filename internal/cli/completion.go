@@ -83,6 +83,7 @@ func completionSpec() []commandSpec {
 		{name: "--url", kind: flagValue},
 		{name: "--to", kind: flagValue},
 		{name: "--tool", kind: flagValue},
+		{name: "--choices", kind: flagValue},
 		{name: "--codex"},
 	}
 	for _, h := range hookPayloads {

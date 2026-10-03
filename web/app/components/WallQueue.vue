@@ -52,6 +52,7 @@ defineExpose({ focusSelected })
       :key="s.id"
       class="flex flex-col gap-2.5 rounded-md border bg-elevated/40 p-3.5 transition-shadow"
       :class="[i === selected ? 'border-warning ring-2 ring-warning/40' : 'border-default']"
+      :data-queue-session="s.id"
       @click="emit('select', i)"
     >
       <div class="flex items-center gap-2">

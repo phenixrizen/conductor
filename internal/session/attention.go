@@ -65,7 +65,7 @@ type Option struct {
 const (
 	MaxAttentionOptions = 6
 	MaxOptionLabel      = 60 // runes
-	MaxOptionInput      = 16 // bytes
+	MaxOptionInput      = 48 // bytes: a choice of 40 and the CR that enters it, or a digit
 )
 
 // CleanOptions drops entries without a label or input, trims both to their

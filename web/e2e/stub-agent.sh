@@ -20,6 +20,9 @@
 #                   by Enter alone, which writes the trust into
 #                   $HOME/.codex/config.toml; a launch with -c projects=…
 #                   (the yolo trust override) asks nothing
+#   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
+#                   these as choices (notify --choices) before its prompt;
+#                   the next line typed answers it
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -274,6 +277,10 @@ else
 fi
 if [[ ${STUB_TRUST_DIALOG:-} == 1 && -z $trusted ]]; then
 	trust_dialog
+fi
+if [[ -n ${STUB_CHOICES:-} ]]; then
+	printf '%s [%s]\n' "${STUB_ASK:-Which one?}" "$STUB_CHOICES"
+	report --state needs_input --message "${STUB_ASK:-Which one?}" --choices "$STUB_CHOICES"
 fi
 printf '\e[?2004h> '
 while IFS= read -r line; do

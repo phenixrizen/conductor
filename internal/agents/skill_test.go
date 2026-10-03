@@ -31,6 +31,7 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" notify --event artifact --url <url>`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to <member> --message "…"`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "…"`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "Which database?" --choices "Postgres|SQLite|Keep both"`,
 		`"${CONDUCTOR_BIN:-conductor}" crew create crew.json --self lead --open`,
 		`"${CONDUCTOR_BIN:-conductor}" crew status`,
 		`"${CONDUCTOR_BIN:-conductor}" crew add member.json`,
@@ -42,8 +43,8 @@ func TestSkillText(t *testing.T) {
 			t.Errorf("the skill does not say %q", want)
 		}
 	}
-	if n := strings.Count(body, " notify --"); n != 4 {
-		t.Errorf("%d notify commands, want the 4 above", n)
+	if n := strings.Count(body, " notify --"); n != 5 {
+		t.Errorf("%d notify commands, want the 5 above", n)
 	}
 	if strings.Contains(Skill, binPlaceholder) || !strings.HasSuffix(Skill, "\n") {
 		t.Fatalf("skill:\n%s", Skill)
