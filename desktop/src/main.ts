@@ -15,6 +15,7 @@ import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, restrictPermissions } from './window'
 import { WslLauncher, wslAvailable } from './launcher-wsl'
+import { RELEASES_URL, startUpdater, updateChannel } from './updater'
 
 const dev = !app.isPackaged
 const resources = app.isPackaged ? process.resourcesPath : join(__dirname, '..')
@@ -155,6 +156,12 @@ async function run() {
   }
   tray = createTray({ icon: iconPath(), show, openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
   show()
+  const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
+  log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
+  void startUpdater(channel, logs, (version) => {
+    void dialog.showMessageBox({ type: 'info', title: 'Conductor', message: `Conductor ${version} is downloaded`, detail: 'It installs when you quit the app.' })
+  })
+
   app.on('second-instance', () => show().focus())
   app.on('activate', () => show())
   app.on('window-all-closed', () => {

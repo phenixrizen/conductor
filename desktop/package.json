@@ -23,5 +23,8 @@
     "@playwright/test": "1.44.1"
   },
   "author": "the Conductor authors",
-  "homepage": "https://github.com/phenixrizen/conductor"
+  "homepage": "https://github.com/phenixrizen/conductor",
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  }
 }
