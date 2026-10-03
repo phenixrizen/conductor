@@ -17,6 +17,8 @@ Usage:
   conductor host [flags] -- <command...>
                                host a local terminal session
   conductor notify [flags]     report "needs input" from inside a session
+  conductor crew create|add|status|link
+                               form a crew around this session, from inside it
   conductor up <crew-id> [--server URL] [--token T] [--open]
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
@@ -47,6 +49,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runHost(ctx, args[1:], stdin, stdout, stderr)
 	case "notify":
 		return runNotify(ctx, args[1:], stdin, stdout, stderr)
+	case "crew":
+		return runCrew(ctx, args[1:], stdin, stdout, stderr)
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":

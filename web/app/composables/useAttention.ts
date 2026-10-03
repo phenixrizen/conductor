@@ -2,7 +2,8 @@ import type { RunInfo, SessionInfo } from './useSessions'
 import { ApiError } from './useApi'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
-import type { SessionActivity } from '~/utils/protocol'
+import { formedCrew } from '~/utils/activity'
+import type { ActivityEntry, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
@@ -88,6 +89,7 @@ export function useAttention() {
   const api = useSessions()
   const events = useEvents()
   const { settings } = useAttentionSettings()
+  const toast = useToast()
 
   const sessions = computed(() => {
     void version.value
@@ -172,6 +174,21 @@ export function useAttention() {
     if (!fresh.length || !events.routes.value.needs_input.browser) return
     for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id)
     chime()
+  }
+
+  /** A session that formed a crew around itself and asked for it to be offered (conductor crew create --open): a toast with Open. Nothing navigates on its own. */
+  function offerFormedCrew(sessionId: string, entry: ActivityEntry) {
+    if (!import.meta.client) return
+    const s = store.value.sessions.get(sessionId)
+    const formed = formedCrew(s?.name || sessionId, entry)
+    if (!formed) return
+    toast.add({
+      title: formed.title,
+      description: 'The run is in the sidebar. Open shows it.',
+      icon: 'i-lucide-users',
+      color: 'neutral',
+      actions: [{ label: 'Open', icon: 'i-lucide-arrow-right', onClick: () => navigateTo(formed.path) }],
+    })
   }
 
   /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
@@ -274,6 +291,7 @@ export function useAttention() {
         else runs.schedule(r.id)
       } else if (event === 'activity') {
         const { sessionId, ...entry } = payload as SessionActivity
+        offerFormedCrew(sessionId, entry)
         events.push(sessionId, entry)
       }
     } catch {

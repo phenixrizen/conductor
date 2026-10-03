@@ -635,6 +635,33 @@ Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default
 `conductor up` prints the run, the URL of its page and, for a crew set to create
 a view link, that link on a third line, `view <url>`.
 
+**Agents that form crews.** An agent running in a Conductor session can form a
+crew around its own session, from inside it, with no admin token: the session's
+own token (the one `conductor notify` uses) is accepted on four routes scoped to
+that session, on by default (`agents.selfService: false` or
+`CONDUCTOR_AGENT_SELF_SERVICE=0` turns them off). The skill teaches the agent
+to write a `crew.json` and run:
+
+```bash
+"${CONDUCTOR_BIN:-conductor}" crew create crew.json --self lead --open   # the crew, launched, with this session as "lead"
+"${CONDUCTOR_BIN:-conductor}" crew add member.json                       # one more member of this session's run
+"${CONDUCTOR_BIN:-conductor}" crew status                                # the run and its members
+"${CONDUCTOR_BIN:-conductor}" crew link --ttl 2h --label "for the PR"    # a view-only link to this session
+```
+
+`crew.json` is the crew as the API takes it (`name`, `goal`, `members` with
+their `start` rules, `self` naming the member this session becomes); `-` reads
+stdin. The crew's working directory and yolo setting are the session's own and
+cannot be chosen, the session is adopted as the member named by `--self`
+(running, with its prompt counted as typed, so members that start "after" it
+wait for its next done, and handoffs reach it), and the other members start
+as at a launch. `--open` makes the workbench offer the run: a toast on every
+page with **Open**; nothing navigates on its own. Links are view-only and last a
+day at most. Bounds: 2 crews per session per hour, 5 links per session per day,
+the crew limits below; a hosted session cannot form a crew (its directory is not
+on the server). Outside a session the commands exit 0 silently
+(`--quiet=false` says why), as `conductor notify` does.
+
 Limits:
 
 - No limit on the number of crews (the Crews page and `conductor crews` page
