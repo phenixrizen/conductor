@@ -51,6 +51,8 @@ const emit = defineEmits<{
 }>()
 
 const host = ref<HTMLDivElement>()
+/** The renderer xterm draws with: webgl, or dom when WebGL is not available. */
+const renderer = ref<'webgl' | 'dom' | ''>('')
 const overlay = ref<{ title: string; detail?: string } | null>(null)
 const connecting = ref(false)
 const fileView = ref(false)
@@ -395,10 +397,18 @@ onMounted(() => {
     if (props.fit === 'scale') scheduleScale()
     else scheduleResize()
   })
+  // The renderer in use, for anyone measuring the tiles (data-renderer on
+  // the host): webgl once the addon is up, dom when it is not available or
+  // its context is lost.
+  renderer.value = 'dom'
   try {
     const webgl = new WebglAddon()
-    webgl.onContextLoss(() => webgl.dispose())
+    webgl.onContextLoss(() => {
+      webgl.dispose()
+      renderer.value = 'dom'
+    })
     term.loadAddon(webgl)
+    renderer.value = 'webgl'
   } catch {
     /* canvas renderer fallback */
   }
@@ -441,7 +451,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
-    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale', 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale', 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />
