@@ -359,7 +359,8 @@ export interface ReachInfo {
   /** `ok` when the server reached itself through the public URL, `unverified` when it did not (usual from inside the network). */
   verified?: 'ok' | 'unverified'
   error?: string
-  tls?: { mode: string; ready: boolean }
+  /** The TLS listener's certificate; absent without a TLS listener. `ready` says one is served. */
+  tls?: { mode: 'acme' | 'files'; ready: boolean; identifiers?: string[]; challenge?: string; notAfter?: string; renewAt?: string; lastError?: string; nextTry?: string }
 }
 
 export interface PathGit {

@@ -57,6 +57,7 @@ type Mapper struct {
 	mu       sync.Mutex
 	status   Status
 	onAddr   []func(netip.Addr)
+	onChange []func(Status)
 	mappings []liveMapping
 	igd      *igd
 	closed   bool
@@ -115,6 +116,26 @@ func (m *Mapper) OnAddress(fn func(netip.Addr)) {
 	m.onAddr = append(m.onAddr, fn)
 }
 
+// OnChange registers fn, called (on the mapper's goroutine) after every
+// change of the status: the address, a mapping made or lost, a failure.
+func (m *Mapper) OnChange(fn func(Status)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onChange = append(m.onChange, fn)
+}
+
+// changed tells the OnChange subscribers the status now.
+func (m *Mapper) changed() {
+	m.mu.Lock()
+	fns := make([]func(Status), len(m.onChange))
+	copy(fns, m.onChange)
+	st := m.status
+	m.mu.Unlock()
+	for _, fn := range fns {
+		fn(st)
+	}
+}
+
 // Run drives the mapper until ctx ends: the address by STUN, the mappings,
 // their renewal at half the lease, the address re-checked every STUNEvery,
 // a failed attempt retried after Retry (doubling to RetryMax). It returns
@@ -126,6 +147,7 @@ func (m *Mapper) Run(ctx context.Context) {
 	retry := m.o.Retry
 	for {
 		wait, err := m.attempt(ctx)
+		m.changed()
 		if ctx.Err() != nil {
 			return
 		}

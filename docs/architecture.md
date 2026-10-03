@@ -84,17 +84,22 @@ What each piece does when a link crosses a network boundary:
 - **A forwarded port, a public address or a proxy** makes the server
   reachable. That, and only that, makes a link open from outside.
 
-Round 5 (`docs/features.md`, `docs/round5-plan.md`) adds two packages so a
-machine behind a home router gets a public link with nothing configured:
-`internal/reach` asks STUN for the public address and maps the TLS port on
-the router through UPnP IGD, PCP or NAT-PMP (the plain port is never mapped),
-and `internal/certs` obtains a certificate from Let's Encrypt through lego for
-that address (or a configured domain) and serves it on a second listener.
-Share links take `https://<public address>/…` only once the port is mapped
-and the certificate is ready; until then they keep the address the request
-came through. A mapping is reported as "mapped", never "reachable": the
-server's own check through the public address is often refused by the router
-(no hairpinning), so a person on another network is the only proof.
+Two packages make a machine behind a home router reachable with nothing
+configured: `internal/reach` asks STUN for the public address and maps the
+TLS port on the router through UPnP IGD, PCP or NAT-PMP (the plain port is
+never mapped; the lease is renewed and deleted on shutdown), and
+`internal/certs` obtains a certificate from Let's Encrypt through lego for
+that address (an IP-address certificate, `tls-alpn-01` on the mapped 443) or
+for configured domains, keeps it under `dataDir/tls` and serves it on a
+second listener (`tls.listen`), HTTP/1.1 only. The manager serves nothing
+before the first issuance. Share links take `https://<public address>/…`
+only once the port is mapped and the certificate is ready; until then they
+keep the address the request came through. A mapping is reported as
+"mapped", never "reachable": the server's own check through the public
+address is often refused by the router (no hairpinning), so a person on
+another network is the only proof. `conductor serve` wires the three: the
+mapper tells the certificate manager the address once the port is mapped,
+and the API reads both for `GET /api/reach` and the link base.
 
 ## Crew runs
 

@@ -3,10 +3,20 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -431,5 +441,131 @@ func TestServeLogsTheReachResult(t *testing.T) {
 	logs = serveUntilListening(t, "--config", cfg)
 	if lines := logLines(logs, "reach: auto finds the public address"); len(lines) != 1 {
 		t.Fatalf("auto without TLS is not explained:\n%s", logs)
+	}
+}
+
+// writeTestCert writes a self-signed certificate and key for 127.0.0.1 into
+// dir and returns their paths.
+func writeTestCert(t *testing.T, dir string) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "conductor test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	certPath, keyPath = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	_ = os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600)
+	return certPath, keyPath
+}
+
+// serveWhile runs `conductor serve` until marker is logged, calls during
+// with the logs so far while the server runs, then stops it and returns
+// everything logged.
+func serveWhile(t *testing.T, marker string, during func(logs string), args ...string) string {
+	t.Helper()
+	t.Cleanup(agents.ForgetBinary())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), io.Discard, &logs)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit code %d", code)
+		}
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(logs.String(), marker) {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned before %q: %v\n%s", marker, err, logs.String())
+		case <-deadline:
+			t.Fatalf("serve never logged %q:\n%s", marker, logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if during != nil {
+		during(logs.String())
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	return logs.String()
+}
+
+// tlsAddr is the address the "tls listening" line names.
+func tlsAddr(t *testing.T, logs string) string {
+	t.Helper()
+	lines := logLines(logs, "tls listening")
+	if len(lines) != 1 {
+		t.Fatalf("no tls listening line:\n%s", logs)
+	}
+	for _, f := range strings.Fields(lines[0]) {
+		if v, ok := strings.CutPrefix(f, "listen="); ok {
+			return v
+		}
+	}
+	t.Fatalf("no listen= in %q", lines[0])
+	return ""
+}
+
+func TestServeListensWithCertificateFiles(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeTestCert(t, dir)
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "certFile": %q, "keyFile": %q}}`, dir, dir, data, certPath, keyPath))
+	logs := serveWhile(t, "tls listening", func(logs string) {
+		addr := tlsAddr(t, logs)
+		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+		resp, err := client.Get("https://" + addr + "/api/health")
+		if err != nil {
+			t.Fatalf("https: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.TLS == nil || resp.TLS.PeerCertificates[0].IPAddresses[0].String() != "127.0.0.1" {
+			t.Fatalf("https health: %d %v", resp.StatusCode, resp.TLS)
+		}
+		if resp.ProtoMajor != 1 {
+			t.Fatalf("protocol %s: HTTP/2 must not be offered while the WebSocket routes are HTTP/1.1", resp.Proto)
+		}
+	}, "--config", cfg)
+	if lines := logLines(logs, "tls listening", "mode=files", "ready=true"); len(lines) != 1 {
+		t.Fatalf("tls line:\n%s", logs)
+	}
+}
+
+func TestServeServesNothingOnTLSBeforeTheFirstCertificate(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	// ACME for the public address with reach manual: the address lookup goes
+	// to a STUN server that answers nothing, so no order can start, and the
+	// listener must refuse every handshake rather than serve something made up.
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "acme": {"email": "me@example.net"}}, "reach": {"mode": "manual", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
+	t.Setenv("CONDUCTOR_REACH", "manual")
+	logs := serveWhile(t, "tls listening", func(logs string) {
+		addr := tlsAddr(t, logs)
+		d := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+		if err == nil {
+			conn.Close()
+			t.Fatal("a handshake succeeded before any certificate was issued")
+		}
+	}, "--config", cfg)
+	if lines := logLines(logs, "tls listening", "mode=acme", "ready=false"); len(lines) != 1 {
+		t.Fatalf("tls line:\n%s", logs)
+	}
+	if fi, err := os.Stat(filepath.Join(data, "tls")); err != nil || !fi.IsDir() {
+		t.Fatalf("the tls directory was not made: %v", err)
 	}
 }

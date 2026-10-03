@@ -102,6 +102,37 @@ channel of a hosted session directly over WebRTC once the join page has loaded
 from the server; it carries no data and does not make the server's page
 reachable, which only a forwarded port, a public address or a proxy does.
 
+### TLS
+
+A link that leaves your network should be `https`. The server serves the
+workbench over TLS on a second listener (`tls.listen`, `:8443`) with a
+certificate from Let's Encrypt through [lego](https://github.com/go-acme/lego):
+
+- **For your public address, with nothing to configure:** `tls.acme` with no
+  `domains` (`CONDUCTOR_TLS_ACME=1`). With `reach.mode` `auto` the server asks
+  STUN for its public address, maps port 443 on the router to the TLS
+  listener, and orders an IP-address certificate for that address (Let's
+  Encrypt issues those since January 2026, as six-day certificates under the
+  `shortlived` profile, proven with `tls-alpn-01` on 443). It renews after
+  four days and orders again when the address changes, which makes old links
+  stale: the Share dialog says so. Until the first certificate is issued,
+  links keep the address you opened the workbench at and the TLS listener
+  refuses every handshake; nothing self-signed is ever served.
+- **For a domain:** `tls.acme.domains: ["home.example.net"]`, proven with
+  `dns-01` through `cloudflare`, `exec` (a script of your own, `EXEC_PATH`)
+  or `httpreq`, with `http-01` on a mapped port 80 (`reach.publicPort80`), or
+  with `tls-alpn-01` on the mapped 443. Keeping the name pointed at your
+  address (dynamic DNS) is yours to arrange.
+- **With your own certificate:** `tls.certFile` and `tls.keyFile`, re-read
+  when they change.
+
+The plain listener stays as it is for the desktop window, local hosts and
+`http-01`; there is no redirect to TLS. `GET /api/reach` reports the
+certificate (`tls`: identifiers, `notAfter`, `renewAt`, `ready`, the last
+error); the account key and the certificates live under `dataDir/tls`, mode
+`0600`. The certificate flow is tested against Let's Encrypt's Pebble in CI
+(`make test-pebble`).
+
 ## Clickable links and file viewer
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
@@ -741,6 +772,14 @@ file must run `compinit` before that line.
 | `reach.publicPort` | `CONDUCTOR_REACH_PUBLIC_PORT` | `443` | the port on the public address for the TLS listener: mapped in `auto`, forwarded by you in `manual` |
 | `reach.publicPort80` | `CONDUCTOR_REACH_PUBLIC_PORT_80` | `false` | also map port 80 to the plain listener, for an ACME `http-01` challenge |
 | `reach.stunServer` | `CONDUCTOR_REACH_STUN` | first `stun:` of `iceServers` | the STUN server that answers the public address |
+| `tls.listen` | `CONDUCTOR_TLS_LISTEN` | `:8443` once a certificate source is set | the TLS listener, serving the same workbench; `reach.publicPort` (443) is mapped to it. HTTP/1.1 only; no redirect from the plain listener |
+| `tls.acme` | `CONDUCTOR_TLS_ACME=1` and the keys below | off | a certificate from Let's Encrypt (or `caDirectory`) through ACME, kept under `dataDir/tls`, renewed on its own (at two thirds of a short certificate's life, thirty days before a long one's end, or when the CA suggests), see [TLS](#tls) |
+| `tls.acme.email` | `CONDUCTOR_TLS_ACME_EMAIL` | none | the account's contact |
+| `tls.acme.domains` | `CONDUCTOR_TLS_ACME_DOMAINS` (comma-separated) | none: the public address | DNS names or IP addresses the certificate is for; empty orders an IP-address certificate for the address reach finds, once its port is mapped |
+| `tls.acme.challenge` | `CONDUCTOR_TLS_ACME_CHALLENGE` | `tls-alpn-01` | `tls-alpn-01` (answered on the TLS listener through the mapped 443), `http-01` (on the plain listener through a mapped 80: `reach.publicPort80`) or `dns-01` (names only, through `dnsProvider`) |
+| `tls.acme.dnsProvider`, `tls.acme.dnsEnv` | `CONDUCTOR_TLS_ACME_DNS_PROVIDER`, `CONDUCTOR_TLS_ACME_DNS_ENV` (`K=V,K=V`) | none | `cloudflare`, `exec` or `httpreq`, with its settings under lego's names (`CLOUDFLARE_DNS_API_TOKEN`, `EXEC_PATH`, `HTTPREQ_ENDPOINT`, …); never logged or shown |
+| `tls.acme.caDirectory`, `tls.acme.profile` | `CONDUCTOR_TLS_ACME_CA`, `CONDUCTOR_TLS_ACME_PROFILE` | Let's Encrypt; `shortlived` for IP addresses | the ACME directory (`https`), and the certificate profile |
+| `tls.certFile`, `tls.keyFile` | `CONDUCTOR_TLS_CERT_FILE`, `CONDUCTOR_TLS_KEY_FILE` | none | a certificate of your own (PEM, with its chain), re-read when the files change; exclusive with `tls.acme` |
 
 ### Upgrading
 
@@ -902,7 +941,10 @@ that matches neither an empty id nor one that begins with a dash.
   lost on restart; hosted sessions reconnect and resume while the server is up.
 - WebRTC needs UDP between the browser and the host; otherwise the relay is
   used automatically. No TURN credential minting yet.
-- Put the server behind HTTPS before sharing links outside a trusted network.
+- Share links outside a trusted network over TLS only: the `tls` listener
+  with a certificate from Let's Encrypt (or your own), or a reverse proxy
+  that terminates TLS. Plain http is never mapped on the router or
+  advertised on the public address.
 
 ## Development
 

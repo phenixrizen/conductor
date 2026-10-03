@@ -238,6 +238,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
+	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/catalog", s.requireAdmin(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.requireAdmin(s.handleSaveAgent))

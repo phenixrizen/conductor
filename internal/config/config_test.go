@@ -821,3 +821,83 @@ func TestReachConfigBoundsAndEnv(t *testing.T) {
 		t.Fatalf("off needs no STUN server: %v", err)
 	}
 }
+
+func TestTLSConfigValidation(t *testing.T) {
+	ok := func(name string, mutate func(*Config)) *Config {
+		t.Helper()
+		c := Defaults()
+		mutate(c)
+		if err := c.Validate(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return c
+	}
+	bad := func(name, want string, mutate func(*Config)) {
+		t.Helper()
+		c := Defaults()
+		mutate(c)
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", name, err, want)
+		}
+	}
+	if c := Defaults(); c.TLSEnabled() || c.TLS.Listen != "" {
+		t.Fatalf("defaults %+v", c.TLS)
+	}
+	c := ok("acme for the public address", func(c *Config) { c.TLS.ACME = &ACME{Email: "me@example.net"} })
+	if c.TLS.Listen != ":8443" || c.TLS.ACME.Challenge != ChallengeTLSALPN || c.TLS.ACME.Profile != "shortlived" || !c.ACMEIdentifiersAreIPs() {
+		t.Fatalf("filled %+v %+v", c.TLS, c.TLS.ACME)
+	}
+	c = ok("acme for a domain", func(c *Config) {
+		c.TLS.ACME = &ACME{Domains: []string{"home.example.net"}, Challenge: ChallengeDNS, DNSProvider: "cloudflare"}
+	})
+	if c.TLS.ACME.Profile != "" || c.ACMEIdentifiersAreIPs() {
+		t.Fatalf("domain %+v", c.TLS.ACME)
+	}
+	ok("files", func(c *Config) { c.TLS.CertFile = "cert.pem"; c.TLS.KeyFile = "key.pem" })
+	ok("literal ip", func(c *Config) { c.TLS.ACME = &ACME{Domains: []string{"203.0.113.9"}} })
+	ok("http-01 with port 80 mapped", func(c *Config) { c.TLS.ACME = &ACME{Challenge: ChallengeHTTP}; c.Reach.PublicPort80 = true })
+	ok("acme with reach manual", func(c *Config) { c.TLS.ACME = &ACME{}; c.Reach.Mode = ReachManual })
+	bad("files and acme", "exclusive", func(c *Config) { c.TLS.CertFile = "a"; c.TLS.KeyFile = "b"; c.TLS.ACME = &ACME{} })
+	bad("cert without key", "go together", func(c *Config) { c.TLS.CertFile = "a" })
+	bad("same listen", "differ", func(c *Config) { c.TLS.ACME = &ACME{}; c.TLS.Listen = ":8080" })
+	bad("listen without a source", "need tls.acme", func(c *Config) { c.TLS.Listen = ":8443" })
+	bad("dns-01 for an ip", "cannot prove an IP", func(c *Config) { c.TLS.ACME = &ACME{Challenge: ChallengeDNS, DNSProvider: "exec"} })
+	bad("wrong profile for an ip", "shortlived", func(c *Config) { c.TLS.ACME = &ACME{Profile: "classic"} })
+	bad("no domains and reach off", "needs reach", func(c *Config) { c.TLS.ACME = &ACME{}; c.Reach.Mode = ReachOff })
+	bad("public port not 443", "443", func(c *Config) { c.TLS.ACME = &ACME{}; c.Reach.PublicPort = 8443 })
+	bad("http-01 without port 80", "publicPort80", func(c *Config) { c.TLS.ACME = &ACME{Challenge: ChallengeHTTP} })
+	bad("dns-01 without a provider", "dnsProvider", func(c *Config) { c.TLS.ACME = &ACME{Domains: []string{"a.example"}, Challenge: ChallengeDNS} })
+	bad("unknown provider", "cloudflare, exec or httpreq", func(c *Config) {
+		c.TLS.ACME = &ACME{Domains: []string{"a.example"}, Challenge: ChallengeDNS, DNSProvider: "route53"}
+	})
+	bad("unknown challenge", "challenge must be", func(c *Config) { c.TLS.ACME = &ACME{Challenge: "dns-02"} })
+	bad("bad ca", "https", func(c *Config) { c.TLS.ACME = &ACME{CADirectory: "http://ca.example/dir"} })
+	bad("bad domain", "not a DNS name", func(c *Config) { c.TLS.ACME = &ACME{Domains: []string{"a b"}} })
+}
+
+func TestTLSEnvOverrides(t *testing.T) {
+	cfg := Defaults()
+	env := map[string]string{
+		"CONDUCTOR_TLS_LISTEN": ":9443", "CONDUCTOR_TLS_ACME_EMAIL": "me@example.net", "CONDUCTOR_TLS_ACME_DOMAINS": "home.example.net, alt.example.net",
+		"CONDUCTOR_TLS_ACME_CHALLENGE": "dns-01", "CONDUCTOR_TLS_ACME_DNS_PROVIDER": "cloudflare", "CONDUCTOR_TLS_ACME_DNS_ENV": "CLOUDFLARE_DNS_API_TOKEN=tok,X=1",
+		"CONDUCTOR_TLS_ACME_CA": "https://acme-staging-v02.api.letsencrypt.org/directory", "CONDUCTOR_TLS_ACME_PROFILE": "classic",
+	}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.TLS.ACME
+	if cfg.TLS.Listen != ":9443" || a == nil || a.Email != "me@example.net" || len(a.Domains) != 2 || a.Domains[1] != "alt.example.net" || a.Challenge != "dns-01" || a.DNSProvider != "cloudflare" || a.DNSEnv["CLOUDFLARE_DNS_API_TOKEN"] != "tok" || a.DNSEnv["X"] != "1" || a.Profile != "classic" || !strings.Contains(a.CADirectory, "staging") {
+		t.Fatalf("%+v %+v", cfg.TLS, a)
+	}
+	plain := Defaults()
+	if err := applyEnv(plain, func(k string) string { return map[string]string{"CONDUCTOR_TLS_ACME": "1"}[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.Validate(); err != nil || plain.TLS.ACME == nil || plain.TLS.Listen != ":8443" {
+		t.Fatalf("CONDUCTOR_TLS_ACME=1: %v %+v", err, plain.TLS)
+	}
+}

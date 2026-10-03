@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e lint fmt generate docker clean
+.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-pebble lint fmt generate docker clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -67,6 +67,11 @@ test-web: web-typecheck ## frontend checks
 
 test-e2e: web-build build-go ## Playwright suite (web/e2e): the built server with stub agents, in Chromium 1117
 	cd web && npm run typecheck:e2e && npm run test:e2e
+
+PEBBLE_VERSION ?= v2.10.1
+test-pebble: ## certificates from Let's Encrypt's Pebble (installs it with go install when missing)
+	@command -v pebble >/dev/null 2>&1 || [ -n "$$CONDUCTOR_PEBBLE" ] || go install github.com/letsencrypt/pebble/v2/cmd/pebble@$(PEBBLE_VERSION)
+	PATH="$$(go env GOPATH)/bin:$$PATH" go test -race -count=1 -tags pebble -run Pebble ./internal/certs/
 
 lint: ## gofmt and go vet
 	@out="$$(gofmt -l $(GO_FILES))"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi

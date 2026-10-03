@@ -723,8 +723,14 @@ branch `design/crews-graph`.
   cannot prove it.
 - Router models beyond the loopback fakes: which answered UPnP IGD, PCP or
   NAT-PMP, and which refused (list them here with the firmware).
-- IP-address certificates from the real Let's Encrypt (Pebble stands in for it
-  in CI): the rate limits and the renewal every few days over a week.
+- IP-address certificates from the real Let's Encrypt: the rate limits and
+  the renewal every few days over a week. Pebble stands in for it in CI
+  (`make test-pebble`): an IP identifier over `tls-alpn-01` with a renewal,
+  and a name over `tls-alpn-01` and `http-01`, all validated by Pebble
+  against the listener, pass on 2026-10-03.
+- The TLS listener offers HTTP/1.1 only. Whether the WebSocket routes work
+  over HTTP/2 (RFC 8441 extended CONNECT in Go's server and the browsers)
+  decides whether `h2` can be offered later.
 - The first nightly run: every **verify** row of the plan closed with the real
   CLI's help and version output.
 - The Windows installer on a machine with WSL2: the first-run screen without

@@ -16,6 +16,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `internal/proto` | binary framing and JSON messages |
 | `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention, submissions (a paste, then Enter: the one way Conductor types into a session), the agent's own session |
 | `internal/reach` | how the server is reached from outside: the public address by STUN, the TLS port mapped on the gateway (UPnP IGD, PCP, NAT-PMP), the self-check; mapped is never reported as reachable |
+| `internal/certs` | the TLS listener's certificate: from Let's Encrypt through lego (the public address or domains; tls-alpn-01, http-01, dns-01), kept under `dataDir/tls`, renewed on its own; or from files; nothing served before the first issuance |
 | `internal/share`, `internal/signal`, `internal/api` | share tokens; hosted-session brokering; HTTP + WebSocket surface |
 | `internal/hostagent` | `conductor host`: pion WebRTC peers, relay sink, local terminal |
 | `internal/notify` | `conductor notify`: attention and event reports from inside a session; hook payload mappers (Claude Code, Codex, agy, Copilot, Cursor, Goose), the agent's own session id among what they read |
@@ -57,6 +58,7 @@ npm --prefix web test          # vitest (link detection)
 make web-build                 # nuxt generate + copy into internal/web/dist
 make build-go                  # embeds whatever is in internal/web/dist
 make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
+make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
 python3 scripts/brand_assets.py --check
 ```
 
@@ -72,6 +74,9 @@ reported limitation, not a pass.
 | github.com/pion/webrtc/v4 | v4.2.21 |
 | github.com/creack/pty | v1.1.24 |
 | github.com/coder/websocket | v1.8.15 |
+| github.com/pion/stun/v4 (direct for the reach lookup) | v4.0.1 |
+| github.com/go-acme/lego/v5 (core, tls-alpn-01, http-01, dns-01 with cloudflare, exec, httpreq) | v5.5.2 |
+| github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
 | shiki | 4.4.3 |

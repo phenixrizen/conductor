@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,11 +10,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/api"
+	"github.com/phenixrizen/conductor/internal/certs"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/reach"
 	"github.com/phenixrizen/conductor/internal/share"
@@ -125,6 +130,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
+		// No HTTP/2 on the TLS listener: the WebSocket routes are HTTP/1.1
+		// ones, and a browser that negotiated h2 would need the extended
+		// CONNECT of RFC 8441 for them. Set before any Serve.
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -141,10 +150,21 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 
 	mctx, mcancel := context.WithCancel(ctx)
 	go srv.RunMaintenance(mctx)
-	mapper := startReach(mctx, cfg, srv, log)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() { errCh <- httpSrv.Serve(ln) }()
+	var certMgr *certs.Manager
+	var tlsLn net.Listener
+	if cfg.TLSEnabled() {
+		certMgr, tlsLn, err = startTLS(mctx, cfg, log)
+		if err != nil {
+			mcancel()
+			_ = ln.Close()
+			return 1, err
+		}
+		go func() { errCh <- httpSrv.Serve(tlsLn) }()
+	}
+	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)
 
 	select {
 	case <-ctx.Done():
@@ -171,17 +191,52 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	return 0, nil
 }
 
+// startTLS makes the certificate manager and the TLS listener: a certificate
+// from ACME (for the public address, or the configured domains) or from
+// files, served with TLS 1.2 or later, HTTP/1.1 and the acme-tls/1 protocol
+// of the tls-alpn-01 challenge. HTTP/2 is not offered: the WebSocket routes
+// are HTTP/1.1 ones. Nothing is served before the first issuance.
+func startTLS(ctx context.Context, cfg *config.Config, log *slog.Logger) (*certs.Manager, net.Listener, error) {
+	o := certs.Options{Dir: filepath.Join(cfg.DataDir, "tls"), CertFile: cfg.TLS.CertFile, KeyFile: cfg.TLS.KeyFile, Log: log}
+	if a := cfg.TLS.ACME; a != nil {
+		o.Identifiers = a.Domains
+		o.Profile = a.Profile
+		o.Challenge = a.Challenge
+		o.ACME = &certs.ACMEOptions{Email: a.Email, Directory: a.CADirectory, Challenge: a.Challenge, DNSProvider: a.DNSProvider, DNSEnv: a.DNSEnv}
+	}
+	m, err := certs.New(o)
+	if err != nil {
+		return nil, nil, err
+	}
+	raw, err := net.Listen("tcp", cfg.TLS.Listen)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tls listen %s: %w", cfg.TLS.Listen, err)
+	}
+	tcfg := &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1", "acme-tls/1"}, GetCertificate: m.GetCertificate}
+	go m.Run(ctx)
+	st := m.Status()
+	log.Info("tls listening", "listen", raw.Addr().String(), "mode", st.Mode, "identifiers", st.Identifiers, "challenge", st.Challenge, "ready", st.Ready)
+	return m, tls.NewListener(raw, tcfg), nil
+}
+
 // startReach starts the reach mapper the config asks for and gives the server
-// its status: in auto, the public address by STUN and, once there is a TLS
-// listener to map, its port on the gateway (reachPorts); in manual, the
-// address only. Off starts nothing. The mapper runs until ctx ends; the
-// caller closes it to delete the mappings.
-func startReach(ctx context.Context, cfg *config.Config, srv *api.Server, log *slog.Logger) *reach.Mapper {
+// its status: in auto, the public address by STUN and, when there is a TLS
+// listener, its port on the gateway (reachPorts); in manual, the address
+// only. Off starts nothing. With a certificate for the public address to
+// obtain, the manager learns the address from the mapper once the port is
+// mapped (or forwarded by hand). The mapper runs until ctx ends; the caller
+// closes it to delete the mappings.
+func startReach(ctx context.Context, cfg *config.Config, srv *api.Server, certMgr *certs.Manager, plainPort, tlsPort uint16, log *slog.Logger) *reach.Mapper {
+	var cs certSourceOrNil = nil
+	if certMgr != nil {
+		cs = certMgr
+	}
 	if cfg.Reach.Mode == config.ReachOff {
+		srv.SetReach(nil, cs)
 		log.Info("reach: off; share links take the address the workbench is opened at")
 		return nil
 	}
-	ports := reachPorts(cfg)
+	ports := reachPorts(cfg, plainPort, tlsPort)
 	m := reach.New(reach.Options{
 		Mode:       cfg.Reach.Mode,
 		Ports:      ports,
@@ -189,18 +244,58 @@ func startReach(ctx context.Context, cfg *config.Config, srv *api.Server, log *s
 		Verify:     reach.Verifier{Instance: srv.Instance()}.Verify,
 		Log:        log,
 	})
-	srv.SetReach(m, nil)
+	srv.SetReach(m, cs)
 	if cfg.Reach.Mode == config.ReachAuto && len(ports) == 0 {
 		log.Info("reach: auto finds the public address; nothing is mapped without a TLS listener, and share links take the address the workbench is opened at")
+	}
+	if certMgr != nil && cfg.TLS.ACME != nil && len(cfg.TLS.ACME.Domains) == 0 {
+		m.OnChange(func(st reach.Status) {
+			if st.ExternalIP.IsValid() && (st.Mapped || st.Method == reach.MethodManual) {
+				certMgr.SetIdentifiers([]string{st.ExternalIP.String()})
+			} else {
+				certMgr.SetIdentifiers(nil)
+			}
+		})
 	}
 	go m.Run(ctx)
 	return m
 }
 
-// reachPorts are the ports reach maps or reports: the TLS listener's, from
-// the public port, once there is one (none yet: plain http is never mapped).
-func reachPorts(cfg *config.Config) []reach.PortMap {
-	return nil
+// certSourceOrNil lets a nil *certs.Manager reach SetReach as a nil interface.
+type certSourceOrNil interface {
+	Ready() bool
+	Status() certs.Status
+	HTTP01(token string) (string, bool)
+}
+
+// reachPorts are the ports reach maps or reports: the public port to the
+// TLS listener, and 80 to the plain listener when reach.publicPort80 asks
+// for it (http-01). Plain http is never mapped on its own.
+func reachPorts(cfg *config.Config, plainPort, tlsPort uint16) []reach.PortMap {
+	if tlsPort == 0 {
+		return nil
+	}
+	ports := []reach.PortMap{{External: uint16(cfg.Reach.PublicPort), Internal: tlsPort}}
+	if cfg.Reach.PublicPort80 && plainPort != 0 {
+		ports = append(ports, reach.PortMap{External: 80, Internal: plainPort})
+	}
+	return ports
+}
+
+// portOf is the port a listener is bound to (0 for none).
+func portOf(ln net.Listener) uint16 {
+	if ln == nil {
+		return 0
+	}
+	if ap, err := netip.ParseAddrPort(ln.Addr().String()); err == nil {
+		return ap.Port()
+	}
+	if _, p, err := net.SplitHostPort(ln.Addr().String()); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			return uint16(n)
+		}
+	}
+	return 0
 }
 
 // exitCodeFromEnv is a helper for tests that want to run serve in-process.

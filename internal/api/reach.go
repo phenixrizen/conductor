@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/phenixrizen/conductor/internal/certs"
 	"github.com/phenixrizen/conductor/internal/reach"
 )
 
@@ -11,10 +12,13 @@ type reachSource interface {
 	Status() reach.Status
 }
 
-// certSource says whether the TLS listener has a certificate to serve: the
-// discovered address becomes a link's base only then (internal/certs).
+// certSource is the TLS listener's certificate manager (internal/certs):
+// the discovered address becomes a link's base only once it is ready, and
+// its open http-01 challenges are served on the plain listener.
 type certSource interface {
 	Ready() bool
+	Status() certs.Status
+	HTTP01(token string) (keyAuth string, ok bool)
 }
 
 // SetReach gives the server its reach status and certificate readiness;
@@ -32,14 +36,7 @@ func (s *Server) Instance() string { return s.instance }
 // reachStatus is what GET /api/reach reports.
 type reachStatus struct {
 	reach.Status
-	TLS *tlsStatus `json:"tls,omitempty"`
-}
-
-// tlsStatus is the certificate part of the reach report; filled by the
-// certificate manager when there is one.
-type tlsStatus struct {
-	Mode  string `json:"mode"`
-	Ready bool   `json:"ready"`
+	TLS *certs.Status `json:"tls,omitempty"`
 }
 
 func (s *Server) handleReach(w http.ResponseWriter, r *http.Request) {
@@ -51,9 +48,32 @@ func (s *Server) handleReach(w http.ResponseWriter, r *http.Request) {
 		out.Status = src.Status()
 	}
 	if certs != nil {
-		out.TLS = &tlsStatus{Mode: "files", Ready: certs.Ready()}
+		st := certs.Status()
+		out.TLS = &st
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleACMEChallenge answers an http-01 challenge of an open order on the
+// plain listener (RFC 8555 §8.3); 404 for any other token, and without a
+// certificate manager.
+func (s *Server) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
+	s.reachMu.Lock()
+	certs := s.certs
+	s.reachMu.Unlock()
+	token := r.PathValue("token")
+	if certs == nil || len(token) > 128 {
+		http.NotFound(w, r)
+		return
+	}
+	keyAuth, ok := certs.HTTP01(token)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(keyAuth))
 }
 
 // discoveredBase is the base share links take from reach: the public URL of

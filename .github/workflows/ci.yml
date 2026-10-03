@@ -83,3 +83,12 @@ jobs:
             web/playwright-report
             web/test-results
           if-no-files-found: ignore
+
+  pebble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test-pebble

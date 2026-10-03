@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -54,6 +55,53 @@ type Reach struct {
 	// first stun: URL of iceServers when empty.
 	STUNServer string `json:"stunServer"`
 }
+
+// TLS configures a second listener that serves the same workbench over TLS,
+// with a certificate from Let's Encrypt through ACME (internal/certs) or
+// from files.
+type TLS struct {
+	// Listen is the TLS listener's address; ":8443" when ACME or files are
+	// set and it is empty. The public port (reach.publicPort, 443) is mapped
+	// to it.
+	Listen string `json:"listen"`
+	// CertFile and KeyFile serve a certificate of the person's own (PEM),
+	// re-read when they change. Exclusive with ACME.
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
+	// ACME obtains the certificate from a CA.
+	ACME *ACME `json:"acme"`
+}
+
+// ACME says what certificate to obtain and how to prove the identifiers.
+type ACME struct {
+	// Email is the account's contact (optional, recommended).
+	Email string `json:"email"`
+	// Domains are the identifiers: DNS names or literal IP addresses. Empty
+	// means the public address reach finds (an IP-address certificate).
+	Domains []string `json:"domains"`
+	// Challenge is tls-alpn-01 (the default, on the TLS listener through the
+	// mapped 443), http-01 (on the plain listener through a mapped 80) or
+	// dns-01 (through DNSProvider; DNS names only).
+	Challenge string `json:"challenge"`
+	// DNSProvider is cloudflare, exec or httpreq; DNSEnv holds its settings
+	// under lego's variable names (CLOUDFLARE_DNS_API_TOKEN, EXEC_PATH,
+	// HTTPREQ_ENDPOINT, …), never logged or shown.
+	DNSProvider string            `json:"dnsProvider"`
+	DNSEnv      map[string]string `json:"dnsEnv"`
+	// CADirectory is the ACME directory URL; Let's Encrypt's when empty.
+	CADirectory string `json:"caDirectory"`
+	// Profile is the ACME profile asked for; "shortlived" for IP addresses
+	// (Let's Encrypt issues those as six-day certificates only), else the
+	// CA's default.
+	Profile string `json:"profile"`
+}
+
+// ACME challenges.
+const (
+	ChallengeTLSALPN = "tls-alpn-01"
+	ChallengeHTTP    = "http-01"
+	ChallengeDNS     = "dns-01"
+)
 
 // Reach modes.
 const (
@@ -145,6 +193,8 @@ type Config struct {
 	Yolo bool `json:"yolo"`
 	// Reach: the public address and the port mapping on the gateway.
 	Reach Reach `json:"reach"`
+	// TLS: the TLS listener and where its certificate comes from.
+	TLS TLS `json:"tls"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -178,6 +228,27 @@ func Defaults() *Config {
 		FileView:             FileViewView,
 		Reach:                Reach{Mode: ReachAuto, PublicPort: 443},
 	}
+}
+
+// TLSEnabled reports whether there is a TLS listener: ACME or certificate
+// files are configured.
+func (c *Config) TLSEnabled() bool { return c.TLS.ACME != nil || c.TLS.CertFile != "" }
+
+// ACMEIdentifiersAreIPs reports whether the ACME identifiers are IP
+// addresses: the discovered address (no domains), or literal addresses.
+func (c *Config) ACMEIdentifiersAreIPs() bool {
+	if c.TLS.ACME == nil {
+		return false
+	}
+	if len(c.TLS.ACME.Domains) == 0 {
+		return true
+	}
+	for _, d := range c.TLS.ACME.Domains {
+		if _, err := netip.ParseAddr(d); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // STUNServer is the server the reach lookup asks for the public address:
@@ -298,6 +369,45 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		}
 		cfg.Webhooks = hooks
 	}
+	str("CONDUCTOR_TLS_LISTEN", &cfg.TLS.Listen)
+	str("CONDUCTOR_TLS_CERT_FILE", &cfg.TLS.CertFile)
+	str("CONDUCTOR_TLS_KEY_FILE", &cfg.TLS.KeyFile)
+	acme := func() *ACME {
+		if cfg.TLS.ACME == nil {
+			cfg.TLS.ACME = &ACME{}
+		}
+		return cfg.TLS.ACME
+	}
+	for key, set := range map[string]func(*ACME, string){
+		"CONDUCTOR_TLS_ACME_EMAIL":        func(a *ACME, v string) { a.Email = v },
+		"CONDUCTOR_TLS_ACME_CHALLENGE":    func(a *ACME, v string) { a.Challenge = v },
+		"CONDUCTOR_TLS_ACME_DNS_PROVIDER": func(a *ACME, v string) { a.DNSProvider = v },
+		"CONDUCTOR_TLS_ACME_CA":           func(a *ACME, v string) { a.CADirectory = v },
+		"CONDUCTOR_TLS_ACME_PROFILE":      func(a *ACME, v string) { a.Profile = v },
+	} {
+		if v := getenv(key); v != "" {
+			set(acme(), v)
+		}
+	}
+	if v := getenv("CONDUCTOR_TLS_ACME"); v == "1" || v == "true" {
+		acme()
+	}
+	if v := getenv("CONDUCTOR_TLS_ACME_DOMAINS"); v != "" {
+		var out []string
+		list("CONDUCTOR_TLS_ACME_DOMAINS", &out)
+		acme().Domains = out
+	}
+	if v := getenv("CONDUCTOR_TLS_ACME_DNS_ENV"); v != "" {
+		a := acme()
+		if a.DNSEnv == nil {
+			a.DNSEnv = map[string]string{}
+		}
+		for _, kv := range strings.Split(v, ",") {
+			if k, val, ok := strings.Cut(strings.TrimSpace(kv), "="); ok && k != "" {
+				a.DNSEnv[k] = val
+			}
+		}
+	}
 	str("CONDUCTOR_REACH", &cfg.Reach.Mode)
 	str("CONDUCTOR_REACH_STUN", &cfg.Reach.STUNServer)
 	if err := num("CONDUCTOR_REACH_PUBLIC_PORT", &cfg.Reach.PublicPort); err != nil {
@@ -399,10 +509,97 @@ func (c *Config) Validate() error {
 	if c.Reach.Mode != ReachOff && c.STUNServer() == "" {
 		errs = append(errs, errors.New("reach needs a STUN server: reach.stunServer, or a stun: URL in iceServers"))
 	}
+	errs = append(errs, c.validateTLS()...)
 	hookErrs, warnings := c.validateWebhooks()
 	errs = append(errs, hookErrs...)
 	c.warnings = warnings
 	return errors.Join(errs...)
+}
+
+// validateTLS checks the TLS listener and its certificate source, and fills
+// the defaults (listen, challenge, profile) in.
+func (c *Config) validateTLS() []error {
+	var errs []error
+	t := &c.TLS
+	if !c.TLSEnabled() {
+		if t.Listen != "" || t.KeyFile != "" {
+			errs = append(errs, errors.New("tls.listen and tls.keyFile need tls.acme or tls.certFile"))
+		}
+		return errs
+	}
+	if t.CertFile != "" && t.ACME != nil {
+		errs = append(errs, errors.New("tls.certFile and tls.acme are exclusive: one certificate source"))
+	}
+	if (t.CertFile == "") != (t.KeyFile == "") {
+		errs = append(errs, errors.New("tls.certFile and tls.keyFile go together"))
+	}
+	if t.Listen == "" {
+		t.Listen = ":8443"
+	}
+	if t.Listen == c.Listen {
+		errs = append(errs, errors.New("tls.listen must differ from listen"))
+	}
+	for _, f := range []*string{&t.CertFile, &t.KeyFile} {
+		if *f != "" {
+			if abs, err := filepath.Abs(*f); err == nil {
+				*f = abs
+			}
+		}
+	}
+	a := t.ACME
+	if a == nil {
+		return errs
+	}
+	if a.Challenge == "" {
+		a.Challenge = ChallengeTLSALPN
+	}
+	switch a.Challenge {
+	case ChallengeTLSALPN, ChallengeHTTP, ChallengeDNS:
+	default:
+		errs = append(errs, fmt.Errorf("tls.acme.challenge must be tls-alpn-01, http-01 or dns-01, got %q", a.Challenge))
+	}
+	for i, d := range a.Domains {
+		d = strings.TrimSpace(d)
+		a.Domains[i] = d
+		if d == "" || strings.ContainsAny(d, " /\\") {
+			errs = append(errs, fmt.Errorf("tls.acme.domains[%d]: %q is not a DNS name or an IP address", i, d))
+		}
+	}
+	ips := c.ACMEIdentifiersAreIPs()
+	if ips && a.Challenge == ChallengeDNS {
+		errs = append(errs, errors.New("tls.acme: dns-01 cannot prove an IP address; use tls-alpn-01 or http-01"))
+	}
+	if ips {
+		if a.Profile == "" {
+			a.Profile = "shortlived"
+		} else if a.Profile != "shortlived" {
+			errs = append(errs, errors.New("tls.acme.profile must be shortlived for IP addresses (Let's Encrypt issues six-day certificates for them)"))
+		}
+	}
+	if len(a.Domains) == 0 && c.Reach.Mode == ReachOff {
+		errs = append(errs, errors.New("tls.acme without domains needs reach (the certificate is for the public address reach finds); set reach.mode to auto or manual, or name domains"))
+	}
+	if len(a.Domains) == 0 && c.Reach.PublicPort != 443 && a.Challenge == ChallengeTLSALPN {
+		errs = append(errs, errors.New("tls.acme for the public address needs reach.publicPort 443: the CA validates tls-alpn-01 on 443 only"))
+	}
+	if a.Challenge == ChallengeHTTP && c.Reach.Mode == ReachAuto && !c.Reach.PublicPort80 {
+		errs = append(errs, errors.New("tls.acme with http-01 needs reach.publicPort80, so port 80 reaches the plain listener"))
+	}
+	if a.Challenge == ChallengeDNS {
+		switch a.DNSProvider {
+		case "cloudflare", "exec", "httpreq":
+		case "":
+			errs = append(errs, errors.New("tls.acme with dns-01 needs tls.acme.dnsProvider (cloudflare, exec or httpreq)"))
+		default:
+			errs = append(errs, fmt.Errorf("tls.acme.dnsProvider must be cloudflare, exec or httpreq, got %q", a.DNSProvider))
+		}
+	}
+	if a.CADirectory != "" {
+		if u, err := url.Parse(a.CADirectory); err != nil || u.Scheme != "https" || u.Host == "" {
+			errs = append(errs, errors.New("tls.acme.caDirectory must be an https URL"))
+		}
+	}
+	return errs
 }
 
 // Warnings are what the last Validate found worth saying but not wrong: a
