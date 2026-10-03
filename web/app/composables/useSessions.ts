@@ -363,6 +363,9 @@ export interface RunInfo {
   needsInput: number
   /** The run's yolo choice, fixed at launch: every member, one added later included, follows it. */
   yolo: boolean
+  /** The stopped run this one resumed, and the run that resumed this one (Resume run). */
+  resumedFrom?: string
+  resumedBy?: string
 }
 
 /** GET /api/reach: what the server knows about being reached from outside its network, and whether its TLS listener has a certificate. */
@@ -502,6 +505,11 @@ export function useSessions() {
       request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/start`, { method: 'POST' }).then((r) => r.run),
     /** Stops every member's session; the worktrees stay. */
     stopRun: (runId: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }).then((r) => r.run),
+    /**
+     * Starts a new run of a stopped run's crew in which every member with a resumable conversation continues it in its kept worktree and
+     * branch, without a prompt, and the others start afresh under their start rules. 409 `run_running` while the run goes.
+     */
+    resumeRun: (runId: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' }).then((r) => r.run),
     /**
      * Types `text` and a carriage return into the named members, or every member when `members` is empty or missing, recorded as input by
      * `byName`. Line breaks and tabs become spaces and other control characters go; 400 `invalid_request` when nothing is left or it is over

@@ -148,3 +148,66 @@ test('a Codex-shaped session resumes by its captured thread, and a gone working 
   expect(refused.status).toBe(400)
   expect(refused.body.error?.code).toBe('invalid_cwd')
 })
+
+test('a member of a stopped run resumed reopens the run, and Resume run continues every conversation in a new run', async ({ page, api, state }) => {
+  const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e resume stopped',
+    goal: 'resume',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    members: [
+      { name: 'lead', agentId: 'claude', prompt: 'first turn', start: { when: 'immediately' } },
+      { name: 'later', agentId: 'claude', prompt: 'when asked', start: { when: 'manual' } },
+    ],
+  })
+  const run = await api.launchCrew(crew.crew.id)
+  const runs = [run.id]
+  try {
+    await expect.poll(async () => logged(await api.run(run.id), "typed lead's prompt"), { timeout: 60_000 }).toBe(true)
+    const lead = member(await api.run(run.id), 'lead')
+    await expect.poll(async () => (await api.session(lead.sessionId ?? '')).agentSession?.resumable, { timeout: 30_000 }).toBe(true)
+    await api.stopRun(run.id)
+    await expect.poll(async () => (await api.run(run.id)).state, { timeout: 15_000 }).toBe('stopped')
+    // In place: the crew view offers Resume on the ended member of the stopped run; it reopens the run.
+    await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+    const resume = page.locator('[data-run-grid] [data-member="lead"] [data-resume]')
+    await expect(resume).toBeVisible()
+    await resume.click()
+    await expect.poll(async () => (await api.run(run.id)).state, { timeout: 30_000 }).toBe('running')
+    let r = await api.run(run.id)
+    expect(r.stoppedAt).toBeUndefined()
+    expect(logged(r, 'reopened: lead resumes')).toBe(true)
+    expect(member(r, 'lead').branch).toBe(lead.branch)
+    await api.stopRun(run.id)
+    await expect.poll(async () => (await api.run(run.id)).state, { timeout: 15_000 }).toBe('stopped')
+    // As a new run: the header's Resume run continues lead's conversation in its kept worktree.
+    const worktrees = git(state.repo, 'worktree', 'list', '--porcelain')
+    await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+    await page.locator('[data-crew-run-header] [data-run-resume]').click()
+    await page.waitForURL((u) => u.pathname.startsWith('/runs/') && !u.pathname.endsWith(run.id), { timeout: 30_000 })
+    const nextId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
+    runs.push(nextId)
+    const next = await api.run(nextId)
+    expect(next.id).not.toBe(run.id)
+    expect((next as unknown as { resumedFrom?: string }).resumedFrom).toBe(run.id)
+    expect(member(next, 'lead').status).toBe('running')
+    expect(member(next, 'lead').branch).toBe(lead.branch)
+    expect(member(next, 'later').status).toBe('pending')
+    const nextLead = await api.session(member(next, 'lead').sessionId ?? '')
+    expect(nextLead.command).toContain('--resume')
+    expect(git(state.repo, 'worktree', 'list', '--porcelain')).toBe(worktrees)
+    r = await api.run(run.id)
+    expect((r as unknown as { resumedBy?: string }).resumedBy).toBe(nextId)
+    expect(r.state).toBe('stopped')
+    await expect(page.locator('[data-crew-run-header] [data-run-resume]')).toHaveCount(0)
+    // The Crews page row of the stopped run shows no Resume run once resumed; the new run's row is live.
+    await page.goto('/crews')
+    await expect(page.locator(`[data-crew-runs] [data-run="${nextId}"]`)).toHaveAttribute('data-state', 'running')
+    await expect(page.locator(`[data-crew-runs] [data-run="${run.id}"] [data-run-resume]`)).toHaveCount(0)
+  } finally {
+    for (const id of runs) await api.stopRun(id)
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+  }
+})

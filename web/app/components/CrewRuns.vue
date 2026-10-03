@@ -37,6 +37,20 @@ const rows = computed(() =>
 )
 
 const stopping = ref('')
+const resuming = ref('')
+async function resume(r: RunInfo) {
+  resuming.value = r.id
+  try {
+    const next = await api.resumeRun(r.id)
+    live.applyRun(next)
+    await navigateTo(`/runs/${encodeURIComponent(next.id)}`)
+  } catch (e) {
+    toast.add({ title: 'Resume failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    resuming.value = ''
+  }
+}
+
 async function stop(r: RunInfo) {
   stopping.value = r.id
   try {
@@ -62,6 +76,7 @@ async function stop(r: RunInfo) {
         <div class="flex-1" />
         <UButton :to="`/runs/${encodeURIComponent(row.run.id)}`" label="Open" size="xs" color="neutral" variant="ghost" :title="`Open the crew view of ${row.run.id}`" data-run-open />
         <UButton v-if="row.live" icon="i-lucide-square" size="xs" color="error" variant="ghost" :aria-label="`Stop the run ${row.run.id}`" :loading="stopping === row.run.id" data-run-stop @click="stop(row.run)" />
+        <UButton v-else-if="row.run.stoppedAt && !row.run.resumedBy" icon="i-lucide-play" size="xs" color="primary" variant="ghost" :aria-label="`Resume the run ${row.run.id} as a new run`" :title="`Resume ${row.run.id}: every member with a conversation continues it in its worktree`" :loading="resuming === row.run.id" data-run-resume @click="resume(row.run)" />
       </div>
       <div class="flex flex-wrap gap-1" data-run-members>
         <span v-for="x in row.members" :key="x.m.name" class="relative" :title="`${x.m.name} · ${x.dot.label}`" :data-run-member="x.m.name" :data-status="x.status">

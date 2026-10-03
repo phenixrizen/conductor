@@ -271,6 +271,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/members", s.requireAdmin(s.handleAddRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/start", s.requireAdmin(s.handleStartRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/stop", s.requireAdmin(s.handleStopRun))
+	mux.HandleFunc("POST /api/runs/{run}/resume", s.requireAdmin(s.handleResumeRun))
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/resume", s.requireAdmin(s.handleResumeRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.requireAdmin(s.handleBroadcast))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.requireAdmin(s.handleListRunLinks))

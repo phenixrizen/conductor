@@ -249,7 +249,7 @@ watch(() => admin.token.value, load)
                     :loading="starting === t.name"
                     @click="startMember(t.name)"
                   />
-                  <ResumeButton v-else-if="t.member?.status === 'ended' && !run?.stoppedAt" :run-id="runId" :member="t.name" stay size="xs" />
+                  <ResumeButton v-else-if="t.member?.status === 'ended'" :run-id="runId" :member="t.name" stay size="xs" />
                 </div>
               </div>
             </template>

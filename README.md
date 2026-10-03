@@ -725,6 +725,16 @@ is there while the ended session is listed (`exitedRetention`, 10 minutes by
 default) and, for a crew member, while the server keeps the run; a member of a
 stopped run, and a hosted session, cannot be resumed in this version.
 
+A stopped run can go on in two ways. **Resume** on an ended member of a run
+whose stop completed resumes that member in place and reopens the run: the
+run is running again, the other ended members stay ended until you resume
+them one by one, and **Stop all** stops it again. **Resume run** (the crew
+view's header, or the run's row on the Crews page) starts a new run of the
+crew in which every member whose conversation is resumable continues it in
+its kept worktree and branch, without a new prompt (its next done starts the
+members after it), while the others start afresh under their start rules;
+the new run names the old one it resumed, and the old one names it.
+
 ## Shell completion
 
 `conductor completion zsh` or `conductor completion bash` prints a completion

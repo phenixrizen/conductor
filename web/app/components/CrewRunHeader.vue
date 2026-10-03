@@ -14,6 +14,8 @@ const emit = defineEmits<{ changed: [run: RunInfo] }>()
 
 const api = useSessions()
 const toast = useToast()
+const live = useAttention()
+const router = useRouter()
 
 const stopped = computed(() => !!props.run?.stoppedAt)
 const uptime = computed(() => {
@@ -67,6 +69,22 @@ async function add() {
 
 const shareOpen = ref(false)
 
+// Resume run: a new run of the crew in which every member with a conversation continues it in its kept worktree.
+const resuming = ref(false)
+async function resumeRun() {
+  resuming.value = true
+  try {
+    const next = await api.resumeRun(props.runId)
+    live.applyRun(next)
+    toast.add({ title: 'Run resumed', description: `${next.id}: the conversations continue in their worktrees.`, icon: 'i-lucide-play', color: 'success' })
+    await router.push(`/runs/${encodeURIComponent(next.id)}`)
+  } catch (e) {
+    toast.add({ title: 'Resume failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    resuming.value = false
+  }
+}
+
 // Stop all asks first.
 const stopOpen = ref(false)
 const stopping = ref(false)
@@ -103,6 +121,7 @@ async function stopAll() {
       <!-- Icons only on a phone: the labels would push the name off the bar. -->
       <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
       <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share crew" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share crew</span></UButton>
+      <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume run</span></UButton>
       <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop all" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop all</span></UButton>
       <FullscreenButton />
     </template>

@@ -474,6 +474,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "member_started", err.Error())
 	case errors.Is(err, crew.ErrRunStopped):
 		writeError(w, http.StatusConflict, "run_stopped", err.Error())
+	case errors.Is(err, crew.ErrRunRunning):
+		writeError(w, http.StatusConflict, "run_running", err.Error())
 	case errors.Is(err, crew.ErrMemberRunning):
 		writeError(w, http.StatusConflict, "still_running", err.Error())
 	case errors.As(err, &aerr):
@@ -482,4 +484,19 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		s.log.Warn("crew "+what+" failed", "id", id, "err", err)
 		writeError(w, http.StatusInternalServerError, "launch_failed", err.Error())
 	}
+}
+
+// handleResumeRun starts a new run of a stopped run's crew in which every
+// member with a resumable conversation continues it in its kept worktree
+// (Engine.ResumeRun): 201 {run}.
+func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("run")
+	ctx, cancel := runContext(r)
+	defer cancel()
+	run, err := s.runs.ResumeRun(ctx, id)
+	if err != nil {
+		s.runError(w, "resume run", id, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
 }

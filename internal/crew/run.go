@@ -94,6 +94,7 @@ var (
 	ErrMemberStarted  = errors.New("the member has started already")
 	ErrRunStopped     = errors.New("the run is stopped")
 	ErrMemberRunning  = errors.New("the member is still running")
+	ErrRunRunning     = errors.New("the run is still running: stop it first")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
@@ -156,6 +157,10 @@ type Run struct {
 	// Yolo is the run's yolo choice, fixed at launch: every member, one added
 	// or started later included, is launched with it.
 	Yolo bool `json:"yolo"`
+	// ResumedFrom is the stopped run this one resumed (ResumeRun), and
+	// ResumedBy the run that resumed this one.
+	ResumedFrom string `json:"resumedFrom,omitempty"`
+	ResumedBy   string `json:"resumedBy,omitempty"`
 	// State is the run's state (RunRunning…), NeedsInput how many members'
 	// sessions wait on a prompt. A member's done keeps a run running: a done
 	// agent is idle, not gone.
@@ -235,8 +240,13 @@ type run struct {
 	// ctx ends when the run stops; every member start runs under it.
 	ctx    context.Context
 	cancel context.CancelFunc
-	// stopping is set once the run begins to stop: no member starts after it.
-	stopping bool
+	// stopping is set once the run begins to stop: no member starts after it;
+	// stopDone once the stop completed (every session stopped, every start
+	// and delivery drained), which a member's Resume may reopen.
+	stopping, stopDone bool
+	// resumedFrom and resumedBy link a run to the one it resumed, and to the
+	// one that resumed it (ResumeRun).
+	resumedFrom, resumedBy string
 	// launching is set from add until the launcher releases the run
 	// (LaunchHeld): evict leaves the run alone meanwhile, so that a crew whose
 	// members all start later, which has nothing running once it is kept, is
@@ -310,31 +320,9 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 // the cap cannot forget the run between its start and its link.
 func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
 	noop := func() {}
-	if err := c.validateWithID(); err != nil {
+	prefix, err := e.prepare(ctx, c)
+	if err != nil {
 		return nil, noop, err
-	}
-	if err := c.Launchable(); err != nil {
-		return nil, noop, err
-	}
-	prefix := ""
-	if c.Isolation == IsolationWorktree {
-		if err := checkGit(); err != nil {
-			return nil, noop, err
-		}
-		if !filepath.IsAbs(c.Cwd) {
-			return nil, noop, invalidf("with worktrees, cwd must be an absolute path")
-		}
-		if err := checkWorktreesDir(c.Cwd); err != nil {
-			return nil, noop, err
-		}
-		if err := CheckRepo(ctx, c.Cwd); err != nil {
-			return nil, noop, err
-		}
-		p, err := repoPrefix(ctx, c.Cwd)
-		if err != nil {
-			return nil, noop, err
-		}
-		prefix = p
 	}
 	r := e.add(c, prefix)
 	release := sync.OnceFunc(func() { e.launched(r) })
@@ -343,6 +331,140 @@ func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
 	}
 	run, err := e.startImmediate(ctx, r)
 	return run, release, err
+}
+
+// prepare checks c as LaunchHeld describes and, with worktrees, finds where
+// its cwd lies in its repository (the prefix).
+func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error) {
+	if err := c.validateWithID(); err != nil {
+		return "", err
+	}
+	if err := c.Launchable(); err != nil {
+		return "", err
+	}
+	if c.Isolation != IsolationWorktree {
+		return "", nil
+	}
+	if err := checkGit(); err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(c.Cwd) {
+		return "", invalidf("with worktrees, cwd must be an absolute path")
+	}
+	if err := checkWorktreesDir(c.Cwd); err != nil {
+		return "", err
+	}
+	if err := CheckRepo(ctx, c.Cwd); err != nil {
+		return "", err
+	}
+	return repoPrefix(ctx, c.Cwd)
+}
+
+// ResumeRun starts a new run of a stopped (or finished) run's crew in which
+// every member whose last agent session is resumable continues its
+// conversation in its kept worktree and branch, without a prompt, and the
+// others start afresh under their start rules; the new run names the old
+// in ResumedFrom and the old names it in ResumedBy. A run still going, or
+// whose stop was cut short, is refused (ErrRunRunning, ErrRunStopped). A
+// member whose session cannot be made ends with the reason, as at launch.
+func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
+	cur, ok := e.Get(runID)
+	if !ok {
+		return nil, ErrRunNotFound
+	}
+	e.mu.Lock()
+	old := e.runs[runID]
+	if old == nil {
+		e.mu.Unlock()
+		return nil, ErrRunNotFound
+	}
+	switch {
+	case old.stopping && !old.stopDone:
+		e.mu.Unlock()
+		return nil, ErrRunStopped
+	case cur.State != RunStopped && cur.State != RunFinished:
+		e.mu.Unlock()
+		return nil, ErrRunRunning
+	}
+	yolo := old.yolo
+	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo}
+	type kept struct{ agentSession, sessionID, worktree, branch, base string }
+	keeps := map[string]kept{}
+	for _, m := range old.members {
+		c.Members = append(c.Members, m.def)
+	}
+	for _, st := range cur.Members {
+		if st.AgentSession != nil && st.AgentSession.Resumable && st.AgentSession.ID != "" {
+			k := kept{agentSession: st.AgentSession.ID, sessionID: st.SessionID, worktree: st.Worktree, branch: st.Branch}
+			if m := old.member(st.Name); m != nil {
+				k.base = m.base
+			}
+			keeps[st.Name] = k
+		}
+	}
+	e.mu.Unlock()
+	prefix, err := e.prepare(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	r := e.add(c, prefix)
+	defer e.launched(r)
+	e.mu.Lock()
+	r.resumedFrom = old.id
+	old.resumedBy = r.id
+	old.note(session.ActivityStatus, "resumed as %s", r.id)
+	r.note(session.ActivityStatus, "resumes %s: %d conversations continue", old.id, len(keeps))
+	var resumes []*member
+	for _, m := range r.members {
+		k, ok := keeps[m.def.Name]
+		if !ok {
+			continue
+		}
+		if r.isolation == IsolationWorktree && k.worktree != "" {
+			m.state.Branch, m.state.Worktree, m.base = k.branch, k.worktree, k.base
+		}
+		m.state.Status = MemberStarting
+		r.starts.Add(1)
+		resumes = append(resumes, m)
+	}
+	r.touch()
+	e.mu.Unlock()
+	if e.afterAdd != nil {
+		e.afterAdd(r.id)
+	}
+	for _, m := range resumes {
+		k := keeps[m.def.Name]
+		name := m.def.Name
+		cwd := r.cwd
+		if r.isolation == IsolationWorktree && k.worktree != "" {
+			cwd = filepath.Join(k.worktree, r.prefix)
+		}
+		local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
+			Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
+			Resume: k.agentSession, ResumedFrom: k.sessionID})
+		if err != nil {
+			r.starts.Done()
+			e.fail(r, m, err)
+			continue
+		}
+		id := local.Info().ID
+		started := time.Now().UTC()
+		e.mu.Lock()
+		m.state.SessionID, m.state.Started, m.state.Status = id, &started, MemberRunning
+		// Its conversation has its prompt: a done from now on starts the
+		// members after it.
+		m.prompted, m.promptedAt = true, started
+		e.bySession.Store(id, sessionMember{r, m})
+		r.note(session.ActivityStatus, "%s resumed its conversation", name)
+		e.mu.Unlock()
+		r.starts.Done()
+		m.poke()
+	}
+	run, err := e.startImmediate(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return run, nil
 }
 
 // startImmediate starts the members of r that start immediately and returns
@@ -898,6 +1020,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 		r.stoppedAt = &now
 		r.note(session.ActivityStatus, "stopped")
 	}
+	// A stop cut short by its context may have left a start or a delivery
+	// going: such a run is not reopened.
+	r.stopDone = ctx.Err() == nil
 	e.mu.Unlock()
 	return errors.Join(errs...)
 }
@@ -1096,6 +1221,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 func (r *run) snapshot(withDiffs bool) Run {
 	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
+		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
 		Log: append([]session.ActivityEntry{}, r.log...)}
 	for _, m := range r.members {
 		st := m.state
@@ -1266,7 +1392,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	switch {
 	case m == nil:
 		err = ErrMemberNotFound
-	case r.stopping:
+	case r.stopping && !r.stopDone:
 		err = ErrRunStopped
 	case m.state.Status == MemberPending:
 		err = ErrMemberRunning
@@ -1276,6 +1402,16 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	if err != nil {
 		e.mu.Unlock()
 		return "", err
+	}
+	if r.stopping {
+		// A stopped run whose stop completed is reopened in place: a context
+		// of its own again, no longer stopping, the other members as they
+		// are (ended ones are resumed one by one); a later Stop stops it
+		// again.
+		r.ctx, r.cancel = context.WithCancel(context.Background())
+		r.stopping, r.stopDone, r.stoppedAt = false, false, nil
+		r.note(session.ActivityStatus, "reopened: %s resumes", name)
+		r.touch()
 	}
 	old := m.state.SessionID
 	cwd := r.cwd

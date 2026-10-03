@@ -283,7 +283,11 @@ func TestResumeMember(t *testing.T) {
 	if err := e.Stop(t.Context(), run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", ""); !errors.Is(err, ErrRunStopped) {
+	// A member of a stopped run resumed reopens the run (TestResumeMemberReopensACompletedStop).
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", ""); err != nil {
 		t.Fatalf("stopped: %v", err)
+	}
+	if got, _ := e.Get(run.ID); got.StoppedAt != nil {
+		t.Fatalf("not reopened: %+v", got)
 	}
 }
