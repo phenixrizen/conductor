@@ -66,10 +66,13 @@ type Server struct {
 	// publisher publishes sessions to a rendezvous (SetPublisher); published
 	// holds the publications by session id, pubGone the ids that left before
 	// their publication landed (see publish.go).
-	pubMu     sync.Mutex
-	publisher Publisher
-	published map[string]PublishedSession
-	pubGone   map[string]bool
+	// selfLimits bounds what an agent does with its own session's token
+	// (selfservice.go).
+	selfLimits *selfCounters
+	pubMu      sync.Mutex
+	publisher  Publisher
+	published  map[string]PublishedSession
+	pubGone    map[string]bool
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and
@@ -173,6 +176,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home:     home,
 		instance: newInstance(),
 	}
+	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
@@ -282,6 +286,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.requireAdmin(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
+	// What an agent may do with its own session's token (selfservice.go).
+	mux.HandleFunc("POST /api/sessions/{id}/crew", s.handleSelfCrew)
+	mux.HandleFunc("POST /api/sessions/{id}/run/members", s.handleSelfAddMember)
+	mux.HandleFunc("GET /api/sessions/{id}/run", s.handleSelfRun)
+	mux.HandleFunc("POST /api/sessions/{id}/links/agent", s.handleSelfLink)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.requireAdmin(s.handleResumeSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))

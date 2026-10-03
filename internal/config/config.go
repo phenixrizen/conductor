@@ -96,6 +96,18 @@ type ACME struct {
 	Profile string `json:"profile"`
 }
 
+// Agents holds what agents may do on their own, with their session's token.
+type Agents struct {
+	// SelfService lets an agent form a crew around its own session, add
+	// members to its run, read its run and mint a view link to itself
+	// (docs/protocol.md): a scoped grant on the session's agent token, never
+	// the admin token. On by default.
+	SelfService *bool `json:"selfService,omitempty"`
+}
+
+// SelfService reports whether agents may serve themselves (Agents.SelfService, on by default).
+func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.Agents.SelfService }
+
 // Rendezvous names a public Conductor this server publishes its sessions
 // to, through the host protocol, so they can be shared from there when this
 // server cannot be reached from outside (carrier-grade NAT, a corporate
@@ -213,6 +225,8 @@ type Config struct {
 	TLS TLS `json:"tls"`
 	// Rendezvous: a public Conductor to publish sessions to.
 	Rendezvous Rendezvous `json:"rendezvous"`
+	// Agents: what agents may do on their own.
+	Agents Agents `json:"agents"`
 
 	// GeneratedAdminToken is true when AdminToken was created at startup.
 	GeneratedAdminToken bool `json:"-"`
@@ -425,6 +439,14 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 				a.DNSEnv[k] = val
 			}
 		}
+	}
+	switch getenv("CONDUCTOR_AGENT_SELF_SERVICE") {
+	case "1", "true":
+		on := true
+		cfg.Agents.SelfService = &on
+	case "0", "false":
+		off := false
+		cfg.Agents.SelfService = &off
 	}
 	str("CONDUCTOR_RENDEZVOUS_SERVER", &cfg.Rendezvous.Server)
 	str("CONDUCTOR_RENDEZVOUS_TOKEN", &cfg.Rendezvous.Token)

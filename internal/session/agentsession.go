@@ -46,6 +46,17 @@ const (
 	PolicyLowest = "lowest" // the smallest: Codex's main thread, not its title thread
 )
 
+// SetCrew tags the session with the run it was adopted into (an agent that
+// formed a crew around its own session, docs/protocol.md): the listings
+// group it under the run from then on.
+func (s *Local) SetCrew(ref CrewRef) {
+	s.mu.Lock()
+	r := ref
+	s.info.Crew = &r
+	s.mu.Unlock()
+	s.notifyChange()
+}
+
 // SetAgentSession records the agent session a launch chose or resumed.
 func (s *Local) SetAgentSession(as AgentSession) {
 	s.mu.Lock()

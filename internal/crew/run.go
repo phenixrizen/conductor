@@ -333,6 +333,54 @@ func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
 	return run, release, err
 }
 
+// LaunchAdopting is LaunchHeld for a crew an agent forms around its own
+// session: the member named self is not started but adopted, its session
+// the one given (running already, its prompt its own), so the members after
+// it start on its next done and handoffs reach it; the rest start as at
+// launch. The session is tagged with the run by the caller (SetCrew).
+func (e *Engine) LaunchAdopting(ctx context.Context, c Crew, self, sessionID string) (*Run, func(), error) {
+	noop := func() {}
+	if c.member(self) == nil {
+		return nil, noop, invalidf("self %s is not a member of the crew", quote(self))
+	}
+	if sessionID == "" {
+		return nil, noop, invalidf("no session to adopt")
+	}
+	if _, _, ok := e.MemberOf(sessionID); ok {
+		return nil, noop, invalidf("the session is a member of a run already")
+	}
+	prefix, err := e.prepare(ctx, c)
+	if err != nil {
+		return nil, noop, err
+	}
+	r := e.add(c, prefix)
+	release := sync.OnceFunc(func() { e.launched(r) })
+	if e.afterAdd != nil {
+		e.afterAdd(r.id)
+	}
+	now := time.Now().UTC()
+	e.mu.Lock()
+	m := r.member(self)
+	m.state.SessionID, m.state.Started, m.state.Status = sessionID, &now, MemberRunning
+	m.prompted, m.promptedAt = true, now
+	e.bySession.Store(sessionID, sessionMember{r, m})
+	r.note(session.ActivityStatus, "%s formed the crew from its own session and joined it", self)
+	r.touch()
+	e.mu.Unlock()
+	run, err := e.startImmediate(ctx, r)
+	return run, release, err
+}
+
+// member returns the member of c named name, or nil.
+func (c Crew) member(name string) *Member {
+	for i := range c.Members {
+		if c.Members[i].Name == name {
+			return &c.Members[i]
+		}
+	}
+	return nil
+}
+
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
 // its cwd lies in its repository (the prefix).
 func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error) {
