@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ActivityEntry } from '~/utils/protocol'
-import { connectError, crewGraph, depths, GAP_X, GAP_Y, handoffEdges, handoffsOf, layout, listRows, NODE_H, NODE_W, withStart, type GraphMember } from './crewGraph'
+import { connectError, crewGraph, depths, GAP_X, GAP_Y, HANDOFF_ARC, handoffEdges, handoffPath, handoffsOf, layout, listRows, NODE_H, NODE_W, withStart, type GraphMember } from './crewGraph'
 
 const m = (name: string, start: GraphMember['start'] = { when: 'immediately' }, agentId = 'claude'): GraphMember => ({ name, agentId, start })
 
@@ -138,5 +138,12 @@ describe('withStart and listRows', () => {
     expect(next.find((x) => x.name === 'docs')!.start).toEqual({ when: 'after', member: 'tests' })
     const rows = listRows(layout(next))
     expect(rows.map((n) => `${n.id}@${n.depth}`)).toEqual(['lead@0', 'core@1', 'cli@1', 'tests@2', 'docs@3'])
+  })
+})
+
+describe('handoffPath', () => {
+  it('arcs above the line left to right, and to its right top to bottom, with the badge half way up the arc', () => {
+    expect(handoffPath(0, 100, 200, 100, 'LR')).toEqual([`M0,100 Q100,${100 - HANDOFF_ARC} 200,100`, 100, 100 - HANDOFF_ARC / 2])
+    expect(handoffPath(50, 0, 50, 200, 'TB')).toEqual([`M50,0 Q${50 + HANDOFF_ARC},100 50,200`, 50 + HANDOFF_ARC / 2, 100])
   })
 })

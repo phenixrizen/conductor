@@ -240,3 +240,19 @@ export function listRows(g: CrewGraphData): GraphNode[] {
   for (const r of roots) visit(r)
   return out
 }
+
+/** How far a handoff edge arcs away from the straight line between its handles, in px. */
+export const HANDOFF_ARC = 28
+
+/**
+ * The path of a handoff edge: a quadratic curve from the source handle to the target handle whose control point sits HANDOFF_ARC
+ * above the midpoint (left to right) or to its right (top to bottom), so it never lies on the "after" edge between the same two
+ * members; and the point at its middle (half the arc off the midpoint), where its badge goes.
+ */
+export function handoffPath(sx: number, sy: number, tx: number, ty: number, direction: GraphDirection): [path: string, labelX: number, labelY: number] {
+  const mx = (sx + tx) / 2
+  const my = (sy + ty) / 2
+  const [cx, cy] = direction === 'LR' ? [mx, my - HANDOFF_ARC] : [mx + HANDOFF_ARC, my]
+  const [lx, ly] = direction === 'LR' ? [mx, my - HANDOFF_ARC / 2] : [mx + HANDOFF_ARC / 2, my]
+  return [`M${sx},${sy} Q${cx},${cy} ${tx},${ty}`, lx, ly]
+}

@@ -31,7 +31,7 @@ export function runLength(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'member
 
 export type AttentionSlice = 'needs_input' | 'working' | 'done' | 'idle'
 
-/** Sessions by attention state, for the Wall's donut: active sessions only, in a fixed order. */
+/** Sessions by attention state, for the Wall's attention bar: active sessions only, in a fixed order. */
 export function attentionSlices(sessions: readonly SessionInfo[], active: (s: SessionInfo) => boolean): Record<AttentionSlice, number> {
   const out: Record<AttentionSlice, number> = { needs_input: 0, working: 0, done: 0, idle: 0 }
   for (const s of sessions) {

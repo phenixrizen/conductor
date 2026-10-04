@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@vue-flow/core'
-import type { GraphEdge } from '~/utils/crewGraph'
+import { BaseEdge, EdgeLabelRenderer, getBezierPath, Position, type EdgeProps } from '@vue-flow/core'
+import { handoffPath, type GraphEdge } from '~/utils/crewGraph'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -19,8 +19,11 @@ export interface CrewEdgeData {
 const props = defineProps<EdgeProps<CrewEdgeData>>()
 const emit = defineEmits<{ disconnect: [to: string] }>()
 
+// A handoff takes an arc of its own, so it never shares the path (and the label's place) of the "after" edge between the same two.
 const path = computed(() =>
-  getBezierPath({
+  props.data.edge.kind === 'handoff'
+    ? handoffPath(props.sourceX, props.sourceY, props.targetX, props.targetY, props.sourcePosition === Position.Right ? 'LR' : 'TB')
+    : getBezierPath({
     sourceX: props.sourceX,
     sourceY: props.sourceY,
     sourcePosition: props.sourcePosition,
@@ -45,7 +48,7 @@ const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : 'var(--ui-text
     :data-graph-edge-kind="e.kind"
   />
   <EdgeLabelRenderer>
-    <div class="nodrag nopan absolute" :style="{ transform: `translate(-50%, -50%) translate(${path[1]}px, ${path[2]}px)`, pointerEvents: 'all' }" :data-graph-edge-label="`${e.from}-${e.to}`">
+    <div class="nodrag nopan absolute" :style="{ transform: `translate(-50%, -50%) translate(${path[1]}px, ${path[2]}px)`, pointerEvents: 'all' }" :data-graph-edge-label="`${e.from}-${e.to}`" :data-graph-label-kind="e.kind">
       <UPopover v-if="handoff" mode="hover" :open-delay="150">
         <UBadge :label="`${e.count ?? 0}`" color="info" variant="solid" size="sm" class="cursor-default font-mono" :aria-label="`${e.count} handoffs from ${e.from} to ${e.to}`" data-graph-handoff-count />
         <template #content>

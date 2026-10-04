@@ -788,8 +788,8 @@ a crew's Runs tab lists them and charts the last twelve as bars (minutes,
 coloured by outcome, an amber edge when someone had to answer), once there
 are two, and the Crews table draws the same bars beside each crew.
 The Events page's feed draws the last hour's events per minute (what needs
-you, handoffs, errors, the rest) once two are in it, and the Wall's header shows its sessions by attention state as a small
-donut from two sessions on. Nothing is charted with fewer than two points.
+you, handoffs, errors, the rest) once two are in it, and the Wall's header shows its sessions by attention state as a slim
+stacked bar from two sessions on. Nothing is charted with fewer than two points.
 
 **Handoffs.** A member passes work to another with an event, which the
 [Conductor skill](#events-and-hooks) teaches the agent to send:

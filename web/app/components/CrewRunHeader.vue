@@ -107,7 +107,7 @@ async function stopAll() {
 </script>
 
 <template>
-  <UDashboardNavbar :ui="{ root: 'h-14' }" data-crew-run-header>
+  <UDashboardNavbar :ui="{ root: 'h-14', left: 'min-w-0 flex-1', right: 'flex-none' }" data-crew-run-header>
     <template #title>
       <span class="flex min-w-0 items-baseline gap-2">
         <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate hover:underline" :title="`The saved crew ${run.name}`">{{ run.name }}</NuxtLink>
@@ -117,11 +117,10 @@ async function stopAll() {
       </span>
     </template>
     <template #trailing>
-      <!-- On a phone only the members needing input stay: they are what to act on. -->
-      <div v-if="run" class="ml-2 flex min-w-0 items-center gap-1.5">
+      <div v-if="run" class="ml-2 hidden min-w-0 items-center gap-1.5 sm:flex">
         <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
-        <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="hidden flex-none sm:inline-flex" />
-        <span class="ml-1 hidden truncate font-mono text-xs text-muted sm:inline">{{ uptime }}</span>
+        <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
+        <span class="ml-1 truncate font-mono text-xs text-muted">{{ uptime }}</span>
       </div>
     </template>
     <template #right>
@@ -130,9 +129,15 @@ async function stopAll() {
       <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share</span></UButton>
       <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
       <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
-      <FullscreenButton />
+      <FullscreenButton class="hidden sm:inline-flex" />
     </template>
   </UDashboardNavbar>
+  <!-- On a phone the counts and the uptime take a line of their own: the bar keeps the name and the buttons. -->
+  <div v-if="run" class="flex items-center gap-1.5 border-b border-default px-4 py-1.5 sm:hidden" data-run-header-strip>
+    <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-needs />
+    <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-running />
+    <span class="min-w-0 truncate font-mono text-[11px] text-muted">{{ uptime }}</span>
+  </div>
 
   <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run, not the saved crew. One that starts at launch starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
     <template #body>

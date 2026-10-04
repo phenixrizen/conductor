@@ -5,7 +5,7 @@ import { AGENT_ICONS } from './app/utils/agentIcons'
 export default defineNuxtConfig({
   compatibilityDate: '2026-09-01',
   ssr: false,
-  modules: ['@nuxt/ui', 'nuxt-charts'],
+  modules: ['@nuxt/ui'],
   css: ['~/assets/css/main.css'],
   // Dark is the theme, whatever the OS prefers; the sidebar's theme button
   // switches to light and that choice is kept (under a key of our own, so a

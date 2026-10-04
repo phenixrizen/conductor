@@ -69,7 +69,12 @@ test('the run page draws the members and their start rules, and a handoff as it 
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
   const handoff = page.locator('[data-graph-canvas] [data-graph-edge="lead-core"][data-graph-edge-kind="handoff"]')
   await expect(handoff).toHaveCount(1, { timeout: 15_000 })
-  await expect(page.locator('[data-graph-edge-label="lead-core"] [data-graph-handoff-count]').last()).toHaveText('1')
+  const handoffLabel = page.locator('[data-graph-edge-label="lead-core"][data-graph-label-kind="handoff"]')
+  await expect(handoffLabel.locator('[data-graph-handoff-count]')).toHaveText('1')
+  // The handoff arcs off the "after" edge between the same two: its badge never covers the "when done" label.
+  const afterBox = (await page.locator('[data-graph-edge-label="lead-core"][data-graph-label-kind="after"]').boundingBox())!
+  const handoffBox = (await handoffLabel.boundingBox())!
+  expect(Math.abs(afterBox.y - handoffBox.y)).toBeGreaterThanOrEqual(10)
 
   // Start now on the manual member works from the node.
   await page.locator('[data-graph-node="docs"]').getByRole('button', { name: 'Start now' }).click()
@@ -108,7 +113,7 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
   await expect(canvas.locator('[data-graph-edge="lead-docs"]')).toHaveCount(0)
 
   // The × on the edge removes the rule: docs starts immediately.
-  await canvas.locator('[data-graph-edge-label="tests-docs"] [data-graph-edge-delete]').click()
+  await canvas.locator('[data-graph-edge-label="tests-docs"][data-graph-label-kind="after"] [data-graph-edge-delete]').click()
   await expect(canvas.locator('[data-graph-edge="tests-docs"]')).toHaveCount(0)
   await page.getByRole('button', { name: 'Save' }).click()
   await expect.poll(async () => (await api.crew(crewId)).members.find((m) => m.name === 'docs')?.start, { timeout: 15_000 }).toEqual({ when: 'immediately' })
@@ -125,5 +130,10 @@ test('a phone gets the list, indented by depth', async ({ browser, state }) => {
   await expect(page.locator('[data-graph-canvas]')).toHaveCount(0)
   await expect(list.locator('[data-graph-list-row="core"]')).toHaveAttribute('data-depth', '1')
   await expect(list.locator('[data-graph-list-row="tests"]')).toHaveAttribute('data-depth', '2')
+  // The run header keeps the name clear of the buttons; the counts take a line of their own.
+  await expect(page.locator('[data-run-header-strip]')).toBeVisible()
+  const title = (await page.locator('[data-crew-run-header] a').first().boundingBox())!
+  const firstButton = (await page.locator('[data-crew-run-header] button:visible').nth(1).boundingBox())!
+  expect(title.x + title.width).toBeLessThanOrEqual(firstButton.x)
   await context.close()
 })
