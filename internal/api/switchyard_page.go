@@ -426,7 +426,7 @@ footer.sy .right{margin-left:auto}
 <main class="sy">
 <div class="hero">
 <h1>This is a Conductor switchyard.</h1>
-<p class="muted">It connects people to Conductor sessions that run on their owners' own machines. It runs no agents and keeps no terminal output: a session goes straight from the owner's machine to the viewer's browser, {{if .RelayOn}}and through this server's relay only when the network leaves no other way.{{else}}and never through this server: its relay is off, so a viewer whose network blocks a direct connection cannot join.{{end}}</p>
+<p class="muted">It introduces viewers to Conductor sessions running on their owners' own machines. Nothing runs here: no agents, no terminals, no stored output. {{if .RelayOn}}Once a viewer joins, the session travels straight from the owner's machine to the viewer's browser, and passes through this server's relay only when the network allows no direct path.{{else}}Once a viewer joins, the session travels straight from the owner's machine to the viewer's browser. This server's relay is off, so a viewer whose network allows no direct path cannot join.{{end}}</p>
 </div>
 <div class="cols">
 <div class="col">

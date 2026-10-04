@@ -29,7 +29,7 @@ func TestSwitchyardServesItsOwnPages(t *testing.T) {
 	e := switchyardEnv(t, true)
 	e.srv.web = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "app:"+r.URL.Path) })
 	code, body := getPage(t, e, "/")
-	for _, want := range []string{"This is a Conductor switchyard.", "Were you sent a link?", "Looking for the workbench?", "Sharing from your machine?", "This server is up", "only when the network leaves no other way", "conductor://", "Paste the workbench token", "No cookies."} {
+	for _, want := range []string{"This is a Conductor switchyard.", "Were you sent a link?", "Looking for the workbench?", "Sharing from your machine?", "This server is up", "only when the network allows no direct path", "conductor://", "Paste the workbench token", "No cookies."} {
 		if code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("landing: %d, missing %q in %.300s", code, want, body)
 		}
@@ -58,7 +58,7 @@ func TestSwitchyardServesItsOwnPages(t *testing.T) {
 	}
 
 	off := switchyardEnv(t, false)
-	if _, body := getPage(t, off, "/"); !strings.Contains(body, "its relay is off") || !strings.Contains(body, "Off · direct connections only") {
+	if _, body := getPage(t, off, "/"); !strings.Contains(body, "This server's relay is off") || !strings.Contains(body, "Off · direct connections only") {
 		t.Fatalf("relay off landing: %.300s", body)
 	}
 
