@@ -117,6 +117,18 @@ channel of a hosted session directly over WebRTC once the join page has loaded
 from the server; it carries no data and does not make the server's page
 reachable, which only a forwarded port, a public address or a proxy does.
 
+**Links you open stay in the sidebar.** In the desktop app, or a browser that
+holds the workbench token, a shared session opens beside your own sidebar
+instead of taking the window over, and a link you have joined is kept under
+**Shared with you** at the top of the sidebar (name, role, which server it was
+shared through, a dot for its state, looked at again every minute). Opening
+it joins at once; **Leave** keeps it; **×** forgets it. The list is kept in
+this browser (`conductor.joined`, at most 20) and holds each link's token, as
+the browser keeps the workbench token, so forget the links you are done with.
+A link shared through a switchyard works from the app and from a browser on
+the same machine, or from an origin the switchyard's `allowedOrigins` names; a
+guest's browser, without the workbench token, keeps nothing.
+
 ### Switchyard
 
 A small public Conductor run as a **switchyard** introduces machines no one

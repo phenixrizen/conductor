@@ -25,6 +25,7 @@ const groups = computed(() => sidebarGroups(filterSessions(shown.value, query.va
 const count = (key: 'needs' | 'running' | 'exited') => groups.value[key].reduce((n, g) => n + g.sessions.length, 0)
 const needsDot = computed(() => needsDotShown(events.routes.value))
 const empty = computed(() => shown.value.length === 0)
+const joined = useJoined()
 /** The run-only variant names its run once, at the top: its groups need no header of their own. */
 const runHeaders = computed(() => !props.runId)
 
@@ -72,8 +73,9 @@ function groupKey(g: SidebarGroup): string {
         </NuxtLink>
         <span v-if="!runOpen(route.path, runId)" class="text-xs text-muted">Only this crew's members are listed.</span>
       </div>
+      <SidebarSharedList v-if="!runId" />
       <p v-if="empty && runId" class="px-2 py-4 text-xs text-muted leading-relaxed">No member of this crew has a session yet.</p>
-      <p v-else-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
+      <p v-else-if="empty && !joined.list.value.length" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
       <section v-if="count('needs')" class="flex flex-col gap-0.5">
         <h3 class="flex items-center gap-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-warning">

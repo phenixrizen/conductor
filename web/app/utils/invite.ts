@@ -8,7 +8,9 @@
  */
 
 const LOOPBACK = /^(127\.(\d{1,3}\.){2}\d{1,3}|localhost|\[::1\])(:\d{1,5})?$/i
-const TOKEN = /^[A-Za-z0-9_-]{16,256}$/
+/** What a share token looks like. */
+export const SHARE_TOKEN = /^[A-Za-z0-9_-]{16,256}$/
+const TOKEN = SHARE_TOKEN
 const HOST = /^(\[[0-9a-f:]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)(:\d{1,5})?$/i
 
 export interface Invite {

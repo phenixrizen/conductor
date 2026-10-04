@@ -5,8 +5,16 @@ import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileViewer.vue'
 import { parseLocation } from '~/utils/links'
 import { joinServer } from '~/utils/invite'
+import { joinedFromInfo } from '~/utils/joined'
 
-definePageMeta({ layout: 'bare' })
+// The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
+// never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
+// changed under a live terminal would remount the page and drop it.
+definePageMeta({ layout: false })
+const admin = useWorkbenchToken()
+const desktop = useDesktop()
+const inWorkbench = admin.hasToken.value || desktop.isDesktop.value
+const kept = useJoined()
 
 const route = useRoute()
 const api = useSessions()
@@ -94,20 +102,25 @@ async function fetchInfo() {
     info.value = await api.join(token.value, server.value)
     if (info.value.session) status.value = info.value.session.status
     error.value = ''
+    kept.noteInfo(server.value, token.value, info.value)
   } catch (e) {
     error.value = (e as Error).message
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   nameDraft.value = identity.name.value
-  fetchInfo()
+  await fetchInfo()
+  // A link kept under Shared with you joins at once: the person joined it before, under this name.
+  if (inWorkbench && info.value && !error.value && identity.name.value && kept.find(server.value, token.value)) join()
 })
 
 function join() {
   identity.set(nameDraft.value)
   left.value = false
   joined.value = true
+  // Kept in the workbench's sidebar; a guest's browser keeps nothing.
+  if (inWorkbench && info.value) kept.add({ token: token.value, server: server.value, host: viaHost.value, ...joinedFromInfo(info.value) })
 }
 
 /** What the person left, said on the card they come back to; the link still works, so Join again is one click. */
@@ -197,6 +210,8 @@ function requestFile(path: string, stat?: boolean) {
 </script>
 
 <template>
+  <NuxtLayout :name="inWorkbench ? 'default' : 'bare'">
+    <JoinFrame :workbench="inWorkbench">
   <template v-if="!joined">
     <main class="flex flex-1 items-center justify-center p-6">
       <div class="flex w-full max-w-sm flex-col gap-4 rounded-lg border border-default bg-default p-6 shadow-sm">
@@ -236,15 +251,17 @@ function requestFile(path: string, stat?: boolean) {
 
   <template v-else-if="run && !current">
     <header class="flex items-center gap-3 border-b border-default px-4 py-2">
-      <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
-      <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
-      <span class="font-semibold">Conductor</span>
-      <USeparator orientation="vertical" class="h-5" />
+      <template v-if="!inWorkbench">
+        <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
+        <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
+        <span class="font-semibold">Conductor</span>
+        <USeparator orientation="vertical" class="h-5" />
+      </template>
       <span class="truncate">{{ run.name }}</span>
       <UBadge :label="info!.role === 'control' ? 'control' : 'view only'" :icon="info!.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info!.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
       <UBadge :label="`${run.members.length} ${run.members.length === 1 ? 'agent' : 'agents'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
-      <span class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
+      <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
       <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="fetchInfo" />
       <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
@@ -261,10 +278,12 @@ function requestFile(path: string, stat?: boolean) {
       <UTooltip v-if="run" text="Back to the crew">
         <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the crew" @click="backToCrew" />
       </UTooltip>
-      <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
-      <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
-      <span class="font-semibold">Conductor</span>
-      <USeparator orientation="vertical" class="h-5" />
+      <template v-if="!inWorkbench">
+        <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
+        <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
+        <span class="font-semibold">Conductor</span>
+        <USeparator orientation="vertical" class="h-5" />
+      </template>
       <span class="truncate"><template v-if="run">{{ run.name }} · </template>{{ current.name }}</span>
       <UBadge :label="info.role === 'control' ? 'control' : 'view only'" :icon="info.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
       <SessionStatusBadge v-if="status" :status="status as any" />
@@ -273,7 +292,7 @@ function requestFile(path: string, stat?: boolean) {
       <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
-      <span class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
+      <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
       <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
         <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
       </form>
@@ -301,4 +320,6 @@ function requestFile(path: string, stat?: boolean) {
 
     <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />
   </template>
+    </JoinFrame>
+  </NuxtLayout>
 </template>

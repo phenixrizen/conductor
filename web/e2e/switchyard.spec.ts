@@ -96,7 +96,9 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
   await page.goto(`/join/${link.token}?server=${encodeURIComponent(syURL)}`)
   await expect(page.getByText(`Shared through 127.0.0.1:${new URL(syURL).port}`)).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Join hosted-stub' })).toBeVisible({ timeout: 15_000 })
-  await page.getByLabel('Your name').fill('e2e guest')
+  // Opened from the workbench (its token is in this browser), the page sits beside the sidebar.
+  await expect(page.locator('[data-join-frame]')).toHaveAttribute('data-join-frame', 'workbench')
+  await page.getByRole('textbox', { name: 'Your name' }).fill('e2e guest')
   await page.getByRole('button', { name: 'Join session' }).click()
   const badge = page.locator('[data-transport-state]').first()
   await expect(badge).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
@@ -120,7 +122,7 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
   await page.locator('[data-join-leave]').click()
   await expect(page.locator('[data-join-left]')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Join session' })).toBeVisible()
-  await expect(page.getByLabel('Your name')).toHaveValue('e2e guest')
+  await expect(page.getByRole('textbox', { name: 'Your name' })).toHaveValue('e2e guest')
   await expect(page.locator('.terminal-host')).toHaveCount(0)
   await expect
     .poll(async () => {
@@ -129,6 +131,21 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
       return s?.viewers ?? 0
     }, { timeout: 30_000, message: 'the switchyard drops the viewer' })
     .toBe(0)
+
+  // The link stays under Shared with you after Leave, on any page; opening it joins at once; × forgets it.
+  const shared = page.locator('[data-sidebar-shared] [data-shared-entry]')
+  await expect(shared).toHaveCount(1)
+  await expect(shared).toContainText('hosted-stub')
+  await expect(shared).toContainText(`through 127.0.0.1:${new URL(syURL).port}`)
+  await page.goto('/yard')
+  await expect(shared).toHaveCount(1)
+  await shared.getByRole('link').click()
+  await expect(page).toHaveURL(new RegExp(`/join/${link.token}\\?server=`))
+  await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+  await expect(page.getByRole('button', { name: 'Join session' })).toHaveCount(0)
+  await page.locator('[data-shared-forget]').click()
+  await expect(page.locator('[data-sidebar-shared]')).toHaveCount(0)
+  expect(await page.evaluate(() => localStorage.getItem('conductor.joined'))).toBe('[]')
 })
 
 test('the switchyard serves its landing page, a 404 for workbench paths, and the app only for joining', async () => {
