@@ -1,3 +1,4 @@
+import { hostname } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
@@ -93,6 +94,7 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
 
   // This workbench's own join page, told to signal to the switchyard: the join route answers it across origins.
   await page.goto(`/join/${link.token}?server=${encodeURIComponent(syURL)}`)
+  await expect(page.getByText(`Shared through 127.0.0.1:${new URL(syURL).port}`)).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Join hosted-stub' })).toBeVisible({ timeout: 15_000 })
   await page.getByPlaceholder('Priya Shah').fill('e2e guest')
   await page.getByRole('button', { name: 'Join session' }).click()
@@ -113,6 +115,33 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
   await page.keyboard.press('Enter')
   const transcript = join(home, '.stub-sessions', `${agentSession}.txt`)
   await expect.poll(() => (existsSync(transcript) ? readFileSync(transcript, 'utf8') : ''), { timeout: 20_000, message: 'the hosted stub got the line' }).toContain('hello through the switchyard')
+})
+
+test('the switchyard serves its landing page, a 404 for workbench paths, and the app only for joining', async () => {
+  const port = new URL(syURL).port
+  const landing = await fetch(`${syURL}/`)
+  const body = await landing.text()
+  expect(landing.status).toBe(200)
+  expect(body).toContain('This is a Conductor switchyard.')
+  expect(body).toContain(`conductor://127.0.0.1:${port}/join/`)
+  expect(body).toContain('Off · plain http')
+  for (const p of ['/crews', '/sessions/x', '/wall', '/agents', '/events', '/settings']) {
+    const r = await fetch(`${syURL}${p}`)
+    expect(r.status, p).toBe(404)
+    expect(await r.text(), p).toContain("The workbench isn't here.")
+  }
+  const join = await fetch(`${syURL}/join/not-a-token`)
+  expect(join.status).toBe(200)
+  const joinBody = await join.text()
+  expect(joinBody).toMatch(/__nuxt|\/_nuxt\//)
+  expect(joinBody).not.toContain("The workbench isn't here.")
+  const status = await fetch(`${syURL}/api/switchyard/status`, { headers: { Authorization: `Bearer ${syAdmin}` } })
+  expect(status.status).toBe(200)
+  const figures = (await status.json()) as { hosts: number; sessions: number; hostList: Array<{ name: string }> }
+  expect(figures.hosts).toBe(1)
+  expect(figures.sessions).toBe(1)
+  expect(figures.hostList[0]?.name).toBe(hostname()) // the publishing machine, not the session's name
+  expect((await fetch(`${syURL}/api/switchyard/status`)).status).toBe(401)
 })
 
 test('the switchyard launches nothing, and its join route answers no stranger origin', async () => {

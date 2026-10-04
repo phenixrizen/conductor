@@ -136,6 +136,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			s.relayed.add(len(data))
 			if inner.Type == proto.TypeInput {
 				continue // hosts never send input to viewers
 			}

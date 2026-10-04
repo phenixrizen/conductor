@@ -323,8 +323,9 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 			"hostName": info.HostName,
 			"hostUser": info.HostUser,
 		},
-		"role":  link.Role,
-		"label": link.Label,
+		"role":       link.Role,
+		"label":      link.Label,
+		"switchyard": s.cfg.Switchyard.Enabled,
 	})
 }
 
@@ -359,8 +360,9 @@ func (s *Server) joinRun(w http.ResponseWriter, link *share.Link) {
 		members = append(members, jm)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"run":   map[string]any{"id": run.ID, "name": run.Name, "members": members},
-		"role":  link.Role,
-		"label": link.Label,
+		"run":        map[string]any{"id": run.ID, "name": run.Name, "members": members},
+		"role":       link.Role,
+		"label":      link.Label,
+		"switchyard": s.cfg.Switchyard.Enabled,
 	})
 }

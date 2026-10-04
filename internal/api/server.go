@@ -70,9 +70,13 @@ type Server struct {
 	// instance identifies this process on /api/health, for the reach
 	// self-check; reach and certs are what SetReach gave (see reach.go).
 	instance string
-	reachMu  sync.Mutex
-	reach    reachSource
-	certs    certSource
+	// started is when this process began serving (the switchyard page's uptime);
+	// relayed counts the bytes its relay carried, for the operator's figures.
+	started time.Time
+	relayed *relayMeter
+	reachMu sync.Mutex
+	reach   reachSource
+	certs   certSource
 	// publisher publishes sessions to a rendezvous (SetPublisher); published
 	// holds the publications by session id, pubGone the ids that left before
 	// their publication landed (see publish.go).
@@ -186,6 +190,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home:      home,
 		skillDone: map[string]bool{},
 		instance:  newInstance(),
+		started:   time.Now(),
+		relayed:   newRelayMeter(nil),
 	}
 	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
@@ -298,6 +304,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
+	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
@@ -355,7 +362,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such route")
 	})
-	if s.web != nil {
+	if s.cfg.Switchyard.Enabled {
+		// A switchyard serves its own pages and the app only for joining.
+		mux.Handle("/", s.switchyardFront())
+	} else if s.web != nil {
 		mux.Handle("/", s.web)
 	} else {
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

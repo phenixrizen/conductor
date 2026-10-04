@@ -127,9 +127,17 @@ listener on 443 itself (`setcap cap_net_bind_service=+ep` on the binary, or
 root), and an ACME account without an email, which Let's Encrypt accepts.
 
 `conductor switchyard` is `conductor serve --switchyard`: the sessions,
-crews, runs, catalog and integrations routes answer `403 switchyard`, the
-Agents and Crews pages say so, and everything about hosted sessions, links
-and the events stream works as on any server. `switchyard.relay: false`
+crews, runs, catalog and integrations routes answer `403 switchyard`, and
+everything about hosted sessions, links and the events stream works as on
+any server. It serves no workbench: its root is a landing page that says
+what the server is, how a link looks, how a machine publishes to it and
+whether it is up (version, uptime, the certificate's renewal, the relay),
+every workbench path (`/sessions/…`, `/crews`, `/wall`, `/agents`,
+`/events`, `/settings`) is a 404 page pointing at the Conductor on your own
+computer, and the app is served only for `/join/<token>` and `/paste`. The
+operator pastes the workbench token on the landing page to see the hosts
+connected, the sessions published, the viewers and the bytes relayed this
+hour (`GET /api/switchyard/status`); the token stays in that browser. `switchyard.relay: false`
 (`CONDUCTOR_SWITCHYARD_RELAY=0`) turns the relay off: a viewer whose WebRTC
 fails is told `relay_off` and a host that would use the relay alone is
 refused. `switchyard.allowedOrigins` (host patterns, `127.0.0.1:*` and

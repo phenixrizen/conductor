@@ -241,6 +241,8 @@ export interface JoinInfo {
   run?: { id: string; name: string; members: JoinRunMember[] }
   role: Role
   label?: string
+  /** Whether the server answering is a switchyard (a coordinator that launches nothing), which the join page names. */
+  switchyard?: boolean
 }
 
 /**

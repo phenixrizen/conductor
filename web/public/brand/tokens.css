@@ -34,12 +34,17 @@
   --conductor-focus-width: 3px;
 }
 
-/* Future application themes must map every semantic state deliberately.
-   This is not a shipped full-workbench dark mode. */
+/* The dark values the switchyard's pages use (the workbench's own dark mode
+   is Nuxt UI's): zinc surfaces, forest-300 as the action colour. */
 [data-conductor-theme="dark"] {
-  --conductor-surface: var(--conductor-dark-surface);
-  --conductor-panel: var(--conductor-dark-panel);
-  --conductor-text: var(--conductor-dark-text);
-  --conductor-muted: var(--conductor-dark-muted);
-  --conductor-accent-text: var(--conductor-dark-accent-text);
+  --conductor-surface: #18181B;
+  --conductor-panel: #27272A;
+  --conductor-text: #E4E4E7;
+  --conductor-muted: #A1A1AA;
+  --conductor-border: #3F3F46;
+  --conductor-action: #9BB3A3;
+  --conductor-on-action: #18181B;
+  --conductor-accent-text: #F3AC89;
+  --conductor-warning: #DBA63E;
+  --conductor-success: #6FAE83;
 }

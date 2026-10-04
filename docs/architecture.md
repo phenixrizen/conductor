@@ -169,6 +169,16 @@ join route answers the switchyard's allowed origins across origins and the
 session WebSocket accepts them. What a switchyard carries is signaling and
 the relayed terminals, so one small machine with a certificate serves many.
 
+Its pages are its own (`internal/api/switchyard_page.go`): a server-rendered
+landing page at `/` (what the server is, how a link looks, how a machine
+publishes to it, a status card from the same facts as health, reach and the
+certificate manager, and the operator's figures behind the workbench token
+through `GET /api/switchyard/status`), a 404 page for every workbench path,
+and the app only under `/join/` and `/paste` and for its assets. The pages
+are Go templates with the brand tokens inlined, so a switchyard built
+without the UI still answers. A `relayMeter` counts the bytes the relay
+carried over the last hour for the operator's card.
+
 ## Desktop shell
 
 `desktop/` is an Electron shell around the same binary: it starts

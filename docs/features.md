@@ -687,6 +687,16 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
   switchyard. A public switchyard may bound what a host relays
   (`switchyard.relayKBps`).
 
+- The switchyard serves no workbench (2026-10-04, from the design "Switchyard
+  Pages"): `/` is a server-rendered landing page (what the server is, how a
+  link looks, how a machine publishes to it, the status card: version,
+  uptime, TLS and its renewal, the relay, the public address, the invite
+  form; the operator's figures behind the workbench token), every workbench
+  path is a 404 page pointing at the Conductor on one's own computer, and the
+  app is served only for `/join/<token>` and `/paste`. The join page names
+  the switchyard it was shared through. Both pages are Go templates with the
+  brand tokens inlined, so they stand without the app built.
+
 ### Open verification (round 6)
 
 - Two desktop apps on two home networks through a switchyard on a VPS, one

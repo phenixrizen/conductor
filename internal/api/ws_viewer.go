@@ -286,6 +286,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 				_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, "terminal frames require relay mode on this connection"))
 				continue
 			}
+			s.relayed.add(len(f.Payload))
 			if err := hs.RelayToHost(v, f); err != nil {
 				switch {
 				case errors.Is(err, session.ErrReadOnly):

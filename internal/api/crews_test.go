@@ -1413,7 +1413,7 @@ func TestRunLinkJoinSessionAndFiles(t *testing.T) {
 			map[string]any{"name": "web", "agentId": "cat", "status": "ended"},
 			map[string]any{"name": "docs", "agentId": "cat", "status": "pending"},
 		}},
-		"role": "control", "label": "pairing",
+		"role": "control", "label": "pairing", "switchyard": false,
 	}
 	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(out, want) {
 		t.Fatalf("join: %d %v", resp.StatusCode, out)

@@ -79,6 +79,8 @@ function agentName(agentId: string): string {
   return names[agentId] ?? agentId
 }
 const agentLabel = computed(() => agentName(current.value?.agentId ?? ''))
+/** The switchyard this link was shared through, named on the page: the invite's server, else this page's own host. */
+const viaHost = computed(() => serverHost.value || (import.meta.client ? location.host : ''))
 const hostedBy = computed(() => {
   const s = current.value
   if (!s) return ''
@@ -209,6 +211,7 @@ function requestFile(path: string, stat?: boolean) {
             </UFormField>
             <UButton type="submit" :label="run ? 'Join crew' : 'Join session'" block :disabled="!nameDraft.trim()" />
           </form>
+          <p v-if="info.switchyard && viaHost" class="text-xs text-muted" data-join-switchyard>Shared through <span class="font-mono">{{ viaHost }}</span></p>
         </template>
         <div v-else class="text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking link…</div>
       </div>
