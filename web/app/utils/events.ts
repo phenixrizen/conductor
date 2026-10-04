@@ -324,7 +324,7 @@ export function pruneMarks(
 
 /**
  * Where the carousel's follow mode moves for an event: the index of its
- * session among those shown, or null to stay. Only a type routed to Wall jump
+ * session among those shown, or null to stay. Only a type routed to Roundhouse jump
  * moves it, never needs_input (follow mode jumps for that from the session
  * state), and never while follow mode is off, someone types, or it holds on a
  * session that needs input.
@@ -498,9 +498,9 @@ export const ROUTE_GROUPS: ReadonlyArray<{ key: string; title: string; note: str
 
 /** The destinations a route row has, as the routing pills and the readout name them. */
 export const ROUTE_KEYS: ReadonlyArray<{ key: keyof RouteRow; label: string; icon: string; summary: string; hint: string }> = [
-  { key: 'badge', label: 'Badge', icon: 'i-lucide-circle-dot', summary: 'Sidebar badge', hint: 'A badge on the session in the sidebar and on its wall tile' },
+  { key: 'badge', label: 'Badge', icon: 'i-lucide-circle-dot', summary: 'Sidebar badge', hint: 'A badge on the session in the sidebar and on its Yard tile' },
   { key: 'browser', label: 'Browser', icon: 'i-lucide-bell', summary: 'Browser notification', hint: 'A browser notification and the chime, as switched on under Alerts' },
-  { key: 'wall', label: 'Wall jump', icon: 'i-lucide-layout-grid', summary: 'Wall jumps to it', hint: 'The carousel jumps to the session while it follows routed events' },
+  { key: 'wall', label: 'Roundhouse jump', icon: 'i-lucide-gallery-horizontal', summary: 'Roundhouse jumps to it', hint: 'The Roundhouse jumps to the session while it follows routed events' },
   { key: 'feed', label: 'Feed', icon: 'i-lucide-list', summary: 'Feed', hint: 'A line in the live feed' },
 ]
 

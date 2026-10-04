@@ -103,8 +103,8 @@ const sidebarRunName = computed(() => {
 })
 
 const nav = computed<NavigationMenuItem[]>(() => [
-  { label: 'Wall', icon: 'i-lucide-layout-grid', to: '/wall', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
-  { label: 'Carousel', icon: 'i-lucide-gallery-horizontal', to: '/carousel' },
+  { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
+  { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
   {
     label: 'Crews',
@@ -116,12 +116,12 @@ const nav = computed<NavigationMenuItem[]>(() => [
   ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
 
-// On the rail Nuxt UI's collapsed menu hides the links' labels and the Wall's
-// count: each link is named by an aria-label instead, and the Wall's icon
+// On the rail Nuxt UI's collapsed menu hides the links' labels and the Yard's
+// count: each link is named by an aria-label instead, and the Yard's icon
 // carries an amber chip while any session needs you.
 const railNav = computed<NavigationMenuItem[]>(() =>
   nav.value.map((item) => {
-    const n = item.to === '/wall' ? attention.count.value : 0
+    const n = item.to === '/yard' ? attention.count.value : 0
     return { ...item, 'aria-label': n ? `${item.label}, ${n} ${n === 1 ? 'needs' : 'need'} you` : item.label, chip: n ? { color: 'warning' } : undefined }
   }),
 )
@@ -139,8 +139,8 @@ defineShortcuts({
   '?': () => shortcuts.show(),
   n: () => launch.show(),
   '/': focusFilter,
-  'g-w': () => router.push('/wall'),
-  'g-c': () => router.push('/carousel'),
+  'g-w': () => router.push('/yard'),
+  'g-c': () => router.push('/roundhouse'),
   'g-a': () => router.push('/agents'),
   'g-e': () => router.push('/events'),
   'g-r': () => router.push('/crews'),
@@ -148,8 +148,8 @@ defineShortcuts({
   alt_h: { ...inTerminal, handler: () => shortcuts.show() },
   alt_n: { ...inTerminal, handler: () => launch.show() },
   alt_s: { ...inTerminal, handler: focusFilter },
-  alt_w: { ...inTerminal, handler: () => router.push('/wall') },
-  alt_c: { ...inTerminal, handler: () => router.push('/carousel') },
+  alt_w: { ...inTerminal, handler: () => router.push('/yard') },
+  alt_c: { ...inTerminal, handler: () => router.push('/roundhouse') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
   alt_e: { ...inTerminal, handler: () => router.push('/events') },
   alt_r: { ...inTerminal, handler: () => router.push('/crews') },

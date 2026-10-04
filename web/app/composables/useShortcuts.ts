@@ -24,8 +24,8 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['?'], label: 'Keyboard shortcuts (Alt+H in a terminal)' },
     { keys: ['N'], label: 'Launch an agent (Alt+N in a terminal)' },
     { keys: ['/'], label: 'Filter sessions (Alt+S in a terminal)' },
-    { keys: ['G', 'W'], label: 'Go to the Wall (Alt+W in a terminal)' },
-    { keys: ['G', 'C'], label: 'Go to the Carousel (Alt+C in a terminal)' },
+    { keys: ['G', 'W'], label: 'Go to the Yard (Alt+W in a terminal)' },
+    { keys: ['G', 'C'], label: 'Go to the Roundhouse (Alt+C in a terminal)' },
     { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
     { keys: ['G', 'E'], label: 'Go to Events (Alt+E in a terminal)' },
     { keys: ['G', 'R'], label: 'Go to Crews (Alt+R in a terminal)' },
@@ -34,7 +34,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
 }
 
 export const WALL_SHORTCUTS: ShortcutGroup = {
-  title: 'Wall',
+  title: 'Yard',
   rows: [
     { keys: ['escape'], label: 'Back to the grid (Alt+Esc in a terminal)' },
     { keys: ['J'], label: 'Next in the queue (Alt+J in a terminal)' },
@@ -44,7 +44,7 @@ export const WALL_SHORTCUTS: ShortcutGroup = {
 }
 
 export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
-  title: 'Carousel',
+  title: 'Roundhouse',
   rows: [
     { keys: ['arrowleft'], label: 'Previous session (Alt+← in a terminal)' },
     { keys: ['arrowright'], label: 'Next session (Alt+→ in a terminal)' },

@@ -441,7 +441,7 @@ footer.sy .right{margin-left:auto}
 </section>
 <section class="card">
 <h2>Looking for the workbench?</h2>
-<p>Conductor runs on your own computer: the agents, crews, wall and every terminal stay there. Install it, then share from it through a switchyard like this one.</p>
+<p>Conductor runs on your own computer: the agents, crews, yard and every terminal stay there. Install it, then share from it through a switchyard like this one.</p>
 <div class="btns"><a class="btn" href="{{.AppURL}}">Get the desktop app</a><a class="btn ghost" href="{{.DocsURL}}">Read the docs</a></div>
 </section>
 <section class="card">
@@ -522,7 +522,7 @@ var saved=load();if(saved){fetchStatus(saved,forget);schedule()}
 <div class="hero">
 <span class="mono small muted">404 · {{.Path}}</span>
 <h1>The workbench isn't here.</h1>
-<p class="muted">This address is a Conductor switchyard. It introduces viewers to sessions on people's own machines and has no sessions, crews, wall, agents or settings of its own. Those live in Conductor on your computer.</p>
+<p class="muted">This address is a Conductor switchyard. It introduces viewers to sessions on people's own machines and has no sessions, crews, yard, agents or settings of its own. Those live in Conductor on your computer.</p>
 </div>
 <div class="rows">
 <div><b>Open Conductor on your computer</b><span class="mono small">http://localhost:8080</span><span class="small muted">The default address of a Conductor you run yourself. The desktop app opens its own window.</span></div>

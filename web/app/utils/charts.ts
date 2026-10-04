@@ -3,7 +3,7 @@ import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 /**
  * The numbers behind the charts: how long a crew's runs lasted (runLength,
  * which the Crews pages draw as bars) and sessions by attention state for the
- * Wall; the Events page counts its own (sparkBuckets in utils/events.ts).
+ * Yard; the Events page counts its own (sparkBuckets in utils/events.ts).
  * Each is drawn only when it says something: a chart needs at least two
  * points (enough), and the empty state says what will appear.
  */
@@ -31,7 +31,7 @@ export function runLength(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'member
 
 export type AttentionSlice = 'needs_input' | 'working' | 'done' | 'idle'
 
-/** Sessions by attention state, for the Wall's attention bar: active sessions only, in a fixed order. */
+/** Sessions by attention state, for the Yard's attention bar: active sessions only, in a fixed order. */
 export function attentionSlices(sessions: readonly SessionInfo[], active: (s: SessionInfo) => boolean): Record<AttentionSlice, number> {
   const out: Record<AttentionSlice, number> = { needs_input: 0, working: 0, done: 0, idle: 0 }
   for (const s of sessions) {

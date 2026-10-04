@@ -37,7 +37,7 @@ func TestSwitchyardServesItsOwnPages(t *testing.T) {
 	if strings.Contains(body, adminToken) {
 		t.Fatal("the landing page leaks the token")
 	}
-	for _, p := range []string{"/crews/users-api", "/sessions/abc", "/wall", "/agents", "/events", "/settings", "/join", "/runs/x"} {
+	for _, p := range []string{"/crews/users-api", "/sessions/abc", "/wall", "/yard", "/roundhouse", "/agents", "/events", "/settings", "/join", "/runs/x"} {
 		code, body := getPage(t, e, p)
 		if code != http.StatusNotFound || !strings.Contains(body, "The workbench isn't here.") || !strings.Contains(body, "404 · "+p) {
 			t.Fatalf("%s: %d %.300s", p, code, body)

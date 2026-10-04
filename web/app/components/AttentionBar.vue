@@ -4,7 +4,7 @@ import { isActive } from '~/utils/attention'
 import { attentionSlices, enough, type AttentionSlice } from '~/utils/charts'
 
 /**
- * The Wall's sessions by attention state, as one slim stacked bar in its
+ * The Yard's sessions by attention state, as one slim stacked bar in its
  * header: needs input (amber), working (green), done (blue) and no state yet
  * (grey), each as wide as its share. The header's buttons carry the counts;
  * the bar is the proportion. Drawn only with two sessions or more.

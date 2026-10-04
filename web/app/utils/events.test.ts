@@ -384,13 +384,13 @@ describe('pruneMarks', () => {
 
 describe('followJump', () => {
   const ctx = { follow: true, routes: routes(), typing: false, holding: false, activeIds: ['a', 'b', 'c'], selected: 0 }
-  it('moves the carousel to the session of an event routed to Wall jump', () => {
+  it('moves the Roundhouse to the session of an event routed to Roundhouse jump', () => {
     expect(followJump({ type: 'handoff', sessionId: 'c' }, ctx)).toBe(2)
   })
   it('stays put while it holds on a session that needs input', () => {
     expect(followJump({ type: 'handoff', sessionId: 'c' }, { ...ctx, holding: true })).toBeNull()
   })
-  it('stays put while someone types, with follow off, or for a type not routed to Wall jump', () => {
+  it('stays put while someone types, with follow off, or for a type not routed to Roundhouse jump', () => {
     expect(followJump({ type: 'handoff', sessionId: 'c' }, { ...ctx, typing: true })).toBeNull()
     expect(followJump({ type: 'handoff', sessionId: 'c' }, { ...ctx, follow: false })).toBeNull()
     expect(followJump({ type: 'progress', sessionId: 'c' }, ctx)).toBeNull()

@@ -139,7 +139,7 @@ test('the switchyard serves its landing page, a 404 for workbench paths, and the
   expect(body).toContain('This is a Conductor switchyard.')
   expect(body).toContain(`conductor://127.0.0.1:${port}/join/`)
   expect(body).toContain('Off · plain http')
-  for (const p of ['/crews', '/sessions/x', '/wall', '/agents', '/events', '/settings']) {
+  for (const p of ['/crews', '/sessions/x', '/wall', '/yard', '/roundhouse', '/agents', '/events', '/settings']) {
     const r = await fetch(`${syURL}${p}`)
     expect(r.status, p).toBe(404)
     expect(await r.text(), p).toContain("The workbench isn't here.")

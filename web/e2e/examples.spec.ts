@@ -16,6 +16,9 @@ test.afterAll(async ({ api }) => {
 test('the examples load on the empty Crews page, at the scratch repository', async ({ page, api, state }) => {
   await page.goto('/crews')
   await page.locator('[data-crews-empty]').getByRole('button', { name: 'Load the examples' }).click()
+  // Loading opens the first example; the home lists all four.
+  await expect(page).toHaveURL(/\/crews\/example-todo-app$/)
+  await page.goto('/crews')
   await expect(page.locator('[data-crew-item]', { hasText: 'Example: todo app' })).toBeVisible()
   for (const id of ['example-todo-app', 'example-test-fixer', 'example-docs-writer', 'example-dependency-upgrade']) {
     // The examples work in the server's default working directory: the scratch repository.
@@ -105,17 +108,17 @@ test('the full sidebar groups the run: its header, then its four members', async
   expect(new Set(links.slice(header + 1, header + 5))).toEqual(sessions)
 })
 
-test('typing into a tile on the wall reaches the session', async ({ page, api }) => {
+test('typing into a tile on the Yard reaches the session', async ({ page, api }) => {
   const lead = member(await api.run(runId), 'lead').sessionId ?? ''
-  await page.goto('/wall')
+  await page.goto('/yard')
   const tile = page.locator('[data-session-tile]').filter({ has: page.getByText('lead', { exact: true }) })
   await expect(tile).toHaveCount(1)
   await tile.locator('.xterm-screen').click()
-  await page.keyboard.type('ping-from-wall')
+  await page.keyboard.type('ping-from-yard')
   await page.keyboard.press('Enter')
   // The click focused the terminal in place: no navigation, and the stub got the line.
-  await expect(page).toHaveURL(/\/wall$/)
-  await expect.poll(async () => (await api.session(lead)).attention?.message ?? '', { timeout: 30_000 }).toContain('got: ping-from-wall')
+  await expect(page).toHaveURL(/\/yard$/)
+  await expect.poll(async () => (await api.session(lead)).attention?.message ?? '', { timeout: 30_000 }).toContain('got: ping-from-yard')
 })
 
 for (const [crew, first, second] of [

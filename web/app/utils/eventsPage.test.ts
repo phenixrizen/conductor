@@ -12,7 +12,7 @@ describe('the Events page helpers', () => {
   it('reads the routing as where each kind goes', () => {
     expect(routeSummary(DEFAULT_ROUTES)).toEqual([
       { key: 'browser', icon: 'i-lucide-bell', title: 'Browser notification', types: 'needs you, tool denied, artifacts, errors, exit ≠ 0' },
-      { key: 'wall', icon: 'i-lucide-layout-grid', title: 'Wall jumps to it', types: 'needs you, handoffs' },
+      { key: 'wall', icon: 'i-lucide-gallery-horizontal', title: 'Roundhouse jumps to it', types: 'needs you, handoffs' },
       { key: 'badge', icon: 'i-lucide-circle-dot', title: 'Sidebar badge', types: 'needs you, done, tool denied, errors, exit ≠ 0' },
     ])
     const quiet = Object.fromEntries(EVENT_TYPES.map((t) => [t, { badge: false, browser: false, wall: false, feed: true }])) as typeof DEFAULT_ROUTES

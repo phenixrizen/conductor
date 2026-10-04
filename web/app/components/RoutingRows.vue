@@ -5,7 +5,7 @@ import { EVENT_INFO, ROUTE_GROUPS, ROUTE_KEYS, type EventType, type RouteRow, we
 /**
  * Where each kind of event goes in this browser: the ten events grouped by
  * how loud they are, each with its destinations as pills (Badge, Browser,
- * Wall jump, Feed) and the webhooks of conductor.json beside them, read-only.
+ * Roundhouse jump, Feed) and the webhooks of conductor.json beside them, read-only.
  * `working` never sets a badge: it clears one.
  */
 const props = defineProps<{

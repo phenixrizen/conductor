@@ -78,8 +78,8 @@ test('every tile on the run page is a live terminal that fills its pane', async 
   for (const f of measured) expect(f.hostW).toBeGreaterThan(200)
 })
 
-test('the wall tiles fill too, and typing into a focused tile reaches the agent without leaving the wall', async ({ page, api }) => {
-  await page.goto('/wall')
+test('the Yard tiles fill too, and typing into a focused tile reaches the agent without leaving the Yard', async ({ page, api }) => {
+  await page.goto('/yard')
   const tile = page.locator('[data-session-tile]').filter({ has: page.getByText('lead', { exact: true }) })
   await expect(tile).toHaveCount(1, { timeout: 30_000 })
   const lead = await api.session(leadSession)
@@ -94,24 +94,25 @@ test('the wall tiles fill too, and typing into a focused tile reaches the agent 
   await tile.locator('.xterm-screen').click()
   await page.keyboard.type('jk')
   await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(/\/wall$/)
+  await expect(page).toHaveURL(/\/yard$/)
   await expect.poll(async () => (await api.session(leadSession)).attention?.message ?? '', { timeout: 30_000 }).toContain('got: jk')
 })
 
 test('the Alt chords leave a focused terminal for the page: Alt+A to Agents, Alt+Esc back to the grid, Alt+H the shortcuts', async ({ page, api }) => {
-  await page.goto('/wall')
+  await page.goto('/yard')
   const tile = page.locator('[data-session-tile]').filter({ has: page.getByText('lead', { exact: true }) })
   await expect(tile).toHaveCount(1, { timeout: 30_000 })
   await tile.locator('.xterm-screen').click()
   await page.keyboard.press('Alt+A')
   await expect(page).toHaveURL(/\/agents$/)
-  // Focus mode on the wall, then Alt+Esc from inside the terminal goes back to the grid.
+  // Focus mode on the Yard (an old /wall link lands there, focus kept), then Alt+Esc from inside the terminal goes back to the grid.
   await page.goto(`/wall?focus=${encodeURIComponent(leadSession)}`)
+  await expect(page).toHaveURL(/\/yard\?focus=/)
   const full = page.locator('.terminal-host').first()
   await expect(full).toBeVisible()
   await full.locator('.xterm-screen').click()
   await page.keyboard.press('Alt+Escape')
-  await expect(page).toHaveURL(/\/wall$/)
+  await expect(page).toHaveURL(/\/yard$/)
   await expect(tile).toHaveCount(1)
   // Alt+H opens the shortcuts modal over the terminal; Escape closes it; the next keys are the agent's again.
   await tile.locator('.xterm-screen').click()

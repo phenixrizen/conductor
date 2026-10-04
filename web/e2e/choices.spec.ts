@@ -49,7 +49,7 @@ test('the session page offers the choices and a click types one as a line', asyn
 test('the wall queue offers the same buttons', async ({ page, api, state }) => {
   const s = await ask(api)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
-  await page.goto('/wall')
+  await page.goto('/yard')
   const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
   await expect(card).toBeVisible({ timeout: 30_000 })
   await card.getByRole('button', { name: /SQLite/ }).click()

@@ -147,7 +147,7 @@ everything about hosted sessions, links and the events stream works as on
 any server. It serves no workbench: its root is a landing page that says
 what the server is, how a link looks, how a machine publishes to it and
 whether it is up (version, uptime, the certificate's renewal, the relay),
-every workbench path (`/sessions/…`, `/crews`, `/wall`, `/agents`,
+every workbench path (`/sessions/…`, `/crews`, `/yard`, `/agents`,
 `/events`, `/settings`) is a 404 page pointing at the Conductor on your own
 computer, and the app is served only for `/join/<token>` and `/paste`. The
 operator pastes the workbench token on the landing page to see the hosts
@@ -236,12 +236,12 @@ directory, so do not run `conductor host` from a directory that holds a
 server's data directory or config file: anyone the session is shared with
 could read the catalog's env secrets and the workbench token.
 
-## The wall
+## The Yard
 
-`/wall` is a grid of live tiles, one per active session, sized so that every
+`/yard` (the Wall before it was renamed; `/wall` still lands there) is a grid of live tiles, one per active session, sized so that every
 session fits on screen without scrolling; tiles shrink as sessions are added.
 Each tile is the session's terminal at the tile's size, filling it: the last
-viewer that attaches or resizes sets a session's size, so opening the wall
+viewer that attaches or resizes sets a session's size, so opening the Yard
 sizes each session to its tile, opening a session's page sizes it to that
 page, and coming back to the grid sizes it to its tile again. Click into a
 tile and type: the keys go to that session, the plain-key shortcuts pause
@@ -251,18 +251,18 @@ lists every session waiting for input with its prompt: answer from there
 (**J**/**K** select, **Enter** types a reply) without opening the session,
 and see who answered what under **Answered**. The expand button in a tile's
 header, a double-click on the header, or **Enter** on a tile whose frame has
-keyboard focus expands it in place to a full-size terminal (`/wall?focus=<id>`,
+keyboard focus expands it in place to a full-size terminal (`/yard?focus=<id>`,
 so the view is linkable); **Esc**, the back arrow or the browser's Back button
 return to the grid, and **Open page** goes to the full session page. The
-fullscreen button turns a spare monitor into a status wall.
+fullscreen button turns a spare monitor into a status board.
 
-## The carousel
+## The Roundhouse
 
-`/carousel` rotates through the active sessions one at a time, full size and
+`/roundhouse` (`/carousel` still lands there) rotates through the active sessions one at a time, full size and
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow routed events** on, the
-carousel follows what the **Wall jump** column on the Events page routes to
+Roundhouse follows what the **Roundhouse jump** switch on the Events page's Routing tab routes to
 it, input requests and handoffs unless you change it. It jumps to a session
 that needs input and holds there for two intervals (at least 20 s) before
 rotating on; click **Holding** to release it sooner. Any other routed event
@@ -276,7 +276,7 @@ the footer says which session is next.
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch
 button, a search button that opens the full sidebar on its filter, the pages
-and the sidebar's buttons as icons with tooltips (the Wall's count as an amber
+and the sidebar's buttons as icons with tooltips (the Yard's count as an amber
 chip), and every session as its agent's initials with the amber dot when it
 needs you, the members of a running crew together under its name, which links
 to the run page. The full sidebar groups them the same way: inside each
@@ -311,7 +311,7 @@ an attention word, or a hook mapped to one) that the server answers `429` is
 tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes
 at most; an event is tried once. Sessions that need a human show an amber
 **needs input** badge, move to the top of the sidebar, count in the tab title,
-can raise a browser notification, and appear in the wall queue. Claude Code
+can raise a browser notification, and appear in the Yard's queue. Claude Code
 permission requests arrive with their options, so **Yes / Always / No** buttons
 appear wherever the prompt is shown. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
@@ -325,9 +325,9 @@ handoffs, errors and the rest, as the tab saw them), where each kind of event
 goes now, and whether each agent reports. **Routing** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
 with its destinations as switches: a labelled badge on its session in the
-sidebar and on its wall tile (until the session reports `working` or
+sidebar and on its Yard tile (until the session reports `working` or
 `needs_input`, or you open it), a browser notification with the chime (as
-switched on under the sidebar's alerts), a carousel jump while it follows, and
+switched on under the sidebar's alerts), a Roundhouse jump while it follows, and
 a line in the live feed, which keeps the last 500 events in memory. Routes are
 saved in the browser. **Integrations** is a table of the agents: whether their
 hooks reach them, what they report, where an install writes, and **Install on
@@ -404,7 +404,7 @@ as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
 --state needs_input --message "approve?"` from a script for anything else;
 `--state clear` resets it. A question with a few answers takes them as
 `--choices "Postgres|SQLite|Keep both"` (at most 6, each at most 40 bytes):
-the session tile, the wall queue and the run page show them as buttons, and
+the session tile, the Yard's queue and the run page show them as buttons, and
 a click types the choice into the session as a line, so an agent names the
 choices in its terminal first and gets the same words back.
 
@@ -677,7 +677,7 @@ crew and its start ("users api · run started 08:31") with its short id.
 **The run page.** `/runs/<id>` shows a live tile for every member, with its
 branch and a diff count (`+12 −3`), a feed of the members' events and the run's
 own log, and how many members need input. A tile is the member's terminal at
-the tile's size, as on the wall: click into it and type; its expand button, or
+the tile's size, as on the Yard: click into it and type; its expand button, or
 a double-click on its header, opens the session's page. The diff counts the
 lines of tracked files the member's worktree adds and removes against the
 commit it began from, committed or not; untracked files are not counted, and
@@ -788,7 +788,7 @@ a crew's Runs tab lists them and charts the last twelve as bars (minutes,
 coloured by outcome, an amber edge when someone had to answer), once there
 are two, and the Crews table draws the same bars beside each crew.
 The Events page's feed draws the last hour's events per minute (what needs
-you, handoffs, errors, the rest) once two are in it, and the Wall's header shows its sessions by attention state as a slim
+you, handoffs, errors, the rest) once two are in it, and the Yard's header shows its sessions by attention state as a slim
 stacked bar from two sessions on. Nothing is charted with fewer than two points.
 
 **Handoffs.** A member passes work to another with an event, which the
@@ -918,8 +918,8 @@ built-in's, and `"yolo": {}` gives it none. Sessions started with
 ## Resume and relaunch
 
 An ended session (exited or stopped) offers **Resume** in its header, on its
-tile on the run page (the wall's grid shows only running sessions, so on the
-wall it is in the expanded view's header), on its row in the sidebar's
+tile on the run page (the Yard's grid shows only running sessions, so on the
+Yard it is in the expanded view's header), on its row in the sidebar's
 **Exited** section, and on an ended member's tile on the run page. Resume
 starts a new session with the same agent, name, working directory, arguments
 and yolo choice and, for a crew member, the same run, branch and worktree,
