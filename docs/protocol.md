@@ -123,7 +123,9 @@ without a `requestId` is a protocol error), `link_revoke{requestId, linkId}`
 counted against the link bucket; a missing or oversize field is a protocol
 error).
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
+(`links`: the ids of the live links the server holds for the session, `[]`
+when none; an older server sends no field, which says nothing),
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
@@ -175,8 +177,21 @@ A host that loses its connection reconnects with `resume` and the secret from
 `registered`. The session shows `host_disconnected` in the meantime and is
 removed after 60 s without the host. A server that no longer knows the session (a restarted switchyard keeps
 hosted sessions in memory) closes the resume with `4404`; the host then
-registers afresh under a new id, and the links minted at the old one are
-gone with it.
+registers afresh.
+
+`register` may carry `host.instance` (a secret of the host process, at most
+64 bytes, never logged) and `session.localId` (the session's id on the host,
+at most 64 bytes), both or neither, else `ErrBadRegister` closes the
+connection. With them the session's id is fixed: a hash of the pair, so a
+host that registers again after the server restarted gets the same id, and
+a link minted for it before names it again; a session still held under that
+id whose host is away is taken back (`resumed: true`), one whose host is
+connected refuses the second. `conductor host` makes an instance when it
+starts; a Conductor publishing to a switchyard makes one for its life and
+uses each session's own id. The publishing server keeps its records of the
+links minted for a session while `registered.links` (then `link_created` and
+`link_revoked`) says the switchyard holds them, and, with an older
+switchyard that says nothing, only while the session keeps its id.
 
 ## Attention
 

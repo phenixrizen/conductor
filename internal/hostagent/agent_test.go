@@ -459,6 +459,7 @@ func TestHostExitsPromptlyWhenCancelled(t *testing.T) {
 func TestHostRegistersAfreshWhenTheServerForgotTheSession(t *testing.T) {
 	var attempts atomic.Int32
 	resumes := make(chan string, 4)
+	idents := make(chan string, 4)
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ws/host" {
 			http.NotFound(w, r)
@@ -483,6 +484,7 @@ func TestHostRegistersAfreshWhenTheServerForgotTheSession(t *testing.T) {
 		} else {
 			resumes <- ""
 		}
+		idents <- reg.Host.Instance + "|" + reg.Session.LocalID
 		switch n {
 		case 1:
 			_ = c.Write(r.Context(), websocket.MessageText, mustJSON(proto.Registered{T: proto.HostRegistered, SessionID: "s1", Secret: "sec", ShareBaseURL: "http://sy.test"}))
@@ -525,4 +527,12 @@ func TestHostRegistersAfreshWhenTheServerForgotTheSession(t *testing.T) {
 	want(resumes, "s1", "second attempt resumes s1")
 	want(resumes, "", "third attempt registers afresh")
 	want(ids, "s2", "registered again under the new id")
+	// Every attempt names the same instance and local id: a server that keeps
+	// instances gives the session its id back.
+	first := <-idents
+	if !strings.HasSuffix(first, "|1") || len(first) < 20 {
+		t.Fatalf("instance and local id %q", first)
+	}
+	want(idents, first, "the second attempt's instance")
+	want(idents, first, "the third attempt's instance")
 }

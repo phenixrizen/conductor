@@ -776,3 +776,48 @@ func TestAnEndedHostedSessionNeedsNothing(t *testing.T) {
 		t.Fatalf("ended: %+v", info)
 	}
 }
+
+// A host's instance and local id fix the session's id: the same pair gives
+// the same id, either input changed another.
+func TestHostedIDIsStableAndDiffersByEitherInput(t *testing.T) {
+	a := HostedID("instance-a", "1")
+	if a != HostedID("instance-a", "1") || len(a) != session.IDLen {
+		t.Fatalf("id %q", a)
+	}
+	if a == HostedID("instance-b", "1") || a == HostedID("instance-a", "2") || HostedID("ab", "c") == HostedID("a", "bc") {
+		t.Fatal("ids collide")
+	}
+}
+
+func registerAs(hub *Hub, instance, localID string, conn *HostConn) (*HostedSession, bool, error) {
+	return hub.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion,
+		Host: proto.HostInfo{Name: "laptop", Instance: instance}, Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24, LocalID: localID}}, conn)
+}
+
+// The same instance registering again while its host is away takes the
+// session back under its id; while the host is connected it is refused, as
+// is another instance; one of the pair without the other is refused.
+func TestRegisterUnderAnInstance(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, resumed, err := registerAs(hub, "instance-a", "1", NewHostConn())
+	if err != nil || resumed || hs.Info().ID != HostedID("instance-a", "1") || hs.Owner() == "" {
+		t.Fatalf("first: %v %v %+v", err, resumed, hs)
+	}
+	if _, _, err := registerAs(hub, "instance-a", "1", NewHostConn()); !errors.Is(err, ErrBadRegister) {
+		t.Fatalf("while connected: %v", err)
+	}
+	hs.HostDisconnected(hs.conn)
+	if _, _, err := registerAs(hub, "instance-b", "1", NewHostConn()); err != nil {
+		t.Fatalf("another instance gets an id of its own: %v", err)
+	}
+	again, resumed, err := registerAs(hub, "instance-a", "1", NewHostConn())
+	if err != nil || !resumed || again != hs {
+		t.Fatalf("taken back: %v %v", err, resumed)
+	}
+	if _, _, err := registerAs(hub, "instance-a", "", NewHostConn()); !errors.Is(err, ErrBadRegister) {
+		t.Fatalf("instance without a local id: %v", err)
+	}
+	if _, _, err := registerAs(hub, strings.Repeat("x", proto.MaxHostInstance+1), "1", NewHostConn()); !errors.Is(err, ErrBadRegister) {
+		t.Fatalf("instance too long: %v", err)
+	}
+}

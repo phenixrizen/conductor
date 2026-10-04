@@ -30,6 +30,17 @@ type Uplink struct {
 	ICE          ICE
 	ReconnectMax time.Duration
 	Log          *slog.Logger
+
+	// instance is this server's secret with the rendezvous: with each
+	// session's own id it gives a published session the same id after the
+	// rendezvous restarts (proto.HostInfo.Instance). Made on first use.
+	instOnce sync.Once
+	instance string
+}
+
+func (u *Uplink) instanceID() string {
+	u.instOnce.Do(func() { u.instance, _ = share.NewToken() })
+	return u.instance
 }
 
 // Published is a session published to the rendezvous.
@@ -56,6 +67,11 @@ func (p *Published) CurrentSessionID() string {
 
 // CurrentID is CurrentSessionID, as the api's PublishedSession names it.
 func (p *Published) CurrentID() string { return p.CurrentSessionID() }
+
+// HeldLinks is what the rendezvous last said it holds of the links minted
+// for the session: the ids in its registered answer, plus those minted and
+// less those revoked since; false when it never said (an older rendezvous).
+func (p *Published) HeldLinks() ([]string, bool) { return p.a.heldLinks() }
 
 // Revoke asks the rendezvous to revoke a link it minted for the session;
 // a link it no longer knows answers an error that names not_found.
@@ -99,7 +115,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	// attention there; agents of a published session report to their own
 	// server, so this one is used by nobody, and is fresh for every publish.
 	agentToken, _ := share.NewToken()
-	a := &agent{opts: opts, wsURL: wsURL, dir: info.Cwd, cols: info.Cols, rows: info.Rows, peers: map[string]*peer{}, log: log, agentToken: agentToken, local: local}
+	a := &agent{opts: opts, wsURL: wsURL, dir: info.Cwd, cols: info.Cols, rows: info.Rows, peers: map[string]*peer{}, log: log, agentToken: agentToken, local: local, instance: u.instanceID(), localID: info.ID}
 	a.activity = newActivityForwarder(a.sendActivity, log)
 	conn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {

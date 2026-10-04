@@ -39,10 +39,21 @@ type HostInfo struct {
 	Version string `json:"version"`
 	// User is the OS user running the host (≤ 64 bytes), for "hosted by".
 	User string `json:"user,omitempty"`
+	// Instance is a secret of the host process (≤ MaxHostInstance bytes):
+	// with HostSession.LocalID it fixes the session's id on the server
+	// (signal.HostedID), so the same session has the same id after the
+	// server restarts and a link minted before still opens it. Only its
+	// holder can register under that id. Never logged.
+	Instance string `json:"instance,omitempty"`
 }
 
-// MaxHostUser bounds HostInfo.User.
-const MaxHostUser = 64
+// MaxHostUser bounds HostInfo.User; MaxHostInstance and MaxLocalID bound
+// HostInfo.Instance and HostSession.LocalID.
+const (
+	MaxHostUser     = 64
+	MaxHostInstance = 64
+	MaxLocalID      = 64
+)
 
 // HostSession describes the session a host offers.
 type HostSession struct {
@@ -58,6 +69,9 @@ type HostSession struct {
 	AgentToken string `json:"agentToken,omitempty"`
 	// Branch is the git branch of Cwd when known (≤ 200 bytes).
 	Branch string `json:"branch,omitempty"`
+	// LocalID is the session's id on the host; with HostInfo.Instance,
+	// both or neither.
+	LocalID string `json:"localId,omitempty"`
 }
 
 // HostResume lets a reconnecting host reclaim its session.
@@ -83,6 +97,12 @@ type Registered struct {
 	ShareBaseURL string      `json:"shareBaseUrl"`
 	Resumed      bool        `json:"resumed"`
 	ICEServers   []ICEServer `json:"iceServers,omitempty"`
+	// Links are the ids of the live links the server holds for the
+	// session, so a host registering again after the server restarted
+	// knows which of the links it minted still open it. Never omitted: a
+	// server without links sends []; an older server sends no field (nil
+	// to the host, which says nothing).
+	Links []string `json:"links"`
 }
 
 // HostStatusMsg reports the hosted process state.

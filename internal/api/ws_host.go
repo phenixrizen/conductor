@@ -105,7 +105,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	for _, srv := range s.cfg.ICEServers {
 		ice = append(ice, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
 	}
-	registered, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice})
+	registered, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID)})
 	if err := writeText(ctx, c, registered); err != nil {
 		return
 	}
@@ -362,4 +362,18 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 		out.ExpiresAt = link.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 	_ = hs.Tell(out)
+}
+
+// liveLinkIDs are the ids of the links that still open a hosted session here:
+// not revoked, not expired. Never nil, so registered always carries the list.
+func (s *Server) liveLinkIDs(sessionID string) []string {
+	ids := []string{}
+	now := time.Now()
+	for _, l := range s.links.ListBySession(sessionID) {
+		if l.Revoked || (l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)) {
+			continue
+		}
+		ids = append(ids, l.ID)
+	}
+	return ids
 }

@@ -127,7 +127,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// the server. Register first so the session ID is known before the
 	// process starts and can be placed in its environment.
 	agentToken, _ := share.NewToken()
-	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken}
+	// An instance of its own, so a switchyard that restarts gives the session its id back.
+	instance, _ := share.NewToken()
+	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
 	a.activity = newActivityForwarder(a.sendActivity, opts.Log)
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
@@ -230,6 +232,14 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
+	// instance and localID fix the session's id on the server across its
+	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
+	instance, localID string
+	// held is what the server last said it holds of the links minted for
+	// the session (registered.links, then link_created and link_revoked);
+	// heldKnown is false until a server said. Guarded by mu.
+	held      map[string]bool
+	heldKnown bool
 	// links are the link requests waiting for the server's answer, by
 	// request id. Guarded by mu.
 	links map[string]chan linkAnswer
@@ -374,10 +384,10 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	reg := proto.Register{
 		T:     proto.HostRegister,
 		Proto: proto.ProtoVersion,
-		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser()},
+		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser(), Instance: a.instance},
 		Session: proto.HostSession{
 			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
-			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir),
+			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir), LocalID: a.localID,
 		},
 	}
 	if a.sessID != "" {
@@ -398,7 +408,8 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		if reg.Resume != nil && websocket.CloseStatus(err) == websocket.StatusCode(proto.CloseNotFound) {
 			// The server no longer knows the session (it restarted and keeps
 			// hosted sessions in memory): resuming would fail forever, so the
-			// next attempt registers afresh, under a new id.
+			// next attempt registers afresh, under the same instance and local
+			// id, which give the same session id on a server that keeps them.
 			a.mu.Lock()
 			old := a.sessID
 			a.sessID, a.secret = "", ""
@@ -416,6 +427,12 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.sessID = registered.SessionID
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
+	if registered.Links != nil {
+		a.held, a.heldKnown = map[string]bool{}, true
+		for _, id := range registered.Links {
+			a.held[id] = true
+		}
+	}
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
 	}
@@ -710,11 +727,13 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 	case proto.HostLinkCreated:
 		var m proto.LinkCreated
 		if json.Unmarshal(data, &m) == nil {
+			a.noteHeld(m.LinkID, true)
 			a.answerLink(m.RequestID, m, nil)
 		}
 	case proto.HostLinkRevoked:
 		var m proto.LinkRevoked
 		if json.Unmarshal(data, &m) == nil {
+			a.noteHeld(m.LinkID, false)
 			a.answerLink(m.RequestID, proto.LinkCreated{LinkID: m.LinkID}, nil)
 		}
 	case proto.HostError:
@@ -903,3 +922,31 @@ func writeJSON(ctx context.Context, c *websocket.Conn, v any) error {
 
 // discard is used when no stdout is configured.
 var _ io.Writer = io.Discard
+
+// noteHeld keeps held in step with a link the server minted or revoked.
+func (a *agent) noteHeld(linkID string, on bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.heldKnown || linkID == "" {
+		return
+	}
+	if on {
+		a.held[linkID] = true
+	} else {
+		delete(a.held, linkID)
+	}
+}
+
+// heldLinks is what the server last said it holds, and whether it said.
+func (a *agent) heldLinks() ([]string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.heldKnown {
+		return nil, false
+	}
+	out := make([]string, 0, len(a.held))
+	for id := range a.held {
+		out = append(out, id)
+	}
+	return out, true
+}

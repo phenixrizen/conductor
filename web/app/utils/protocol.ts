@@ -305,3 +305,19 @@ export interface HostLinkRevokedMessage {
 export const HOST_LINK_REQUESTS_PER_MINUTE = 5
 /** A link id in a revoke is at most this long. */
 export const HOST_MAX_LINK_ID = 64
+
+/** What a host's register says of the host and its session that fixes the session's id across a server restart (docs/protocol.md). */
+export interface HostIdentity {
+  /** A secret of the host process: with the session's local id, the session's id on the server. Never shown or logged. */
+  instance?: string
+  /** The session's id on the host. */
+  localId?: string
+}
+/** The bounds of HostIdentity's fields. */
+export const HOST_MAX_INSTANCE = 64
+export const HOST_MAX_LOCAL_ID = 64
+
+/** The part of registered that says which links the server still holds for the session; absent from an older server. */
+export interface HostRegisteredLinks {
+  links?: string[]
+}

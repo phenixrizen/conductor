@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -118,5 +120,34 @@ func TestAHostRevokesItsLinkAtTheServer(t *testing.T) {
 	case <-host.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("an oversize link id did not end the connection")
+	}
+}
+
+// A host registering with an instance and a local id gets the same session
+// id when it registers again, and registered lists the links the server
+// still holds for it: the live ones, not the revoked.
+func TestRegisteredListsTheLinksTheServerHolds(t *testing.T) {
+	e := switchyardEnv(t, true)
+	hostInfo := proto.HostInfo{Name: "laptop", Instance: "instance-secret-0123456789"}
+	sess := proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, LocalID: "local-1"}
+	host, reg := dialFakeHostWith(t, e, hostInfo, sess, "Bearer test-host-token")
+	if links, ok := reg["links"].([]any); !ok || len(links) != 0 {
+		t.Fatalf("a fresh session's registered links: %v", reg["links"])
+	}
+	var ids []string
+	for i := range 2 {
+		host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: fmt.Sprintf("r%d", i), Role: "view"})
+		ids = append(ids, host.expect(proto.HostLinkCreated)["linkId"].(string))
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: ids[0]})
+	host.expect(proto.HostLinkRevoked)
+	host.c.Close(websocket.StatusNormalClosure, "")
+	<-host.done
+	again, reg := dialFakeHostWith(t, e, hostInfo, sess, "Bearer test-host-token")
+	if again.sessionID != host.sessionID || reg["resumed"] != true {
+		t.Fatalf("the same instance and local id: %s then %s (resumed %v)", host.sessionID, again.sessionID, reg["resumed"])
+	}
+	if links, _ := reg["links"].([]any); len(links) != 1 || links[0] != ids[1] {
+		t.Fatalf("registered links %v, want [%s]", reg["links"], ids[1])
 	}
 }

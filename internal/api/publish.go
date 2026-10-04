@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"time"
 
@@ -32,9 +33,12 @@ type PublishedSession interface {
 	// error naming not_found.
 	Revoke(ctx context.Context, linkID string) error
 	// CurrentID is the rendezvous's id for the session now: ID unless the
-	// rendezvous restarted and the session was registered afresh, which
-	// loses the links minted before.
+	// rendezvous restarted and the session was registered afresh under
+	// another id (an older rendezvous, which ignores host instances).
 	CurrentID() string
+	// HeldLinks is what the rendezvous last said it holds of the links
+	// minted for the session; false when it never said (an older one).
+	HeldLinks() ([]string, bool)
 }
 
 // remoteLink is a link minted at the rendezvous for a published session,
@@ -73,9 +77,24 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 	s.pubMu.Lock()
 	defer s.pubMu.Unlock()
 	pub := s.published[id]
+	var held []string
+	known := false
+	if pub != nil {
+		held, known = pub.HeldLinks()
+	}
 	var out []remoteLink
 	for lid, rl := range s.remoteLinks[id] {
-		if pub == nil || rl.hostedID != pub.CurrentID() {
+		// Gone with the publication; else the rendezvous's word, when it
+		// gives one; else (an older one) a session registered afresh lost them.
+		gone := pub == nil
+		switch {
+		case gone:
+		case known:
+			gone = !slices.Contains(held, lid)
+		default:
+			gone = rl.hostedID != pub.CurrentID()
+		}
+		if gone {
 			delete(s.remoteLinks[id], lid)
 			continue
 		}

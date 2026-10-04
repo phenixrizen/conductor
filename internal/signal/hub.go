@@ -1,6 +1,8 @@
 package signal
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -63,6 +65,9 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if len(reg.Host.User) > proto.MaxHostUser || len(reg.Session.Branch) > session.MaxBranchLen {
 		return nil, false, ErrBadRegister
 	}
+	if (reg.Host.Instance == "") != (reg.Session.LocalID == "") || len(reg.Host.Instance) > proto.MaxHostInstance || len(reg.Session.LocalID) > proto.MaxLocalID {
+		return nil, false, ErrBadRegister
+	}
 	if reg.Resume != nil {
 		hub.mu.Lock()
 		hs, ok := hub.sessions[reg.Resume.SessionID]
@@ -70,25 +75,28 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		if !ok || !share.Equal(reg.Resume.Secret, hs.secret) {
 			return nil, false, ErrBadResume
 		}
-		hs.mu.Lock()
-		if hs.conn != nil {
-			hs.mu.Unlock()
+		if !hs.attach(reg, conn) {
 			return nil, false, ErrBadResume
 		}
-		hs.conn = conn
-		if !hs.info.Status.Ended() {
-			hs.info.Status = session.StatusRunning
-		}
-		hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
-		hs.info.Branch = reg.Session.Branch
-		hs.info.HostUser = reg.Host.User
-		hs.relayOnly = reg.Session.RelayOnly
-		if reg.Session.AgentToken != "" {
-			hs.setAgentToken(reg.Session.AgentToken)
-		}
-		hs.mu.Unlock()
-		hs.notifyChange()
 		return hs, true, nil
+	}
+	id := session.NewID()
+	owner := ""
+	if reg.Host.Instance != "" {
+		// The same instance and local id give the same id after a restart of
+		// this server; a session still held under it (its host away) is
+		// taken back, one with a live connection refused.
+		id = HostedID(reg.Host.Instance, reg.Session.LocalID)
+		owner = ownerOf(reg.Host.Instance)
+		hub.mu.Lock()
+		hs, ok := hub.sessions[id]
+		hub.mu.Unlock()
+		if ok {
+			if hs.owner != owner || !hs.attach(reg, conn) {
+				return nil, false, ErrBadRegister
+			}
+			return hs, true, nil
+		}
 	}
 	secret, _ := share.NewToken()
 	name := strings.TrimSpace(reg.Session.Name)
@@ -97,6 +105,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	}
 	hs := &HostedSession{
 		hub:        hub,
+		owner:      owner,
 		secret:     secret,
 		log:        hub.log,
 		conn:       conn,
@@ -104,7 +113,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		viewers:    map[string]*Viewer{},
 		maxViewers: hub.MaxViewers,
 		info: session.Info{
-			ID:        session.NewID(),
+			ID:        id,
 			Name:      name,
 			Kind:      session.KindHosted,
 			AgentID:   reg.Session.AgentID,
@@ -128,6 +137,45 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hub.mu.Unlock()
 	hs.notifyChange()
 	return hs, false, nil
+}
+
+// attach puts conn on a session whose host is away (a resume, or the same
+// instance registering again) and refreshes what the host says of it; false
+// when the session has a live connection.
+func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
+	hs.mu.Lock()
+	if hs.conn != nil {
+		hs.mu.Unlock()
+		return false
+	}
+	hs.conn = conn
+	if !hs.info.Status.Ended() {
+		hs.info.Status = session.StatusRunning
+	}
+	hs.info.Cols, hs.info.Rows = reg.Session.Cols, reg.Session.Rows
+	hs.info.Branch = reg.Session.Branch
+	hs.info.HostUser = reg.Host.User
+	hs.relayOnly = reg.Session.RelayOnly
+	if reg.Session.AgentToken != "" {
+		hs.setAgentToken(reg.Session.AgentToken)
+	}
+	hs.mu.Unlock()
+	hs.notifyChange()
+	return true
+}
+
+// HostedID is the id of a session registered with an instance and a local
+// id: the same on every registration, so a link minted for it names it again
+// after this server restarts, and not to be guessed without the instance.
+func HostedID(instance, localID string) string {
+	sum := sha256.Sum256([]byte("conductor hosted session\x00" + instance + "\x00" + localID))
+	return hex.EncodeToString(sum[:session.IDLen/2])
+}
+
+// ownerOf is what a session keeps of its host's instance: a hash, never the secret.
+func ownerOf(instance string) string {
+	sum := sha256.Sum256([]byte("conductor host instance\x00" + instance))
+	return hex.EncodeToString(sum[:16])
 }
 
 // Get returns the hosted session with the given ID.

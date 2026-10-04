@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,23 @@ func TestHostActivityMsgOmitsAnEmptySessionAndEmptyFields(t *testing.T) {
 	want := `{"t":"activity","entry":{"t":"activity","at":"2026-09-29T12:00:00Z","type":"progress"}}`
 	if string(got) != want {
 		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+// The register message carries the host's instance and the session's local
+// id; registered always carries its links, [] when none, and a reply
+// without the field (an older server) reads as nil.
+func TestRegisterWireShapeCarriesInstanceAndLocalID(t *testing.T) {
+	b, _ := json.Marshal(Register{T: HostRegister, Proto: ProtoVersion, Host: HostInfo{Name: "laptop", Instance: "secret"}, Session: HostSession{Command: []string{"bash"}, LocalID: "s1"}})
+	if !strings.Contains(string(b), `"instance":"secret"`) || !strings.Contains(string(b), `"localId":"s1"`) {
+		t.Fatalf("register %s", b)
+	}
+	b, _ = json.Marshal(Registered{T: HostRegistered, Links: []string{}})
+	if !strings.Contains(string(b), `"links":[]`) {
+		t.Fatalf("registered %s", b)
+	}
+	var old Registered
+	if err := json.Unmarshal([]byte(`{"t":"registered","sessionId":"x"}`), &old); err != nil || old.Links != nil {
+		t.Fatalf("an older server's registered: %+v %v", old, err)
 	}
 }

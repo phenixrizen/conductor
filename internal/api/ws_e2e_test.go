@@ -425,6 +425,15 @@ func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
 // "" sends none (an open host).
 func dialFakeHostAuth(t *testing.T, e *testEnv, agentToken, auth string) *fakeHost {
 	t.Helper()
+	h, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop"}, proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, AgentToken: agentToken}, auth)
+	return h
+}
+
+// dialFakeHostWith registers a fake host saying host and sess, with the
+// given Authorization value ("" sends none), and returns it with the
+// server's registered answer.
+func dialFakeHostWith(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.HostSession, auth string) (*fakeHost, map[string]any) {
+	t.Helper()
 	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -440,15 +449,13 @@ func dialFakeHostAuth(t *testing.T, e *testEnv, agentToken, auth string) *fakeHo
 	t.Cleanup(func() { c.CloseNow() })
 	h := &fakeHost{t: t, c: c, msgs: make(chan map[string]any, 4096), done: make(chan struct{})}
 	go h.pump()
-	h.send(proto.Register{
-		T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
-		Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, AgentToken: agentToken},
-	})
-	h.sessionID, _ = h.expect(proto.HostRegistered)["sessionId"].(string)
+	h.send(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: host, Session: sess})
+	registered := h.expect(proto.HostRegistered)
+	h.sessionID, _ = registered["sessionId"].(string)
 	if h.sessionID == "" {
 		t.Fatal("the server registered no session")
 	}
-	return h
+	return h, registered
 }
 
 // pump moves the server's text messages to msgs until the connection ends.

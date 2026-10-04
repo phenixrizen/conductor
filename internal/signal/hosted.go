@@ -216,6 +216,10 @@ type HostedSession struct {
 	hub    *Hub
 	secret string
 	log    *slog.Logger
+	// owner is the hash of the host instance that registered the session
+	// (hex), "" for a host that gave none: what ties a host's connections
+	// together, for links over several of its sessions.
+	owner string
 
 	mu             sync.Mutex
 	info           session.Info
@@ -232,6 +236,9 @@ type HostedSession struct {
 	// full. Guarded by mu.
 	events session.EventBucket
 }
+
+// Owner is the hash of the host instance that registered the session, "" when none.
+func (h *HostedSession) Owner() string { return h.owner }
 
 // Info returns the session description.
 func (h *HostedSession) Info() session.Info {
