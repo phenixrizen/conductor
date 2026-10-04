@@ -7,6 +7,10 @@ export default defineNuxtConfig({
   ssr: false,
   modules: ['@nuxt/ui', 'nuxt-charts'],
   css: ['~/assets/css/main.css'],
+  // Dark is the theme, whatever the OS prefers; the sidebar's theme button
+  // switches to light and that choice is kept (under a key of our own, so a
+  // "light" an earlier build saved while following the OS does not carry over).
+  colorMode: { preference: 'dark', fallback: 'dark', storageKey: 'conductor-color-mode' },
   // The workbench never fetches icons at runtime: every icon it shows is
   // bundled from @iconify-json/lucide. The scan finds the names in the app's
   // sources (.ts too: event icons are named in app/utils); the built-in

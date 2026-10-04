@@ -96,8 +96,10 @@ decorative shadows. Show one visually primary next action within each work area.
 Keep design prose readable and evidence compact but legible.
 
 The browser workbench imports these tokens for its light canvas, flat panels,
-buttons, typography and focus treatment. Dark-panel tokens remain reference values,
-not a completed application dark mode.
+buttons, typography and focus treatment. The workbench opens dark (Nuxt UI's
+dark palette with forest-300 as the primary) whatever the OS prefers; light is
+a choice its theme button makes. The dark-panel tokens are what the switchyard's
+own pages use.
 
 ## Placement and accessibility
 
