@@ -140,7 +140,7 @@ relay only for the pairs ICE cannot connect. A switchyard that admits
 **open hosts** (`switchyard.openHosts`) needs no token from a publisher:
 each address may hold `openHostSessions` live sessions (4), register
 `openHostRegistrationsPerMinute` times (6) and relay `openHostRelayKBps`
-(128 KiB/s); a host token (`rendezvous.token`) marks a trusted machine
+(128 KiB/s) for all its sessions together; a host token (`rendezvous.token`) marks a trusted machine
 outside those limits. The switchyard launches nothing of its own:
 
 ```bash
@@ -1061,6 +1061,10 @@ file must run `compinit` before that line.
 | `switchyard.enabled` | `CONDUCTOR_SWITCHYARD` (`1`/`true`), or `conductor switchyard` | `false` | coordinate hosted sessions and launch nothing: the launching routes answer `403 switchyard` (see [Switchyard](#switchyard)) |
 | `switchyard.relay` | `CONDUCTOR_SWITCHYARD_RELAY` (`1`/`true` on, `0`/`false` off) | `true` | on a switchyard, relay the terminal for viewers whose WebRTC fails; off, they get `relay_off` and relay-only hosts are refused |
 | `switchyard.relayKBps` | `CONDUCTOR_SWITCHYARD_RELAY_KBPS` | `0` (no bound) | on a switchyard, how much one host may send through the relay a second, in KiB, with a burst of twice that: a host past it is slowed, never cut; a public switchyard's protection against a session that streams |
+| `switchyard.openHosts` | `CONDUCTOR_SWITCHYARD_OPEN_HOSTS` | `false` | on a switchyard, register a host that presents no token, under the per-address bounds below; a wrong token is still refused, and a host token marks a trusted machine outside them |
+| `switchyard.openHostSessions` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_SESSIONS` | `4` | live hosted sessions the open hosts of one address may hold |
+| `switchyard.openHostRegistrationsPerMinute` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_REGISTRATIONS` | `6` | how often one address may register an open host |
+| `switchyard.openHostRelayKBps` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS` | `128` | what the open hosts of one address relay a second, all of them together, in KiB (one bucket per address, a burst of twice that); `0` falls back to `relayKBps`, per connection |
 | `switchyard.allowedOrigins` | `CONDUCTOR_SWITCHYARD_ORIGINS` (comma-separated host patterns) | `127.0.0.1:*`, `localhost:*` | the browser origins a switchyard answers across origins on the join route and accepts on a hosted session's WebSocket: the desktop app's own workbench |
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
 | `agents.mcp` | `CONDUCTOR_AGENT_MCP` (`1`/`true` on, `0`/`false` off) | `true` | register `conductor mcp` with agents that take an MCP server at launch (Claude Code, Codex), so the skill's reports and crew actions are tools |

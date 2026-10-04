@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -87,7 +88,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Switchyard.Enabled {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
-			hc.relay = newByteBucket(s.cfg.Switchyard.OpenHostRelayKBps * 1024)
+			// One bucket for every open host of the address: the bound is the address's, not each connection's.
+			hc.relay = s.openRelay.acquire(addr, s.cfg.Switchyard.OpenHostRelayKBps*1024)
+			defer s.openRelay.release(addr)
 		case s.cfg.Switchyard.RelayKBps > 0:
 			hc.relay = newByteBucket(s.cfg.Switchyard.RelayKBps * 1024)
 		}
@@ -192,7 +195,9 @@ type hostConnState struct {
 // that streams more than the bound is slowed rather than cut off: the
 // server reads its connection no faster than the bucket refills, and TCP
 // does the rest.
+// It is safe to share: the open hosts of one address take from one bucket.
 type byteBucket struct {
+	mu          sync.Mutex
 	rate, burst float64
 	tokens      float64
 	last        time.Time
@@ -205,18 +210,18 @@ func newByteBucket(bytesPerSecond int) *byteBucket {
 
 func (b *byteBucket) take(ctx context.Context, n int) error {
 	for {
+		b.mu.Lock()
 		now := time.Now()
 		b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
 		b.last = now
-		need := float64(n)
-		if need > b.burst {
-			need = b.burst
-		}
+		need := min(float64(n), b.burst)
 		if b.tokens >= need {
 			b.tokens -= need
+			b.mu.Unlock()
 			return nil
 		}
 		wait := time.Duration((need - b.tokens) / b.rate * float64(time.Second))
+		b.mu.Unlock()
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():

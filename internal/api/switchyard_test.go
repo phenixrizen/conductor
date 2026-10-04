@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -441,5 +442,67 @@ func TestHostedSessionsTakeMaxViewersFromTheConfig(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("the second viewer was let in past a cap of one")
 		}
+	}
+}
+
+// One bucket shared by many takers never hands out more than its burst and
+// what it refills meanwhile.
+func TestByteBucketIsSafeToShare(t *testing.T) {
+	b := newByteBucket(64 << 10)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	var mu sync.Mutex
+	taken := 0
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for b.take(ctx, 4<<10) == nil {
+				mu.Lock()
+				taken += 4 << 10
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if limit := 2*(64<<10) + int(time.Since(start).Seconds()*float64(64<<10)) + 4<<10; taken > limit {
+		t.Fatalf("took %d bytes, at most %d", taken, limit)
+	}
+}
+
+func TestAddrBucketsShareOneBucketPerAddress(t *testing.T) {
+	var c addrBuckets
+	a1, a2, b := c.acquire("a", 1024), c.acquire("a", 1024), c.acquire("b", 1024)
+	if a1 != a2 || a1 == b {
+		t.Fatal("an address gets one bucket, another address its own")
+	}
+	c.release("a")
+	if c.acquire("a", 1024) != a1 {
+		t.Fatal("the bucket goes only with its last holder")
+	}
+	c.release("a")
+	c.release("a")
+	if c.acquire("a", 1024) == a1 {
+		t.Fatal("a fresh bucket after the address left")
+	}
+	c.release("a")
+	c.release("b")
+	if len(c.held) != 0 {
+		t.Fatalf("held %v", c.held)
+	}
+}
+
+// The open hosts of one address relay under one bound: a second host's
+// relay finds the bucket the first drained, where a bound per connection
+// would give it a fresh burst.
+func TestOpenHostsFromOneAddressShareTheRelayBound(t *testing.T) {
+	e := openSwitchyardEnv(t, func(c *config.Config) { c.Switchyard.OpenHostRelayKBps = 256; c.Switchyard.RelayKBps = 0 })
+	first := dialFakeHostAuth(t, e, "hosted-agent-token", "")
+	second := dialFakeHostAuth(t, e, "hosted-agent-token", "")
+	relayOneMiB(t, e, first)
+	if took := relayOneMiB(t, e, second); took < 3*time.Second {
+		t.Fatalf("the second open host of the address relayed 1 MiB in %v: its bound is its own", took)
 	}
 }

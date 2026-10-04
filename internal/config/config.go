@@ -150,9 +150,10 @@ type Switchyard struct {
 	// OpenHostRegistrationsPerMinute bounds how often one address may
 	// register as an open host (6 a minute by default).
 	OpenHostRegistrationsPerMinute int `json:"openHostRegistrationsPerMinute,omitempty"`
-	// OpenHostRelayKBps bounds an open host's relayed output, like
-	// RelayKBps but for open hosts (128 KiB/s by default); 0 falls back to
-	// RelayKBps.
+	// OpenHostRelayKBps bounds what the open hosts of one address relay,
+	// all of them together (128 KiB/s by default): one bucket per address,
+	// shared by its connections, with a burst of twice the rate. 0 falls
+	// back to RelayKBps, which is per connection.
 	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
 }
 

@@ -36,10 +36,12 @@ type Server struct {
 	events   *eventHub
 	webhooks *webhookSender
 	limiter  *rateLimiter
-	// hostLimiter and openHosts bound open hosts on a switchyard, per address:
-	// how often one registers and how many live sessions it holds.
+	// hostLimiter, openHosts and openRelay bound open hosts on a switchyard,
+	// per address: how often one registers, how many live sessions it holds,
+	// and what all of them relay together.
 	hostLimiter *rateLimiter
 	openHosts   *addrCounter
+	openRelay   *addrBuckets
 	log         *slog.Logger
 	web         http.Handler
 	store       *store.Store
@@ -191,6 +193,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		limiter:     newRateLimiter(5, 20),
 		hostLimiter: newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
 		openHosts:   &addrCounter{},
+		openRelay:   &addrBuckets{},
 		log:         log,
 		web:         web,
 		store:       st,
