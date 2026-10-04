@@ -630,11 +630,12 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
 - The live tier on 2026-10-03 from this machine: Claude Code 2.1.288 passed
   the typed prompt and the yolo check; its trust question highlights "No,
   exit" first, so the trusting answer is Down then Enter (the spec presses
-  that; Codex's is Enter alone). Codex's rows failed because its login had
-  expired (`Error: account/read failed … unauthorized (401)` at start): a
-  `codex login` and a rerun are due. A resumed Claude Code member answered
-  the word it was told (PINEAPPLE) once the broadcast waited for it to be
-  ready.
+  that; Codex's is Enter alone). A resumed Claude Code member answered the
+  word it was told (PINEAPPLE) once the broadcast waited for it to be ready.
+  On 2026-10-04, after `codex login`, all four Codex rows passed against
+  Codex 0.159.0, and the four Claude Code rows against 2.1.289 once the
+  trust row waited for the run log's note (its first run read the log a
+  moment before the engine wrote "solo asks").
 
 ### Deferred (round 4)
 
