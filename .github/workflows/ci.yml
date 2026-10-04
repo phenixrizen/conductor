@@ -108,7 +108,8 @@ jobs:
           path: bin/conductor
 
   e2e:
-    runs-on: ubuntu-latest
+    # 22.04: Playwright 1.44.1's dependency list names libasound2, which 24.04 no longer has.
+    runs-on: ubuntu-22.04
     needs: web
     steps:
       - uses: actions/checkout@v4

@@ -64,8 +64,14 @@ jobs:
         with:
           name: web-dist
           path: internal/web/dist
-      - run: make desktop-binaries
+      - name: server binaries for the packages (no make on the Windows runner)
         shell: bash
+        run: |
+          v=$(git describe --tags --always --dirty); c=$(git rev-parse --short HEAD)
+          for t in linux/amd64/linux-x64 linux/arm64/linux-arm64 darwin/amd64/mac-x64 darwin/arm64/mac-arm64; do
+            goos=${t%%/*}; rest=${t#*/}; goarch=${rest%%/*}; dir=bin/desktop/${rest#*/}; mkdir -p "$dir"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "-X github.com/phenixrizen/conductor/internal/version.Version=$v -X github.com/phenixrizen/conductor/internal/version.Commit=$c" -o "$dir/conductor" ./cmd/conductor && echo "built $dir/conductor"
+          done
       - run: npm ci
         working-directory: desktop
       - run: npm run build

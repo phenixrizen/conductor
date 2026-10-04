@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest'
 import { defaultSettings, loadSettings, saveSettings, serverAffecting, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
+// On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
+const win = process.platform === 'win32'
+
 describe('settings', () => {
   const home = '/home/me'
   const defaults = defaultSettings(home, '/home/me/.config/conductor-desktop')
@@ -18,7 +21,7 @@ describe('settings', () => {
     expect(validate({ ...defaults, reach: 'always' as 'auto' })).toContain('reach must be auto, manual or off')
     expect(validate({ ...defaults, allowedRoots: ['relative'] })).toContain('allowed root "relative" must be an absolute path')
   })
-  it('round-trips through the file, mode 0600, and falls back to the defaults for a broken or bad file', () => {
+  it.skipIf(win)('round-trips through the file, mode 0600, and falls back to the defaults for a broken or bad file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-settings-'))
     const file = join(dir, 'settings.json')
     expect(loadSettings(file, defaults)).toEqual(defaults)
@@ -42,7 +45,7 @@ describe('settings', () => {
 })
 
 describe('server environment', () => {
-  it('drops the app\'s CONDUCTOR_* variables, sets the settings\' and the token, and the login shell\'s PATH', () => {
+  it.skipIf(win)('drops the app\'s CONDUCTOR_* variables, sets the settings\' and the token, and the login shell\'s PATH', () => {
     const defaults = defaultSettings('/home/me', '/ud')
     const env = serverEnv({ HOME: '/home/me', PATH: '/usr/bin', CONDUCTOR_WORKBENCH_TOKEN: 'leaked', CONDUCTOR_YOLO: '1', LANG: 'C' }, { ...defaults, yolo: true, reach: 'manual' }, 'tok', '/opt/bin:/usr/bin')
     expect(env).toEqual({ HOME: '/home/me', PATH: '/opt/bin:/usr/bin', LANG: 'C', CONDUCTOR_WORKBENCH_TOKEN: 'tok', CONDUCTOR_DATA_DIR: '/ud/conductor', CONDUCTOR_ALLOWED_ROOTS: '/home/me', CONDUCTOR_DEFAULT_CWD: '/home/me', CONDUCTOR_YOLO: '1', CONDUCTOR_REACH: 'manual' })

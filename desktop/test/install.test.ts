@@ -4,12 +4,15 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ensureStableBinary, stableBinaryPath } from '../src/install'
 
+// On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
+const win = process.platform === 'win32'
+
 describe('stable binary', () => {
-  it('lives under the user\'s data directory per platform', () => {
+  it.skipIf(win)('lives under the user\'s data directory per platform', () => {
     expect(stableBinaryPath('linux', '/home/me')).toBe('/home/me/.local/share/conductor/bin/conductor')
     expect(stableBinaryPath('darwin', '/Users/me')).toBe('/Users/me/Library/Application Support/Conductor/bin/conductor')
   })
-  it('copies once per version, executable, and again when the version changes', () => {
+  it.skipIf(win)('copies once per version, executable, and again when the version changes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-install-'))
     const src = join(dir, 'src')
     writeFileSync(src, '#!/bin/sh\necho hi\n')

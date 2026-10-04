@@ -364,3 +364,19 @@ func TestRepoRoots(t *testing.T) {
 		t.Fatalf("no repository: %q", got)
 	}
 }
+
+// The message of a failed git command is the line that says why, wherever
+// git put it: newer gits print "Preparing worktree" before the fatal line.
+func TestGitMessagePrefersTheFatalLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"Preparing worktree (new branch 'x')\nfatal: a branch named 'x' already exists": "fatal: a branch named 'x' already exists",
+		"fatal: not a git repository":                  "fatal: not a git repository",
+		"error: pathspec 'x' did not match\nhint: use": "error: pathspec 'x' did not match",
+		"Preparing worktree\nsomething odd\n":          "something odd",
+		"":                                             "",
+	} {
+		if got := gitMessage(in); got != want {
+			t.Errorf("gitMessage(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
