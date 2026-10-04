@@ -125,7 +125,8 @@ type Switchyard struct {
 	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
 	// OpenHosts admits a host that presents no token at all, under the
 	// limits below, so a Conductor publishes here with nothing configured:
-	// the public switchyard. A host with a wrong token is still refused (a
+	// the public switchyard. Read only while Enabled (conductor switchyard
+	// sets that after the file is read, so it is not a validation rule). A host with a wrong token is still refused (a
 	// typo must show); one with a host token is trusted and outside the
 	// limits.
 	OpenHosts bool `json:"openHosts,omitempty"`
@@ -664,9 +665,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Switchyard.RelayKBps < 0 || c.Switchyard.RelayKBps > 1<<20 {
 		errs = append(errs, errors.New("switchyard.relayKBps must be between 0 and 1048576"))
-	}
-	if c.Switchyard.OpenHosts && !c.Switchyard.Enabled {
-		errs = append(errs, errors.New("switchyard.openHosts needs switchyard.enabled: only a switchyard admits open hosts"))
 	}
 	if n := c.Switchyard.OpenHostSessions; n < 1 || n > 1000 {
 		errs = append(errs, errors.New("switchyard.openHostSessions must be between 1 and 1000"))

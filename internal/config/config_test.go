@@ -1035,7 +1035,6 @@ func TestSwitchyardOpenHostsConfigAndEnv(t *testing.T) {
 		t.Fatalf("valid: %v", err)
 	}
 	for name, mutate := range map[string]func(*Config){
-		"open hosts without a switchyard": func(c *Config) { c.Switchyard.Enabled = false; c.Switchyard.OpenHosts = true },
 		"no sessions":                     func(c *Config) { c.Switchyard.OpenHostSessions = 0 },
 		"no registrations":                func(c *Config) { c.Switchyard.OpenHostRegistrationsPerMinute = 0 },
 		"negative relay":                  func(c *Config) { c.Switchyard.OpenHostRelayKBps = -1 },
