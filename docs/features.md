@@ -903,6 +903,15 @@ branch `design/crews-graph`.
   CLI's help and version output.
 - The Windows installer on a machine with WSL2: the first-run screen without
   WSL, the server in the distribution, the agents found, a link from Settings.
+  2026-10-04: the release workflow ran for the first time on the tag
+  `v0.6.0-rc.1` and, after four rounds of runner-only fixes (Playwright's
+  dependencies on Ubuntu 24.04, POSIX-only desktop tests on Windows, no
+  `make` on the Windows runner, git 2.55's reading of info/exclude, empty
+  signing secrets read as certificate paths, the package version from the
+  tag), built every package on the three runners into a draft prerelease:
+  dmg and zip for macOS, deb, rpm and AppImage for Linux, the NSIS
+  installer for Windows, all unsigned. The installer's walk-through on this
+  machine is still to do.
 ### Deferred (round 5)
 
 - A readiness wait for a resumed member: it is `running` the moment its
