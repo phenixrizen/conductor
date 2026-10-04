@@ -819,11 +819,15 @@ branch `design/crews-graph`.
 
 ### Open verification (round 5)
 
-- The crew graph, the run timeline and the charts at 1440 and 390 wide in
-  both themes, against the Claude Design hand-off on `design/crews-graph`
-  (Playwright checks the structure, not the look): the node and edge styles,
-  the handoff hover card, the editor's drag, the Crews list thumbnails, the
-  Events page's area chart and the Wall's donut.
+- The crew graph, the run timeline and the charts against a design: there
+  was no hand-off (the brief on `design/crews-graph` was never run through
+  the design tool), so the owner updates the mockups by hand from the built
+  pages. A rendered review on 2026-10-04 (every page at 1440 and 390, both
+  themes) found: an "after" edge and a handoff edge between the same members
+  share one path, so the count badge covers the label; the Crews card chart
+  is cramped in the sidebar column; a stopped run lists never-started members
+  as errors; the Events chart is empty on every page load (feed only); the
+  Wall donut reads as a spinner; the phone run header truncates its title.
 - The skills directories: Cursor, Copilot, OpenCode, oh-my-pi and Amp read
   `~/.agents/skills` and the Antigravity CLI `~/.gemini/antigravity-cli/skills`
   by their vendors' docs (read 2026-10-03); DeepSeek Harness reads
@@ -831,9 +835,20 @@ branch `design/crews-graph`.
   Conductor, should list the `conductor` skill (`/skills` or its equivalent).
 - A link `https://<public ip>/join/<token>` opened from a phone on mobile
   data: the padlock, the join page, the terminal live. The server's self-check
-  cannot prove it.
+  cannot prove it. 2026-10-04, from a Linux machine on a home LAN (not WSL),
+  `CONDUCTOR_TLS_ACME=1` with reach auto and no email: STUN found the public
+  address, no gateway mapped the port (below), so no certificate was ordered,
+  the TLS listener refused handshakes with "no certificate yet" and links
+  stayed on the request address, as designed. The LAN path passed: a control
+  link to a shell session, opened from another machine, joined over WebSocket
+  and typing reached the shell. Open until a router maps or forwards 443.
 - Router models beyond the loopback fakes: which answered UPnP IGD, PCP or
   NAT-PMP, and which refused (list them here with the firmware).
+  - UniFi OS gateway (Ubiquiti), 2026-10-04: refused all three. No SSDP
+    answer from an Internet Gateway Device (a raw M-SEARCH from the same
+    machine saw only a Roku and a media device), PCP and NAT-PMP refused on
+    5351. UPnP is off by default on UniFi and it has no NAT-PMP; turning
+    UPnP on, or a manual forward with `reach.mode: manual`, is the way.
 - IP-address certificates from the real Let's Encrypt: the rate limits and
   the renewal every few days over a week. Pebble stands in for it in CI
   (`make test-pebble`): an IP identifier over `tls-alpn-01` with a renewal,
@@ -846,9 +861,6 @@ branch `design/crews-graph`.
   CLI's help and version output.
 - The Windows installer on a machine with WSL2: the first-run screen without
   WSL, the server in the distribution, the agents found, a link from Settings.
-- The crew graph, timeline and charts compared against the design hand-off at
-  1440 and 390 in both themes.
-
 ### Deferred (round 5)
 
 - A readiness wait for a resumed member: it is `running` the moment its
