@@ -287,5 +287,21 @@ export interface HostLinkCreatedMessage {
   expiresAt?: string
 }
 
-/** A host connection may ask for this many links a minute. */
+export interface HostLinkRevokeMessage {
+  t: 'link_revoke'
+  /** ≤ 32 bytes. */
+  requestId: string
+  /** ≤ 64 bytes: a linkId from link_created. */
+  linkId: string
+}
+
+export interface HostLinkRevokedMessage {
+  t: 'link_revoked'
+  requestId: string
+  linkId: string
+}
+
+/** A host connection may ask for this many links a minute (a revoke is never counted). */
 export const HOST_LINK_REQUESTS_PER_MINUTE = 5
+/** A link id in a revoke is at most this long. */
+export const HOST_MAX_LINK_ID = 64

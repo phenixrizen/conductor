@@ -20,10 +20,27 @@ type createLinkRequest struct {
 	TTLSeconds int64        `json:"ttlSeconds"`
 }
 
-// linkView is a share link plus the number of viewers attached through it.
+// linkView is a share link plus the number of viewers attached through it;
+// Remote marks one minted at the rendezvous, whose viewers are counted there.
 type linkView struct {
 	*share.Link
-	Active int `json:"active"`
+	Active int  `json:"active"`
+	Remote bool `json:"remote,omitempty"`
+}
+
+// sessionLinks lists a session's links: the ones made here, with their
+// viewers, then the ones minted at the rendezvous for it.
+func (s *Server) sessionLinks(id string, d session.Driver) []linkView {
+	active := d.LinkViewers()
+	links := s.links.ListBySession(id)
+	out := make([]linkView, 0, len(links))
+	for _, l := range links {
+		out = append(out, linkView{Link: l, Active: active[l.ID]})
+	}
+	for _, rl := range s.remoteLinksOf(id) {
+		out = append(out, linkView{Link: &share.Link{ID: rl.ID, SessionID: id, Label: rl.Label, Role: rl.Role, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt}, Remote: true})
+	}
+	return out
 }
 
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
@@ -33,13 +50,7 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
-	active := d.LinkViewers()
-	links := s.links.ListBySession(id)
-	out := make([]linkView, 0, len(links))
-	for _, l := range links {
-		out = append(out, linkView{Link: l, Active: active[l.ID]})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": out})
+	writeJSON(w, http.StatusOK, map[string]any{"links": s.sessionLinks(id, d)})
 }
 
 func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +74,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordLink(id, "link created at the rendezvous: "+linkLabelOr(res.Label)+" ("+res.Role+")")
+		s.recordRemoteLink(id, res, pub.CurrentID())
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"link":   map[string]any{"id": res.LinkID, "role": res.Role, "label": res.Label, "expiresAt": res.ExpiresAt, "sessionId": id, "remote": true},
 			"url":    res.URL,
@@ -257,6 +269,20 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 	}
 	found, revoked := s.links.Revoke(id, linkID)
 	if !found {
+		// A link minted at the rendezvous is revoked there, over the host
+		// connection; one it no longer knows is gone either way.
+		if pub := s.publishedOf(id); pub != nil && s.hasRemoteLink(id, linkID) {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			if err := pub.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
+				return
+			}
+			s.forgetRemoteLink(id, linkID)
+			s.recordLink(id, "link revoked at the rendezvous: "+linkLabelOr(label))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}
@@ -264,6 +290,16 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 		s.recordLink(id, "link revoked: "+linkLabelOr(label))
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// hasRemoteLink says whether session id's current publication holds linkID.
+func (s *Server) hasRemoteLink(id, linkID string) bool {
+	for _, rl := range s.remoteLinksOf(id) {
+		if rl.ID == linkID {
+			return true
+		}
+	}
+	return false
 }
 
 // recordLink adds a link event to a server session's activity log. Hosted

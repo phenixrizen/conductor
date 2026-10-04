@@ -77,3 +77,46 @@ func TestLinkRepliesCarryAnInvite(t *testing.T) {
 		t.Fatalf("%d %v", resp.StatusCode, out)
 	}
 }
+
+// A host revokes a link the server minted for it: the answer names the
+// link, a join by it is refused as revoked, a viewer through it is closed;
+// an unknown link answers not_found; a malformed revoke ends the connection.
+func TestAHostRevokesItsLinkAtTheServer(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://switchyard.example.net" })
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "r1", Role: "view", TTLSeconds: 3600})
+	m := host.expect(proto.HostLinkCreated)
+	linkID, _ := m["linkId"].(string)
+	token := strings.TrimPrefix(m["url"].(string), "https://switchyard.example.net/join/")
+	v := dialViewer(t, e, host.sessionID, token)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	host.expect(proto.HostViewerJoin)
+
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "x1", LinkID: linkID})
+	if r := host.expect(proto.HostLinkRevoked); r["requestId"] != "x1" || r["linkId"] != linkID {
+		t.Fatalf("link_revoked %v", r)
+	}
+	if resp, out := e.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusNotFound || fmt.Sprint(out) == "" {
+		t.Fatalf("join after revoke: %d %v", resp.StatusCode, out)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := v.read(); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the viewer through the revoked link was not closed")
+		}
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "x2", LinkID: "nope"})
+	if r := host.expect(proto.HostError); r["code"] != "not_found" || r["requestId"] != "x2" {
+		t.Fatalf("unknown link: %v", r)
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "x3", LinkID: strings.Repeat("l", proto.MaxLinkID+1)})
+	select {
+	case <-host.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an oversize link id did not end the connection")
+	}
+}

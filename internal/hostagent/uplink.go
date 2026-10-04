@@ -54,6 +54,15 @@ func (p *Published) CurrentSessionID() string {
 	return p.a.sessID
 }
 
+// CurrentID is CurrentSessionID, as the api's PublishedSession names it.
+func (p *Published) CurrentID() string { return p.CurrentSessionID() }
+
+// Revoke asks the rendezvous to revoke a link it minted for the session;
+// a link it no longer knows answers an error that names not_found.
+func (p *Published) Revoke(ctx context.Context, linkID string) error {
+	return p.a.requestRevoke(ctx, linkID)
+}
+
 // Link asks the rendezvous for a share link to the session: its URL there,
 // the same as an invite, and the link's id, role, label and expiry.
 func (p *Published) Link(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {

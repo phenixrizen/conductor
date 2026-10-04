@@ -118,7 +118,10 @@ Host → server: `register{proto, host{name,version,user?}, session{name,agentId
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
 `ttlSeconds` ≤ 86400, at most 5 requests a minute per connection; one
-without a `requestId` is a protocol error).
+without a `requestId` is a protocol error), `link_revoke{requestId, linkId}`
+(revoke a link the server minted for this session: `linkId` ≤ 64 bytes; never
+counted against the link bucket; a missing or oversize field is a protocol
+error).
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers}`,
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
@@ -128,7 +131,9 @@ Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServer
 `link_created{requestId, url, invite, linkId, role, label?, expiresAt?}`
 (the link on the server's public base, and the same as an invite,
 `conductor://<host>/join/<token>` with `?http=1` for a plain-http base,
-which the desktop app opens itself), `error{code, message, requestId?}`
+which the desktop app opens itself), `link_revoked{requestId, linkId}`
+(the link is revoked and its viewers closed; `error{not_found, requestId}`
+for a link the server does not hold), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`).
 
@@ -573,9 +578,9 @@ its run, and on no other.
 | `POST /api/sessions/{id}/run/members` | the session's agent token, or admin | add a member (one `crew.Member`) to the session's own run, as `POST /api/runs/{run}/members` does; `201 {run}`; `409 no_run` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
-| `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers |
+| `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers; for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records |
 | `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
-| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204`; revoking a revoked link answers `204` and records nothing |
+| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204`; revoking a revoked link answers `204` and records nothing ; a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |

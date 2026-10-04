@@ -222,6 +222,8 @@ export interface ShareLink {
   revoked: boolean
   /** Viewers currently attached through this link (server-reported). */
   active?: number
+  /** Minted at the switchyard the session is published to: listed and revoked from here, viewers counted there. */
+  remote?: boolean
 }
 
 /** A member of a run as the join page sees it. */

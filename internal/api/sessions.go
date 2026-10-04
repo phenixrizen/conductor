@@ -340,7 +340,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"session": d.Info(), "role": p.role(id)}
 	if p.admin {
-		out["links"] = s.links.ListBySession(id)
+		out["links"] = s.sessionLinks(id, d)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

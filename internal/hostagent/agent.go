@@ -712,6 +712,11 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if json.Unmarshal(data, &m) == nil {
 			a.answerLink(m.RequestID, m, nil)
 		}
+	case proto.HostLinkRevoked:
+		var m proto.LinkRevoked
+		if json.Unmarshal(data, &m) == nil {
+			a.answerLink(m.RequestID, proto.LinkCreated{LinkID: m.LinkID}, nil)
+		}
 	case proto.HostError:
 		var m proto.ErrorMsg
 		_ = json.Unmarshal(data, &m)
@@ -757,6 +762,36 @@ func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration,
 		return ans.link, ans.err
 	case <-ctx.Done():
 		return proto.LinkCreated{}, ctx.Err()
+	}
+}
+
+// requestRevoke asks the server to revoke a link it minted for the session
+// and waits for the answer; a link the server does not know answers
+// "not_found: …".
+func (a *agent) requestRevoke(ctx context.Context, linkID string) error {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return err
+	}
+	id := hex.EncodeToString(b[:])
+	ch := make(chan linkAnswer, 1)
+	a.mu.Lock()
+	if a.links == nil {
+		a.links = map[string]chan linkAnswer{}
+	}
+	a.links[id] = ch
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.links, id)
+		a.mu.Unlock()
+	}()
+	a.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: id, LinkID: linkID})
+	select {
+	case ans := <-ch:
+		return ans.err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

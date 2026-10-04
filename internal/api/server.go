@@ -91,6 +91,8 @@ type Server struct {
 	publisher  Publisher
 	published  map[string]PublishedSession
 	pubGone    map[string]bool
+	// remoteLinks are the links minted at the rendezvous per published session.
+	remoteLinks map[string]map[string]remoteLink
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and

@@ -155,8 +155,45 @@ func TestLinkOnAPublishedSessionIsMintedAtTheRendezvous(t *testing.T) {
 	if resp, out := rendezvous.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
 		t.Fatalf("the rendezvous resolves it: %d %v", resp.StatusCode, out)
 	}
-	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); strings.Contains(fmt.Sprint(out), "for the PR") {
-		t.Fatalf("the local store kept a remote link: %v", out)
+	// Listed here as the rendezvous's, with no viewer count of its own.
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); !strings.Contains(fmt.Sprint(out), "for the PR") || !strings.Contains(fmt.Sprint(out), "remote:true") {
+		t.Fatalf("the remote link is not listed: %v", out)
+	}
+}
+
+// A link minted at the rendezvous is revoked from here: the DELETE goes over
+// the host connection, the rendezvous refuses the join afterwards, and the
+// list no longer holds it. A link the rendezvous forgot is dropped the same way.
+func TestRemoteLinksAreListedAndRevokedFromTheLocalServer(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control", "label": "pairing"})
+	link, _ := out["link"].(map[string]any)
+	linkID, _ := link["id"].(string)
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	if linkID == "" || token == "" {
+		t.Fatalf("link %v", out)
+	}
+	if resp, _ := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	if resp, out := rendezvous.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the rendezvous still resolves it: %d %v", resp.StatusCode, out)
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); strings.Contains(fmt.Sprint(out), "pairing") {
+		t.Fatalf("still listed: %v", out)
+	}
+	if resp, _ := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("revoking it twice: %d", resp.StatusCode)
 	}
 }
 

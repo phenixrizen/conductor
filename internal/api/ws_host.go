@@ -297,6 +297,18 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 			return false
 		}
 		s.hostLink(hs, hc, m)
+	case proto.HostLinkRevoke:
+		var m proto.HostLinkRevokeMsg
+		if json.Unmarshal(data, &m) != nil || m.RequestID == "" || len(m.RequestID) > proto.MaxLinkRequestID || m.LinkID == "" || len(m.LinkID) > proto.MaxLinkID {
+			return false
+		}
+		// A revoke is never counted against the link bucket: it must always go through.
+		if found, _ := s.links.Revoke(hs.Info().ID, m.LinkID); !found {
+			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: m.RequestID})
+		} else {
+			s.log.Info("link revoked by its host", "session", hs.Info().ID, "link", m.LinkID)
+			_ = hs.Tell(proto.LinkRevoked{T: proto.HostLinkRevoked, RequestID: m.RequestID, LinkID: m.LinkID})
+		}
 	case proto.HostRegister:
 		return false
 	default:

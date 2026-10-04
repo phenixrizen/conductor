@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -24,6 +25,68 @@ type PublishedSession interface {
 	ID() string
 	// Link mints a share link to the session at the rendezvous.
 	Link(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error)
+	// Revoke revokes a link minted there; one it no longer knows answers an
+	// error naming not_found.
+	Revoke(ctx context.Context, linkID string) error
+	// CurrentID is the rendezvous's id for the session now: ID unless the
+	// rendezvous restarted and the session was registered afresh, which
+	// loses the links minted before.
+	CurrentID() string
+}
+
+// remoteLink is a link minted at the rendezvous for a published session,
+// kept here so the session's links list it and can revoke it; hostedID is
+// the rendezvous's session id it was minted for, so a re-registration after
+// a rendezvous restart drops it (the rendezvous keeps links in memory).
+type remoteLink struct {
+	ID        string
+	Role      session.Role
+	Label     string
+	CreatedAt time.Time
+	ExpiresAt *time.Time
+	hostedID  string
+}
+
+// recordRemoteLink keeps a link minted at the rendezvous for session id.
+func (s *Server) recordRemoteLink(id string, res proto.LinkCreated, hostedID string) {
+	rl := remoteLink{ID: res.LinkID, Role: session.Role(res.Role), Label: res.Label, CreatedAt: time.Now(), hostedID: hostedID}
+	if t, err := time.Parse(time.RFC3339, res.ExpiresAt); err == nil && res.ExpiresAt != "" {
+		rl.ExpiresAt = &t
+	}
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	if s.remoteLinks == nil {
+		s.remoteLinks = map[string]map[string]remoteLink{}
+	}
+	if s.remoteLinks[id] == nil {
+		s.remoteLinks[id] = map[string]remoteLink{}
+	}
+	s.remoteLinks[id][res.LinkID] = rl
+}
+
+// remoteLinksOf lists the links minted at the rendezvous for session id that
+// its current publication still holds, newest first; stale ones are dropped.
+func (s *Server) remoteLinksOf(id string) []remoteLink {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	pub := s.published[id]
+	var out []remoteLink
+	for lid, rl := range s.remoteLinks[id] {
+		if pub == nil || rl.hostedID != pub.CurrentID() {
+			delete(s.remoteLinks[id], lid)
+			continue
+		}
+		out = append(out, rl)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out
+}
+
+// forgetRemoteLink drops the record of a remote link.
+func (s *Server) forgetRemoteLink(id, linkID string) {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	delete(s.remoteLinks[id], linkID)
 }
 
 // SetPublisher makes every server session created from now on published
@@ -86,6 +149,7 @@ func (s *Server) unpublish(id string) {
 	s.pubMu.Lock()
 	pub := s.published[id]
 	delete(s.published, id)
+	delete(s.remoteLinks, id)
 	if s.publisher != nil {
 		if s.pubGone == nil {
 			s.pubGone = map[string]bool{}

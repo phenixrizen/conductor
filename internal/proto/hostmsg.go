@@ -18,6 +18,10 @@ const (
 	// behind a rendezvous mints its links there); HostLinkCreated answers.
 	HostLink        = "link"
 	HostLinkCreated = "link_created"
+	// HostLinkRevoke asks the server to revoke a link it minted for the
+	// session; HostLinkRevoked answers, error not_found when it has none.
+	HostLinkRevoke  = "link_revoke"
+	HostLinkRevoked = "link_revoked"
 
 	// server -> host
 	HostRegistered  = "registered"
@@ -181,6 +185,7 @@ const (
 	MaxLinkLabel      = 120       // bytes
 	MaxLinkTTLSeconds = 24 * 3600 // a day
 	MaxLinkRequestID  = 32        // bytes
+	MaxLinkID         = 64        // bytes, a link id in a revoke
 	// LinkRequestsPerMinute is how many link requests a host connection may
 	// make a minute; past it the server answers error rate_limited.
 	LinkRequestsPerMinute = 5
@@ -209,4 +214,20 @@ type LinkCreated struct {
 	Role      string `json:"role"`
 	Label     string `json:"label,omitempty"`
 	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+// HostLinkRevokeMsg is a host's request to revoke a link the server minted
+// for its session (LinkCreated.LinkID). RequestID ties the answer to it.
+type HostLinkRevokeMsg struct {
+	T         string `json:"t"`
+	RequestID string `json:"requestId"`
+	LinkID    string `json:"linkId"`
+}
+
+// LinkRevoked answers HostLinkRevokeMsg: the link is revoked and its
+// viewers are gone.
+type LinkRevoked struct {
+	T         string `json:"t"`
+	RequestID string `json:"requestId"`
+	LinkID    string `json:"linkId"`
 }
