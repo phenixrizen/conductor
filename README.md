@@ -117,8 +117,14 @@ viewer and the publishing machine, through the switchyard's relay only for
 the pairs ICE cannot connect. The switchyard launches nothing of its own:
 
 ```bash
-CONDUCTOR_HOST_TOKENS=a-host-token CONDUCTOR_TLS_ACME=1 CONDUCTOR_TLS_ACME_EMAIL=you@example.com conductor switchyard --listen :80
+CONDUCTOR_HOST_TOKENS=a-host-token CONDUCTOR_REACH=manual CONDUCTOR_TLS_LISTEN=:443 CONDUCTOR_TLS_ACME=1 conductor switchyard --listen :80
 ```
+
+That is the shape for a VPS: `reach.mode: manual` (there is no router to map;
+STUN finds the address and 443 is open as it is; in `auto` a certificate is
+only ordered once a router mapping exists, which a VPS never gets), the TLS
+listener on 443 itself (`setcap cap_net_bind_service=+ep` on the binary, or
+root), and an ACME account without an email, which Let's Encrypt accepts.
 
 `conductor switchyard` is `conductor serve --switchyard`: the sessions,
 crews, runs, catalog and integrations routes answer `403 switchyard`, the
