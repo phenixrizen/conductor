@@ -37,6 +37,20 @@ type ICEServer struct {
 	Credential string   `json:"credential,omitempty"`
 }
 
+// Paths says what GET /api/paths may list. Browse is roots (the default:
+// the allowed roots alone, as a session's working directory is checked) or
+// any: every directory the server's user can read, for the desktop app's
+// settings picker, which chooses the roots themselves and the data directory.
+type Paths struct {
+	Browse string `json:"browse"`
+}
+
+// The values of paths.browse.
+const (
+	BrowseRoots = "roots"
+	BrowseAny   = "any"
+)
+
 // Reach says how the server finds out, and makes it so, that it can be
 // reached from outside its network (internal/reach).
 type Reach struct {
@@ -324,6 +338,8 @@ type Config struct {
 	Yolo bool `json:"yolo"`
 	// Reach: the public address and the port mapping on the gateway.
 	Reach Reach `json:"reach"`
+	// Paths: what GET /api/paths may list.
+	Paths Paths `json:"paths"`
 	// TLS: the TLS listener and where its certificate comes from.
 	TLS TLS `json:"tls"`
 	// Rendezvous: a public Conductor to publish sessions to.
@@ -366,6 +382,7 @@ func Defaults() *Config {
 		PublicURL:            "http://localhost:8080",
 		AllowedRoots:         []string{cwd},
 		DefaultCwd:           cwd,
+		Paths:                Paths{Browse: BrowseRoots},
 		ScrollbackBytes:      256 << 10,
 		MaxSessions:          32,
 		MaxViewersPerSession: 32,
@@ -627,6 +644,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		cfg.Rendezvous.RelayOnly = true
 	}
 	str("CONDUCTOR_REACH", &cfg.Reach.Mode)
+	str("CONDUCTOR_PATHS_BROWSE", &cfg.Paths.Browse)
 	str("CONDUCTOR_REACH_STUN", &cfg.Reach.STUNServer)
 	if err := num("CONDUCTOR_REACH_PUBLIC_PORT", &cfg.Reach.PublicPort); err != nil {
 		return err
@@ -749,6 +767,9 @@ func (c *Config) Validate() error {
 		if len(s.URLs) == 0 {
 			errs = append(errs, fmt.Errorf("iceServers[%d]: urls must not be empty", i))
 		}
+	}
+	if c.Paths.Browse != BrowseRoots && c.Paths.Browse != BrowseAny {
+		errs = append(errs, fmt.Errorf("paths.browse must be roots or any, got %q", c.Paths.Browse))
 	}
 	switch c.Reach.Mode {
 	case ReachOff, ReachAuto, ReachManual:

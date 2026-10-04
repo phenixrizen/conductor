@@ -504,7 +504,12 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 // uses it as the default display name. It is a label, not authentication.
 func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
-	writeJSON(w, http.StatusOK, map[string]any{"user": serverUser(), "host": host, "switchyard": s.cfg.Switchyard.Enabled})
+	out := map[string]any{"user": serverUser(), "host": host, "switchyard": s.cfg.Switchyard.Enabled}
+	// The server user's home: where the settings picker's Home goes.
+	if home, err := os.UserHomeDir(); err == nil {
+		out["home"] = home
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // serverUser is the OS user running this process, bounded to 64 bytes.

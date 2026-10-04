@@ -942,6 +942,9 @@ func TestWhoAmIReportsServerUser(t *testing.T) {
 	if u, _ := out["user"].(string); u == "" || len(u) > 64 {
 		t.Fatalf("user %q", u)
 	}
+	if home, err := os.UserHomeDir(); err == nil && out["home"] != home {
+		t.Fatalf("home %v, want %s", out["home"], home)
+	}
 }
 
 func TestCatalogEditingPersistsOverlay(t *testing.T) {

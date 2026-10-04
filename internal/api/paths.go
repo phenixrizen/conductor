@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/crew"
 )
 
@@ -24,6 +25,11 @@ import (
 // roots leads nowhere. Each path is stat'ed before it is resolved (resolveDir),
 // and the work of one request ends with its context: at its 5 s deadline, or
 // when the client goes away.
+//
+// With paths.browse "any" (the desktop app sets it for its own server) a
+// listing may ask for scope=any: every directory the server's user can stat,
+// for the settings picker, which chooses the roots themselves and the data
+// directory. The stat still comes first, and links are still resolved.
 
 const (
 	// maxPathEntries bounds one listing: a page for a picker, not a file system.
@@ -90,6 +96,21 @@ func (s *Server) noAllowedDir() string {
 // walks up to 255 links, each down its whole path again, for seconds: a path
 // that does not stat as a directory is never resolved.
 func (s *Server) resolveDir(path string) (string, error) {
+	return s.resolveDirIn(path, scopeRoots)
+}
+
+// pathScope says which directories a listing may show.
+type pathScope int
+
+const (
+	scopeRoots pathScope = iota // under the allowed roots, as resolveCwd checks a session's directory
+	scopeAny                    // any directory the server's user can stat (paths.browse "any")
+)
+
+// resolveDirIn is resolveDir for a scope: the stat first in both, then
+// resolveCwd under scopeRoots, or the symbolic links resolved and a second
+// stat alone under scopeAny.
+func (s *Server) resolveDirIn(path string, scope pathScope) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", errors.New("invalid working directory")
@@ -101,6 +122,16 @@ func (s *Server) resolveDir(path string) (string, error) {
 	if !fi.IsDir() {
 		return "", errors.New("working directory is not a directory")
 	}
+	if scope == scopeAny {
+		real, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return "", errors.New("working directory does not exist")
+		}
+		if fi, err := os.Stat(real); err != nil || !fi.IsDir() {
+			return "", errors.New("working directory is not a directory")
+		}
+		return real, nil
+	}
 	return s.resolveCwd(abs)
 }
 
@@ -111,10 +142,10 @@ func (s *Server) resolveDir(path string) (string, error) {
 // hidden name, which filepath.Clean would drop. An empty prefix is the
 // server's default working directory. A prefix no part of which qualifies is
 // errNoAllowedDir; the error is ctx's once ctx is done.
-func (s *Server) splitPrefix(ctx context.Context, prefix string) (dir, seg string, err error) {
+func (s *Server) splitPrefix(ctx context.Context, prefix string, scope pathScope) (dir, seg string, err error) {
 	raw := cmp.Or(prefix, s.cfg.DefaultCwd)
 	if strings.HasSuffix(raw, string(filepath.Separator)+".") {
-		dir, seg, err := s.splitPrefix(ctx, strings.TrimSuffix(raw, "."))
+		dir, seg, err := s.splitPrefix(ctx, strings.TrimSuffix(raw, "."), scope)
 		if err == nil && seg == "" {
 			seg = "."
 		}
@@ -125,7 +156,7 @@ func (s *Server) splitPrefix(ctx context.Context, prefix string) (dir, seg strin
 		if err := ctx.Err(); err != nil {
 			return "", "", err
 		}
-		if real, err := s.resolveDir(cur); err == nil {
+		if real, err := s.resolveDirIn(cur, scope); err == nil {
 			return real, seg, nil
 		}
 		parent := filepath.Dir(cur)
@@ -199,8 +230,8 @@ func readCandidates(dir, seg string) (out []candidate, capped bool, err error) {
 // one, truncated. Past its end git is not asked either, and the listing keeps
 // its entries, those not yet marked left unmarked, and is truncated too: a
 // mark left out is not a directory outside git.
-func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (pathsReply, error) {
-	dir, seg, err := s.splitPrefix(ctx, prefix)
+func (s *Server) listPaths(ctx context.Context, prefix string, limit int, scope pathScope) (pathsReply, error) {
+	dir, seg, err := s.splitPrefix(ctx, prefix, scope)
 	if err != nil {
 		return pathsReply{}, err
 	}
@@ -222,7 +253,7 @@ func (s *Server) listPaths(ctx context.Context, prefix string, limit int) (paths
 				out.Truncated = true
 				break
 			}
-			real, err := s.resolveDir(path)
+			real, err := s.resolveDirIn(path, scope)
 			if err != nil {
 				skipped++
 				continue
@@ -313,9 +344,22 @@ func (s *Server) handleListPaths(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, maxPathEntries)
 	}
+	scope := scopeRoots
+	switch r.URL.Query().Get("scope") {
+	case "", config.BrowseRoots:
+	case config.BrowseAny:
+		if s.cfg.Paths.Browse != config.BrowseAny {
+			writeError(w, http.StatusForbidden, "browse_off", "listing outside the allowed roots is off: set paths.browse to any (CONDUCTOR_PATHS_BROWSE=any)")
+			return
+		}
+		scope = scopeAny
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "scope must be roots or any")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), gitCheckTimeout)
 	defer cancel()
-	reply, err := s.listPaths(ctx, prefix, limit)
+	reply, err := s.listPaths(ctx, prefix, limit, scope)
 	switch {
 	case errors.Is(err, errNoAllowedDir):
 		writeError(w, http.StatusBadRequest, "invalid_cwd", s.noAllowedDir())

@@ -11,6 +11,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/store"
 )
 
 func TestLoadFileAndEnvPrecedence(t *testing.T) {
@@ -1093,5 +1094,25 @@ func TestSwitchyardOpenHostsConfigAndEnv(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// paths.browse is roots unless the file or CONDUCTOR_PATHS_BROWSE says any;
+// another value is refused, naming the key.
+func TestPathsBrowse(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Paths.Browse != BrowseRoots {
+		t.Fatalf("default %q", cfg.Paths.Browse)
+	}
+	if err := store.DecodeStrict([]byte(`{"paths":{"browse":"any"}}`), cfg); err != nil || cfg.Paths.Browse != BrowseAny {
+		t.Fatalf("file: %q %v", cfg.Paths.Browse, err)
+	}
+	cfg = Defaults()
+	if err := applyEnv(cfg, func(k string) string { return map[string]string{"CONDUCTOR_PATHS_BROWSE": "any"}[k] }); err != nil || cfg.Paths.Browse != BrowseAny {
+		t.Fatalf("env: %q %v", cfg.Paths.Browse, err)
+	}
+	cfg.Paths.Browse = "maybe"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "paths.browse") {
+		t.Fatalf("maybe: %v", err)
 	}
 }

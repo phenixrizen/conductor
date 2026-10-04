@@ -434,7 +434,7 @@ func TestPathsStopsWhenTheContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	start := time.Now()
-	_, err := e.srv.listPaths(ctx, filepath.Join(root, "maze", "x", "y"), maxPathEntries)
+	_, err := e.srv.listPaths(ctx, filepath.Join(root, "maze", "x", "y"), maxPathEntries, scopeRoots)
 	if took := time.Since(start); !errors.Is(err, context.Canceled) || took > time.Second {
 		t.Fatalf("%v in %v", err, took)
 	}
@@ -481,7 +481,7 @@ func TestPathsKeepsItsEntriesPastTheDeadline(t *testing.T) {
 	t.Cleanup(func() { gitState = was })
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	reply, err := e.srv.listPaths(ctx, root, maxPathEntries)
+	reply, err := e.srv.listPaths(ctx, root, maxPathEntries, scopeRoots)
 	if err != nil || len(reply.Entries) != 3 || len(asked) != 1 || !reply.Truncated {
 		t.Fatalf("%+v %v, asked %v", reply, err, asked)
 	}
@@ -662,5 +662,81 @@ func TestGitCheckReportsAWorktreesLink(t *testing.T) {
 	}
 	if status, out := e.gitCheck(repo); status != http.StatusOK || !strings.Contains(fmt.Sprint(out["message"]), "symbolic link") {
 		t.Fatalf("%d %v", status, out)
+	}
+}
+
+// pathsIn is paths with a scope.
+func (e *testEnv) pathsIn(prefix, scope string) (int, map[string]any) {
+	e.t.Helper()
+	resp, out := e.do("GET", "/api/paths?"+url.Values{"prefix": {prefix}, "scope": {scope}}.Encode(), adminToken, nil)
+	return resp.StatusCode, out
+}
+
+// Listing outside the roots is off unless paths.browse says any; scope must
+// be roots or any; roots answers as no scope does.
+func TestPathsScopeIsRootsUnlessSwitchedOn(t *testing.T) {
+	e := newTestEnv(t, nil)
+	code, out := e.pathsIn(e.root, "any")
+	if code != http.StatusForbidden || out["error"].(map[string]any)["code"] != "browse_off" {
+		t.Fatalf("any while off: %d %v", code, out)
+	}
+	if code, out := e.pathsIn(e.root, "bogus"); code != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "invalid_request" {
+		t.Fatalf("bogus: %d %v", code, out)
+	}
+	a, outA := e.pathsIn(e.root, "roots")
+	b, outB := e.paths(e.root, "")
+	if a != http.StatusOK || b != http.StatusOK || fmt.Sprint(outA) != fmt.Sprint(outB) {
+		t.Fatalf("roots %d %v, none %d %v", a, outA, b, outB)
+	}
+}
+
+// With paths.browse any, scope=any lists directories outside the roots, a
+// link out of them included, and hidden ones only when a dot is typed; the
+// roots scope still refuses them.
+func TestPathsScopeAnyListsOutsideTheRoots(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.Paths.Browse = config.BrowseAny })
+	outside := t.TempDir()
+	for _, d := range []string{"secret", ".hidden"} {
+		if err := os.Mkdir(filepath.Join(outside, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(e.root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	real, _ := filepath.EvalSymlinks(outside)
+	code, out := e.pathsIn(outside+string(filepath.Separator), "any")
+	if code != http.StatusOK || out["dir"] != real || !slices.Equal(entryNames(out), []string{"secret"}) {
+		t.Fatalf("outside: %d %v", code, out)
+	}
+	if _, out := e.pathsIn(outside+string(filepath.Separator)+".", "any"); !slices.Contains(entryNames(out), ".hidden") {
+		t.Fatalf("hidden with a dot: %v", out)
+	}
+	if code, _ := e.pathsIn("/", "any"); code != http.StatusOK {
+		t.Fatalf("/: %d", code)
+	}
+	if _, out := e.pathsIn(e.root+string(filepath.Separator), "any"); !slices.Contains(entryNames(out), "escape") {
+		t.Fatalf("the link out is listed under any: %v", out)
+	}
+	if _, out := e.pathsIn(e.root+string(filepath.Separator), "roots"); slices.Contains(entryNames(out), "escape") {
+		t.Fatalf("the link out is listed under roots: %v", out)
+	}
+	if code, out := e.paths(outside, ""); code != http.StatusBadRequest {
+		t.Fatalf("outside without scope: %d %v", code, out)
+	}
+}
+
+// The stat comes before the links are resolved under any too: a link loop
+// answers at once.
+func TestPathsScopeAnyAnswersInTimeThroughALinkLoop(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.Paths.Browse = config.BrowseAny })
+	root := e.root
+	if err := os.Symlink(filepath.Join(root, "loop"), filepath.Join(root, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	code, out := e.pathsIn(filepath.Join(root, "loop", "x", "y"), "any")
+	if took := time.Since(start); code != http.StatusOK || took > 2*time.Second {
+		t.Fatalf("%d %v in %s", code, out, took)
 	}
 }
