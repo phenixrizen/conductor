@@ -15,9 +15,14 @@ var errNoAnswer = errors.New("no answer")
 // immediate) while ctx lasts. accept returns done for the answer, false for a
 // datagram to ignore, or an error to stop with. The exchange is bounded by
 // ctx, which the caller gives a deadline.
+//
+// IPv4 only: reach is about the address a NAT shows and the gateway protocols,
+// all of them IPv4. On a dual-stack host a plain "udp" dial reaches the STUN
+// server over IPv6 and brings back the host's IPv6 address, and a certificate
+// ordered for it matches no IPv4 link (seen on a Lightsail instance, 2026-10-04).
 func udpExchange(ctx context.Context, addr string, req []byte, rto time.Duration, accept func(b []byte) (done bool, err error)) error {
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "udp", addr)
+	conn, err := d.DialContext(ctx, "udp4", addr)
 	if err != nil {
 		return err
 	}

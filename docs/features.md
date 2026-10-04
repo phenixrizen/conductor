@@ -853,7 +853,15 @@ branch `design/crews-graph`.
   the renewal every few days over a week. Pebble stands in for it in CI
   (`make test-pebble`): an IP identifier over `tls-alpn-01` with a renewal,
   and a name over `tls-alpn-01` and `http-01`, all validated by Pebble
-  against the listener, pass on 2026-10-03.
+  against the listener, pass on 2026-10-03. 2026-10-04: issued for real on
+  a VPS running `conductor switchyard` with `reach.mode: manual` and the
+  TLS listener on 443: the order, the `tls-alpn-01` validation and the
+  six-day certificate (renewal at two thirds) took seven seconds, with no
+  account email. The first order went to the host's IPv6 address, which
+  STUN over a plain "udp" dial returned on a dual-stack host; the reach
+  lookups are IPv4 only now (`udp4`), and the second order was for the
+  static IPv4 address, which `https://<ip>/api/health` verifies with the
+  system trust store. The renewal over a week is still to be watched.
 - The TLS listener offers HTTP/1.1 only. Whether the WebSocket routes work
   over HTTP/2 (RFC 8441 extended CONNECT in Go's server and the browsers)
   decides whether `h2` can be offered later.

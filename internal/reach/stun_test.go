@@ -154,3 +154,17 @@ func TestParseSTUNServer(t *testing.T) {
 		}
 	}
 }
+
+// The lookup is IPv4 only: a dual-stack host must not be told its IPv6
+// address (a certificate for it would match no IPv4 link), so an IPv6 server
+// address is refused at the dial, at once, rather than tried.
+func TestPublicAddrUsesIPv4Only(t *testing.T) {
+	start := time.Now()
+	_, err := PublicAddr(context.Background(), "[::1]:3478")
+	if err == nil || !(strings.Contains(err.Error(), "no suitable address") || strings.Contains(err.Error(), "non-IPv4")) {
+		t.Fatalf("err = %v, want the udp4 dial's refusal of an IPv6 address", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("took %s: the dial was tried instead of refused", time.Since(start))
+	}
+}
