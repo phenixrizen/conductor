@@ -356,6 +356,11 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	d, ok := s.registry.Get(link.SessionID)
 	if !ok {
+		if link.Owner != "" {
+			// A kept link whose host is away: it works again once the host registers.
+			writeError(w, http.StatusServiceUnavailable, "host_offline", "the machine that shared this session is not connected to the switchyard right now; try again in a moment")
+			return
+		}
 		writeError(w, http.StatusNotFound, "session_gone", "the shared session no longer exists")
 		return
 	}

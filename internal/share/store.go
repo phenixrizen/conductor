@@ -21,6 +21,11 @@ type Link struct {
 	CreatedAt time.Time    `json:"createdAt"`
 	ExpiresAt *time.Time   `json:"expiresAt,omitempty"`
 	Revoked   bool         `json:"revoked"`
+	// Owner, on a switchyard, is the hash of the host instance a durable
+	// link was minted for (kept on disk, outliving the host's absences);
+	// Addr the open host's address it counts against. Never in a reply.
+	Owner string `json:"-"`
+	Addr  string `json:"-"`
 
 	hash Hash
 }
@@ -189,15 +194,97 @@ func (s *Store) list(scopes map[string]map[string]*Link, key string) []*Link {
 	return out
 }
 
-// DeleteSession forgets every link of a session.
-func (s *Store) DeleteSession(sessionID string) {
+// DeleteSession forgets the links of a session and returns the IDs it
+// dropped. A durable link (one with an Owner) stays unless durableToo: its
+// session left only because its host went away, and comes back under the
+// same id when the host does.
+func (s *Store) DeleteSession(sessionID string, durableToo bool) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var dropped []string
 	for id, l := range s.bySession[sessionID] {
+		if l.Owner != "" && !durableToo {
+			continue
+		}
 		delete(s.byHash, l.hash)
 		delete(s.byID, id)
+		delete(s.bySession[sessionID], id)
+		dropped = append(dropped, id)
 	}
-	delete(s.bySession, sessionID)
+	if len(s.bySession[sessionID]) == 0 {
+		delete(s.bySession, sessionID)
+	}
+	return dropped
+}
+
+// Restore puts back a link kept on disk, under the hash of its token.
+func (s *Store) Restore(l Link, hash Hash) {
+	link := l
+	link.hash = hash
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byHash[hash] = &link
+	s.byID[link.ID] = &link
+	scopes, key := s.bySession, link.SessionID
+	if link.RunID != "" {
+		scopes, key = s.byRun, link.RunID
+	}
+	if scopes[key] == nil {
+		scopes[key] = map[string]*Link{}
+	}
+	scopes[key][link.ID] = &link
+}
+
+// SetOwner makes a link durable: minted for the host instance owner, from
+// the address addr ("" for a tokened host).
+func (s *Store) SetOwner(linkID, owner, addr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l, ok := s.byID[linkID]; ok {
+		l.Owner, l.Addr = owner, addr
+	}
+}
+
+// Drop forgets one link outright (its file swept), whatever its state.
+func (s *Store) Drop(linkID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.byID[linkID]
+	if !ok {
+		return
+	}
+	delete(s.byHash, l.hash)
+	delete(s.byID, linkID)
+	for _, scopes := range []map[string]map[string]*Link{s.bySession, s.byRun} {
+		for key, m := range scopes {
+			if _, ok := m[linkID]; ok {
+				delete(m, linkID)
+				if len(m) == 0 {
+					delete(scopes, key)
+				}
+			}
+		}
+	}
+}
+
+// Durable lists the durable links, for the sweep.
+func (s *Store) Durable() []*Link {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Link
+	for _, l := range s.byID {
+		if l.Owner != "" {
+			out = append(out, copyLink(l))
+		}
+	}
+	return out
+}
+
+// Count is how many links the store holds.
+func (s *Store) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.byID)
 }
 
 // DeleteRun forgets every link of a run, as DeleteSession does a session's,

@@ -155,6 +155,10 @@ type Switchyard struct {
 	// shared by its connections, with a burst of twice the rate. 0 falls
 	// back to RelayKBps, which is per connection.
 	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
+	// OpenHostLinks bounds the links the open hosts of one address keep on
+	// the switchyard at a time (32 by default): links outlive restarts, so
+	// they are counted, not only rate-limited.
+	OpenHostLinks int `json:"openHostLinks,omitempty"`
 }
 
 // SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).
@@ -387,7 +391,7 @@ func Defaults() *Config {
 		ScrollbackBytes:      256 << 10,
 		MaxSessions:          32,
 		MaxViewersPerSession: 32,
-		Switchyard:           Switchyard{OpenHostSessions: 4, OpenHostRegistrationsPerMinute: 6, OpenHostRelayKBps: 128},
+		Switchyard:           Switchyard{OpenHostSessions: 4, OpenHostRegistrationsPerMinute: 6, OpenHostRelayKBps: 128, OpenHostLinks: 32},
 		ExitedRetention:      Duration(10 * time.Minute),
 		ICEServers:           []ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 		RelayTimeoutMs:       8000,
@@ -607,6 +611,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_REGISTRATIONS", &cfg.Switchyard.OpenHostRegistrationsPerMinute); err != nil {
 		return err
 	}
+	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_LINKS", &cfg.Switchyard.OpenHostLinks); err != nil {
+		return err
+	}
 	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS", &cfg.Switchyard.OpenHostRelayKBps); err != nil {
 		return err
 	}
@@ -723,6 +730,9 @@ func (c *Config) Validate() error {
 	}
 	if n := c.Switchyard.OpenHostRegistrationsPerMinute; n < 1 || n > 600 {
 		errs = append(errs, errors.New("switchyard.openHostRegistrationsPerMinute must be between 1 and 600"))
+	}
+	if n := c.Switchyard.OpenHostLinks; n < 1 || n > 1000 {
+		errs = append(errs, fmt.Errorf("switchyard.openHostLinks must be between 1 and 1000, got %d", n))
 	}
 	if n := c.Switchyard.OpenHostRelayKBps; n < 0 || n > 1<<20 {
 		errs = append(errs, errors.New("switchyard.openHostRelayKBps must be between 0 and 1048576"))

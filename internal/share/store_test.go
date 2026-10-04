@@ -69,7 +69,7 @@ func TestDeleteSessionAndRole(t *testing.T) {
 		t.Fatalf("role: %v", err)
 	}
 	_, tok, _ := s.Create("sess", session.RoleView, "", 0)
-	s.DeleteSession("sess")
+	s.DeleteSession("sess", true)
 	if _, err := s.Resolve(tok); !errors.Is(err, ErrUnknownToken) {
 		t.Fatalf("after delete: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestRunLinks(t *testing.T) {
 		t.Fatalf("list after revoke %+v", l)
 	}
 	// Deleting a session leaves the run links alone.
-	s.DeleteSession("")
+	s.DeleteSession("", true)
 	if _, ok := s.Get(link.ID); !ok {
 		t.Fatal("a session's delete dropped a run link")
 	}

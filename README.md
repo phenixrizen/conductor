@@ -1065,6 +1065,7 @@ file must run `compinit` before that line.
 | `switchyard.openHostSessions` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_SESSIONS` | `4` | live hosted sessions the open hosts of one address may hold |
 | `switchyard.openHostRegistrationsPerMinute` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_REGISTRATIONS` | `6` | how often one address may register an open host |
 | `switchyard.openHostRelayKBps` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS` | `128` | what the open hosts of one address relay a second, all of them together, in KiB (one bucket per address, a burst of twice that); `0` falls back to `relayKBps`, per connection |
+| `switchyard.openHostLinks` | `CONDUCTOR_SWITCHYARD_OPEN_HOST_LINKS` | `32` | the links the open hosts of one address keep on the switchyard at a time (kept links outlive restarts, so they are counted); past it a link request is refused with `link_refused` |
 | `switchyard.allowedOrigins` | `CONDUCTOR_SWITCHYARD_ORIGINS` (comma-separated host patterns) | `127.0.0.1:*`, `localhost:*` | the browser origins a switchyard answers across origins on the join route and accepts on a hosted session's WebSocket: the desktop app's own workbench |
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
 | `agents.mcp` | `CONDUCTOR_AGENT_MCP` (`1`/`true` on, `0`/`false` off) | `true` | register `conductor mcp` with agents that take an MCP server at launch (Claude Code, Codex), so the skill's reports and crew actions are tools |
@@ -1263,6 +1264,11 @@ that matches neither an empty id nor one that begins with a dash.
   digit, so it can never read as a flag, and goes in as one argument.
 - Terminal output is not persisted. Sessions and links live in memory and are
   lost on restart; hosted sessions reconnect and resume while the server is up.
+  A switchyard is the exception for links: it keeps the ones it mints for
+  hosts that register under an instance (every Conductor and `conductor host`
+  does) in `links/` of its data directory, the token's hash and never the
+  token, so a restart loses none; until the host registers again (under the
+  same session id) a join answers that the machine is not connected.
 - WebRTC needs UDP between the browser and the host; otherwise the relay is
   used automatically. No TURN credential minting yet.
 - Share links outside a trusted network over TLS only: the `tls` listener

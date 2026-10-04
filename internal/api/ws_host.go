@@ -85,6 +85,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	info := hs.Info()
 	hc := &hostConnState{base: s.publicBase(r)}
+	if open {
+		hc.addr = addr
+	}
+	s.sawHost(hs.Owner())
 	if s.cfg.Switchyard.Enabled {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
@@ -185,7 +189,9 @@ func writeText(ctx context.Context, c *websocket.Conn, b []byte) error {
 // the base its links take, when it last asked for links, and the bucket
 // its relayed output drains (nil without a bound).
 type hostConnState struct {
-	base      string
+	base string
+	// addr is an open host's address, for the bound on the links it keeps; "" for a tokened host.
+	addr      string
 	linkTimes []time.Time
 	relay     *byteBucket
 }
@@ -354,6 +360,10 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 	link, token, err := s.links.Create(hs.Info().ID, role, m.Label, ttl)
 	if err != nil {
 		refuse("link_refused", err.Error())
+		return
+	}
+	if !s.keepLink(link, token, hs.Owner(), hc.addr) {
+		refuse("link_refused", "this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
 		return
 	}
 	s.log.Info("link minted for a host", "session", hs.Info().ID, "role", role, "label", link.Label)

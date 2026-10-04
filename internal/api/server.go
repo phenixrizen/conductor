@@ -42,9 +42,12 @@ type Server struct {
 	hostLimiter *rateLimiter
 	openHosts   *addrCounter
 	openRelay   *addrBuckets
-	log         *slog.Logger
-	web         http.Handler
-	store       *store.Store
+	// keeper keeps the links a switchyard mints across its restarts
+	// (linkfiles.go); nil elsewhere.
+	keeper *linkKeeper
+	log    *slog.Logger
+	web    http.Handler
+	store  *store.Store
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -248,13 +251,21 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.hosts.OnChange = s.events.publish
 	s.hosts.OnActivity = s.events.activity
-	s.registry.OnRemove = func(id string) {
-		s.links.DeleteSession(id)
+	s.registry.OnRemove = func(id string, d session.Driver) {
+		// A durable link outlives a host that went away (its session only
+		// expired) and goes with a session that ended.
+		for _, lid := range s.links.DeleteSession(id, d.Info().Status.Ended()) {
+			s.dropLinkFile(lid)
+		}
 		s.events.removed(id)
 		s.unpublish(id)
 		s.pastes.closeAll(id)
 	}
+	if cfg.Switchyard.Enabled && s.store != nil {
+		s.openLinkKeeper(s.store)
+	}
 	s.links.OnRevoke = func(sessionID, linkID string) {
+		s.dropLinkFile(linkID)
 		if d, ok := s.registry.Get(sessionID); ok {
 			d.DisconnectLink(linkID)
 		}
@@ -567,6 +578,7 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 				s.log.Info("session garbage collected", "session", id)
 			}
 			s.hosts.Expire(now)
+			s.sweepLinks(now)
 		}
 	}
 }

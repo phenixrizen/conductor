@@ -37,7 +37,7 @@ func TestRegistryCapacityListAndGC(t *testing.T) {
 	a.info.Status = StatusExited
 	a.info.EndedAt = &ended
 	var removed []string
-	r.OnRemove = func(id string) { removed = append(removed, id) }
+	r.OnRemove = func(id string, _ Driver) { removed = append(removed, id) }
 	if got := r.GC(10*time.Minute, now); len(got) != 1 || got[0] != "a" || len(removed) != 1 {
 		t.Fatalf("gc %v removed %v", got, removed)
 	}
