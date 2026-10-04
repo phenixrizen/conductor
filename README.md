@@ -316,12 +316,22 @@ permission requests arrive with their options, so **Yes / Always / No** buttons
 appear wherever the prompt is shown. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 
-**Routing.** The Events page's matrix sets, per event type and per browser,
-what an event does: a labelled badge on its session in the sidebar and on its
-wall tile (until the session reports `working` or `needs_input`, or you open
-it), a browser notification with the chime (as switched on under the sidebar's
-alerts), a carousel jump while it follows, and a line in the live feed, which
-keeps the last 500 events in memory. Routes are saved in the browser. An
+**The Events page** has three tabs. **Feed** (the default) lists the events
+newest first in groups of one minute: the time, the event's icon, who reported
+it (a crew member as `<crew> / <member>`), what happened and the one thing to
+do about it (**Answer** a question, **Open run** for a handoff, **Open** an
+artifact). Beside it: the last hour as bars per minute (what needs you,
+handoffs, errors and the rest, as the tab saw them), where each kind of event
+goes now, and whether each agent reports. **Routing** lists the ten events
+grouped by how loud they are (needs you, worth knowing, background), each
+with its destinations as switches: a labelled badge on its session in the
+sidebar and on its wall tile (until the session reports `working` or
+`needs_input`, or you open it), a browser notification with the chime (as
+switched on under the sidebar's alerts), a carousel jump while it follows, and
+a line in the live feed, which keeps the last 500 events in memory. Routes are
+saved in the browser. **Integrations** is a table of the agents: whether their
+hooks reach them, what they report, where an install writes, and **Install on
+this machine**, with the snippet of an agent nothing wires open below. An
 artifact's URL becomes a link only when it is `http(s)`.
 
 **Wired at launch.** Conductor has a hook adapter for every built-in agent but
@@ -463,7 +473,7 @@ for Claude Code started elsewhere.
 The server can also pass events on to other services. A webhook in the
 config is a URL the server POSTs to for every entry, from any session, of
 the event types the webhook lists. The **Events** page shows the webhooks,
-read-only, in the routing matrix's **Webhook** column.
+read-only, as the **Webhook** switch of each event on the Routing tab.
 
 ```json
 {
@@ -777,9 +787,8 @@ a terminal's contents; at most 500 kept) and read back after a restart, so
 a crew's Runs tab lists them and charts the last twelve as bars (minutes,
 coloured by outcome, an amber edge when someone had to answer), once there
 are two, and the Crews table draws the same bars beside each crew.
-The Events page charts the last hour's activity per minute (attention
-changes, reports, handoffs, tool calls, errors) once two events are in it,
-and the Wall's header shows its sessions by attention state as a small
+The Events page's feed draws the last hour's events per minute (what needs
+you, handoffs, errors, the rest) once two are in it, and the Wall's header shows its sessions by attention state as a small
 donut from two sessions on. Nothing is charted with fewer than two points.
 
 **Handoffs.** A member passes work to another with an event, which the

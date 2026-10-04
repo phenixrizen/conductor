@@ -16,7 +16,7 @@ export type EventType = 'needs_input' | 'done' | 'working' | 'tool_denied' | 'pr
  */
 export interface RouteRow { badge: boolean; browser: boolean; wall: boolean; feed: boolean }
 
-/** Every event type, in the order the routing matrix lists them. */
+/** Every event type, in the order the routing lists them by default. */
 export const EVENT_TYPES: readonly EventType[] = ['needs_input', 'done', 'working', 'tool_denied', 'progress', 'artifact', 'handoff', 'error', 'exit_nonzero', 'tool_use']
 
 function row(badge: boolean, browser: boolean, wall: boolean, feed: boolean): RouteRow {
@@ -45,24 +45,26 @@ export type EventColor = 'warning' | 'success' | 'error' | 'info' | 'neutral'
 export interface EventInfo {
   /** Short name on a session badge. */
   label: string
+  /** What happened, in a sentence's words: the routing row's heading. */
+  title: string
   icon: string
   /** Its colour in the feed and on a session badge, by severity. */
   color: EventColor
-  /** What reports it, under its name in the routing matrix. */
+  /** What reports it, under its title on the Routing tab. */
   source: string
 }
 
 export const EVENT_INFO: Record<EventType, EventInfo> = {
-  needs_input: { label: 'needs input', icon: 'i-lucide-hand', color: 'warning', source: 'permission and question hooks · bell · OSC 9/777 · screen pattern' },
-  done: { label: 'done', icon: 'i-lucide-check', color: 'success', source: 'the agent finished its turn' },
-  working: { label: 'working', icon: 'i-lucide-loader-circle', color: 'neutral', source: 'a prompt was submitted · clears the badge' },
-  tool_denied: { label: 'denied', icon: 'i-lucide-shield-x', color: 'error', source: 'a tool call was refused' },
-  progress: { label: 'progress', icon: 'i-lucide-list-checks', color: 'success', source: 'skill: a step of a long task' },
-  artifact: { label: 'artifact', icon: 'i-lucide-link', color: 'info', source: 'skill: a pull request, file or URL' },
-  handoff: { label: 'handoff', icon: 'i-lucide-arrow-right-left', color: 'info', source: 'skill: work passed to another member' },
-  error: { label: 'error', icon: 'i-lucide-triangle-alert', color: 'error', source: 'an error the agent hit' },
-  exit_nonzero: { label: 'exited', icon: 'i-lucide-circle-x', color: 'error', source: 'the process exited with a non-zero code' },
-  tool_use: { label: 'tool', icon: 'i-lucide-wrench', color: 'neutral', source: 'every tool call (chatty)' },
+  needs_input: { title: 'An agent asks for input', label: 'needs input', icon: 'i-lucide-hand', color: 'warning', source: 'permission and question hooks · bell · OSC 9/777 · screen pattern' },
+  done: { title: 'An agent finished its turn', label: 'done', icon: 'i-lucide-check', color: 'success', source: 'the agent finished its turn' },
+  working: { title: 'A prompt was submitted', label: 'working', icon: 'i-lucide-loader-circle', color: 'neutral', source: 'a prompt was submitted · clears the badge' },
+  tool_denied: { title: 'A tool call was refused', label: 'denied', icon: 'i-lucide-shield-x', color: 'error', source: 'a tool call was refused' },
+  progress: { title: 'A step of a long task', label: 'progress', icon: 'i-lucide-list-checks', color: 'success', source: 'skill: a step of a long task' },
+  artifact: { title: 'A pull request, file or URL', label: 'artifact', icon: 'i-lucide-link', color: 'info', source: 'skill: a pull request, file or URL' },
+  handoff: { title: 'Work handed to another member', label: 'handoff', icon: 'i-lucide-arrow-right-left', color: 'info', source: 'skill: work passed to another member' },
+  error: { title: 'An agent hit an error', label: 'error', icon: 'i-lucide-triangle-alert', color: 'error', source: 'an error the agent hit' },
+  exit_nonzero: { title: 'A process exited badly', label: 'exited', icon: 'i-lucide-circle-x', color: 'error', source: 'the process exited with a non-zero code' },
+  tool_use: { title: 'Every tool call', label: 'tool', icon: 'i-lucide-wrench', color: 'neutral', source: 'every tool call (chatty)' },
 }
 
 type StateEvent = 'needs_input' | 'working' | 'done'
@@ -485,4 +487,94 @@ export class EntryHold {
     }
     q.timer = setTimeout(() => this.drain(sessionId, true), Math.max(0, q.items[0]!.until - Date.now()))
   }
+}
+
+/** The routing rows, grouped by how loud each event is. Every type is in exactly one group. */
+export const ROUTE_GROUPS: ReadonlyArray<{ key: string; title: string; note: string; types: readonly EventType[] }> = [
+  { key: 'loud', title: 'Needs you', note: 'interrupts', types: ['needs_input', 'tool_denied', 'error', 'exit_nonzero'] },
+  { key: 'notice', title: 'Worth knowing', note: 'shows up, never interrupts', types: ['done', 'handoff', 'artifact'] },
+  { key: 'quiet', title: 'Background', note: 'feed only', types: ['working', 'progress', 'tool_use'] },
+]
+
+/** The destinations a route row has, as the routing pills and the readout name them. */
+export const ROUTE_KEYS: ReadonlyArray<{ key: keyof RouteRow; label: string; icon: string; summary: string; hint: string }> = [
+  { key: 'badge', label: 'Badge', icon: 'i-lucide-circle-dot', summary: 'Sidebar badge', hint: 'A badge on the session in the sidebar and on its wall tile' },
+  { key: 'browser', label: 'Browser', icon: 'i-lucide-bell', summary: 'Browser notification', hint: 'A browser notification and the chime, as switched on under Alerts' },
+  { key: 'wall', label: 'Wall jump', icon: 'i-lucide-layout-grid', summary: 'Wall jumps to it', hint: 'The carousel jumps to the session while it follows routed events' },
+  { key: 'feed', label: 'Feed', icon: 'i-lucide-list', summary: 'Feed', hint: 'A line in the live feed' },
+]
+
+/** The short names the readout uses for each type. */
+const SUMMARY_NAMES: Record<EventType, string> = {
+  needs_input: 'needs you',
+  done: 'done',
+  working: 'working',
+  tool_denied: 'tool denied',
+  progress: 'progress',
+  artifact: 'artifacts',
+  handoff: 'handoffs',
+  error: 'errors',
+  exit_nonzero: 'exit ≠ 0',
+  tool_use: 'tool calls',
+}
+
+/** "Where they go": per destination that interrupts or marks (browser, wall, badge), the types routed there; destinations with none are left out. */
+export function routeSummary(routes: Record<EventType, RouteRow>): Array<{ key: keyof RouteRow; icon: string; title: string; types: string }> {
+  const out: Array<{ key: keyof RouteRow; icon: string; title: string; types: string }> = []
+  for (const key of ['browser', 'wall', 'badge'] as const) {
+    const types = EVENT_TYPES.filter((t) => routes[t][key] && !(t === 'working' && key === 'badge'))
+    if (!types.length) continue
+    const k = ROUTE_KEYS.find((r) => r.key === key)!
+    out.push({ key, icon: k.icon, title: k.summary, types: types.map((t) => SUMMARY_NAMES[t]).join(', ') })
+  }
+  return out
+}
+
+/** The feed in groups of one minute, newest first; the current minute's header says "now". */
+export function feedGroups<T extends Pick<FeedEntry, 'at' | 'seq'>>(entries: readonly T[], now: number): Array<{ key: string; label: string; entries: T[] }> {
+  const groups: Array<{ key: string; label: string; entries: T[] }> = []
+  const nowMinute = Math.floor(now / 60_000)
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!
+    const t = Date.parse(e.at)
+    const minute = Number.isNaN(t) ? -1 : Math.floor(t / 60_000)
+    const key = String(minute)
+    let g = groups.at(-1)
+    if (!g || g.key !== key) {
+      const d = new Date(minute * 60_000)
+      const hm = minute < 0 ? '' : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+      g = { key, label: minute === nowMinute ? `${hm} · now` : hm, entries: [] }
+      groups.push(g)
+    }
+    g.entries.push(e)
+  }
+  return groups
+}
+
+/** The kinds the last-hour bars stack, loudest at the bottom: what needs you, handoffs, errors, and everything else. */
+export type SparkKind = 'needs' | 'handoff' | 'error' | 'other'
+
+/** What a feed event counts as in the last-hour bars. */
+export function sparkKind(t: EventType): SparkKind {
+  if (t === 'needs_input') return 'needs'
+  if (t === 'handoff') return 'handoff'
+  if (t === 'error' || t === 'exit_nonzero' || t === 'tool_denied') return 'error'
+  return 'other'
+}
+
+/** The feed's events per minute over the last `minutes`, oldest first, one bucket a minute, and the totals per kind. */
+export function sparkBuckets(entries: ReadonlyArray<Pick<FeedEntry, 'at' | 'event'>>, now: number, minutes = 60): { buckets: Array<Record<SparkKind, number> & { minute: number }>; totals: Record<SparkKind, number> } {
+  const end = Math.floor(now / 60_000) * 60_000
+  const start = end - (minutes - 1) * 60_000
+  const buckets: Array<Record<SparkKind, number> & { minute: number }> = []
+  for (let t = start; t <= end; t += 60_000) buckets.push({ minute: t, needs: 0, handoff: 0, error: 0, other: 0 })
+  const totals: Record<SparkKind, number> = { needs: 0, handoff: 0, error: 0, other: 0 }
+  for (const e of entries) {
+    const at = Date.parse(e.at)
+    if (Number.isNaN(at) || at < start || at >= end + 60_000) continue
+    const k = sparkKind(e.event)
+    buckets[Math.floor((at - start) / 60_000)]![k]++
+    totals[k]++
+  }
+  return { buckets, totals }
 }

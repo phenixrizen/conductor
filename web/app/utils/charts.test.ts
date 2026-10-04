@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import { activityBuckets, activityTotal, attentionSlices, enough, roleColors, runLength } from './charts'
+import { attentionSlices, enough, roleColors, runLength } from './charts'
 
 const T0 = Date.parse('2026-10-03T10:30:00Z')
 const iso = (offsetS: number) => new Date(T0 + offsetS * 1000).toISOString()
@@ -10,38 +10,6 @@ describe('enough', () => {
     expect(enough(0)).toBe(false)
     expect(enough(1)).toBe(false)
     expect(enough(2)).toBe(true)
-  })
-})
-
-describe('activityBuckets', () => {
-  it('counts the feed per minute into groups over the window, oldest first, with empty minutes kept', () => {
-    const now = T0 + 30_000 // 10:30:30
-    const buckets = activityBuckets(
-      [
-        { at: iso(5), event: 'needs_input' },
-        { at: iso(10), event: 'done' },
-        { at: iso(-70), event: 'tool_use' },
-        { at: iso(-65), event: 'tool_denied' },
-        { at: iso(-65), event: 'handoff' },
-        { at: iso(-100), event: 'error' },
-        { at: iso(-100), event: 'exit_nonzero' },
-        { at: iso(-100), event: 'progress' },
-        { at: iso(-100), event: 'artifact' },
-        { at: iso(-125), event: 'error' },
-        { at: iso(-61 * 60), event: 'error' },
-        { at: iso(90), event: 'error' },
-        { at: 'nope', event: 'error' },
-      ],
-      now,
-      3,
-    )
-    // The window: 10:28, 10:29 and 10:30 (now is 10:30:30); 10:27:55 and the hour before are out, and so is 10:31:30.
-    expect(buckets.map((b) => b.minute)).toEqual([T0 - 120_000, T0 - 60_000, T0])
-    expect(buckets[2]).toEqual({ minute: T0, attention: 2, reports: 0, handoff: 0, tool: 0, error: 0 })
-    expect(buckets[1]).toEqual({ minute: T0 - 60_000, attention: 0, reports: 0, handoff: 0, tool: 0, error: 0 })
-    expect(buckets[0]).toEqual({ minute: T0 - 120_000, attention: 0, reports: 2, handoff: 1, tool: 2, error: 2 })
-    expect(activityTotal(buckets)).toBe(9)
-    expect(activityBuckets([], now).length).toBe(60)
   })
 })
 

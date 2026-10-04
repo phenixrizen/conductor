@@ -1,36 +1,65 @@
 <script setup lang="ts">
-import { COLOR_TEXT, EVENT_INFO, type FeedEntry } from '~/utils/events'
+import { COLOR_TEXT, EVENT_INFO, feedGroups, type FeedEntry } from '~/utils/events'
+import { agentInitials } from '~/utils/sessions'
 
-const props = defineProps<{ entries: FeedEntry[] }>()
+/**
+ * The live feed, newest first, in groups of one minute. Each row: its time,
+ * the event's icon, who reported it (a crew member as "<crew> / <member>"),
+ * what happened, and the one thing to do about it: Answer a question, open
+ * the run a handoff belongs to, open what an artifact points at. Text only:
+ * nothing an agent sends is rendered as HTML, and `link` is set only for a
+ * URL linkableUrl allows.
+ */
+const props = defineProps<{ entries: FeedEntry[]; now: number }>()
 
-// Newest first. Each line's time, detail and link were worked out once, when
-// it arrived (routeEntry). Text only: nothing an agent sends is rendered as
-// HTML, and `link` is set only for a URL linkableUrl allows.
-const lines = computed(() => [...props.entries].reverse())
+const live = useAttention()
+const groups = computed(() => feedGroups(props.entries, props.now))
+
+function who(e: FeedEntry): { name: string; agent: string; runId?: string } {
+  const s = live.sessions.value.find((x) => x.id === e.sessionId)
+  if (s?.crew) return { name: `${live.runNames.value[s.crew.runId] || s.crew.crewId} / ${s.crew.member}`, agent: s.agentId, runId: s.crew.runId }
+  return { name: e.sessionName, agent: s?.agentId ?? '' }
+}
 </script>
 
 <template>
-  <section class="flex flex-col rounded-md border border-default" aria-labelledby="event-feed-title" data-event-feed>
-    <div class="flex items-center gap-2 border-b border-default px-4 py-2">
-      <h3 id="event-feed-title" class="text-[11px] font-semibold uppercase tracking-wider text-muted">Live</h3>
-      <span v-if="entries.length" class="font-mono text-[11px] text-muted">{{ entries.length }}</span>
-      <code class="ml-auto truncate font-mono text-[11px] text-muted">POST /api/sessions/:id/events</code>
+  <section class="flex min-w-0 flex-col" aria-label="Live feed" data-event-feed>
+    <p v-if="!entries.length" class="py-6 text-sm text-muted">Nothing yet. Events show up here as agents report them.</p>
+    <div v-for="g in groups" :key="g.key" class="@container flex flex-col" data-feed-group>
+      <div class="pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted">{{ g.label }}</div>
+      <ol class="flex flex-col">
+        <li
+          v-for="e in g.entries"
+          :key="e.seq"
+          class="-mx-2.5 grid grid-cols-[3.5rem_1rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 rounded-md px-2.5 py-2 @min-[40rem]:grid-cols-[4rem_1.125rem_10.5rem_minmax(0,1fr)_auto]"
+          :class="e.event === 'needs_input' && 'bg-warning/10'"
+          :data-event="e.event"
+        >
+          <span class="font-mono text-[11.5px] text-muted">{{ e.time }}</span>
+          <UIcon :name="EVENT_INFO[e.event].icon" class="size-4" :class="COLOR_TEXT[EVENT_INFO[e.event].color]" />
+          <!-- One cell on a phone (what happened, then who); two columns, who first, from 40rem. -->
+          <div class="flex min-w-0 flex-col gap-0.5 @min-[40rem]:contents">
+            <NuxtLink :to="`/sessions/${e.sessionId}`" class="order-2 flex min-w-0 items-center gap-1.5 hover:underline @min-[40rem]:order-none" data-feed-who>
+              <span v-if="who(e).agent" class="grid h-[18px] w-5 flex-none place-items-center rounded bg-elevated font-mono text-[8.5px] font-semibold">{{ agentInitials(who(e).agent) }}</span>
+              <span class="truncate font-mono text-[12.5px] font-medium text-highlighted">{{ who(e).name }}</span>
+            </NuxtLink>
+            <span class="min-w-0 truncate text-[13.5px]" :title="[e.detail, e.url].filter(Boolean).join(' · ')">
+              <b class="font-medium" :class="COLOR_TEXT[EVENT_INFO[e.event].color]">{{ EVENT_INFO[e.event].label }}</b>
+              <span v-if="e.detail" class="ml-1">{{ e.detail }}</span>
+              <template v-if="e.url">
+                <span class="mx-1">·</span>
+                <a v-if="e.link" :href="e.link" target="_blank" rel="noopener noreferrer" class="text-secondary underline underline-offset-2" data-event-link>{{ e.url }}</a>
+                <span v-else>{{ e.url }}</span>
+              </template>
+            </span>
+          </div>
+          <span class="flex justify-end">
+            <UButton v-if="e.event === 'needs_input'" :to="`/sessions/${e.sessionId}`" label="Answer" size="xs" data-feed-answer />
+            <UButton v-else-if="e.event === 'handoff' && who(e).runId" :to="`/runs/${encodeURIComponent(who(e).runId!)}`" label="Open run" size="xs" color="neutral" variant="outline" />
+            <UButton v-else-if="e.link" :href="e.link" target="_blank" rel="noopener noreferrer" label="Open" size="xs" color="neutral" variant="outline" />
+          </span>
+        </li>
+      </ol>
     </div>
-    <p v-if="!lines.length" class="px-4 py-6 text-sm text-muted">Nothing yet. Events show up here as agents report them.</p>
-    <ol v-else class="h-96 overflow-y-auto px-4 py-2 font-mono text-xs leading-6">
-      <li v-for="e in lines" :key="e.seq" class="flex gap-3 whitespace-nowrap" :data-event="e.event">
-        <span class="flex-none text-dimmed">{{ e.time }}</span>
-        <span class="w-24 flex-none truncate font-medium" :class="COLOR_TEXT[EVENT_INFO[e.event].color]">{{ e.event }}</span>
-        <span class="min-w-0 truncate" :title="[e.sessionName, e.detail, e.url].filter(Boolean).join(' · ')">
-          <NuxtLink :to="`/sessions/${e.sessionId}`" class="text-highlighted hover:underline">{{ e.sessionName }}</NuxtLink>
-          <template v-if="e.detail"> · {{ e.detail }}</template>
-          <template v-if="e.url">
-            ·
-            <a v-if="e.link" :href="e.link" target="_blank" rel="noopener noreferrer" class="text-primary underline underline-offset-2" data-event-link>{{ e.url }}</a>
-            <span v-else>{{ e.url }}</span>
-          </template>
-        </span>
-      </li>
-    </ol>
   </section>
 </template>

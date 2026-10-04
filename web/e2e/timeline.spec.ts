@@ -86,6 +86,6 @@ test('the crew\'s Runs tab charts the runs once there are two, and the Events pa
   const third = await api.launchCrew(crewId)
   runs.push(third.id)
   await expect.poll(async () => Number(await chart.getAttribute('data-total')), { timeout: 60_000 }).toBeGreaterThanOrEqual(2)
-  await expect(chart.locator('svg').first()).toBeVisible()
+  await expect(chart.locator('[data-activity-bar]')).toHaveCount(60)
   await expect(chart.locator('[data-activity-chart-empty]')).toHaveCount(0)
 })

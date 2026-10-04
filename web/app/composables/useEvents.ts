@@ -2,7 +2,7 @@ import type { SessionInfo } from './useSessions'
 import type { ActivityEntry } from '~/utils/protocol'
 import { EntryHold, parseRoutes, pruneMarks, routeEntry, type EventMark, type EventType, type FeedEntry, type RouteRow, type RoutedEvent } from '~/utils/events'
 
-/** Browser storage key of the routing matrix: routes are per browser. */
+/** Browser storage key of the routing: routes are per browser. */
 export const ROUTES_KEY = 'conductor.events.routes'
 /** Longest an entry waits for the session change that carries its state. */
 const HOLD_MS = 2000
@@ -27,7 +27,7 @@ function readRoutes(): Record<EventType, RouteRow> {
 
 /**
  * Events of every session, as the admin stream delivers them (useAttention
- * pushes each `activity` entry here): the live feed, the routing matrix and
+ * pushes each `activity` entry here): the live feed, the routing rows and
  * the badges it puts on sessions. Nothing is polled and nothing persists but
  * the routes.
  */

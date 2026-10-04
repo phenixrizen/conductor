@@ -1,11 +1,11 @@
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import type { FeedEntry } from '~/utils/events'
 
 /**
- * The numbers behind the charts: activity per minute for the Events page,
- * how long a crew's runs lasted (the Crews page draws its own bars from
- * runLength), sessions by attention state for the Wall. Each is drawn only when it says something: a chart needs at
- * least two points (enough), and the empty state says what will appear.
+ * The numbers behind the charts: how long a crew's runs lasted (runLength,
+ * which the Crews pages draw as bars) and sessions by attention state for the
+ * Wall; the Events page counts its own (sparkBuckets in utils/events.ts).
+ * Each is drawn only when it says something: a chart needs at least two
+ * points (enough), and the empty state says what will appear.
  */
 
 /** The least points a chart is drawn with. */
@@ -13,58 +13,6 @@ export const MIN_POINTS = 2
 
 export function enough(points: number): boolean {
   return points >= MIN_POINTS
-}
-
-/** The event groups of the activity chart, and which feed events each counts. */
-export const ACTIVITY_GROUPS = {
-  attention: ['needs_input', 'done', 'working'],
-  reports: ['progress', 'artifact'],
-  handoff: ['handoff'],
-  tool: ['tool_use', 'tool_denied'],
-  error: ['error', 'exit_nonzero'],
-} as const satisfies Record<string, readonly FeedEntry['event'][]>
-
-export type ActivityGroup = keyof typeof ACTIVITY_GROUPS
-
-export interface ActivityBucket {
-  /** ms: the minute's start. */
-  minute: number
-  attention: number
-  reports: number
-  handoff: number
-  tool: number
-  error: number
-}
-
-function groupOf(event: FeedEntry['event']): ActivityGroup | undefined {
-  for (const [g, events] of Object.entries(ACTIVITY_GROUPS)) if ((events as readonly string[]).includes(event)) return g as ActivityGroup
-  return undefined
-}
-
-/**
- * The feed's events per minute over the last `minutes`, oldest first, one
- * bucket per minute whether or not anything happened (a flat line is the
- * truth). Entries older than the window, or in the future, are left out.
- */
-export function activityBuckets(entries: ReadonlyArray<Pick<FeedEntry, 'at' | 'event'>>, now: number, minutes = 60): ActivityBucket[] {
-  const end = Math.floor(now / 60_000) * 60_000
-  const start = end - (minutes - 1) * 60_000
-  const buckets: ActivityBucket[] = []
-  for (let t = start; t <= end; t += 60_000) buckets.push({ minute: t, attention: 0, reports: 0, handoff: 0, tool: 0, error: 0 })
-  for (const e of entries) {
-    const at = Date.parse(e.at)
-    if (Number.isNaN(at) || at < start || at >= end + 60_000) continue
-    const g = groupOf(e.event)
-    if (!g) continue
-    const b = buckets[Math.floor((at - start) / 60_000)]
-    if (b) b[g]++
-  }
-  return buckets
-}
-
-/** How many of the feed's events the buckets hold, to decide whether the chart says anything. */
-export function activityTotal(buckets: readonly ActivityBucket[]): number {
-  return buckets.reduce((n, b) => n + b.attention + b.reports + b.handoff + b.tool + b.error, 0)
 }
 
 /** A run's length: to its stop, to its last member's end, or to now while it goes. */
