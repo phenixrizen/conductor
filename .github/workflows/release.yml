@@ -89,8 +89,19 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CERT_PFX }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
         run: |
-          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then publish=always; else publish=never; fi
-          npx electron-builder --config electron-builder.yml --publish "$publish"
+          # A secret that is not set arrives as an empty variable, which electron-builder reads as a
+          # certificate path; drop those, and do not search the keychain for an identity either.
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID WIN_CSC_LINK WIN_CSC_KEY_PASSWORD; do
+            [ -z "${!v}" ] && unset "$v" || true
+          done
+          [ -n "${CSC_LINK:-}" ] || export CSC_IDENTITY_AUTO_DISCOVERY=false
+          # The package version: the tag without its v (a release candidate is 0.6.0-rc.1), else 0.0.0 with the commit.
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+            publish=always; ver="${GITHUB_REF_NAME#v}"
+          else
+            publish=never; ver="0.0.0-$(git rev-parse --short HEAD)"
+          fi
+          npx electron-builder --config electron-builder.yml --publish "$publish" -c.extraMetadata.version="$ver"
       - uses: actions/upload-artifact@v4
         with:
           name: conductor-desktop-${{ matrix.name }}
