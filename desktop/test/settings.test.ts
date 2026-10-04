@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, migrateToWsl, saveSettings, serverAffecting, validate } from '../src/settings'
+import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, serverAffecting, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -34,7 +34,8 @@ describe('settings', () => {
     writeFileSync(file, JSON.stringify({ defaultCwd: '/elsewhere' }))
     expect(loadSettings(file, defaults)).toEqual(defaults)
     writeFileSync(file, JSON.stringify({ yolo: 'yes', closeToTray: false }))
-    expect(loadSettings(file, defaults)).toEqual({ ...defaults, closeToTray: false })
+    // A file without the noticed list is an earlier build's: every notice is owed to it.
+    expect(loadSettings(file, defaults)).toEqual({ ...defaults, closeToTray: false, noticed: [] })
     expect(readFileSync(file, 'utf8')).toContain('closeToTray')
   })
   it('knows which changes restart the server', () => {
@@ -102,5 +103,29 @@ describe('settings inside WSL', () => {
     expect(mixed.settings).toMatchObject({ dataDir: '/home/me/.conductor', allowedRoots: ['/home/me/code'], defaultCwd: '/home/me/code' })
     // A cwd outside every root after the move takes the first root.
     expect(migrateToWsl({ ...win, allowedRoots: ['/srv'], defaultCwd: 'C:\\x' }, home).settings.defaultCwd).toBe('/srv')
+  })
+})
+
+describe('the one-time notices', () => {
+  const defaults = defaultSettings('/home/me', '/home/me/.config/conductor-desktop')
+  it('owes a fresh install nothing', () => {
+    expect(owedNotice(defaults)).toEqual({ notice: '', settings: defaults })
+  })
+  it.skipIf(win)('owes settings from an earlier build the publishing notice once, and keeps it marked through the file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-notice-'))
+    const file = join(dir, 'settings.json')
+    const { noticed: _drop, ...older } = defaults
+    writeFileSync(file, JSON.stringify(older))
+    const loaded = loadSettings(file, defaults)
+    expect(loaded.noticed).toEqual([])
+    const first = owedNotice(loaded)
+    expect(first.notice).toBe('publishing')
+    saveSettings(file, first.settings)
+    expect(owedNotice(loadSettings(file, defaults))).toMatchObject({ notice: '' })
+  })
+  it('says nothing to someone who turned publishing off, and marks it all the same', () => {
+    const off = owedNotice({ ...defaults, noticed: [], switchyardEnabled: false })
+    expect(off.notice).toBe('')
+    expect(off.settings.noticed).toEqual(['publishing'])
   })
 })

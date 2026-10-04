@@ -15,6 +15,7 @@ const bridge = {
   openInBrowser: (): Promise<void> => ipcRenderer.invoke('conductor:openInBrowser'),
   showLog: (): Promise<void> => ipcRenderer.invoke('conductor:showLog'),
   serverState: () => ipcRenderer.invoke('conductor:serverState'),
+  notice: (): Promise<string> => ipcRenderer.invoke('conductor:notice'),
   ice: () => ipcRenderer.invoke('conductor:ice'),
   allowIceFirewall: (): Promise<string> => ipcRenderer.invoke('conductor:allowIceFirewall'),
   versions: () => ipcRenderer.invoke('conductor:versions'),

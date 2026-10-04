@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { desktopBridge, tokenFromFragment, withoutTokenFragment } from './desktop'
+import { desktopBridge, noticeWords, tokenFromFragment, withoutTokenFragment } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -13,5 +13,13 @@ describe('desktop bridge', () => {
     expect(tokenFromFragment('#token=../evil')).toBe('')
     expect(withoutTokenFragment('http://127.0.0.1:4312/#token=abcdefghijklmnop0123456789')).toBe('http://127.0.0.1:4312/')
     expect(withoutTokenFragment('http://127.0.0.1:4312/wall#other=1&token=abcdefghijklmnop0123456789')).toBe('http://127.0.0.1:4312/wall#other=1')
+  })
+})
+
+describe('noticeWords', () => {
+  it('words the publishing notice and nothing else', () => {
+    expect(noticeWords('publishing')?.description).toContain('Settings → Switchyard')
+    expect(noticeWords('')).toBeNull()
+    expect(noticeWords('later')).toBeNull()
   })
 })

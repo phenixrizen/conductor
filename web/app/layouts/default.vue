@@ -2,6 +2,7 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { sidebarRunFor } from '~/utils/crews'
 import { SIDEBAR_SIZE } from '~/utils/sidebar'
+import { noticeWords } from '~/utils/desktop'
 
 const { hasToken, clear } = useWorkbenchToken()
 const showToken = ref(false)
@@ -25,6 +26,7 @@ function saveName() {
   nameOpen.value = false
 }
 const router = useRouter()
+const toast = useToast()
 const route = useRoute()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
@@ -78,6 +80,12 @@ async function expandByButton() {
 // for the first, 18 % again after mount for the second.
 const sidebarDefaultSize = ref(sidebar.size.value)
 onMounted(() => (sidebarDefaultSize.value = SIDEBAR_SIZE.default))
+
+// A notice the desktop app owes once (an upgrade that changed what sharing does): one toast with the way to Settings.
+onMounted(async () => {
+  const words = noticeWords((await desktop.bridge.value?.notice?.().catch(() => '')) ?? '')
+  if (words) toast.add({ ...words, icon: 'i-lucide-globe', color: 'info', duration: 20000, actions: [{ label: 'Settings', onClick: () => router.push('/settings') }] })
+})
 
 /** Saves the full sidebar's width (Nuxt UI's `--width` on its root, in percent) once a drag or a double-click on the handle has set it. */
 async function keepWidth() {

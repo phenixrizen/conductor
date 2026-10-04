@@ -12,6 +12,19 @@ export interface DesktopSettings {
   switchyardServer: string
   switchyardToken: string
   switchyardName: string
+  /** The one-time notices already shown. */
+  noticed?: string[]
+}
+
+/** The words of a one-time notice the desktop app hands the workbench; null for one this build does not know. */
+export function noticeWords(notice: string): { title: string; description: string } | null {
+  if (notice === 'publishing') {
+    return {
+      title: 'Sessions are shared through the switchyard now',
+      description: 'Share makes a link that works from anywhere, through switchyard.rslabs.net by default. Turn it off under Settings → Switchyard.',
+    }
+  }
+  return null
 }
 
 export interface DesktopServerState {
@@ -43,6 +56,8 @@ export interface DesktopBridge {
   openInBrowser(): Promise<void>
   showLog(): Promise<void>
   serverState(): Promise<DesktopServerState>
+  /** The one-time notice the app owes ('publishing'), handed out once; '' when none. Older apps lack it. */
+  notice?(): Promise<string>
   /** Windows: what the app forwards for WebRTC from WSL. */
   ice(): Promise<DesktopIceStatus>
   /** Windows: adds the firewall rule for the ICE port (one elevation prompt); the rule's state after. */

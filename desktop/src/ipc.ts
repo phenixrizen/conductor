@@ -11,6 +11,8 @@ export interface IpcDeps {
   supervisor: ServerSupervisor
   settings: { get: () => DesktopSettings; set: (s: DesktopSettings) => void }
   showLog: () => void
+  /** The one-time notice owed to this person, handed out once ('' after, and when none is owed). */
+  notice: () => string
   mainWindow: () => BrowserWindow | null
   serverVersion: () => string
   /** What the app forwards for WebRTC from WSL (Windows), for Settings. */
@@ -47,6 +49,7 @@ export function registerIpc(d: IpcDeps): void {
     }),
   )
   ipcMain.handle('conductor:settings:get', guard(() => d.settings.get()))
+  ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle(
     'conductor:settings:set',
     guard(async (_e, patch) => {

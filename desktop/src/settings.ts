@@ -27,12 +27,18 @@ export interface DesktopSettings {
   switchyardToken: string
   /** How this machine is named there; '' for its host name. */
   switchyardName: string
+  /** The one-time notices already shown (or not owed: a fresh install owes none), by name. */
+  noticed: string[]
 }
+
+/** The notices the app owes once: publishing, the round that turned sharing through the public switchyard on by default. */
+export const NOTICES = ['publishing'] as const
+export type Notice = (typeof NOTICES)[number]
 
 export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [...NOTICES] }
 }
 
 /**
@@ -111,7 +117,20 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
   if (typeof raw.switchyardServer === 'string') out.switchyardServer = raw.switchyardServer
   if (typeof raw.switchyardToken === 'string') out.switchyardToken = raw.switchyardToken
   if (typeof raw.switchyardName === 'string') out.switchyardName = raw.switchyardName
+  // A file from before the notices existed has no noticed list: every notice is owed to it.
+  out.noticed = Array.isArray(raw.noticed) ? raw.noticed.filter((n): n is string => typeof n === 'string') : []
   return out
+}
+
+/**
+ * owedNotice is the notice to show once, and the settings with it marked shown: publishing, to settings that came from a file
+ * saved before it existed while publishing is on (turned off, there is nothing to tell). A fresh install starts with every notice
+ * marked (defaultSettings), so it owes none.
+ */
+export function owedNotice(s: DesktopSettings): { notice: Notice | ''; settings: DesktopSettings } {
+  if (s.noticed.includes('publishing')) return { notice: '', settings: s }
+  const settings = { ...s, noticed: [...s.noticed, 'publishing'] }
+  return { notice: s.switchyardEnabled ? 'publishing' : '', settings }
 }
 
 /** saveSettings writes the file through a temporary one, mode 0600. */

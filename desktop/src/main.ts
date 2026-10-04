@@ -10,7 +10,7 @@ import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
 import { ServerSupervisor } from './server'
-import { defaultSettings, loadSettings, migrateToWsl, saveSettings, type DesktopSettings } from './settings'
+import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, restrictPermissions } from './window'
@@ -59,6 +59,13 @@ async function run() {
   const settingsFile = join(userData, 'settings.json')
   const defaults = defaultSettings(homedir(), userData)
   let settings = loadSettings(settingsFile, defaults)
+  // A notice owed to settings from an earlier build: shown once, in the workbench, then marked.
+  const owed = owedNotice(settings)
+  let notice = owed.notice
+  if (owed.settings !== settings) {
+    settings = owed.settings
+    saveSettings(settingsFile, settings)
+  }
   const token = randomBytes(32).toString('hex')
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
@@ -201,6 +208,11 @@ async function run() {
       },
     },
     showLog,
+    notice: () => {
+      const n = notice
+      notice = ''
+      return n
+    },
     mainWindow: () => main,
     serverVersion: () => supervisor.status.version ?? '',
     ice: () => ({ ...ice }),
