@@ -561,9 +561,12 @@ export function useSessions() {
     installIntegration: (id: string) =>
       request<{ changed: string[] }>(`/api/integrations/${encodeURIComponent(id)}/install`, { method: 'POST' }).then((r) => r.changed ?? []),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),
-    /** The token is shown this once; `invite` is the same link for the desktop app; `remote` says a rendezvous minted it (no token here). */
+    /**
+     * The token is shown this once; `invite` is the same link for the desktop app; `remote` says the switchyard minted it (no token here);
+     * `rendezvous` says, for a link made here although a switchyard is configured, which one and why the session is not there.
+     */
     createLink: (id: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
-      request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),
+      request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }>(`/api/sessions/${encodeURIComponent(id)}/links`, { method: 'POST', body }),
     revokeLink: (id: string, linkId: string) =>
       request<void>(`/api/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** The link's session or run, from this server, or from `server` (a switchyard, utils/invite.ts joinServer) with no workbench token. */

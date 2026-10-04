@@ -63,9 +63,18 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A session published to a rendezvous is viewed there: its links are
-	// minted there, over the host connection.
-	if pub := s.publishedOf(id); pub != nil {
+	// A session published to a switchyard is viewed there: its links are
+	// minted there, over the host connection. A publication still being made
+	// is waited for; one that failed gives a local link that says why.
+	server := s.publisherServer()
+	var pub PublishedSession
+	why := ""
+	if server != "" {
+		wctx, wcancel := context.WithTimeout(r.Context(), 10*time.Second)
+		pub, why = s.awaitPublication(wctx, id)
+		wcancel()
+	}
+	if pub != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		res, err := pub.Link(ctx, string(req.Role), req.ttl(), req.Label)
@@ -89,7 +98,11 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
-	s.writeLink(w, r, link, token)
+	reply := s.linkReply(r, link, token)
+	if server != "" {
+		reply["rendezvous"] = map[string]any{"server": server, "error": why}
+	}
+	writeJSON(w, http.StatusCreated, reply)
 }
 
 // readLinkRequest reads and checks the body of a link creation. It writes the

@@ -1,9 +1,18 @@
 <script setup lang="ts">
 import type { ReachInfo, ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
-import { linkReach } from '~/utils/reach'
+import { shareReach, type ShareReach } from '~/utils/share'
 
-/** A session's links, or a crew run's: those open every member of the run, one added later included. Exactly one of the two is given. */
+/**
+ * Share in one click: opening the dialog makes a view link for two hours,
+ * copies it and says where it reaches (from anywhere, through the
+ * switchyard, when the session is published there). Opening it again on the
+ * same target shows the link already made rather than minting another; the
+ * role, label and expiry are below, for another link.
+ *
+ * A session's links, or a crew run's: those open every member of the run,
+ * one added later included. Exactly one of the two is given.
+ */
 type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
 const props = defineProps<Target & { sessionName?: string }>()
 const open = defineModel<boolean>('open', { default: false })
@@ -27,11 +36,13 @@ function routes() {
     revoke: (linkId: string) => api.revokeLink(id, linkId),
   }
 }
+const isRun = computed(() => props.runId !== undefined)
+const targetKey = computed(() => (props.runId !== undefined ? `run:${props.runId}` : `session:${props.sessionId}`))
 const title = computed(() => (props.sessionName ? `Share ${props.sessionName}` : props.runId ? 'Share this crew' : 'Share this session'))
 const description = computed(() =>
   props.runId
-    ? 'Anyone with the link joins every agent of the crew, one added later too, with the role you pick. Revoking disconnects them.'
-    : 'Anyone with the link joins with the role you pick. Revoking disconnects them.',
+    ? 'The link is copied: it opens every agent of the crew, one added later too. Revoking disconnects whoever used it.'
+    : 'The link is copied. Revoking disconnects whoever used it.',
 )
 const toast = useToast()
 const copyText = useCopy()
@@ -39,11 +50,22 @@ const links = ref<ShareLink[]>([])
 const loading = ref(false)
 const creating = ref(false)
 const error = ref('')
-const created = ref<{ url: string; role: Role; label?: string; invite?: string; remote?: boolean } | null>(null)
+
+type Created = { linkId: string; url: string; role: Role; label?: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }
+/** The link made for the current target, kept while the dialog is closed so the next open shows it again. */
+const created = ref<Created | null>(null)
+const createdFor = ref('')
 /** The server's reach report, read when the modal opens; null when it could not be read. */
 const reach = ref<ReachInfo | null>(null)
-const createdReach = computed(() => (created.value ? linkReach(created.value.url, reach.value) : null))
-const reachColor: Record<string, 'success' | 'warning' | 'neutral' | 'info'> = { public: 'success', pending: 'warning', local: 'neutral', unknown: 'info' }
+const createdReach = computed<ShareReach | null>(() => (created.value ? shareReach(created.value, reach.value, isRun.value) : null))
+const reachColor: Record<string, 'success' | 'warning' | 'neutral' | 'info'> = { remote: 'success', public: 'success', pending: 'warning', local: 'neutral', unknown: 'info' }
+const reachIcon = computed(() => {
+  const r = createdReach.value
+  if (!r) return ''
+  if (r.kind === 'remote') return 'i-lucide-globe'
+  if (r.kind === 'unpublished') return 'i-lucide-unplug'
+  return r.level === 'public' ? 'i-lucide-globe' : r.level === 'pending' ? 'i-lucide-hourglass' : 'i-lucide-house'
+})
 
 const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '7200' })
 
@@ -90,24 +112,42 @@ async function refresh() {
   }
 }
 
-watch(open, (v) => {
-  if (v) {
-    created.value = null
-    refresh()
-    api
-      .reach()
-      .then((r) => (reach.value = r))
-      .catch(() => (reach.value = null))
+// Opening the dialog is the one click: the link already made for this
+// target is shown and copied again; otherwise a view link for two hours is
+// made, copied and shown. One mint per target, not per open: a switchyard
+// allows a host five link requests a minute.
+watch(open, async (v) => {
+  if (!v) return
+  error.value = ''
+  api
+    .reach()
+    .then((r) => (reach.value = r))
+    .catch(() => (reach.value = null))
+  await refresh()
+  const held = created.value && createdFor.value === targetKey.value && links.value.some((l) => l.id === created.value!.linkId && !l.revoked)
+  if (held) {
+    await copy(created.value!.url)
+    return
   }
+  created.value = null
+  await create({ role: 'view', ttlSeconds: 7200 })
 })
 
-async function create() {
+async function create(body: { role: Role; label?: string; ttlSeconds?: number }) {
   creating.value = true
   error.value = ''
   try {
-    const res = await routes().create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
-    created.value = { url: res.url, role: res.link.role, label: res.link.label, invite: res.invite, remote: 'remote' in res && res.remote === true }
-    form.label = ''
+    const res = await routes().create(body)
+    created.value = {
+      linkId: res.link.id,
+      url: res.url,
+      role: res.link.role,
+      label: res.link.label,
+      invite: res.invite,
+      remote: 'remote' in res && res.remote === true,
+      rendezvous: 'rendezvous' in res ? res.rendezvous : undefined,
+    }
+    createdFor.value = targetKey.value
     await refresh()
     await copy(res.url)
   } catch (e) {
@@ -117,15 +157,20 @@ async function create() {
   }
 }
 
+async function createAnother() {
+  await create({ role: form.role, label: form.label || undefined, ttlSeconds: Number(form.ttl) || undefined })
+  form.label = ''
+}
+
 function copy(url: string) {
-  return copyText(url, 'Link copied', 'The token is shown once; keep it private.')
+  return copyText(url, 'Link copied', 'Paste it to whoever should join.')
 }
 
 async function revoke(link: ShareLink) {
   try {
     await routes().revoke(link.id)
     toast.add({ title: 'Link revoked', description: 'Viewers using it were disconnected.', icon: 'i-lucide-ban', color: 'neutral' })
-    if (created.value && links.value.find((l) => l.id === link.id)) created.value = null
+    if (created.value && created.value.linkId === link.id) created.value = null
     await refresh()
   } catch (e) {
     error.value = (e as Error).message
@@ -153,32 +198,63 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
       <div class="flex flex-col gap-4">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
 
-        <form class="flex flex-col gap-4" @submit.prevent="create">
-          <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Role">
-            <button
-              v-for="r in roles"
-              :key="r.value"
-              type="button"
-              role="radio"
-              :aria-checked="form.role === r.value"
-              class="flex flex-col gap-1 rounded-md border p-3 text-left transition-colors"
-              :class="form.role === r.value ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default hover:border-accented'"
-              @click="form.role = r.value"
-            >
-              <span class="text-sm font-semibold">{{ r.label }}</span>
-              <span class="text-xs leading-snug text-muted">{{ r.description }}</span>
-            </button>
+        <div v-if="creating && !created" class="flex items-center gap-2 text-sm text-muted" data-share-making>
+          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
+          Making the link…
+        </div>
+
+        <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3" data-share-created>
+          <div class="flex items-center gap-2.5">
+            <span class="flex-1 truncate font-mono text-xs" :title="created.url" data-created-url>{{ shortUrl(created.url) }}</span>
+            <UBadge :label="created.role === 'control' ? 'Control' : 'View'" :color="created.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
+            <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
           </div>
-          <div class="grid grid-cols-2 gap-3">
-            <UFormField label="Label" name="label">
-              <UInput v-model="form.label" placeholder="what the link is for (optional)" class="w-full" />
-            </UFormField>
-            <UFormField label="Expires" name="ttl">
-              <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
-            </UFormField>
+          <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
+            <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
+            <UButton label="Copy invite" size="sm" color="neutral" variant="outline" @click="copyText(created!.invite!, 'Invite copied', 'It opens in the Conductor app; the link opens in a browser.')" />
           </div>
-          <UButton label="Create link" type="submit" icon="i-lucide-link" :loading="creating" class="self-end" />
-        </form>
+          <UAlert
+            v-if="createdReach"
+            :color="reachColor[createdReach.kind === 'unpublished' ? 'pending' : createdReach.level]"
+            variant="soft"
+            :icon="reachIcon"
+            :title="createdReach.title"
+            :description="createdReach.text"
+            :data-link-reach="createdReach.level"
+            :data-share-reach="createdReach.kind"
+            class="mt-1"
+          />
+        </div>
+
+        <details class="rounded-md border border-default px-3.5 py-2" data-another-link>
+          <summary class="cursor-pointer text-sm font-semibold">Another link</summary>
+          <form class="mt-3 flex flex-col gap-4" @submit.prevent="createAnother">
+            <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Role">
+              <button
+                v-for="r in roles"
+                :key="r.value"
+                type="button"
+                role="radio"
+                :aria-checked="form.role === r.value"
+                class="flex flex-col gap-1 rounded-md border p-3 text-left transition-colors"
+                :class="form.role === r.value ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-default hover:border-accented'"
+                @click="form.role = r.value"
+              >
+                <span class="text-sm font-semibold">{{ r.label }}</span>
+                <span class="text-xs leading-snug text-muted">{{ r.description }}</span>
+              </button>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <UFormField label="Label" name="label">
+                <UInput v-model="form.label" placeholder="what the link is for (optional)" class="w-full" />
+              </UFormField>
+              <UFormField label="Expires" name="ttl">
+                <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
+              </UFormField>
+            </div>
+            <UButton label="Create link" type="submit" icon="i-lucide-link" :loading="creating" class="self-end" />
+          </form>
+        </details>
 
         <details v-if="'sessionId' in props && props.sessionId" class="rounded-md border border-default px-3.5 py-2" data-paste-invite>
           <summary class="cursor-pointer text-sm font-semibold">Answer a paste invite</summary>
@@ -197,29 +273,6 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
           </div>
         </details>
 
-        <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3">
-          <div class="flex items-center gap-2.5">
-            <span class="flex-1 truncate font-mono text-xs" :title="created.url">{{ shortUrl(created.url) }}</span>
-            <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
-          </div>
-          <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
-            <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
-            <UButton label="Copy invite" size="sm" color="neutral" variant="outline" @click="copyText(created!.invite!, 'Invite copied', 'It opens in the Conductor app; the link opens in a browser.')" />
-          </div>
-          <span v-if="created.remote" class="text-xs text-muted" data-created-remote>Minted at the rendezvous: the link and the invite reach it, which hands the terminal to this machine.</span>
-          <span class="text-xs text-secondary">Shown once. Copy it now; you can always make a new one.</span>
-          <UAlert
-            v-if="createdReach"
-            :color="reachColor[createdReach.level]"
-            variant="soft"
-            :icon="createdReach.level === 'public' ? 'i-lucide-globe' : createdReach.level === 'pending' ? 'i-lucide-hourglass' : 'i-lucide-house'"
-            :title="createdReach.title"
-            :description="createdReach.text"
-            :data-link-reach="createdReach.level"
-            class="mt-1"
-          />
-        </div>
-
         <div>
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Links</h3>
@@ -227,14 +280,15 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
           </div>
           <p v-if="!live.length && !loading" class="text-sm text-muted">No links yet.</p>
           <ul v-else class="flex flex-col gap-2">
-            <li v-for="link in live" :key="link.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5">
+            <li v-for="link in live" :key="link.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5" data-share-link>
               <div class="flex items-center gap-2">
                 <span class="text-sm font-medium truncate">{{ link.label || 'unlabelled' }}</span>
                 <UBadge :label="link.role === 'control' ? 'Control' : 'View'" :color="link.role === 'control' ? 'primary' : 'neutral'" :variant="link.role === 'control' ? 'subtle' : 'outline'" size="sm" />
+                <UBadge v-if="link.remote" label="switchyard" color="info" variant="subtle" size="sm" icon="i-lucide-globe" />
                 <UButton label="Revoke" size="xs" variant="link" color="secondary" class="ml-auto" @click="revoke(link)" />
               </div>
               <span class="font-mono text-[11px] text-muted">
-                created {{ fmt(link.createdAt) }}<template v-if="link.expiresAt"> · expires {{ fmt(link.expiresAt) }}</template><template v-if="link.active !== undefined"> · {{ link.active }} using</template>
+                created {{ fmt(link.createdAt) }}<template v-if="link.expiresAt"> · expires {{ fmt(link.expiresAt) }}</template><template v-if="link.active !== undefined && !link.remote"> · {{ link.active }} using</template>
               </span>
             </li>
           </ul>

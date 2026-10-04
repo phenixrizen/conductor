@@ -13,6 +13,9 @@ import (
 // (hostagent.Uplink); PublishedSession is one publication.
 type Publisher interface {
 	Publish(ctx context.Context, local *session.Local) (PublishedSession, error)
+	// Server is the rendezvous's URL, for a reply that says where a session
+	// was meant to be published.
+	Server() string
 }
 
 // PublishedSession is a session published to the rendezvous: its hooks get
@@ -107,13 +110,35 @@ func (s *Server) publish(local *session.Local) {
 	if p == nil {
 		return
 	}
+	// A link request made meanwhile waits for this to end (awaitPublication).
+	id := local.Info().ID
+	pending := make(chan struct{})
+	s.pubMu.Lock()
+	if s.pubPending == nil {
+		s.pubPending = map[string]chan struct{}{}
+	}
+	s.pubPending[id] = pending
+	delete(s.pubErr, id)
+	s.pubMu.Unlock()
 	s.track(func() {
+		defer func() {
+			s.pubMu.Lock()
+			delete(s.pubPending, id)
+			s.pubMu.Unlock()
+			close(pending)
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		pub, err := p.Publish(ctx, local)
 		if err != nil {
-			s.log.Warn("publish to the rendezvous failed", "session", local.Info().ID, "err", err.Error())
+			s.log.Warn("publish to the rendezvous failed", "session", id, "err", err.Error())
 			local.Record(session.ActivityEntry{Type: session.ActivityError, Message: "not published to the rendezvous: " + err.Error()})
+			s.pubMu.Lock()
+			if s.pubErr == nil {
+				s.pubErr = map[string]string{}
+			}
+			s.pubErr[id] = err.Error()
+			s.pubMu.Unlock()
 			return
 		}
 		s.pubMu.Lock()
@@ -137,6 +162,45 @@ func (s *Server) publish(local *session.Local) {
 	})
 }
 
+// awaitPublication is the publication of session id, waiting as long as ctx
+// allows for one still being made; when there is none it says why: the
+// publish's error, or that it is still connecting.
+func (s *Server) awaitPublication(ctx context.Context, id string) (PublishedSession, string) {
+	s.pubMu.Lock()
+	pub, pending, why := s.published[id], s.pubPending[id], s.pubErr[id]
+	s.pubMu.Unlock()
+	if pub != nil {
+		return pub, ""
+	}
+	if pending != nil {
+		select {
+		case <-pending:
+		case <-ctx.Done():
+			return nil, "still connecting to the switchyard"
+		}
+		s.pubMu.Lock()
+		pub, why = s.published[id], s.pubErr[id]
+		s.pubMu.Unlock()
+		if pub != nil {
+			return pub, ""
+		}
+	}
+	if why == "" {
+		why = "not published"
+	}
+	return nil, why
+}
+
+// publisherServer is the rendezvous sessions are published to, "" for none.
+func (s *Server) publisherServer() string {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	if s.publisher == nil {
+		return ""
+	}
+	return s.publisher.Server()
+}
+
 // publishedOf is the publication of a session, nil for none.
 func (s *Server) publishedOf(id string) PublishedSession {
 	s.pubMu.Lock()
@@ -150,6 +214,7 @@ func (s *Server) unpublish(id string) {
 	pub := s.published[id]
 	delete(s.published, id)
 	delete(s.remoteLinks, id)
+	delete(s.pubErr, id)
 	if s.publisher != nil {
 		if s.pubGone == nil {
 			s.pubGone = map[string]bool{}

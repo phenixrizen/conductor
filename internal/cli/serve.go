@@ -246,6 +246,8 @@ func (p uplinkPublisher) Publish(ctx context.Context, local *session.Local) (api
 	return p.u.Publish(ctx, local)
 }
 
+func (p uplinkPublisher) Server() string { return p.u.ServerURL }
+
 // handshake is the JSON line --print-listen writes once the listeners are
 // bound: what a parent process needs to open the workbench and sign in.
 type handshake struct {

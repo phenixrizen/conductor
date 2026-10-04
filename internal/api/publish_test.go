@@ -21,6 +21,8 @@ func (p uplinkPublisher) Publish(ctx context.Context, local *session.Local) (Pub
 	return p.u.Publish(ctx, local)
 }
 
+func (p uplinkPublisher) Server() string { return p.u.ServerURL }
+
 // A server with a rendezvous publishes every session it starts there: the
 // rendezvous lists it as hosted by this server, a viewer there types into
 // it through the relay, its activity shows there, and ending the session
@@ -224,5 +226,22 @@ func TestAServerPublishesToAnOpenSwitchyardWithoutAToken(t *testing.T) {
 	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
 	if resp.StatusCode != http.StatusCreated || out["remote"] != true || !strings.HasPrefix(out["url"].(string), "https://rendezvous.example.net/join/") {
 		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+}
+
+// A link asked for while the session is not published (the switchyard
+// refused or is down) is made here and the reply says which switchyard and
+// why, so the Share dialog can say it in words.
+func TestLinkOnAnUnpublishedSessionSaysWhy(t *testing.T) {
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: "http://127.0.0.1:1", HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	rv, _ := out["rendezvous"].(map[string]any)
+	if resp.StatusCode != http.StatusCreated || out["remote"] != nil || out["token"] == nil || rv == nil || rv["server"] != "http://127.0.0.1:1" || rv["error"] == "" {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	if !strings.HasPrefix(out["url"].(string), "http://example.test/join/") {
+		t.Fatalf("not a local link: %v", out["url"])
 	}
 }
