@@ -57,7 +57,7 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
-	cfg.AdminToken = adminToken
+	cfg.WorkbenchToken = adminToken
 	cfg.HostTokens = []string{"test-host-token"}
 	cfg.AllowedRoots = []string{root}
 	cfg.DefaultCwd = root
@@ -565,7 +565,7 @@ func TestFileReadsNeverReachTheConfigOrCatalogFile(t *testing.T) {
 		c.Path, c.CatalogPath = configFile, catalogFile
 	})
 	for path, body := range map[string]string{
-		configFile:  fmt.Sprintf(`{"adminToken": %q, "hostTokens": ["test-host-token"], "catalogPath": "agents.json"}`, adminToken),
+		configFile:  fmt.Sprintf(`{"workbenchToken": %q, "hostTokens": ["test-host-token"], "catalogPath": "agents.json"}`, adminToken),
 		catalogFile: fmt.Sprintf(`{"agents": [{"id": "keyed", "name": "keyed", "command": ["/bin/cat"], "env": {"OPENAI_API_KEY": %q}}]}`, secret),
 		filepath.Join(e.root, "conductor.example.json"): `{"listen": ":8080"}`,
 	} {
@@ -632,7 +632,7 @@ func TestFileReadsNeverReachCopiesOfTheConfigOrCatalogFile(t *testing.T) {
 		".conductor.json.swp", "#conductor.json#", "agents.json.bak", "agents.json~", ".agents.json.swp",
 	}
 	for _, name := range append(copies, "conductor.example.json") {
-		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"workbenchToken": "`+adminToken+`"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -676,7 +676,7 @@ func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
 		}
 		target = filepath.Join(real, "prod.json")
 		configFile = filepath.Join(c.DefaultCwd, "conductor.json")
-		if err := os.WriteFile(target, []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
+		if err := os.WriteFile(target, []byte(`{"workbenchToken": "`+adminToken+`"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Symlink(target, configFile); err != nil {
@@ -686,7 +686,7 @@ func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
 	})
 	copies := []string{"real/prod.json", "real/prod.json.bak", "real/.prod.json.swp", "real/#prod.json#", "conductor.json.bak", ".conductor.json.swp"}
 	for _, name := range append(copies[1:], "real/notes.txt") {
-		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"adminToken": "`+adminToken+`"}`), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(e.root, name), []byte(`{"workbenchToken": "`+adminToken+`"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1215,7 +1215,7 @@ func TestCatalogSaveRejectsInvalidAgents(t *testing.T) {
 	}
 }
 
-func TestCatalogRoutesNeedTheAdminToken(t *testing.T) {
+func TestCatalogRoutesNeedTheWorkbenchToken(t *testing.T) {
 	e := newTestEnv(t, nil)
 	routes := []struct {
 		method, path string
@@ -2842,7 +2842,7 @@ func TestIntegrationsInstallByHandAndFailure(t *testing.T) {
 	}
 }
 
-func TestIntegrationsRoutesNeedTheAdminToken(t *testing.T) {
+func TestIntegrationsRoutesNeedTheWorkbenchToken(t *testing.T) {
 	e := newTestEnv(t, nil)
 	home := t.TempDir()
 	e.srv.home = home

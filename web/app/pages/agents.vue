@@ -11,7 +11,7 @@ import { removalOf, removalText } from '~/utils/catalog'
 useHead({ title: 'Agents' })
 
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const toast = useToast()
 const agents = ref<AgentInfo[]>([])
 /** IDs the server hides from the catalog; each can be restored. */

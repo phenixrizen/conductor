@@ -3,7 +3,7 @@ import type { NavigationMenuItem } from '@nuxt/ui'
 import { sidebarRunFor } from '~/utils/crews'
 import { SIDEBAR_SIZE } from '~/utils/sidebar'
 
-const { hasToken, clear } = useAdminToken()
+const { hasToken, clear } = useWorkbenchToken()
 const showToken = ref(false)
 const colorMode = useColorMode()
 const attention = useAttention()
@@ -239,8 +239,8 @@ defineShortcuts({
           <UTooltip text="Keyboard shortcuts" :kbds="['?']" :content="collapsed ? { side: 'right' } : undefined">
             <UButton icon="i-lucide-keyboard" color="neutral" variant="ghost" size="sm" aria-label="Keyboard shortcuts" @click="shortcuts.show()" />
           </UTooltip>
-          <UTooltip :text="hasToken ? 'Admin token set' : 'Set admin token'" :content="collapsed ? { side: 'right' } : undefined">
-            <UButton :icon="hasToken ? 'i-lucide-key-round' : 'i-lucide-lock'" :color="hasToken ? 'neutral' : 'warning'" variant="ghost" size="sm" :aria-label="hasToken ? 'Admin token set' : 'Set admin token'" @click="showToken = true" />
+          <UTooltip :text="hasToken ? 'Workbench token set' : 'Set workbench token'" :content="collapsed ? { side: 'right' } : undefined">
+            <UButton :icon="hasToken ? 'i-lucide-key-round' : 'i-lucide-lock'" :color="hasToken ? 'neutral' : 'warning'" variant="ghost" size="sm" :aria-label="hasToken ? 'Workbench token set' : 'Set workbench token'" @click="showToken = true" />
           </UTooltip>
           <UTooltip text="Toggle theme" :content="collapsed ? { side: 'right' } : undefined">
             <UButton icon="i-lucide-sun-moon" color="neutral" variant="ghost" size="sm" aria-label="Toggle theme" @click="toggleTheme" />
@@ -257,7 +257,7 @@ defineShortcuts({
 
     <slot />
 
-    <AdminTokenGate v-model:open="showToken" />
+    <WorkbenchTokenGate v-model:open="showToken" />
     <ShortcutsModal />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
   </UDashboardGroup>

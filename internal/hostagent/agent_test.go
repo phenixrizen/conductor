@@ -29,7 +29,7 @@ const (
 func startServer(t *testing.T) (*api.Server, *httptest.Server) {
 	t.Helper()
 	cfg := config.Defaults()
-	cfg.AdminToken = adminToken
+	cfg.WorkbenchToken = adminToken
 	cfg.HostTokens = []string{hostToken}
 	cfg.AllowedRoots = []string{t.TempDir()}
 	cfg.Dev = true

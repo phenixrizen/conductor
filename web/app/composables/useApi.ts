@@ -32,10 +32,10 @@ export function useApiBase() {
   return { httpBase, wsBase }
 }
 
-/** $fetch wrapper that attaches the admin token and normalises errors. */
+/** $fetch wrapper that attaches the workbench token and normalises errors. */
 export function useApi() {
   const { httpBase } = useApiBase()
-  const admin = useAdminToken()
+  const admin = useWorkbenchToken()
 
   async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string } = {}): Promise<T> {
     const token = opts.token ?? admin.token.value

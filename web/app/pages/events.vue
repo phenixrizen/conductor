@@ -4,7 +4,7 @@ import type { Integration, WebhookInfo } from '~/composables/useSessions'
 useHead({ title: 'Events' })
 
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const attention = useAttention()
 const events = useEvents()
 const { httpBase } = useApiBase()

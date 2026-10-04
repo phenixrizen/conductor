@@ -112,7 +112,7 @@ export function useEvents() {
     setMarks(pruneMarks(marks.value, routes.value, (id) => ids.has(id)))
   }
 
-  /** Another admin token: nothing seen through the old one stays (feed, badges, holds). */
+  /** Another workbench token: nothing seen through the old one stays (feed, badges, holds). */
   function reset() {
     entryHold.clear()
     feed.value = []

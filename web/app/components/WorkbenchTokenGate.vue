@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const open = defineModel<boolean>('open', { default: false })
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const draft = ref('')
 
 watch(open, (v) => {
@@ -21,11 +21,11 @@ function save() {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="Admin token" description="The token from CONDUCTOR_ADMIN_TOKEN (or the one printed at server start). It is kept in this browser only.">
+  <UModal v-model:open="open" title="Workbench token" description="The token from CONDUCTOR_WORKBENCH_TOKEN (or the one printed at server start). It opens everything here and is kept in this browser only.">
     <template #body>
       <form class="flex flex-col gap-3" @submit.prevent="save">
         <UFormField label="Token" name="token">
-          <UInput v-model="draft" type="password" autocomplete="off" placeholder="paste the admin token" class="w-full" autofocus />
+          <UInput v-model="draft" type="password" autocomplete="off" placeholder="paste the workbench token" class="w-full" autofocus />
         </UFormField>
         <div class="flex justify-end gap-2">
           <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />

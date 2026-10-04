@@ -57,7 +57,7 @@ export function desktopBridge(): DesktopBridge | null {
   return b && typeof b.token === 'function' ? b : null
 }
 
-/** tokenFromFragment reads an admin token the desktop app put in the URL fragment ("Open in browser"): `#token=…`, '' when none. */
+/** tokenFromFragment reads a workbench token the desktop app put in the URL fragment ("Open in browser"): `#token=…`, '' when none. */
 export function tokenFromFragment(hash: string): string {
   const h = hash.startsWith('#') ? hash.slice(1) : hash
   if (!h) return ''

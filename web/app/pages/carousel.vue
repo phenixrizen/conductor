@@ -9,7 +9,7 @@ useHead({ title: 'Carousel' })
 
 const attention = useAttention()
 const events = useEvents()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const { create } = useTerminalTransport()
 useShortcutsModal().registerPage(CAROUSEL_SHORTCUTS)
 

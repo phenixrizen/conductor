@@ -1,24 +1,34 @@
 import { desktopBridge } from '~/utils/desktop'
 
-const STORAGE_KEY = 'conductor.adminToken'
+const STORAGE_KEY = 'conductor.workbenchToken'
+/** The key before the token was renamed; a value found there moves over once. */
+const OLD_STORAGE_KEY = 'conductor.adminToken'
 
 function readStored(): string {
   try {
-    return localStorage.getItem(STORAGE_KEY) ?? ''
+    const now = localStorage.getItem(STORAGE_KEY)
+    if (now) return now
+    const old = localStorage.getItem(OLD_STORAGE_KEY)
+    if (old) {
+      localStorage.setItem(STORAGE_KEY, old)
+      localStorage.removeItem(OLD_STORAGE_KEY)
+      return old
+    }
+    return ''
   } catch {
     return ''
   }
 }
 
 /**
- * The admin token typed by the operator, kept in localStorage for this browser; in the desktop app, the token the shell minted for
+ * The workbench token typed by the operator, kept in localStorage for this browser; in the desktop app, the token the shell minted for
  * this run, read from its bridge and kept in memory only.
  */
-export function useAdminToken() {
+export function useWorkbenchToken() {
   const desktop = import.meta.client ? desktopBridge() : null
-  const token = useState<string>('adminToken', () => (import.meta.client && !desktop ? readStored() : ''))
-  const needsToken = useState<boolean>('adminTokenNeeded', () => false)
-  const asked = useState<boolean>('adminTokenAskedDesktop', () => false)
+  const token = useState<string>('workbenchToken', () => (import.meta.client && !desktop ? readStored() : ''))
+  const needsToken = useState<boolean>('workbenchTokenNeeded', () => false)
+  const asked = useState<boolean>('workbenchTokenAskedDesktop', () => false)
   if (desktop && !asked.value) {
     asked.value = true
     desktop

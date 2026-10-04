@@ -18,7 +18,7 @@ const srv = http.createServer((req, res) => { res.end(JSON.stringify({ ok: true,
 srv.listen(0, '127.0.0.1', () => {
   const port = srv.address().port
   if (${!!opts.noise}) process.stdout.write('Welcome to the shell\\n')
-  if (!${!!opts.silent}) process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + port, publicUrl: 'http://127.0.0.1:' + port, pid: process.pid, version: 'fake', adminToken: process.env.CONDUCTOR_ADMIN_TOKEN }) + '\\n')
+  if (!${!!opts.silent}) process.stdout.write(JSON.stringify({ listen: '127.0.0.1:' + port, publicUrl: 'http://127.0.0.1:' + port, pid: process.pid, version: 'fake', workbenchToken: process.env.CONDUCTOR_WORKBENCH_TOKEN }) + '\\n')
   process.stderr.write('serving\\n')
   if (${opts.crashAfterMs ?? 0}) setTimeout(() => process.exit(3), ${opts.crashAfterMs ?? 0})
 })
@@ -53,9 +53,9 @@ describe('server supervisor', () => {
   it('starts the server, reads its handshake past the shell\'s noise, and stops it by closing stdin', async () => {
     const launcher = new ScriptLauncher(fakeServer({ noise: true }))
     const lines: string[] = []
-    const s = new ServerSupervisor({ launcher, args: ['serve'], env: () => ({ ...process.env, CONDUCTOR_ADMIN_TOKEN: 'tok' } as Record<string, string>), log: (k, l) => lines.push(`${k}: ${l}`) })
+    const s = new ServerSupervisor({ launcher, args: ['serve'], env: () => ({ ...process.env, CONDUCTOR_WORKBENCH_TOKEN: 'tok' } as Record<string, string>), log: (k, l) => lines.push(`${k}: ${l}`) })
     const h = await s.start()
-    expect(h.adminToken).toBe('tok')
+    expect(h.workbenchToken).toBe('tok')
     expect(s.status.state).toBe('running')
     expect(s.status.url).toBe(h.publicUrl)
     const res = await fetch(h.publicUrl + '/api/health')
@@ -87,12 +87,12 @@ describe('server supervisor', () => {
   it('restart stops and starts again with the environment read afresh', async () => {
     const launcher = new ScriptLauncher(fakeServer({}))
     let token = 'one'
-    const s = new ServerSupervisor({ launcher, args: [], env: () => ({ ...process.env, CONDUCTOR_ADMIN_TOKEN: token } as Record<string, string>), log: quiet })
+    const s = new ServerSupervisor({ launcher, args: [], env: () => ({ ...process.env, CONDUCTOR_WORKBENCH_TOKEN: token } as Record<string, string>), log: quiet })
     const first = await s.start()
     token = 'two'
     const second = await s.restart()
-    expect(first.adminToken).toBe('one')
-    expect(second.adminToken).toBe('two')
+    expect(first.workbenchToken).toBe('one')
+    expect(second.workbenchToken).toBe('two')
     expect(second.pid).not.toBe(first.pid)
     await s.stop()
   })

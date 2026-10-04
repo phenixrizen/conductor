@@ -8,7 +8,7 @@ import { shortCwd } from '~/utils/sessions'
 
 const route = useRoute()
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const toast = useToast()
 const live = useAttention()
 const { httpBase } = useApiBase()

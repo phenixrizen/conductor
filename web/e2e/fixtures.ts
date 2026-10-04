@@ -137,11 +137,11 @@ export const test = base.extend<{ api: Api }, { state: E2EState }>({
   baseURL: async ({ state }, use) => {
     await use(state.baseURL)
   },
-  // Every page starts with the admin token where the workbench keeps it (useAdminToken: localStorage conductor.adminToken).
+  // Every page starts with the workbench token where the workbench keeps it (useWorkbenchToken: localStorage conductor.workbenchToken).
   page: async ({ page, state }, use) => {
     await page.addInitScript((token) => {
       try {
-        localStorage.setItem('conductor.adminToken', token)
+        localStorage.setItem('conductor.workbenchToken', token)
       } catch {
         /* storage refused: the page asks for the token, and the test fails on what it cannot find */
       }

@@ -13,7 +13,7 @@ import { bestGrid, lastItemSpan } from '~/utils/wall'
 const route = useRoute()
 const router = useRouter()
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const live = useAttention()
 const events = useEvents()
 const toast = useToast()

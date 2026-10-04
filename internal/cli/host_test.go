@@ -51,7 +51,7 @@ func TestHostRejectsABadSignalPattern(t *testing.T) {
 func TestHostSignalPatternReachesTheSession(t *testing.T) {
 	clearConductorEnv(t)
 	cfg := config.Defaults()
-	cfg.AdminToken = "admin-token"
+	cfg.WorkbenchToken = "admin-token"
 	cfg.HostTokens = []string{"host-token"}
 	cfg.AllowedRoots = []string{t.TempDir()}
 	cfg.Dev = true
@@ -147,7 +147,7 @@ func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 	cfg := config.Defaults()
-	cfg.AdminToken = "admin-token"
+	cfg.WorkbenchToken = "admin-token"
 	cfg.HostTokens = []string{"host-token"}
 	cfg.AllowedRoots = []string{t.TempDir()}
 	cfg.Dev = true

@@ -45,7 +45,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	examples := fs.Bool("examples", false, "seed the example crews once (env CONDUCTOR_EXAMPLES=1); a crew whose id exists is left alone")
 	yolo := fs.Bool("yolo", false, "launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise (env CONDUCTOR_YOLO=1)")
-	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, adminToken?, tlsListen?} (for a parent process such as the desktop app)")
+	printListen := fs.Bool("print-listen", false, "print one JSON line to stdout once listening: {listen, publicUrl, pid, version, workbenchToken?, tlsListen?} (for a parent process such as the desktop app)")
 	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "shut down when stdin closes (a parent process that dies takes the server with it)")
 	switchyard := fs.Bool("switchyard", false, "coordinate hosted sessions and launch nothing: no sessions, crews, runs or catalog of its own (env CONDUCTOR_SWITCHYARD=1; conductor switchyard)")
 	if err := fs.Parse(args); err != nil {
@@ -92,10 +92,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if cfg.Yolo {
 		log.Warn("yolo is on: agents launch with their yolo recipes and skip their permission prompts (Codex's also drops its sandbox)")
 	}
-	if cfg.AdminToken == "" {
+	if cfg.WorkbenchToken == "" {
 		tok, _ := share.NewToken()
-		cfg.AdminToken = tok
-		cfg.GeneratedAdminToken = true
+		cfg.WorkbenchToken = tok
+		cfg.GeneratedWorkbenchToken = true
 	}
 	cat, err := cfg.LoadCatalog()
 	if err != nil {
@@ -167,9 +167,12 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if cfg.PublicURLIsLocal() {
 		log.Info("share links take the address the workbench is opened at; set publicUrl (CONDUCTOR_PUBLIC_URL) for a fixed one")
 	}
-	if cfg.GeneratedAdminToken {
-		// Printed once so a developer can sign in; set CONDUCTOR_ADMIN_TOKEN to avoid this.
-		log.Warn("no admin token configured; generated one for this run", "adminToken", cfg.AdminToken)
+	if cfg.GeneratedWorkbenchToken {
+		// Printed once so a developer can sign in; set CONDUCTOR_WORKBENCH_TOKEN to avoid this.
+		log.Warn("no workbench token configured; generated one for this run", "workbenchToken", cfg.WorkbenchToken)
+	}
+	if cfg.WorkbenchTokenRenamed {
+		log.Warn("adminToken and CONDUCTOR_ADMIN_TOKEN are the old names of the workbench token; use workbenchToken or CONDUCTOR_WORKBENCH_TOKEN")
 	}
 
 	ctx, stdinCancel := context.WithCancel(ctx)
@@ -243,21 +246,21 @@ func (p uplinkPublisher) Publish(ctx context.Context, local *session.Local) (api
 // handshake is the JSON line --print-listen writes once the listeners are
 // bound: what a parent process needs to open the workbench and sign in.
 type handshake struct {
-	Listen     string `json:"listen"`
-	PublicURL  string `json:"publicUrl"`
-	PID        int    `json:"pid"`
-	Version    string `json:"version"`
-	AdminToken string `json:"adminToken,omitempty"`
-	TLSListen  string `json:"tlsListen,omitempty"`
+	Listen         string `json:"listen"`
+	PublicURL      string `json:"publicUrl"`
+	PID            int    `json:"pid"`
+	Version        string `json:"version"`
+	WorkbenchToken string `json:"workbenchToken,omitempty"`
+	TLSListen      string `json:"tlsListen,omitempty"`
 }
 
-// printHandshake writes the handshake line. The admin token goes only when
+// printHandshake writes the handshake line. The workbench token goes only when
 // the server generated it for this run (a configured one is the parent's
 // already); the line is for the parent's pipe, never a log.
 func printHandshake(w io.Writer, cfg *config.Config, ln, tlsLn net.Listener) error {
 	h := handshake{Listen: ln.Addr().String(), PublicURL: cfg.PublicURL, PID: os.Getpid(), Version: version.String()}
-	if cfg.GeneratedAdminToken {
-		h.AdminToken = cfg.AdminToken
+	if cfg.GeneratedWorkbenchToken {
+		h.WorkbenchToken = cfg.WorkbenchToken
 	}
 	if tlsLn != nil {
 		h.TLSListen = tlsLn.Addr().String()

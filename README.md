@@ -14,7 +14,7 @@ Two ways to run a session:
 |---|---|---|
 | Where the agent runs | On the machine running `conductor serve` | On your laptop via `conductor host` |
 | How browsers reach it | WebSocket relay through the server | WebRTC data channel straight to your machine, with an automatic relay fallback through the server |
-| Who starts it | Anyone with the admin token, from the UI or API | You, from your shell |
+| Who starts it | Anyone with the workbench token, from the UI or API | You, from your shell |
 
 Both kinds show up in the same session list, use the same share links, the same
 terminal and the same in-browser file viewer.
@@ -27,11 +27,11 @@ Requirements: Go 1.26+, Node 22+, and the agent CLIs you want to launch on the
 ```bash
 make deps                 # checks go/node/npm/python3, then go mod download + npm ci
 make build                # generates the SPA and builds bin/conductor with it embedded
-CONDUCTOR_ADMIN_TOKEN=change-me ./bin/conductor serve
+CONDUCTOR_WORKBENCH_TOKEN=change-me ./bin/conductor serve
 ```
 
-Open <http://localhost:8080>, paste the admin token when prompted, and press
-**Launch agent**. Without `CONDUCTOR_ADMIN_TOKEN` the server prints a random
+Open <http://localhost:8080>, paste the workbench token when prompted, and press
+**Launch agent**. Without `CONDUCTOR_WORKBENCH_TOKEN` the server prints a random
 token at startup.
 
 Host a session from your own machine instead:
@@ -211,7 +211,7 @@ data directory, config file or catalog file (`catalogPath`), even inside a
 working directory. A hosted session serves everything under its working
 directory, so do not run `conductor host` from a directory that holds a
 server's data directory or config file: anyone the session is shared with
-could read the catalog's env secrets and the admin token.
+could read the catalog's env secrets and the workbench token.
 
 ## The wall
 
@@ -740,8 +740,8 @@ conductor up <crew-id> [--open]        # launch a crew; prints the run, its URL 
 ```
 
 Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default
-`http://localhost:8080`) with the admin token from `--token` (env
-`CONDUCTOR_ADMIN_TOKEN`). `--open` opens the run's page in your browser.
+`http://localhost:8080`) with the workbench token from `--token` (env
+`CONDUCTOR_WORKBENCH_TOKEN`). `--open` opens the run's page in your browser.
 `conductor up` prints the run, the URL of its page and, for a crew set to create
 a view link, that link on a third line, `view <url>`.
 
@@ -755,7 +755,7 @@ The server's launches register it; `conductor host` does not yet, and the
 other agents get the skill's commands alone.
 
 **Agents that form crews.** An agent running in a Conductor session can form a
-crew around its own session, from inside it, with no admin token: the session's
+crew around its own session, from inside it, with no workbench token: the session's
 own token (the one `conductor notify` uses) is accepted on four routes scoped to
 that session, on by default (`agents.selfService: false` or
 `CONDUCTOR_AGENT_SELF_SERVICE=0` turns them off). The skill teaches the agent
@@ -886,7 +886,7 @@ the new run names the old one it resumed, and the old one names it.
 
 Conductor also runs as a desktop app (macOS, Linux as deb, rpm and
 AppImage, Windows through WSL 2): an Electron shell that starts the server
-on a free loopback port with an admin token minted for the run, opens the
+on a free loopback port with a workbench token minted for the run, opens the
 workbench in a window signed in with it, keeps the server in the tray when
 the window closes, and stops it when the app quits. Its **Settings** page
 holds what the server starts with (the data directory, the allowed roots,
@@ -923,8 +923,8 @@ other WSL shells are left alone.
 script: subcommands, flags (`conductor serve`'s `--examples` and `--yolo`
 among them) and their values, and for `conductor up` the crew
 ids, read from the server as you type through `conductor crews --ids` (which
-prints ids only, and nothing, with exit 0, when there is no admin token in
-`CONDUCTOR_ADMIN_TOKEN` or the server in `CONDUCTOR_SERVER` does not answer
+prints ids only, and nothing, with exit 0, when there is no workbench token in
+`CONDUCTOR_WORKBENCH_TOKEN` or the server in `CONDUCTOR_SERVER` does not answer
 within two seconds). The ids are only ever offered as words: nothing the server
 answers is run by your shell, and an id not shaped like a crew's is dropped on
 both sides. Load it with `source <(conductor completion zsh)` in `~/.zshrc`
@@ -946,8 +946,8 @@ file must run `compinit` before that line.
 |---|---|---|---|
 | `listen` | `CONDUCTOR_LISTEN` | `:8080` | bind address |
 | `publicUrl` | `CONDUCTOR_PUBLIC_URL` | `http://localhost:8080` | base for share links and the agents' notify URL; while it names localhost, a share link takes the address its request came through instead (see Sharing) |
-| `adminToken` | `CONDUCTOR_ADMIN_TOKEN` | generated | protects management routes |
-| `hostTokens` | `CONDUCTOR_HOST_TOKENS` | admin token only | tokens accepted from `conductor host` |
+| `workbenchToken` | `CONDUCTOR_WORKBENCH_TOKEN` | generated | the operator's token: opens the workbench and every management route (the old names `adminToken` and `CONDUCTOR_ADMIN_TOKEN` are still read, with a warning at start) |
+| `hostTokens` | `CONDUCTOR_HOST_TOKENS` | workbench token only | tokens accepted from `conductor host` |
 | `allowedRoots` | `CONDUCTOR_ALLOWED_ROOTS` | current directory | where server sessions may run |
 | `defaultCwd` | `CONDUCTOR_DEFAULT_CWD` | current directory | working directory when a launch omits one |
 | `allowedOrigins` | `CONDUCTOR_ALLOWED_ORIGINS` | same host | extra WebSocket origin patterns |
@@ -958,7 +958,7 @@ file must run `compinit` before that line.
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
-| — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, adminToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
+| — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
 | `switchyard.enabled` | `CONDUCTOR_SWITCHYARD` (`1`/`true`), or `conductor switchyard` | `false` | coordinate hosted sessions and launch nothing: the launching routes answer `403 switchyard` (see [Switchyard](#switchyard)) |
 | `switchyard.relay` | `CONDUCTOR_SWITCHYARD_RELAY` (`1`/`true` on, `0`/`false` off) | `true` | on a switchyard, relay the terminal for viewers whose WebRTC fails; off, they get `relay_off` and relay-only hosts are refused |
@@ -1123,7 +1123,7 @@ that matches neither an empty id nor one that begins with a dash.
 
 ## Security model and limits
 
-- The admin token gates launching, listing, stopping, link management and
+- The workbench token gates launching, listing, stopping, link management and
   editing the agent catalog; share tokens grant one role on one session; host
   tokens only allow registering hosted sessions. Tokens are compared in
   constant time and stored hashed. A crew run's link grants its role on every

@@ -312,7 +312,7 @@ func headCommit(ctx context.Context, dir string) (string, error) {
 
 // git runs git -C dir args and returns what it writes to its standard output.
 // Its environment is a session's allowlist from the server's (so no
-// CONDUCTOR_* variable, the admin token among them, reaches git or the hooks
+// CONDUCTOR_* variable, the workbench token among them, reaches git or the hooks
 // it runs) in the C locale, which --shortstat is read in. A failure carries
 // the first line git wrote to its standard error.
 func git(ctx context.Context, dir string, args ...string) (string, error) {

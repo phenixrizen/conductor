@@ -155,7 +155,7 @@ func TestResolvePathDenyListFileEntry(t *testing.T) {
 	root := setupTree(t)
 	secret := filepath.Join(root, "conductor.json")
 	for path, body := range map[string]string{
-		secret: `{"adminToken":"secret"}`,
+		secret: `{"workbenchToken":"secret"}`,
 		filepath.Join(root, "conductor.example.json"): `{}`,
 	} {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -230,7 +230,7 @@ func TestResolvePathDeniesCopiesBesideADeniedFile(t *testing.T) {
 		if name == ".#conductor.json" {
 			continue // an Emacs lock file is a dangling symbolic link, made below
 		}
-		if err := os.WriteFile(filepath.Join(root, name), []byte(`{"adminToken":"secret"}`), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(`{"workbenchToken":"secret"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

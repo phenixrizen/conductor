@@ -103,7 +103,7 @@ View-role INPUT, `resize` and `submit` are dropped by the server before they rea
 
 ## Host control connection
 
-`GET /ws/host?token=…` (host token or admin token). Text frames are JSON; binary
+`GET /ws/host?token=…` (host token or workbench token). Text frames are JSON; binary
 frames are RELAY envelopes.
 
 Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
@@ -254,7 +254,7 @@ prompt is never typed while it shows (see Crew runs).
 
 Explicit updates: `POST /api/sessions/{id}/attention` with
 `{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?}` and
-`Authorization: Bearer <agent token>` (or the admin token). Every session's
+`Authorization: Bearer <agent token>` (or the workbench token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`, which `conductor notify` and `conductor crew` read,
 `CONDUCTOR_BIN`, the absolute path of the conductor binary its hooks run,
@@ -391,7 +391,7 @@ before it. That entry's `at` is the change's `since`, taken as the state is
 set, so no one sees the state before the time its entry gives.
 
 Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
-<agent token>` (or the admin token) and the body `{type, message?, url?, to?,
+<agent token>` (or the workbench token) and the body `{type, message?, url?, to?,
 tool?, kind?, options?}`. `type` is one of the six event types or an
 attention word: `needs_input`, `working`, `done` or `clear`. An attention word
 is applied exactly as `POST /api/sessions/{id}/attention` applies it, with the
@@ -509,7 +509,7 @@ check, the integrations and an agent's self-service crew routes, answers
 `/api/join`, the events stream, health, reach and whoami, is as below.
 
 Every `/api/...` route, with the credential it needs. Admin means
-`Authorization: Bearer <admin token>`; a share token is also accepted where the
+`Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. JSON request bodies are limited to 64 KiB (2 MiB on the crew
 routes, 128 KiB when adding a member to a run) and unknown fields are rejected. Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The

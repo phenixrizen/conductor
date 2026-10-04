@@ -21,7 +21,7 @@ const completionUsage = `Usage:
       print a completion script for the shell: subcommands, flags and their
       values, and for conductor up the crew ids, from conductor crews --ids
       as you type (the server from CONDUCTOR_SERVER, else
-      http://localhost:8080, and the token from CONDUCTOR_ADMIN_TOKEN; no ids
+      http://localhost:8080, and the token from CONDUCTOR_WORKBENCH_TOKEN; no ids
       without the token or when the server does not answer)
   conductor completion install [--shell zsh|bash] [--rc FILE]
       add one marked line that loads the script to ~/.zshrc or ~/.bashrc,

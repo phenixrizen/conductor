@@ -132,7 +132,7 @@ func TestUpEnvironmentAndFlagOrder(t *testing.T) {
 	clearConductorEnv(t)
 	srv, seen := stubServer(t, http.StatusCreated, launchReply)
 	t.Setenv("CONDUCTOR_SERVER", srv.URL)
-	t.Setenv("CONDUCTOR_ADMIN_TOKEN", secretToken)
+	t.Setenv("CONDUCTOR_WORKBENCH_TOKEN", secretToken)
 	code, stdout, stderr, err := up(t, "crew-1")
 	if code != 0 || err != nil || stdout != "run r-1\n"+srv.URL+"/runs/r-1\n" {
 		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
@@ -164,7 +164,7 @@ func TestUpMissingToken(t *testing.T) {
 	clearConductorEnv(t)
 	srv, seen := stubServer(t, http.StatusCreated, launchReply)
 	code, stdout, _, err := up(t, "crew-1", "--server", srv.URL)
-	if code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_ADMIN_TOKEN") || stdout != "" {
+	if code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_WORKBENCH_TOKEN") || stdout != "" {
 		t.Fatalf("exit %d %v\nstdout:\n%s", code, err, stdout)
 	}
 	if len(*seen) != 0 {
@@ -202,11 +202,11 @@ func TestUpUsageErrors(t *testing.T) {
 func TestUpHelp(t *testing.T) {
 	clearConductorEnv(t)
 	code, _, stderr, err := up(t, "-h")
-	if code != 0 || err != nil || !strings.Contains(stderr, "conductor up") || !strings.Contains(stderr, "CONDUCTOR_ADMIN_TOKEN") {
+	if code != 0 || err != nil || !strings.Contains(stderr, "conductor up") || !strings.Contains(stderr, "CONDUCTOR_WORKBENCH_TOKEN") {
 		t.Fatalf("exit %d %v\n%s", code, err, stderr)
 	}
 	// The token's own default is never printed.
-	t.Setenv("CONDUCTOR_ADMIN_TOKEN", secretToken)
+	t.Setenv("CONDUCTOR_WORKBENCH_TOKEN", secretToken)
 	_, _, stderr, _ = up(t, "-h")
 	noSecret(t, stderr)
 }
@@ -221,7 +221,7 @@ func TestUpAPIError(t *testing.T) {
 		want   string
 	}{
 		"envelope":      {http.StatusNotFound, `{"error":{"code":"not_found","message":"no such crew"}}`, "not_found: no such crew"},
-		"unauthorized":  {http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"admin token required"}}`, "unauthorized: admin token required"},
+		"unauthorized":  {http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"workbench token required"}}`, "unauthorized: workbench token required"},
 		"not json":      {http.StatusBadGateway, `<html>bad gateway</html>`, "502"},
 		"empty":         {http.StatusInternalServerError, ``, "500"},
 		"redirect":      {http.StatusFound, ``, "302"},
@@ -413,15 +413,15 @@ func TestCrewsEmpty(t *testing.T) {
 
 func TestCrewsErrors(t *testing.T) {
 	clearConductorEnv(t)
-	if code, _, _, err := crews(t, "--server", "http://localhost:1"); code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_ADMIN_TOKEN") {
+	if code, _, _, err := crews(t, "--server", "http://localhost:1"); code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_WORKBENCH_TOKEN") {
 		t.Fatalf("no token: exit %d %v", code, err)
 	}
 	if code, _, _, err := crews(t, "extra", "--token", secretToken); code != 2 || err == nil {
 		t.Fatalf("an argument: exit %d %v", code, err)
 	}
-	srv, _ := stubServer(t, http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"admin token required"}}`)
+	srv, _ := stubServer(t, http.StatusUnauthorized, `{"error":{"code":"unauthorized","message":"workbench token required"}}`)
 	code, stdout, stderr, err := crews(t, "--server", srv.URL, "--token", secretToken)
-	if code != 1 || err == nil || !strings.Contains(err.Error(), "unauthorized: admin token required") || stdout != "" {
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "unauthorized: workbench token required") || stdout != "" {
 		t.Fatalf("exit %d %v\nstdout:\n%s", code, err, stdout)
 	}
 	noSecret(t, stdout, stderr, err)

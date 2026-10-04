@@ -7,7 +7,7 @@ export const STATE_ENV = 'CONDUCTOR_E2E_STATE'
 export interface E2EState {
   /** `http://127.0.0.1:<port>`, also the server's public URL. */
   baseURL: string
-  /** The admin token, a fresh one for each run of the suite. */
+  /** The workbench token, a fresh one for each run of the suite. */
   token: string
   port: number
   /** The server's process, killed by pid at teardown. */

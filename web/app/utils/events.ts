@@ -456,7 +456,7 @@ export class EntryHold {
     for (const id of [...this.held.keys()]) if (!keep(id)) this.forget(id)
   }
 
-  /** Drops everything held, releasing nothing (another admin token, another view of the server). */
+  /** Drops everything held, releasing nothing (another workbench token, another view of the server). */
   clear(): void {
     for (const q of this.held.values()) clearTimeout(q.timer)
     this.held.clear()

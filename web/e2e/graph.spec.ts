@@ -117,7 +117,7 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
 test('a phone gets the list, indented by depth', async ({ browser, state }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const page = await context.newPage()
-  await page.addInitScript((token) => localStorage.setItem('conductor.adminToken', token), state.token)
+  await page.addInitScript((token) => localStorage.setItem('conductor.workbenchToken', token), state.token)
   await page.goto(`/runs/${encodeURIComponent(runId)}`)
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
   const list = page.locator('[data-graph-list]')

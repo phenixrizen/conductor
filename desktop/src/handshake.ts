@@ -4,7 +4,7 @@ export interface Handshake {
   publicUrl: string
   pid: number
   version: string
-  adminToken?: string
+  workbenchToken?: string
   tlsListen?: string
 }
 
@@ -23,7 +23,9 @@ export function parseHandshake(line: string): Handshake | null {
   if (typeof o.listen !== 'string' || typeof o.publicUrl !== 'string' || typeof o.pid !== 'number') return null
   if (!/^https?:\/\//.test(o.publicUrl)) return null
   const h: Handshake = { listen: o.listen, publicUrl: o.publicUrl, pid: o.pid, version: typeof o.version === 'string' ? o.version : '' }
-  if (typeof o.adminToken === 'string' && o.adminToken) h.adminToken = o.adminToken
+  // workbenchToken, or adminToken from a server older than the rename.
+  const tok = typeof o.workbenchToken === 'string' && o.workbenchToken ? o.workbenchToken : typeof o.adminToken === 'string' ? o.adminToken : ''
+  if (tok) h.workbenchToken = tok
   if (typeof o.tlsListen === 'string' && o.tlsListen) h.tlsListen = o.tlsListen
   return h
 }

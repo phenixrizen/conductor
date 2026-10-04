@@ -20,7 +20,7 @@ func TestLoadFileAndEnvPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CONDUCTOR_MAX_SESSIONS", "7")
-	t.Setenv("CONDUCTOR_ADMIN_TOKEN", "secret")
+	t.Setenv("CONDUCTOR_WORKBENCH_TOKEN", "secret")
 	t.Setenv("CONDUCTOR_HOST_TOKENS", "a, b")
 	cfg, err := Load(path)
 	if err != nil {
@@ -35,8 +35,8 @@ func TestLoadFileAndEnvPrecedence(t *testing.T) {
 	if time.Duration(cfg.ExitedRetention) != time.Minute {
 		t.Fatalf("retention: %v", time.Duration(cfg.ExitedRetention))
 	}
-	if cfg.AdminToken != "secret" || len(cfg.HostTokens) != 2 || cfg.HostTokens[1] != "b" {
-		t.Fatalf("tokens: %q %v", cfg.AdminToken, cfg.HostTokens)
+	if cfg.WorkbenchToken != "secret" || len(cfg.HostTokens) != 2 || cfg.HostTokens[1] != "b" {
+		t.Fatalf("tokens: %q %v", cfg.WorkbenchToken, cfg.HostTokens)
 	}
 	if cfg.AllowedRoots[0] != dir {
 		t.Fatalf("roots: %v", cfg.AllowedRoots)
@@ -984,5 +984,35 @@ func TestSwitchyardConfig(t *testing.T) {
 	cfg.Switchyard.AllowedOrigins = []string{"http://app.example"}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "switchyard.allowedOrigins") {
 		t.Fatalf("a URL passed as an origin pattern: %v", err)
+	}
+}
+
+// The token's old name, adminToken in the file and CONDUCTOR_ADMIN_TOKEN in
+// the environment, still works and is reported as renamed; the new name wins
+// when both are given.
+func TestTheOldAdminTokenNameStillWorks(t *testing.T) {
+	cfg := Defaults()
+	cfg.AdminToken = "old"
+	if err := applyEnv(cfg, func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkbenchToken != "old" || !cfg.WorkbenchTokenRenamed || cfg.AdminToken != "" {
+		t.Fatalf("file: %q renamed=%v old=%q", cfg.WorkbenchToken, cfg.WorkbenchTokenRenamed, cfg.AdminToken)
+	}
+	cfg = Defaults()
+	env := map[string]string{"CONDUCTOR_ADMIN_TOKEN": "old-env"}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkbenchToken != "old-env" || !cfg.WorkbenchTokenRenamed {
+		t.Fatalf("env: %q renamed=%v", cfg.WorkbenchToken, cfg.WorkbenchTokenRenamed)
+	}
+	cfg = Defaults()
+	env = map[string]string{"CONDUCTOR_ADMIN_TOKEN": "old-env", "CONDUCTOR_WORKBENCH_TOKEN": "new-env"}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkbenchToken != "new-env" || cfg.WorkbenchTokenRenamed {
+		t.Fatalf("both: %q renamed=%v", cfg.WorkbenchToken, cfg.WorkbenchTokenRenamed)
 	}
 }

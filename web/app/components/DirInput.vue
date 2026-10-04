@@ -24,7 +24,7 @@ const model = defineModel<string>({ default: '' })
 defineProps<{ placeholder?: string; name?: string }>()
 
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 
 const root = useTemplateRef<HTMLElement>('root')
 const menu = useTemplateRef<{ inputRef?: HTMLInputElement; viewportRef?: HTMLElement }>('menu')

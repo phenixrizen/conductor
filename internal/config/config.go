@@ -142,7 +142,7 @@ type Agents struct {
 	// SelfService lets an agent form a crew around its own session, add
 	// members to its run, read its run and mint a view link to itself
 	// (docs/protocol.md): a scoped grant on the session's agent token, never
-	// the admin token. On by default.
+	// the workbench token. On by default.
 	SelfService *bool `json:"selfService,omitempty"`
 	// InstallSkill puts the Conductor skill where an agent reads skills, in
 	// the server user's home, when the agent is first launched after the
@@ -171,7 +171,7 @@ func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.A
 type Rendezvous struct {
 	// Server is the public Conductor's URL (http(s)://host[:port]).
 	Server string `json:"server"`
-	// Token is one of its host tokens (hostTokens, or its admin token).
+	// Token is one of its host tokens (hostTokens, or its workbench token).
 	Token string `json:"token"`
 	// HostName labels this server there; the machine's name when empty.
 	HostName string `json:"hostName"`
@@ -233,9 +233,14 @@ type Config struct {
 	// (PublicURLIsLocal), a share link takes the address its request came
 	// through instead: the address the workbench was opened at.
 	PublicURL string `json:"publicUrl"`
-	// AdminToken protects launch and management routes. Generated when empty.
+	// WorkbenchToken is the operator's token: it opens the workbench and every
+	// management route (the admin principal). Generated when empty.
+	WorkbenchToken string `json:"workbenchToken"`
+	// AdminToken is the old name of WorkbenchToken, still read from a config
+	// file and from CONDUCTOR_ADMIN_TOKEN so nothing breaks: applyEnv moves it
+	// over, and WorkbenchTokenRenamed says so, for one warning at start.
 	AdminToken string `json:"adminToken"`
-	// HostTokens authorize `conductor host` registrations. Empty means the admin token only.
+	// HostTokens authorize `conductor host` registrations. Empty means the workbench token only.
 	HostTokens []string `json:"hostTokens"`
 	// AllowedOrigins lists WebSocket origin patterns beyond same-host.
 	AllowedOrigins []string `json:"allowedOrigins"`
@@ -293,8 +298,11 @@ type Config struct {
 	// does by default.
 	ICE ICE `json:"ice"`
 
-	// GeneratedAdminToken is true when AdminToken was created at startup.
-	GeneratedAdminToken bool `json:"-"`
+	// GeneratedWorkbenchToken is true when WorkbenchToken was created at startup.
+	GeneratedWorkbenchToken bool `json:"-"`
+	// WorkbenchTokenRenamed is true when the token came in under its old name
+	// (adminToken, CONDUCTOR_ADMIN_TOKEN).
+	WorkbenchTokenRenamed bool `json:"-"`
 	// Examples seeds the example crews once at startup: CONDUCTOR_EXAMPLES=1
 	// (or true), or conductor serve --examples. Not a config-file key: the
 	// decoder ignores it, so an "examples" key in the file is rejected.
@@ -419,7 +427,8 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	}
 	str("CONDUCTOR_LISTEN", &cfg.Listen)
 	str("CONDUCTOR_PUBLIC_URL", &cfg.PublicURL)
-	str("CONDUCTOR_ADMIN_TOKEN", &cfg.AdminToken)
+	str("CONDUCTOR_WORKBENCH_TOKEN", &cfg.WorkbenchToken)
+	str("CONDUCTOR_ADMIN_TOKEN", &cfg.AdminToken) // the old name, folded below
 	list("CONDUCTOR_HOST_TOKENS", &cfg.HostTokens)
 	list("CONDUCTOR_ALLOWED_ORIGINS", &cfg.AllowedOrigins)
 	list("CONDUCTOR_ALLOWED_ROOTS", &cfg.AllowedRoots)
@@ -573,6 +582,15 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 			}
 		}
 		cfg.ICEServers = servers
+	}
+	// The old name of the workbench token, from the file or the environment,
+	// still works; the new name wins when both are set.
+	if cfg.AdminToken != "" {
+		if cfg.WorkbenchToken == "" {
+			cfg.WorkbenchToken = cfg.AdminToken
+			cfg.WorkbenchTokenRenamed = true
+		}
+		cfg.AdminToken = ""
 	}
 	return nil
 }

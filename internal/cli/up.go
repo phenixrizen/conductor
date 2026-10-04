@@ -46,7 +46,7 @@ const crewsUsage = `Usage:
       server cannot be asked)
 
 The server defaults to CONDUCTOR_SERVER, else http://localhost:8080; the
-admin token to CONDUCTOR_ADMIN_TOKEN.
+workbench token to CONDUCTOR_WORKBENCH_TOKEN.
 `
 
 // errNoOpener is what openBrowser returns when the platform has no command to
@@ -271,7 +271,7 @@ func addAPIFlags(fs *flag.FlagSet) apiFlags {
 	return apiFlags{
 		server: fs.String("server", "", "conductor server URL (env CONDUCTOR_SERVER, default "+defaultServer+")"),
 		// No default is shown or read here: -h would print the token.
-		token: fs.String("token", "", "admin token (env CONDUCTOR_ADMIN_TOKEN)"),
+		token: fs.String("token", "", "workbench token (env CONDUCTOR_WORKBENCH_TOKEN)"),
 	}
 }
 
@@ -284,9 +284,9 @@ func (f apiFlags) client() (*apiClient, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsAny(server, "?#") {
 		return nil, errors.New("the server must be an http or https URL with a host, and no query or fragment (--server or CONDUCTOR_SERVER)")
 	}
-	token := cmp.Or(*f.token, os.Getenv("CONDUCTOR_ADMIN_TOKEN"))
+	token := cmp.Or(*f.token, os.Getenv("CONDUCTOR_WORKBENCH_TOKEN"), os.Getenv("CONDUCTOR_ADMIN_TOKEN"))
 	if token == "" {
-		return nil, errors.New("an admin token is required (--token or CONDUCTOR_ADMIN_TOKEN)")
+		return nil, errors.New("a workbench token is required (--token or CONDUCTOR_WORKBENCH_TOKEN)")
 	}
 	// Userinfo in the URL is never used (the token travels in a header) and
 	// must not be printed or handed to a browser with the run URL.

@@ -73,7 +73,7 @@ func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
 	if tok == "" {
 		return principal{}
 	}
-	if share.Equal(tok, s.cfg.AdminToken) {
+	if share.Equal(tok, s.cfg.WorkbenchToken) {
 		return principal{admin: true, host: true}
 	}
 	for _, ht := range s.cfg.HostTokens {
@@ -89,7 +89,7 @@ func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
 	return principal{}
 }
 
-// requireAdmin wraps handlers that need the admin token.
+// requireAdmin wraps handlers that need the workbench token (the admin principal).
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authenticate(r, false).admin {
@@ -98,7 +98,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="conductor"`)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "admin token required")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 			return
 		}
 		next(w, r)

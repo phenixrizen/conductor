@@ -79,7 +79,7 @@ func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d se
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 		return "", false
 	}
-	writeError(w, http.StatusUnauthorized, "unauthorized", "agent or admin token required")
+	writeError(w, http.StatusUnauthorized, "unauthorized", "agent or workbench token required")
 	return "", false
 }
 

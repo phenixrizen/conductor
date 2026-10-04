@@ -14,7 +14,7 @@ import (
 
 // The self-service routes: what an agent may do with its own session's
 // token (docs/protocol.md, "Agents that form crews"). Each takes the agent
-// token of the session in the path (or the admin token), refuses a hosted
+// token of the session in the path (or the workbench token), refuses a hosted
 // session, and is bounded per session: an agent never holds the admin
 // token, and what it forms runs with its own session's working directory
 // and yolo choice, never more.

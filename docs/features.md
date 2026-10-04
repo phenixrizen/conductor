@@ -172,7 +172,7 @@ that order.
     broadcast again: it is skipped and named in the toast.
   - **Share crew**, open the link in a private window: every member tile is
     there, read-only.
-  - `conductor up api-sweep` from a shell with `CONDUCTOR_ADMIN_TOKEN` set
+  - `conductor up api-sweep` from a shell with `CONDUCTOR_WORKBENCH_TOKEN` set
     prints the run URL.
 
 ## Open verification
@@ -277,7 +277,7 @@ open deferred item from rounds 1 and 2, then the features below.
   script: subcommands, flags and their values statically; crew ids for
   `conductor up` dynamically through `conductor crews --ids` (ids only, one
   per line, exit 0 and silent when the server is unreachable or the token is
-  missing), using `CONDUCTOR_SERVER` and `CONDUCTOR_ADMIN_TOKEN` from the
+  missing), using `CONDUCTOR_SERVER` and `CONDUCTOR_WORKBENCH_TOKEN` from the
   environment. `conductor completion install` appends one marked `source`
   line to `~/.zshrc` or `~/.bashrc` (idempotent; refuses a file, a link or a
   directory not owned by the user). No new dependency.
@@ -804,7 +804,7 @@ branch `design/crews-graph`.
 - **Desktop: Electron, with Windows through WSL2.** A `desktop/` shell packages
   the Go server (macOS dmg and zip, Linux deb, rpm and AppImage) and talks to it
   through a one-line JSON handshake on stdout and a stdin that ends the server
-  when the shell dies; the admin token lives in memory for the shell's run.
+  when the shell dies; the workbench token lives in memory for the shell's run.
   Windows gets no native server: the installer bundles the Linux binary and runs
   it inside the user's WSL2 distribution, with a first-run screen that explains
   `wsl --install`. (Round 6 settled how WSL reaches out: the app forwards,
@@ -822,7 +822,7 @@ branch `design/crews-graph`.
   token gains a scoped grant: form a crew around its own session (its cwd and
   yolo, never more; the session becomes the first member), add a member to its
   run, read its run, mint a view-only link to itself; two crews per session
-  per hour. An agent never holds the admin token. `conductor crew create|add|
+  per hour. An agent never holds the workbench token. `conductor crew create|add|
   status|link` wrap the routes; `--open` shows a toast with the run in the
   workbench rather than navigating anyone. A needs-input report may carry
   choices that viewers answer with one click.

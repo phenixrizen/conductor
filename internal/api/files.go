@@ -11,7 +11,7 @@ import (
 
 // fileDeny returns what no file read of a server session may reach, even
 // inside its working directory: the data directory, whose catalog.json holds
-// the agents' env secrets; the config file, which holds the admin token and
+// the agents' env secrets; the config file, which holds the workbench token and
 // host tokens; and the catalog file (catalogPath), which can hold env secrets.
 // For each of the two files there is also a name entry (see
 // session.ResolvePath): beside it, and beside its target when the path is a

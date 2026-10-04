@@ -114,11 +114,11 @@ const test = base.extend<object, { server: Started & { root: string; untrusted: 
 
 test.skip(!live, 'set CONDUCTOR_E2E_LIVE=1 and CONDUCTOR_E2E_LIVE_REPO to an already-trusted git repository')
 
-/** The admin token where the workbench keeps it, so a page can type into a session. */
+/** The workbench token where the workbench keeps it, so a page can type into a session. */
 async function signIn(page: Page, server: Started) {
   await page.addInitScript((token) => {
     try {
-      localStorage.setItem('conductor.adminToken', token)
+      localStorage.setItem('conductor.workbenchToken', token)
     } catch {
       /* the page asks */
     }

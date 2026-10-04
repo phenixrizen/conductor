@@ -188,7 +188,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
 		}
-		writeError(w, http.StatusUnauthorized, "unauthorized", "admin token required")
+		writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 		return
 	}
 	// The middleware wraps the writer; ResponseController reaches the flusher

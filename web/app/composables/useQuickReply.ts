@@ -10,7 +10,7 @@ import type { SessionInfo } from './useSessions'
  */
 export function useQuickReply() {
   const { create } = useTerminalTransport()
-  const admin = useAdminToken()
+  const admin = useWorkbenchToken()
   const sending = useState<Set<string>>('quickReplySending', () => new Set())
 
   function mark(id: string, on: boolean) {

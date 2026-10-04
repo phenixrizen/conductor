@@ -1,7 +1,7 @@
 # Conductor desktop
 
 The desktop app is an Electron shell around the `conductor` server: it
-starts `conductor serve` on a free loopback port with an admin token minted
+starts `conductor serve` on a free loopback port with a workbench token minted
 for the run, opens the embedded workbench in a window with that token handed
 over through a context-isolated bridge, and stops the server when it quits.
 Nothing moves out of Go: the shell only runs the binary, keeps its settings,
@@ -40,7 +40,7 @@ still has hook assets that name a binary that exists.
 
 ## The token
 
-The admin token is 32 random bytes minted when the server starts and lives
+The workbench token is 32 random bytes minted when the server starts and lives
 in the shell's memory, the server's environment and the handshake line: it
 is never written to disk. The workbench reads it from the bridge, never from
 localStorage. "Open in browser" opens the system browser on the server's

@@ -10,7 +10,7 @@ const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ launched: [session: SessionInfo] }>()
 
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const toast = useToast()
 const live = useAttention()
 const { httpBase } = useApiBase()
@@ -182,8 +182,8 @@ async function submit() {
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />
           </UFormField>
           <UFormField label="Run this in your terminal" name="command">
-            <CodeBlock :commands="[command]" wrap :disabled="!localReady" copy-title="Command copied" copy-description="It carries your admin token; keep it private." />
-            <template #hint><span>uses your admin token; keep it private</span></template>
+            <CodeBlock :commands="[command]" wrap :disabled="!localReady" copy-title="Command copied" copy-description="It carries your workbench token; keep it private." />
+            <template #hint><span>uses your workbench token; keep it private</span></template>
           </UFormField>
           <p class="text-xs leading-relaxed text-muted">Your terminal stays attached. The session appears here as <b class="text-default">hosted</b> once it connects, peer-to-peer when UDP allows.</p>
         </template>

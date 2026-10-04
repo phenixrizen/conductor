@@ -144,7 +144,7 @@ func (s *Server) hostTokenOK(tok string) bool {
 	if tok == "" {
 		return false
 	}
-	if share.Equal(tok, s.cfg.AdminToken) {
+	if share.Equal(tok, s.cfg.WorkbenchToken) {
 		return true
 	}
 	for _, ht := range s.cfg.HostTokens {

@@ -132,7 +132,7 @@ func TestServeLogsTheDataDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	logs := serveUntilListening(t, "--config", cfg)
 	if lines := logLines(logs, "conductor serving", "dataDir="+data); len(lines) != 1 {
 		t.Fatalf("the serving line does not name the data directory:\n%s", logs)
@@ -151,7 +151,7 @@ func TestServeLogsTheDataDirectory(t *testing.T) {
 func TestServeWarnsWhenTheDataDirOverlapsAnAllowedRoot(t *testing.T) {
 	clearConductorEnv(t)
 	home := os.Getenv("HOME")
-	cfg := writeServeConfig(t, t.TempDir(), fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, home, home))
+	cfg := writeServeConfig(t, t.TempDir(), fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, home, home))
 	logs := serveUntilListening(t, "--config", cfg)
 	data := filepath.Join(home, ".conductor")
 	if lines := logLines(logs, "level=WARN", "dataDir="+data, "allowedRoot="+home); len(lines) != 1 {
@@ -163,7 +163,7 @@ func TestServeWarnsWhenTheDataDirOverlapsAnAllowedRoot(t *testing.T) {
 // settings choose another.
 func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
 	clearConductorEnv(t)
-	cfg := writeServeConfig(t, t.TempDir(), `{"adminToken": "t"}`)
+	cfg := writeServeConfig(t, t.TempDir(), `{"workbenchToken": "t"}`)
 	data := filepath.Join(os.Getenv("HOME"), ".conductor")
 	// A file where the directory should be defeats MkdirAll even for root.
 	if err := os.WriteFile(data, []byte("not a directory"), 0o600); err != nil {
@@ -200,7 +200,7 @@ func TestServeKeepsAnOldDataDirectoryWithANotice(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
 	logs := serveUntilListening(t, "--config", cfg)
 	def := filepath.Join(os.Getenv("HOME"), ".conductor")
 	if lines := logLines(logs, "level=WARN", old, def); len(lines) != 1 {
@@ -224,7 +224,7 @@ func TestServeUsesTheHomeDataDirectory(t *testing.T) {
 	if err := os.Mkdir(work, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
 	logs := serveUntilListening(t, "--config", cfg)
 	data := filepath.Join(os.Getenv("HOME"), ".conductor")
 	if lines := logLines(logs, "conductor serving", "dataDir="+data); len(lines) != 1 {
@@ -248,7 +248,7 @@ func TestServeWritesTheHookAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	serveUntilListening(t, "--config", cfg)
 	exe, err := os.Executable()
 	if err != nil {
@@ -275,7 +275,7 @@ func TestServeGoesOnWhenItCannotSetTheModesOfTheHookAssets(t *testing.T) {
 	}
 	data := filepath.Join(dir, "state")
 	asset := filepath.Join(data, "hooks", "claude.json")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	old := writeAssets
 	t.Cleanup(func() { writeAssets = old })
 	writeAssets = func(hooksDir, bin string) error {
@@ -312,7 +312,7 @@ func TestServeGoesOnWhenItCannotSetTheModeOfANewHookAsset(t *testing.T) {
 	}
 	data := filepath.Join(dir, "state")
 	asset := filepath.Join(data, "hooks", "claude.json")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	t.Cleanup(agents.ReplaceChmod(func(p string, m fs.FileMode) error {
 		if strings.HasPrefix(filepath.Base(p), ".claude.json.conductor-") {
 			return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
@@ -352,7 +352,7 @@ func TestServeNamesTheConductorOnPATH(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	serveUntilListening(t, "--config", cfg)
 	b, err := os.ReadFile(filepath.Join(data, "hooks", "claude.json"))
 	if err != nil || !strings.Contains(string(b), `"`+filepath.Join(bin, "conductor")+` notify --claude-hook"`) {
@@ -375,7 +375,7 @@ func TestServeWarnsAboutAWebhookHostThatDoesNotResolve(t *testing.T) {
 	}
 	t.Cleanup(func() { config.LookupWebhookHost = old })
 	dir := t.TempDir()
-	body := fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q,
+	body := fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q,
 		"webhooks": [{"url": "https://nowhere.example/hook?token=t0k3n", "events": ["error"], "secret": "s3cret"}]}`, dir, dir, filepath.Join(t.TempDir(), "data"))
 	logs := serveUntilListening(t, "--config", writeServeConfig(t, t.TempDir(), body))
 	if lines := logLines(logs, "level=WARN", "webhooks[0]", "nowhere.example did not resolve"); len(lines) != 1 {
@@ -404,7 +404,7 @@ func TestServeSeedsTheExamplesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	logs := serveUntilListening(t, "--config", cfg, "--examples")
 	if lines := logLines(logs, "example crews", `added="[example-todo-app example-test-fixer example-docs-writer example-dependency-upgrade]"`, "skipped=[]"); len(lines) != 1 {
 		t.Fatalf("first start:\n%s", logs)
@@ -430,7 +430,7 @@ func TestServeLogsTheReachResult(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "off"}}`, dir, dir, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "off"}}`, dir, dir, data))
 	logs := serveUntilListening(t, "--config", cfg)
 	if lines := logLines(logs, "reach: off"); len(lines) != 1 {
 		t.Fatalf("off is not logged:\n%s", logs)
@@ -438,7 +438,7 @@ func TestServeLogsTheReachResult(t *testing.T) {
 	// Auto without a TLS listener only looks the address up; the lookup goes
 	// to the STUN server named, here one that answers nothing on loopback.
 	t.Setenv("CONDUCTOR_REACH", "auto")
-	cfg = writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "auto", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
+	cfg = writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "auto", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
 	logs = serveUntilListening(t, "--config", cfg)
 	if lines := logLines(logs, "reach: auto finds the public address"); len(lines) != 1 {
 		t.Fatalf("auto without TLS is not explained:\n%s", logs)
@@ -524,7 +524,7 @@ func TestServeListensWithCertificateFiles(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := writeTestCert(t, dir)
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "certFile": %q, "keyFile": %q}}`, dir, dir, data, certPath, keyPath))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "certFile": %q, "keyFile": %q}}`, dir, dir, data, certPath, keyPath))
 	logs := serveWhile(t, "tls listening", func(logs string) {
 		addr := tlsAddr(t, logs)
 		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
@@ -552,7 +552,7 @@ func TestServeServesNothingOnTLSBeforeTheFirstCertificate(t *testing.T) {
 	// ACME for the public address with reach manual: the address lookup goes
 	// to a STUN server that answers nothing, so no order can start, and the
 	// listener must refuse every handshake rather than serve something made up.
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "acme": {"email": "me@example.net"}}, "reach": {"mode": "manual", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "acme": {"email": "me@example.net"}}, "reach": {"mode": "manual", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
 	t.Setenv("CONDUCTOR_REACH", "manual")
 	logs := serveWhile(t, "tls listening", func(logs string) {
 		addr := tlsAddr(t, logs)
@@ -624,13 +624,13 @@ func TestServePrintsTheListenHandshake(t *testing.T) {
 	if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
 		t.Fatalf("listen %q", h.Listen)
 	}
-	if h.PublicURL != "http://localhost:"+port || h.PID != os.Getpid() || h.Version == "" || len(h.AdminToken) < 32 || h.TLSListen != "" {
+	if h.PublicURL != "http://localhost:"+port || h.PID != os.Getpid() || h.Version == "" || len(h.WorkbenchToken) < 32 || h.TLSListen != "" {
 		t.Fatalf("handshake %+v (port %s)", h, port)
 	}
 	if lines := logLines(logs.String(), "conductor serving", "publicUrl=http://localhost:"+port); len(lines) != 1 {
 		t.Fatalf("publicUrl did not follow the port:\n%s", logs.String())
 	}
-	if strings.Contains(logs.String(), h.AdminToken) {
+	if strings.Contains(logs.String(), h.WorkbenchToken) {
 		// The generated token is logged once by design (a developer signs in with it); the handshake does not change that.
 		t.Log("the generated token is in the log, as before")
 	}
@@ -642,7 +642,7 @@ func TestServeExitsWhenStdinCloses(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
 	data := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"adminToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
 	t.Cleanup(agents.ForgetBinary())
 	pr, pw := io.Pipe()
 	var logs syncBuffer
@@ -680,7 +680,7 @@ func TestServeExitsWhenStdinCloses(t *testing.T) {
 func TestSwitchyardCommandServes(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
-	cfg := writeServeConfig(t, dir, `{"adminToken": "t", "dataDir": "`+filepath.Join(dir, "state")+`"}`)
+	cfg := writeServeConfig(t, dir, `{"workbenchToken": "t", "dataDir": "`+filepath.Join(dir, "state")+`"}`)
 	logs := serveUntilListening(t, "--config", cfg, "--switchyard")
 	if lines := logLines(logs, "switchyard: coordinating hosted sessions", "relay=true"); len(lines) != 1 {
 		t.Fatalf("no switchyard line:\n%s", logs)

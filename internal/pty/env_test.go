@@ -8,7 +8,7 @@ import (
 
 func TestBuildEnv(t *testing.T) {
 	parent := []string{
-		"PATH=/bin", "HOME=/home/x", "SECRET=1", "LC_ALL=C", "CONDUCTOR_ADMIN_TOKEN=t",
+		"PATH=/bin", "HOME=/home/x", "SECRET=1", "LC_ALL=C", "CONDUCTOR_WORKBENCH_TOKEN=t",
 		"LD_PRELOAD=/evil.so", "EXTRA=yes", "TERM=dumb", "CONDUCTOR_BIN=/from/the/parent",
 	}
 	set := map[string]string{"FOO": "bar", "CONDUCTOR_X": "no", "LD_LIBRARY_PATH": "/x", "CONDUCTOR_BIN": "/from/the/catalog"}

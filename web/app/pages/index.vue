@@ -4,7 +4,7 @@ import { groupSessions } from '~/utils/sessions'
 useHead({ title: 'Sessions' })
 
 const attention = useAttention()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const launch = useLaunchModal()
 
 // The sidebar is the session list; this route only picks the first session

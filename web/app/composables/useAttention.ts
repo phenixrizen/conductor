@@ -76,7 +76,7 @@ export function useAttentionStore() {
 
 /**
  * Live session state for the whole app: one streaming fetch of
- * /api/events (admin token in the Authorization header, never in the URL)
+ * /api/events (workbench token in the Authorization header, never in the URL)
  * with polling as a fallback. Drives badges, counters, the tab title, the
  * favicon, browser notifications and the chime, as the Events page routes
  * them, and hands every activity entry to useEvents.
@@ -84,7 +84,7 @@ export function useAttentionStore() {
 export function useAttention() {
   const store = useAttentionStore()
   const version = useState<number>('attentionVersion', () => 0)
-  const admin = useAdminToken()
+  const admin = useWorkbenchToken()
   const { httpBase } = useApiBase()
   const api = useSessions()
   const events = useEvents()
@@ -233,7 +233,7 @@ export function useAttention() {
       const res = await fetch(`${httpBase.value}/api/events`, { headers: { Authorization: `Bearer ${admin.token.value}` }, signal })
       if (res.status === 401) {
         admin.needsToken.value = true
-        store.value.error = 'Admin token required'
+        store.value.error = 'Workbench token required'
         return
       }
       if (!res.ok || !res.body) throw new Error(`events ${res.status}`)

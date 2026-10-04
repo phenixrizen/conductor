@@ -77,7 +77,7 @@ export interface Started {
 
 /**
  * Starts `conductor serve` with config and a clean environment: PATH, LANG, the HOME given, and the CONDUCTOR_* values that place it
- * (data directory, public URL, allowed root, default working directory, admin token); of the caller's own variables only the ones
+ * (data directory, public URL, allowed root, default working directory, workbench token); of the caller's own variables only the ones
  * passEnv names, never a CONDUCTOR_* one, so a CONDUCTOR_YOLO or a token set in the shell cannot reach it. It returns once /api/health answers, and kills the server when it does not.
  */
 export async function startServer(o: {
@@ -104,7 +104,7 @@ export async function startServer(o: {
       CONDUCTOR_PUBLIC_URL: baseURL,
       CONDUCTOR_ALLOWED_ROOTS: o.allowedRoot,
       CONDUCTOR_DEFAULT_CWD: o.defaultCwd,
-      CONDUCTOR_ADMIN_TOKEN: token,
+      CONDUCTOR_WORKBENCH_TOKEN: token,
       CONDUCTOR_REACH: 'off',
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
     },

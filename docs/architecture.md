@@ -175,7 +175,7 @@ the relayed terminals, so one small machine with a certificate serves many.
 `conductor serve --listen 127.0.0.1:0 --print-listen --exit-on-stdin-close`
 with the settings it keeps (`userData/settings.json`: data directory,
 allowed roots, default directory, yolo, reach) as `CONDUCTOR_*` variables,
-an admin token minted for the run in the environment, and the login shell's
+a workbench token minted for the run in the environment, and the login shell's
 PATH so the agents are found; reads the handshake line from stdout; opens the
 workbench in a window whose preload exposes the token through a
 context-isolated bridge (`window.conductorDesktop`); polls the server's
@@ -216,7 +216,7 @@ registers the `conductor:` scheme: an invite opens its own join page with
 
 ## Security model
 
-- The admin token protects launching, listing, stopping, link management and
+- The workbench token protects launching, listing, stopping, link management and
   editing the agent catalog, which is as powerful as the server user: a saved
   agent's argv and env run as that user.
 - Share links carry their own 256-bit token; only its SHA-256 is stored. A link
