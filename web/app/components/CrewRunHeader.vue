@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
-import { shortRunId, startedClock } from '~/utils/crewWords'
+import { runSubtitle, shortRunId } from '~/utils/crewWords'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -112,7 +112,7 @@ async function stopAll() {
       <span class="flex min-w-0 items-baseline gap-2">
         <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate hover:underline" :title="`The saved crew ${run.name}`">{{ run.name }}</NuxtLink>
         <span v-else class="truncate">Run</span>
-        <span v-if="run" class="hidden flex-none text-[13px] font-normal text-muted sm:inline">run started {{ startedClock(run.startedAt) }}</span>
+        <span v-if="run" class="flex-none truncate text-[13px] font-normal text-muted" :class="!run.label && 'hidden sm:inline'" data-run-subtitle>{{ runSubtitle(run) }}</span>
         <span class="hidden flex-none font-mono text-[11px] font-normal text-dimmed md:inline" :title="runId">{{ shortRunId(runId) }}</span>
       </span>
     </template>

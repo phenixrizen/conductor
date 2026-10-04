@@ -118,7 +118,7 @@ export function useAttention() {
     return runs.list()
   })
   /** The runs' names by id, for the sidebar's run headers. */
-  const runNames = computed<Record<string, string>>(() => Object.fromEntries(runList.value.map((r) => [r.id, r.name])))
+  const runNames = computed<Record<string, string>>(() => Object.fromEntries(runList.value.map((r) => [r.id, r.label || r.name])))
   /** The run with this id as last read, if the store has it. */
   function runOf(id: string): RunInfo | undefined {
     void runsVersion.value

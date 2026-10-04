@@ -156,11 +156,8 @@ func (c Crew) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
 		return invalidf("name must not be empty")
 	}
-	if utf8.RuneCountInString(c.Name) > maxName {
-		return invalidf("name must be at most %d characters", maxName)
-	}
-	if strings.ContainsFunc(c.Name, unicode.IsControl) {
-		return invalidf("name must not contain control characters")
+	if err := nameError("name", c.Name); err != nil {
+		return err
 	}
 	if utf8.RuneCountInString(c.Goal) > maxGoal {
 		return invalidf("goal must be at most %d characters", maxGoal)
@@ -365,4 +362,22 @@ func (c Crew) clone() Crew {
 		c.Members[i].Args = slices.Clone(c.Members[i].Args)
 	}
 	return c
+}
+
+// nameError checks a name the way a crew's is checked: at most maxName
+// characters, no control characters. what names it in the message.
+func nameError(what, s string) error {
+	if utf8.RuneCountInString(s) > maxName {
+		return invalidf("%s must be at most %d characters", what, maxName)
+	}
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return invalidf("%s must not contain control characters", what)
+	}
+	return nil
+}
+
+// ValidateLabel checks a run's own name (Run.Label) as a crew name is
+// checked; empty is fine: the run then has none.
+func ValidateLabel(label string) error {
+	return nameError("label", label)
 }

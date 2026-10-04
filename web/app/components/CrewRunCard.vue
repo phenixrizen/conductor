@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import { memberTiles, shortRunId, startedClock } from '~/utils/crewWords'
+import { memberTiles, runSubtitle, shortRunId } from '~/utils/crewWords'
 import { runState } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 
@@ -50,12 +50,12 @@ async function stop() {
     :class="needs ? 'border-warning ring-1 ring-warning/40' : 'border-default'"
     :data-run="run.id"
     :data-state="state.state"
-    :aria-label="`${run.name}, run started ${startedClock(run.startedAt)}`"
+    :aria-label="`${run.name}, ${runSubtitle(run)}`"
   >
     <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
       <UIcon name="i-lucide-circle-play" class="size-4.5 flex-none" :class="needs ? 'text-warning' : 'text-success'" />
       <NuxtLink :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate text-[15px] font-semibold text-highlighted hover:underline">{{ run.name }}</NuxtLink>
-      <span class="text-[13px] text-muted">run started {{ startedClock(run.startedAt) }}</span>
+      <span class="truncate text-[13px] text-muted" data-run-subtitle>{{ runSubtitle(run) }}</span>
       <span class="font-mono text-[11px] text-dimmed" :title="run.id">{{ shortRunId(run.id) }}</span>
       <YoloBadge v-if="run.yolo" icon class="flex-none" />
       <UBadge :label="needs ? `${needs} need${needs === 1 ? 's' : ''} you` : 'running'" :color="needs ? 'warning' : 'success'" variant="subtle" size="sm" class="ml-auto flex-none" data-run-state />

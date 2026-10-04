@@ -1614,3 +1614,32 @@ func TestCrewRunsListsRecordsAndLiveRuns(t *testing.T) {
 		t.Fatalf("no token: %d", resp.StatusCode)
 	}
 }
+
+// A launch may name the run: the name is on the run, read back and kept by a
+// resume; no body launches it unnamed; a bad name or an unknown field is refused.
+func TestCrewLaunchTakesALabel(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.sendCrew("POST", "/api/crews", map[string]any{
+		"name": "Named", "goal": "ship", "cwd": e.root, "where": "server", "isolation": "none", "members": []any{catMember("core", "manual")},
+	}, http.StatusCreated)["id"].(string)
+	resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated || out["run"].(map[string]any)["label"] != nil {
+		t.Fatalf("unnamed: %d %v", resp.StatusCode, out)
+	}
+	resp, out = e.do("POST", "/api/crews/"+id+"/launch", adminToken, map[string]any{"label": "  fix login  "})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("named: %d %v", resp.StatusCode, out)
+	}
+	runID := out["run"].(map[string]any)["id"].(string)
+	if _, got := e.do("GET", "/api/runs/"+runID, adminToken, nil); got["run"].(map[string]any)["label"] != "fix login" {
+		t.Fatalf("read: %v", got["run"])
+	}
+	e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil)
+	if resp, got := e.do("POST", "/api/runs/"+runID+"/resume", adminToken, nil); resp.StatusCode >= 300 || got["run"].(map[string]any)["label"] != "fix login" {
+		t.Fatalf("resume: %d %v", resp.StatusCode, got)
+	}
+	for _, body := range []map[string]any{{"label": strings.Repeat("x", 61)}, {"name": "x"}} {
+		resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, body)
+		wantAPIError(t, fmt.Sprint(body), resp, out, http.StatusBadRequest, "invalid_request", "")
+	}
+}

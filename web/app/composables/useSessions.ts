@@ -352,7 +352,10 @@ export interface RunInfo {
   /** `<crew id>-<8 hex>`. */
   id: string
   crewId: string
+  /** The crew's name. */
   name: string
+  /** The run's own name, given at launch and kept by a resume; absent when it has none. */
+  label?: string
   goal: string
   cwd: string
   isolation: 'none' | 'worktree'
@@ -503,7 +506,8 @@ export function useSessions() {
      * `run_stopped` when the run is stopped while it launches; a member's session errors as POST /api/sessions; 500 `launch_failed`.
      * A crew with `viewLinkTtlSeconds` also gets a view link of the run, in `viewLink`: its token is in this reply only, to show once.
      */
-    launchCrew: (id: string) => request<{ run: RunInfo; viewLink?: { link: ShareLink; token: string; url: string } }>(`/api/crews/${encodeURIComponent(id)}/launch`, { method: 'POST' }),
+    launchCrew: (id: string, body?: { label: string }) =>
+      request<{ run: RunInfo; viewLink?: { link: ShareLink; token: string; url: string } }>(`/api/crews/${encodeURIComponent(id)}/launch`, { method: 'POST', body }),
     /** Every run in the server's memory, newest first. */
     listRuns: () => request<{ runs: RunInfo[] }>('/api/runs').then((r) => r.runs ?? []),
     /** One run, with each worktree member's diff. */

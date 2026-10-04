@@ -672,7 +672,9 @@ waits for whom. A *run* is one launch of it: live sessions, branches, a log.
 The Crews page (`/crews`) shows the runs going now above the saved crews; a
 saved crew's page (`/crews/<id>`) has its **Setup** and its **Runs**, and
 says when a run of it is live; a run's page (`/runs/<id>`) is named by its
-crew and its start ("users api · run started 08:31") with its short id.
+crew and its start ("users api · run started 08:31") with its short id, or by
+the name it was given at launch (the arrow beside **Launch run**, or
+`conductor up <crew> --name`), which a resume keeps.
 
 **The run page.** `/runs/<id>` shows a live tile for every member, with its
 branch and a diff count (`+12 −3`), a feed of the members' events and the run's
@@ -755,7 +757,9 @@ own, whether the run was then stopped or not), its members as tiles with a
 status dot each, how long it took, a note (who asks a question, what failed,
 how many a stop cut off, what changed as `+412 −58 on 5 branches`), and
 **Stop** and **Open** while it goes, **Resume as new run** and **Open** after.
-A member that reports it is done keeps its run running, for a done agent is
+Chips above the table filter the rows by state (all, live, finished, stopped,
+failed, each with its count) and a select by when they started (today, 7 or
+30 days, all time); the browser keeps the choice. A member that reports it is done keeps its run running, for a done agent is
 idle, not gone. The pages follow the runs through the event stream, as the
 run page and the sidebar do. A crew's **Yolo** setting (the server's default,
 on or off; see [Yolo](#yolo)) is fixed on the run when it is launched, so
@@ -813,7 +817,7 @@ nothing else happens.
 ```bash
 conductor crews                        # one line per saved crew: id, name, members
 conductor crews --ids                  # the ids only, one per line (for shell completion)
-conductor up <crew-id> [--open]        # launch a crew; prints the run, its URL and its view link
+conductor up <crew-id> [--name N] [--open]  # launch a crew (named, with --name); prints the run, its URL and its view link
 ```
 
 Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default

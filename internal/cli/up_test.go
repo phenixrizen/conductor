@@ -21,6 +21,7 @@ const secretToken = "sekret-admin-token"
 // request is what a stub server saw of one request.
 type request struct {
 	method, path, query, auth string
+	body, contentType         string
 }
 
 // stubServer answers every request with status and body, and records the
@@ -29,7 +30,8 @@ func stubServer(t *testing.T, status int, body string) (*httptest.Server, *[]req
 	t.Helper()
 	var seen []request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, request{r.Method, r.URL.EscapedPath(), r.URL.RawQuery, r.Header.Get("Authorization")})
+		b, _ := io.ReadAll(r.Body)
+		seen = append(seen, request{r.Method, r.URL.EscapedPath(), r.URL.RawQuery, r.Header.Get("Authorization"), string(b), r.Header.Get("Content-Type")})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
@@ -352,7 +354,7 @@ func TestCrewsList(t *testing.T) {
 	if stdout != want {
 		t.Fatalf("stdout:\n%q\nwant:\n%q", stdout, want)
 	}
-	if len(*seen) != 1 || (*seen)[0] != (request{http.MethodGet, "/api/crews", "offset=0&limit=100", "Bearer " + secretToken}) {
+	if len(*seen) != 1 || (*seen)[0] != (request{http.MethodGet, "/api/crews", "offset=0&limit=100", "Bearer " + secretToken, "", ""}) {
 		t.Fatalf("requests: %+v", *seen)
 	}
 	noSecret(t, stdout, stderr)
@@ -549,5 +551,24 @@ func TestUpSaysWhenTheRunIsYolo(t *testing.T) {
 	want := "run r-1\n" + srv.URL + "/runs/r-1\nyolo: its members skip their permission prompts\n"
 	if code != 0 || err != nil || stdout != want {
 		t.Fatalf("exit %d %v\nstdout:\n%q\nwant:\n%q\nstderr:\n%s", code, err, stdout, want, stderr)
+	}
+}
+
+// --name names the run: the launch carries it as the label; without it the
+// launch has no body.
+func TestUpSendsTheName(t *testing.T) {
+	srv, seen := stubServer(t, http.StatusCreated, `{"run":{"id":"pair-0123abcd"}}`)
+	var out, errOut strings.Builder
+	if code, err := runUp(context.Background(), []string{"pair", "--server", srv.URL, "--token", "tok", "--name", " fix login "}, &out, &errOut); code != 0 || err != nil {
+		t.Fatalf("up: %d %v %s", code, err, errOut.String())
+	}
+	if r := (*seen)[0]; r.body != `{"label":"fix login"}` || r.contentType != "application/json" {
+		t.Fatalf("named launch sent %+v", r)
+	}
+	if code, err := runUp(context.Background(), []string{"pair", "--server", srv.URL, "--token", "tok"}, &out, &errOut); code != 0 || err != nil {
+		t.Fatalf("up: %d %v", code, err)
+	}
+	if r := (*seen)[1]; r.body != "" || r.contentType != "" {
+		t.Fatalf("unnamed launch sent %+v", r)
 	}
 }

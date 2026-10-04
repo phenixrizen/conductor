@@ -4,6 +4,13 @@ import {
   askedCount,
   barsSummary,
   changedFields,
+  DEFAULT_RUN_FILTER,
+  filterCounts,
+  filterRuns,
+  readRunFilter,
+  runSubtitle,
+  runTitle,
+  sinceStart,
   crewShape,
   liveRunLine,
   medianMinutes,
@@ -196,5 +203,41 @@ describe('changedFields', () => {
     expect(changedFields({ ...saved, goal: 'ship it' }, saved)).toEqual(['Goal'])
     expect(changedFields({ ...saved, name: 'x', cwd: '/x', yolo: true, members: [m('lead'), m('b')] }, saved)).toEqual(['Name', 'Working directory', 'Each run', 'Members'])
     expect(changedFields(saved, undefined)).toEqual([])
+  })
+})
+
+describe('run names and the Runs tab filter', () => {
+  it('names a run by its own name when it has one, else by its crew and start', () => {
+    expect(runSubtitle({ label: 'fix login', startedAt: iso(0) })).toBe('fix login')
+    expect(runSubtitle({ startedAt: iso(0) })).toMatch(/^run started \d/)
+    expect(runTitle({ name: 'users api', label: 'fix login' })).toBe('fix login')
+    expect(runTitle({ name: 'users api' })).toBe('users api')
+  })
+
+  it('filters runs by how they ended and when they started', () => {
+    const now = new Date(2026, 9, 4, 10, 0, 0).getTime()
+    const at = (d: number, h: number) => new Date(2026, 9, d, h, 0, 0).toISOString()
+    const rows = [
+      { run: { startedAt: at(4, 9) }, outcome: 'needs you' as const },
+      { run: { startedAt: at(4, 0) }, outcome: 'finished' as const },
+      { run: { startedAt: at(3, 23) }, outcome: 'stopped' as const },
+      { run: { startedAt: at(1, 9) }, outcome: 'failed' as const },
+      { run: { startedAt: at(1, 10) }, outcome: 'running' as const },
+      { run: { startedAt: new Date(2026, 8, 1).toISOString() }, outcome: 'finished' as const },
+    ]
+    expect(filterRuns(rows, { state: 'all', since: 'today' }, now)).toHaveLength(2)
+    expect(filterRuns(rows, { state: 'live', since: 'all' }, now).map((r) => r.outcome)).toEqual(['needs you', 'running'])
+    expect(filterRuns(rows, { state: 'finished', since: '7d' }, now)).toHaveLength(1)
+    expect(filterRuns(rows, { state: 'finished', since: '30d' }, now)).toHaveLength(1)
+    expect(filterRuns(rows, { state: 'finished', since: 'all' }, now)).toHaveLength(2)
+    expect(filterCounts(rows, '7d', now)).toEqual({ all: 5, live: 2, finished: 1, stopped: 1, failed: 1 })
+    expect(sinceStart('today', now)).toBe(new Date(2026, 9, 4).getTime())
+  })
+
+  it('reads the kept filter safely', () => {
+    expect(readRunFilter(null)).toEqual(DEFAULT_RUN_FILTER)
+    expect(readRunFilter('{not json')).toEqual(DEFAULT_RUN_FILTER)
+    expect(readRunFilter('{"state":"failed","since":"7d"}')).toEqual({ state: 'failed', since: '7d' })
+    expect(readRunFilter('{"state":"nope","since":"1y"}')).toEqual(DEFAULT_RUN_FILTER)
   })
 })

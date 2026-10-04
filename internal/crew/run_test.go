@@ -1086,7 +1086,7 @@ func TestALaunchingRunIsNeverForgotten(t *testing.T) {
 	var forgotten []string
 	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
 	// Launch keeps its run first (add), then starts what starts at once.
-	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), "")
+	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), "", "")
 	var first string
 	for i := range maxRuns {
 		run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))
@@ -1501,5 +1501,43 @@ func TestAYoloRunLaunchesEveryMemberWithIt(t *testing.T) {
 	defer fl.mu.Unlock()
 	if len(fl.calls) != 2 || !fl.calls[0].yolo || !fl.calls[1].yolo {
 		t.Fatalf("calls %+v", fl.calls)
+	}
+}
+
+// A run named at launch keeps the name on every read, says it in its log,
+// and passes it to the run that resumes it; a bad name is refused.
+func TestLaunchKeepsTheRunsLabel(t *testing.T) {
+	e, _ := newEngine(t)
+	run, release, err := e.LaunchNamed(context.Background(), testCrew(manual("lead", "")), "fix the login bug")
+	release()
+	if err != nil || run.Label != "fix the login bug" {
+		t.Fatalf("launch: %+v, %v", run, err)
+	}
+	got, _ := e.Get(run.ID)
+	if got.Label != "fix the login bug" || !strings.Contains(got.Log[0].Message, `as "fix the login bug"`) {
+		t.Fatalf("read: %q, log %q", got.Label, got.Log[0].Message)
+	}
+	if err := e.Stop(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := e.ResumeRun(context.Background(), run.ID)
+	if err != nil || next.Label != "fix the login bug" {
+		t.Fatalf("resume: %+v, %v", next, err)
+	}
+	plain, release, err := e.LaunchNamed(context.Background(), testCrew(manual("lead", "")), "")
+	release()
+	if err != nil || plain.Label != "" {
+		t.Fatalf("unnamed: %q, %v", plain.Label, err)
+	}
+}
+
+func TestLaunchRefusesABadLabel(t *testing.T) {
+	e, _ := newEngine(t)
+	for _, label := range []string{strings.Repeat("x", 61), "bell\x07"} {
+		_, release, err := e.LaunchNamed(context.Background(), testCrew(manual("lead", "")), label)
+		release()
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "label must") {
+			t.Fatalf("%q: %v", label, err)
+		}
 	}
 }

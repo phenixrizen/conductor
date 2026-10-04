@@ -333,6 +333,16 @@ async function confirmDelete() {
   }
 }
 
+// Naming a run is one step more than launching one, beside the button.
+const nameOpen = ref(false)
+const runName = ref('')
+function launchNamed() {
+  const label = runName.value
+  nameOpen.value = false
+  runName.value = ''
+  launch('', label)
+}
+
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => (deleteOpen.value = true) }]])
 
 /**
@@ -359,7 +369,7 @@ function hours(ttlSeconds: number): number {
  * the crew's view link, if it asks for one, and returns it this once: the
  * run page shows it when the launch opens that, else a dialog here does.
  */
-async function launch(id = '') {
+async function launch(id = '', label = '') {
   const key = id ? id : selectedKey.value
   if (key === undefined) return
   launchingKey.value = key
@@ -376,7 +386,7 @@ async function launch(id = '') {
     if (!c) return
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
-      launched = await api.launchCrew(c.id)
+      launched = await api.launchCrew(c.id, label.trim() ? { label: label.trim() } : undefined)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
       else fail('Launch failed', e)
@@ -404,7 +414,7 @@ async function launch(id = '') {
       return
     }
     toast.add({
-      title: `${c.name}: run started ${startedClock(run.startedAt)}`,
+      title: `${c.name}: ${run.label || `run started ${startedClock(run.startedAt)}`}`,
       icon: 'i-lucide-circle-play',
       color: 'success',
       actions: [{ label: 'Open run', icon: 'i-lucide-arrow-right', onClick: () => router.push(`/runs/${encodeURIComponent(run.id)}`) }],
@@ -479,7 +489,20 @@ watch(crewId, loadSelected)
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
           </UDropdownMenu>
           <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
-            <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="launch()"><span class="hidden sm:inline">Launch run</span></UButton>
+            <UFieldGroup>
+              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="launch()"><span class="hidden sm:inline">Launch run</span></UButton>
+              <UPopover v-model:open="nameOpen" :content="{ align: 'end' }">
+                <UButton icon="i-lucide-chevron-down" :disabled="!!launchBlocked || saving" aria-label="Name this run" class="border-l border-inverted/20" data-launch-menu />
+                <template #content>
+                  <form class="flex w-72 flex-col gap-2 p-3" @submit.prevent="launchNamed">
+                    <span class="text-sm font-medium text-highlighted">Name this run</span>
+                    <UInput v-model="runName" maxlength="60" placeholder="what this run is for" autofocus aria-label="Run name" data-launch-name />
+                    <span class="text-xs text-muted">Shown wherever the run is named; without one the pages say when it started.</span>
+                    <UButton type="submit" label="Launch named" icon="i-lucide-play" :disabled="!runName.trim()" class="self-end" data-launch-named />
+                  </form>
+                </template>
+              </UPopover>
+            </UFieldGroup>
           </UTooltip>
           <FullscreenButton />
         </template>

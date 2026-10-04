@@ -37,9 +37,9 @@ const (
 var requestTimeout = 30 * time.Second
 
 const crewsUsage = `Usage:
-  conductor up <crew-id> [--server URL] [--token T] [--open]
+  conductor up <crew-id> [--server URL] [--token T] [--name N] [--open]
       launch a saved crew as a run; prints the run and the URL of its page,
-      and the crew's view link when it has one
+      and the crew's view link when it has one; --name names the run
   conductor crews [--server URL] [--token T] [--ids]
       list the saved crews: id, name and members; with --ids the ids only,
       one per line, for shell completion (nothing, and exit 0, when the
@@ -83,6 +83,7 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	api := addAPIFlags(fs)
+	name := fs.String("name", "", "a name for this run; the pages otherwise say the crew and the start time")
 	open := fs.Bool("open", false, "open the run's page in the browser (xdg-open, or open on macOS)")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, crewsUsage)
@@ -117,7 +118,11 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 			URL string `json:"url"`
 		} `json:"viewLink"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/api/crews/"+url.PathEscape(rest[0])+"/launch", &reply); err != nil {
+	var body any
+	if n := strings.TrimSpace(*name); n != "" {
+		body = map[string]string{"label": n}
+	}
+	if err := c.doBody(ctx, http.MethodPost, "/api/crews/"+url.PathEscape(rest[0])+"/launch", body, &reply); err != nil {
 		return 1, err
 	}
 	if reply.Run.ID == "" {
@@ -253,7 +258,7 @@ func (c *apiClient) crewList(ctx context.Context) ([]crewLine, error) {
 			Crews []crewLine `json:"crews"`
 			Total int        `json:"total"`
 		}
-		if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), &reply, maxCrewsReply); err != nil {
+		if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/crews?offset=%d&limit=%d", offset, crewsPage), nil, &reply, maxCrewsReply); err != nil {
 			return nil, err
 		}
 		all = append(all, reply.Crews...)
@@ -306,16 +311,32 @@ type apiClient struct {
 // the server's host, never the path, the query or the token. A reply of more
 // than maxReply bytes is an error.
 func (c *apiClient) do(ctx context.Context, method, path string, out any) error {
-	return c.doLimit(ctx, method, path, out, maxReply)
+	return c.doLimit(ctx, method, path, nil, out, maxReply)
 }
 
-// doLimit is do with a reply of at most limit bytes, a whole number of MiB.
-func (c *apiClient) doLimit(ctx context.Context, method, path string, out any, limit int) error {
+// doBody is do with a JSON body; a nil body sends none.
+func (c *apiClient) doBody(ctx context.Context, method, path string, body, out any) error {
+	return c.doLimit(ctx, method, path, body, out, maxReply)
+}
+
+// doLimit is doBody with a reply of at most limit bytes, a whole number of MiB.
+func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out any, limit int) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
 	if err != nil {
 		return fmt.Errorf("cannot build a request for %s", c.host)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
@@ -327,17 +348,17 @@ func (c *apiClient) doLimit(ctx context.Context, method, path string, out any, l
 		return c.transportError(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	reply, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return c.transportError(err)
 	}
-	if len(body) > limit {
+	if len(reply) > limit {
 		return fmt.Errorf("the reply from %s is larger than %d MiB", c.host, limit>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return c.statusError(resp.Status, body)
+		return c.statusError(resp.Status, reply)
 	}
-	if err := json.Unmarshal(body, out); err != nil {
+	if err := json.Unmarshal(reply, out); err != nil {
 		return fmt.Errorf("unreadable reply from %s: %w", c.host, err)
 	}
 	return nil

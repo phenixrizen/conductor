@@ -168,6 +168,16 @@ export function startedClock(iso: string): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
+/** The part after the crew's name: the run's own name when it was given one at launch, else "run started 08:31". */
+export function runSubtitle(run: Pick<RunInfo, 'label' | 'startedAt'>): string {
+  return run.label || `run started ${startedClock(run.startedAt)}`
+}
+
+/** How a run is named where one line must do (a tab title, the sidebar): its own name, else its crew's. */
+export function runTitle(run: Pick<RunInfo, 'name' | 'label'>): string {
+  return run.label || run.name
+}
+
 /** When a run started, for a row: "today 08:31", "Oct 2 16:04", or without the time "Oct 2". */
 export function runWhen(iso: string, now = Date.now(), time = true): string {
   const d = new Date(iso)
@@ -349,4 +359,67 @@ export function changedFields(draft: CrewInput, saved: CrewInput | undefined): s
   if (a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('Each run')
   if (JSON.stringify(a.members) !== JSON.stringify(b.members)) out.push('Members')
   return out
+}
+
+/** The Runs tab's filter: by how runs ended (live is running or needing you) and by when they started. */
+export type RunFilterState = 'all' | 'live' | 'finished' | 'stopped' | 'failed'
+export type RunFilterSince = 'today' | '7d' | '30d' | 'all'
+export interface RunFilter {
+  state: RunFilterState
+  since: RunFilterSince
+}
+export const DEFAULT_RUN_FILTER: RunFilter = { state: 'all', since: 'all' }
+/** Where this browser keeps the filter: a habit of the reader's, not part of a link. */
+export const RUN_FILTER_KEY = 'conductor.crewRuns.filter'
+
+/** The chip an outcome falls under. */
+export function filterState(o: RunOutcome): Exclude<RunFilterState, 'all'> {
+  return o === 'needs you' || o === 'running' ? 'live' : o
+}
+
+/** The instant a window begins: local midnight for today, now minus 7 or 30 days, -Infinity for all. */
+export function sinceStart(since: RunFilterSince, now: number): number {
+  if (since === 'all') return -Infinity
+  if (since === 'today') {
+    const d = new Date(now)
+    d.setHours(0, 0, 0, 0)
+    return d.getTime()
+  }
+  return now - (since === '7d' ? 7 : 30) * 86_400_000
+}
+
+function inWindow(startedAt: string, since: RunFilterSince, now: number): boolean {
+  const t = Date.parse(startedAt)
+  return !Number.isNaN(t) && t >= sinceStart(since, now)
+}
+
+/** The rows a filter keeps, in their order. */
+export function filterRuns<T extends { run: Pick<RunInfo, 'startedAt'>; outcome: RunOutcome }>(rows: readonly T[], f: RunFilter, now: number): T[] {
+  return rows.filter((r) => inWindow(r.run.startedAt, f.since, now) && (f.state === 'all' || filterState(r.outcome) === f.state))
+}
+
+/** Each chip's count within the time window; All counts the window. */
+export function filterCounts<T extends { run: Pick<RunInfo, 'startedAt'>; outcome: RunOutcome }>(rows: readonly T[], since: RunFilterSince, now: number): Record<RunFilterState, number> {
+  const out: Record<RunFilterState, number> = { all: 0, live: 0, finished: 0, stopped: 0, failed: 0 }
+  for (const r of rows) {
+    if (!inWindow(r.run.startedAt, since, now)) continue
+    out.all++
+    out[filterState(r.outcome)]++
+  }
+  return out
+}
+
+/** The filter as this browser kept it; the default for anything odd. */
+export function readRunFilter(raw: string | null): RunFilter {
+  try {
+    const v = JSON.parse(raw ?? '') as Partial<RunFilter>
+    const states: RunFilterState[] = ['all', 'live', 'finished', 'stopped', 'failed']
+    const sinces: RunFilterSince[] = ['today', '7d', '30d', 'all']
+    return {
+      state: states.includes(v.state as RunFilterState) ? (v.state as RunFilterState) : 'all',
+      since: sinces.includes(v.since as RunFilterSince) ? (v.since as RunFilterSince) : 'all',
+    }
+  } catch {
+    return { ...DEFAULT_RUN_FILTER }
+  }
 }

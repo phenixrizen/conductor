@@ -48,6 +48,16 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	return decodeJSONLimit(w, r, v, maxBody)
 }
 
+// decodeOptionalJSON is decodeJSONLimit for a body that may be absent: an
+// empty body leaves v as it is.
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	err := decodeJSONLimit(w, r, v, limit)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
 // decodeJSONLimit is decodeJSON with the body bounded to limit bytes.
 func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)

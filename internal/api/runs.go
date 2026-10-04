@@ -159,7 +159,25 @@ func runContext(r *http.Request) (context.Context, context.CancelFunc) {
 // handleLaunchCrew launches a saved crew as a run: 201 {run} once the session
 // of every member that starts immediately exists; each prompt is typed once
 // its session is ready.
+// launchBody is the optional body of POST /api/crews/{id}/launch: the run's own name.
+type launchBody struct {
+	Label string `json:"label"`
+}
+
+// maxLaunchBody bounds that body.
+const maxLaunchBody = 4 << 10
+
 func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
+	var body launchBody
+	if err := decodeOptionalJSON(w, r, &body, maxLaunchBody); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	label := strings.TrimSpace(body.Label)
+	if err := crew.ValidateLabel(label); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	if s.crews == nil {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
 		return
@@ -192,7 +210,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 	c.Yolo = &yolo
 	ctx, cancel := runContext(r)
 	defer cancel()
-	run, release, err := s.runs.LaunchHeld(ctx, c)
+	run, release, err := s.runs.LaunchNamed(ctx, c, label)
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()

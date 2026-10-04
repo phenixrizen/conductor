@@ -145,9 +145,12 @@ const (
 
 // Run is a launch of a crew as the engine reports it.
 type Run struct {
-	ID        string        `json:"id"`
-	CrewID    string        `json:"crewId"`
-	Name      string        `json:"name"`
+	ID     string `json:"id"`
+	CrewID string `json:"crewId"`
+	Name   string `json:"name"`
+	// Label is the run's own name, given at launch and kept by a resume;
+	// empty when none: the pages then say the crew and the start.
+	Label     string        `json:"label,omitempty"`
 	Goal      string        `json:"goal"`
 	Cwd       string        `json:"cwd"`
 	Isolation string        `json:"isolation"`
@@ -232,7 +235,7 @@ type sessionMember struct {
 
 // run is a launch of a crew. Engine.mu guards what changes after it is made.
 type run struct {
-	id, crewID, name, goal, cwd, isolation string
+	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
 	// changed is the engine's OnRunChange, or nil.
@@ -327,12 +330,21 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 // does nothing): the API mints the run's view link first, so that a launch at
 // the cap cannot forget the run between its start and its link.
 func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
+	return e.LaunchNamed(ctx, c, "")
+}
+
+// LaunchNamed is LaunchHeld with the run's own name (Run.Label), checked
+// as a crew name is (ValidateLabel, ErrInvalid); empty gives it none.
+func (e *Engine) LaunchNamed(ctx context.Context, c Crew, label string) (*Run, func(), error) {
 	noop := func() {}
+	if err := ValidateLabel(label); err != nil {
+		return nil, noop, err
+	}
 	prefix, err := e.prepare(ctx, c)
 	if err != nil {
 		return nil, noop, err
 	}
-	r := e.add(c, prefix)
+	r := e.add(c, prefix, label)
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
@@ -361,7 +373,7 @@ func (e *Engine) LaunchAdopting(ctx context.Context, c Crew, self, sessionID str
 	if err != nil {
 		return nil, noop, err
 	}
-	r := e.add(c, prefix)
+	r := e.add(c, prefix, "")
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
@@ -463,7 +475,7 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := e.add(c, prefix)
+	r := e.add(c, prefix, old.label)
 	defer e.launched(r)
 	e.mu.Lock()
 	r.resumedFrom = old.id
@@ -581,9 +593,9 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 
 // add makes and keeps a run of c with every member pending, launching until
 // the caller calls launched.
-func (e *Engine) add(c Crew, prefix string) *run {
+func (e *Engine) add(c Crew, prefix, label string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &run{crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
+	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
 	immediate := 0
 	for _, m := range c.Members {
@@ -600,7 +612,11 @@ func (e *Engine) add(c Crew, prefix string) *run {
 	e.evict()
 	e.runs[r.id] = r
 	e.order = append(e.order, r)
-	r.note(session.ActivityStatus, "launched %s: %d members, %d starting now", c.Name, len(c.Members), immediate)
+	if label != "" {
+		r.note(session.ActivityStatus, "launched %s as %q: %d members, %d starting now", c.Name, label, len(c.Members), immediate)
+	} else {
+		r.note(session.ActivityStatus, "launched %s: %d members, %d starting now", c.Name, len(c.Members), immediate)
+	}
 	return r
 }
 
@@ -1299,7 +1315,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 
 // snapshot copies r, with the members' diffs when withDiffs. The caller holds e.mu.
 func (r *run) snapshot(withDiffs bool) Run {
-	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
+	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
 		Log: append([]session.ActivityEntry{}, r.log...)}

@@ -103,7 +103,7 @@ func completionSpec() []commandSpec {
 		{name: "notify", flags: notifyFlags},
 		{name: "mcp"},
 		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},
-		{name: "up", flags: api(flagSpec{name: "--open"}), crewID: true},
+		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
 		{name: "crews", flags: api(flagSpec{name: "--ids"})},
 		{name: "hooks", flags: []flagSpec{{name: "--home", kind: flagFile}, {name: "--data-dir", kind: flagFile}}, words: []string{"install", "status"}, after: map[string][]string{"install": adapters}},
 		{name: "skill"},

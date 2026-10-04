@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { enough } from '~/utils/charts'
-import { barClass, barsSummary, memberTiles, minutesLabel, outcomeBadge, runBars, runNote, runOutcome, runTook, runWhen, shortRunId } from '~/utils/crewWords'
+import { barClass, barsSummary, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberTiles, minutesLabel, outcomeBadge, readRunFilter, RUN_FILTER_KEY, runBars, runNote, runOutcome, runTook, runWhen, shortRunId, type RunFilter, type RunFilterSince, type RunFilterState } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { agentInitials } from '~/utils/sessions'
 
@@ -36,10 +36,47 @@ const axis = computed(() => {
   return [first, mid, last].filter((x, i, a) => x && a.indexOf(x) === i)
 })
 
+// The filter is this browser's habit (localStorage), not part of a link; changing it folds "Show more".
+function readFilter(): RunFilter {
+  try {
+    return readRunFilter(localStorage.getItem(RUN_FILTER_KEY))
+  } catch {
+    return { ...DEFAULT_RUN_FILTER }
+  }
+}
+const filter = ref<RunFilter>(readFilter())
+watch(
+  filter,
+  (f) => {
+    all.value = false
+    try {
+      localStorage.setItem(RUN_FILTER_KEY, JSON.stringify(f))
+    } catch {
+      /* storage refused: the filter lasts the page */
+    }
+  },
+  { deep: true },
+)
+const outcomes = computed(() => props.runs.map((r) => ({ run: r, outcome: runOutcome(r, runState(r, props.sessions).state) })))
+const matching = computed(() => filterRuns(outcomes.value, filter.value, props.now))
+const counts = computed(() => filterCounts(outcomes.value, filter.value.since, props.now))
+const stateChips: Array<{ value: RunFilterState; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'live', label: 'Live' },
+  { value: 'finished', label: 'Finished' },
+  { value: 'stopped', label: 'Stopped' },
+  { value: 'failed', label: 'Failed' },
+]
+const sinceItems = [
+  { label: 'Today', value: 'today' },
+  { label: '7 days', value: '7d' },
+  { label: '30 days', value: '30d' },
+  { label: 'All time', value: 'all' },
+]
+
 const rows = computed(() =>
-  (all.value ? props.runs : props.runs.slice(0, SHOWN)).map((r) => {
+  (all.value ? matching.value : matching.value.slice(0, SHOWN)).map(({ run: r, outcome }) => {
     const st = runState(r, props.sessions)
-    const outcome = runOutcome(r, st.state)
     const isLive = runLive(st.state)
     return {
       run: r,
@@ -111,7 +148,23 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[10rem_7rem_
       </template>
     </section>
 
-    <div class="@container overflow-hidden rounded-lg ring ring-default" data-crew-runs>
+    <div v-if="runs.length" class="flex flex-wrap items-center gap-1.5" data-runs-filter>
+      <UButton
+        v-for="c in stateChips"
+        :key="c.value"
+        :label="`${c.label} ${counts[c.value]}`"
+        size="xs"
+        color="neutral"
+        :variant="filter.state === c.value ? 'solid' : 'outline'"
+        :data-runs-state="c.value"
+        :data-active="filter.state === c.value"
+        :data-count="counts[c.value]"
+        @click="filter = { ...filter, state: c.value }"
+      />
+      <USelect :model-value="filter.since" :items="sinceItems" size="xs" class="ml-auto w-28" aria-label="When they started" data-runs-since @update:model-value="filter = { ...filter, since: $event as RunFilterSince }" />
+    </div>
+
+    <div class="@container overflow-hidden rounded-lg ring ring-default" data-crew-runs :data-runs-matching="matching.length" :data-runs-shown="rows.length">
       <div class="hidden gap-3 border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[64rem]:grid" :class="cols" aria-hidden="true">
         <span>Run</span>
         <span>State</span>
@@ -120,10 +173,15 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[10rem_7rem_
         <span>Note</span>
         <span />
       </div>
-      <p v-if="!rows.length" class="px-4 py-4 text-sm text-muted">No runs yet. Launch run starts one.</p>
+      <p v-if="!runs.length" class="px-4 py-4 text-sm text-muted">No runs yet. Launch run starts one.</p>
+      <p v-else-if="!matching.length" class="flex items-center gap-2 px-4 py-4 text-sm text-muted">
+        No runs match this filter.
+        <UButton label="Show all" size="xs" color="neutral" variant="link" class="px-0" data-runs-filter-reset @click="filter = { ...DEFAULT_RUN_FILTER }" />
+      </p>
       <div v-for="row in rows" :key="row.run.id" class="grid items-center gap-x-3 gap-y-2 border-b border-default px-4 py-2.5 text-[13px] last:border-b-0" :class="cols" :data-run="row.run.id" :data-state="row.state">
         <div class="col-start-1 row-start-1 flex min-w-0 flex-wrap items-center gap-x-2 @min-[64rem]:flex-col @min-[64rem]:items-start @min-[64rem]:gap-0">
-          <span class="font-medium text-highlighted" :title="row.run.id">{{ runWhen(row.run.startedAt, now) }}</span>
+          <span v-if="row.run.label" class="w-full truncate font-medium text-highlighted" :title="row.run.label" data-run-label>{{ row.run.label }}</span>
+          <span :class="row.run.label ? 'text-muted' : 'font-medium text-highlighted'" :title="row.run.id">{{ runWhen(row.run.startedAt, now) }}</span>
           <span class="font-mono text-[11px] text-dimmed">{{ shortRunId(row.run.id) }}</span>
           <YoloBadge v-if="row.run.yolo" icon />
         </div>
@@ -168,8 +226,8 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[10rem_7rem_
           </div>
         </div>
       </div>
-      <div v-if="runs.length > SHOWN" class="px-4 py-2">
-        <UButton :label="all ? 'Show fewer' : `Show ${runs.length - SHOWN} more`" size="xs" color="neutral" variant="link" class="px-0" @click="all = !all" />
+      <div v-if="matching.length > SHOWN" class="px-4 py-2">
+        <UButton :label="all ? 'Show fewer' : `Show ${matching.length - SHOWN} more`" size="xs" color="neutral" variant="link" class="px-0" @click="all = !all" />
       </div>
     </div>
   </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import { broadcastSelection, crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
-import { memberWords } from '~/utils/crewWords'
+import { memberWords, runTitle } from '~/utils/crewWords'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 
@@ -30,7 +30,7 @@ const now = ref(Date.now())
 const launchLink = ref(takeViewLink(String(route.params.run)))
 const copy = useCopy()
 
-useHead({ title: computed(() => (run.value ? `${run.value.name} · run` : 'Run')) })
+useHead({ title: computed(() => (run.value ? `${runTitle(run.value)} · run` : 'Run')) })
 
 /** Reads the run as the page opens: its diff stats are read with it. Later reads are the live store's. */
 async function load() {
