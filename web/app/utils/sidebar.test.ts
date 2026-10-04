@@ -197,6 +197,26 @@ describe('sidebarGroups', () => {
     expect(shape('exited')).toEqual([['exited:r1', 'API sweep', ['e']]])
   })
 
+  it('puts the sessions other machines host here last in each section, one group per machine', () => {
+    const list = [
+      session({ id: 'a', name: 'mine', createdAt: '2026-10-01T09:05:00Z' }),
+      session({ id: 'h1', kind: 'hosted', hostName: 'laptop', createdAt: '2026-10-01T09:04:00Z' }),
+      session({ id: 'h2', kind: 'hosted', hostName: '', createdAt: '2026-10-01T09:03:00Z' }),
+      session({ id: 'h3', kind: 'hosted', hostName: 'laptop', attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z' } }),
+      session({ id: 'b', crew: { runId: 'r1', crewId: 'api', member: 'core' }, createdAt: '2026-10-01T09:02:00Z' }),
+    ]
+    const g = sidebarGroups(list, { r1: 'API' })
+    const shape = (k: 'needs' | 'running' | 'exited') => g[k].map((x) => [x.key, x.host, x.label, x.sessions.map((s) => s.id)])
+    expect(shape('needs')).toEqual([['needs:host:laptop', 'laptop', 'laptop', ['h3']]])
+    expect(shape('running')).toEqual([
+      ['running:', undefined, undefined, ['a']],
+      ['running:r1', undefined, 'API', ['b']],
+      ['running:host:laptop', 'laptop', 'laptop', ['h1']],
+      ['running:host:', '', 'unnamed host', ['h2']],
+    ])
+    expect(railGroups(list, { r1: 'API' }).map((r) => r.host)).toEqual(['laptop', undefined, undefined, 'laptop', ''])
+  })
+
   it('has empty sections for no sessions', () => {
     expect(sidebarGroups([])).toEqual({ needs: [], running: [], exited: [] })
   })

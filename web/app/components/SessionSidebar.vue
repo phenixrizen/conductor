@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import { filterSessions, relativeTime, sessionMeta } from '~/utils/sessions'
-import { needsDotShown, runOpen, sessionOpen, sidebarGroups, sidebarSessions } from '~/utils/sidebar'
+import { needsDotShown, runOpen, sessionOpen, sidebarGroups, sidebarSessions, type SidebarGroup } from '~/utils/sidebar'
 
 /**
  * The full sidebar. In each section (needs you, running, exited) the sessions of no run come first, then the members of each crew run under
@@ -47,6 +47,11 @@ onMounted(() => {
   tick = window.setInterval(() => (now.value = Date.now()), 30000)
 })
 onBeforeUnmount(() => window.clearInterval(tick))
+
+/** A group's handle for the tests: its run, `host:<machine>` for hosted sessions, '' for this server's own. */
+function groupKey(g: SidebarGroup): string {
+  return g.runId ?? (g.host !== undefined ? `host:${g.host}` : '')
+}
 </script>
 
 <template>
@@ -74,14 +79,15 @@ onBeforeUnmount(() => window.clearInterval(tick))
         <h3 class="flex items-center gap-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-warning">
           Needs you <span class="rounded-full bg-warning/20 px-1.5 text-warning tracking-normal">{{ count('needs') }}</span>
         </h3>
-        <div v-for="g in groups.needs" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="g.runId ?? ''">
+        <div v-for="g in groups.needs" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="groupKey(g)">
           <SidebarRunHeader v-if="g.runId && runHeaders" :run-id="g.runId" :label="g.label" />
+          <SidebarHostHeader v-else-if="g.host !== undefined && runHeaders" :host="g.host" :label="g.label!" />
           <NuxtLink
             v-for="s in g.sessions"
             :key="s.id"
             :to="`/sessions/${s.id}`"
             class="flex gap-2.5 rounded-md px-2.5 py-2 transition-colors"
-            :class="[active(s.id) ? 'bg-default border border-default shadow-xs' : 'hover:bg-elevated/60', g.runId && runHeaders && 'ml-2']"
+            :class="[active(s.id) ? 'bg-default border border-default shadow-xs' : 'hover:bg-elevated/60', (g.runId || g.host !== undefined) && runHeaders && 'ml-2']"
           >
             <SessionAvatar :agent-id="s.agentId" solid />
             <div class="min-w-0 flex-1 flex flex-col gap-0.5">
@@ -100,14 +106,15 @@ onBeforeUnmount(() => window.clearInterval(tick))
 
       <section v-if="count('running')" class="flex flex-col gap-0.5">
         <h3 class="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted">Running · {{ count('running') }}</h3>
-        <div v-for="g in groups.running" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="g.runId ?? ''">
+        <div v-for="g in groups.running" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="groupKey(g)">
           <SidebarRunHeader v-if="g.runId && runHeaders" :run-id="g.runId" :label="g.label" />
+          <SidebarHostHeader v-else-if="g.host !== undefined && runHeaders" :host="g.host" :label="g.label!" />
           <NuxtLink
             v-for="s in g.sessions"
             :key="s.id"
             :to="`/sessions/${s.id}`"
             class="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors"
-            :class="[active(s.id) ? 'bg-default border border-default shadow-xs' : 'hover:bg-elevated/60', g.runId && runHeaders && 'ml-2']"
+            :class="[active(s.id) ? 'bg-default border border-default shadow-xs' : 'hover:bg-elevated/60', (g.runId || g.host !== undefined) && runHeaders && 'ml-2']"
           >
             <SessionAvatar :agent-id="s.agentId" />
             <div class="min-w-0 flex-1 flex flex-col">
@@ -125,10 +132,11 @@ onBeforeUnmount(() => window.clearInterval(tick))
 
       <section v-if="count('exited')" class="flex flex-col gap-0.5">
         <h3 class="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted">Exited · {{ count('exited') }}</h3>
-        <div v-for="g in groups.exited" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="g.runId ?? ''">
+        <div v-for="g in groups.exited" :key="g.key" class="flex flex-col gap-0.5" :data-sidebar-group="groupKey(g)">
           <SidebarRunHeader v-if="g.runId && runHeaders" :run-id="g.runId" :label="g.label" />
+          <SidebarHostHeader v-else-if="g.host !== undefined && runHeaders" :host="g.host" :label="g.label!" />
           <!-- The resume button sits beside the row's link, not in it: a link holds no button. -->
-          <div v-for="s in g.sessions" :key="s.id" class="flex items-center gap-1" :class="g.runId && runHeaders && 'ml-2'">
+          <div v-for="s in g.sessions" :key="s.id" class="flex items-center gap-1" :class="(g.runId || g.host !== undefined) && runHeaders && 'ml-2'">
             <NuxtLink
               :to="`/sessions/${s.id}`"
               class="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-1.5 opacity-75 transition-colors"

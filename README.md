@@ -282,7 +282,8 @@ needs you, the members of a running crew together under its name, which links
 to the run page. The full sidebar groups them the same way: inside each
 section (**Needs you**, **Running**, **Exited**) the sessions of no crew come
 first, then one group per crew run under a header naming the run, which links
-to its run page. A session launched with yolo carries the **yolo** badge
+to its run page, then the sessions other machines host here (`conductor
+host`), one group per machine under a laptop icon and its name. A session launched with yolo carries the **yolo** badge
 there, and an ended one a **Resume** (or **Relaunch**) button. Click one to
 open it. The panel button at the bottom of the
 rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width

@@ -107,26 +107,35 @@ export interface SidebarGroup {
   /** Unique in the sidebar: a run's members can sit in several sections (one needs you, one runs), each its own group. */
   key: string
   runId?: string
-  /** The run's name from `runNames`, else its crew's id. */
+  /** The machine of a group of hosted sessions ('' for one that gave no name); absent for the loose and run groups. */
+  host?: string
+  /** The run's name from `runNames`, else its crew's id; the machine's name ("unnamed host" when blank). */
   label?: string
   sessions: SessionInfo[]
 }
 
+/** The label of hosted sessions whose machine gave no name. */
+export const UNNAMED_HOST = 'unnamed host'
+
 /**
- * The sidebar's sessions by section (needs you, running, exited, in groupSessions' order), and in each section the sessions of no run first,
- * then one group per run, in the order its first member comes, named from `runNames` (the live store's runs) or its crew's id. The full
- * sidebar and the rail both draw from it.
+ * The sidebar's sessions by section (needs you, running, exited, in groupSessions' order), and in each section this server's own
+ * sessions of no run first, then one group per run, in the order its first member comes, named from `runNames` (the live store's runs)
+ * or its crew's id, then one group per machine for the sessions other machines host here (`conductor host`), named by the machine.
+ * The full sidebar and the rail both draw from it.
  */
 export function sidebarGroups(sessions: readonly SessionInfo[], runNames: Readonly<Record<string, string>> = {}): Record<SessionGroupKey, SidebarGroup[]> {
   const g = groupSessions([...sessions])
   const out = { needs: [], running: [], exited: [] } as Record<SessionGroupKey, SidebarGroup[]>
   for (const key of SIDEBAR_SECTIONS) {
     const list = g[key]
-    const loose = list.filter((s) => !s.crew)
+    const loose = list.filter((s) => !s.crew && s.kind !== 'hosted')
     if (loose.length) out[key].push({ key: `${key}:`, sessions: loose })
     const byRun = new Map<string, SessionInfo[]>()
     for (const s of list) if (s.crew) byRun.set(s.crew.runId, [...(byRun.get(s.crew.runId) ?? []), s])
     for (const [runId, members] of byRun) out[key].push({ key: `${key}:${runId}`, runId, label: runNames[runId] || members[0]?.crew?.crewId, sessions: members })
+    const byHost = new Map<string, SessionInfo[]>()
+    for (const s of list) if (!s.crew && s.kind === 'hosted') byHost.set(s.hostName ?? '', [...(byHost.get(s.hostName ?? '') ?? []), s])
+    for (const [host, hosted] of byHost) out[key].push({ key: `${key}:host:${host}`, host, label: host || UNNAMED_HOST, sessions: hosted })
   }
   return out
 }
@@ -143,6 +152,7 @@ export interface RailGroup {
   /** Unique in the list: a run's members can sit in several sections (one needs you, one runs), each its own group. */
   key: string
   runId?: string
+  host?: string
   label?: string
   items: RailItem[]
 }
@@ -155,6 +165,7 @@ export function railGroups(sessions: readonly SessionInfo[], runNames: Readonly<
     sections[key].map((g) => ({
       key: g.key,
       runId: g.runId,
+      host: g.host,
       label: g.label,
       items: g.sessions.map((s) => ({ id: s.id, name: s.name, agentId: s.agentId, dot: dot(key, s), message: s.attention?.message || undefined })),
     })),

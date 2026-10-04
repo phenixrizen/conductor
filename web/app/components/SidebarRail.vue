@@ -43,6 +43,9 @@ const needsDot = computed(() => needsDotShown(events.routes.value))
             data-rail-run
           >{{ g.label ?? g.runId }}</NuxtLink>
         </UTooltip>
+        <UTooltip v-else-if="g.host !== undefined" :text="`Hosted · ${g.label}`" :content="{ side: 'right' }">
+          <span class="grid w-full place-items-center text-muted" :aria-label="`Hosted on ${g.label}`" :data-rail-host="g.host"><UIcon name="i-lucide-laptop" class="size-3.5" /></span>
+        </UTooltip>
         <UTooltip v-for="it in g.items" :key="it.id" :text="it.message ? `${it.name} · ${it.message}` : it.name" :content="{ side: 'right' }">
           <NuxtLink
             :to="`/sessions/${it.id}`"
