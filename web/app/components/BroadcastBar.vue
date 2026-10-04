@@ -47,7 +47,7 @@ async function send() {
     <UInput
       v-model="text"
       size="sm"
-      placeholder="Main moved. Rebase onto origin/main before your next commit."
+      placeholder="A message to every selected agent"
       aria-label="Broadcast text"
       :color="tooLong ? 'error' : undefined"
       :highlight="tooLong"

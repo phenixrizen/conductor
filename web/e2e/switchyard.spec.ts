@@ -96,7 +96,7 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
   await page.goto(`/join/${link.token}?server=${encodeURIComponent(syURL)}`)
   await expect(page.getByText(`Shared through 127.0.0.1:${new URL(syURL).port}`)).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Join hosted-stub' })).toBeVisible({ timeout: 15_000 })
-  await page.getByPlaceholder('Priya Shah').fill('e2e guest')
+  await page.getByLabel('Your name').fill('e2e guest')
   await page.getByRole('button', { name: 'Join session' }).click()
   const badge = page.locator('[data-transport-state]').first()
   await expect(badge).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })

@@ -12,7 +12,7 @@ test('a viewer joins by paste with no server between the two', async ({ page, ap
   const session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', args: ['--session-id', agentSession] })
   try {
     await page.goto('/paste')
-    await page.getByPlaceholder('Priya Shah').fill('paste guest')
+    await page.getByLabel('Your name').fill('paste guest')
     await page.locator('[data-paste-make]').click()
     const offerBox = page.locator('[data-paste-offer]')
     await expect(offerBox).toBeVisible({ timeout: 15_000 })
@@ -45,7 +45,7 @@ test('a bad blob is refused in words, on the page and by the server', async ({ p
     expect(r.status).toBe(400)
     expect(r.body.error?.code).toBe('invalid_offer')
     await page.goto('/paste')
-    await page.getByPlaceholder('Priya Shah').fill('paste guest')
+    await page.getByLabel('Your name').fill('paste guest')
     await page.locator('[data-paste-make]').click()
     await expect(page.locator('[data-paste-offer]')).toBeVisible({ timeout: 15_000 })
     await page.locator('[data-paste-answer]').fill('cpi1.notreally')

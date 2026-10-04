@@ -171,7 +171,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
           </div>
           <div class="grid grid-cols-2 gap-3">
             <UFormField label="Label" name="label">
-              <UInput v-model="form.label" placeholder="pairing" class="w-full" />
+              <UInput v-model="form.label" placeholder="what the link is for (optional)" class="w-full" />
             </UFormField>
             <UFormField label="Expires" name="ttl">
               <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />

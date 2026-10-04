@@ -96,7 +96,7 @@ const menu = computed(() => [
 
 const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 
-// "Priya is typing…": anyone else whose last input is under four seconds old.
+// "<name> is typing…": anyone else whose last input is under four seconds old.
 const now = ref(Date.now())
 let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 1000)))

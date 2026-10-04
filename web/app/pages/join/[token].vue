@@ -207,7 +207,7 @@ function requestFile(path: string, stat?: boolean) {
           </div>
           <form class="flex flex-col gap-3" @submit.prevent="join">
             <UFormField label="Your name" name="name" hint="shown to others">
-              <UInput v-model="nameDraft" placeholder="Priya Shah" class="w-full" autofocus maxlength="40" />
+              <UInput v-model="nameDraft" class="w-full" autofocus maxlength="40" />
             </UFormField>
             <UButton type="submit" :label="run ? 'Join crew' : 'Join session'" block :disabled="!nameDraft.trim()" />
           </form>

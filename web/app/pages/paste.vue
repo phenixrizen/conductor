@@ -101,7 +101,7 @@ const answerLooksRight = computed(() => isPasteBlob(answer.value))
           <section class="flex flex-col gap-2" data-paste-step="1">
             <h2 class="text-sm font-semibold">1. Your invite</h2>
             <UFormField label="Your name" description="What the others see you as.">
-              <UInput v-model="nameDraft" placeholder="Priya Shah" class="w-full" maxlength="40" />
+              <UInput v-model="nameDraft" class="w-full" maxlength="40" />
             </UFormField>
             <UButton v-if="!offer" label="Make my invite" icon="i-lucide-sparkles" :loading="making" :disabled="!nameDraft.trim()" class="self-start" data-paste-make @click="makeInvite" />
             <template v-else>
