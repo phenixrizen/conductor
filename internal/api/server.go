@@ -36,9 +36,13 @@ type Server struct {
 	events   *eventHub
 	webhooks *webhookSender
 	limiter  *rateLimiter
-	log      *slog.Logger
-	web      http.Handler
-	store    *store.Store
+	// hostLimiter and openHosts bound open hosts on a switchyard, per address:
+	// how often one registers and how many live sessions it holds.
+	hostLimiter *rateLimiter
+	openHosts   *addrCounter
+	log         *slog.Logger
+	web         http.Handler
+	store       *store.Store
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -173,25 +177,27 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home = ""
 	}
 	s := &Server{
-		cfg:       cfg,
-		base:      base,
-		overlay:   overlay,
-		catalog:   effective,
-		registry:  session.NewRegistry(cfg.MaxSessions),
-		links:     share.NewStore(),
-		limiter:   newRateLimiter(5, 20),
-		log:       log,
-		web:       web,
-		store:     st,
-		crews:     crews,
-		fileDeny:  fileDeny(cfg, st),
-		lookups:   newLookupCache(),
-		probes:    newProbeCache(),
-		home:      home,
-		skillDone: map[string]bool{},
-		instance:  newInstance(),
-		started:   time.Now(),
-		relayed:   newRelayMeter(nil),
+		cfg:         cfg,
+		base:        base,
+		overlay:     overlay,
+		catalog:     effective,
+		registry:    session.NewRegistry(cfg.MaxSessions),
+		links:       share.NewStore(),
+		limiter:     newRateLimiter(5, 20),
+		hostLimiter: newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
+		openHosts:   &addrCounter{},
+		log:         log,
+		web:         web,
+		store:       st,
+		crews:       crews,
+		fileDeny:    fileDeny(cfg, st),
+		lookups:     newLookupCache(),
+		probes:      newProbeCache(),
+		home:        home,
+		skillDone:   map[string]bool{},
+		instance:    newInstance(),
+		started:     time.Now(),
+		relayed:     newRelayMeter(nil),
 	}
 	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
@@ -229,6 +235,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// through localChange.
 	s.events.addSink(s.runs.OnActivity)
 	s.hosts = signal.NewHub(s.registry, log)
+	if cfg.MaxViewersPerSession > 0 {
+		s.hosts.MaxViewers = cfg.MaxViewersPerSession
+	}
 	s.hosts.OnChange = s.events.publish
 	s.hosts.OnActivity = s.events.activity
 	s.registry.OnRemove = func(id string) {

@@ -220,6 +220,15 @@ func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
 		c.Switchyard.RelayKBps = 256
 	})
 	host := dialFakeHost(t, e, "hosted-agent-token")
+	if took := relayOneMiB(t, e, host); took < 1500*time.Millisecond {
+		t.Fatalf("1 MiB went through in %v with a bound of 256 KiB/s", took)
+	}
+}
+
+// relayOneMiB joins host's session as a relayed viewer, streams 1 MiB from
+// the host in 64 whole frames and says how long the viewer took to get it all.
+func relayOneMiB(t *testing.T, e *testEnv, host *fakeHost) time.Duration {
+	t.Helper()
 	v := dialViewer(t, e, host.sessionID, adminToken)
 	v.hello(80, 24)
 	v.expectControl(proto.CtlWelcome)
@@ -265,9 +274,7 @@ func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
 		}
 		got++
 	}
-	if took := time.Since(start); took < 1500*time.Millisecond {
-		t.Fatalf("1 MiB went through in %v with a bound of 256 KiB/s", took)
-	}
+	return time.Since(start)
 }
 
 // A byte bucket refills at its rate and allows a burst of twice it; a take
@@ -297,5 +304,142 @@ func TestByteBucket(t *testing.T) {
 	defer cancel()
 	if err := b.take(cctx, 2000); err == nil {
 		t.Fatal("a cancelled wait returned no error")
+	}
+}
+
+// dialHostRaw dials the host route with the given Authorization value ("" for
+// none) and returns the HTTP status when the upgrade is refused, 101 when it
+// went through (the connection is then closed).
+func dialHostRaw(t *testing.T, e *testEnv, auth string) int {
+	t.Helper()
+	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	header := http.Header{}
+	if auth != "" {
+		header.Set("Authorization", auth)
+	}
+	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		if resp == nil {
+			t.Fatalf("dial: %v", err)
+		}
+		return resp.StatusCode
+	}
+	c.CloseNow()
+	return http.StatusSwitchingProtocols
+}
+
+func openSwitchyardEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
+	t.Helper()
+	return newTestEnv(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+		if mutate != nil {
+			mutate(c)
+		}
+	})
+}
+
+// A switchyard that admits open hosts registers one that presents no token
+// and shares it as any other; without openHosts, on a plain server, or
+// with a wrong token, the route still answers 401.
+func TestSwitchyardAdmitsOpenHosts(t *testing.T) {
+	e := openSwitchyardEnv(t, nil)
+	host := dialFakeHostAuth(t, e, "hosted-agent-token", "")
+	resp, out := e.do("POST", "/api/sessions/"+host.sessionID+"/links", adminToken, map[string]any{"role": "view", "label": "open"})
+	if resp.StatusCode != http.StatusCreated || out["token"] == nil {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("GET", "/api/join/"+out["token"].(string), "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
+		t.Fatalf("join: %d %v", resp.StatusCode, out)
+	}
+	if got := dialHostRaw(t, e, "Bearer nope"); got != http.StatusUnauthorized {
+		t.Fatalf("wrong token on an open switchyard: %d", got)
+	}
+	if got := dialHostRaw(t, switchyardEnv(t, true), ""); got != http.StatusUnauthorized {
+		t.Fatalf("no token without openHosts: %d", got)
+	}
+	if got := dialHostRaw(t, newTestEnv(t, nil), ""); got != http.StatusUnauthorized {
+		t.Fatalf("no token on a plain server: %d", got)
+	}
+}
+
+// One address holds at most openHostSessions live open sessions; a place
+// frees when its connection ends; a host with a token is never counted.
+func TestOpenHostSessionsPerAddressAreCapped(t *testing.T) {
+	e := openSwitchyardEnv(t, func(c *config.Config) {
+		c.Switchyard.OpenHostSessions = 2
+		c.Switchyard.OpenHostRegistrationsPerMinute = 600
+	})
+	first := dialFakeHostAuth(t, e, "a1", "")
+	dialFakeHostAuth(t, e, "a2", "")
+	if got := dialHostRaw(t, e, ""); got != http.StatusTooManyRequests {
+		t.Fatalf("third open host: %d, want 429", got)
+	}
+	for i := 0; i < 3; i++ {
+		dialFakeHost(t, e, "tokened"+string(rune('a'+i)))
+	}
+	first.c.CloseNow()
+	deadline := time.Now().Add(5 * time.Second)
+	for dialHostRaw(t, e, "") != http.StatusSwitchingProtocols {
+		if time.Now().After(deadline) {
+			t.Fatal("the place of a closed open host was not freed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// Open registrations from one address are rate limited; tokened ones are not.
+func TestOpenHostRegistrationsAreRateLimitedPerAddress(t *testing.T) {
+	e := openSwitchyardEnv(t, func(c *config.Config) {
+		c.Switchyard.OpenHostRegistrationsPerMinute = 2
+		c.Switchyard.OpenHostSessions = 100
+	})
+	for i := 0; i < 2; i++ {
+		if got := dialHostRaw(t, e, ""); got != http.StatusSwitchingProtocols {
+			t.Fatalf("open registration %d: %d", i+1, got)
+		}
+	}
+	if got := dialHostRaw(t, e, ""); got != http.StatusTooManyRequests {
+		t.Fatalf("third open registration in a minute: %d, want 429", got)
+	}
+	if got := dialHostRaw(t, e, "Bearer test-host-token"); got != http.StatusSwitchingProtocols {
+		t.Fatalf("a tokened host after the open limit: %d", got)
+	}
+}
+
+// An open host relays under openHostRelayKBps, its own bound.
+func TestOpenHostsRelayUnderTheirOwnBound(t *testing.T) {
+	e := openSwitchyardEnv(t, func(c *config.Config) { c.Switchyard.OpenHostRelayKBps = 256; c.Switchyard.RelayKBps = 0 })
+	host := dialFakeHostAuth(t, e, "hosted-agent-token", "")
+	if took := relayOneMiB(t, e, host); took < 1500*time.Millisecond {
+		t.Fatalf("an open host sent 1 MiB in %v under a bound of 256 KiB/s", took)
+	}
+}
+
+// A hosted session takes its viewer cap from the config, as a server session does.
+func TestHostedSessionsTakeMaxViewersFromTheConfig(t *testing.T) {
+	e := switchyardEnv(t, true)
+	e2 := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; c.MaxViewersPerSession = 1 })
+	_ = e
+	host := dialFakeHost(t, e2, "hosted-agent-token")
+	v1 := dialViewer(t, e2, host.sessionID, adminToken)
+	v1.hello(80, 24)
+	v1.expectControl(proto.CtlWelcome)
+	v2 := dialViewer(t, e2, host.sessionID, adminToken)
+	v2.hello(80, 24)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := v2.read()
+		if err != nil {
+			if websocket.CloseStatus(err) != websocket.StatusCode(proto.CloseTooManyViewers) {
+				t.Fatalf("second viewer: %v", err)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second viewer was let in past a cap of one")
+		}
 	}
 }

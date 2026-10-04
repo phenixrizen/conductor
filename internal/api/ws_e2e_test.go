@@ -418,10 +418,21 @@ type fakeHost struct {
 
 func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
 	t.Helper()
+	return dialFakeHostAuth(t, e, agentToken, "Bearer test-host-token")
+}
+
+// dialFakeHostAuth registers a fake host with the given Authorization value;
+// "" sends none (an open host).
+func dialFakeHostAuth(t *testing.T, e *testEnv, agentToken, auth string) *fakeHost {
+	t.Helper()
 	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
+	header := http.Header{}
+	if auth != "" {
+		header.Set("Authorization", auth)
+	}
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("dial host: %v", err)
 	}

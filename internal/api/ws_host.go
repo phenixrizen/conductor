@@ -18,13 +18,30 @@ import (
 
 // handleHostWS accepts a `conductor host` control connection.
 func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
-	if !s.hostTokenOK(presentedToken(r, true)) {
+	// An open host presents no token at all, on a switchyard that admits
+	// them, and lives under the per-address limits; a wrong token is refused
+	// as ever (a typo must show), a right one is trusted and unlimited.
+	tok := presentedToken(r, true)
+	open := tok == "" && s.cfg.Switchyard.Enabled && s.cfg.Switchyard.OpenHosts
+	if !open && !s.hostTokenOK(tok) {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "unauthorized", "host token required")
 		return
+	}
+	addr := clientKey(r)
+	if open {
+		if !s.hostLimiter.allow(addr) {
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many registrations from this address; ask the operator for a host token")
+			return
+		}
+		if !s.openHosts.acquire(addr, s.cfg.Switchyard.OpenHostSessions) {
+			writeError(w, http.StatusTooManyRequests, "open_host_limit", "this address holds as many open sessions as this switchyard allows; ask the operator for a host token")
+			return
+		}
+		defer s.openHosts.release(addr)
 	}
 	c, err := websocket.Accept(w, r, s.acceptOptions())
 	if err != nil {
@@ -67,10 +84,15 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	info := hs.Info()
 	hc := &hostConnState{base: s.publicBase(r)}
-	if s.cfg.Switchyard.Enabled && s.cfg.Switchyard.RelayKBps > 0 {
-		hc.relay = newByteBucket(s.cfg.Switchyard.RelayKBps * 1024)
+	if s.cfg.Switchyard.Enabled {
+		switch {
+		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
+			hc.relay = newByteBucket(s.cfg.Switchyard.OpenHostRelayKBps * 1024)
+		case s.cfg.Switchyard.RelayKBps > 0:
+			hc.relay = newByteBucket(s.cfg.Switchyard.RelayKBps * 1024)
+		}
 	}
-	s.log.Info("host registered", "session", info.ID, "host", info.HostName, "resumed", resumed)
+	s.log.Info("host registered", "session", info.ID, "host", info.HostName, "resumed", resumed, "open", open)
 	defer func() {
 		hs.HostDisconnected(conn)
 		s.log.Info("host disconnected", "session", info.ID)

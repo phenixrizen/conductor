@@ -25,7 +25,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	server := fs.String("server", envOr("CONDUCTOR_SERVER", "http://localhost:8080"), "conductor server URL (env CONDUCTOR_SERVER)")
-	token := fs.String("token", "", "host token (env CONDUCTOR_HOST_TOKEN)")
+	token := fs.String("token", "", "host token (env CONDUCTOR_HOST_TOKEN); none for a switchyard that admits open hosts")
 	name := fs.String("name", "", "session name shown in the UI")
 	hostName := fs.String("host-name", "", "machine label (default: hostname)")
 	agentID := fs.String("agent", "", "agent id shown in the UI (default: command name); the id of an adapter with a launch route (claude, codex, pi, aider) also wires Conductor's hooks into the command at launch; other adapters install by hand (conductor hooks install)")
@@ -57,9 +57,8 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if *token == "" {
 		*token = os.Getenv("CONDUCTOR_HOST_TOKEN")
 	}
-	if *token == "" {
-		return 2, errors.New("a host token is required (--token or CONDUCTOR_HOST_TOKEN)")
-	}
+	// No token is fine on a switchyard that admits open hosts; elsewhere
+	// the server answers 401 and says so.
 	switch *fileView {
 	case "view", "control", "off":
 	default:

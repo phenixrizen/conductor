@@ -68,3 +68,34 @@ func clientKey(r *http.Request) string {
 	}
 	return host
 }
+
+// addrCounter counts what one address holds at a time (an open host's live
+// sessions on a switchyard): acquire takes one place under max, release
+// gives it back.
+type addrCounter struct {
+	mu   sync.Mutex
+	held map[string]int
+}
+
+func (c *addrCounter) acquire(key string, max int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held == nil {
+		c.held = map[string]int{}
+	}
+	if c.held[key] >= max {
+		return false
+	}
+	c.held[key]++
+	return true
+}
+
+func (c *addrCounter) release(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held[key] <= 1 {
+		delete(c.held, key)
+		return
+	}
+	c.held[key]--
+}

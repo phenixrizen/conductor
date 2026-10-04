@@ -353,9 +353,12 @@ func (a *agent) controlLoop(ctx context.Context, first *websocket.Conn) {
 // the session. On success the connection is stored as the active one.
 func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Registered, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	c, _, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{
-		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + a.opts.Token}},
-	})
+	// No token, no header: an open host on a switchyard that admits them.
+	header := map[string][]string{}
+	if a.opts.Token != "" {
+		header["Authorization"] = []string{"Bearer " + a.opts.Token}
+	}
+	c, _, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header})
 	cancel()
 	if err != nil {
 		return nil, proto.Registered{}, err

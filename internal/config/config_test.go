@@ -1016,3 +1016,35 @@ func TestTheOldAdminTokenNameStillWorks(t *testing.T) {
 		t.Fatalf("both: %q renamed=%v", cfg.WorkbenchToken, cfg.WorkbenchTokenRenamed)
 	}
 }
+
+// Open hosts: off by default with the limits set; the environment turns it
+// on and sets each limit; the bounds and the need for switchyard.enabled.
+func TestSwitchyardOpenHostsConfigAndEnv(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Switchyard.OpenHosts || cfg.Switchyard.OpenHostSessions != 4 || cfg.Switchyard.OpenHostRegistrationsPerMinute != 6 || cfg.Switchyard.OpenHostRelayKBps != 128 {
+		t.Fatalf("defaults: %+v", cfg.Switchyard)
+	}
+	env := map[string]string{"CONDUCTOR_SWITCHYARD": "1", "CONDUCTOR_SWITCHYARD_OPEN_HOSTS": "true", "CONDUCTOR_SWITCHYARD_OPEN_HOST_SESSIONS": "9", "CONDUCTOR_SWITCHYARD_OPEN_HOST_REGISTRATIONS": "30", "CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS": "64"}
+	if err := applyEnv(cfg, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Switchyard.OpenHosts || cfg.Switchyard.OpenHostSessions != 9 || cfg.Switchyard.OpenHostRegistrationsPerMinute != 30 || cfg.Switchyard.OpenHostRelayKBps != 64 {
+		t.Fatalf("env: %+v", cfg.Switchyard)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"open hosts without a switchyard": func(c *Config) { c.Switchyard.Enabled = false; c.Switchyard.OpenHosts = true },
+		"no sessions":                     func(c *Config) { c.Switchyard.OpenHostSessions = 0 },
+		"no registrations":                func(c *Config) { c.Switchyard.OpenHostRegistrationsPerMinute = 0 },
+		"negative relay":                  func(c *Config) { c.Switchyard.OpenHostRelayKBps = -1 },
+	} {
+		c := Defaults()
+		c.Switchyard.Enabled = true
+		mutate(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

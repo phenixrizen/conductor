@@ -123,6 +123,22 @@ type Switchyard struct {
 	// workbench, served from a loopback address. Loopback with any port by
 	// default.
 	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
+	// OpenHosts admits a host that presents no token at all, under the
+	// limits below, so a Conductor publishes here with nothing configured:
+	// the public switchyard. A host with a wrong token is still refused (a
+	// typo must show); one with a host token is trusted and outside the
+	// limits.
+	OpenHosts bool `json:"openHosts,omitempty"`
+	// OpenHostSessions is how many live hosted sessions one address may
+	// hold as an open host (4 by default).
+	OpenHostSessions int `json:"openHostSessions,omitempty"`
+	// OpenHostRegistrationsPerMinute bounds how often one address may
+	// register as an open host (6 a minute by default).
+	OpenHostRegistrationsPerMinute int `json:"openHostRegistrationsPerMinute,omitempty"`
+	// OpenHostRelayKBps bounds an open host's relayed output, like
+	// RelayKBps but for open hosts (128 KiB/s by default); 0 falls back to
+	// RelayKBps.
+	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
 }
 
 // SwitchyardRelay reports whether the switchyard relays (Switchyard.Relay, on by default).
@@ -327,6 +343,7 @@ func Defaults() *Config {
 		ScrollbackBytes:      256 << 10,
 		MaxSessions:          32,
 		MaxViewersPerSession: 32,
+		Switchyard:           Switchyard{OpenHostSessions: 4, OpenHostRegistrationsPerMinute: 6, OpenHostRelayKBps: 128},
 		ExitedRetention:      Duration(10 * time.Minute),
 		ICEServers:           []ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 		RelayTimeoutMs:       8000,
@@ -537,6 +554,18 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	if err := num("CONDUCTOR_SWITCHYARD_RELAY_KBPS", &cfg.Switchyard.RelayKBps); err != nil {
 		return err
 	}
+	if v := getenv("CONDUCTOR_SWITCHYARD_OPEN_HOSTS"); v == "1" || v == "true" {
+		cfg.Switchyard.OpenHosts = true
+	}
+	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_SESSIONS", &cfg.Switchyard.OpenHostSessions); err != nil {
+		return err
+	}
+	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_REGISTRATIONS", &cfg.Switchyard.OpenHostRegistrationsPerMinute); err != nil {
+		return err
+	}
+	if err := num("CONDUCTOR_SWITCHYARD_OPEN_HOST_RELAY_KBPS", &cfg.Switchyard.OpenHostRelayKBps); err != nil {
+		return err
+	}
 	if err := num("CONDUCTOR_ICE_UDP_PORT", &cfg.ICE.UDPPort); err != nil {
 		return err
 	}
@@ -635,6 +664,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Switchyard.RelayKBps < 0 || c.Switchyard.RelayKBps > 1<<20 {
 		errs = append(errs, errors.New("switchyard.relayKBps must be between 0 and 1048576"))
+	}
+	if c.Switchyard.OpenHosts && !c.Switchyard.Enabled {
+		errs = append(errs, errors.New("switchyard.openHosts needs switchyard.enabled: only a switchyard admits open hosts"))
+	}
+	if n := c.Switchyard.OpenHostSessions; n < 1 || n > 1000 {
+		errs = append(errs, errors.New("switchyard.openHostSessions must be between 1 and 1000"))
+	}
+	if n := c.Switchyard.OpenHostRegistrationsPerMinute; n < 1 || n > 600 {
+		errs = append(errs, errors.New("switchyard.openHostRegistrationsPerMinute must be between 1 and 600"))
+	}
+	if n := c.Switchyard.OpenHostRelayKBps; n < 0 || n > 1<<20 {
+		errs = append(errs, errors.New("switchyard.openHostRelayKBps must be between 0 and 1048576"))
 	}
 	for _, o := range c.Switchyard.AllowedOrigins {
 		if strings.TrimSpace(o) == "" || strings.Contains(o, "://") {

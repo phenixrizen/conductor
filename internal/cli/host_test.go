@@ -204,3 +204,14 @@ func TestHostAgentFlagInjectsTheAdapter(t *testing.T) {
 		t.Fatal("host did not stop")
 	}
 }
+
+// No token is no longer refused up front: an open switchyard admits such a
+// host, and any other server answers 401 itself. Here the dial fails, which
+// is the server's answer, not the flag check's.
+func TestHostNeedsNoToken(t *testing.T) {
+	clearConductorEnv(t)
+	code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh")
+	if err == nil || code == 2 || strings.Contains(err.Error()+stderr, "host token is required") {
+		t.Fatalf("code %d, err %v, stderr %q", code, err, stderr)
+	}
+}

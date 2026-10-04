@@ -159,3 +159,33 @@ func TestLinkOnAPublishedSessionIsMintedAtTheRendezvous(t *testing.T) {
 		t.Fatalf("the local store kept a remote link: %v", out)
 	}
 }
+
+// A server with no host token publishes to a switchyard that admits open
+// hosts: the session is listed there and a link is minted there.
+func TestAServerPublishesToAnOpenSwitchyardWithoutAToken(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) {
+		c.PublicURL = "https://rendezvous.example.net"
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	})
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, HostName: "open-box", RelayOnly: true}})
+	id := local.createSession("cat")
+	var hosted session.Info
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && hosted.ID == "" {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "open-box" {
+				hosted = i
+			}
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hosted.ID == "" {
+		t.Fatal("the open switchyard never listed the session")
+	}
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true || !strings.HasPrefix(out["url"].(string), "https://rendezvous.example.net/join/") {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+}

@@ -103,7 +103,10 @@ View-role INPUT, `resize` and `submit` are dropped by the server before they rea
 
 ## Host control connection
 
-`GET /ws/host?token=…` (host token or workbench token). Text frames are JSON; binary
+`GET /ws/host?token=…` (host token or workbench token; on a switchyard with
+`switchyard.openHosts`, none at all: an open host, limited per address in how
+often it registers, how many live sessions it holds and what it relays). Text
+frames are JSON; binary
 frames are RELAY envelopes.
 
 Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
