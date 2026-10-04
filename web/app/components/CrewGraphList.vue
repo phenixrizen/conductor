@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { listRows, type CrewGraphData, type GraphNode } from '~/utils/crewGraph'
+import { startWords } from '~/utils/crewWords'
 import { memberDot } from '~/utils/runs'
 
 /**
@@ -17,11 +18,7 @@ function handoffsFrom(n: GraphNode) {
 }
 
 function startLabel(n: GraphNode): string {
-  const s = n.member.start
-  if (n.warning) return n.warning
-  if (s.when === 'after') return `after ${s.member} idle`
-  if (s.when === 'manual') return 'by hand'
-  return 'immediately'
+  return n.warning ?? startWords(n.member.start).text
 }
 </script>
 

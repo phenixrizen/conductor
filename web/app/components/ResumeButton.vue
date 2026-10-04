@@ -5,7 +5,7 @@ import { resumeLabel } from '~/utils/yolo'
 /**
  * Starts an ended session again (POST /api/sessions/{id}/resume), or an ended member of a run that has no session left on the server
  * (`runId` and `member`: POST /api/runs/{run}/members/{name}/resume): Resume when its agent has a conversation to resume, else Relaunch.
- * The new session opens unless `stay` (the crew view, where its tile appears); a relaunch toasts why it did not resume.
+ * The new session opens unless `stay` (the run page, where its tile appears); a relaunch toasts why it did not resume.
  */
 const props = withDefaults(
   defineProps<{ session?: SessionInfo; runId?: string; member?: string; stay?: boolean; iconOnly?: boolean; size?: 'xs' | 'sm' | 'md' }>(),

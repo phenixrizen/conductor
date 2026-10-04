@@ -417,7 +417,8 @@ func TestCrewRoutesPageThroughMoreThan50Crews(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || out["total"] != 56.0 || len(page) != 4 || page[0].(map[string]any)["id"] != "crew-49" {
 		t.Fatalf("page: %d %v", resp.StatusCode, out)
 	}
-	if first := page[0].(map[string]any); first["members"] == nil || first["goal"] != nil || fmt.Sprint(first["members"]) != "[map[agentId:sh name:lead start:map[when:immediately]] map[agentId:cat name:tests start:map[member:lead when:after]]]" {
+	// A summary carries the goal (the Crews page shows it under the name) and the members without their prompts.
+	if first := page[0].(map[string]any); first["members"] == nil || first["goal"] == nil || fmt.Sprint(first["members"]) != "[map[agentId:sh name:lead start:map[when:immediately]] map[agentId:cat name:tests start:map[member:lead when:after]]]" {
 		t.Fatalf("a summary: %v", first)
 	}
 	if _, out := e.do("GET", "/api/crews", adminToken, nil); len(out["crews"].([]any)) != 56 || out["total"] != 56.0 {

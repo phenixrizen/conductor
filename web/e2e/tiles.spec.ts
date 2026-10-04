@@ -1,6 +1,6 @@
 import { expect, logged, member, test, type Run } from './fixtures'
 
-// The interactive tiles: on the crew view and the wall every tile is a live
+// The interactive tiles: on the run page and the wall every tile is a live
 // terminal that fills its pane (no blank strip beside the grid of cells), is
 // drawn with the renderer this browser has (data-renderer), takes typing in
 // place, and hands the Alt chords to the page. By-hand item 1 of round 4.
@@ -52,7 +52,7 @@ async function fills(page: import('@playwright/test').Page, cols: number) {
   )
 }
 
-test('every tile on the crew view is a live terminal that fills its pane', async ({ page, api }) => {
+test('every tile on the run page is a live terminal that fills its pane', async ({ page, api }) => {
   const webgl2 = await (async () => {
     await page.goto('/agents')
     return page.evaluate(() => !!document.createElement('canvas').getContext('webgl2'))

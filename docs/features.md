@@ -16,8 +16,8 @@ for the wire details.
 
 - **Crews** (2a Crews, 2b Crew running). Saved teams of up to 12 agents with
   role prompts, start conditions and optional per-member git worktrees, run
-  from the Crews page or `conductor up`; the crew view has tiles, handoffs,
-  broadcast, run links and stop-all. See the README (Crews) and
+  from the Crews page or `conductor up`; the run page has tiles, handoffs,
+  broadcast, run links and stop. See the README (Crews) and
   `docs/protocol.md` (Crew runs); hosted crews and worktree cleanup are below
   under Future features.
 
@@ -648,6 +648,75 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
 - `conductor up --resume <run>` (the API has `POST /api/runs/{run}/resume`
   since round 5).
 - aider's chat-history file as its session handle.
+
+## Round 8: saved crews and runs told apart (2026-10-04)
+
+From the design hand-off "Crews Redesign": one page held both the saved crews
+and their runs, a narrow list where each crew carried a "Running" badge and
+its runs were unnamed rows ("3", "33s…"), beside an editor that filled the
+screen. Nothing said which was the plan and which the thing running.
+
+### Decisions
+
+- **Two nouns, said every time.** A crew is a saved plan; a run is one
+  launch of it. "Crew view" is the run page; "Launch 5 agents" is "Launch
+  run"; "Stop all" is "Stop"; "Resume run" is "Resume as new run"; "Share
+  crew" is "Share". A run is named by its crew and its start ("users api ·
+  run started 08:31") with its short id beside it, never by its id alone.
+- **Status belongs to runs.** A saved crew never says Running or Ready: its
+  row says "1 live run" when one exists, leading to it, and its page shows a
+  banner for each live run ("started 08:31 · 3 running · review needs you ·
+  docs waits for Start now · Open run"). "Draft changes" became an
+  unsaved-changes bar at the bottom of the crew's page that names what
+  changed and, while a run is live, says the run keeps the version it
+  launched with.
+- **One Crews page, two sections.** `/crews` is the home: "Running now"
+  (one card per live run: badge, the members as chips in the crew's shape
+  with a status dot each, a line per member that asks with Answer beside it,
+  up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
+  shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
+  alone", where it runs, the last runs as bars, Edit, Launch run).
+  `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
+  draft of a crew not saved yet (the server never derives the id `new`).
+  The summary `GET /api/crews` lists carries the goal now.
+- **Start rules in words.** "At launch", "After lead is done", "When you
+  press Start", each with an icon, in the table's Starts column, on a graph
+  node's last line and in the sentence beside the Members heading ("lead →
+  core → tests start in a chain; docs waits for you; review starts at
+  once"). Graph edges read "when done"; a member started by hand is drawn
+  dashed; the column gap grew to 96 px so the label fits. "Runs on" (Server
+  / My machine) left the editor: hosted crews come later, and the field
+  said nothing until then. The switches of a launch (open the run page, a
+  view link, yolo) sit behind the line under "Each run".
+- **Stopped is not failed.** A member a stop cut off reads "not started"
+  (never started, or `the run is stopped` as its error) or "stopped", in
+  grey; red is kept for an error of the member's own, and a run with one
+  is "failed" whether it was then stopped or not. The Runs tab's rows carry a
+  note: who asks a question, what failed ("tests: exited 1"), how many a
+  stop cut off ("3 never started"), who waits for Start now, else what
+  changed ("+412 −58 on 5 branches").
+- **The chart moved** out of the 240 px column into the Runs tab, drawn as
+  plain bars (the last twelve runs; the median, how many needed an answer,
+  how many failed) with an amber edge where someone had to answer; the home's
+  table draws the same bars beside each crew. `nuxt-charts` no longer draws
+  it (the Events page and the Wall still use it).
+- **Leaving a share.** The join page's headers have Leave: the terminals go
+  (their connections close with them), the card comes back with the name
+  kept, and the link still joins. Asked on 2026-10-04: "in a shared view I
+  only see the one screen, no way to leave the share".
+
+### Open verification (round 8)
+
+- By eye on the installed app: the Crews home with a run going and one that
+  asks a question; a crew's page under a live run; the graph's "when done"
+  labels at the new gap; the Runs tab with a failed run (a member whose
+  program exits non-zero before its prompt).
+
+### Deferred
+
+- Hosted crews ("Runs on: my machine"), and with them the field.
+- A run's name of its own (today the crew's name and the start time).
+- Filtering the Runs tab (by state, by date) once a crew has hundreds.
 
 ## Round 7: the switchyard as the way sharing works, dark always, the Windows app seeing WSL (2026-10-04)
 

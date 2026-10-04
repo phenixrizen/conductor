@@ -23,7 +23,7 @@ test('the examples load on the empty Crews page, at the scratch repository', asy
   }
 })
 
-test('the todo app launches and opens its crew view, a tile per member', async ({ page }) => {
+test('the todo app launches and opens its run page, a tile per member', async ({ page }) => {
   await page.goto('/crews/example-todo-app')
   await page.locator('[data-launch]').click()
   await page.waitForURL(/\/runs\/example-todo-app-[0-9a-f]{8}$/)
@@ -73,8 +73,20 @@ test('each prompt runs without a person, the members start in order, the handoff
   }
 })
 
-test('the Crews page lists the run under its crew, with each member and its status', async ({ page }) => {
+test('the Crews home shows the run as running now, and the crew\'s Runs tab lists it with each member and its status', async ({ page }) => {
+  await page.goto('/crews')
+  const card = page.locator(`[data-running-now] [data-run="${runId}"]`)
+  await expect(card).toBeVisible()
+  await expect(card).toHaveAttribute('data-state', 'running')
+  await expect(card).toContainText('Example: todo app')
+  await expect(card).toContainText('run started')
+  // The saved crew's row says a run is live, and says nothing of running itself.
+  const entry = page.locator('[data-crew-entry][data-crew-id="example-todo-app"]')
+  await expect(entry.locator('[data-crew-live]')).toHaveText(/1 live run/)
+  await expect(entry.locator('[data-crew-shape]')).toHaveText('4 · a tree')
   await page.goto('/crews/example-todo-app')
+  await expect(page.locator('[data-live-run-banner]')).toContainText('live run')
+  await page.getByRole('tab', { name: /Runs/ }).click()
   const row = page.locator(`[data-crew-runs] [data-run="${runId}"]`)
   await expect(row).toBeVisible()
   await expect(row).toHaveAttribute('data-state', 'running')

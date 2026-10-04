@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import { activityBuckets, activityTotal, attentionSlices, enough, outcomeOf, roleColors, runBars, runBarSeries, runLength } from './charts'
+import { activityBuckets, activityTotal, attentionSlices, enough, roleColors, runLength } from './charts'
 
 const T0 = Date.parse('2026-10-03T10:30:00Z')
 const iso = (offsetS: number) => new Date(T0 + offsetS * 1000).toISOString()
@@ -61,13 +61,9 @@ const run = (id: string, state: RunInfo['state'], startS: number, extra: Partial
   ...extra,
 })
 
-describe('run bars', () => {
-  it('reads the outcome and the length of a run', () => {
+describe('runLength', () => {
+  it('measures a run to its stop, to its last member\'s end, or to now while it goes', () => {
     const now = T0 + 600_000
-    expect(outcomeOf(run('a', 'running', 0))).toBe('running')
-    expect(outcomeOf(run('a', 'needs_input', 0))).toBe('running')
-    expect(outcomeOf(run('a', 'stopped', 0, { stoppedAt: iso(100) }))).toBe('stopped')
-    expect(outcomeOf(run('a', 'finished', 0))).toBe('finished')
     expect(runLength(run('a', 'running', 0), now)).toBe(600_000)
     expect(runLength(run('a', 'stopped', 0, { stoppedAt: iso(100) }), now)).toBe(100_000)
     const finished = run('a', 'finished', 0, {
@@ -78,22 +74,6 @@ describe('run bars', () => {
     })
     expect(runLength(finished, now)).toBe(80_000)
     expect(runLength({ ...finished, startedAt: 'nope' }, now)).toBe(0)
-  })
-
-  it('takes the last twenty runs, oldest first, with a series per outcome', () => {
-    const now = T0 + 3_600_000
-    const runs = Array.from({ length: 25 }, (_, i) => run(`r${i}`, i === 0 ? 'running' : i % 2 ? 'finished' : 'stopped', -i * 60, i === 0 ? {} : { stoppedAt: i % 2 ? undefined : iso(-i * 60 + 30), needsInput: i }))
-    const bars = runBars(runs, now)
-    expect(bars).toHaveLength(20)
-    expect(bars[0]!.id).toBe('r19')
-    expect(bars.at(-1)!).toMatchObject({ id: 'r0', outcome: 'running', minutes: 60 })
-    const series = runBarSeries(bars)
-    expect(series.at(-1)).toMatchObject({ id: 'r0', running: 60, finished: 0, stopped: 0 })
-    // A finished run without its members' ends is measured to now.
-    expect(series[0]).toMatchObject({ id: 'r19', finished: 79, stopped: 0, running: 0 })
-    const stopped = series.find((s) => s.id === 'r2')!
-    expect(stopped.stopped).toBe(0.5)
-    expect(stopped.needsInput).toBe(2)
   })
 })
 

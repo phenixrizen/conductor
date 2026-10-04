@@ -54,6 +54,7 @@ var (
 type Summary struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
+	Goal      string          `json:"goal"`
 	Cwd       string          `json:"cwd"`
 	Where     string          `json:"where"`
 	Isolation string          `json:"isolation"`
@@ -74,7 +75,7 @@ func (c Crew) summary() Summary {
 	for _, m := range c.Members {
 		members = append(members, MemberSummary{Name: m.Name, AgentID: m.AgentID, Start: m.Start})
 	}
-	return Summary{ID: c.ID, Name: c.Name, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, UpdatedAt: c.UpdatedAt}
+	return Summary{ID: c.ID, Name: c.Name, Goal: c.Goal, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, UpdatedAt: c.UpdatedAt}
 }
 
 // Store keeps the saved crews, one file each in crews/ of the data directory,
@@ -277,6 +278,8 @@ func (s *Store) Create(c Crew) (Crew, error) {
 	if err != nil {
 		return Crew{}, err
 	}
+	// The workbench edits a crew not saved yet at /crews/new: no crew takes that id.
+	taken[reservedID] = true
 	c.ID = freeID(taken, cmp.Or(slug(c.Name), "crew"), "")
 	c.CreatedAt = s.now()
 	c.UpdatedAt = c.CreatedAt
@@ -451,6 +454,10 @@ func (c Crew) canonical() Crew {
 
 // maxSlug bounds the part of an ID that comes from the name.
 const maxSlug = 40
+
+// reservedID is the id no derived ID takes: the workbench's page for a crew
+// not saved yet (/crews/new).
+const reservedID = "new"
 
 // slug derives an ID from a crew name by the rule the web's slugId follows:
 // lower case, every run of characters other than a-z and 0-9 one dash, no

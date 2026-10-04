@@ -5,7 +5,7 @@ import { needsDotShown, railGroups, runOpen, sessionOpen, sidebarSessions } from
  * The sidebar as a rail: Launch, a search button that opens the full
  * sidebar on its filter, and every session as its agent's avatar with the
  * attention dot, the members of a run together under its name, which links
- * to the crew view as the full sidebar's run header does. The mark, the
+ * to the run page as the full sidebar's run header does. The mark, the
  * pages, the utility buttons and the expand button are the layout's header
  * and footer.
  */

@@ -149,7 +149,7 @@ test('a Codex-shaped session resumes by its captured thread, and a gone working 
   expect(refused.body.error?.code).toBe('invalid_cwd')
 })
 
-test('a member of a stopped run resumed reopens the run, and Resume run continues every conversation in a new run', async ({ page, api, state }) => {
+test('a member of a stopped run resumed reopens the run, and Resume as new run continues every conversation in a new run', async ({ page, api, state }) => {
   const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
     name: 'e2e resume stopped',
     goal: 'resume',
@@ -170,7 +170,7 @@ test('a member of a stopped run resumed reopens the run, and Resume run continue
     await expect.poll(async () => (await api.session(lead.sessionId ?? '')).agentSession?.resumable, { timeout: 30_000 }).toBe(true)
     await api.stopRun(run.id)
     await expect.poll(async () => (await api.run(run.id)).state, { timeout: 15_000 }).toBe('stopped')
-    // In place: the crew view offers Resume on the ended member of the stopped run; it reopens the run.
+    // In place: the run page offers Resume on the ended member of the stopped run; it reopens the run.
     await page.goto(`/runs/${encodeURIComponent(run.id)}`)
     const resume = page.locator('[data-run-grid] [data-member="lead"] [data-resume]')
     await expect(resume).toBeVisible()
@@ -182,7 +182,7 @@ test('a member of a stopped run resumed reopens the run, and Resume run continue
     expect(member(r, 'lead').branch).toBe(lead.branch)
     await api.stopRun(run.id)
     await expect.poll(async () => (await api.run(run.id)).state, { timeout: 15_000 }).toBe('stopped')
-    // As a new run: the header's Resume run continues lead's conversation in its kept worktree.
+    // As a new run: the header's Resume as new run continues lead's conversation in its kept worktree.
     const worktrees = git(state.repo, 'worktree', 'list', '--porcelain')
     await page.goto(`/runs/${encodeURIComponent(run.id)}`)
     await page.locator('[data-crew-run-header] [data-run-resume]').click()
@@ -202,10 +202,14 @@ test('a member of a stopped run resumed reopens the run, and Resume run continue
     expect((r as unknown as { resumedBy?: string }).resumedBy).toBe(nextId)
     expect(r.state).toBe('stopped')
     await expect(page.locator('[data-crew-run-header] [data-run-resume]')).toHaveCount(0)
-    // The Crews page row of the stopped run shows no Resume run once resumed; the new run's row is live.
+    // The Crews page lists the new run as running now, and the stopped run no longer offers Resume as new run once resumed.
     await page.goto('/crews')
-    await expect(page.locator(`[data-crew-runs] [data-run="${nextId}"]`)).toHaveAttribute('data-state', 'running')
+    await expect(page.locator(`[data-running-now] [data-run="${nextId}"]`)).toHaveAttribute('data-state', 'running')
+    await expect(page.locator(`[data-running-now] [data-run="${run.id}"]`)).toHaveCount(0)
+    await page.goto(`/crews/${encodeURIComponent(crew.crew.id)}?tab=runs`)
+    await expect(page.locator(`[data-crew-runs] [data-run="${run.id}"]`)).toHaveAttribute('data-state', 'stopped')
     await expect(page.locator(`[data-crew-runs] [data-run="${run.id}"] [data-run-resume]`)).toHaveCount(0)
+    await expect(page.locator(`[data-crew-runs] [data-run="${nextId}"] [data-run-stop]`)).toBeVisible()
   } finally {
     for (const id of runs) await api.stopRun(id)
     await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)

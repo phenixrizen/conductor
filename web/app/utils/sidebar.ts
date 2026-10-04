@@ -89,7 +89,7 @@ export function sessionOpen(path: string, id: string): boolean {
   return path === `/sessions/${id}`
 }
 
-/** Whether `path` is the crew view of run `runId`. */
+/** Whether `path` is the run page of run `runId`. */
 export function runOpen(path: string, runId: string): boolean {
   return path === `/runs/${runId}`
 }

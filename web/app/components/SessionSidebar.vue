@@ -5,8 +5,8 @@ import { needsDotShown, runOpen, sessionOpen, sidebarGroups, sidebarSessions } f
 
 /**
  * The full sidebar. In each section (needs you, running, exited) the sessions of no run come first, then the members of each crew run under
- * a header naming the run, which links to its crew view (sidebarGroups, as the rail groups them). With `runId`, only the sessions of that
- * run, under a header naming it (`runName`) with a link back to its crew view.
+ * a header naming the run, which links to its run page (sidebarGroups, as the rail groups them). With `runId`, only the sessions of that
+ * run, under a header naming it (`runName`) with a link back to its run page.
  */
 const props = defineProps<{ runId?: string; runName?: string }>()
 

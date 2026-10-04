@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
+import { shortRunId, startedClock } from '~/utils/crewWords'
 import { relativeTime } from '~/utils/sessions'
 
 /**
- * The crew view's header: the run's name, how many members need input and
- * run, how long it has been up, and its actions: add an agent mid-run, share
- * the crew (a run link) and stop every member. Each action calls the server
- * and hands the run as it is after it to the page (`changed`).
+ * The run page's header: the run named by its crew and its start, how many
+ * members need input and run, how long it has been up, and its actions: add
+ * an agent mid-run, share the run (a run link), stop every member, and once
+ * stopped resume it as a new run. Each action calls the server and hands the
+ * run as it is after it to the page (`changed`).
  */
 const props = defineProps<{ run: RunInfo | null; runId: string; counts: { needs: number; running: number }; now: number }>()
 const emit = defineEmits<{ changed: [run: RunInfo] }>()
@@ -59,7 +61,7 @@ async function add() {
     const run = await api.addRunMember(props.runId, m)
     emit('changed', run)
     addOpen.value = false
-    toast.add({ title: `${m.name} joined the crew`, icon: 'i-lucide-user-plus', color: 'success' })
+    toast.add({ title: `${m.name} joined the run`, icon: 'i-lucide-user-plus', color: 'success' })
   } catch (e) {
     addError.value = (e as Error).message
   } finally {
@@ -69,7 +71,7 @@ async function add() {
 
 const shareOpen = ref(false)
 
-// Resume run: a new run of the crew in which every member with a conversation continues it in its kept worktree.
+// Resume as new run: a new run of the crew in which every member with a conversation continues it in its kept worktree.
 const resuming = ref(false)
 async function resumeRun() {
   resuming.value = true
@@ -85,7 +87,7 @@ async function resumeRun() {
   }
 }
 
-// Stop all asks first.
+// Stop asks first.
 const stopOpen = ref(false)
 const stopping = ref(false)
 
@@ -95,7 +97,7 @@ async function stopAll() {
     const run = await api.stopRun(props.runId)
     emit('changed', run)
     stopOpen.value = false
-    toast.add({ title: 'Crew stopped', description: 'Every member was stopped; the worktrees and branches stay.', icon: 'i-lucide-square', color: 'neutral' })
+    toast.add({ title: 'Run stopped', description: 'Every member was stopped; the worktrees and branches stay.', icon: 'i-lucide-square', color: 'neutral' })
   } catch (e) {
     toast.add({ title: 'Stop failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
@@ -107,7 +109,12 @@ async function stopAll() {
 <template>
   <UDashboardNavbar :ui="{ root: 'h-14' }" data-crew-run-header>
     <template #title>
-      <span class="truncate">{{ run?.name || 'Crew' }}</span>
+      <span class="flex min-w-0 items-baseline gap-2">
+        <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate hover:underline" :title="`The saved crew ${run.name}`">{{ run.name }}</NuxtLink>
+        <span v-else class="truncate">Run</span>
+        <span v-if="run" class="hidden flex-none text-[13px] font-normal text-muted sm:inline">run started {{ startedClock(run.startedAt) }}</span>
+        <span class="hidden flex-none font-mono text-[11px] font-normal text-dimmed md:inline" :title="runId">{{ shortRunId(runId) }}</span>
+      </span>
     </template>
     <template #trailing>
       <!-- On a phone only the members needing input stay: they are what to act on. -->
@@ -120,14 +127,14 @@ async function stopAll() {
     <template #right>
       <!-- Icons only on a phone: the labels would push the name off the bar. -->
       <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
-      <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share crew" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share crew</span></UButton>
-      <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume run</span></UButton>
-      <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop all" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop all</span></UButton>
+      <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share</span></UButton>
+      <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
+      <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton />
     </template>
   </UDashboardNavbar>
 
-  <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run. One that starts immediately starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
+  <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run, not the saved crew. One that starts at launch starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
@@ -138,18 +145,18 @@ async function stopAll() {
     <template #footer>
       <div class="flex w-full justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" @click="addOpen = false" />
-        <UButton label="Add to crew" icon="i-lucide-user-plus" :loading="adding" :disabled="addInvalid" @click="add" />
+        <UButton label="Add to the run" icon="i-lucide-user-plus" :loading="adding" :disabled="addInvalid" @click="add" />
       </div>
     </template>
   </USlideover>
 
   <ShareLinksModal v-model:open="shareOpen" :run-id="runId" :session-name="run?.name" />
 
-  <UModal v-model:open="stopOpen" :title="`Stop ${run?.name || 'the crew'}?`" description="Every member's session is stopped. The worktrees and their branches stay.">
+  <UModal v-model:open="stopOpen" :title="`Stop this run of ${run?.name || 'the crew'}?`" description="Every member's session is stopped; a member not started yet never starts. The worktrees and their branches stay, and the run can be resumed as a new run.">
     <template #footer>
       <div class="flex w-full justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" @click="stopOpen = false" />
-        <UButton label="Stop all" icon="i-lucide-square" color="error" :loading="stopping" data-confirm-stop @click="stopAll" />
+        <UButton label="Stop the run" icon="i-lucide-square" color="error" :loading="stopping" data-confirm-stop @click="stopAll" />
       </div>
     </template>
   </UModal>

@@ -137,7 +137,7 @@ export function pageAfterDelete(page: number, left: number): number {
 
 /** The summary GET /api/crews lists for `c`: what the list shows after a save, until the list is read again. */
 export function summaryOf(c: CrewInfo): CrewSummary {
-  return { id: c.id, name: c.name, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
+  return { id: c.id, name: c.name, goal: c.goal, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
 }
 
 /** A member's state as the run view shows it (memberStatus). */
@@ -258,7 +258,7 @@ export async function broadcastByName(displayName: string, whoami: () => Promise
 }
 
 /**
- * The run whose members the sidebar lists alone (its group variant): the run of a crew view (`/runs/<id>`), or of the member session a
+ * The run whose members the sidebar lists alone (its group variant): the run of a run page (`/runs/<id>`), or of the member session a
  * page shows (`/sessions/<id>`), however that page was reached. Undefined everywhere else.
  */
 export function sidebarRunFor(path: string, sessions: readonly SessionInfo[]): string | undefined {
@@ -274,14 +274,14 @@ export function sidebarRunFor(path: string, sessions: readonly SessionInfo[]): s
   return sessions.find((s) => s.id === id)?.crew?.runId
 }
 
-/** How long a launch's view link waits for its crew view to take it. */
+/** How long a launch's view link waits for its run page to take it. */
 const VIEW_LINK_HOLD_MS = 60_000
 
 let heldViewLink: { runId: string; url: string; ttlSeconds: number; at: number } | null = null
 let heldTimer: ReturnType<typeof setTimeout> | undefined
 
 /**
- * Hands the view link a launch returned to the crew view the launch opens, in memory only: the crew view takes it once (takeViewLink), and
+ * Hands the view link a launch returned to the run page the launch opens, in memory only: the run page takes it once (takeViewLink), and
  * a timer drops it once the hold is over, so a token nobody took does not stay in memory.
  */
 export function holdViewLink(runId: string, url: string, ttlSeconds: number, now = Date.now()) {
@@ -320,7 +320,7 @@ export interface BroadcastMember {
 }
 
 /**
- * The crew view's broadcast selection. Every member whose session runs is selected unless the person unticked it (`choices`, by name: the
+ * The run page's broadcast selection. Every member whose session runs is selected unless the person unticked it (`choices`, by name: the
  * person's own ticks and unticks, which outlast every read of the run and every run event); a member that starts later is selected as it
  * appears. `selected` is what the bar sends, in the run's order; `sending` the selected members the server will type into; `waiting` the
  * selected members it will skip because their sessions wait on a prompt.

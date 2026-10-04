@@ -3,8 +3,8 @@ import type { FeedEntry } from '~/utils/events'
 
 /**
  * The numbers behind the charts: activity per minute for the Events page,
- * a crew's last runs for the Crews page, sessions by attention state for
- * the Wall. Each is drawn only when it says something: a chart needs at
+ * how long a crew's runs lasted (the Crews page draws its own bars from
+ * runLength), sessions by attention state for the Wall. Each is drawn only when it says something: a chart needs at
  * least two points (enough), and the empty state says what will appear.
  */
 
@@ -67,27 +67,6 @@ export function activityTotal(buckets: readonly ActivityBucket[]): number {
   return buckets.reduce((n, b) => n + b.attention + b.reports + b.handoff + b.tool + b.error, 0)
 }
 
-export type RunOutcome = 'finished' | 'stopped' | 'running'
-
-export interface RunBar {
-  id: string
-  /** The run's start, ms. */
-  startedAt: number
-  /** Minutes the run lasted, or has lasted. */
-  minutes: number
-  outcome: RunOutcome
-  needsInput: number
-  /** How many members ended with an error. */
-  errors: number
-}
-
-/** The outcome a run's record or live state shows. */
-export function outcomeOf(run: Pick<RunInfo, 'state' | 'stoppedAt'>): RunOutcome {
-  if (run.stoppedAt || run.state === 'stopped') return 'stopped'
-  if (run.state === 'finished') return 'finished'
-  return 'running'
-}
-
 /** A run's length: to its stop, to its last member's end, or to now while it goes. */
 export function runLength(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state'>, now: number): number {
   const start = Date.parse(run.startedAt)
@@ -100,34 +79,6 @@ export function runLength(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'member
     }
   }
   return Math.max(0, (end ?? now) - start)
-}
-
-/** The last `limit` runs of a crew as bars, oldest first, from the runs newest first (live and recorded). */
-export function runBars(runs: readonly RunInfo[], now: number, limit = 20): RunBar[] {
-  return runs
-    .slice(0, limit)
-    .map((r) => ({
-      id: r.id,
-      startedAt: Date.parse(r.startedAt) || 0,
-      minutes: Math.round((runLength(r, now) / 60_000) * 10) / 10,
-      outcome: outcomeOf(r),
-      needsInput: r.needsInput ?? 0,
-      errors: r.members.filter((m) => m.error).length,
-    }))
-    .reverse()
-}
-
-/** The bars as the bar chart takes them: one series per outcome, so each bar is coloured by its outcome. */
-export function runBarSeries(bars: readonly RunBar[]): Array<{ label: string; finished: number; stopped: number; running: number; id: string; needsInput: number; errors: number }> {
-  return bars.map((b) => ({
-    label: new Date(b.startedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
-    finished: b.outcome === 'finished' ? b.minutes : 0,
-    stopped: b.outcome === 'stopped' ? b.minutes : 0,
-    running: b.outcome === 'running' ? b.minutes : 0,
-    id: b.id,
-    needsInput: b.needsInput,
-    errors: b.errors,
-  }))
 }
 
 export type AttentionSlice = 'needs_input' | 'working' | 'done' | 'idle'

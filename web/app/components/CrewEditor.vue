@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
-import { draftMember, memberNameError, memberNameFrom, type DraftCrew } from '~/utils/crews'
+import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
+import { draftMember, memberNameFrom, type DraftCrew } from '~/utils/crews'
+import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
-import type { CrewStart } from '~/composables/useSessions'
 import { isActive } from '~/utils/attention'
 import { gitCheckLine, type GitCheckView } from '~/utils/dirInput'
 import { shortCwd } from '~/utils/sessions'
 import { yoloChoice, yoloFromChoice, type YoloChoice } from '~/utils/yolo'
 
 /**
- * One crew as a form: its name, goal, working directory, where it runs,
- * isolation, what happens after launch and its members. The page saves,
- * launches, duplicates and deletes it; the editor only changes the draft.
+ * A saved crew's Setup: its goal, where its runs work, what each run does,
+ * and its members as a table or as the graph of their start rules. The page
+ * owns the name (in its header), saving, launching, duplicating and
+ * deleting; the editor only changes the draft.
  */
 const crew = defineModel<DraftCrew>({ required: true })
-const props = defineProps<{ agents: AgentInfo[]; dirty: boolean; saving?: boolean; launching?: boolean; yoloDefault?: boolean }>()
-const emit = defineEmits<{ save: []; discard: []; duplicate: []; launch: []; delete: [] }>()
+const props = defineProps<{ agents: AgentInfo[]; yoloDefault?: boolean }>()
 
 const live = useAttention()
 const api = useSessions()
@@ -49,27 +49,19 @@ watch(
 )
 onBeforeUnmount(() => window.clearTimeout(gitTimer))
 const gitLine = computed(() => gitCheckLine(gitCheck.value, crew.value.isolation))
+/** Under "Runs in": the git state of the directory, and that it is the server's. */
+const runsInHelp = computed(() => {
+  const where = serverHost.host.value ? `on ${serverHost.host.value}` : 'on the server'
+  const git = gitLine.value.text.replace(/\.$/, '')
+  return git ? `${git} · ${where}` : where
+})
 
 /** The view link a launch creates lasts 8 hours when the switch is on. */
 const VIEW_LINK_TTL = 8 * 3600
 
-const nameMissing = computed(() => !crew.value.name.trim())
-const memberProblems = computed(() => crew.value.members.some((m, i) => memberNameError(m.name, crew.value.members.filter((_, j) => j !== i).map((x) => x.name)) || !m.agentId))
-const invalid = computed(() => nameMissing.value || memberProblems.value)
-const launchLabel = computed(() => `Launch ${crew.value.members.length} ${crew.value.members.length === 1 ? 'agent' : 'agents'}`)
-const launchBlocked = computed(() => {
-  if (!crew.value.members.length) return 'Add a member first'
-  if (crew.value.where !== 'server') return 'Only a crew that runs on the server can be launched'
-  if (invalid.value) return 'Fix the fields marked in red first'
-  return ''
-})
-/** The launch button's tooltip: what blocks it, else why the server would refuse it (it stays enabled: the 409 answers). */
-const launchHint = computed(() => launchBlocked.value || (gitLine.value.blocks ? gitLine.value.text : ''))
-const subtitle = computed(() => `${crew.value.id ? `crews/${crew.value.id}.json` : 'not saved yet'} · ${crew.value.members.length} ${crew.value.members.length === 1 ? 'agent' : 'agents'}`)
-
 const isolationItems = [
-  { label: 'Git worktree per agent', value: 'worktree' },
-  { label: 'Shared working directory', value: 'none' },
+  { label: 'shares one working directory', value: 'none' },
+  { label: 'gives each member a git worktree', value: 'worktree' },
 ]
 
 // Yolo for the crew's runs: the server's default, or on, or off. A launch
@@ -88,10 +80,14 @@ const viewLink = computed({
   get: () => !!crew.value.viewLinkTtlSeconds,
   set: (on: boolean) => (crew.value = { ...crew.value, viewLinkTtlSeconds: on ? VIEW_LINK_TTL : undefined }),
 })
-const viewLinkLabel = computed(() => {
+const viewLinkHours = computed(() => {
   const ttl = crew.value.viewLinkTtlSeconds
-  const hours = ttl && ttl !== VIEW_LINK_TTL ? `${Math.round((ttl / 3600) * 10) / 10}h` : '8h'
-  return `Create a view link (${hours})`
+  return ttl && ttl !== VIEW_LINK_TTL ? `${Math.round((ttl / 3600) * 10) / 10}h` : '8h'
+})
+/** Under "Each run": what a launch does, in one line; the popover behind it changes it. */
+const eachRunLine = computed(() => {
+  const yoloWord = yolo.value === 'default' ? `server default (${props.yoloDefault ? 'on' : 'off'})` : yolo.value
+  return `${crew.value.openAfterLaunch ? 'Opens the run page' : 'Stays on this page'} · ${viewLink.value ? `view link for ${viewLinkHours.value}` : 'no view link'} · yolo: ${yoloWord}`
 })
 
 function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
@@ -118,23 +114,6 @@ function addFrom(s: SessionInfo) {
   pickOpen.value = false
 }
 
-// Runs on: the arrow keys move the focus between the two options, and
-// choose Server on the way; My machine takes the focus (its tooltip says why)
-// but cannot be chosen.
-const whereGroup = useTemplateRef<HTMLElement>('whereGroup')
-function onWhereKey(e: KeyboardEvent) {
-  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]
-  if (!step || !whereGroup.value) return
-  e.preventDefault()
-  const options = [...whereGroup.value.querySelectorAll<HTMLElement>('[role="radio"]')]
-  const at = options.indexOf(document.activeElement as HTMLElement)
-  const next = options[(at + step + options.length) % options.length]
-  next?.focus()
-  if (next && next.getAttribute('aria-disabled') !== 'true') next.click()
-}
-
-const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => emit('delete') }]])
-
 // The members as a table, or as the graph of their start rules: dragging an
 // edge sets "after", its × removes the rule, a node's menu sets it by hand.
 // The server's rules hold while drawing (one parent, no cycle): a refused
@@ -142,13 +121,14 @@ const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', 
 const membersView = ref<'table' | 'graph'>('table')
 const membersViewItems = [
   { label: 'Table', value: 'table', icon: 'i-lucide-table' },
-  { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
+  { label: 'Graph', value: 'graph', icon: 'i-lucide-workflow' },
 ]
 const selectedMember = ref('')
+const agentNames = computed(() => Object.fromEntries(props.agents.map((a) => [a.id, a.name])))
 function setStart(name: string, start: CrewStart) {
   set('members', withStart(crew.value.members, name, start))
 }
-/** Removes a member from the graph; the members that started after it start immediately, as the table does. */
+/** Removes a member from the graph; the members that started after it start at launch, as the table does. */
 function removeMember(name: string) {
   set(
     'members',
@@ -162,99 +142,55 @@ function refused(message: string) {
 
 <template>
   <div class="flex min-w-0 flex-col gap-5" data-crew-editor>
-    <div class="flex flex-wrap items-start gap-3">
-      <div class="flex min-w-60 flex-1 flex-col gap-0.5">
-        <UInput
-          :model-value="crew.name"
-          variant="ghost"
-          maxlength="60"
-          placeholder="Crew name"
-          aria-label="Crew name"
-          :color="nameMissing ? 'error' : undefined"
-          :highlight="nameMissing"
-          :ui="{ base: 'px-1 -mx-1 text-lg md:text-lg font-semibold text-highlighted' }"
-          class="max-w-md"
-          @update:model-value="set('name', String($event))"
-        />
-        <span class="font-mono text-xs text-muted">{{ subtitle }}</span>
-      </div>
-      <div class="flex flex-wrap items-center gap-1.5">
-        <template v-if="dirty">
-          <UButton v-if="crew.id" label="Discard" color="neutral" variant="ghost" :disabled="saving" @click="emit('discard')" />
-          <UButton label="Save" icon="i-lucide-save" color="neutral" variant="outline" :loading="saving" :disabled="invalid || launching" @click="emit('save')" />
-        </template>
-        <UButton v-if="crew.id" label="Duplicate" icon="i-lucide-copy" color="neutral" variant="outline" :disabled="saving || launching" @click="emit('duplicate')" />
-        <UTooltip :text="launchHint" :disabled="!launchHint">
-          <UButton :label="launchLabel" icon="i-lucide-play" :loading="launching" :disabled="!!launchBlocked || saving" data-launch @click="emit('launch')" />
-        </UTooltip>
-        <UDropdownMenu v-if="crew.id" :items="menu" :content="{ align: 'end' }">
-          <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" aria-label="More" />
-        </UDropdownMenu>
-      </div>
-    </div>
-
     <div class="grid gap-4 lg:grid-cols-[1.4fr_1fr_1fr]">
       <UFormField label="Goal" hint="shared as $GOAL" name="goal">
-        <UTextarea :model-value="crew.goal" :rows="3" autoresize :maxrows="8" maxlength="2000" placeholder="What the crew is for. Role prompts reach it as $GOAL." class="w-full" @update:model-value="set('goal', String($event))" />
+        <UTextarea :model-value="crew.goal" :rows="3" autoresize :maxrows="8" maxlength="2000" placeholder="What the crew is for. Every first prompt can say $GOAL." class="w-full" @update:model-value="set('goal', String($event))" />
       </UFormField>
 
-      <div class="flex flex-col gap-2">
-        <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
-        <UFormField label="Working directory" hint="allowed root" name="cwd" :help="gitLine.text || undefined" :ui="{ help: 'mt-1 text-xs' }">
-          <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" @update:model-value="set('cwd', $event)" />
-          <template v-if="gitLine.text" #help>
-            <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ gitLine.text }}</span>
-          </template>
-        </UFormField>
-        <!-- One tab stop (the option chosen); the arrow keys move between the options. -->
-        <div ref="whereGroup" class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm" role="radiogroup" aria-label="Runs on" @keydown="onWhereKey">
-          <button
-            type="button"
-            role="radio"
-            :aria-checked="crew.where === 'server'"
-            :tabindex="crew.where === 'host' ? -1 : 0"
-            class="rounded py-1.5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            :class="crew.where === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'"
-            @click="set('where', 'server')"
-          >
-            Server
-          </button>
-          <UTooltip text="hosted crews come later">
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="crew.where === 'host'"
-              aria-disabled="true"
-              :tabindex="crew.where === 'host' ? 0 : -1"
-              class="rounded py-1.5 cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              :class="crew.where === 'host' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-dimmed'"
-            >
-              My machine
-            </button>
-          </UTooltip>
-        </div>
-      </div>
+      <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
+      <UFormField label="Runs in" name="cwd" :help="runsInHelp" :ui="{ help: 'mt-1 text-xs' }">
+        <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" @update:model-value="set('cwd', $event)" />
+        <template #help>
+          <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ runsInHelp }}</span>
+        </template>
+      </UFormField>
 
-      <div class="flex flex-col gap-2.5">
-        <span class="text-sm font-medium text-default">Isolation &amp; after launch</span>
-        <USelect :model-value="crew.isolation" :items="isolationItems" aria-label="Isolation" class="w-full" @update:model-value="set('isolation', $event as DraftCrew['isolation'])" />
-        <USwitch :model-value="crew.openAfterLaunch" label="Open the crew view after launch" size="sm" @update:model-value="set('openAfterLaunch', $event)" />
-        <USwitch v-model="viewLink" :label="viewLinkLabel" size="sm" />
-        <USelect v-model="yolo" :items="yoloItems" aria-label="Yolo" class="w-full" data-crew-yolo />
-      </div>
+      <UFormField label="Each run" name="isolation" :ui="{ help: 'mt-1 text-xs' }">
+        <USelect :model-value="crew.isolation" :items="isolationItems" aria-label="Each run" class="w-full" @update:model-value="set('isolation', $event as DraftCrew['isolation'])" />
+        <template #help>
+          <!-- One line says what a launch does; the popover behind it holds the switches. -->
+          <UPopover :content="{ align: 'start' }">
+            <button type="button" class="flex min-w-0 max-w-full items-center gap-1 rounded-xs text-left text-muted hover:text-default focus-visible:ring-2 focus-visible:ring-primary outline-none" data-each-run>
+              <span class="[overflow-wrap:anywhere]">{{ eachRunLine }}</span>
+              <UIcon name="i-lucide-pencil" class="size-3 flex-none" />
+            </button>
+            <template #content>
+              <div class="flex w-72 flex-col gap-3 p-3">
+                <USwitch :model-value="crew.openAfterLaunch" label="Open the run page after launch" size="sm" @update:model-value="set('openAfterLaunch', $event)" />
+                <USwitch v-model="viewLink" :label="`Create a view link (${viewLinkHours})`" size="sm" />
+                <USelect v-model="yolo" :items="yoloItems" aria-label="Yolo" size="sm" class="w-full" data-crew-yolo />
+              </div>
+            </template>
+          </UPopover>
+        </template>
+      </UFormField>
     </div>
 
     <p v-if="crew.isolation === 'worktree'" class="-mt-2 text-xs text-muted">
-      Each agent works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The working directory must be in a git repository with a commit.
+      Each member works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The directory must be in a git repository with a commit.
     </p>
 
-    <div class="flex flex-col gap-3" data-crew-members>
-      <UTabs v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="self-start" data-members-view />
+    <div class="flex flex-col gap-3" data-crew-members-section>
+      <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <span class="text-sm font-semibold text-highlighted">Members</span>
+        <span class="min-w-0 text-[12.5px] text-muted" data-start-sentence>{{ startSentence(crew.members) }}</span>
+        <UTabs v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="ml-auto" data-members-view />
+      </div>
       <CrewMembersTable v-if="membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" @update:model-value="set('members', $event)" @add="addMember" @add-from-session="pickOpen = true" />
       <template v-else>
-        <CrewGraph :members="crew.members" editable :selected="selectedMember" @select="selectedMember = $event" @set-start="setStart" @remove="removeMember" @refused="refused" />
+        <CrewGraph :members="crew.members" :agent-names="agentNames" editable :selected="selectedMember" @select="selectedMember = $event" @set-start="setStart" @remove="removeMember" @refused="refused" />
         <div class="flex flex-wrap gap-x-4 gap-y-1">
-          <UButton label="Add agent" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!agents.length || crew.members.length >= 12" @click="addMember" />
+          <UButton label="Add member" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!agents.length || crew.members.length >= 12" data-add-member @click="addMember" />
           <UButton label="Add from a running session" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="crew.members.length >= 12" @click="pickOpen = true" />
         </div>
       </template>
@@ -267,7 +203,7 @@ function refused(message: string) {
           <li v-for="s in running" :key="s.id">
             <button type="button" class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-elevated/60" @click="addFrom(s)">
               <SessionAvatar :agent-id="s.agentId" />
-              <span class="min-w-0 flex-1 flex flex-col">
+              <span class="flex min-w-0 flex-1 flex-col">
                 <span class="truncate text-sm font-medium">{{ s.name }}</span>
                 <span class="truncate font-mono text-[11px] text-muted">{{ s.agentId }} · {{ shortCwd(s.cwd) }}</span>
               </span>

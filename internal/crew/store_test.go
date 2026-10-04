@@ -82,6 +82,19 @@ func TestEachCrewIsAFile(t *testing.T) {
 // at a time, with the total. A summary carries what the list shows and not
 // the prompts. A file added, changed or removed by hand shows at the next
 // listing.
+// A crew named "new" gets another id: /crews/new is the workbench's page for a
+// crew not saved yet.
+func TestCreateNeverDerivesTheReservedID(t *testing.T) {
+	s, _ := newStore(t)
+	c, err := s.Create(validCrew("", "New"))
+	if err != nil || c.ID != "new-2" {
+		t.Fatalf("a crew named New got the id %q, %v", c.ID, err)
+	}
+	if c, err = s.Create(validCrew("", "new!")); err != nil || c.ID != "new-3" {
+		t.Fatalf("the next got %q, %v", c.ID, err)
+	}
+}
+
 func TestListPagesThroughTheDirectory(t *testing.T) {
 	s, st := newStore(t)
 	for i := range 7 {
@@ -100,7 +113,7 @@ func TestListPagesThroughTheDirectory(t *testing.T) {
 		t.Fatalf("past the end %v of %d", ids(page), total)
 	}
 	page, _, _ = s.List(0, 1)
-	want := Summary{ID: "c6", Name: "Crew 0", Cwd: "/srv/api", Where: "server", Isolation: "worktree",
+	want := Summary{ID: "c6", Name: "Crew 0", Goal: "ship /v1/users", Cwd: "/srv/api", Where: "server", Isolation: "worktree",
 		Members: []MemberSummary{{Name: "lead", AgentID: "claude", Start: Start{When: "immediately"}}, {Name: "tests", AgentID: "shell", Start: Start{When: "after", Member: "lead"}}}, UpdatedAt: validCrew("", "").UpdatedAt}
 	if !reflect.DeepEqual(page[0], want) {
 		t.Fatalf("summary %+v, want %+v", page[0], want)

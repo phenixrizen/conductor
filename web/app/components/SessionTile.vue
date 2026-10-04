@@ -29,7 +29,7 @@ const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${prop
 </script>
 
 <template>
-  <!-- The page's own control (the crew view's selection box) sits beside the tile, not in it: one control per element. -->
+  <!-- The page's own control (the run page's selection box) sits beside the tile, not in it: one control per element. -->
   <div class="relative h-full min-h-0 min-w-0">
     <div v-if="$slots.leading" class="absolute left-[11px] top-2 z-10 flex">
       <slot name="leading" />

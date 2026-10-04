@@ -4,7 +4,7 @@ import type { GraphEdge } from '~/utils/crewGraph'
 import { relativeTime } from '~/utils/sessions'
 
 /**
- * One edge of the crew graph. A solid edge is a start rule ("after X idle"),
+ * One edge of the crew graph. A solid edge is a start rule ("after X is done"),
  * with a small label and, in the editor, a button that deletes it (the
  * member then starts immediately). A dashed, animated edge is the handoffs
  * from one member to another in this run: a count badge, and the last
@@ -57,7 +57,7 @@ const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : 'var(--ui-text
         </template>
       </UPopover>
       <span v-else class="flex items-center gap-0.5 rounded bg-default/90 px-1 text-[10px] text-muted">
-        after
+        when done
         <UButton v-if="data.editable" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="-mr-1 size-4 p-0" :aria-label="`${e.to} no longer starts after ${e.from}`" data-graph-edge-delete @click="emit('disconnect', e.to)" />
       </span>
     </div>

@@ -308,6 +308,7 @@ export interface CrewInfo {
 export interface CrewSummary {
   id: string
   name: string
+  goal: string
   cwd: string
   where: 'server' | 'host'
   isolation: 'none' | 'worktree'
@@ -369,7 +370,7 @@ export interface RunInfo {
   needsInput: number
   /** The run's yolo choice, fixed at launch: every member, one added later included, follows it. */
   yolo: boolean
-  /** The stopped run this one resumed, and the run that resumed this one (Resume run). */
+  /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
 }

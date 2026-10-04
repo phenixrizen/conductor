@@ -25,7 +25,7 @@ export function bestGrid(n: number, width: number, height: number, gap = 8, aspe
 
 /**
  * How many cells the item placed last in a grid of `n` items fills: the cells
- * the last row leaves empty, and its own. The crew view puts its feed there,
+ * the last row leaves empty, and its own. The run page puts its feed there,
  * so its grid has no empty cell. At least 1, at most a row.
  */
 export function lastItemSpan(n: number, layout: GridLayout): number {

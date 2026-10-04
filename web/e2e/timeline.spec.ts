@@ -54,18 +54,29 @@ test('a member held with a trust question shows an amber segment on its row, and
   await expect(tl.locator('[data-timeline-row="held"]')).toHaveAttribute('data-status', 'ended')
 })
 
-test('the Crews list charts the runs once two ended, and the Events page charts the activity', async ({ page, api }) => {
+test('the crew\'s Runs tab charts the runs once there are two, and the Events page charts the activity', async ({ page, api }) => {
+  await page.goto(`/crews/${encodeURIComponent(crewId)}?tab=runs`)
+  const runsChart = page.locator('[data-runs-chart]')
+  await expect(runsChart).toHaveAttribute('data-runs', '1', { timeout: 15_000 })
+  await expect(runsChart.locator('[data-runs-chart-empty]')).toHaveText('A chart of the last runs appears after two.')
+  // The home's row of the crew draws the same runs as bars.
   await page.goto('/crews')
-  const entry = page.locator(`[data-crew-entry]:has([data-crew-item][href="/crews/${crewId}"])`)
-  await expect(entry.locator('[data-runs-chart]')).toHaveAttribute('data-runs', '1', { timeout: 15_000 })
-  await expect(entry.locator('[data-runs-chart-empty]')).toHaveText('A chart of the last runs appears after two.')
+  const entry = page.locator(`[data-crew-entry][data-crew-id="${crewId}"]`)
+  await expect(entry.locator('[data-crew-bars]')).toHaveAttribute('data-runs', '1', { timeout: 15_000 })
+  await expect(entry.locator('[data-crew-bars] [data-run-bar]')).toHaveAttribute('data-outcome', 'stopped')
+  await expect(entry.locator('[data-crew-last-run]')).toHaveText(/^today /)
   const second = await api.launchCrew(crewId)
   runs.push(second.id)
   await expect.poll(async () => logged(await api.run(second.id), "typed lead's prompt"), { timeout: 60_000 }).toBe(true)
   await api.stopRun(second.id)
-  await expect(entry.locator('[data-runs-chart]')).toHaveAttribute('data-runs', '2', { timeout: 20_000 })
-  await expect(entry.locator('[data-runs-chart-empty]')).toHaveCount(0)
-  await expect(entry.locator('[data-runs-chart] svg').first()).toBeVisible()
+  await page.goto(`/crews/${encodeURIComponent(crewId)}?tab=runs`)
+  await expect(runsChart).toHaveAttribute('data-runs', '2', { timeout: 20_000 })
+  await expect(runsChart.locator('[data-runs-chart-empty]')).toHaveCount(0)
+  await expect(runsChart.locator('[data-run-bar]')).toHaveCount(2)
+  await expect(runsChart).toContainText('median')
+  // Both runs are rows, named by when they started, stopped and offering a new run.
+  await expect(page.locator(`[data-crew-runs] [data-run="${second.id}"]`)).toHaveAttribute('data-state', 'stopped')
+  await expect(page.locator(`[data-crew-runs] [data-run="${second.id}"] [data-run-resume]`)).toHaveText(/Resume as new run/)
 
   // The feed holds what arrives while the page is open: the chart fills as a run reports.
   await page.goto('/events')

@@ -90,7 +90,7 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
   document.addEventListener(end, keepWidth, { once: true })
 }
 
-// The sidebar's group variant: on a crew view (/runs/<id>), and on the page
+// The sidebar's group variant: on a run page (/runs/<id>), and on the page
 // of any member session of a run however it was reached, the sidebar lists
 // only that run's members. The run's name comes from the live store's runs;
 // the crew's id stands in for a run the server no longer keeps.

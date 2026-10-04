@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import { broadcastSelection, crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
+import { memberWords } from '~/utils/crewWords'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 
-// The crew view: a tile for every member of one run, its activity and a
+// The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
 // the run, with its member states, branches and diff stats, is read as the page
 // opens and again whenever a run event or a member session's change says it
@@ -29,7 +30,7 @@ const now = ref(Date.now())
 const launchLink = ref(takeViewLink(String(route.params.run)))
 const copy = useCopy()
 
-useHead({ title: computed(() => run.value?.name || 'Crew') })
+useHead({ title: computed(() => (run.value ? `${run.value.name} · run` : 'Run')) })
 
 /** Reads the run as the page opens: its diff stats are read with it. Later reads are the live store's. */
 async function load() {
@@ -158,17 +159,15 @@ function footer(t: Tile): { where: string; diff: string } {
   return { where, diff }
 }
 
-function pendingLabel(t: Tile): string {
+/** A tile without a session: what its member does, in the run's words (a member a stop cut off is grey, red only for its own error). */
+function placeholder(t: Tile): { text: string; tone: 'warning' | 'error' | 'muted' | 'default' } {
   const m = t.member
-  if (!m) return ''
-  const st = run.value ? memberStatus(run.value, m, live.sessions.value) : m.status
-  if (st === 'ended') return m.error ? `ended: ${m.error}` : 'ended'
+  if (!m || !run.value) return { text: '', tone: 'muted' }
+  const st = memberStatus(run.value, m, live.sessions.value)
   // Started, and its session not in the live store yet.
-  if (st !== 'pending') return 'starting…'
-  if (m.start.when === 'after') return `starts once ${m.start.member} is idle`
-  if (m.start.when === 'manual') return 'starts by hand'
-  return 'waiting to start'
+  return st === 'pending' || st === 'ended' ? memberWords(run.value, m, st) : { text: 'starting…', tone: 'muted' }
 }
+const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }
 
 const starting = ref('')
 async function startMember(name: string) {
@@ -293,7 +292,7 @@ watch(() => admin.token.value, load)
                   <span class="flex-1 truncate text-[13px] font-semibold">{{ t.name }}</span>
                 </div>
                 <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
-                  <span>{{ pendingLabel(t) }}</span>
+                  <span :class="tone[placeholder(t).tone]" data-member-words>{{ placeholder(t).text }}</span>
                   <UButton
                     v-if="t.member?.status === 'pending' && !run?.stoppedAt"
                     label="Start now"

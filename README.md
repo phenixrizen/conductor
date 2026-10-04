@@ -279,10 +279,10 @@ button, a search button that opens the full sidebar on its filter, the pages
 and the sidebar's buttons as icons with tooltips (the Wall's count as an amber
 chip), and every session as its agent's initials with the amber dot when it
 needs you, the members of a running crew together under its name, which links
-to the crew view. The full sidebar groups them the same way: inside each
+to the run page. The full sidebar groups them the same way: inside each
 section (**Needs you**, **Running**, **Exited**) the sessions of no crew come
 first, then one group per crew run under a header naming the run, which links
-to its crew view. A session launched with yolo carries the **yolo** badge
+to its run page. A session launched with yolo carries the **yolo** badge
 there, and an ended one a **Resume** (or **Relaunch**) button. Click one to
 open it. The panel button at the bottom of the
 rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width
@@ -657,7 +657,14 @@ run stops and not when the crew is deleted: remove them yourself with `git
 worktree remove` and `git branch -d` once you have merged what you want. With
 *Shared working directory* every member works in the same directory.
 
-**The crew view.** `/runs/<id>` shows a live tile for every member, with its
+**Two nouns.** A *crew* is a saved plan: members, agents, first prompts, who
+waits for whom. A *run* is one launch of it: live sessions, branches, a log.
+The Crews page (`/crews`) shows the runs going now above the saved crews; a
+saved crew's page (`/crews/<id>`) has its **Setup** and its **Runs**, and
+says when a run of it is live; a run's page (`/runs/<id>`) is named by its
+crew and its start ("users api · run started 08:31") with its short id.
+
+**The run page.** `/runs/<id>` shows a live tile for every member, with its
 branch and a diff count (`+12 −3`), a feed of the members' events and the run's
 own log, and how many members need input. A tile is the member's terminal at
 the tile's size, as on the wall: click into it and type; its expand button, or
@@ -666,10 +673,14 @@ lines of tracked files the member's worktree adds and removes against the
 commit it began from, committed or not; untracked files are not counted, and
 the numbers are read again when the run changes, at most every 10 seconds. The
 page follows the run through the event stream and polls nothing. A member that
-has not started yet shows a placeholder, a pending one offers **Start now**,
-and an ended one **Resume** (see [Resume and relaunch](#resume-and-relaunch)).
-The header has **Add agent** (a member joins the run), **Share crew** and
-**Stop all**; stopping ends every session and leaves the worktrees.
+has not started yet shows a placeholder ("starts after lead is done", "waits
+for Start now"), a pending one offers **Start now**, and an ended one
+**Resume** (see [Resume and relaunch](#resume-and-relaunch)). A member a stop
+cut off reads "not started" or "stopped" in grey; red is kept for a member
+that ended with an error of its own. The header has **Add agent** (a member
+joins the run, not the saved crew), **Share** and **Stop**; stopping ends every
+session and leaves the worktrees, and a stopped run offers **Resume as new
+run**.
 
 - **Broadcast.** Every member with a session is ticked, and one that starts
   later is ticked when its tile appears; untick the ones to leave out (the
@@ -682,46 +693,79 @@ The header has **Add agent** (a member joins the run), **Share crew** and
   and who was skipped, and why. Each line is recorded as an input in the
   member's activity under your display name, or the server's user when you
   have not set one.
-- **Share crew** creates a run link with the **View** or **Control** role. It
+- **Share** creates a run link with the **View** or **Control** role. It
   grants that role on the session of every member of the run, members added
   later included, and on no other session; the join page lists the members.
-  With a **Control** link their tiles take keys as the crew view's do; with a
+  With a **Control** link their tiles take keys as the run page's do; with a
   **View** link each tile shows the member's whole screen scaled to fit, and
   never resizes the session.
   Revoking it disconnects everyone who came in through it. A crew saved with
   **Create a view link (8h)** gets a view-only link, labelled `launch`, when it
-  is launched. Its URL is shown once on the crew view and printed by `conductor
-  up`; nothing shows it again.
+  is launched. Its URL is shown once on the run page and printed by `conductor
+  up`; nothing shows it again. Whoever joins through a link has **Leave** in
+  the page's header: the terminals go, the card comes back, and the link
+  still joins.
 
-**Runs on the Crews page.** Each crew in the list shows its runs, newest
-first: the run's name and age, its state (**Running**; **Needs input** with
-how many members wait; **Stopped** after a stop; **Finished** once every member
-has ended and none is pending; a member that reports it is done keeps its run
-running, for a done agent is idle, not gone), a member's error beside it, the
-members as their agents' avatars with a dot for each one's status (pending,
-starting, running, needs input, ended), **Open** for the crew view and **Stop**
-while it runs; five at first, **Show more** for the rest. The crew's badge
-reads **Running** while one of its runs is running or needs input
-(**Draft changes** wins while you edit). The page follows the runs through the
-event stream, as the crew view and the sidebar do. A crew's **Yolo** setting
-(the server's default, on or off; see [Yolo](#yolo)) is fixed on the run when
-it is launched, so every member, one started or added later included, follows
-it.
+**The Crews page.** `/crews` opens on **Running now**: one card per run
+going now, named by its crew and its start, with a badge (**running**, or
+how many members **need you**), the members as chips in the shape of the
+crew with a status dot each, a line for every member that asks a question
+with **Answer** beside it, how long it has been up, **Stop** and **Open run**.
+Below, **Saved crews** is a table of plans: name and goal (and "1 live run"
+when one is going, leading to it), the crew's shape in miniature with a few
+words ("5 · a chain of 3, 1 by hand, 1 alone"), where its runs work, its
+last runs as bars (height how long each went, colour how it ended: green
+finished, grey stopped, red a member failed, an amber edge when someone had
+to answer) with when the last one started, **Edit** and **Launch run**. A
+saved crew never says "Running": status belongs to runs.
 
-**The graph.** The crew view has a **Graph** tab beside the tile grid: one
+**A saved crew's page.** `/crews/<id>` has the crew's name in its header
+(edit it there), **Duplicate**, a menu with **Delete crew**, and **Launch
+run**. A banner says when a run of it is live ("started 08:31 · 3 running ·
+review needs you · docs waits for Start now") and leads to it. **Setup** holds
+the goal, where runs work (**Runs in**, with the directory's git state), what
+each run does (one working directory or a git worktree each; the line under
+it, which opens the switches, says whether a launch opens the run page,
+makes a view link and which yolo it uses), and the members as a table (name,
+agent, first prompt, when it starts: **At launch**, **After lead is done**,
+**When you press Start**; a row's menu adds extra arguments, moves or removes
+it) or as the graph of their start rules. A sentence beside the heading reads
+the start order ("lead → core → tests start in a chain; docs waits for you;
+review starts at once"). An edit gets an **Unsaved changes** bar at the
+bottom naming what changed, with **Discard** and **Save**; while a run is
+live it says the run keeps the version it launched with. A crew not saved
+yet is drafted at `/crews/new`.
+
+**Runs.** The crew's **Runs** tab charts its last twelve runs as bars (minutes,
+with the median, how many needed an answer and how many failed) and lists
+every run, newest first, the live ones and the records of those that ended:
+when it started with its short id, its state (**needs you**, **running**,
+**finished**, **stopped**, **failed**: a member ended with an error of its
+own, whether the run was then stopped or not), its members as tiles with a
+status dot each, how long it took, a note (who asks a question, what failed,
+how many a stop cut off, what changed as `+412 −58 on 5 branches`), and
+**Stop** and **Open** while it goes, **Resume as new run** and **Open** after.
+A member that reports it is done keeps its run running, for a done agent is
+idle, not gone. The pages follow the runs through the event stream, as the
+run page and the sidebar do. A crew's **Yolo** setting (the server's default,
+on or off; see [Yolo](#yolo)) is fixed on the run when it is launched, so
+every member, one started or added later included, follows it.
+
+**The graph.** The run page has a **Graph** tab beside the tile grid: one
 node per member (agent, name, status dot, a needs-input badge, branch and
-diff, Start now or Resume where they apply), solid edges for "starts after X
-is idle" and dashed, moving edges for the handoffs delivered in this run,
+diff, Start now or Resume where they apply), solid edges labelled "when done"
+for "starts after X is done" and dashed, moving edges for the handoffs delivered in this run,
 with a count and the last message on hover. Roots sit on the left (or on top:
 the direction and the handoff switch are remembered by the browser), a click
 selects, a double click or Enter opens the member's session. The crew editor
 has the same graph as a second mode of the members section: drag from a
 member's right handle to another's left and that one starts after it; the ×
-on an edge removes the rule (the member starts immediately); a node's menu
-sets a rule by hand or removes the member. A member waits for at most one
+on an edge removes the rule (the member starts at launch); a node's menu
+sets a rule by hand or removes the member, and a member started by hand is
+drawn dashed. A member waits for at most one
 other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
-badges, and the Crews list shows each crew's shape in miniature.
+badges, and the Crews table shows each crew's shape in miniature.
 
 **The timeline and the charts.** A **Timeline** tab beside the graph draws
 one bar per member from its start to its end or now, amber where its session
@@ -730,8 +774,9 @@ other member's row for each handoff, and the run's stopped line; a hover
 reads the exact times. Runs that end (stopped or finished) are recorded as
 `runs/<id>.json` in the data directory (the run as the API answers it, never
 a terminal's contents; at most 500 kept) and read back after a restart, so
-the Crews list charts each crew's last twenty runs as bars (minutes,
-coloured by outcome, with how many members needed input), once there are two.
+a crew's Runs tab lists them and charts the last twelve as bars (minutes,
+coloured by outcome, an amber edge when someone had to answer), once there
+are two, and the Crews table draws the same bars beside each crew.
 The Events page charts the last hour's activity per minute (attention
 changes, reports, handoffs, tool calls, errors) once two events are in it,
 and the Wall's header shows its sessions by attention state as a small
@@ -864,9 +909,9 @@ built-in's, and `"yolo": {}` gives it none. Sessions started with
 ## Resume and relaunch
 
 An ended session (exited or stopped) offers **Resume** in its header, on its
-tile on the crew view (the wall's grid shows only running sessions, so on the
+tile on the run page (the wall's grid shows only running sessions, so on the
 wall it is in the expanded view's header), on its row in the sidebar's
-**Exited** section, and on an ended member's tile on the crew view. Resume
+**Exited** section, and on an ended member's tile on the run page. Resume
 starts a new session with the same agent, name, working directory, arguments
 and yolo choice and, for a crew member, the same run, branch and worktree,
 launched with the agent's resume arguments for its own session id:
@@ -898,8 +943,8 @@ stopped run, and a hosted session, cannot be resumed in this version.
 A stopped run can go on in two ways. **Resume** on an ended member of a run
 whose stop completed resumes that member in place and reopens the run: the
 run is running again, the other ended members stay ended until you resume
-them one by one, and **Stop all** stops it again. **Resume run** (the crew
-view's header, or the run's row on the Crews page) starts a new run of the
+them one by one, and **Stop** stops it again. **Resume as new run** (the run
+page's header, or the run's row on the crew's Runs tab) starts a new run of the
 crew in which every member whose conversation is resumable continues it in
 its kept worktree and branch, without a new prompt (its next done starts the
 members after it), while the others start afresh under their start rules;

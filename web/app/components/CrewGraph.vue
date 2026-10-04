@@ -10,7 +10,7 @@ import type { CrewEdgeData } from '~/components/CrewGraphEdge.vue'
 
 /**
  * The crew graph: members as nodes laid out by their start rules (roots on
- * the left), solid edges for "after X idle", dashed edges for the handoffs
+ * the left), solid edges for "after X is done", dashed edges for the handoffs
  * of a run. On a run page it shows the members' live states and offers
  * Start now, Resume and Open; in the crew editor (`editable`) dragging from
  * one member's right handle to another's left sets "starts after", the
@@ -31,8 +31,10 @@ const props = withDefaults(
     now?: number
     /** Fill the height the parent gives (a page body); else the canvas is a fixed 24 rem tall (a form). */
     fill?: boolean
+    /** The agents' names by id, said on each node under the member's name. */
+    agentNames?: Record<string, string>
   }>(),
-  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false },
+  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}) },
 )
 const emit = defineEmits<{
   select: [name: string]
@@ -79,7 +81,7 @@ const flowNodes = computed<Node<MemberNodeData>[]>(() =>
     id: n.id,
     type: 'member',
     position: { x: n.x, y: n.y },
-    data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped },
+    data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, agentName: props.agentNames[n.member.agentId] ?? '' },
     connectable: props.editable,
     draggable: false,
     selected: n.id === props.selected,
@@ -186,7 +188,8 @@ const legend = [
         @click="prefs.direction = prefs.direction === 'LR' ? 'TB' : 'LR'"
       />
       <USwitch v-if="!editable" v-model="prefs.handoffs" label="Handoffs" size="xs" data-graph-handoffs />
-      <UPopover :content="{ align: 'end' }">
+      <span v-if="editable && wide" class="ml-1.5 text-xs text-muted" data-graph-hint>Drag from a member's right edge onto another to make it wait. One "after" each; loops can't be drawn.</span>
+      <UPopover v-if="!editable" :content="{ align: 'end' }">
         <UButton label="Legend" icon="i-lucide-info" size="xs" color="neutral" variant="ghost" class="ml-auto" />
         <template #content>
           <dl class="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 p-3 text-xs">
@@ -195,11 +198,10 @@ const legend = [
               <dd>{{ l.label }}</dd>
             </template>
             <dt class="h-px w-4 bg-(--ui-text-muted)" />
-            <dd>starts after the member it points from is idle</dd>
+            <dd>starts when the member it points from is done</dd>
             <dt class="h-px w-4 border-t border-dashed border-(--ui-info)" />
             <dd>handoffs in this run, with their count</dd>
           </dl>
-          <p v-if="editable" class="border-t border-default px-3 py-2 text-xs text-muted">Drag from a member's right handle to another's left: that one starts after it. One parent each; the × on an edge removes the rule.</p>
         </template>
       </UPopover>
     </div>

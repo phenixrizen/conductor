@@ -13,13 +13,13 @@ import type { MemberStatus } from '~/utils/crews'
 /** Node size and the gaps between columns and rows, in px. */
 export const NODE_W = 240
 export const NODE_H = 96
-export const GAP_X = 64
+export const GAP_X = 96
 export const GAP_Y = 24
 
 export type GraphDirection = 'LR' | 'TB'
 
 /** What a node needs of a member: a saved crew's or a run's. */
-export type GraphMember = Pick<CrewMember, 'name' | 'agentId' | 'start'> & Partial<Pick<RunMember, 'status' | 'branch' | 'diff' | 'error' | 'sessionId' | 'needsInput' | 'startedAt' | 'endedAt'>>
+export type GraphMember = Pick<CrewMember, 'name' | 'agentId' | 'start'> & Partial<Pick<CrewMember, 'prompt'>> & Partial<Pick<RunMember, 'status' | 'branch' | 'diff' | 'error' | 'sessionId' | 'needsInput' | 'startedAt' | 'endedAt'>>
 
 export interface GraphNode {
   /** The member's name. */

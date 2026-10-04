@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { runOpen } from '~/utils/sidebar'
 
-/** The header of a crew run's members in a sidebar section: the run's name, linking to its crew view. */
+/** The header of a crew run's members in a sidebar section: the run's name, linking to its run page. */
 const props = defineProps<{ runId: string; label?: string }>()
 const route = useRoute()
 </script>
