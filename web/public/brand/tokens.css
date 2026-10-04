@@ -34,17 +34,39 @@
   --conductor-focus-width: 3px;
 }
 
-/* The dark values the switchyard's pages use (the workbench's own dark mode
-   is Nuxt UI's): zinc surfaces, forest-300 as the action colour. */
+/* The values the switchyard's own pages use: dark by default, light when the
+   system prefers it (the workbench's zinc surfaces; forest-300 is the action
+   colour on dark, forest-700 on light). The workbench's own dark mode is
+   Nuxt UI's. */
 [data-conductor-theme="dark"] {
   --conductor-surface: #18181B;
-  --conductor-panel: #27272A;
-  --conductor-text: #E4E4E7;
+  --conductor-panel: #18181B;
+  --conductor-text: #FFFFFF;
+  --conductor-body: #E4E4E7;
   --conductor-muted: #A1A1AA;
-  --conductor-border: #3F3F46;
+  --conductor-border: #27272A;
   --conductor-action: #9BB3A3;
   --conductor-on-action: #18181B;
-  --conductor-accent-text: #F3AC89;
+  --conductor-accent-text: #DF8259;
+  --conductor-code: #27272A;
   --conductor-warning: #DBA63E;
   --conductor-success: #6FAE83;
+  --conductor-idle: #71717A;
+  --conductor-mark: #EEF1E9;
+}
+[data-conductor-theme="light"] {
+  --conductor-surface: #FFFFFF;
+  --conductor-panel: #FFFFFF;
+  --conductor-text: #18181B;
+  --conductor-body: #3F3F46;
+  --conductor-muted: #71717A;
+  --conductor-border: #E4E4E7;
+  --conductor-action: #263D35;
+  --conductor-on-action: #FFFFFF;
+  --conductor-accent-text: #A44727;
+  --conductor-code: #F4F4F5;
+  --conductor-warning: #C98A1B;
+  --conductor-success: #3F8F5F;
+  --conductor-idle: #A1A1AA;
+  --conductor-mark: #263D35;
 }
