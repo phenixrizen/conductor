@@ -25,6 +25,10 @@ func newRecords(t *testing.T) (*Records, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Closed before the directory goes (cleanups run last in, first out, and
+	// TempDir's was registered first): a record write still in flight ends,
+	// and a later one is a no-op, so the directory is empty when removed.
+	t.Cleanup(rs.Close)
 	return rs, filepath.Join(dir, "runs")
 }
 
