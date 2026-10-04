@@ -699,6 +699,19 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
 - The `conductor:` scheme registered by each installer (NSIS, dmg, deb,
   rpm, AppImage) and an invite clicked in a browser reaching a running app.
 
+- 2026-10-04, a switchyard on a VPS (a Lightsail nano in Ohio, Ubuntu 24.04,
+  a systemd service with a root-only env file, `reach.mode: manual`, the TLS
+  listener on 443, Let's Encrypt's IP certificate issued in seven seconds):
+  a server on a Linux machine on the home LAN published a shell session to
+  it (`CONDUCTOR_RENDEZVOUS_*`, reach off, no TLS of its own); the link was
+  minted at the switchyard (`remote: true`), the switchyard listed the
+  session as hosted, and a browser on another machine (inside WSL, behind
+  Hyper-V's NAT and the same UniFi router) joined it over **WebRTC direct**
+  (69 ms) with typing reaching the shell. Both machines share one router,
+  so a viewer on another network (a phone on mobile data) is still the
+  proof that the path crosses two NATs; the relay fallback is not exercised
+  yet. A domain name for the switchyard waits on its DNS delegation.
+
 ### Deferred
 
 - The app forwards the TLS listener into WSL and maps the router from
