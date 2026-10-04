@@ -9,7 +9,6 @@ const bridge = {
   settings: {
     get: () => ipcRenderer.invoke('conductor:settings:get'),
     set: (patch: Record<string, unknown>) => ipcRenderer.invoke('conductor:settings:set', patch),
-    pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('conductor:pickDirectory'),
   },
   restartServer: (): Promise<void> => ipcRenderer.invoke('conductor:restartServer'),
   openInBrowser: (): Promise<void> => ipcRenderer.invoke('conductor:openInBrowser'),

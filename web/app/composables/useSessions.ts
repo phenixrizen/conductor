@@ -544,7 +544,7 @@ export function useSessions() {
     revokeRunLink: (runId: string, linkId: string) =>
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
-    whoami: () => request<{ user: string; host: string; switchyard: boolean }>('/api/whoami'),
+    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string }>('/api/whoami'),
     /** The server's reach: its public address, the mapped port and the certificate's readiness. */
     reach: () => request<ReachInfo>('/api/reach'),
     /**
@@ -552,7 +552,9 @@ export function useSessions() {
      * first 2000 entries read, each marked when it is a git repository (`repo`) with a commit (`commits`). Hidden directories show once
      * the typed element starts with a dot. 400 `invalid_cwd` when no part of the prefix is under a root.
      */
-    listPaths: (prefix: string, limit = 50) => request<PathsReply>('/api/paths', { query: { prefix, limit: String(limit) } }),
+    /** `scope: 'any'` lists outside the allowed roots, on a server with paths.browse any (the desktop app's). */
+    listPaths: (prefix: string, limit = 50, scope: 'roots' | 'any' = 'roots') =>
+      request<PathsReply>('/api/paths', { query: { prefix, limit: String(limit), ...(scope === 'any' ? { scope } : {}) } }),
     /** Whether a crew with worktrees could launch in `cwd` (the server's default when empty). A preview: the launch's 409 `not_a_repo` decides. */
     gitCheck: (cwd: string) => request<GitCheck>('/api/git/check', { query: { cwd } }),
     /** Every hook adapter, in a stable order, with its install checked in the server user's home, the server's host name, and its webhooks. */

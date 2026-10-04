@@ -1,9 +1,8 @@
-import { app, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { external } from './window'
 import { serverAffecting, validate, type DesktopSettings } from './settings'
 import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
-import { wslPickedPath } from './wsl'
 
 export interface IpcDeps {
   origin: () => string
@@ -19,8 +18,8 @@ export interface IpcDeps {
   ice: () => IceStatus
   /** Adds the firewall rule for the ICE port through an elevated netsh; the rule's state after. */
   allowIceFirewall: () => Promise<IceStatus['firewall']>
-  /** Windows: the WSL distribution the server runs in and its home, for settings that are its paths and a picker that opens there; null elsewhere. */
-  wsl?: () => { distro: string; home: string; windowsFolders: boolean } | null
+  /** Windows: the WSL distribution the server runs in, whose paths the settings are; null elsewhere. */
+  wsl?: () => { distro: string } | null
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -60,20 +59,6 @@ export function registerIpc(d: IpcDeps): void {
       d.settings.set(next)
       if (serverAffecting(cur, next)) await d.supervisor.restart()
       return next
-    }),
-  )
-  ipcMain.handle(
-    'conductor:pickDirectory',
-    guard(async () => {
-      const w = d.mainWindow()
-      const wsl = d.wsl?.() ?? null
-      // On Windows the picker opens inside the distribution, and what it
-      // returns is translated to the distribution's own path.
-      const opts: Electron.OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'] }
-      if (wsl) opts.defaultPath = `\\\\wsl.localhost\\${wsl.distro}${wsl.home.replace(/\//g, '\\')}`
-      const r = await (w ? dialog.showOpenDialog(w, opts) : dialog.showOpenDialog(opts))
-      if (r.canceled || !r.filePaths.length) return null
-      return wsl ? wslPickedPath(r.filePaths[0]!, wsl.distro, wsl.windowsFolders) : r.filePaths[0]
     }),
   )
   ipcMain.handle(

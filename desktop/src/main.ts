@@ -216,7 +216,7 @@ async function run() {
     mainWindow: () => main,
     serverVersion: () => supervisor.status.version ?? '',
     ice: () => ({ ...ice }),
-    wsl: () => (wsl ? { distro: wsl.distro(), home: wsl.linuxHome(), windowsFolders: settings.wslWindowsHome } : null),
+    wsl: () => (wsl ? { distro: wsl.distro() } : null),
     allowIceFirewall: async () => {
       if (await allowIceThroughFirewall(ice.port)) ice.firewall = await firewallRuleExists(ice.port)
       return ice.firewall

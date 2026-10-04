@@ -108,6 +108,8 @@ export async function startServer(o: {
       CONDUCTOR_REACH: 'off',
       // The suite's sessions stay here: never published to the public switchyard.
       CONDUCTOR_RENDEZVOUS: '0',
+      // As the desktop app sets it: the Settings picker browses outside the roots.
+      CONDUCTOR_PATHS_BROWSE: 'any',
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
     },
     stdio: ['ignore', out, out],

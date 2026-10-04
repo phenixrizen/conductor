@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity } from '~/utils/agents'
 import type { DesktopIceStatus, DesktopSettings } from '~/utils/desktop'
@@ -84,11 +85,18 @@ async function save() {
   }
 }
 
-async function pick(field: 'dataDir' | 'defaultCwd' | 'root') {
-  const dir = await desktop.bridge.value?.settings.pickDirectory()
-  if (!dir) return
-  if (field === 'root') form.allowedRoots = [...form.allowedRoots, dir]
-  else form[field] = dir
+// The folder picker browses the server's own folders (on Windows, the WSL distribution's), never the native dialog.
+const picker = ref<{ field: PickerField; start: string; title: string; expect?: 'under-roots' | 'outside-roots' } | null>(null)
+const pickerOpen = ref(false)
+const pickerTitles: Record<PickerField, string> = { root: 'Add an allowed root', defaultCwd: 'Default working directory', dataDir: 'Data directory' }
+function openPicker(field: PickerField) {
+  picker.value = { field, start: pickerStart(field, form), title: pickerTitles[field], expect: field === 'defaultCwd' ? 'under-roots' : field === 'dataDir' ? 'outside-roots' : undefined }
+  pickerOpen.value = true
+}
+function onPick(dir: string) {
+  const field = picker.value?.field
+  if (field === 'root') form.allowedRoots = form.allowedRoots.includes(dir) ? form.allowedRoots : [...form.allowedRoots, dir]
+  else if (field) form[field] = dir
 }
 
 onMounted(load)
@@ -162,19 +170,19 @@ onMounted(load)
           <template #header><h2 class="font-semibold">Where agents work</h2></template>
           <div class="flex flex-col gap-4">
             <p v-if="desktop.bridge.value?.platform === 'win32'" class="text-sm text-muted" data-wsl-paths>
-              The server runs inside your WSL distribution, so these are its paths (such as <code class="font-mono">/home/&lt;user&gt;/code</code>); the folder picker opens there. Windows folders need the switch under "How agents run" and live under <code class="font-mono">/mnt</code>.
+              The server runs inside your WSL distribution, so these are its paths (such as <code class="font-mono">/home/&lt;user&gt;/code</code>); the folder picker browses the distribution. Windows folders need the switch under "How agents run" and live under <code class="font-mono">/mnt</code>.
             </p>
             <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them.">
               <div class="flex gap-2">
                 <UTextarea v-model="rootsText" :rows="3" class="flex-1 font-mono text-xs" />
-                <UButton icon="i-lucide-folder-plus" color="neutral" variant="outline" aria-label="Add a root" @click="pick('root')" />
+                <UButton icon="i-lucide-folder-plus" color="neutral" variant="outline" aria-label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
               </div>
             </UFormField>
             <UFormField label="Default working directory" description="Where a launch runs when it names no directory; under an allowed root.">
-              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick" @click="pick('defaultCwd')" /></div>
+              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
             </UFormField>
             <UFormField label="Data directory" description="The server's catalog, crews, hooks and certificates. Keep it outside the allowed roots.">
-              <div class="flex gap-2"><UInput v-model="form.dataDir" class="flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick" @click="pick('dataDir')" /></div>
+              <div class="flex gap-2"><UInput v-model="form.dataDir" class="flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
             </UFormField>
           </div>
         </UCard>
@@ -224,6 +232,8 @@ onMounted(load)
             </li>
           </ul>
         </UCard>
+
+        <DirPickerModal v-if="picker" v-model:open="pickerOpen" :start="picker.start" :title="picker.title" anywhere :roots="form.allowedRoots" :expect="picker.expect" @pick="onPick" />
       </div>
     </template>
   </UDashboardPanel>

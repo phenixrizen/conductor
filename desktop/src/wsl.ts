@@ -47,26 +47,6 @@ export function windowsPathToWsl(p: string): string {
   return `/mnt/${m[1]!.toLowerCase()}/${m[2]!.replace(/\\/g, '/')}`
 }
 
-/**
- * wslPickedPath turns what the Windows folder picker returned into the distribution's own path: \\wsl.localhost\<distro>\a\b and
- * \\wsl$\<distro>\a\b become /a/b; a Windows folder (C:\…) becomes /mnt/c/… only when Windows folders are allowed, and is refused
- * in words otherwise; a Linux path is kept. Anything else is refused.
- */
-export function wslPickedPath(picked: string, distro: string, windowsFolders: boolean): string {
-  const p = picked.trim()
-  if (p.startsWith('/')) return p
-  const m = /^\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+)(?:\\(.*))?$/i.exec(p)
-  if (m) {
-    if (m[1]!.toLowerCase() !== distro.toLowerCase()) throw new Error(`that folder is in the ${m[1]} distribution, not ${distro}`)
-    return '/' + (m[2] ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
-  }
-  if (/^[A-Za-z]:[\\/]/.test(p)) {
-    if (!windowsFolders) throw new Error(`pick a folder inside ${distro} (such as its home), or allow Windows folders in Settings first`)
-    return windowsPathToWsl(p)
-  }
-  throw new Error(`not a folder inside ${distro}: ${p}`)
-}
-
 /** The shell script that installs the Linux binary inside the distribution: fixed text, its inputs positional, never interpolated. */
 export const INSTALL_SCRIPT = `set -eu
 src="$1"; version="$2"

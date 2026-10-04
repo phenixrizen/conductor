@@ -51,7 +51,7 @@ export interface DesktopBridge {
   platform: string
   token(): Promise<string>
   openExternal(url: string): Promise<void>
-  settings: { get(): Promise<DesktopSettings>; set(patch: Partial<DesktopSettings>): Promise<DesktopSettings>; pickDirectory(): Promise<string | null> }
+  settings: { get(): Promise<DesktopSettings>; set(patch: Partial<DesktopSettings>): Promise<DesktopSettings> }
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
   showLog(): Promise<void>

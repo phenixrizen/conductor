@@ -6,6 +6,8 @@
 export function useServerHost() {
   const host = useState<string>('serverHost', () => '')
   const switchyard = useState<boolean>('serverSwitchyard', () => false)
+  /** The server user's home directory; '' until known or when it has none. */
+  const home = useState<string>('serverHome', () => '')
   const asked = useState<boolean>('serverHostAsked', () => false)
   const api = useSessions()
   async function load() {
@@ -15,9 +17,10 @@ export function useServerHost() {
       const me = await api.whoami()
       host.value = me.host ?? ''
       switchyard.value = me.switchyard === true
+      home.value = me.home ?? ''
     } catch {
       asked.value = false
     }
   }
-  return { host, switchyard, load }
+  return { host, switchyard, home, load }
 }

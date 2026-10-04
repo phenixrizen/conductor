@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chooseDistro, decode, INSTALL_SCRIPT, parseList, parseWslconfigNetworking, windowsPathToWsl, wslPickedPath } from '../src/wsl'
+import { chooseDistro, decode, INSTALL_SCRIPT, parseList, parseWslconfigNetworking, windowsPathToWsl } from '../src/wsl'
 import { wslAvailable, WslLauncher } from '../src/launcher-wsl'
 
 const LIST = '  NAME            STATE           VERSION\r\n* Ubuntu-24.04    Running         2\r\n  Debian          Stopped         1\r\n'
@@ -75,16 +75,6 @@ describe('wsl', () => {
     await l.prepare()
     expect(l.shellPath()).toBe('')
     expect(l.linuxEnv({}, false, '').CONDUCTOR_PATH).toBeUndefined()
-  })
-  it('turns what the picker returned into the distribution\'s path', () => {
-    expect(wslPickedPath('\\\\wsl.localhost\\Ubuntu\\home\\me\\code', 'Ubuntu', false)).toBe('/home/me/code')
-    expect(wslPickedPath('\\\\wsl$\\Ubuntu\\home\\me\\', 'Ubuntu', false)).toBe('/home/me')
-    expect(wslPickedPath('\\\\wsl.localhost\\Ubuntu', 'Ubuntu', false)).toBe('/')
-    expect(wslPickedPath('/home/me/code', 'Ubuntu', false)).toBe('/home/me/code')
-    expect(wslPickedPath('C:\\Users\\me\\code', 'Ubuntu', true)).toBe('/mnt/c/Users/me/code')
-    expect(() => wslPickedPath('C:\\Users\\me\\code', 'Ubuntu', false)).toThrow(/inside Ubuntu/)
-    expect(() => wslPickedPath('\\\\wsl.localhost\\Debian\\home', 'Ubuntu', false)).toThrow(/Debian/)
-    expect(() => wslPickedPath('\\\\server\\share', 'Ubuntu', true)).toThrow(/not a folder inside/)
   })
 })
 

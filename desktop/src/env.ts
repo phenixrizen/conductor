@@ -17,6 +17,9 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, to
   out.CONDUCTOR_DEFAULT_CWD = settings.defaultCwd
   out.CONDUCTOR_YOLO = settings.yolo ? '1' : '0'
   out.CONDUCTOR_REACH = settings.reach
+  // The app's server is the person's own machine: its Settings picker browses
+  // every folder there (on Windows, the distribution's), not only the roots.
+  out.CONDUCTOR_PATHS_BROWSE = 'any'
   // Publishing is the server's default; off is a choice. The server's own
   // default switchyard stands when none is named, and a token is optional.
   out.CONDUCTOR_RENDEZVOUS = settings.switchyardEnabled ? '1' : '0'

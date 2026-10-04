@@ -985,7 +985,7 @@ shell there (`$SHELL -ilc`, so nvm's, npm's and `~/.local/bin`'s programs
 count) for its PATH and starts the server with it; a `claude`, `codex` or
 `npm` that Windows put on the PATH under `/mnt/c` is named on the Agents
 page as found on Windows, not used. The settings' directories are the
-distribution's own (`/home/<user>/…`), and the folder picker opens inside it;
+distribution's own (`/home/<user>/…`), and the folder picker browses the server's own folders, so it lists the distribution's and never a Windows path;
 projects under `/mnt/c` work but are slow, and need the Windows-folders
 switch; keep repositories in the distribution's home.
 WSL's default NAT mode stays as it is (the app never asks for mirrored
