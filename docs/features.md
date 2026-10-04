@@ -655,8 +655,10 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
 
 ### Decisions
 
-- **Mirrored networking is never required or recommended.** It changes WSL
-  for Docker and every other tool. The desktop app on Windows runs a UDP
+- **The person configures no Windows networking, ever.** Not mirrored
+  networking (it changes WSL for Docker and every other tool), not
+  `netsh interface portproxy`, not a `.wslconfig` edit: whatever must cross
+  Hyper-V's NAT, the desktop app forwards itself. The desktop app on Windows runs a UDP
   forwarder (a NAT in user space) in front of the server in WSL, which puts
   every WebRTC connection on one UDP port (7877) and advertises the Windows
   LAN address; ICE then crosses one NAT, the router's. The installer adds
@@ -699,6 +701,11 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
 
 ### Deferred
 
+- The app forwards the TLS listener into WSL and maps the router from
+  Windows (UPnP, PCP, NAT-PMP from the Windows side), so the public-address
+  path of round 5 works from WSL with nothing configured by hand. Until
+  then the phone test of a public link is done from a machine that is not
+  WSL.
 - Switchyard rosters and invite lifetimes beyond the share store's: who is
   online, invites that name a person.
 - A relay quota per host on a switchyard, for a public one.
@@ -782,8 +789,8 @@ branch `design/crews-graph`.
   when the shell dies; the admin token lives in memory for the shell's run.
   Windows gets no native server: the installer bundles the Linux binary and runs
   it inside the user's WSL2 distribution, with a first-run screen that explains
-  `wsl --install`; reach inside WSL2 needs mirrored networking and the app says
-  so.
+  `wsl --install`. (Round 6 settled how WSL reaches out: the app forwards,
+  the person configures no Windows networking.)
 - **The skill's commands are also MCP tools.** `conductor mcp` serves
   report, set_state, ask, form_crew, add_member, run_status and link on
   stdio (JSON-RPC 2.0, one message a line); a server's launch registers it

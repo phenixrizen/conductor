@@ -167,7 +167,7 @@ func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.A
 // Rendezvous names a public Conductor this server publishes its sessions
 // to, through the host protocol, so they can be shared from there when this
 // server cannot be reached from outside (carrier-grade NAT, a corporate
-// network, WSL2 without mirrored networking).
+// network, WSL2 in its NAT mode).
 type Rendezvous struct {
 	// Server is the public Conductor's URL (http(s)://host[:port]).
 	Server string `json:"server"`

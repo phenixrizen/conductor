@@ -49,6 +49,16 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
   and `docs/design/brand.md`. The junction mark is artwork, never a status light.
 - Do not commit `internal/web/dist` contents (only `.gitkeep`), `web/.nuxt` or
   `web/.output`. Commit `web/package-lock.json`.
+- **Windows and WSL: the person configures no networking, ever.** Never ask
+  for `netsh interface portproxy`, `networkingMode=mirrored` in
+  `.wslconfig`, a `.wslconfig` edit, or any other manual step to expose the
+  server inside WSL. Whatever must cross Hyper-V's NAT, the desktop app
+  forwards itself (today UDP for ICE, `desktop/src/udp-forwarder.ts`;
+  forwarding the TLS listener and mapping the router from Windows are the
+  app's job too, not yet done). Docs, setup screens, Settings text, test
+  instructions and by-hand checklists follow this; a check that would need
+  such a step on WSL is done from a machine that is not WSL, or waits for the
+  app. The owner has said this twice; do not raise it again.
 
 ## Checks
 

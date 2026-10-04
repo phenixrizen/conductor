@@ -62,9 +62,11 @@ and advertises the Windows LAN address, the forwarder listens on that port
 on Windows and carries each remote peer to the distribution's address on a
 socket of its own, so ICE sees one NAT, the router's. The installer adds the
 inbound firewall rule for the port when it has the right; Settings offers it
-again (an elevated `netsh`, fixed arguments) when it is missing. Plain
-share links to the local server still need Windows to expose the HTTP port
-(`netsh interface portproxy`); through a switchyard nothing more is needed.
+again (an elevated `netsh`, fixed arguments) when it is missing. The person
+configures no Windows networking by hand, ever: no port proxy, no
+`.wslconfig` change. What else must cross Hyper-V's NAT (the TLS listener,
+the router mapping) is the app's to forward in a later round; until then
+sharing from WSL goes through a switchyard or a paste invite.
 
 **Invites.** The app registers the `conductor:` URL scheme (electron-builder
 `protocols`, `setAsDefaultProtocolClient`). An invite,
