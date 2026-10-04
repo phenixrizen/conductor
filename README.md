@@ -12,7 +12,7 @@ Two ways to run a session:
 
 | | Server-hosted | Developer-hosted |
 |---|---|---|
-| Where the agent runs | On the machine running `conductor serve` | On your laptop via `conductor host` |
+| Where the agent runs | On the machine running `conductor serve` (in the desktop app, this computer) | On the computer you are at, via `conductor host`, when the server is elsewhere |
 | How browsers reach it | WebSocket relay through the server | WebRTC data channel straight to your machine, with an automatic relay fallback through the server |
 | Who starts it | Anyone with the workbench token, from the UI or API | You, from your shell |
 
@@ -58,10 +58,14 @@ has a pattern signal.
 
 The sidebar is the session list, grouped into **Needs you**, **Running** and
 **Exited**, with a filter box (**/**) and a **Launch agent** button (**N**).
-Launch offers **Server** or **My machine**: the latter shows the exact
-`conductor host` command to paste into a terminal (it carries your admin
-token; keep it private) and the dialog closes by itself when that session
-connects. The session page shows the terminal, a reply bar whenever the agent
+When the workbench is served from another machine, Launch asks where the
+agent runs: **On this server**, or **On this computer**, which shows the exact
+`conductor host` command to paste into a terminal here (it carries your
+workbench token; keep it private) and closes the dialog by itself when that
+session connects. In the desktop app, or on a workbench opened at this
+computer's own address, there is one answer and the question is not asked. The workbench opens dark; the theme button at the foot of the
+sidebar switches to light and remembers it. The session page shows the
+terminal, a reply bar whenever the agent
 is waiting (type an answer, or press the numbered buttons a Claude Code
 permission prompt offers), and an inspector with **People** (who is attached,
 their role and link, who is typing), **Files** (the file browser) and

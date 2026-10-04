@@ -4,6 +4,7 @@ import { ApiError } from '~/composables/useApi'
 import { serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
+import { showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -24,6 +25,19 @@ const yoloDefault = ref(false)
 
 /** `yolo` is this launch's own choice; undefined follows the server's default. */
 const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: string; cwd: string; args: string; yolo?: boolean }>({ agentId: '', runsOn: 'server', name: '', cwd: '', args: '' })
+
+// Where the agent runs is asked only when there are two answers: on a
+// workbench served from another machine. In the desktop app, or at this
+// computer's own address, it runs on this server, which is this computer.
+const { isDesktop } = useDesktop()
+const runsOnChoice = computed(() => showsRunsOn(isDesktop.value, import.meta.client ? location.hostname : ''))
+watch(
+  runsOnChoice,
+  (choice) => {
+    if (!choice) state.runsOn = 'server'
+  },
+  { immediate: true },
+)
 
 const selected = computed(() => agents.value.find((a) => a.id === state.agentId))
 /** The server tab offers the agents installed on the server; My machine offers every agent: what is installed there is the host's. */
@@ -145,15 +159,16 @@ async function submit() {
         </div>
         <p v-if="selected?.description" class="-mt-2 text-xs text-muted">{{ selected.description }} <code class="font-mono">{{ selected.command.join(' ') }}</code></p>
 
-        <UFormField label="Runs on" name="runsOn">
+        <UFormField v-if="runsOnChoice" label="Where it runs" name="runsOn" data-runs-on>
           <div class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm">
-            <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'server'">Server</button>
-            <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'local' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'local'">My machine</button>
+            <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'server' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'server'">On this server</button>
+            <button type="button" class="rounded py-1.5 transition-colors" :class="state.runsOn === 'local' ? 'bg-default font-semibold shadow-xs ring-1 ring-default' : 'text-muted'" @click="state.runsOn = 'local'">On this computer</button>
           </div>
+          <template #hint><span>"this computer" runs a command you paste; the server is where the workbench is served from</span></template>
         </UFormField>
 
         <UFormField label="Name" name="name" :hint="state.runsOn === 'local' ? 'required to spot it when it connects' : 'optional'" :error="state.runsOn === 'local' && !state.name.trim() ? 'Give the session a name first' : undefined">
-          <UInput v-model="state.name" placeholder="e.g. auth-refactor" class="w-full" />
+          <UInput v-model="state.name" placeholder="optional" class="w-full" />
         </UFormField>
 
         <template v-if="state.runsOn === 'server'">
@@ -181,11 +196,11 @@ async function submit() {
           <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args" hint="appended to the command">
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />
           </UFormField>
-          <UFormField label="Run this in your terminal" name="command">
+          <UFormField label="Run this in a terminal on this computer" name="command">
             <CodeBlock :commands="[command]" wrap :disabled="!localReady" copy-title="Command copied" copy-description="It carries your workbench token; keep it private." />
-            <template #hint><span>uses your workbench token; keep it private</span></template>
+            <template #hint><span>carries your workbench token; keep it private</span></template>
           </UFormField>
-          <p class="text-xs leading-relaxed text-muted">Your terminal stays attached. The session appears here as <b class="text-default">hosted</b> once it connects, peer-to-peer when UDP allows.</p>
+          <p class="text-xs leading-relaxed text-muted">The session appears here as <b class="text-default">hosted</b> as soon as it connects, and this dialog closes; your terminal stays attached to it.</p>
         </template>
       </form>
     </template>
