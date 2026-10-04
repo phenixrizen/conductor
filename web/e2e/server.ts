@@ -106,6 +106,8 @@ export async function startServer(o: {
       CONDUCTOR_DEFAULT_CWD: o.defaultCwd,
       CONDUCTOR_WORKBENCH_TOKEN: token,
       CONDUCTOR_REACH: 'off',
+      // The suite's sessions stay here: never published to the public switchyard.
+      CONDUCTOR_RENDEZVOUS: '0',
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
     },
     stdio: ['ignore', out, out],

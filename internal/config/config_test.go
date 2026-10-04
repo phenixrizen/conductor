@@ -911,20 +911,68 @@ func TestRendezvousConfig(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if r := cfg.Rendezvous; r.Server != "https://team.example.net" || r.Token != "tok" || r.HostName != "office" || !r.RelayOnly {
+	if r := cfg.Rendezvous; r.Server != "https://team.example.net" || r.Token != "tok" || r.HostName != "office" || !r.RelayOnly || cfg.RendezvousServer() != "https://team.example.net" {
 		t.Fatalf("%+v", r)
 	}
 	for name, mutate := range map[string]func(*Config){
-		"no token":   func(c *Config) { c.Rendezvous.Server = "https://team.example.net" },
-		"bad url":    func(c *Config) { c.Rendezvous = Rendezvous{Server: "team.example.net", Token: "t"} },
-		"itself":     func(c *Config) { c.Rendezvous = Rendezvous{Server: c.PublicURL, Token: "t"} },
-		"token only": func(c *Config) { c.Rendezvous.Token = "t" },
+		"bad url": func(c *Config) { c.Rendezvous = Rendezvous{Server: "team.example.net", Token: "t"} },
+		"itself": func(c *Config) {
+			c.PublicURL = "https://me.example.net"
+			c.Rendezvous = Rendezvous{Server: "https://me.example.net/"}
+		},
 	} {
 		c := Defaults()
 		mutate(c)
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+	for name, mutate := range map[string]func(*Config){
+		"no token":   func(c *Config) { c.Rendezvous.Server = "https://team.example.net" },
+		"token only": func(c *Config) { c.Rendezvous.Token = "t" },
+	} {
+		c := Defaults()
+		mutate(c)
+		if err := c.Validate(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// Publishing is on by default, to the public switchyard; the environment or
+// the file turns it off or names another; a switchyard publishes nowhere.
+func TestRendezvousDefaultsToThePublicSwitchyard(t *testing.T) {
+	cfg := Defaults()
+	if cfg.RendezvousServer() != DefaultRendezvousServer || DefaultRendezvousServer != "https://switchyard.rslabs.net" {
+		t.Fatalf("default: %q", cfg.RendezvousServer())
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("the defaults validate: %v", err)
+	}
+	off := Defaults()
+	if err := applyEnv(off, func(k string) string { return map[string]string{"CONDUCTOR_RENDEZVOUS": "0"}[k] }); err != nil || off.RendezvousServer() != "" {
+		t.Fatalf("CONDUCTOR_RENDEZVOUS=0: %v %q", err, off.RendezvousServer())
+	}
+	on := Defaults()
+	if err := applyEnv(on, func(k string) string { return map[string]string{"CONDUCTOR_RENDEZVOUS": "1"}[k] }); err != nil || on.RendezvousServer() != DefaultRendezvousServer {
+		t.Fatalf("CONDUCTOR_RENDEZVOUS=1: %v %q", err, on.RendezvousServer())
+	}
+	no := false
+	file := Defaults()
+	file.Rendezvous.Enabled = &no
+	if file.RendezvousServer() != "" {
+		t.Fatal("enabled: false in the file")
+	}
+	sy := Defaults()
+	sy.Switchyard.Enabled = true
+	if sy.RendezvousServer() != "" {
+		t.Fatal("a switchyard publishes to no switchyard")
+	}
+	// A server whose own public URL is the public switchyard must not publish to itself.
+	self := Defaults()
+	self.PublicURL = DefaultRendezvousServer + "/"
+	if err := self.Validate(); err == nil || !strings.Contains(err.Error(), "not this one's publicUrl") {
+		t.Fatalf("itself by default: %v", err)
 	}
 }
 
@@ -1035,9 +1083,9 @@ func TestSwitchyardOpenHostsConfigAndEnv(t *testing.T) {
 		t.Fatalf("valid: %v", err)
 	}
 	for name, mutate := range map[string]func(*Config){
-		"no sessions":                     func(c *Config) { c.Switchyard.OpenHostSessions = 0 },
-		"no registrations":                func(c *Config) { c.Switchyard.OpenHostRegistrationsPerMinute = 0 },
-		"negative relay":                  func(c *Config) { c.Switchyard.OpenHostRelayKBps = -1 },
+		"no sessions":      func(c *Config) { c.Switchyard.OpenHostSessions = 0 },
+		"no registrations": func(c *Config) { c.Switchyard.OpenHostRegistrationsPerMinute = 0 },
+		"negative relay":   func(c *Config) { c.Switchyard.OpenHostRelayKBps = -1 },
 	} {
 		c := Defaults()
 		c.Switchyard.Enabled = true

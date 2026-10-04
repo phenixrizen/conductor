@@ -60,8 +60,10 @@ func clearConductorEnv(t *testing.T) {
 	// A home of the test's own: nothing a test starts reads or writes the
 	// user's ~/.conductor.
 	t.Setenv("HOME", t.TempDir())
-	// No STUN or gateway traffic from a test unless it asks for it.
+	// No STUN or gateway traffic from a test unless it asks for it, and no
+	// publishing to the public switchyard: a test's sessions stay here.
 	t.Setenv("CONDUCTOR_REACH", "off")
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "0")
 }
 
 // writeServeConfig writes body as conductor.json in dir and returns its path.
@@ -688,5 +690,21 @@ func TestSwitchyardCommandServes(t *testing.T) {
 	var stderr bytes.Buffer
 	if code, err := Run(t.Context(), []string{"switchyard", "-h"}, strings.NewReader(""), io.Discard, &stderr); code != 0 || err != nil || !strings.Contains(stderr.String(), "-switchyard") {
 		t.Fatalf("switchyard -h: %d %v\n%s", code, err, stderr.String())
+	}
+}
+
+// Without the harness's CONDUCTOR_RENDEZVOUS=0 the server says it publishes
+// to the public switchyard, and dials nothing until a session is launched;
+// with it, it says so and names nothing.
+func TestServeLogsThePublicSwitchyard(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state")))
+	if logs := serveUntilListening(t, "--config", cfg); len(logLines(logs, "not published to a switchyard")) != 1 || strings.Contains(logs, "switchyard.rslabs.net") {
+		t.Fatalf("with CONDUCTOR_RENDEZVOUS=0:\n%s", logs)
+	}
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	if logs := serveUntilListening(t, "--config", cfg); len(logLines(logs, "published to the switchyard")) != 1 || !strings.Contains(logs, "switchyard.rslabs.net") || !strings.Contains(logs, "hostToken=false") {
+		t.Fatalf("by default:\n%s", logs)
 	}
 }

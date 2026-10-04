@@ -103,7 +103,8 @@ what reaches whom:
 | on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address. With `reach.mode` `auto` (the default) the server learns its public address from STUN and, once it has a TLS listener with a certificate, maps that port on the router and builds links on `https://<public address>`; until then links keep the address you opened the workbench at, and the Share dialog says so. `GET /api/reach` reports the state. A mapping is reported as mapped, never as reachable: the server's own check through the public address is refused by most home routers, so open a link once from a phone on mobile data |
 | on your machine under WSL2 | through the desktop app: it forwards WebRTC into the distribution itself (a switchyard invite, or a paste invite), and WSL's default NAT mode stays as it is; you configure no Windows networking. A plain `http://` link to a server inside WSL reaches no one outside the distribution, and the public-address path (TLS and the router mapping) from WSL waits for the app to forward that listener and map the router itself |
 | on a machine with a public address, or behind a reverse proxy | anyone, at `publicUrl` or the proxy's forwarded host |
-| behind carrier-grade NAT or a corporate network | `rendezvous`: this server publishes every session to a public Conductor through the host protocol, where it is listed as hosted by this machine and shared from; or a tunnel or a reverse proxy in front of the server; or `conductor host` from your machine against a server anyone can reach |
+| anywhere, by default | the public switchyard: this server publishes every session to `switchyard.rslabs.net` through the host protocol (`rendezvous`, on unless turned off), where it is listed as hosted by this machine and the link is minted; the terminal goes between the viewer and this machine, through the switchyard's relay only when it must |
+| behind carrier-grade NAT or a corporate network, with publishing off | a tunnel or a reverse proxy in front of the server; or `conductor host` from your machine against a server anyone can reach |
 
 The ICE servers play no part in a link. STUN tells a browser or a `conductor
 host` its own public address and port so the two can connect the terminal
@@ -113,15 +114,20 @@ reachable, which only a forwarded port, a public address or a proxy does.
 
 ### Switchyard
 
-When no one's machine is reachable, a small public Conductor run as a
-**switchyard** introduces them: every Conductor publishes its sessions to it
-(`rendezvous.server` and `rendezvous.token`, one of its host tokens), viewers
-join by links minted there, and the terminal goes over WebRTC between the
-viewer and the publishing machine, through the switchyard's relay only for
-the pairs ICE cannot connect. The switchyard launches nothing of its own:
+A small public Conductor run as a **switchyard** introduces machines no one
+can reach: every Conductor publishes its sessions to one (`rendezvous`; the
+public `switchyard.rslabs.net` unless the config names another or turns it
+off), viewers join by links minted there, and the terminal goes over WebRTC
+between the viewer and the publishing machine, through the switchyard's
+relay only for the pairs ICE cannot connect. A switchyard that admits
+**open hosts** (`switchyard.openHosts`) needs no token from a publisher:
+each address may hold `openHostSessions` live sessions (4), register
+`openHostRegistrationsPerMinute` times (6) and relay `openHostRelayKBps`
+(128 KiB/s); a host token (`rendezvous.token`) marks a trusted machine
+outside those limits. The switchyard launches nothing of its own:
 
 ```bash
-CONDUCTOR_HOST_TOKENS=a-host-token CONDUCTOR_REACH=manual CONDUCTOR_TLS_LISTEN=:443 CONDUCTOR_TLS_ACME=1 conductor switchyard --listen :80
+CONDUCTOR_SWITCHYARD_OPEN_HOSTS=1 CONDUCTOR_MAX_SESSIONS=500 CONDUCTOR_MAX_VIEWERS_PER_SESSION=8 CONDUCTOR_HOST_TOKENS=a-host-token CONDUCTOR_REACH=manual CONDUCTOR_TLS_LISTEN=:443 CONDUCTOR_TLS_ACME=1 conductor switchyard --listen :80
 ```
 
 That is the shape for a VPS: `reach.mode: manual` (there is no router to map;
@@ -991,7 +997,8 @@ file must run `compinit` before that line.
 | `tls.acme.challenge` | `CONDUCTOR_TLS_ACME_CHALLENGE` | `tls-alpn-01` | `tls-alpn-01` (answered on the TLS listener through the mapped 443), `http-01` (on the plain listener through a mapped 80: `reach.publicPort80`) or `dns-01` (names only, through `dnsProvider`) |
 | `tls.acme.dnsProvider`, `tls.acme.dnsEnv` | `CONDUCTOR_TLS_ACME_DNS_PROVIDER`, `CONDUCTOR_TLS_ACME_DNS_ENV` (`K=V,K=V`) | none | `cloudflare`, `exec` or `httpreq`, with its settings under lego's names (`CLOUDFLARE_DNS_API_TOKEN`, `EXEC_PATH`, `HTTPREQ_ENDPOINT`, …); never logged or shown |
 | `tls.acme.caDirectory`, `tls.acme.profile` | `CONDUCTOR_TLS_ACME_CA`, `CONDUCTOR_TLS_ACME_PROFILE` | Let's Encrypt; `shortlived` for IP addresses | the ACME directory (`https`), and the certificate profile |
-| `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | none | a public Conductor every session is published to, through the host protocol (as `conductor host` does), with one of its host tokens; the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published |
+| `rendezvous.enabled` | `CONDUCTOR_RENDEZVOUS` (`1`/`true` on, `0`/`false` off) | `true` | publish every session to a switchyard, where share links are minted and work from anywhere; off, links work where this server is reachable |
+| `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | `https://switchyard.rslabs.net`, no token | the switchyard every session is published to, through the host protocol (as `conductor host` does); the token is optional (a host token of a private switchyard, or a trusted seat on the public one); the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published |
 | `ice.udpPort`, `ice.publicIp` | `CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP` | none | how this server's published sessions (`rendezvous`) gather their WebRTC candidates: one UDP port for every connection, and the address advertised as this machine's in place of its interfaces' own, for a forwarder in front of it (the desktop app on Windows, in front of WSL) |
 | `tls.certFile`, `tls.keyFile` | `CONDUCTOR_TLS_CERT_FILE`, `CONDUCTOR_TLS_KEY_FILE` | none | a certificate of your own (PEM, with its chain), re-read when the files change; exclusive with `tls.acme` |
 

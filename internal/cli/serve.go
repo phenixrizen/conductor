@@ -206,9 +206,12 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			stdinCancel()
 		}()
 	}
-	if rv := cfg.Rendezvous; rv.Server != "" {
-		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rv.Server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
-		log.Info("sessions are published to the rendezvous", "server", rv.Server)
+	if server := cfg.RendezvousServer(); server != "" {
+		rv := cfg.Rendezvous
+		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
+		log.Info("sessions are published to the switchyard", "server", server, "hostToken", rv.Token != "")
+	} else if !cfg.Switchyard.Enabled {
+		log.Info("sessions are not published to a switchyard; share links work where this server is reachable")
 	}
 
 	select {

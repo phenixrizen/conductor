@@ -52,7 +52,7 @@ test.beforeAll(async ({ state }) => {
   mkdirSync(data, { recursive: true })
   const log = openSync(join(state.root, 'switchyard.log'), 'a')
   switchyard = spawn(serverBinary(), ['switchyard', '--listen', `127.0.0.1:${port}`], {
-    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: home, CONDUCTOR_DATA_DIR: data, CONDUCTOR_PUBLIC_URL: syURL, CONDUCTOR_WORKBENCH_TOKEN: syAdmin, CONDUCTOR_HOST_TOKENS: hostToken, CONDUCTOR_ALLOWED_ROOTS: home, CONDUCTOR_REACH: 'off' },
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: home, CONDUCTOR_DATA_DIR: data, CONDUCTOR_PUBLIC_URL: syURL, CONDUCTOR_WORKBENCH_TOKEN: syAdmin, CONDUCTOR_HOST_TOKENS: hostToken, CONDUCTOR_ALLOWED_ROOTS: home, CONDUCTOR_REACH: 'off', CONDUCTOR_RENDEZVOUS: '0' },
     stdio: ['ignore', log, log],
   })
   await until('the switchyard answers', async () => {

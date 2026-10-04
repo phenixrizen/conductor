@@ -15,7 +15,7 @@
   "fileView": "view",
   "reach": { "mode": "auto", "publicPort": 443, "publicPort80": false, "stunServer": "" },
   "tls": { "listen": "", "certFile": "", "keyFile": "", "acme": null },
-  "rendezvous": { "server": "", "token": "", "hostName": "", "relayOnly": false },
+  "rendezvous": { "enabled": true, "server": "", "token": "", "hostName": "", "relayOnly": false },
   "dataDir": "",
   "catalog": {
     "disableDefaults": false,

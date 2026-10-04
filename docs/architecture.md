@@ -101,9 +101,10 @@ another network is the only proof. `conductor serve` wires the three: the
 mapper tells the certificate manager the address once the port is mapped,
 and the API reads both for `GET /api/reach` and the link base.
 
-A server that cannot be reached at all (carrier-grade NAT, a corporate
-network) publishes its sessions to a rendezvous instead (`rendezvous` in the
-config): `hostagent.Uplink` registers each local session with the public
+Every server publishes its sessions to a switchyard by default (`rendezvous`
+in the config: the public `switchyard.rslabs.net`, another one, or off), so
+a link works from anywhere whatever is in front of this machine:
+`hostagent.Uplink` registers each local session with the public
 Conductor over the host control connection, exactly as `conductor host`
 does for the process it runs, one connection per session; the rendezvous
 lists it as hosted, serves its viewers over WebRTC or its relay, and mints

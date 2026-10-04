@@ -181,20 +181,45 @@ func (c *Config) InstallSkill() bool { return c.Agents.InstallSkill == nil || *c
 // SelfService reports whether agents may serve themselves (Agents.SelfService, on by default).
 func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.Agents.SelfService }
 
-// Rendezvous names a public Conductor this server publishes its sessions
-// to, through the host protocol, so they can be shared from there when this
-// server cannot be reached from outside (carrier-grade NAT, a corporate
-// network, WSL2 in its NAT mode).
+// DefaultRendezvousServer is the public switchyard every server publishes
+// its sessions to unless the config names another or turns it off: what
+// makes a share link work from anywhere with nothing configured.
+const DefaultRendezvousServer = "https://switchyard.rslabs.net"
+
+// Rendezvous names the public Conductor (a switchyard) this server publishes
+// its sessions to, through the host protocol, so they are shared from there
+// wherever this server is: behind a home router, carrier-grade NAT, a
+// corporate network, WSL2 in its NAT mode. On by default, at
+// DefaultRendezvousServer.
 type Rendezvous struct {
-	// Server is the public Conductor's URL (http(s)://host[:port]).
+	// Enabled turns publishing off when false (CONDUCTOR_RENDEZVOUS=0); nil
+	// is on.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Server is the switchyard's URL (http(s)://host[:port]); empty means
+	// DefaultRendezvousServer.
 	Server string `json:"server"`
-	// Token is one of its host tokens (hostTokens, or its workbench token).
+	// Token is optional: one of the switchyard's host tokens, for a private
+	// switchyard that admits no open hosts, or a trusted seat on the public
+	// one, outside its per-address limits.
 	Token string `json:"token"`
 	// HostName labels this server there; the machine's name when empty.
 	HostName string `json:"hostName"`
 	// RelayOnly serves viewers through the rendezvous's relay only, without
 	// WebRTC.
 	RelayOnly bool `json:"relayOnly"`
+}
+
+// RendezvousServer is the switchyard this server publishes to: none when
+// publishing is off or this server is itself a switchyard, else the
+// configured server, else the public default.
+func (c *Config) RendezvousServer() string {
+	if c.Rendezvous.Enabled != nil && !*c.Rendezvous.Enabled || c.Switchyard.Enabled {
+		return ""
+	}
+	if c.Rendezvous.Server != "" {
+		return c.Rendezvous.Server
+	}
+	return DefaultRendezvousServer
 }
 
 // ACME challenges.
@@ -587,6 +612,14 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		off := false
 		cfg.Agents.InstallSkill = &off
 	}
+	switch getenv("CONDUCTOR_RENDEZVOUS") {
+	case "1", "true":
+		on := true
+		cfg.Rendezvous.Enabled = &on
+	case "0", "false":
+		off := false
+		cfg.Rendezvous.Enabled = &off
+	}
 	str("CONDUCTOR_RENDEZVOUS_SERVER", &cfg.Rendezvous.Server)
 	str("CONDUCTOR_RENDEZVOUS_TOKEN", &cfg.Rendezvous.Token)
 	str("CONDUCTOR_RENDEZVOUS_HOST_NAME", &cfg.Rendezvous.HostName)
@@ -729,17 +762,14 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("reach needs a STUN server: reach.stunServer, or a stun: URL in iceServers"))
 	}
 	errs = append(errs, c.validateTLS()...)
-	if r := &c.Rendezvous; r.Server != "" || r.Token != "" {
+	if r := &c.Rendezvous; r.Server != "" {
 		r.Server = strings.TrimRight(r.Server, "/")
 		if u, err := url.Parse(r.Server); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, errors.New("rendezvous.server must be an http or https URL with a host"))
 		}
-		if r.Token == "" {
-			errs = append(errs, errors.New("rendezvous.token is needed: a host token of the rendezvous"))
-		}
-		if r.Server == c.PublicURL {
-			errs = append(errs, errors.New("rendezvous.server must be another server, not this one's publicUrl"))
-		}
+	}
+	if server := c.RendezvousServer(); server != "" && server == strings.TrimRight(c.PublicURL, "/") {
+		errs = append(errs, errors.New("rendezvous.server must be another server, not this one's publicUrl"))
 	}
 	hookErrs, warnings := c.validateWebhooks()
 	errs = append(errs, hookErrs...)

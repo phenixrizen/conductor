@@ -85,7 +85,10 @@ impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
 `STUB_REPORT`, keeps a transcript per agent session, and draws the trust
 question with `STUB_TRUST_DIALOG=1`; `web/e2e/conductor.e2e.json` wires it
 with the real recipes. Run the narrowest package tests while iterating, then
-the full set before finishing. A check that cannot run (no Docker, no network, no browser) is a
+the full set before finishing. Every harness that launches sessions sets
+`CONDUCTOR_RENDEZVOUS=0` (the cli tests' `clearConductorEnv`, `web/e2e/server.ts`):
+a server publishes its sessions to the public switchyard by default, and a
+test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
 
 ## Pinned versions
