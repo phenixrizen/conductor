@@ -81,12 +81,17 @@ still runs it.
 
 ## Sharing
 
-On a session page press **Share** and create a link with the **View** (watch
-and open files) or **Control** (types into the agent, answers prompts) role,
-with a label and an expiry. The link URL is `<base>/join/<token>` and the
-token is shown once. Guests type a display name before joining; nothing
-connects until they press **Join**, so a fetched link never exposes terminal
-content. Revoking a link disconnects everyone using it.
+On a session page press **Share**: a **View** link (watch and open files),
+good for two hours, is made and copied at once, and the dialog says where it
+reaches. With the session published to a switchyard (the default) that is
+"works from anywhere": the link is minted there and opens there, and the
+terminal comes straight to this machine. Below it, another link with the
+**Control** role (types into the agent, answers prompts), a label and an
+expiry. Opening Share again shows the link already made. The link URL is
+`<base>/join/<token>`; the token is shown once. Guests type a display name
+before joining; nothing connects until they press **Join**, so a fetched link
+never exposes terminal content. Revoking a link disconnects everyone using
+it, a link minted at the switchyard too.
 
 The base is the address you opened the workbench at (`http://192.168.1.20:8080`,
 a tunnel's URL, a reverse proxy's host, with the scheme and host the proxy
@@ -1144,8 +1149,12 @@ that matches neither an empty id nor one that begins with a dash.
 
 - The workbench token gates launching, listing, stopping, link management and
   editing the agent catalog; share tokens grant one role on one session; host
-  tokens only allow registering hosted sessions. Tokens are compared in
-  constant time and stored hashed. A crew run's link grants its role on every
+  tokens only allow registering hosted sessions. A switchyard that admits open
+  hosts registers a host with no token at all, limited per address (sessions
+  held, registrations a minute, relayed bytes) and never trusted beyond that:
+  it sees who publishes and who joins, never terminal content unless it
+  relays, and keeps none. Tokens are compared in constant time and stored
+  hashed. A crew run's link grants its role on every
   member session of that run, members added to the run later included, and
   on no other session.
 - Editing the catalog is as powerful as the server user. An admin can add or

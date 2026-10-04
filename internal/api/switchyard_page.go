@@ -165,6 +165,7 @@ type switchyardPage struct {
 	Relay         string
 	RelayClass    string
 	RelayOn       bool
+	OpenHosts     bool
 	PublicAddress string
 	DocsURL       string
 	SourceURL     string
@@ -194,6 +195,7 @@ func (s *Server) switchyardPageData() switchyardPage {
 	}
 	p.TLS, p.TLSClass, p.CertWarn = s.tlsRow()
 	p.RelayOn = s.cfg.SwitchyardRelay()
+	p.OpenHosts = s.cfg.Switchyard.OpenHosts
 	switch {
 	case !p.RelayOn:
 		p.Relay, p.RelayClass = "Off · direct connections only", "muted"
@@ -443,12 +445,16 @@ footer.sy .right{margin-left:auto}
 </section>
 <section class="card">
 <h2>Sharing from your machine?</h2>
-<p>Ask the operator of this switchyard for a host token, then add both to your Conductor config:</p>
+{{if .OpenHosts}}<p>Nothing to configure: the desktop app and <span class="mono">conductor serve</span> publish here by default. To name this switchyard yourself:</p>
+<div class="code">"rendezvous": {
+  "server": "https://{{.Host}}"
+}</div>
+<p class="small muted">In the desktop app it is Settings → Switchyard. A host token is optional and marks a trusted machine, outside the per-address limits. Your sessions stay on your machine; this server only passes along who may join them.</p>{{else}}<p>Ask the operator of this switchyard for a host token, then add both to your Conductor config:</p>
 <div class="code">"rendezvous": {
   "server": "https://{{.Host}}",
   "token": "&lt;host token&gt;"
 }</div>
-<p class="small muted">In the desktop app it is Settings → Switchyard. Your sessions stay on your machine; this server only passes along who may join them.</p>
+<p class="small muted">In the desktop app it is Settings → Switchyard. Your sessions stay on your machine; this server only passes along who may join them.</p>{{end}}
 </section>
 </div>
 <aside class="aside">
@@ -475,7 +481,7 @@ footer.sy .right{margin-left:auto}
 <div id="op-view" class="hidden">
 <dl class="counts"><div><dt>Hosts connected</dt><dd id="c-hosts">0</dd></div><div><dt>Sessions published</dt><dd id="c-sessions">0</dd></div><div><dt>Viewers</dt><dd id="c-viewers">0</dd></div><div><dt>Relay this hour</dt><dd id="c-relay">0 B</dd></div></dl>
 <div class="hosts" id="op-hosts"></div>
-<div class="nohosts hidden" id="op-nohosts"><div class="title"><span class="dot idle"></span><b>No hosts connected yet</b></div><p class="small muted">A home machine appears here a few seconds after it connects with a host token. The config it needs is under "Sharing from your machine?"</p></div>
+<div class="nohosts hidden" id="op-nohosts"><div class="title"><span class="dot idle"></span><b>No hosts connected yet</b></div><p class="small muted">A home machine appears here a few seconds after it connects. What it needs, if anything, is under "Sharing from your machine?"</p></div>
 </div>
 </section>
 </aside>

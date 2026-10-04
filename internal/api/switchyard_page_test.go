@@ -186,3 +186,16 @@ func TestSwitchyardLandingTLSLine(t *testing.T) {
 		t.Fatalf("no certificate yet: %.300s", body)
 	}
 }
+
+// The "Sharing from your machine?" card says what a publisher needs: nothing
+// on a switchyard that admits open hosts, a host token on one that does not.
+func TestSwitchyardLandingSaysWhatAPublisherNeeds(t *testing.T) {
+	closed := switchyardEnv(t, true)
+	if _, body := getPage(t, closed, "/"); !strings.Contains(body, "Ask the operator of this switchyard for a host token") || strings.Contains(body, "Nothing to configure") {
+		t.Fatalf("token-gated: %.300s", body)
+	}
+	open := openSwitchyardEnv(t, nil)
+	if _, body := getPage(t, open, "/"); !strings.Contains(body, "Nothing to configure") || strings.Contains(body, "Ask the operator of this switchyard for a host token") || !strings.Contains(body, "A host token is optional") {
+		t.Fatalf("open: %.300s", body)
+	}
+}

@@ -649,6 +649,77 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 7: the switchyard as the way sharing works, dark always, the Windows app seeing WSL (2026-10-04)
+
+Asked after installing the first release candidate on Windows: "I want the
+conductor app to start in dark mode. I want switchyard to be the default for
+sharing! I want conductor to just work when I click share an agent. I want
+the names as examples in the UI removed. Also what the hell does 'Runs on'";
+and from the Windows app: Codex "not installed" though it is in WSL, and
+Settings showing Windows paths.
+
+### Decisions
+
+- **Open hosts.** A switchyard with `switchyard.openHosts` registers a host
+  that presents no token, under per-address limits: `openHostSessions` live
+  sessions (4), `openHostRegistrationsPerMinute` (6), `openHostRelayKBps`
+  (128). A wrong token is still refused; a host token marks a trusted machine
+  outside the limits. The relay bound is per connection, so one address may
+  relay `openHostSessions` times the bound; a quota per address is deferred.
+  The public switchyard runs with open hosts on, `maxSessions` 500 and
+  `maxViewersPerSession` 8 (hosted sessions take the viewer cap from the
+  config now; the hub hard-coded 32).
+- **The public switchyard by default.** Every server publishes to
+  `https://switchyard.rslabs.net` (`config.DefaultRendezvousServer`) unless
+  `rendezvous.server` names another, `rendezvous.enabled: false`
+  (`CONDUCTOR_RENDEZVOUS=0`) turns it off, or the server is a switchyard. The
+  token is optional. The desktop app's Settings has the switch, on by default,
+  and keeps the four switchyard settings across restarts (they were dropped
+  on read). Every test harness that launches sessions sets
+  `CONDUCTOR_RENDEZVOUS=0` (AGENTS.md).
+- **Links minted at the switchyard are the sharing machine's.** It keeps a
+  record of each (dropped when the publication ends, or when a switchyard
+  restart re-registered the session and lost them), lists them with the local
+  ones (`remote: true`) and revokes them over the host protocol
+  (`link_revoke` / `link_revoked`, `error{not_found}`).
+- **One-click Share.** Opening the dialog makes a view link for two hours,
+  copies it and says where it reaches: from anywhere through the switchyard
+  that minted it; or why the session is not there (the server waits up to
+  ten seconds for a publication still being made, and a link made meanwhile
+  carries `rendezvous: {server, error}`); or what a local link reaches.
+  Opening it again shows the link already made (a host may ask a switchyard
+  for five links a minute). View is the one-click role: a link that lands on
+  the clipboard must not hand out typing rights by accident; control is one
+  click more. Crew links are made here, not at the switchyard.
+- **Dark always.** The workbench opens dark whatever the OS prefers, under a
+  storage key of its own; the theme button switches to light and that is
+  kept.
+- **No invented names** in placeholders; the launch dialog asks where the
+  agent runs only when the workbench is served from another machine.
+- **The Windows app and WSL** (E1, E2 of the plan): the server in WSL gets
+  the person's own shell's PATH, imported through `$SHELL -ilc` as the native
+  app does, so nvm's and npm's bins count; a program found under `/mnt/` is
+  named and not used; the settings on Windows are WSL paths, picked inside
+  the distribution.
+
+### Open verification (round 7)
+
+- The public switchyard with open hosts on: a `conductor host` with no token
+  from a second machine registered and showed in the operator card
+  (2026-10-04). Still to see: the desktop app on this PC with nothing
+  configured, listed there; Share → one click → the link on a phone on mobile
+  data saying "Works from anywhere"; a revoke from the dialog disconnecting
+  the phone.
+- The Windows installer after E1 and E2: Codex identified inside the
+  distribution, `/home/<user>` paths in Settings, a session launched there.
+
+### Deferred
+
+- Run (crew) links through a switchyard.
+- A relay quota per address rather than per connection.
+- The switchyard persisting its links across restarts.
+- A one-time notice in the desktop app on the upgrade that turns publishing on.
+
 ## Round 6: switchyard, invites the app opens itself, and ICE from WSL without mirrored networking (2026-10-03)
 
 Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
