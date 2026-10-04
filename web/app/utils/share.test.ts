@@ -22,7 +22,8 @@ describe('shareReach', () => {
     const r = shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline)
     expect(r.kind).toBe('local')
     expect(r.title).toBe('Works on your network only')
-    expect(shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline, true).text).toMatch(/^Crew links are made here, not at the switchyard\./)
+    expect(shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline, true).text).toBe(shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline).text)
+    expect(shareReach({ url: 'https://switchyard.example.net/join/abc', remote: true }, offline, true).text).toMatch(/opens every agent of the crew there/)
     expect(shareReach({ url: 'https://home.example.net/join/abc' }, null).title).toBe('Reachable from outside your network')
   })
   it('hostOf', () => {

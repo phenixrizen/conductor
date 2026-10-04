@@ -321,3 +321,38 @@ export const HOST_MAX_LOCAL_ID = 64
 export interface HostRegisteredLinks {
   links?: string[]
 }
+
+/** A crew run as a switchyard shows it: what a host sends with link_run and link_run_update. */
+export interface HostRunGroup {
+  id: string
+  name: string
+  members: Array<{ name: string; sessionId?: string; agentId: string; status: 'pending' | 'starting' | 'running' | 'ended' }>
+}
+/** host → server: one link to the sessions of a run's members; answered by link_created with runId. */
+export interface HostRunLinkMessage {
+  t: 'link_run'
+  requestId: string
+  role: 'view' | 'control'
+  ttlSeconds?: number
+  label?: string
+  run: HostRunGroup
+}
+/** host → server: the run's members now; answered by link_run_updated, or error not_found. */
+export interface HostRunLinkUpdateMessage {
+  t: 'link_run_update'
+  requestId: string
+  run: HostRunGroup
+}
+/** server → host: how many of the run's links follow the new members. */
+export interface HostRunLinkUpdatedMessage {
+  t: 'link_run_updated'
+  requestId: string
+  runId: string
+  links: number
+}
+/** The bounds of a run group, and how many updates a connection may send a minute. */
+export const HOST_MAX_RUN_LINK_MEMBERS = 32
+export const HOST_MAX_RUN_ID = 64
+export const HOST_MAX_RUN_NAME = 120
+export const HOST_MAX_RUN_MEMBER_NAME = 40
+export const HOST_RUN_LINK_UPDATES_PER_MINUTE = 30

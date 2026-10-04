@@ -736,6 +736,11 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			a.noteHeld(m.LinkID, false)
 			a.answerLink(m.RequestID, proto.LinkCreated{LinkID: m.LinkID}, nil)
 		}
+	case proto.HostRunLinkUpdated:
+		var m proto.RunLinkUpdated
+		if json.Unmarshal(data, &m) == nil {
+			a.answerLink(m.RequestID, proto.LinkCreated{RunID: m.RunID}, nil)
+		}
 	case proto.HostError:
 		var m proto.ErrorMsg
 		_ = json.Unmarshal(data, &m)
@@ -758,6 +763,41 @@ type linkAnswer struct {
 // for its answer (link_created, or an error naming the request), at most
 // until ctx ends.
 func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {
+	return a.ask(ctx, func(id string) any {
+		return proto.HostLinkMsg{T: proto.HostLink, RequestID: id, Role: role, TTLSeconds: int(ttl / time.Second), Label: label}
+	})
+}
+
+// requestRevoke asks the server to revoke a link it minted for the session
+// and waits for the answer; a link the server does not know answers
+// "not_found: …".
+func (a *agent) requestRevoke(ctx context.Context, linkID string) error {
+	_, err := a.ask(ctx, func(id string) any {
+		return proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: id, LinkID: linkID}
+	})
+	return err
+}
+
+// requestRunLink asks the server for one link to the sessions of a run's
+// members (proto.HostRunLinkMsg) and waits for link_created.
+func (a *agent) requestRunLink(ctx context.Context, role string, ttl time.Duration, label string, run proto.RunGroup) (proto.LinkCreated, error) {
+	return a.ask(ctx, func(id string) any {
+		return proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: id, Role: role, TTLSeconds: int(ttl / time.Second), Label: label, Run: run}
+	})
+}
+
+// requestRunUpdate tells the server a run's members now and waits for
+// link_run_updated; a run without links there answers "not_found: …".
+func (a *agent) requestRunUpdate(ctx context.Context, run proto.RunGroup) error {
+	_, err := a.ask(ctx, func(id string) any {
+		return proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: id, Run: run}
+	})
+	return err
+}
+
+// ask sends the request build makes with a fresh request id and waits for
+// the server's answer to it (answerLink), or for ctx.
+func (a *agent) ask(ctx context.Context, build func(requestID string) any) (proto.LinkCreated, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return proto.LinkCreated{}, err
@@ -775,42 +815,12 @@ func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration,
 		delete(a.links, id)
 		a.mu.Unlock()
 	}()
-	a.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: id, Role: role, TTLSeconds: int(ttl / time.Second), Label: label})
+	a.send(build(id))
 	select {
 	case ans := <-ch:
 		return ans.link, ans.err
 	case <-ctx.Done():
 		return proto.LinkCreated{}, ctx.Err()
-	}
-}
-
-// requestRevoke asks the server to revoke a link it minted for the session
-// and waits for the answer; a link the server does not know answers
-// "not_found: …".
-func (a *agent) requestRevoke(ctx context.Context, linkID string) error {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return err
-	}
-	id := hex.EncodeToString(b[:])
-	ch := make(chan linkAnswer, 1)
-	a.mu.Lock()
-	if a.links == nil {
-		a.links = map[string]chan linkAnswer{}
-	}
-	a.links[id] = ch
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		delete(a.links, id)
-		a.mu.Unlock()
-	}()
-	a.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: id, LinkID: linkID})
-	select {
-	case ans := <-ch:
-		return ans.err
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }
 

@@ -26,9 +26,39 @@ type Link struct {
 	// Addr the open host's address it counts against. Never in a reply.
 	Owner string `json:"-"`
 	Addr  string `json:"-"`
+	// Group, on a switchyard, is the crew run a host's run link opens: its
+	// members and their sessions there, kept current by the host, since a
+	// switchyard runs no crews. RunID is then the host's run id.
+	Group *Group `json:"-"`
 
 	hash Hash
 }
+
+// Group is a crew run as a switchyard knows it: its name and its members.
+type Group struct {
+	Name    string
+	Members []GroupMember
+}
+
+// GroupMember is a member of a Group: its session there, "" while it has none.
+type GroupMember struct {
+	Name, SessionID, AgentID, Status string
+}
+
+// Names says whether the group names the session.
+func (g *Group) Names(sessionID string) bool {
+	if g == nil || sessionID == "" {
+		return false
+	}
+	for _, m := range g.Members {
+		if m.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func groupKey(owner, runID string) string { return owner + "/" + runID }
 
 // Errors returned by the store.
 var (
@@ -228,6 +258,9 @@ func (s *Store) Restore(l Link, hash Hash) {
 	scopes, key := s.bySession, link.SessionID
 	if link.RunID != "" {
 		scopes, key = s.byRun, link.RunID
+		if link.Group != nil {
+			key = groupKey(link.Owner, link.RunID)
+		}
 	}
 	if scopes[key] == nil {
 		scopes[key] = map[string]*Link{}
@@ -307,5 +340,61 @@ func (s *Store) DeleteRun(runID string) []string {
 
 func copyLink(l *Link) *Link {
 	cp := *l
+	if l.Group != nil {
+		g := Group{Name: l.Group.Name, Members: append([]GroupMember(nil), l.Group.Members...)}
+		cp.Group = &g
+	}
 	return &cp
+}
+
+// CreateGroupLink issues a link to a host's crew run, as a switchyard holds
+// it: the members' sessions are named in g, which SetGroup keeps current.
+// Indexed under the owner and the run, so two hosts' run ids never meet.
+func (s *Store) CreateGroupLink(runID, owner string, g Group, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	gc := Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+	return s.create(&Link{RunID: runID, Owner: owner, Group: &gc}, s.byRun, groupKey(owner, runID), role, label, ttl)
+}
+
+// SetGroup gives the live links of owner's run the members in g; it returns
+// how many it changed.
+func (s *Store) SetGroup(owner, runID string, g Group) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, l := range s.byRun[groupKey(owner, runID)] {
+		if l.Revoked || l.Group == nil {
+			continue
+		}
+		l.Group = &Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+		n++
+	}
+	return n
+}
+
+// RevokeGroup revokes owner's run link linkID, notifying OnRevokeRun.
+func (s *Store) RevokeGroup(owner, linkID string) (found, revoked bool) {
+	var runID string
+	return s.revoke(linkID, func(l *Link) bool {
+		runID = l.RunID
+		return l.Group != nil && l.Owner == owner
+	}, func() {
+		if s.OnRevokeRun != nil {
+			s.OnRevokeRun(runID, linkID)
+		}
+	})
+}
+
+// ListNaming lists the live group links that name a session.
+func (s *Store) ListNaming(sessionID string) []*Link {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Link
+	for _, m := range s.byRun {
+		for _, l := range m {
+			if !l.Revoked && l.Group.Names(sessionID) {
+				out = append(out, copyLink(l))
+			}
+		}
+	}
+	return out
 }

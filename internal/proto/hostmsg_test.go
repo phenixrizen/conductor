@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -55,5 +56,50 @@ func TestRegisterWireShapeCarriesInstanceAndLocalID(t *testing.T) {
 	var old Registered
 	if err := json.Unmarshal([]byte(`{"t":"registered","sessionId":"x"}`), &old); err != nil || old.Links != nil {
 		t.Fatalf("an older server's registered: %+v %v", old, err)
+	}
+}
+
+// A run group is checked against its bounds, and a full one fits a host message.
+func TestRunGroupValidateBounds(t *testing.T) {
+	member := func(i int) RunMember {
+		return RunMember{Name: fmt.Sprintf("m%02d", i), AgentID: "claude", Status: "running", SessionID: strings.Repeat("a", 16)}
+	}
+	g := RunGroup{ID: strings.Repeat("r", MaxRunID), Name: strings.Repeat("n", MaxRunName)}
+	for i := range MaxRunLinkMembers {
+		g.Members = append(g.Members, member(i))
+	}
+	if err := g.Validate(); err != nil {
+		t.Fatalf("a full group: %v", err)
+	}
+	b, _ := json.Marshal(HostRunLinkMsg{T: HostRunLink, RequestID: "r", Role: "view", Label: strings.Repeat("l", MaxLinkLabel), Run: g})
+	if len(b) > MaxHostMessage/4 {
+		t.Fatalf("a full link_run is %d bytes", len(b))
+	}
+	bad := []func(*RunGroup){
+		func(g *RunGroup) { g.Members = append(g.Members, member(99)) },
+		func(g *RunGroup) { g.Members[0].Status = "dancing" },
+		func(g *RunGroup) { g.Members[0].Name = strings.Repeat("x", MaxRunMemberName+1) },
+		func(g *RunGroup) { g.Members[1].Name = g.Members[0].Name },
+		func(g *RunGroup) { g.ID = strings.Repeat("r", MaxRunID+1) },
+		func(g *RunGroup) { g.Members = nil },
+	}
+	for i, mutate := range bad {
+		c := g
+		c.Members = append([]RunMember(nil), g.Members...)
+		mutate(&c)
+		if c.Validate() == nil {
+			t.Fatalf("bad group %d passed", i)
+		}
+	}
+}
+
+func TestHostRunLinkMsgWireShape(t *testing.T) {
+	b, _ := json.Marshal(HostRunLinkMsg{T: HostRunLink, RequestID: "r", Role: "view", Run: RunGroup{ID: "api-1", Name: "api", Members: []RunMember{{Name: "lead", AgentID: "claude", Status: "pending"}}}})
+	if !strings.Contains(string(b), `"t":"link_run"`) || !strings.Contains(string(b), `"members":[{"name":"lead","agentId":"claude","status":"pending"}]`) {
+		t.Fatalf("link_run %s", b)
+	}
+	b, _ = json.Marshal(LinkCreated{T: HostLinkCreated, RunID: "api-1"})
+	if !strings.Contains(string(b), `"runId":"api-1"`) {
+		t.Fatalf("link_created %s", b)
 	}
 }

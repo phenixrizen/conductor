@@ -68,6 +68,17 @@ func (p *Published) CurrentSessionID() string {
 // CurrentID is CurrentSessionID, as the api's PublishedSession names it.
 func (p *Published) CurrentID() string { return p.CurrentSessionID() }
 
+// RunLink mints, at the rendezvous, one link to the sessions of a run's
+// members there, over this session's connection (which must be a member's).
+func (p *Published) RunLink(ctx context.Context, role string, ttl time.Duration, label string, run proto.RunGroup) (proto.LinkCreated, error) {
+	return p.a.requestRunLink(ctx, role, ttl, label, run)
+}
+
+// RunLinkUpdate tells the rendezvous a run's members now.
+func (p *Published) RunLinkUpdate(ctx context.Context, run proto.RunGroup) error {
+	return p.a.requestRunUpdate(ctx, run)
+}
+
 // HeldLinks is what the rendezvous last said it holds of the links minted
 // for the session: the ids in its registered answer, plus those minted and
 // less those revoked since; false when it never said (an older rendezvous).

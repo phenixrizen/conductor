@@ -242,3 +242,38 @@ func TestRevokeSaysWhetherItRevoked(t *testing.T) {
 		t.Fatalf("session second: %v %v", ok, revoked)
 	}
 }
+
+// A switchyard's group links: indexed by owner and run, kept current by
+// their owner alone, revoked by it alone, and found by the sessions they name.
+func TestGroupLinks(t *testing.T) {
+	s := NewStore()
+	var revokedRun string
+	s.OnRevokeRun = func(runID, linkID string) { revokedRun = runID }
+	g := Group{Name: "api", Members: []GroupMember{{Name: "lead", SessionID: "s1", AgentID: "claude", Status: "running"}}}
+	l, tok, err := s.CreateGroupLink("api-1", "owner-a", g, session.RoleView, "", 0)
+	if err != nil || l.Group == nil || !l.Group.Names("s1") || l.Owner != "owner-a" {
+		t.Fatalf("create: %+v %v", l, err)
+	}
+	if got, err := s.Resolve(tok); err != nil || got.RunID != "api-1" || !got.Group.Names("s1") {
+		t.Fatalf("resolve: %+v %v", got, err)
+	}
+	g.Members = append(g.Members, GroupMember{Name: "core", SessionID: "s2", AgentID: "claude", Status: "running"})
+	if n := s.SetGroup("owner-b", "api-1", g); n != 0 {
+		t.Fatalf("another owner changed %d", n)
+	}
+	if n := s.SetGroup("owner-a", "api-1", g); n != 1 {
+		t.Fatalf("its owner changed %d", n)
+	}
+	if ids := s.ListNaming("s2"); len(ids) != 1 || ids[0].ID != l.ID {
+		t.Fatalf("naming s2: %v", ids)
+	}
+	if found, _ := s.RevokeGroup("owner-b", l.ID); found {
+		t.Fatal("another owner revoked it")
+	}
+	if found, revoked := s.RevokeGroup("owner-a", l.ID); !found || !revoked || revokedRun != "api-1" {
+		t.Fatalf("revoke: %v %v %q", found, revoked, revokedRun)
+	}
+	if _, err := s.Resolve(tok); err != ErrRevoked {
+		t.Fatalf("after revoke: %v", err)
+	}
+}

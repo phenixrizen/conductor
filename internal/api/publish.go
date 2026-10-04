@@ -39,6 +39,11 @@ type PublishedSession interface {
 	// HeldLinks is what the rendezvous last said it holds of the links
 	// minted for the session; false when it never said (an older one).
 	HeldLinks() ([]string, bool)
+	// RunLink mints, at the rendezvous, one link to the sessions of a run's
+	// members there; RunLinkUpdate tells it the members now. Either goes over
+	// this session's connection, which must be a member's.
+	RunLink(ctx context.Context, role string, ttl time.Duration, label string, run proto.RunGroup) (proto.LinkCreated, error)
+	RunLinkUpdate(ctx context.Context, run proto.RunGroup) error
 }
 
 // remoteLink is a link minted at the rendezvous for a published session,
@@ -178,6 +183,10 @@ func (s *Server) publish(local *session.Local) {
 		local.Record(session.ActivityEntry{Type: session.ActivityLink, Message: "published at the rendezvous", URL: url})
 		// What changed before the publication reached the rendezvous.
 		pub.OnChange(local.Info())
+		// A member published now: its run's links there name its session.
+		if runID, _, ok := s.runs.MemberOf(local.Info().ID); ok {
+			s.scheduleRunSync(runID)
+		}
 	})
 }
 

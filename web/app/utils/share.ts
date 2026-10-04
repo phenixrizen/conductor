@@ -28,7 +28,7 @@ export function hostOf(url: string): string {
 
 /**
  * shareReach says what a link reaches: a link minted at the switchyard works from anywhere; one made here although a switchyard is
- * configured says why the session is not there, then what the local link reaches; a crew's link is always made here.
+ * configured says why the session (or no member of the crew) is not there, then what the local link reaches.
  */
 export function shareReach(created: CreatedLink, reach: ReachInfo | null | undefined, run = false): ShareReach {
   if (created.remote) {
@@ -36,7 +36,9 @@ export function shareReach(created: CreatedLink, reach: ReachInfo | null | undef
       kind: 'remote',
       level: 'remote',
       title: 'Works from anywhere',
-      text: `Shared through ${hostOf(created.url)}: the link opens there, and the terminal comes straight to this machine, through the switchyard's relay only when it must.`,
+      text: run
+        ? `Shared through ${hostOf(created.url)}: the link opens every agent of the crew there, members who join later included, and each terminal comes straight to this machine, through the switchyard's relay only when it must.`
+        : `Shared through ${hostOf(created.url)}: the link opens there, and the terminal comes straight to this machine, through the switchyard's relay only when it must.`,
     }
   }
   const local = linkReach(created.url, reach)
@@ -47,9 +49,6 @@ export function shareReach(created: CreatedLink, reach: ReachInfo | null | undef
       title: 'Not published to the switchyard',
       text: `${hostOf(created.rendezvous.server)}: ${created.rendezvous.error}. This link works where this machine is reachable. ${local.text}`,
     }
-  }
-  if (run) {
-    return { kind: 'local', level: local.level, title: local.title, text: `Crew links are made here, not at the switchyard. ${local.text}` }
   }
   return { kind: 'local', level: local.level, title: local.title, text: local.text }
 }

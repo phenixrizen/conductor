@@ -245,3 +245,87 @@ func TestLinkOnAnUnpublishedSessionSaysWhy(t *testing.T) {
 		t.Fatalf("not a local link: %v", out["url"])
 	}
 }
+
+// waitMembersPublished waits until every member of a run with a session is published.
+func waitMembersPublished(t *testing.T, e *testEnv, runID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		run, _ := e.srv.runs.Get(runID)
+		published := 0
+		for _, m := range run.Members {
+			if m.SessionID != "" && e.srv.publishedOf(m.SessionID) != nil {
+				published++
+			}
+		}
+		if published >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d members published", published, n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A run whose members are published is shared at the rendezvous: one link,
+// whose join lists the members as hosted sessions there, following a member
+// added later; the run's links list it, and a revoke here revokes it there.
+func TestARunLinkOnAPublishedRunIsMintedAtTheRendezvous(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	linkID := out["link"].(map[string]any)["id"].(string)
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	members := func() []any {
+		_, got := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		run, _ := got["run"].(map[string]any)
+		ms, _ := run["members"].([]any)
+		return ms
+	}
+	if ms := members(); len(ms) != 2 || ms[0].(map[string]any)["kind"] != "hosted" || ms[0].(map[string]any)["sessionId"] == nil {
+		t.Fatalf("the rendezvous's join: %v", ms)
+	}
+	// A viewer through the run link reaches a member's session there.
+	sid := members()[0].(map[string]any)["sessionId"].(string)
+	v := dialViewer(t, rendezvous, sid, token)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	if resp, out := local.do("POST", "/api/runs/"+runID+"/members", adminToken, catMember("tests", "immediately")); resp.StatusCode >= 300 {
+		t.Fatalf("add member: %d %v", resp.StatusCode, out)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for len(members()) != 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous never heard of the third member: %v", members())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); !strings.Contains(fmt.Sprint(out), "remote:true") {
+		t.Fatalf("the run's links: %v", out)
+	}
+	if resp, _ := local.do("DELETE", "/api/runs/"+runID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	if resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the rendezvous still resolves it: %d %v", resp.StatusCode, out)
+	}
+}
+
+// With no member published, the run's link is made here and says why.
+func TestARunLinkFallsBackToALocalLinkWhenNoMemberIsPublished(t *testing.T) {
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: "http://127.0.0.1:1", Token: "test-host-token", HostName: "office-server"}})
+	runID := local.launchCrew(t, "Alone", catMember("lead", "immediately"))
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+	rv, _ := out["rendezvous"].(map[string]any)
+	if resp.StatusCode != http.StatusCreated || out["remote"] == true || rv == nil || rv["error"] == "" {
+		t.Fatalf("fallback: %d %v", resp.StatusCode, out)
+	}
+}

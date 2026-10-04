@@ -231,6 +231,8 @@ export interface ShareLink {
 /** A member of a run as the join page sees it. */
 export interface JoinRunMember {
   name: string
+  /** hosted for a member of a run shared through a switchyard: its session is reached over WebRTC. */
+  kind?: SessionKind
   /** Its session, only while that runs; `agentId` and `status` are then the session's. */
   sessionId?: string
   agentId: string
@@ -539,7 +541,7 @@ export function useSessions() {
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
     /** Creates a run link: its role on the session of every member of the run, those added later included. The token is shown this once. */
     createRunLink: (runId: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
-      request<{ link: ShareLink; token: string; url: string; invite?: string }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
+      request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
     /** Revokes a run link, closing every viewer attached through it. */
     revokeRunLink: (runId: string, linkId: string) =>
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),

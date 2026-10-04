@@ -35,6 +35,13 @@ func (p principal) role(sessionID string) session.Role {
 		}
 		return ""
 	}
+	// A host's run link on a switchyard names its members' sessions itself.
+	if p.link.Group != nil {
+		if p.link.Group.Names(sessionID) {
+			return p.link.Role
+		}
+		return ""
+	}
 	if p.runOf != nil {
 		if runID, ok := p.runOf(sessionID); ok && runID == p.link.RunID {
 			return p.link.Role

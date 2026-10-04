@@ -65,7 +65,7 @@ const current = computed<{ id: string; name: string; agentId: string; kind: Sess
   if (s) return s
   const m = focus.value
   // Crew members run on the server.
-  return m?.sessionId ? { id: m.sessionId, name: m.name, agentId: m.agentId, kind: 'server' } : null
+  return m?.sessionId ? { id: m.sessionId, name: m.name, agentId: m.agentId, kind: m.kind ?? 'server' } : null
 })
 
 /** What each member's tile last heard from its session, by member name: kept while a member is open in full, for the tiles on the way back (backToCrew). */
@@ -143,7 +143,7 @@ function createTransport() {
 }
 
 function tileTransport(m: JoinRunMember) {
-  return () => create({ sessionId: m.sessionId!, token: token.value, kind: 'server', name: identity.name.value, server: server.value })
+  return () => create({ sessionId: m.sessionId!, token: token.value, kind: m.kind ?? 'server', name: identity.name.value, server: server.value })
 }
 
 function openMember(m: JoinRunMember, heard?: { status?: string; attention?: string }) {

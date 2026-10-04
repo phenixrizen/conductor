@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -208,6 +210,43 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A run whose members are published to a switchyard is shared there:
+	// one link to every member's session, minted over a member's
+	// publication; with none published yet the link is made here and says why.
+	server := s.publisherServer()
+	why := ""
+	if server != "" {
+		wctx, wcancel := context.WithTimeout(r.Context(), 10*time.Second)
+		g, carrier, w2 := s.awaitRunGroup(wctx, id)
+		wcancel()
+		why = w2
+		if carrier != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			res, err := carrier.RunLink(ctx, string(req.Role), req.ttl(), req.Label, g)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not mint the link: "+err.Error())
+				return
+			}
+			s.recordRemoteRunLink(id, res)
+			if b, err := json.Marshal(g); err == nil {
+				s.pubMu.Lock()
+				if s.runSent == nil {
+					s.runSent = map[string]string{}
+				}
+				s.runSent[id] = string(b)
+				s.pubMu.Unlock()
+			}
+			s.runs.Note(id, session.ActivityLink, "link created at the rendezvous: "+linkLabelOr(res.Label)+" ("+res.Role+")")
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"link":   map[string]any{"id": res.LinkID, "role": res.Role, "label": res.Label, "expiresAt": res.ExpiresAt, "runId": id, "remote": true},
+				"url":    res.URL,
+				"invite": res.Invite,
+				"remote": true,
+			})
+			return
+		}
+	}
 	// The link is made under the check that the run is kept: a run forgotten
 	// in between takes its links (OnForget), and this one would be left over.
 	var (
@@ -224,6 +263,12 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
+	if server != "" {
+		reply := s.linkReply(r, link, token)
+		reply["rendezvous"] = map[string]any{"server": server, "error": why}
+		writeJSON(w, http.StatusCreated, reply)
+		return
+	}
 	s.writeLink(w, r, link, token)
 }
 
@@ -252,6 +297,9 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 	for _, l := range links {
 		out = append(out, linkView{Link: l, Active: active[l.ID]})
 	}
+	for _, rl := range s.remoteRunLinksOf(id) {
+		out = append(out, linkView{Link: &share.Link{ID: rl.ID, RunID: id, Role: rl.Role, Label: rl.Label, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt}, Remote: true})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
 
@@ -265,6 +313,25 @@ func (s *Server) handleRevokeRunLink(w http.ResponseWriter, r *http.Request) {
 	}
 	found, revoked := s.links.RevokeRun(id, linkID)
 	if !found {
+		// A link minted at the rendezvous is revoked there, over any member's publication.
+		if s.hasRemoteRunLink(id, linkID) {
+			run, _ := s.runs.Get(id)
+			_, carrier := s.runGroup(run)
+			if carrier == nil {
+				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "no member of the run is published to the rendezvous now")
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			if err := carrier.Revoke(ctx, linkID); err != nil && !strings.Contains(err.Error(), "not_found") {
+				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
+				return
+			}
+			s.forgetRemoteRunLinks(id, linkID)
+			s.runs.Note(id, session.ActivityLink, "link revoked at the rendezvous: "+linkLabelOr(label))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}
@@ -350,6 +417,10 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, code, "this link is not valid")
 		return
 	}
+	if link.Group != nil {
+		s.joinGroup(w, link)
+		return
+	}
 	if link.RunID != "" {
 		s.joinRun(w, link)
 		return
@@ -391,6 +462,40 @@ type joinMember struct {
 	SessionID string `json:"sessionId,omitempty"`
 	AgentID   string `json:"agentId"`
 	Status    string `json:"status"`
+	// Kind is hosted for a member of a run shared through a switchyard,
+	// whose session the page reaches over WebRTC.
+	Kind string `json:"kind,omitempty"`
+}
+
+// joinGroup answers the join page for a host's run link on a switchyard: the
+// run as its host last told it, each member's session as registered here
+// now. No member registered at all is the host away (503 host_offline).
+func (s *Server) joinGroup(w http.ResponseWriter, link *share.Link) {
+	members := make([]joinMember, 0, len(link.Group.Members))
+	seen := false
+	for _, m := range link.Group.Members {
+		jm := joinMember{Name: m.Name, AgentID: m.AgentID, Status: m.Status, Kind: string(session.KindHosted)}
+		if m.SessionID != "" {
+			jm.Status = crew.MemberEnded
+			if d, ok := s.registry.Get(m.SessionID); ok {
+				seen = true
+				if info := d.Info(); !info.Status.Ended() {
+					jm.SessionID, jm.AgentID, jm.Status = info.ID, info.AgentID, string(info.Status)
+				}
+			}
+		}
+		members = append(members, jm)
+	}
+	if !seen && slices.ContainsFunc(link.Group.Members, func(m share.GroupMember) bool { return m.SessionID != "" }) {
+		writeError(w, http.StatusServiceUnavailable, "host_offline", "the machine that shared this crew is not connected to the switchyard right now; try again in a moment")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run":        map[string]any{"id": link.RunID, "name": link.Group.Name, "members": members},
+		"role":       link.Role,
+		"label":      link.Label,
+		"switchyard": s.cfg.Switchyard.Enabled,
+	})
 }
 
 // joinRun answers the join page for a run link: the run and its members.

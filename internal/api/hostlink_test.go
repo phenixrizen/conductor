@@ -151,3 +151,71 @@ func TestRegisteredListsTheLinksTheServerHolds(t *testing.T) {
 		t.Fatalf("registered links %v, want [%s]", reg["links"], ids[1])
 	}
 }
+
+// A host mints one link to two of its sessions at the server: the join lists
+// the run with both as hosted members, a viewer reaches each; another
+// instance's session cannot be named, a host without an instance cannot ask;
+// an update names a third; a revoke from either member's connection ends it.
+func TestAHostMintsARunLinkAtTheServer(t *testing.T) {
+	e := switchyardEnv(t, true)
+	hostInfo := proto.HostInfo{Name: "laptop", Instance: "instance-secret-0123456789"}
+	sess := func(local string) proto.HostSession {
+		return proto.HostSession{Name: local, AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, LocalID: local}
+	}
+	a, _ := dialFakeHostWith(t, e, hostInfo, sess("a"), "Bearer test-host-token")
+	b, _ := dialFakeHostWith(t, e, hostInfo, sess("b"), "Bearer test-host-token")
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "x", Instance: "another-instance-0123456789"}, sess("z"), "Bearer test-host-token")
+	group := func(ids ...string) proto.RunGroup {
+		g := proto.RunGroup{ID: "pair-0123abcd", Name: "pair"}
+		for i, id := range ids {
+			g.Members = append(g.Members, proto.RunMember{Name: fmt.Sprintf("m%d", i), SessionID: id, AgentID: "cat", Status: "running"})
+		}
+		return g
+	}
+	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "x1", Role: "view", Run: group(a.sessionID, other.sessionID)})
+	if m := a.expect(proto.HostError); m["code"] != "invalid_request" {
+		t.Fatalf("another instance's session: %v", m)
+	}
+	plain := dialFakeHost(t, e, "hosted-agent-token")
+	plain.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "x2", Role: "view", Run: group(plain.sessionID)})
+	if m := plain.expect(proto.HostError); m["code"] != "no_instance" {
+		t.Fatalf("no instance: %v", m)
+	}
+	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r1", Role: "view", Run: group(a.sessionID, b.sessionID)})
+	created := a.expect(proto.HostLinkCreated)
+	if created["runId"] != "pair-0123abcd" {
+		t.Fatalf("link_created %v", created)
+	}
+	u := created["url"].(string)
+	token := u[strings.LastIndex(u, "/")+1:]
+	resp, out := e.do("GET", "/api/join/"+token, token, nil)
+	run, _ := out["run"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || run["name"] != "pair" || len(run["members"].([]any)) != 2 {
+		t.Fatalf("join: %d %v", resp.StatusCode, out)
+	}
+	for _, id := range []string{a.sessionID, b.sessionID} {
+		v := dialViewer(t, e, id, token)
+		v.hello(80, 24)
+		v.expectControl(proto.CtlWelcome)
+	}
+	if resp, _ := e.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusOK {
+		t.Fatal("join again")
+	}
+	c, _ := dialFakeHostWith(t, e, hostInfo, sess("c"), "Bearer test-host-token")
+	b.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u1", Run: group(a.sessionID, b.sessionID, c.sessionID)})
+	if m := b.expect(proto.HostRunLinkUpdated); m["links"] != 1.0 {
+		t.Fatalf("update: %v", m)
+	}
+	v := dialViewer(t, e, c.sessionID, token)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	other.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u2", Run: group(other.sessionID)})
+	if m := other.expect(proto.HostError); m["code"] != "not_found" {
+		t.Fatalf("a stranger's update: %v", m)
+	}
+	b.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: created["linkId"].(string)})
+	b.expect(proto.HostLinkRevoked)
+	if resp, out := e.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusNotFound || out["error"].(map[string]any)["code"] != "revoked" {
+		t.Fatalf("after revoke: %d %v", resp.StatusCode, out)
+	}
+}

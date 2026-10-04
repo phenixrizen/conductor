@@ -21,9 +21,12 @@ import (
 
 // linkFile is a link as a switchyard keeps it.
 type linkFile struct {
-	ID        string       `json:"id"`
-	TokenHash string       `json:"tokenHash"`
-	SessionID string       `json:"sessionId"`
+	ID        string `json:"id"`
+	TokenHash string `json:"tokenHash"`
+	SessionID string `json:"sessionId,omitempty"`
+	// RunID and Run are a host's run link's: its run, and its members as the host last told them.
+	RunID     string       `json:"runId,omitempty"`
+	Run       *share.Group `json:"run,omitempty"`
 	Role      session.Role `json:"role"`
 	Label     string       `json:"label,omitempty"`
 	CreatedAt time.Time    `json:"createdAt"`
@@ -48,6 +51,8 @@ type linkKeeper struct {
 	mu    sync.Mutex
 	addrs map[string]int
 	seen  map[string]time.Time
+	// hashes are the kept links' token hashes (hex), for writing a file again.
+	hashes map[string]string
 }
 
 // openLinkKeeper opens links/ under st and puts the links kept there back
@@ -59,7 +64,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.log.Error("links are not kept across restarts: cannot open the links directory", "err", err)
 		return
 	}
-	k := &linkKeeper{files: files, addrs: map[string]int{}, seen: map[string]time.Time{}}
+	k := &linkKeeper{files: files, addrs: map[string]int{}, seen: map[string]time.Time{}, hashes: map[string]string{}}
 	s.keeper = k
 	entries, err := files.List()
 	if err != nil {
@@ -75,7 +80,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 			continue
 		}
 		raw, err := hex.DecodeString(f.TokenHash)
-		if err != nil || len(raw) != len(share.Hash{}) || f.ID == "" || f.SessionID == "" || f.Owner == "" || !f.Role.Valid() {
+		if err != nil || len(raw) != len(share.Hash{}) || f.ID == "" || (f.SessionID == "") == (f.RunID == "" || f.Run == nil) || f.Owner == "" || !f.Role.Valid() {
 			s.log.Error("a kept link is left out", "file", e.Name)
 			continue
 		}
@@ -85,10 +90,11 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		}
 		var h share.Hash
 		copy(h[:], raw)
-		s.links.Restore(share.Link{ID: f.ID, SessionID: f.SessionID, Role: f.Role, Label: f.Label, CreatedAt: f.CreatedAt, ExpiresAt: f.ExpiresAt, Owner: f.Owner, Addr: f.Addr}, h)
+		s.links.Restore(share.Link{ID: f.ID, SessionID: f.SessionID, RunID: f.RunID, Group: f.Run, Role: f.Role, Label: f.Label, CreatedAt: f.CreatedAt, ExpiresAt: f.ExpiresAt, Owner: f.Owner, Addr: f.Addr}, h)
 		if f.Addr != "" {
 			k.addrs[f.Addr]++
 		}
+		k.hashes[f.ID] = f.TokenHash
 		k.seen[f.Owner] = now
 		restored++
 	}
@@ -117,11 +123,42 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) bool {
 	}
 	s.links.SetOwner(link.ID, owner, addr)
 	h := share.HashToken(token)
-	f := linkFile{ID: link.ID, TokenHash: hex.EncodeToString(h[:]), SessionID: link.SessionID, Role: link.Role, Label: link.Label, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt, Owner: owner, Addr: addr}
+	k.mu.Lock()
+	k.hashes[link.ID] = hex.EncodeToString(h[:])
+	k.mu.Unlock()
+	link.Owner, link.Addr = owner, addr
+	s.writeLinkFile(link)
+	return true
+}
+
+// writeLinkFile writes a kept link's file as the store holds it now.
+func (s *Server) writeLinkFile(link *share.Link) {
+	k := s.keeper
+	k.mu.Lock()
+	hash := k.hashes[link.ID]
+	k.mu.Unlock()
+	if hash == "" {
+		return
+	}
+	f := linkFile{ID: link.ID, TokenHash: hash, SessionID: link.SessionID, Role: link.Role, Label: link.Label, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt, Owner: link.Owner, Addr: link.Addr}
+	if link.Group != nil {
+		f.RunID, f.Run = link.RunID, link.Group
+	}
 	if err := k.files.Save(link.ID+".json", f); err != nil {
 		s.log.Error("a link is not kept across restarts", "link", link.ID, "err", err)
 	}
-	return true
+}
+
+// keepGroup writes again the files of owner's run links, whose members changed.
+func (s *Server) keepGroup(owner, runID string) {
+	if s.keeper == nil {
+		return
+	}
+	for _, l := range s.links.Durable() {
+		if l.Owner == owner && l.RunID == runID && l.Group != nil && !l.Revoked {
+			s.writeLinkFile(l)
+		}
+	}
 }
 
 // dropLinkFile forgets a kept link's file and its place in its address's count.
@@ -137,6 +174,9 @@ func (s *Server) dropLinkFile(linkID string) {
 		}
 		k.mu.Unlock()
 	}
+	k.mu.Lock()
+	delete(k.hashes, linkID)
+	k.mu.Unlock()
 	_ = k.files.Delete(linkID + ".json")
 }
 

@@ -119,9 +119,19 @@ Host → server: `register{proto, host{name,version,user?}, session{name,agentId
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
 `ttlSeconds` ≤ 86400, at most 5 requests a minute per connection; one
 without a `requestId` is a protocol error), `link_revoke{requestId, linkId}`
-(revoke a link the server minted for this session: `linkId` ≤ 64 bytes; never
-counted against the link bucket; a missing or oversize field is a protocol
-error).
+(revoke a link the server minted for this session, or a run link its
+instance minted: `linkId` ≤ 64 bytes; never counted against the link bucket;
+a missing or oversize field is a protocol error),
+`link_run{requestId, role, ttlSeconds?, label?, run: {id, name, members: [{name, sessionId?, agentId, status}]}}`
+(one link to the sessions of a crew run's members, each `sessionId` the
+member's session on this server; the run id ≤ 64 bytes, its name ≤ 120, 1 to
+32 members with unique names ≤ 40 bytes, an agent ≤ 64, a status of
+`pending`, `starting`, `running` or `ended`; it needs a host registered with
+an instance, else `error{no_instance}`, and every session must be one this
+instance registered, else `error{invalid_request}`; it shares the link bucket)
+and `link_run_update{requestId, run}` (the run's members now: the run's links
+follow them; at most 30 a minute per connection; `error{not_found}` when the
+run has no link here).
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
 (`links`: the ids of the live links the server holds for the session, `[]`
@@ -130,14 +140,26 @@ when none; an older server sends no field, which says nothing),
 `relay_start{viewerId}`, `viewer_leave{viewerId}`, `stop{sessionId}`,
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
 `activity{entry}` (an event reported through the API, for the host to record),
-`link_created{requestId, url, invite, linkId, role, label?, expiresAt?}`
+`link_created{requestId, url, invite, linkId, role, label?, expiresAt?, runId?}`
+(`runId` for a link minted by `link_run`), `link_run_updated{requestId, runId, links}`
+(how many of the run's links follow the new members),
 (the link on the server's public base, and the same as an invite,
 `conductor://<host>/join/<token>` with `?http=1` for a plain-http base,
 which the desktop app opens itself), `link_revoked{requestId, linkId}`
 (the link is revoked and its viewers closed; `error{not_found, requestId}`
 for a link the server does not hold), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
-`invalid_request`, `rate_limited`, `link_refused`).
+`invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`).
+
+A run link minted by `link_run` resolves on the join page as a run link does
+(`{run: {id, name, members}, role, label, switchyard}`), each member with
+`kind: "hosted"`; a member whose session is not registered now reads `ended`,
+and none registered at all answers `503 host_offline`. The publishing server
+mints it when its run's Share asks (`POST /api/runs/{run}/links` answers
+`201 {link: {…, runId, remote: true}, url, invite, remote: true}`, or a local
+link with `rendezvous: {server, error}` when no member is published), sends
+`link_run_update` two seconds after the run changes (only when the members it
+would send differ from the last), and revokes it with `link_revoke`.
 
 `activity` carries one activity-log entry, the fields of the `activity`
 control message above (`entry` has its own `t`), in both directions. Host to

@@ -99,8 +99,14 @@ type Server struct {
 	// remoteLinks are the links minted at the rendezvous per published session;
 	// pubPending the publications still being made, pubErr why one failed.
 	remoteLinks map[string]map[string]remoteLink
-	pubPending  map[string]chan struct{}
-	pubErr      map[string]string
+	// remoteRunLinks are the records of runs' links minted at the rendezvous;
+	// runSyncing the runs whose members are about to be sent, runSent what was
+	// last sent of each (publishrun.go). Guarded by pubMu.
+	remoteRunLinks map[string]map[string]remoteLink
+	runSyncing     map[string]bool
+	runSent        map[string]string
+	pubPending     map[string]chan struct{}
+	pubErr         map[string]string
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and
@@ -223,6 +229,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// viewers attached through them are closed as on a revoke, on a goroutine
 	// of the server's own (track), which Shutdown waits for.
 	s.runs.OnForget = func(runID string) {
+		s.forgetRemoteRunLinks(runID, "")
 		if live := s.links.DeleteRun(runID); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}
@@ -230,7 +237,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	// What a session change does not carry of a run reaches the browsers as
 	// a run event, which they read the run again for.
-	s.runs.OnRunChange = func(runID string) { s.events.run(runID, false) }
+	s.runs.OnRunChange = func(runID string) {
+		s.events.run(runID, false)
+		// Its links at the switchyard follow its members (nothing for a run without any).
+		s.scheduleRunSync(runID)
+	}
 	if st != nil {
 		records, err := crew.NewRecords(st)
 		if err != nil {
@@ -270,7 +281,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			d.DisconnectLink(linkID)
 		}
 	}
-	s.links.OnRevokeRun = func(runID, linkID string) { s.disconnectLinks([]string{linkID}) }
+	s.links.OnRevokeRun = func(runID, linkID string) {
+		s.dropLinkFile(linkID)
+		s.disconnectLinks([]string{linkID})
+	}
 	return s, nil
 }
 

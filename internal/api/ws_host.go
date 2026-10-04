@@ -14,6 +14,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/share"
 	"github.com/phenixrizen/conductor/internal/signal"
 )
 
@@ -193,7 +194,9 @@ type hostConnState struct {
 	// addr is an open host's address, for the bound on the links it keeps; "" for a tokened host.
 	addr      string
 	linkTimes []time.Time
-	relay     *byteBucket
+	// updateTimes bounds link_run_update (proto.RunLinkUpdatesPerMinute).
+	updateTimes []time.Time
+	relay       *byteBucket
 }
 
 // byteBucket is a token bucket of bytes: rate a second, burst at most.
@@ -314,12 +317,28 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 			return false
 		}
 		// A revoke is never counted against the link bucket: it must always go through.
-		if found, _ := s.links.Revoke(hs.Info().ID, m.LinkID); !found {
+		found, _ := s.links.Revoke(hs.Info().ID, m.LinkID)
+		if !found && hs.Owner() != "" {
+			found, _ = s.links.RevokeGroup(hs.Owner(), m.LinkID)
+		}
+		if !found {
 			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: m.RequestID})
 		} else {
 			s.log.Info("link revoked by its host", "session", hs.Info().ID, "link", m.LinkID)
 			_ = hs.Tell(proto.LinkRevoked{T: proto.HostLinkRevoked, RequestID: m.RequestID, LinkID: m.LinkID})
 		}
+	case proto.HostRunLink:
+		var m proto.HostRunLinkMsg
+		if json.Unmarshal(data, &m) != nil || m.RequestID == "" || len(m.RequestID) > proto.MaxLinkRequestID {
+			return false
+		}
+		s.hostRunLink(hs, hc, m)
+	case proto.HostRunLinkUpdate:
+		var m proto.HostRunLinkUpdateMsg
+		if json.Unmarshal(data, &m) != nil || m.RequestID == "" || len(m.RequestID) > proto.MaxLinkRequestID {
+			return false
+		}
+		s.hostRunLinkUpdate(hs, hc, m)
 	case proto.HostRegister:
 		return false
 	default:
@@ -379,11 +398,106 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 func (s *Server) liveLinkIDs(sessionID string) []string {
 	ids := []string{}
 	now := time.Now()
-	for _, l := range s.links.ListBySession(sessionID) {
+	for _, l := range append(s.links.ListBySession(sessionID), s.links.ListNaming(sessionID)...) {
 		if l.Revoked || (l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)) {
 			continue
 		}
 		ids = append(ids, l.ID)
 	}
 	return ids
+}
+
+// groupOf checks a host's run group: within its bounds, and every member
+// session named one this host registered here (the same instance). It
+// returns the group as the link store keeps it, or the code and words of a
+// refusal.
+func (s *Server) groupOf(hs *signal.HostedSession, g proto.RunGroup) (share.Group, string, string) {
+	if hs.Owner() == "" {
+		return share.Group{}, "no_instance", "a run link needs a host that registers with an instance"
+	}
+	if err := g.Validate(); err != nil {
+		return share.Group{}, "invalid_request", err.Error()
+	}
+	out := share.Group{Name: g.Name}
+	for _, m := range g.Members {
+		if m.SessionID != "" {
+			other, ok := s.hosts.Get(m.SessionID)
+			if !ok || other.Owner() != hs.Owner() {
+				return share.Group{}, "invalid_request", "session " + m.SessionID + " is not this host's"
+			}
+		}
+		out.Members = append(out.Members, share.GroupMember{Name: m.Name, SessionID: m.SessionID, AgentID: m.AgentID, Status: m.Status})
+	}
+	return out, "", ""
+}
+
+// hostRunLink mints one link to the sessions of a host's crew run and
+// answers link_created with the run's id.
+func (s *Server) hostRunLink(hs *signal.HostedSession, hc *hostConnState, m proto.HostRunLinkMsg) {
+	refuse := func(code, msg string) {
+		_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: code, Message: msg, RequestID: m.RequestID})
+	}
+	now := time.Now()
+	hc.linkTimes = slices.DeleteFunc(hc.linkTimes, func(t time.Time) bool { return now.Sub(t) > time.Minute })
+	if len(hc.linkTimes) >= proto.LinkRequestsPerMinute {
+		refuse("rate_limited", "too many link requests; wait a minute")
+		return
+	}
+	role := session.Role(m.Role)
+	if !role.Valid() {
+		refuse("invalid_role", "role must be view or control")
+		return
+	}
+	if len(m.Label) > proto.MaxLinkLabel || m.TTLSeconds < 0 || m.TTLSeconds > proto.MaxLinkTTLSeconds {
+		refuse("invalid_request", "label or ttlSeconds out of range")
+		return
+	}
+	g, code, msg := s.groupOf(hs, m.Run)
+	if code != "" {
+		refuse(code, msg)
+		return
+	}
+	hc.linkTimes = append(hc.linkTimes, now)
+	link, token, err := s.links.CreateGroupLink(m.Run.ID, hs.Owner(), g, role, m.Label, time.Duration(m.TTLSeconds)*time.Second)
+	if err != nil {
+		refuse("link_refused", err.Error())
+		return
+	}
+	if !s.keepLink(link, token, hs.Owner(), hc.addr) {
+		refuse("link_refused", "this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+		return
+	}
+	s.log.Info("run link minted for a host", "run", m.Run.ID, "members", len(g.Members), "role", role)
+	out := proto.LinkCreated{T: proto.HostLinkCreated, RequestID: m.RequestID, URL: hc.base + "/join/" + url.PathEscape(token), Invite: inviteFor(hc.base, token), LinkID: link.ID, Role: string(link.Role), Label: link.Label, RunID: m.Run.ID}
+	if link.ExpiresAt != nil {
+		out.ExpiresAt = link.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	_ = hs.Tell(out)
+}
+
+// hostRunLinkUpdate gives the links of a host's run its members now and
+// answers link_run_updated, or not_found when the run has none here.
+func (s *Server) hostRunLinkUpdate(hs *signal.HostedSession, hc *hostConnState, m proto.HostRunLinkUpdateMsg) {
+	refuse := func(code, msg string) {
+		_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: code, Message: msg, RequestID: m.RequestID})
+	}
+	now := time.Now()
+	hc.updateTimes = slices.DeleteFunc(hc.updateTimes, func(t time.Time) bool { return now.Sub(t) > time.Minute })
+	if len(hc.updateTimes) >= proto.RunLinkUpdatesPerMinute {
+		refuse("rate_limited", "too many run updates; wait a minute")
+		return
+	}
+	hc.updateTimes = append(hc.updateTimes, now)
+	g, code, msg := s.groupOf(hs, m.Run)
+	if code != "" {
+		refuse(code, msg)
+		return
+	}
+	n := s.links.SetGroup(hs.Owner(), m.Run.ID, g)
+	if n == 0 {
+		refuse("not_found", "no links for this run")
+		return
+	}
+	s.keepGroup(hs.Owner(), m.Run.ID)
+	_ = hs.Tell(proto.RunLinkUpdated{T: proto.HostRunLinkUpdated, RequestID: m.RequestID, RunID: m.Run.ID, Links: n})
 }
