@@ -710,7 +710,12 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
   (69 ms) with typing reaching the shell. Both machines share one router,
   so a viewer on another network (a phone on mobile data) is still the
   proof that the path crosses two NATs; the relay fallback is not exercised
-  yet. A domain name for the switchyard waits on its DNS delegation.
+  yet. Later the same day the switchyard moved to a domain name
+  (`tls.acme.domains`, `publicUrl` on the name, reach off): Let's Encrypt's
+  ninety-day certificate came in seven seconds, and the publishing server,
+  still dialing the address, failed its TLS handshake ("bad certificate")
+  until its `rendezvous.server` was repointed at the name, which is the
+  expected shape: a certificate for a name does not cover the address.
 
 ### Deferred
 
