@@ -19,18 +19,20 @@ export interface DesktopSettings {
   wslDistro: string
   /** Windows: also allow /mnt/c/Users/<user> (slow, but where Windows projects live). */
   wslWindowsHome: boolean
-  /** The switchyard every session is published to (`https://host`), '' for none. */
+  /** Publish every session to a switchyard, so a share link works from anywhere. On by default. */
+  switchyardEnabled: boolean
+  /** The switchyard every session is published to (`https://host`); '' for the public one, switchyard.rslabs.net. */
   switchyardServer: string
-  /** One of the switchyard's host tokens. */
+  /** Optional: one of the switchyard's host tokens (a private switchyard, or a trusted seat on the public one). */
   switchyardToken: string
   /** How this machine is named there; '' for its host name. */
   switchyardName: string
 }
 
-export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardServer', 'switchyardToken', 'switchyardName']
+export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardServer: '', switchyardToken: '', switchyardName: '' }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' }
 }
 
 /** validate returns the problems with s, in words; none for good settings. */
@@ -51,7 +53,6 @@ export function validate(s: DesktopSettings): string[] {
       ok = false
     }
     if (!ok) out.push('the switchyard must be an http(s) URL with a host and nothing after it')
-    if (!s.switchyardToken) out.push('a switchyard needs one of its host tokens')
   }
   if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')
   return out
@@ -78,6 +79,10 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
   if (typeof raw.closeToTray === 'boolean') out.closeToTray = raw.closeToTray
   if (typeof raw.wslDistro === 'string') out.wslDistro = raw.wslDistro
   if (typeof raw.wslWindowsHome === 'boolean') out.wslWindowsHome = raw.wslWindowsHome
+  if (typeof raw.switchyardEnabled === 'boolean') out.switchyardEnabled = raw.switchyardEnabled
+  if (typeof raw.switchyardServer === 'string') out.switchyardServer = raw.switchyardServer
+  if (typeof raw.switchyardToken === 'string') out.switchyardToken = raw.switchyardToken
+  if (typeof raw.switchyardName === 'string') out.switchyardName = raw.switchyardName
   return out
 }
 

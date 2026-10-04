@@ -11,7 +11,7 @@ const toast = useToast()
 const serverHost = useServerHost()
 
 const settings = ref<DesktopSettings | null>(null)
-const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardServer: '', switchyardToken: '', switchyardName: '' })
+const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' })
 const saving = ref(false)
 const error = ref('')
 const reach = ref<ReachInfo | null>(null)
@@ -44,7 +44,7 @@ const reachItems = [
 const dirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
 const restarts = computed(() => {
   if (!settings.value) return false
-  const keys: Array<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardServer', 'switchyardToken', 'switchyardName']
+  const keys: Array<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
   return keys.some((k) => JSON.stringify(settings.value![k]) !== JSON.stringify(form[k]))
 })
 
@@ -142,17 +142,18 @@ onMounted(load)
         <UCard data-switchyard-settings>
           <template #header><h2 class="font-semibold">Switchyard</h2></template>
           <div class="flex flex-col gap-4">
+            <USwitch v-model="form.switchyardEnabled" label="Publish sessions to a switchyard" description="So a share link works from anywhere." data-switchyard-enabled />
             <p class="text-sm text-muted">
-              A public Conductor every session here is published to, so people elsewhere join by an invite: the terminal goes between their app and this machine, through the switchyard's relay only when it must. Leave empty to share from this machine alone.
+              Every session here is shared through a public switchyard, switchyard.rslabs.net unless you name another: the link is minted there, and the terminal goes between the viewer and this machine, through the switchyard's relay only when it must. Off, links work where this machine is reachable.
             </p>
-            <UFormField label="Switchyard" description="Its URL, https://switchyard.example.net.">
-              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.example.net" />
+            <UFormField label="Switchyard" description="Leave empty for the public one.">
+              <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.rslabs.net" :disabled="!form.switchyardEnabled" />
             </UFormField>
-            <UFormField label="Host token" description="One of the switchyard's host tokens (its hostTokens setting).">
-              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" />
+            <UFormField label="Host token" description="Optional: a host token for a private switchyard, or a trusted seat on the public one, outside its per-address limits.">
+              <UInput v-model="form.switchyardToken" type="password" class="w-full font-mono text-xs" autocomplete="off" :disabled="!form.switchyardEnabled" />
             </UFormField>
             <UFormField label="Shown there as" description="How this machine is named at the switchyard; its host name when empty.">
-              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" />
+              <UInput v-model="form.switchyardName" class="w-full" maxlength="64" :disabled="!form.switchyardEnabled" />
             </UFormField>
           </div>
         </UCard>
