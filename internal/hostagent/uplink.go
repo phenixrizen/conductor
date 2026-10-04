@@ -46,6 +46,14 @@ type Published struct {
 	once   sync.Once
 }
 
+// CurrentSessionID is the rendezvous's id for the session now: SessionID
+// unless the rendezvous restarted and the session was registered afresh.
+func (p *Published) CurrentSessionID() string {
+	p.a.mu.Lock()
+	defer p.a.mu.Unlock()
+	return p.a.sessID
+}
+
 // Link asks the rendezvous for a share link to the session: its URL there,
 // the same as an invite, and the link's id, role, label and expiry.
 func (p *Published) Link(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {
@@ -104,7 +112,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 		case <-stopped:
 			// The session goes on here; for the rendezvous it is over. Tell it
 			// so, rather than leave it waiting for a host that will not return.
-			a.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: registered.SessionID, Status: string(session.StatusStopped)})
+			a.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: p.CurrentSessionID(), Status: string(session.StatusStopped)})
 			a.flushViewers(runCtx)
 		}
 		cancel()

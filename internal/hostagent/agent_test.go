@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,4 +451,78 @@ func TestHostExitsPromptlyWhenCancelled(t *testing.T) {
 	if took := time.Since(start); took > 1500*time.Millisecond {
 		t.Fatalf("Run took %v to return after its context was cancelled", took)
 	}
+}
+
+// A server that forgot the session (a restarted switchyard) answers a
+// resume with 4404; the host then registers afresh under a new id instead of
+// retrying the resume forever, and Registered is called again with it.
+func TestHostRegistersAfreshWhenTheServerForgotTheSession(t *testing.T) {
+	var attempts atomic.Int32
+	resumes := make(chan string, 4)
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/host" {
+			http.NotFound(w, r)
+			return
+		}
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		n := attempts.Add(1)
+		_, data, err := c.Read(r.Context())
+		if err != nil {
+			return
+		}
+		var reg proto.Register
+		if json.Unmarshal(data, &reg) != nil {
+			c.Close(websocket.StatusProtocolError, "bad register")
+			return
+		}
+		if reg.Resume != nil {
+			resumes <- reg.Resume.SessionID
+		} else {
+			resumes <- ""
+		}
+		switch n {
+		case 1:
+			_ = c.Write(r.Context(), websocket.MessageText, mustJSON(proto.Registered{T: proto.HostRegistered, SessionID: "s1", Secret: "sec", ShareBaseURL: "http://sy.test"}))
+			time.Sleep(150 * time.Millisecond)
+			c.Close(websocket.StatusGoingAway, "restarting")
+		case 2:
+			c.Close(websocket.StatusCode(proto.CloseNotFound), "cannot resume session")
+		default:
+			_ = c.Write(r.Context(), websocket.MessageText, mustJSON(proto.Registered{T: proto.HostRegistered, SessionID: "s2", Secret: "sec2", ShareBaseURL: "http://sy.test"}))
+			for {
+				if _, _, err := c.Read(r.Context()); err != nil {
+					return
+				}
+			}
+		}
+	}))
+	defer fake.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ids := make(chan string, 4)
+	go Run(ctx, Options{
+		ServerURL: fake.URL, Token: "host-token", Name: "x", HostName: "box", Argv: []string{"sleep", "30"},
+		ReconnectMax: 50 * time.Millisecond, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Registered: func(id, base string) { ids <- id },
+	})
+	want := func(ch chan string, v, what string) {
+		t.Helper()
+		select {
+		case got := <-ch:
+			if got != v {
+				t.Fatalf("%s: got %q, want %q", what, got, v)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: nothing within 10s", what)
+		}
+	}
+	want(ids, "s1", "first registration")
+	want(resumes, "", "first attempt resumes nothing")
+	want(resumes, "s1", "second attempt resumes s1")
+	want(resumes, "", "third attempt registers afresh")
+	want(ids, "s2", "registered again under the new id")
 }

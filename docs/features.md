@@ -696,6 +696,12 @@ Asked the same day Round 5 landed. `docs/round6-plan.md` is the plan.
   app is served only for `/join/<token>` and `/paste`. The join page names
   the switchyard it was shared through. Both pages are Go templates with the
   brand tokens inlined, so they stand without the app built.
+- Restarting the switchyard (2026-10-04, seen live): the publishing server
+  retried resuming its old hosted session forever, refused with `4404` each
+  time, until it was restarted. A host answered `4404` on a resume now
+  registers afresh under a new id (tested against a fake switchyard that
+  forgets); links minted before the restart are gone, since the switchyard
+  keeps hosted sessions and links in memory. Persisting them is deferred.
 
 ### Open verification (round 6)
 

@@ -165,7 +165,10 @@ placed in the agent's environment.
 
 A host that loses its connection reconnects with `resume` and the secret from
 `registered`. The session shows `host_disconnected` in the meantime and is
-removed after 60 s without the host.
+removed after 60 s without the host. A server that no longer knows the session (a restarted switchyard keeps
+hosted sessions in memory) closes the resume with `4404`; the host then
+registers afresh under a new id, and the links minted at the old one are
+gone with it.
 
 ## Attention
 

@@ -72,7 +72,9 @@ type Options struct {
 	HooksDir string
 	// ReconnectMax bounds the reconnect backoff.
 	ReconnectMax time.Duration
-	// Registered is called once the first registration succeeds (tests, CLI banner).
+	// Registered is called once the first registration succeeds (tests, CLI
+	// banner), and again when the server lost the session (a restarted
+	// switchyard) and the host registered afresh under a new id.
 	Registered func(sessionID, shareBaseURL string)
 }
 
@@ -390,6 +392,16 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	typ, data, err := c.Read(rctx)
 	rcancel()
 	if err != nil {
+		if reg.Resume != nil && websocket.CloseStatus(err) == websocket.StatusCode(proto.CloseNotFound) {
+			// The server no longer knows the session (it restarted and keeps
+			// hosted sessions in memory): resuming would fail forever, so the
+			// next attempt registers afresh, under a new id.
+			a.mu.Lock()
+			old := a.sessID
+			a.sessID, a.secret = "", ""
+			a.mu.Unlock()
+			return fail(fmt.Errorf("registration: the server no longer knows session %s; registering afresh", old))
+		}
 		return fail(fmt.Errorf("registration: %w", err))
 	}
 	var registered proto.Registered
