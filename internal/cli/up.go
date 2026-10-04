@@ -306,15 +306,10 @@ type apiClient struct {
 	token string // sent in the Authorization header and nowhere else
 }
 
-// do sends one request without a body and decodes the 2xx reply into out. Any
+// doBody sends one request, with body as JSON (nil sends none), and decodes the 2xx reply into out. Any
 // other status is an error carrying the API's code and message. An error names
 // the server's host, never the path, the query or the token. A reply of more
 // than maxReply bytes is an error.
-func (c *apiClient) do(ctx context.Context, method, path string, out any) error {
-	return c.doLimit(ctx, method, path, nil, out, maxReply)
-}
-
-// doBody is do with a JSON body; a nil body sends none.
 func (c *apiClient) doBody(ctx context.Context, method, path string, body, out any) error {
 	return c.doLimit(ctx, method, path, body, out, maxReply)
 }

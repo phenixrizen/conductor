@@ -649,6 +649,76 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 9: the Events page, the switchyard dark, remote sessions in the sidebar, the WSL picker, and the leftovers of rounds 7 and 8 (2026-10-04)
+
+Asked on 2026-10-04: the Events page from its design hand-off; the
+switchyard pages dark as their design has them; "the settings in the
+windows app opens the windows folders which makes zero sense"; remote
+sessions in the sidebar "with an icon above similar to the crew icon", so an
+invite no longer takes the app over; the Wall named the Yard and the
+Carousel the Roundhouse; and the deferred items of rounds 7 and 8 the owner
+picked.
+
+### Decisions
+
+- **The Events page** has three tabs: Feed (default: events by minute, a crew
+  member named `<crew> / <member>`, Answer / Open run / Open on the row; beside
+  it the last hour as bars, where events go, who reports), Routing (the ten
+  events grouped by how loud they are, destinations as switches) and
+  Integrations (a table, the snippet of an agent nothing wires open below).
+  The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
+  user and is dropped.
+- **The switchyard's pages are dark by default**, light under
+  `prefers-color-scheme: light`; no toggle.
+- **The Yard and the Roundhouse.** `/yard` and `/roundhouse`; `/wall` and
+  `/carousel` redirect, a focus query kept; the keys stay G W and G C.
+- **Remote sessions in the sidebar.** Hosted sessions sit under their machine
+  (a laptop and its name) after this server's own and the crew runs. A link
+  joined from the workbench is kept in the browser (`conductor.joined`, at most
+  20, pinned to its server) and listed at the top under "Shared with you" with
+  a globe; opening it joins at once, Leave keeps it, × forgets it, and it is
+  looked at again every minute. The join page sits beside the sidebar when the
+  page has a workbench token (the desktop app, an owner's browser), chosen
+  once so a live terminal never remounts; a guest's page is unchanged and
+  keeps nothing.
+- **The folder picker browses the server.** `paths.browse: any`
+  (`CONDUCTOR_PATHS_BROWSE`, which the desktop app sets) lets
+  `GET /api/paths?scope=any` list outside the roots; Settings' picker is a
+  workbench modal over it, so on Windows it lists the distribution's folders.
+  The Electron dialog and the Windows path conversion go.
+- **A run's own name** (`Run.label`, given at launch, `conductor up --name`,
+  kept by a resume) and **filters on the Runs tab** (state chips, a time
+  select, kept in the browser).
+- **Render fixes:** handoff edges on an arc of their own, the Yard's
+  attention as a slim stacked bar, the phone run header's counts on a strip.
+- **The upgrade notice:** a settings file from before the notices existed
+  owes the publishing notice, shown once as a toast; a fresh install owes none.
+- **The switchyard:** the open hosts of one address share one relay bound;
+  a host registers under an instance and a local id, which fix its session's
+  id, so a switchyard restart gives it back and `registered.links` says which
+  links survive; the switchyard keeps the links it mints for such hosts in
+  `links/` (a join while the host is away answers `503 host_offline`); and a
+  crew run's link is minted there (`link_run`, kept current by
+  `link_run_update`).
+
+### Open verification (round 9)
+
+- The deployed switchyard renders dark, keeps a link across `systemctl
+  restart`, and a run link from the app opens on a phone.
+- The installed app (rc.3): a `conductor://` invite opens beside the sidebar;
+  Settings' pickers list `/home/<user>` folders; the publishing notice shows
+  once after installing over rc.2.
+
+### Deferred
+
+- An e2e test of a run link through the e2e switchyard (the Go loopback test
+  covers the protocol and both servers).
+- Pushing an invite to the open window over a bridge event instead of a
+  full load; the join route answering a browser origin named in Settings;
+  link tokens in the OS keychain; a page behind a machine's sidebar header.
+- A forgotten run revoking its links at the switchyard (they expire, or the
+  orphan sweep takes them after seven days).
+
 ## Round 8: saved crews and runs told apart (2026-10-04)
 
 From the design hand-off "Crews Redesign": one page held both the saved crews
