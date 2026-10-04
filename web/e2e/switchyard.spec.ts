@@ -115,6 +115,20 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
   await page.keyboard.press('Enter')
   const transcript = join(home, '.stub-sessions', `${agentSession}.txt`)
   await expect.poll(() => (existsSync(transcript) ? readFileSync(transcript, 'utf8') : ''), { timeout: 20_000, message: 'the hosted stub got the line' }).toContain('hello through the switchyard')
+
+  // Leave brings the card back, the name kept, and the switchyard no longer counts the viewer; the link still joins.
+  await page.locator('[data-join-leave]').click()
+  await expect(page.locator('[data-join-left]')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Join session' })).toBeVisible()
+  await expect(page.getByLabel('Your name')).toHaveValue('e2e guest')
+  await expect(page.locator('.terminal-host')).toHaveCount(0)
+  await expect
+    .poll(async () => {
+      const list3 = (await (await fetch(`${syURL}/api/sessions`, { headers: { Authorization: `Bearer ${syAdmin}` } })).json()) as { sessions?: Array<{ id: string; viewers?: number }> } | Array<{ id: string; viewers?: number }>
+      const s = (Array.isArray(list3) ? list3 : (list3.sessions ?? [])).find((x) => x.id === hosted.id)
+      return s?.viewers ?? 0
+    }, { timeout: 30_000, message: 'the switchyard drops the viewer' })
+    .toBe(0)
 })
 
 test('the switchyard serves its landing page, a 404 for workbench paths, and the app only for joining', async () => {

@@ -106,7 +106,22 @@ onMounted(() => {
 
 function join() {
   identity.set(nameDraft.value)
+  left.value = false
   joined.value = true
+}
+
+/** What the person left, said on the card they come back to; the link still works, so Join again is one click. */
+const left = ref(false)
+
+/** Leaves the share: the terminals go (their connections close with them) and the card comes back, the name kept. */
+function leave() {
+  joined.value = false
+  focus.value = null
+  tileState.value = {}
+  attention.value = { state: '' }
+  fileTarget.value = null
+  previewUrl.value = null
+  left.value = true
 }
 
 function createTransport() {
@@ -188,7 +203,8 @@ function requestFile(path: string, stat?: boolean) {
         <img src="/brand/conductor-mark.svg" alt="" class="size-8 dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-8 hidden dark:block" />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-link-2-off" title="This link cannot be used" :description="error" />
-        <template v-else-if="info">
+        <UAlert v-else-if="left" color="neutral" variant="subtle" icon="i-lucide-log-out" title="You left" description="Nothing more reaches this page. The link still works: join again below, or close the tab." data-join-left />
+        <template v-if="info && !error">
           <div v-if="run" class="flex flex-col gap-1">
             <h1 class="text-lg font-semibold tracking-tight">Join {{ run.name }}</h1>
             <p class="text-sm leading-relaxed text-muted">
@@ -230,6 +246,7 @@ function requestFile(path: string, stat?: boolean) {
       <div class="flex-1" />
       <span class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
       <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="fetchInfo" />
+      <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
     </header>
 
@@ -260,6 +277,7 @@ function requestFile(path: string, stat?: boolean) {
       <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
         <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
       </form>
+      <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
     </header>
 
