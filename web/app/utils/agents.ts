@@ -35,13 +35,15 @@ function where(host: string): string {
   return host || 'the server'
 }
 
-/** The note on an agent whose program the server did not find; host is the server's host name, or empty. */
-export function notInstalled(host: string): string {
+/** The note on an agent whose program the server did not find; host is the server's host name, or empty; onWindows where a Windows copy was seen from WSL. */
+export function notInstalled(host: string, onWindows?: string): string {
+  if (onWindows) return 'Found on Windows, not in WSL'
   return `Not installed on ${where(host)}`
 }
 
 /** The note's tooltip: how the server judged it. A bare name is looked up on the server's PATH, where any program of that name counts. */
-export function notInstalledTitle(program: string): string {
+export function notInstalledTitle(program: string, onWindows?: string): string {
+  if (onWindows) return `${onWindows} is Windows's, seen through interop; install ${program} inside the WSL distribution (where the server runs) and it is found there`
   if (program.includes('/')) return `${program} was not found on the server`
   return `No program named ${program} is on the server's PATH (any program of that name counts as installed)`
 }

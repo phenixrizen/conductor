@@ -152,7 +152,7 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
               <p v-if="a.description" class="text-sm text-muted">{{ a.description }}</p>
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
-                <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value)" :title="notInstalledTitle(a.command[0] ?? '')" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
+                <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value, a.onWindows)" :title="notInstalledTitle(a.command[0] ?? '', a.onWindows)" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
                 <UBadge
                   v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'"
                   :label="identity(a, serverHost.host.value).label"

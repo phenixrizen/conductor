@@ -29,6 +29,9 @@ type catalogEntry struct {
 	Source    catalog.Source `json:"source,omitempty"`
 	Replaces  catalog.Source `json:"replaces,omitempty"`
 	Available bool           `json:"available"`
+	// OnWindows is where the program was found when that is a Windows
+	// program seen from inside WSL (under /mnt): not installed here.
+	OnWindows string `json:"onWindows,omitempty"`
 	// Identity is what the adapter's probe found the program to be (see
 	// Identity); absent for an agent that is not probed.
 	Identity *Identity `json:"identity,omitempty"`
@@ -109,7 +112,11 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
-		out = append(out, entry(a, cat, s.base, installed, identity))
+		e := entry(a, cat, s.base, installed, identity)
+		if len(a.Command) > 0 {
+			e.OnWindows = answers[a.Command[0]].onWindows
+		}
+		out = append(out, e)
 	}
 	// yoloDefault is the server's yolo choice, which a launch or a crew that
 	// says nothing follows.

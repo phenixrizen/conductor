@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Launcher } from './launcher'
+import { extractPath, mergePaths } from './shellPath'
 import { chooseDistro, decode, INSTALL_SCRIPT, parseList, parseWslconfigNetworking, windowsPathToWsl } from './wsl'
 
 /** runWsl runs wsl.exe with args and returns its decoded output (both streams), '' on failure. */
@@ -56,6 +57,8 @@ export interface WslLauncherOptions {
 export class WslLauncher implements Launcher {
   private bin = '$HOME/.local/share/conductor/bin/conductor'
   private home = ''
+  private shell = ''
+  private path = ''
 
   constructor(private o: WslLauncherOptions) {}
 
@@ -65,10 +68,23 @@ export class WslLauncher implements Launcher {
 
   async prepare(): Promise<string> {
     const run = this.o.run ?? runWsl
-    const home = await run(['-d', this.o.distro, '--exec', 'sh', '-lc', 'printf "__HOME__%s\n" "$HOME"'], 30_000, this.o.exe)
+    const home = await run(['-d', this.o.distro, '--exec', 'sh', '-lc', 'printf "__HOME__%s\n__SHELL__%s\n" "$HOME" "$SHELL"'], 30_000, this.o.exe)
     const m = /__HOME__(\/\S*)/.exec(home.out)
     if (!home.ok || !m) throw new Error(`could not read the home directory inside ${this.o.distro}: ${home.out.trim()}`)
     this.home = m[1]!
+    this.shell = /__SHELL__(\/\S*)/.exec(home.out)?.[1] ?? ''
+    // The PATH the person's own shell builds, interactively: where nvm,
+    // npm's global bin and the like put the agents, which the plain login
+    // shell the server starts under (sh, dash on Ubuntu) never sees.
+    this.path = ''
+    if (this.shell) {
+      const p = await run(['-d', this.o.distro, '--exec', this.shell, '-ilc', `printf '%s%s\\n' __CONDUCTOR_PATH__ "$PATH"`], 10_000, this.o.exe)
+      const imported = extractPath(p.out)
+      if (imported) {
+        this.path = mergePaths(imported, '', this.home, 'linux')
+        this.o.log(`PATH from ${this.shell} in ${this.o.distro}: ${this.path.split(':').length} entries`)
+      } else this.o.log(`${this.shell} in ${this.o.distro} printed no PATH; the login shell's stands`)
+    }
     const src = windowsPathToWsl(this.o.source)
     const r = await run(['-d', this.o.distro, '--exec', 'sh', '-c', INSTALL_SCRIPT, 'conductor-install', src, this.o.version], 120_000, this.o.exe)
     if (!r.ok) throw new Error(`could not install the server into ${this.o.distro}: ${r.out.trim()}`)
@@ -77,9 +93,31 @@ export class WslLauncher implements Launcher {
     return this.bin
   }
 
+  /** distro is the distribution the server runs in. */
+  distro(): string {
+    return this.o.distro
+  }
+
   /** linuxHome is the distribution's home directory, known after prepare. */
   linuxHome(): string {
     return this.home
+  }
+
+  /** shellPath is the PATH the person's own shell gave, merged with the tool directories; '' when it gave none. */
+  shellPath(): string {
+    return this.path
+  }
+
+  /**
+   * startScript is what sh -lc runs inside the distribution: the shell's PATH over the login shell's when the app could read one,
+   * the $HOME the Linux-side paths may be written with expanded, then the server; the arguments are positional, never in the script.
+   */
+  static startScript(): string {
+    return (
+      '[ -n "$CONDUCTOR_PATH" ] && export PATH="$CONDUCTOR_PATH"; unset CONDUCTOR_PATH; ' +
+      'for v in CONDUCTOR_DATA_DIR CONDUCTOR_ALLOWED_ROOTS CONDUCTOR_DEFAULT_CWD; do eval "val=\$$v"; case "$val" in *\$HOME*) eval "export $v=\"$(printf %s "$val" | sed "s|\\$HOME|$HOME|g")\"";; esac; done; ' +
+      'exec "$HOME/.local/share/conductor/bin/conductor" "$@"'
+    )
   }
 
   /**
@@ -99,7 +137,18 @@ export class WslLauncher implements Launcher {
    */
   linuxEnv(env: Record<string, string>, windowsHome: boolean, userProfile: string, ice?: { port: number; publicIp: string }): Record<string, string> {
     const home = this.home || '$HOME'
-    const out: Record<string, string> = { ...env, CONDUCTOR_DATA_DIR: `${home}/.local/share/conductor/data`, CONDUCTOR_ALLOWED_ROOTS: WslLauncher.linuxRoots(windowsHome, userProfile, home).join(','), CONDUCTOR_DEFAULT_CWD: home }
+    // The settings' paths when they are the distribution's (Linux, absolute);
+    // Windows-shaped ones, from before the settings moved there, are replaced
+    // by the defaults inside the distribution.
+    const posix = (p: string | undefined) => (p && p.startsWith('/') ? p : '')
+    const roots = (env.CONDUCTOR_ALLOWED_ROOTS ?? '').split(',').map((r) => r.trim()).filter((r) => r.startsWith('/'))
+    const out: Record<string, string> = {
+      ...env,
+      CONDUCTOR_DATA_DIR: posix(env.CONDUCTOR_DATA_DIR) || `${home}/.local/share/conductor/data`,
+      CONDUCTOR_ALLOWED_ROOTS: WslLauncher.linuxRoots(windowsHome, userProfile, home, roots).join(','),
+      CONDUCTOR_DEFAULT_CWD: posix(env.CONDUCTOR_DEFAULT_CWD) || home,
+    }
+    if (this.path) out.CONDUCTOR_PATH = this.path
     if (ice && ice.port > 0 && ice.publicIp) {
       out.CONDUCTOR_ICE_UDP_PORT = String(ice.port)
       out.CONDUCTOR_ICE_PUBLIC_IP = ice.publicIp
@@ -118,8 +167,7 @@ export class WslLauncher implements Launcher {
     // The login shell expands the $HOME the Linux-side paths are written
     // with (main.ts), then runs the server; the arguments are positional,
     // never part of the script.
-    const script = 'for v in CONDUCTOR_DATA_DIR CONDUCTOR_ALLOWED_ROOTS CONDUCTOR_DEFAULT_CWD; do eval "val=\$$v"; case "$val" in *\$HOME*) eval "export $v=\"$(printf %s "$val" | sed "s|\\$HOME|$HOME|g")\"";; esac; done; exec "$HOME/.local/share/conductor/bin/conductor" "$@"'
-    const argv = ['-d', this.o.distro, '--cd', '~', '--exec', 'sh', '-lc', script, 'conductor', ...args]
+    const argv = ['-d', this.o.distro, '--cd', '~', '--exec', 'sh', '-lc', WslLauncher.startScript(), 'conductor', ...args]
     const child = spawn(this.o.exe ?? 'wsl.exe', argv, { env: winEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     return child
   }
@@ -129,10 +177,16 @@ export class WslLauncher implements Launcher {
     if (pid) void run(['-d', this.o.distro, '--exec', 'kill', '-KILL', String(pid)], 10_000, this.o.exe)
   }
 
-  /** linuxRoots are the allowed roots inside the distribution: the Linux home, and the Windows profile under /mnt when asked. */
-  static linuxRoots(windowsHome: boolean, userProfile: string, home = '$HOME'): string[] {
-    const roots = [home]
-    if (windowsHome && userProfile) roots.push(windowsPathToWsl(userProfile))
+  /**
+   * linuxRoots are the allowed roots inside the distribution: the ones saved (Linux paths), else the Linux home; and the Windows
+   * profile under /mnt when asked.
+   */
+  static linuxRoots(windowsHome: boolean, userProfile: string, home = '$HOME', saved: string[] = []): string[] {
+    const roots = saved.length ? [...saved] : [home]
+    if (windowsHome && userProfile) {
+      const win = windowsPathToWsl(userProfile)
+      if (!roots.includes(win)) roots.push(win)
+    }
     return roots
   }
 }

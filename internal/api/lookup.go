@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -63,8 +64,12 @@ type lookupCache struct {
 	inflight map[string]*lookupCall
 	look     func(program string) (string, error) // exec.LookPath; tests replace it
 	now      func() time.Time
-	wait     time.Duration // lookupWait; tests shorten it
-	sem      chan struct{} // a slot per lookup under way, lookupWorkers of them
+	// wsl says the server runs inside a WSL distribution, where Windows's
+	// programs appear on the PATH under /mnt through interop: those are not
+	// installed here (WSL_DISTRO_NAME; tests set it).
+	wsl  bool
+	wait time.Duration // lookupWait; tests shorten it
+	sem  chan struct{} // a slot per lookup under way, lookupWorkers of them
 }
 
 func newLookupCache() *lookupCache {
@@ -73,6 +78,7 @@ func newLookupCache() *lookupCache {
 		inflight: map[string]*lookupCall{},
 		look:     exec.LookPath,
 		now:      time.Now,
+		wsl:      os.Getenv("WSL_DISTRO_NAME") != "",
 		wait:     lookupWait,
 		sem:      make(chan struct{}, lookupWorkers),
 	}
@@ -137,8 +143,17 @@ func (c *lookupCache) installed(ctx context.Context, program string) bool {
 	if relativePath(program) {
 		return true
 	}
-	_, ok, known := c.found(ctx, program)
+	path, ok, known := c.found(ctx, program)
+	if ok && known && c.onWindows(path) {
+		return false
+	}
 	return ok || !known
+}
+
+// onWindows says whether a resolved path is a Windows program seen from
+// inside WSL (under /mnt, by interop): found, but not installed here.
+func (c *lookupCache) onWindows(path string) bool {
+	return c.wsl && strings.HasPrefix(path, "/mnt/")
 }
 
 // relativePath reports whether program names a file relative to the working
@@ -176,6 +191,9 @@ func (c *lookupCache) warm(ctx context.Context, programs []string) map[string]bo
 type lookupAnswer struct {
 	installed bool   // as installed says
 	path      string // the resolved absolute path, when the lookup found one
+	// onWindows is the path when it is a Windows program seen from inside
+	// WSL, which does not count as installed.
+	onWindows string
 }
 
 // warmPaths is warm with the resolved paths: what the identity probes run.
@@ -196,6 +214,9 @@ func (c *lookupCache) warmPaths(ctx context.Context, programs []string) map[stri
 				a.installed = ok || !known
 				if ok && known {
 					a.path = path
+					if c.onWindows(path) {
+						a.installed, a.onWindows = false, path
+					}
 				}
 			}
 			mu.Lock()

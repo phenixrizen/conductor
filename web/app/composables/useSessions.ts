@@ -98,6 +98,8 @@ export interface AgentInfo {
   replaces?: 'built-in' | 'config'
   /** Whether command[0] resolves on the server (the check of POST /api/catalog/check, cached 30 s). Missing from an older server. */
   available?: boolean
+  /** Where command[0] was found when that is a Windows program seen from inside WSL (under /mnt): not installed in the distribution. */
+  onWindows?: string
   /** The agent's website, an https URL, when known: a built-in's, or what was saved with the agent. */
   site?: string
   /** Its yolo recipe; `{}` is none. Missing: no recipe. */

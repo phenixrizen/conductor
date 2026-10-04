@@ -3,6 +3,7 @@ import { external } from './window'
 import { serverAffecting, validate, type DesktopSettings } from './settings'
 import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
+import { wslPickedPath } from './wsl'
 
 export interface IpcDeps {
   origin: () => string
@@ -16,6 +17,8 @@ export interface IpcDeps {
   ice: () => IceStatus
   /** Adds the firewall rule for the ICE port through an elevated netsh; the rule's state after. */
   allowIceFirewall: () => Promise<IceStatus['firewall']>
+  /** Windows: the WSL distribution the server runs in and its home, for settings that are its paths and a picker that opens there; null elsewhere. */
+  wsl?: () => { distro: string; home: string; windowsFolders: boolean } | null
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -49,7 +52,7 @@ export function registerIpc(d: IpcDeps): void {
     guard(async (_e, patch) => {
       const cur = d.settings.get()
       const next = { ...cur, ...(patch as Partial<DesktopSettings>) } as DesktopSettings
-      const problems = validate(next)
+      const problems = validate(next, !!d.wsl?.())
       if (problems.length) throw new Error(problems.join('; '))
       d.settings.set(next)
       if (serverAffecting(cur, next)) await d.supervisor.restart()
@@ -60,8 +63,14 @@ export function registerIpc(d: IpcDeps): void {
     'conductor:pickDirectory',
     guard(async () => {
       const w = d.mainWindow()
-      const r = await (w ? dialog.showOpenDialog(w, { properties: ['openDirectory', 'createDirectory'] }) : dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] }))
-      return r.canceled || !r.filePaths.length ? null : r.filePaths[0]
+      const wsl = d.wsl?.() ?? null
+      // On Windows the picker opens inside the distribution, and what it
+      // returns is translated to the distribution's own path.
+      const opts: Electron.OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'] }
+      if (wsl) opts.defaultPath = `\\\\wsl.localhost\\${wsl.distro}${wsl.home.replace(/\//g, '\\')}`
+      const r = await (w ? dialog.showOpenDialog(w, opts) : dialog.showOpenDialog(opts))
+      if (r.canceled || !r.filePaths.length) return null
+      return wsl ? wslPickedPath(r.filePaths[0]!, wsl.distro, wsl.windowsFolders) : r.filePaths[0]
     }),
   )
   ipcMain.handle(

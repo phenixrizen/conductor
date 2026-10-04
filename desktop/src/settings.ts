@@ -35,13 +35,18 @@ export function defaultSettings(home: string, userData: string): DesktopSettings
   return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' }
 }
 
-/** validate returns the problems with s, in words; none for good settings. */
-export function validate(s: DesktopSettings): string[] {
+/**
+ * validate returns the problems with s, in words; none for good settings. With posix the paths must be the WSL distribution's
+ * (absolute Linux paths), whatever the host: Windows, where the server runs inside WSL.
+ */
+export function validate(s: DesktopSettings, posix = false): string[] {
   const out: string[] = []
-  if (!s.dataDir || !isAbsolute(s.dataDir)) out.push('the data directory must be an absolute path')
+  const absolute = (p: string) => (posix ? p.startsWith('/') : isAbsolute(p))
+  const kind = posix ? 'an absolute path inside the WSL distribution, such as /home/<user>/code' : 'an absolute path'
+  if (!s.dataDir || !absolute(s.dataDir)) out.push(`the data directory must be ${kind}`)
   if (!Array.isArray(s.allowedRoots) || s.allowedRoots.length === 0) out.push('at least one allowed root is needed')
-  for (const r of s.allowedRoots ?? []) if (!r || !isAbsolute(r)) out.push(`allowed root ${JSON.stringify(r)} must be an absolute path`)
-  if (!s.defaultCwd || !isAbsolute(s.defaultCwd)) out.push('the default working directory must be an absolute path')
+  for (const r of s.allowedRoots ?? []) if (!r || !absolute(r)) out.push(`allowed root ${JSON.stringify(r)} must be ${kind}`)
+  if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default working directory must be ${kind}`)
   else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => s.defaultCwd === r || s.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) out.push('the default working directory must lie under an allowed root')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
   if (s.switchyardServer) {
@@ -56,6 +61,29 @@ export function validate(s: DesktopSettings): string[] {
   }
   if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')
   return out
+}
+
+/** wslDefaults are the defaults for a server inside a WSL distribution whose home is linuxHome. */
+export function wslDefaults(s: DesktopSettings, linuxHome: string): DesktopSettings {
+  return { ...s, dataDir: `${linuxHome}/.local/share/conductor/data`, allowedRoots: [linuxHome], defaultCwd: linuxHome }
+}
+
+/**
+ * migrateToWsl moves settings saved with Windows paths (an earlier build kept them, and the launcher threw them away) to the
+ * distribution's: a path that is not an absolute Linux path becomes the default inside the distribution. changed says so.
+ */
+export function migrateToWsl(s: DesktopSettings, linuxHome: string): { settings: DesktopSettings; changed: boolean } {
+  const d = wslDefaults(s, linuxHome)
+  const linux = (p: string) => typeof p === 'string' && p.startsWith('/')
+  const roots = (s.allowedRoots ?? []).filter(linux)
+  const next: DesktopSettings = {
+    ...s,
+    dataDir: linux(s.dataDir) ? s.dataDir : d.dataDir,
+    allowedRoots: roots.length ? roots : d.allowedRoots,
+    defaultCwd: linux(s.defaultCwd) ? s.defaultCwd : d.defaultCwd,
+  }
+  if (!next.allowedRoots.some((r) => next.defaultCwd === r || next.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) next.defaultCwd = next.allowedRoots[0]!
+  return { settings: next, changed: JSON.stringify(next) !== JSON.stringify(s) }
 }
 
 /** loadSettings reads the file, filling what it lacks from the defaults; a missing or broken file gives the defaults. */

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, saveSettings, serverAffecting, validate } from '../src/settings'
+import { defaultSettings, loadSettings, migrateToWsl, saveSettings, serverAffecting, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -81,5 +81,26 @@ describe('switchyard settings', () => {
     const s = { ...defaultSettings('/home/me', '/home/me/.config/conductor'), switchyardEnabled: false, switchyardServer: 'https://switchyard.example.net', switchyardToken: 'sy-token', switchyardName: 'laptop' }
     saveSettings(file, s)
     expect(loadSettings(file, defaultSettings('/home/me', '/home/me/.config/conductor'))).toEqual(s)
+  })
+})
+
+describe('settings inside WSL', () => {
+  const home = '/home/me'
+  it('validates Linux paths whatever the host, and names what is wrong', () => {
+    const s = { ...defaultSettings('C:\\Users\\me', 'C:\\Users\\me\\AppData'), dataDir: '/home/me/.local/share/conductor/data', allowedRoots: ['/home/me'], defaultCwd: '/home/me' }
+    expect(validate(s, true)).toEqual([])
+    expect(validate({ ...s, allowedRoots: ['C:\\Users\\me'], defaultCwd: 'C:\\Users\\me' }, true).join(' ')).toContain('inside the WSL distribution')
+  })
+  it('moves Windows paths to the defaults inside the distribution, once', () => {
+    const win = defaultSettings('C:\\Users\\me', 'C:\\Users\\me\\AppData\\Roaming\\conductor-desktop')
+    const m = migrateToWsl(win, home)
+    expect(m.changed).toBe(true)
+    expect(m.settings).toMatchObject({ dataDir: '/home/me/.local/share/conductor/data', allowedRoots: ['/home/me'], defaultCwd: '/home/me' })
+    expect(migrateToWsl(m.settings, home).changed).toBe(false)
+    // Linux paths already saved stay; a Windows one among the roots goes.
+    const mixed = migrateToWsl({ ...win, dataDir: '/home/me/.conductor', allowedRoots: ['/home/me/code', 'C:\\Users\\me'], defaultCwd: '/home/me/code' }, home)
+    expect(mixed.settings).toMatchObject({ dataDir: '/home/me/.conductor', allowedRoots: ['/home/me/code'], defaultCwd: '/home/me/code' })
+    // A cwd outside every root after the move takes the first root.
+    expect(migrateToWsl({ ...win, allowedRoots: ['/srv'], defaultCwd: 'C:\\x' }, home).settings.defaultCwd).toBe('/srv')
   })
 })

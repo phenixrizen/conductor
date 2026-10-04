@@ -161,6 +161,9 @@ onMounted(load)
         <UCard>
           <template #header><h2 class="font-semibold">Where agents work</h2></template>
           <div class="flex flex-col gap-4">
+            <p v-if="desktop.bridge.value?.platform === 'win32'" class="text-sm text-muted" data-wsl-paths>
+              The server runs inside your WSL distribution, so these are its paths (such as <code class="font-mono">/home/&lt;user&gt;/code</code>); the folder picker opens there. Windows folders need the switch under "How agents run" and live under <code class="font-mono">/mnt</code>.
+            </p>
             <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them.">
               <div class="flex gap-2">
                 <UTextarea v-model="rootsText" :rows="3" class="flex-1 font-mono text-xs" />

@@ -63,3 +63,11 @@ describe('agent identity', () => {
     expect(agentItem(agent({ id: 'goose', name: 'Goose', available: true, identity: { ran: true, identified: false, impostor: true, verified: false, name: 'Goose' } }), 'build-1').label).toBe('Goose · not Goose on build-1')
   })
 })
+
+describe('a program found on Windows from inside WSL', () => {
+  it('is named, not called installed', () => {
+    expect(notInstalled('box', '/mnt/c/Users/me/AppData/Roaming/npm/codex')).toBe('Found on Windows, not in WSL')
+    expect(notInstalledTitle('codex', '/mnt/c/Users/me/AppData/Roaming/npm/codex')).toContain('install codex inside the WSL distribution')
+    expect(notInstalled('box')).toBe('Not installed on box')
+  })
+})

@@ -515,3 +515,23 @@ func TestLookupsThatStallAnswerUnknownInTime(t *testing.T) {
 		t.Fatalf("a launch after the lookups landed: %v", err)
 	}
 }
+
+// Inside WSL a program resolved under /mnt is Windows's, seen through
+// interop: found, named, and not installed here.
+func TestAProgramUnderMntIsNotInstalledInsideWSL(t *testing.T) {
+	c := newLookupCache()
+	c.look = func(program string) (string, error) { return "/mnt/c/Users/me/AppData/Roaming/npm/" + program, nil }
+	c.wsl = true
+	if c.installed(context.Background(), "codex") {
+		t.Fatal("a Windows codex counted as installed inside WSL")
+	}
+	if a := c.warmPaths(context.Background(), []string{"codex"})["codex"]; a.installed || a.onWindows != "/mnt/c/Users/me/AppData/Roaming/npm/codex" {
+		t.Fatalf("warmPaths %+v", a)
+	}
+	plain := newLookupCache()
+	plain.look = c.look
+	plain.wsl = false
+	if !plain.installed(context.Background(), "codex") || plain.warmPaths(context.Background(), []string{"codex"})["codex"].onWindows != "" {
+		t.Fatal("outside WSL a /mnt path is a program like any other")
+	}
+}

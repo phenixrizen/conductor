@@ -10,7 +10,7 @@ import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
 import { ServerSupervisor } from './server'
-import { defaultSettings, loadSettings, saveSettings, type DesktopSettings } from './settings'
+import { defaultSettings, loadSettings, migrateToWsl, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, restrictPermissions } from './window'
@@ -81,6 +81,16 @@ async function run() {
   }
   log('main', `conductor desktop ${app.getVersion()} (${process.platform}), server ${launcher.describe()}`)
   await launcher.prepare()
+  if (launcher instanceof WslLauncher) {
+    // The settings are the distribution's paths; ones saved as Windows
+    // paths by an earlier build move to the defaults inside it.
+    const m = migrateToWsl(settings, launcher.linuxHome())
+    if (m.changed) {
+      settings = m.settings
+      saveSettings(settingsFile, settings)
+      log('main', `settings: the paths are inside ${launcher.describe()} now: ${settings.defaultCwd}`)
+    }
+  }
   const shellPath = mergePaths(await loginShellPath(process.env.SHELL ?? ''), process.env.PATH ?? '', homedir())
 
   // WebRTC from inside WSL: in NAT mode (the default, left as it is) the
@@ -194,6 +204,7 @@ async function run() {
     mainWindow: () => main,
     serverVersion: () => supervisor.status.version ?? '',
     ice: () => ({ ...ice }),
+    wsl: () => (wsl ? { distro: wsl.distro(), home: wsl.linuxHome(), windowsFolders: settings.wslWindowsHome } : null),
     allowIceFirewall: async () => {
       if (await allowIceThroughFirewall(ice.port)) ice.firewall = await firewallRuleExists(ice.port)
       return ice.firewall

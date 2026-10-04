@@ -922,10 +922,14 @@ desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
 **Windows.** There is no Windows build of the server: the installer bundles
 the Linux binary and the app runs it inside your WSL 2 distribution
 (`wsl --install` once, restart, open the distribution to make your user).
-The agents must be installed inside the distribution: the app finds them on
-its PATH, through your login shell, not on Windows's (`claude`, `codex`,
-`npm` from Windows under `/mnt/c` are flagged, not used). Projects under
-`/mnt/c` work but are slow; keep repositories in the distribution's home.
+The agents must be installed inside the distribution: the app asks your own
+shell there (`$SHELL -ilc`, so nvm's, npm's and `~/.local/bin`'s programs
+count) for its PATH and starts the server with it; a `claude`, `codex` or
+`npm` that Windows put on the PATH under `/mnt/c` is named on the Agents
+page as found on Windows, not used. The settings' directories are the
+distribution's own (`/home/<user>/…`), and the folder picker opens inside it;
+projects under `/mnt/c` work but are slow, and need the Windows-folders
+switch; keep repositories in the distribution's home.
 WSL's default NAT mode stays as it is (the app never asks for mirrored
 networking, which changes WSL for Docker and every other tool): for WebRTC
 the app forwards one UDP port into the distribution itself and the server

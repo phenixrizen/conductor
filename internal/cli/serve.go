@@ -167,6 +167,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if cfg.PublicURLIsLocal() {
 		log.Info("share links take the address the workbench is opened at; set publicUrl (CONDUCTOR_PUBLIC_URL) for a fixed one")
 	}
+	log.Debug("environment", "path", os.Getenv("PATH"))
 	if cfg.GeneratedWorkbenchToken {
 		// Printed once so a developer can sign in; set CONDUCTOR_WORKBENCH_TOKEN to avoid this.
 		log.Warn("no workbench token configured; generated one for this run", "workbenchToken", cfg.WorkbenchToken)
