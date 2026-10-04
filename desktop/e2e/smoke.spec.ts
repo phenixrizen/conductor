@@ -16,7 +16,7 @@ test('the app opens the workbench on its own server and stops it on quit', async
   app.process().stdout?.on('data', (d: Buffer) => output.push(d.toString()))
   const page = await app.firstWindow()
   try {
-    await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 60_000 })
+    await page.waitForURL(/^http:\/\/(127\.0\.0\.1|localhost):\d+\//, { timeout: 60_000 })
   } catch (e) {
     // What the shell and its server said, for a CI log that otherwise shows only the timeout.
     console.log('window url:', page.url())

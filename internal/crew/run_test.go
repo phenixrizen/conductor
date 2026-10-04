@@ -1237,14 +1237,26 @@ func TestLaunchRefusesASymlinkOnTheWayToTheMembersDirectory(t *testing.T) {
 // When the repository's info/exclude cannot be written, the worktrees work
 // without it and the run log says so once, not once per member.
 func TestAnExcludeFailureIsNotedOncePerRun(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only file")
+	}
 	repo := newRepo(t)
-	exclude := filepath.Join(repo, ".git", "info", "exclude")
-	if err := os.RemoveAll(exclude); err != nil {
+	// The exclude file can be read (git reads it when it adds a worktree, and
+	// a newer git refuses to add one when it cannot) but not written: the
+	// append of the worktrees' line fails, once per run.
+	info := filepath.Join(repo, ".git", "info")
+	exclude := filepath.Join(info, "exclude")
+	if err := os.WriteFile(exclude, []byte("# kept read-only by the test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(exclude, 0o755); err != nil { // not a file: it cannot be read or written
+	// Chmod, not WriteFile's mode: git init made the file already.
+	if err := os.Chmod(exclude, 0o444); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(info, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(info, 0o755); _ = os.Chmod(exclude, 0o644) })
 	e, fl := newEngine(t)
 	fl.onLaunch = askAtOnce
 	c := testCrew(immediate("lead", "Plan it."), immediate("core", "Build it."), manual("tests", ""))
