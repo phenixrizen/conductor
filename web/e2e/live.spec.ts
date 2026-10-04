@@ -229,9 +229,15 @@ for (const agent of ['claude', 'codex']) {
           }, { timeout: 90_000, intervals: [500], message: 'the trust question holds the member' })
           .toBe('needs_input')
         expect(solo?.attention?.message ?? '').toMatch(TRUST_WORDS[agent]!)
+        // The session's detector holds the member first; the engine's readiness poll notes the question in the run log a moment later.
         let r = await api.run(run.id)
+        await expect
+          .poll(async () => {
+            r = await api.run(run.id)
+            return logged(r, 'solo asks')
+          }, { timeout: 15_000, intervals: [250], message: 'the run log notes the question' })
+          .toBe(true)
         expect(logged(r, "typed solo's prompt")).toBe(false)
-        expect(logged(r, 'solo asks')).toBe(true)
         // The trusting answer (TRUST_YES): verify with each release which one is highlighted.
         await pressInTerminal(page, server, solo!.id, TRUST_YES[agent]!)
         await expect
