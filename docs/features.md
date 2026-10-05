@@ -681,6 +681,12 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
 - **The copyright** is the package's holder, "© 2026 the Conductor authors"
   (electron-builder's `copyright`), on the splash and in Settings → The app.
 - `GET /api/whoami` gains `version`, for The app card in a browser.
+- **A stopped run is recorded as stopped.** Stopping a run ends its members'
+  sessions first, and the last one ending recorded the run as finished on a
+  goroutine racing the stop's own record: about one stop in twenty kept
+  "finished" (the CI flake in `TestRunRecordIsWrittenWhenARunEnds`, seen
+  at 100 runs under race). A run being stopped is now recorded only by its
+  stop, and the record saves keep the order their snapshots were taken in.
 
 ### Open verification (round 10)
 

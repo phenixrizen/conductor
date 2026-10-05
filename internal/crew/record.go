@@ -172,9 +172,21 @@ func ValidRunID(id string) bool {
 
 // noteEnd tells OnEnd about r when it has ended: stopped, or every member
 // ended with none pending (runState). It takes the engine's lock itself, so
-// the caller must not hold it; OnEnd runs without it.
+// the caller must not hold it; OnEnd runs without it. A run being stopped is
+// told about by its stop, once stopped: its members' sessions ending on the
+// way do not make it finished. The ends reach OnEnd in the order their
+// snapshots were taken (endMu).
 func (e *Engine) noteEnd(runID string) {
 	if e.OnEnd == nil {
+		return
+	}
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
+	e.mu.Lock()
+	cur, ok := e.runs[runID]
+	midStop := ok && cur.stopping && cur.stoppedAt == nil
+	e.mu.Unlock()
+	if !ok || midStop {
 		return
 	}
 	r, ok := e.Get(runID)
@@ -188,14 +200,46 @@ func (e *Engine) noteEnd(runID string) {
 // of its own, started through run (the server's tracked goroutines, which
 // its shutdown waits for; a plain go when nil), and a save that fails is
 // logged by warn.
+//
+// The saves run on goroutines of their own, so a later end of a run (a run
+// reopened and ended again) could be saved before an earlier one: each end
+// is numbered as OnEnd gets it (in the order noteEnd took the snapshots),
+// and a save older than the one already written for its run is dropped.
 func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run func(func())) {
 	if run == nil {
 		run = func(f func()) { go f() }
 	}
+	type pending struct {
+		saved    uint64 // the newest end written
+		inflight int    // ends not yet saved or dropped; the entry goes at zero
+	}
+	var (
+		mu    sync.Mutex
+		seq   uint64
+		byRun = map[string]*pending{}
+	)
 	e.OnEnd = func(r Run) {
+		mu.Lock()
+		seq++
+		n := seq
+		p := byRun[r.ID]
+		if p == nil {
+			p = &pending{}
+			byRun[r.ID] = p
+		}
+		p.inflight++
+		mu.Unlock()
 		run(func() {
-			if err := rs.Save(r); err != nil && warn != nil {
-				warn(r.ID, err)
+			mu.Lock()
+			defer mu.Unlock()
+			if n > p.saved {
+				if err := rs.Save(r); err != nil && warn != nil {
+					warn(r.ID, err)
+				}
+				p.saved = n
+			}
+			if p.inflight--; p.inflight == 0 {
+				delete(byRun, r.ID)
 			}
 		})
 	}

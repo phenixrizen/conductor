@@ -218,6 +218,9 @@ type Engine struct {
 	// must not wait; RecordEnds sets it to save the run. Set it before the
 	// first launch.
 	OnEnd func(r Run)
+	// endMu orders the ends: a snapshot and its OnEnd are one step under it,
+	// so the ends reach OnEnd in the order their snapshots were taken.
+	endMu sync.Mutex
 
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.

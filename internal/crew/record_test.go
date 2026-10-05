@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,5 +176,66 @@ func TestRunRecordsNeverHoldTerminalOutput(t *testing.T) {
 	got, ok, err := rs.Get("team-0badf00d")
 	if err != nil || !ok || got.ID != r.ID || got.Members[0].SessionID != "s1" || len(got.Log) != 1 {
 		t.Fatalf("read back %v %v %+v", ok, err, got)
+	}
+}
+
+// A run being stopped is recorded by its stop: its members' sessions ending
+// on the way never record it as finished first (that record, saved on a
+// goroutine of its own, could land after the stop's and win).
+func TestAStoppedRunIsNeverRecordedAsFinished(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	var mu sync.Mutex
+	var ends []string
+	e.OnEnd = func(r Run) {
+		mu.Lock()
+		ends = append(ends, r.ID+" "+r.State)
+		mu.Unlock()
+	}
+	for range 25 {
+		run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+		waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+		stopRun(t, e, run.ID)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, end := range ends {
+		if strings.HasSuffix(end, " "+RunFinished) {
+			t.Fatalf("a stopped run was told about as finished: %v", ends)
+		}
+	}
+	if len(ends) < 25 {
+		t.Fatalf("%d ends told for 25 stops: %v", len(ends), ends)
+	}
+}
+
+// The ends of one run are saved in the order they came, whatever order
+// their goroutines run in: a late save of an older end is dropped.
+func TestAnOlderEndNeverOverwritesANewerRecord(t *testing.T) {
+	e, _ := newEngine(t)
+	rs, _ := newRecords(t)
+	var queued []func()
+	e.RecordEnds(rs, func(runID string, err error) { t.Errorf("%s: %v", runID, err) }, func(f func()) { queued = append(queued, f) })
+	base := Run{ID: "team-0000000a", CrewID: "team", Name: "team", StartedAt: time.Now().UTC(), Members: []MemberState{}, Log: []session.ActivityEntry{}}
+	finished, stopped := base, base
+	finished.State = RunFinished
+	stopped.State = RunStopped
+	e.OnEnd(finished)
+	e.OnEnd(stopped)
+	// The newer first, then the older.
+	queued[1]()
+	queued[0]()
+	if r, ok, err := rs.Get(base.ID); err != nil || !ok || r.State != RunStopped {
+		t.Fatalf("record %+v %v %v", r, ok, err)
+	}
+	// The run ended again later: that end is saved.
+	e.OnEnd(finished)
+	queued[2]()
+	if r, _, _ := rs.Get(base.ID); r.State != RunFinished {
+		t.Fatalf("the later end was dropped: %+v", r)
 	}
 }
