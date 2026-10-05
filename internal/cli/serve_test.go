@@ -1,0 +1,710 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"math/big"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/phenixrizen/conductor/internal/config"
+)
+
+// syncBuffer collects what the server logs while the test reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// clearConductorEnv keeps the CONDUCTOR_* variables of whoever runs the tests
+// out of the configuration: config.Load ignores empty values.
+func clearConductorEnv(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "CONDUCTOR_") {
+			t.Setenv(k, "")
+		}
+	}
+	// A home of the test's own: nothing a test starts reads or writes the
+	// user's ~/.conductor.
+	t.Setenv("HOME", t.TempDir())
+	// No STUN or gateway traffic from a test unless it asks for it, and no
+	// publishing to the public switchyard: a test's sessions stay here.
+	t.Setenv("CONDUCTOR_REACH", "off")
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "0")
+}
+
+// writeServeConfig writes body as conductor.json in dir and returns its path.
+func writeServeConfig(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "conductor.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// serveUntilListening runs `conductor serve` on a free loopback port until it
+// reports that it is serving, stops it, and returns everything it logged.
+func serveUntilListening(t *testing.T, args ...string) string {
+	t.Helper()
+	// Serve records the binary it writes the hook assets for, for the whole
+	// process: forget it when the test ends.
+	t.Cleanup(agents.ForgetBinary())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit code %d", code)
+		}
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(logs.String(), "conductor serving") {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned before serving: %v\n%s", err, logs.String())
+		case <-deadline:
+			t.Fatalf("serve did not start:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	return logs.String()
+}
+
+// logLines returns the lines of logs that contain every one of parts.
+func logLines(logs string, parts ...string) []string {
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		match := true
+		for _, p := range parts {
+			match = match && strings.Contains(line, p)
+		}
+		if match {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestServeLogsTheDataDirectory(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "conductor serving", "dataDir="+data); len(lines) != 1 {
+		t.Fatalf("the serving line does not name the data directory:\n%s", logs)
+	}
+	if fi, err := os.Stat(data); err != nil || !fi.IsDir() {
+		t.Fatalf("data directory not created: %v", err)
+	}
+	// Outside every allowed root, so no warning about it.
+	if lines := logLines(logs, "level=WARN", "dataDir="); len(lines) != 0 {
+		t.Fatalf("unexpected data directory warning: %v", lines)
+	}
+}
+
+// Without dataDir the directory is ~/.conductor. Here the home is the
+// allowed root: agents work there, so the server says so.
+func TestServeWarnsWhenTheDataDirOverlapsAnAllowedRoot(t *testing.T) {
+	clearConductorEnv(t)
+	home := os.Getenv("HOME")
+	cfg := writeServeConfig(t, t.TempDir(), fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, home, home))
+	logs := serveUntilListening(t, "--config", cfg)
+	data := filepath.Join(home, ".conductor")
+	if lines := logLines(logs, "level=WARN", "dataDir="+data, "allowedRoot="+home); len(lines) != 1 {
+		t.Fatalf("no warning that %s is inside the allowed root %s:\n%s", data, home, logs)
+	}
+}
+
+// A data directory that cannot be made stops the server, which says which
+// settings choose another.
+func TestServeNamesTheSettingWhenTheDataDirIsNotUsable(t *testing.T) {
+	clearConductorEnv(t)
+	cfg := writeServeConfig(t, t.TempDir(), `{"workbenchToken": "t"}`)
+	data := filepath.Join(os.Getenv("HOME"), ".conductor")
+	// A file where the directory should be defeats MkdirAll even for root.
+	if err := os.WriteFile(data, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A server that starts anyway is stopped by the deadline, so the test
+	// fails instead of waiting for the package timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var logs syncBuffer
+	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
+	if strings.Contains(logs.String(), "conductor serving") {
+		t.Fatalf("serve listened with an unusable data directory:\n%s", logs.String())
+	}
+	if code != 1 || err == nil {
+		t.Fatalf("serve started with an unusable data directory: %d %v", code, err)
+	}
+	for _, want := range []string{data, "dataDir", "CONDUCTOR_DATA_DIR", "not a directory"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// An upgraded server whose data directory an older Conductor put next to the
+// config keeps using it while ~/.conductor holds no server data, and says
+// once, at warn, where it is, where the default is and how to move.
+func TestServeKeepsAnOldDataDirectoryWithANotice(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work, old := filepath.Join(dir, "work"), filepath.Join(dir, "conductor.d")
+	for _, d := range []string{work, old} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
+	logs := serveUntilListening(t, "--config", cfg)
+	def := filepath.Join(os.Getenv("HOME"), ".conductor")
+	if lines := logLines(logs, "level=WARN", old, def); len(lines) != 1 {
+		t.Fatalf("no notice naming %s and %s:\n%s", old, def, logs)
+	}
+	if lines := logLines(logs, "conductor serving", "dataDir="+old); len(lines) != 1 {
+		t.Fatalf("the server does not use %s:\n%s", old, logs)
+	}
+	if _, err := os.Stat(def); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("%s was made: %v", def, err)
+	}
+}
+
+// Without dataDir and without an old directory the server makes ~/.conductor,
+// 0700, names it on its serving line and warns about nothing it holds. (The
+// test binary embeds no web UI, which is a warning of its own.)
+func TestServeUsesTheHomeDataDirectory(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q}`, work, work))
+	logs := serveUntilListening(t, "--config", cfg)
+	data := filepath.Join(os.Getenv("HOME"), ".conductor")
+	if lines := logLines(logs, "conductor serving", "dataDir="+data); len(lines) != 1 {
+		t.Fatalf("the serving line does not name %s:\n%s", data, logs)
+	}
+	if fi, err := os.Stat(data); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("%s: %v %v", data, fi, err)
+	}
+	if lines := logLines(logs, "level=WARN", ".conductor"); len(lines) != 0 {
+		t.Fatalf("unexpected data directory warnings: %v", lines)
+	}
+}
+
+// The server writes the hook assets into its data directory at startup, naming
+// its own binary, before it serves: a launch that injects them finds them.
+func TestServeWritesTheHookAssets(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	serveUntilListening(t, "--config", cfg)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(data, "hooks", "claude.json"))
+	if err != nil || !strings.Contains(string(b), exe+" notify --claude-hook") {
+		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(data, "hooks")); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("hooks dir: %v %v", fi.Mode(), err)
+	}
+}
+
+// A mode WriteAssets cannot set (agents.ModeError: the assets are in place)
+// does not stop the server: it warns, naming the file, and serves. Any other
+// failure to write the assets still stops it.
+func TestServeGoesOnWhenItCannotSetTheModesOfTheHookAssets(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	asset := filepath.Join(data, "hooks", "claude.json")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	old := writeAssets
+	t.Cleanup(func() { writeAssets = old })
+	writeAssets = func(hooksDir, bin string) error {
+		if err := old(hooksDir, bin); err != nil {
+			return err
+		}
+		return &agents.ModeError{Errs: []error{&fs.PathError{Op: "chmod", Path: asset, Err: fs.ErrPermission}}}
+	}
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "level=WARN", asset, "goes on"); len(lines) != 1 {
+		t.Fatalf("no warning naming %s:\n%s", asset, logs)
+	}
+
+	writeAssets = func(string, string) error { return errors.New("disk full") }
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var out syncBuffer
+	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &out)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "disk full") || strings.Contains(out.String(), "conductor serving") {
+		t.Fatalf("serve with assets it could not write: %d %v\n%s", code, err, out.String())
+	}
+}
+
+// The same holds for the mode of a new asset, set on the temporary file
+// that is renamed over it: on a first start whose file system keeps no
+// modes, the real WriteAssets puts every asset in place, and the server
+// warns, naming the asset, and serves.
+func TestServeGoesOnWhenItCannotSetTheModeOfANewHookAsset(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	asset := filepath.Join(data, "hooks", "claude.json")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	t.Cleanup(agents.ReplaceChmod(func(p string, m fs.FileMode) error {
+		if strings.HasPrefix(filepath.Base(p), ".claude.json.conductor-") {
+			return &fs.PathError{Op: "chmod", Path: p, Err: fs.ErrPermission}
+		}
+		return os.Chmod(p, m)
+	}))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "level=WARN", asset+":", "goes on"); len(lines) != 1 {
+		t.Fatalf("no warning naming %s:\n%s", asset, logs)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(asset); err != nil || !strings.Contains(string(b), exe+" notify --claude-hook") {
+		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+}
+
+// When the conductor on PATH is this binary through a link, as package
+// managers install it, the assets name the link: it survives an upgrade that
+// replaces the binary it points to.
+func TestServeNamesTheConductorOnPATH(t *testing.T) {
+	clearConductorEnv(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(exe, filepath.Join(bin, "conductor")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	serveUntilListening(t, "--config", cfg)
+	b, err := os.ReadFile(filepath.Join(data, "hooks", "claude.json"))
+	if err != nil || !strings.Contains(string(b), `"`+filepath.Join(bin, "conductor")+` notify --claude-hook"`) {
+		t.Fatalf("claude.json: %v\n%s", err, b)
+	}
+}
+
+// A webhook host that does not resolve while the server starts is not a
+// reason to refuse to start: the server logs a warning and checks the host
+// again before every delivery. A host that resolves to a private address
+// still refuses the start.
+func TestServeWarnsAboutAWebhookHostThatDoesNotResolve(t *testing.T) {
+	clearConductorEnv(t)
+	old := config.LookupWebhookHost
+	config.LookupWebhookHost = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "internal.example" {
+			return []netip.Addr{netip.MustParseAddr("10.0.0.7")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	t.Cleanup(func() { config.LookupWebhookHost = old })
+	dir := t.TempDir()
+	body := fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q,
+		"webhooks": [{"url": "https://nowhere.example/hook?token=t0k3n", "events": ["error"], "secret": "s3cret"}]}`, dir, dir, filepath.Join(t.TempDir(), "data"))
+	logs := serveUntilListening(t, "--config", writeServeConfig(t, t.TempDir(), body))
+	if lines := logLines(logs, "level=WARN", "webhooks[0]", "nowhere.example did not resolve"); len(lines) != 1 {
+		t.Fatalf("no warning about the webhook host:\n%s", logs)
+	}
+	if strings.Contains(logs, "t0k3n") || strings.Contains(logs, "s3cret") {
+		t.Fatalf("the log holds the query or the secret:\n%s", logs)
+	}
+
+	private := strings.Replace(body, "nowhere.example", "internal.example", 1)
+	var stderr bytes.Buffer
+	code, err := runServe(t.Context(), []string{"--listen", "127.0.0.1:0", "--config", writeServeConfig(t, t.TempDir(), private)}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "10.0.0.7 is a private address") {
+		t.Fatalf("a private webhook host: exit %d %v\n%s", code, err, stderr.String())
+	}
+}
+
+// --examples (or CONDUCTOR_EXAMPLES=1) seeds the four example crews into the
+// data directory once, one file each: the second start adds nothing and says
+// so, and without either nothing is seeded.
+func TestServeSeedsTheExamplesOnce(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
+	logs := serveUntilListening(t, "--config", cfg, "--examples")
+	if lines := logLines(logs, "example crews", `added="[example-todo-app example-test-fixer example-docs-writer example-dependency-upgrade]"`, "skipped=[]"); len(lines) != 1 {
+		t.Fatalf("first start:\n%s", logs)
+	}
+	for _, id := range []string{"example-todo-app", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"} {
+		if _, err := os.Stat(filepath.Join(data, "crews", id+".json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CONDUCTOR_EXAMPLES", "1")
+	logs = serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "example crews", "added=[]"); len(lines) != 1 {
+		t.Fatalf("second start:\n%s", logs)
+	}
+	t.Setenv("CONDUCTOR_EXAMPLES", "")
+	logs = serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "example crews"); len(lines) != 0 {
+		t.Fatalf("without the flag nothing is seeded:\n%s", logs)
+	}
+}
+
+func TestServeLogsTheReachResult(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "off"}}`, dir, dir, data))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "reach: off"); len(lines) != 1 {
+		t.Fatalf("off is not logged:\n%s", logs)
+	}
+	// Auto without a TLS listener only looks the address up; the lookup goes
+	// to the STUN server named, here one that answers nothing on loopback.
+	t.Setenv("CONDUCTOR_REACH", "auto")
+	cfg = writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "reach": {"mode": "auto", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
+	logs = serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "reach: auto finds the public address"); len(lines) != 1 {
+		t.Fatalf("auto without TLS is not explained:\n%s", logs)
+	}
+}
+
+// writeTestCert writes a self-signed certificate and key for 127.0.0.1 into
+// dir and returns their paths.
+func writeTestCert(t *testing.T, dir string) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "conductor test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	certPath, keyPath = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	_ = os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600)
+	return certPath, keyPath
+}
+
+// serveWhile runs `conductor serve` until marker is logged, calls during
+// with the logs so far while the server runs, then stops it and returns
+// everything logged.
+func serveWhile(t *testing.T, marker string, during func(logs string), args ...string) string {
+	t.Helper()
+	t.Cleanup(agents.ForgetBinary())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit code %d", code)
+		}
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(logs.String(), marker) {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned before %q: %v\n%s", marker, err, logs.String())
+		case <-deadline:
+			t.Fatalf("serve never logged %q:\n%s", marker, logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if during != nil {
+		during(logs.String())
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	return logs.String()
+}
+
+// tlsAddr is the address the "tls listening" line names.
+func tlsAddr(t *testing.T, logs string) string {
+	t.Helper()
+	lines := logLines(logs, "tls listening")
+	if len(lines) != 1 {
+		t.Fatalf("no tls listening line:\n%s", logs)
+	}
+	for _, f := range strings.Fields(lines[0]) {
+		if v, ok := strings.CutPrefix(f, "listen="); ok {
+			return v
+		}
+	}
+	t.Fatalf("no listen= in %q", lines[0])
+	return ""
+}
+
+func TestServeListensWithCertificateFiles(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeTestCert(t, dir)
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "certFile": %q, "keyFile": %q}}`, dir, dir, data, certPath, keyPath))
+	logs := serveWhile(t, "tls listening", func(logs string) {
+		addr := tlsAddr(t, logs)
+		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+		resp, err := client.Get("https://" + addr + "/api/health")
+		if err != nil {
+			t.Fatalf("https: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.TLS == nil || resp.TLS.PeerCertificates[0].IPAddresses[0].String() != "127.0.0.1" {
+			t.Fatalf("https health: %d %v", resp.StatusCode, resp.TLS)
+		}
+		if resp.ProtoMajor != 1 {
+			t.Fatalf("protocol %s: HTTP/2 must not be offered while the WebSocket routes are HTTP/1.1", resp.Proto)
+		}
+	}, "--config", cfg)
+	if lines := logLines(logs, "tls listening", "mode=files", "ready=true"); len(lines) != 1 {
+		t.Fatalf("tls line:\n%s", logs)
+	}
+}
+
+func TestServeServesNothingOnTLSBeforeTheFirstCertificate(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	// ACME for the public address with reach manual: the address lookup goes
+	// to a STUN server that answers nothing, so no order can start, and the
+	// listener must refuse every handshake rather than serve something made up.
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "tls": {"listen": "127.0.0.1:0", "acme": {"email": "me@example.net"}}, "reach": {"mode": "manual", "stunServer": "stun:127.0.0.1:9"}}`, dir, dir, data))
+	t.Setenv("CONDUCTOR_REACH", "manual")
+	logs := serveWhile(t, "tls listening", func(logs string) {
+		addr := tlsAddr(t, logs)
+		d := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+		if err == nil {
+			conn.Close()
+			t.Fatal("a handshake succeeded before any certificate was issued")
+		}
+	}, "--config", cfg)
+	if lines := logLines(logs, "tls listening", "mode=acme", "ready=false"); len(lines) != 1 {
+		t.Fatalf("tls line:\n%s", logs)
+	}
+	if fi, err := os.Stat(filepath.Join(data, "tls")); err != nil || !fi.IsDir() {
+		t.Fatalf("the tls directory was not made: %v", err)
+	}
+}
+
+func TestLocalPublicURLFollowsTheBoundPort(t *testing.T) {
+	bound := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 43123}
+	cases := map[string]string{
+		"http://localhost:8080":      "http://localhost:43123",
+		"http://127.0.0.1:8080":      "http://127.0.0.1:43123",
+		"http://localhost":           "http://localhost:43123",
+		"https://team.example.net":   "https://team.example.net",
+		"https://team.example.net:1": "https://team.example.net:1",
+	}
+	for in, want := range cases {
+		local := strings.Contains(in, "localhost") || strings.Contains(in, "127.0.0.1")
+		if got := localPublicURL(in, local, bound); got != want {
+			t.Errorf("%s: got %s, want %s", in, got, want)
+		}
+	}
+	if got := localPublicURL("http://localhost:8080", true, nil); got != "http://localhost:8080" {
+		t.Errorf("no listener: %s", got)
+	}
+}
+
+func TestServePrintsTheListenHandshake(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	t.Cleanup(agents.ForgetBinary())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs syncBuffer
+	var out syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(out.String(), "\n") {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned: %v\n%s", err, logs.String())
+		case <-deadline:
+			t.Fatalf("no handshake:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	var h handshake
+	if err := json.Unmarshal([]byte(strings.SplitN(out.String(), "\n", 2)[0]), &h); err != nil {
+		t.Fatalf("handshake %q: %v", out.String(), err)
+	}
+	host, port, err := net.SplitHostPort(h.Listen)
+	if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
+		t.Fatalf("listen %q", h.Listen)
+	}
+	if h.PublicURL != "http://localhost:"+port || h.PID != os.Getpid() || h.Version == "" || len(h.WorkbenchToken) < 32 || h.TLSListen != "" {
+		t.Fatalf("handshake %+v (port %s)", h, port)
+	}
+	if lines := logLines(logs.String(), "conductor serving", "publicUrl=http://localhost:"+port); len(lines) != 1 {
+		t.Fatalf("publicUrl did not follow the port:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), h.WorkbenchToken) {
+		// The generated token is logged once by design (a developer signs in with it); the handshake does not change that.
+		t.Log("the generated token is in the log, as before")
+	}
+	cancel()
+	<-done
+}
+
+func TestServeExitsWhenStdinCloses(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	t.Cleanup(agents.ForgetBinary())
+	pr, pw := io.Pipe()
+	var logs syncBuffer
+	done := make(chan int, 1)
+	go func() {
+		code, _ := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg, "--exit-on-stdin-close"}, pr, io.Discard, &logs)
+		done <- code
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(logs.String(), "conductor serving") {
+		select {
+		case <-done:
+			t.Fatalf("serve returned early:\n%s", logs.String())
+		case <-deadline:
+			t.Fatalf("serve did not start:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	_ = pw.Close()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d:\n%s", code, logs.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("serve did not stop after stdin closed:\n%s", logs.String())
+	}
+	if lines := logLines(logs.String(), "stdin closed"); len(lines) != 1 {
+		t.Fatalf("not logged:\n%s", logs.String())
+	}
+}
+
+// conductor switchyard is serve with --switchyard: the server says so as it
+// starts, and its health route reports the mode.
+func TestSwitchyardCommandServes(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, `{"workbenchToken": "t", "dataDir": "`+filepath.Join(dir, "state")+`"}`)
+	logs := serveUntilListening(t, "--config", cfg, "--switchyard")
+	if lines := logLines(logs, "switchyard: coordinating hosted sessions", "relay=true"); len(lines) != 1 {
+		t.Fatalf("no switchyard line:\n%s", logs)
+	}
+	var stderr bytes.Buffer
+	if code, err := Run(t.Context(), []string{"switchyard", "-h"}, strings.NewReader(""), io.Discard, &stderr); code != 0 || err != nil || !strings.Contains(stderr.String(), "-switchyard") {
+		t.Fatalf("switchyard -h: %d %v\n%s", code, err, stderr.String())
+	}
+}
+
+// Without the harness's CONDUCTOR_RENDEZVOUS=0 the server says it publishes
+// to the public switchyard, and dials nothing until a session is launched;
+// with it, it says so and names nothing.
+func TestServeLogsThePublicSwitchyard(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state")))
+	if logs := serveUntilListening(t, "--config", cfg); len(logLines(logs, "not published to a switchyard")) != 1 || strings.Contains(logs, "switchyard.rslabs.net") {
+		t.Fatalf("with CONDUCTOR_RENDEZVOUS=0:\n%s", logs)
+	}
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	if logs := serveUntilListening(t, "--config", cfg); len(logLines(logs, "published to the switchyard")) != 1 || !strings.Contains(logs, "switchyard.rslabs.net") || !strings.Contains(logs, "hostToken=false") {
+		t.Fatalf("by default:\n%s", logs)
+	}
+}

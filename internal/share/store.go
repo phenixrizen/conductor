@@ -9,18 +9,56 @@ import (
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
-// Link is a share link record. The token itself is never stored.
+// Link is a share link record. The token itself is never stored. A link is
+// either a session's (SessionID) or a crew run's (RunID, SessionID empty): a
+// run link grants its role on the session of every member of the run.
 type Link struct {
 	ID        string       `json:"id"`
 	SessionID string       `json:"sessionId"`
+	RunID     string       `json:"runId,omitempty"`
 	Label     string       `json:"label,omitempty"`
 	Role      session.Role `json:"role"`
 	CreatedAt time.Time    `json:"createdAt"`
 	ExpiresAt *time.Time   `json:"expiresAt,omitempty"`
 	Revoked   bool         `json:"revoked"`
+	// Owner, on a switchyard, is the hash of the host instance a durable
+	// link was minted for (kept on disk, outliving the host's absences);
+	// Addr the open host's address it counts against. Never in a reply.
+	Owner string `json:"-"`
+	Addr  string `json:"-"`
+	// Group, on a switchyard, is the crew run a host's run link opens: its
+	// members and their sessions there, kept current by the host, since a
+	// switchyard runs no crews. RunID is then the host's run id.
+	Group *Group `json:"-"`
 
 	hash Hash
 }
+
+// Group is a crew run as a switchyard knows it: its name and its members.
+type Group struct {
+	Name    string
+	Members []GroupMember
+}
+
+// GroupMember is a member of a Group: its session there, "" while it has none.
+type GroupMember struct {
+	Name, SessionID, AgentID, Status string
+}
+
+// Names says whether the group names the session.
+func (g *Group) Names(sessionID string) bool {
+	if g == nil || sessionID == "" {
+		return false
+	}
+	for _, m := range g.Members {
+		if m.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func groupKey(owner, runID string) string { return owner + "/" + runID }
 
 // Errors returned by the store.
 var (
@@ -31,7 +69,7 @@ var (
 	ErrTooManyLinks = errors.New("share: too many links for session")
 )
 
-// MaxLinksPerSession bounds link creation.
+// MaxLinksPerSession bounds link creation, for each session and for each run.
 const MaxLinksPerSession = 100
 
 // Store is an in-memory link index.
@@ -40,19 +78,37 @@ type Store struct {
 	byHash    map[Hash]*Link
 	byID      map[string]*Link
 	bySession map[string]map[string]*Link
+	byRun     map[string]map[string]*Link
 	now       func() time.Time
 
-	// OnRevoke is invoked after a link is revoked so live viewers can be closed.
+	// OnRevoke is invoked after a session's link is revoked so live viewers
+	// can be closed.
 	OnRevoke func(sessionID, linkID string)
+	// OnRevokeRun is OnRevoke for a run's link.
+	OnRevokeRun func(runID, linkID string)
 }
 
 // NewStore creates an empty store.
 func NewStore() *Store {
-	return &Store{byHash: map[Hash]*Link{}, byID: map[string]*Link{}, bySession: map[string]map[string]*Link{}, now: func() time.Time { return time.Now().UTC() }}
+	return &Store{byHash: map[Hash]*Link{}, byID: map[string]*Link{}, bySession: map[string]map[string]*Link{},
+		byRun: map[string]map[string]*Link{}, now: func() time.Time { return time.Now().UTC() }}
 }
 
-// Create issues a new link and returns the record plus the plaintext token.
+// Create issues a new link to a session and returns the record plus the
+// plaintext token.
 func (s *Store) Create(sessionID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	return s.create(&Link{SessionID: sessionID}, s.bySession, sessionID, role, label, ttl)
+}
+
+// CreateRunLink issues a new link to a crew run and returns the record plus
+// the plaintext token.
+func (s *Store) CreateRunLink(runID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	return s.create(&Link{RunID: runID}, s.byRun, runID, role, label, ttl)
+}
+
+// create completes link, whose scope is set, and indexes it in scopes under
+// key: at most MaxLinksPerSession links per key.
+func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
 	if !role.Valid() {
 		return nil, "", ErrInvalidRole
 	}
@@ -60,31 +116,32 @@ func (s *Store) Create(sessionID string, role session.Role, label string, ttl ti
 		label = label[:120]
 	}
 	tok, hash := NewToken()
-	link := &Link{ID: session.NewID(), SessionID: sessionID, Label: label, Role: role, CreatedAt: s.now(), hash: hash}
+	link.ID, link.Label, link.Role, link.CreatedAt, link.hash = session.NewID(), label, role, s.now(), hash
 	if ttl > 0 {
 		exp := link.CreatedAt.Add(ttl)
 		link.ExpiresAt = &exp
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.bySession[sessionID]) >= MaxLinksPerSession {
+	if len(scopes[key]) >= MaxLinksPerSession {
 		return nil, "", ErrTooManyLinks
 	}
 	s.byHash[hash] = link
 	s.byID[link.ID] = link
-	if s.bySession[sessionID] == nil {
-		s.bySession[sessionID] = map[string]*Link{}
+	if scopes[key] == nil {
+		scopes[key] = map[string]*Link{}
 	}
-	s.bySession[sessionID][link.ID] = link
+	scopes[key][link.ID] = link
 	return copyLink(link), tok, nil
 }
 
-// Resolve returns the live link for a presented token.
+// Resolve returns the live link for a presented token. It reads the link
+// under the lock, as a revoke writes it.
 func (s *Store) Resolve(tok string) (*Link, error) {
 	h := HashToken(tok)
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	link, ok := s.byHash[h]
-	s.mu.RUnlock()
 	if !ok {
 		return nil, ErrUnknownToken
 	}
@@ -108,29 +165,58 @@ func (s *Store) Get(linkID string) (*Link, bool) {
 	return copyLink(l), true
 }
 
-// Revoke marks a link unusable and notifies OnRevoke. It returns false when
-// the link does not belong to sessionID.
-func (s *Store) Revoke(sessionID, linkID string) bool {
+// Revoke marks a session's link unusable and notifies OnRevoke the first
+// time. found is false when the link does not belong to sessionID; revoked
+// says whether this call revoked it (false when it was revoked before).
+func (s *Store) Revoke(sessionID, linkID string) (found, revoked bool) {
+	return s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {
+		if s.OnRevoke != nil {
+			s.OnRevoke(sessionID, linkID)
+		}
+	})
+}
+
+// RevokeRun is Revoke for a run's link, notifying OnRevokeRun.
+func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
+	return s.revoke(linkID, func(l *Link) bool { return l.RunID != "" && l.RunID == runID }, func() {
+		if s.OnRevokeRun != nil {
+			s.OnRevokeRun(runID, linkID)
+		}
+	})
+}
+
+// revoke marks the link with linkID revoked when owned says it is the
+// caller's, and calls notify, outside the lock, the first time.
+func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) (found, revoked bool) {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
-	if !ok || link.SessionID != sessionID {
+	if !ok || !owned(link) {
 		s.mu.Unlock()
-		return false
+		return false, false
 	}
 	already := link.Revoked
 	link.Revoked = true
 	s.mu.Unlock()
-	if !already && s.OnRevoke != nil {
-		s.OnRevoke(sessionID, linkID)
+	if !already {
+		notify()
 	}
-	return true
+	return true, !already
 }
 
 // ListBySession returns links for a session, newest first.
 func (s *Store) ListBySession(sessionID string) []*Link {
+	return s.list(s.bySession, sessionID)
+}
+
+// ListByRun returns links for a run, newest first.
+func (s *Store) ListByRun(runID string) []*Link {
+	return s.list(s.byRun, runID)
+}
+
+func (s *Store) list(scopes map[string]map[string]*Link, key string) []*Link {
 	s.mu.RLock()
-	out := make([]*Link, 0, len(s.bySession[sessionID]))
-	for _, l := range s.bySession[sessionID] {
+	out := make([]*Link, 0, len(scopes[key]))
+	for _, l := range scopes[key] {
 		out = append(out, copyLink(l))
 	}
 	s.mu.RUnlock()
@@ -138,18 +224,177 @@ func (s *Store) ListBySession(sessionID string) []*Link {
 	return out
 }
 
-// DeleteSession forgets every link of a session.
-func (s *Store) DeleteSession(sessionID string) {
+// DeleteSession forgets the links of a session and returns the IDs it
+// dropped. A durable link (one with an Owner) stays unless durableToo: its
+// session left only because its host went away, and comes back under the
+// same id when the host does.
+func (s *Store) DeleteSession(sessionID string, durableToo bool) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var dropped []string
 	for id, l := range s.bySession[sessionID] {
+		if l.Owner != "" && !durableToo {
+			continue
+		}
+		delete(s.byHash, l.hash)
+		delete(s.byID, id)
+		delete(s.bySession[sessionID], id)
+		dropped = append(dropped, id)
+	}
+	if len(s.bySession[sessionID]) == 0 {
+		delete(s.bySession, sessionID)
+	}
+	return dropped
+}
+
+// Restore puts back a link kept on disk, under the hash of its token.
+func (s *Store) Restore(l Link, hash Hash) {
+	link := l
+	link.hash = hash
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byHash[hash] = &link
+	s.byID[link.ID] = &link
+	scopes, key := s.bySession, link.SessionID
+	if link.RunID != "" {
+		scopes, key = s.byRun, link.RunID
+		if link.Group != nil {
+			key = groupKey(link.Owner, link.RunID)
+		}
+	}
+	if scopes[key] == nil {
+		scopes[key] = map[string]*Link{}
+	}
+	scopes[key][link.ID] = &link
+}
+
+// SetOwner makes a link durable: minted for the host instance owner, from
+// the address addr ("" for a tokened host).
+func (s *Store) SetOwner(linkID, owner, addr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l, ok := s.byID[linkID]; ok {
+		l.Owner, l.Addr = owner, addr
+	}
+}
+
+// Drop forgets one link outright (its file swept), whatever its state.
+func (s *Store) Drop(linkID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.byID[linkID]
+	if !ok {
+		return
+	}
+	delete(s.byHash, l.hash)
+	delete(s.byID, linkID)
+	for _, scopes := range []map[string]map[string]*Link{s.bySession, s.byRun} {
+		for key, m := range scopes {
+			if _, ok := m[linkID]; ok {
+				delete(m, linkID)
+				if len(m) == 0 {
+					delete(scopes, key)
+				}
+			}
+		}
+	}
+}
+
+// Durable lists the durable links, for the sweep.
+func (s *Store) Durable() []*Link {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Link
+	for _, l := range s.byID {
+		if l.Owner != "" {
+			out = append(out, copyLink(l))
+		}
+	}
+	return out
+}
+
+// Count is how many links the store holds.
+func (s *Store) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.byID)
+}
+
+// DeleteRun forgets every link of a run, as DeleteSession does a session's,
+// and returns the IDs of those that were not revoked: viewers may still be
+// attached through them.
+func (s *Store) DeleteRun(runID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var live []string
+	for id, l := range s.byRun[runID] {
+		if !l.Revoked {
+			live = append(live, id)
+		}
 		delete(s.byHash, l.hash)
 		delete(s.byID, id)
 	}
-	delete(s.bySession, sessionID)
+	delete(s.byRun, runID)
+	return live
 }
 
 func copyLink(l *Link) *Link {
 	cp := *l
+	if l.Group != nil {
+		g := Group{Name: l.Group.Name, Members: append([]GroupMember(nil), l.Group.Members...)}
+		cp.Group = &g
+	}
 	return &cp
+}
+
+// CreateGroupLink issues a link to a host's crew run, as a switchyard holds
+// it: the members' sessions are named in g, which SetGroup keeps current.
+// Indexed under the owner and the run, so two hosts' run ids never meet.
+func (s *Store) CreateGroupLink(runID, owner string, g Group, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	gc := Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+	return s.create(&Link{RunID: runID, Owner: owner, Group: &gc}, s.byRun, groupKey(owner, runID), role, label, ttl)
+}
+
+// SetGroup gives the live links of owner's run the members in g; it returns
+// how many it changed.
+func (s *Store) SetGroup(owner, runID string, g Group) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, l := range s.byRun[groupKey(owner, runID)] {
+		if l.Revoked || l.Group == nil {
+			continue
+		}
+		l.Group = &Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+		n++
+	}
+	return n
+}
+
+// RevokeGroup revokes owner's run link linkID, notifying OnRevokeRun.
+func (s *Store) RevokeGroup(owner, linkID string) (found, revoked bool) {
+	var runID string
+	return s.revoke(linkID, func(l *Link) bool {
+		runID = l.RunID
+		return l.Group != nil && l.Owner == owner
+	}, func() {
+		if s.OnRevokeRun != nil {
+			s.OnRevokeRun(runID, linkID)
+		}
+	})
+}
+
+// ListNaming lists the live group links that name a session.
+func (s *Store) ListNaming(sessionID string) []*Link {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Link
+	for _, m := range s.byRun {
+		for _, l := range m {
+			if !l.Revoked && l.Group.Names(sessionID) {
+				out = append(out, copyLink(l))
+			}
+		}
+	}
+	return out
 }

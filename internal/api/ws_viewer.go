@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -17,6 +18,10 @@ func (s *Server) acceptOptions() *websocket.AcceptOptions {
 	opts := &websocket.AcceptOptions{OriginPatterns: append([]string{}, s.cfg.AllowedOrigins...)}
 	if s.cfg.Dev {
 		opts.OriginPatterns = append(opts.OriginPatterns, "localhost:*", "127.0.0.1:*")
+	}
+	// A switchyard takes the desktop app's own workbench as a viewer.
+	if s.cfg.Switchyard.Enabled {
+		opts.OriginPatterns = append(opts.OriginPatterns, s.cfg.SwitchyardOrigins()...)
 	}
 	return opts
 }
@@ -102,6 +107,10 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 	}
 }
 
+// submitTimeout bounds a submit message's submission: its turn, the pause
+// and its Enter.
+const submitTimeout = 10 * time.Second
+
 func (s *Server) sendInputError(sub *session.Subscription, local *session.Local, err error) {
 	switch {
 	case errors.Is(err, session.ErrReadOnly):
@@ -152,6 +161,25 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 				Error: &proto.ErrorInfo{Code: code, Message: err.Error()}}, nil); encErr == nil {
 				local.Send(sub, frame)
 			}
+		}
+	case proto.CtlSubmit:
+		var m proto.Submit
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		if len(m.Text) > proto.MaxSubmit {
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "submit text too long"))
+			return true
+		}
+		// The submission goes on when the client goes: a reply box closes its
+		// connection once it has sent, and a line cut in its pause would wait
+		// without its Enter. The read loop waits for it, so what the client
+		// sends next comes after it.
+		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+		_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
+		cancel()
+		if err != nil {
+			s.sendInputError(sub, local, err)
 		}
 	case proto.CtlHello:
 		// duplicate hello is harmless
@@ -235,19 +263,12 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	if err := sink.WriteFrame(welcome); err != nil {
 		return
 	}
-	// Writer: drain frames queued by the host side.
+	// Writer: drain frames queued by the host side. pumped closes when Pump
+	// has closed the sink.
+	pumped := make(chan struct{})
 	go func() {
-		for {
-			select {
-			case <-v.Done():
-				sink.Close(v.Reason())
-				return
-			case frame := <-v.Out:
-				if err := sink.WriteFrame(frame); err != nil {
-					return
-				}
-			}
-		}
+		defer close(pumped)
+		v.Pump(sink)
 	}()
 	go keepalive(sink.ctx, c)
 	for {
@@ -257,7 +278,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		}
 		switch f.Type {
 		case proto.TypeSignal:
-			if !s.handleViewerSignal(sink, hs, v, f.Payload) {
+			if !s.handleViewerSignal(sink, pumped, hs, v, f.Payload) {
 				return
 			}
 		case proto.TypeInput, proto.TypeControl:
@@ -265,12 +286,13 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 				_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, "terminal frames require relay mode on this connection"))
 				continue
 			}
+			s.relayed.add(len(f.Payload))
 			if err := hs.RelayToHost(v, f); err != nil {
 				switch {
 				case errors.Is(err, session.ErrReadOnly):
 					_ = sink.WriteFrame(proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
 				case errors.Is(err, signal.ErrHostGone):
-					sink.Close(signal.ErrHostGone)
+					hostGone(sink, pumped)
 					return
 				}
 			}
@@ -282,14 +304,14 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 }
 
 // handleViewerSignal forwards signaling; false ends the connection.
-func (s *Server) handleViewerSignal(sink *wsSink, hs *signal.HostedSession, v *signal.Viewer, payload []byte) bool {
+func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *signal.HostedSession, v *signal.Viewer, payload []byte) bool {
 	t, err := proto.ParseHeader(payload)
 	if err != nil {
 		return false
 	}
 	fail := func(err error) bool {
 		if errors.Is(err, signal.ErrHostGone) {
-			sink.Close(signal.ErrHostGone)
+			hostGone(sink, pumped)
 			return false
 		}
 		return true
@@ -308,6 +330,12 @@ func (s *Server) handleViewerSignal(sink *wsSink, hs *signal.HostedSession, v *s
 		}
 		return fail(hs.ForwardICE(v, m.Candidate))
 	case proto.SigRelay:
+		if s.cfg.Switchyard.Enabled && !s.cfg.SwitchyardRelay() {
+			// A switchyard without a relay: the viewer is told, and stays
+			// on its WebRTC attempt.
+			_ = sink.WriteFrame(proto.NewError(proto.ErrCodeRelayOff, "this switchyard does not relay: the terminal connects peer to peer or not at all"))
+			return true
+		}
 		if err := hs.StartRelay(v); err != nil {
 			return fail(err)
 		}

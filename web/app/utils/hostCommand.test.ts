@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostCommand, shellQuote } from './hostCommand'
+import { hostAdapter, hostCommand, shellQuote } from './hostCommand'
 
 describe('hostCommand', () => {
   it('renders flags then the argv after --', () => {
@@ -15,5 +15,36 @@ describe('hostCommand', () => {
   })
   it('includes --cwd when given and omits --name when empty', () => {
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], cwd: '/srv/app' })).toBe('conductor host --server http://x --token t --cwd /srv/app -- sh')
+  })
+  it('includes the agent\'s screen pattern as --signal-pattern, single-quoted, before the command', () => {
+    expect(hostCommand({ server: 'http://x', token: 't', name: 'aider', argv: ['aider'], cwd: '/srv/app', pattern: '\\(Y\\)es/\\(N\\)o\\s*$' })).toBe(
+      "conductor host --server http://x --token t --name aider --cwd /srv/app --signal-pattern '\\(Y\\)es/\\(N\\)o\\s*$' -- aider",
+    )
+  })
+  it('escapes single quotes in the pattern and quotes it even when it needs no quoting', () => {
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], pattern: "it's? $" })).toBe("conductor host --server http://x --token t --signal-pattern 'it'\\''s? $' -- sh")
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], pattern: 'ready' })).toBe("conductor host --server http://x --token t --signal-pattern 'ready' -- sh")
+  })
+  it('omits --signal-pattern when there is no pattern', () => {
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'] })).not.toContain('--signal-pattern')
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], pattern: '' })).not.toContain('--signal-pattern')
+  })
+  it('names the agent\'s hook adapter with --agent so the host wires its hooks, and omits it without one', () => {
+    expect(hostCommand({ server: 'http://x', token: 't', name: 'fix', argv: ['claude', '--model', 'opus'], cwd: '/srv/app', adapter: 'claude' })).toBe(
+      'conductor host --server http://x --token t --name fix --cwd /srv/app --agent claude -- claude --model opus',
+    )
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'] })).not.toContain('--agent')
+    expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], adapter: '' })).not.toContain('--agent')
+  })
+})
+
+describe('hostAdapter', () => {
+  it('names the adapter only for the hook signal, as a launch from the server wires it', () => {
+    expect(hostAdapter({ adapter: 'claude', signal: { kind: 'hook' } })).toBe('claude')
+    expect(hostAdapter({ adapter: 'claude', signal: { kind: 'bell' } })).toBeUndefined()
+    expect(hostAdapter({ adapter: 'cursor', signal: { kind: 'pattern', pattern: '^› $' } })).toBeUndefined()
+    expect(hostAdapter({ adapter: 'claude' })).toBeUndefined()
+    expect(hostAdapter({ adapter: '', signal: { kind: 'hook' } })).toBeUndefined()
+    expect(hostAdapter({ signal: { kind: 'hook' } })).toBeUndefined()
   })
 })

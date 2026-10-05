@@ -8,26 +8,36 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
+
+// hostingBanner starts the line the host prints on stderr once it has read the
+// server's registration reply; the session ID and its URL follow.
+const hostingBanner = "conductor: hosting session "
 
 func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	server := fs.String("server", envOr("CONDUCTOR_SERVER", "http://localhost:8080"), "conductor server URL (env CONDUCTOR_SERVER)")
-	token := fs.String("token", "", "host token (env CONDUCTOR_HOST_TOKEN)")
+	token := fs.String("token", "", "host token (env CONDUCTOR_HOST_TOKEN); none for a switchyard that admits open hosts")
 	name := fs.String("name", "", "session name shown in the UI")
 	hostName := fs.String("host-name", "", "machine label (default: hostname)")
-	agentID := fs.String("agent", "", "agent id label (default: command name)")
+	agentID := fs.String("agent", "", "agent id shown in the UI (default: command name); the id of an adapter with a launch route (claude, codex, pi, aider) also wires Conductor's hooks into the command at launch; other adapters install by hand (conductor hooks install)")
 	cwd := fs.String("cwd", "", "working directory for the command (default: current)")
 	relayOnly := fs.Bool("relay-only", false, "never use WebRTC; relay through the server")
 	noLocal := fs.Bool("no-local", false, "do not attach this terminal to the session")
 	stun := fs.String("stun", "", "comma separated ICE server URLs overriding the server's list")
+	iceUDPPort := fs.Int("ice-udp-port", envInt("CONDUCTOR_ICE_UDP_PORT"), "one UDP port for every WebRTC connection (env CONDUCTOR_ICE_UDP_PORT); 0 lets each connection pick its own")
+	icePublicIP := fs.String("ice-public-ip", envOr("CONDUCTOR_ICE_PUBLIC_IP", ""), "the address advertised as this host's own (env CONDUCTOR_ICE_PUBLIC_IP): a forwarder's, such as the desktop app's on Windows in front of WSL")
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
+	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: conductor host [flags] -- <command...>")
@@ -47,13 +57,20 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if *token == "" {
 		*token = os.Getenv("CONDUCTOR_HOST_TOKEN")
 	}
-	if *token == "" {
-		return 2, errors.New("a host token is required (--token or CONDUCTOR_HOST_TOKEN)")
-	}
+	// No token is fine on a switchyard that admits open hosts; elsewhere
+	// the server answers 401 and says so.
 	switch *fileView {
 	case "view", "control", "off":
 	default:
 		return 2, fmt.Errorf("invalid --file-view %q", *fileView)
+	}
+	var pattern *regexp.Regexp
+	if *signalPattern != "" {
+		re, err := catalog.CompilePattern(*signalPattern)
+		if err != nil {
+			return 2, fmt.Errorf("invalid --signal-pattern: %w", err)
+		}
+		pattern = re
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
@@ -76,6 +93,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}
 	opts := hostagent.Options{
+		ICE:             hostagent.ICE{UDPPort: *iceUDPPort, PublicIP: *icePublicIP},
 		ServerURL:       *server,
 		Token:           *token,
 		Name:            *name,
@@ -88,9 +106,11 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		ICEServers:      ice,
 		ScrollbackBytes: *scrollback,
 		FileView:        *fileView,
+		Pattern:         pattern,
+		Adapter:         *agentID,
 		Log:             log,
 		Registered: func(sessionID, base string) {
-			fmt.Fprintf(stderr, "conductor: hosting session %s at %s/sessions/%s\r\n", sessionID, base, sessionID)
+			fmt.Fprintf(stderr, "%s%s at %s/sessions/%s\r\n", hostingBanner, sessionID, base, sessionID)
 		},
 	}
 	if f, ok := stdin.(*os.File); ok {
@@ -111,4 +131,13 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envInt reads an integer from the environment; unset or unreadable is 0.
+func envInt(key string) int {
+	n, err := strconv.Atoi(os.Getenv(key))
+	if err != nil {
+		return 0
+	}
+	return n
 }

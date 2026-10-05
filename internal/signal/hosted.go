@@ -19,10 +19,13 @@ import (
 
 // Errors reported to viewers and hosts.
 var (
-	ErrHostGone      = errors.New("signal: host disconnected")
-	ErrViewerGone    = errors.New("signal: viewer closed")
-	ErrSlowViewer    = errors.New("signal: slow viewer")
-	ErrSlowHost      = errors.New("signal: slow host")
+	ErrHostGone   = errors.New("signal: host disconnected")
+	ErrViewerGone = errors.New("signal: viewer closed")
+	ErrSlowViewer = errors.New("signal: slow viewer")
+	ErrSlowHost   = errors.New("signal: slow host")
+	// ErrRateLimited is session.ErrRateLimited: a report is refused alike
+	// whichever kind of session it is for.
+	ErrRateLimited   = session.ErrRateLimited
 	ErrTooManyViewer = errors.New("signal: too many viewers")
 )
 
@@ -83,7 +86,7 @@ func (c *HostConn) sendJSON(v any) bool {
 }
 
 // Viewer is one browser attached to a hosted session. Frames queued to Out
-// are written to the viewer's WebSocket by the API layer.
+// are written to the viewer's WebSocket by Pump, which the API layer runs.
 type Viewer struct {
 	ID        string
 	Role      session.Role
@@ -124,6 +127,76 @@ func (v *Viewer) close(reason error) {
 	})
 }
 
+// Pump writes the frames queued for the viewer to sink, in order, until the
+// viewer is closed, and then closes sink with the reason it was closed for.
+// The API layer runs it on its own goroutine for the viewer's connection.
+//
+// What becomes of the frames still queued when the viewer is closed depends on
+// the reason. They are dropped when the link was revoked, when the viewer's own
+// queue overflowed (ErrSlowViewer) and when the viewer left (a nil reason). For
+// every other reason, the host going away, asking for the close or reporting an
+// error for the viewer, they are written first: at most as many as the queue
+// holds, and up to the first frame that cannot be written. They are the host's
+// last words, the session's final status among them, and the viewer would
+// otherwise be told the host is gone without being told why. A viewer that the
+// host evicted as too slow (the host asks for the close) is in that second
+// group and is drained too.
+//
+// The close is looked at before each frame, but it does not stop a frame that
+// is being written, or one that is picked just as the close lands: a revoked
+// viewer can still be written a frame.
+func (v *Viewer) Pump(sink session.Sink) {
+	for {
+		// Once the viewer is closed, the close comes before any frame that is
+		// still queued: select would pick at random between the two.
+		select {
+		case <-v.done:
+			v.finish(sink)
+			return
+		default:
+		}
+		select {
+		case <-v.done:
+			v.finish(sink)
+			return
+		case frame := <-v.Out:
+			if err := sink.WriteFrame(frame); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// finish is Pump's end: the frames the viewer is owed, if any, and the close.
+func (v *Viewer) finish(sink session.Sink) {
+	reason := v.Reason()
+	if framesOwed(reason) {
+	owed:
+		for {
+			select {
+			case frame := <-v.Out:
+				if err := sink.WriteFrame(frame); err != nil {
+					return
+				}
+			default:
+				break owed
+			}
+		}
+	}
+	sink.Close(reason)
+}
+
+// framesOwed reports whether a viewer closed for reason is still sent the frames
+// queued for it: it is unless the link was revoked, the viewer's own queue
+// overflowed or the viewer left.
+func framesOwed(reason error) bool {
+	switch {
+	case reason == nil, errors.Is(reason, session.ErrRevoked), errors.Is(reason, ErrSlowViewer):
+		return false
+	}
+	return true
+}
+
 func (v *Viewer) push(frame []byte) {
 	select {
 	case <-v.done:
@@ -143,6 +216,10 @@ type HostedSession struct {
 	hub    *Hub
 	secret string
 	log    *slog.Logger
+	// owner is the hash of the host instance that registered the session
+	// (hex), "" for a host that gave none: what ties a host's connections
+	// together, for links over several of its sessions.
+	owner string
 
 	mu             sync.Mutex
 	info           session.Info
@@ -153,7 +230,15 @@ type HostedSession struct {
 	viewers        map[string]*Viewer
 	disconnectedAt time.Time
 	maxViewers     int
+	// events limits what the server forwards to the host on an agent's behalf
+	// (ForwardActivity, and SetAttentionFull with forward): the host's
+	// connection also carries its viewers' input, and closes when its queue is
+	// full. Guarded by mu.
+	events session.EventBucket
 }
+
+// Owner is the hash of the host instance that registered the session, "" when none.
+func (h *HostedSession) Owner() string { return h.owner }
 
 // Info returns the session description.
 func (h *HostedSession) Info() session.Info {
@@ -211,16 +296,21 @@ func (h *HostedSession) setAgentToken(tok string) {
 	h.hasAgentToken = tok != ""
 }
 
-// SetAttention records an attention change without prompt details.
-func (h *HostedSession) SetAttention(state session.AttentionState, message, source string, forward bool) {
-	h.SetAttentionFull(state, message, source, "", nil, forward)
+// SetAttention records an attention change without prompt details. See
+// SetAttentionFull.
+func (h *HostedSession) SetAttention(state session.AttentionState, message, source string, forward bool) error {
+	return h.SetAttentionFull(state, message, source, "", nil, forward)
 }
 
 // SetAttentionFull records an attention change. When forward is true (API
-// origin) the host is told so its viewers see the change too.
-func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) {
+// origin), the report spends a token of the session's bucket, the one
+// ForwardActivity spends from, whether a host is connected or not: it returns
+// ErrRateLimited, having changed nothing, when there is none. A connected host
+// is told, so its viewers see the change too; without one the change is held
+// on the server. A change from the host (forward false) never spends one.
+func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
 	if !state.Valid() {
-		return
+		return nil
 	}
 	message = session.CleanMessage(message)
 	if !session.ValidKind(kind) {
@@ -231,18 +321,23 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 		kind, options = "", nil
 	}
 	h.mu.Lock()
+	conn := h.conn
+	if forward && !h.events.Take(time.Now()) {
+		h.mu.Unlock()
+		return ErrRateLimited
+	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != session.AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
 	}
 	h.info.Attention = att
-	conn := h.conn
 	h.mu.Unlock()
 	if forward && conn != nil {
 		conn.sendJSON(hostAttentionMsg("", att))
 	}
 	h.notifyChange()
+	return nil
 }
 
 // hostAttentionMsg encodes an attention change for the host control link.
@@ -349,6 +444,11 @@ func (h *HostedSession) ForwardICE(v *Viewer, c proto.ICECandidate) error {
 	return h.toHost(proto.ViewerICE{T: proto.HostICE, ViewerID: v.ID, Candidate: c})
 }
 
+// Tell sends the host a message of the server's own (a link_created, an
+// error answering its request): ErrHostGone without a host, ErrSlowHost
+// when its queue is full.
+func (h *HostedSession) Tell(v any) error { return h.toHost(v) }
+
 // StartRelay switches a viewer to relay mode and tells the host.
 func (h *HostedSession) StartRelay(v *Viewer) error {
 	v.relay.Store(true)
@@ -366,7 +466,7 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 		case proto.TypeInput:
 			return session.ErrReadOnly
 		case proto.TypeControl:
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize {
+			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit {
 				return session.ErrReadOnly
 			}
 		}
@@ -404,6 +504,83 @@ func (h *HostedSession) viewer(id string) *Viewer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.viewers[id]
+}
+
+// --- activity ---
+
+// maxEntryBy bounds the subscriber id of an entry a host reports: ids are 16
+// characters, and session.CleanEntry leaves By alone (see session.CleanID).
+const maxEntryBy = 64
+
+// ForwardActivity sends an event that an agent reported through the API to
+// the host. A hosted session has no activity log on the server: the host
+// records the event in its own and reports it back, which reaches
+// HostActivity. e is cleaned again here, which changes nothing for an entry
+// that was cleaned already, so that no caller can push the message past
+// proto.MaxHostMessage, which the host takes as a protocol error.
+//
+// Each event spends a token of the session's bucket (see SetAttentionFull):
+// the host's connection also carries its viewers' input and closes when its
+// queue is full, and an event can be several KiB. It returns ErrHostGone when
+// no host is connected, before it spends anything, ErrRateLimited when the
+// bucket is empty and ErrSlowHost when the host's queue is full.
+func (h *HostedSession) ForwardActivity(e session.ActivityEntry) error {
+	msg := hostActivityMsg(session.CleanEntry(e))
+	h.mu.Lock()
+	conn := h.conn
+	if conn == nil {
+		h.mu.Unlock()
+		return ErrHostGone
+	}
+	if !h.events.Take(time.Now()) {
+		h.mu.Unlock()
+		return ErrRateLimited
+	}
+	h.mu.Unlock()
+	if !conn.sendJSON(msg) {
+		return ErrSlowHost
+	}
+	return nil
+}
+
+// HostActivity takes an activity entry the host reports, with the attention
+// state the host says an attention entry records, and hands them to the hub's
+// OnActivity. The host is not trusted with them: an entry of a type this
+// server does not know is dropped (a newer host may have more), the text is
+// cut to its limits, By included (a By still over maxEntryBy bytes once
+// cleaned is dropped), and a missing or unreadable time becomes the time of
+// receipt; the state is kept only with an attention entry and only when it is
+// needs_input, working or done. The entry is attributed to this session
+// whatever session the host named. HostActivity does not send the entry back
+// to the host.
+func (h *HostedSession) HostActivity(a proto.Activity, state string) {
+	if !session.ValidEventType(a.Type) {
+		return
+	}
+	e := session.CleanEntry(session.EntryFromProto(a))
+	e.By = session.CleanID(e.By, maxEntryBy)
+	if e.At.IsZero() {
+		e.At = time.Now().UTC()
+	}
+	var recorded session.AttentionState
+	if e.Type == session.ActivityAttention {
+		switch s := session.AttentionState(state); s {
+		case session.AttentionNeedsInput, session.AttentionWorking, session.AttentionDone:
+			recorded = s
+		}
+	}
+	h.mu.Lock()
+	id := h.info.ID
+	h.mu.Unlock()
+	if h.hub != nil && h.hub.OnActivity != nil {
+		h.hub.OnActivity(id, e, recorded)
+	}
+}
+
+// hostActivityMsg wraps an entry in the host `activity` message. The server
+// names no session: the connection says which.
+func hostActivityMsg(e session.ActivityEntry) proto.HostActivityMsg {
+	return proto.HostActivityMsg{T: proto.HostActivity, Entry: session.EntryToProto(e)}
 }
 
 // --- messages from the host ---
@@ -453,9 +630,15 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 	h.mu.Lock()
 	h.info.Status = status
 	h.info.ExitCode = exitCode
-	if status.Ended() && h.info.EndedAt == nil {
-		now := time.Now().UTC()
-		h.info.EndedAt = &now
+	if status.Ended() {
+		if h.info.EndedAt == nil {
+			now := time.Now().UTC()
+			h.info.EndedAt = &now
+		}
+		// An ended session needs nothing, whatever the host said before. A
+		// host that only went away (host_disconnected) may come back: its
+		// session keeps its state.
+		h.info.Attention = session.Attention{}
 	}
 	h.mu.Unlock()
 	h.notifyChange()
@@ -486,8 +669,10 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 	}
 	h.viewers = map[string]*Viewer{}
 	h.mu.Unlock()
+	// Each viewer is closed with ErrHostGone: Pump writes what the host still
+	// owed it, then closes its sink, which tells the viewer why with one error
+	// frame (host_disconnected).
 	for _, v := range viewers {
-		v.push(proto.NewError(proto.ErrCodeHostDisconnected, "the host disconnected"))
 		v.close(ErrHostGone)
 	}
 	conn.Close()

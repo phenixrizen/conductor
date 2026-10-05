@@ -6,8 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMapClaudeHook(t *testing.T) {
@@ -18,7 +21,7 @@ func TestMapClaudeHook(t *testing.T) {
 		ok    bool
 	}{
 		{`{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Allow Bash?"}`, "needs_input", "Allow Bash?", true},
-		{`{"hook_event_name":"Notification","notification_type":"idle_prompt"}`, "needs_input", "idle prompt", true},
+		{`{"hook_event_name":"Notification","notification_type":"idle_prompt"}`, "done", "idle prompt", true},
 		{`{"hook_event_name":"Notification","notification_type":"auth_success"}`, "working", "auth success", true},
 		{`{"hook_event_name":"Stop","last_assistant_message":"All done."}`, "done", "All done.", true},
 		{`{"hook_event_name":"UserPromptSubmit"}`, "working", "", true},
@@ -35,7 +38,7 @@ func TestMapClaudeHook(t *testing.T) {
 
 func TestMapCodex(t *testing.T) {
 	req, ok := MapCodex([]byte(`{"type":"agent-turn-complete","last-assistant-message":"Need a decision"}`))
-	if !ok || req.State != "needs_input" || req.Message != "Need a decision" {
+	if !ok || req.State != "done" || req.Message != "Need a decision" {
 		t.Fatalf("%+v %v", req, ok)
 	}
 	if _, ok := MapCodex([]byte(`{"type":"other"}`)); ok {
@@ -111,10 +114,16 @@ func TestMapClaudeHookStopIsDoneKind(t *testing.T) {
 	}
 }
 
-func TestMapCodexIsPromptKind(t *testing.T) {
+// The end of a Codex turn is done, as Claude Code's Stop is: the agent is
+// idle, and a crew's handoffs and broadcasts are typed into it.
+func TestMapCodexIsDoneKind(t *testing.T) {
 	req, _ := MapCodex([]byte(`{"type":"agent-turn-complete","last-assistant-message":"Need a decision"}`))
-	if req.Kind != "prompt" {
+	if req.State != "done" || req.Kind != "done" {
 		t.Fatalf("%+v", req)
+	}
+	// The hidden thread that titles the conversation (live, Codex 0.159) is not a turn of the user's.
+	if _, ok := MapCodex([]byte(`{"type":"agent-turn-complete","input-messages":["Generate a concise, single-line task title for this conversation"],"last-assistant-message":"Reply READY"}`)); ok {
+		t.Fatal("the title thread's turn mapped")
 	}
 }
 
@@ -122,5 +131,169 @@ func TestRequestJSONCarriesKindAndOptions(t *testing.T) {
 	b, _ := json.Marshal(Request{State: "needs_input", Kind: "permission", Options: []Option{{Label: "Yes", Input: "1"}}})
 	if !strings.Contains(string(b), `"kind":"permission"`) || !strings.Contains(string(b), `"input":"1"`) {
 		t.Fatalf("json %s", b)
+	}
+}
+
+func TestRequestEventTargetsEventsRoute(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { path = r.URL.Path; w.WriteHeader(202) }))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+"/api/sessions/s1/attention", "tok", Request{Event: "progress", Message: "1/7"}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/api/sessions/s1/events" {
+		t.Fatalf("path %q", path)
+	}
+}
+
+// sendTo posts req to srv under path and returns the path, the credential and
+// the decoded JSON body the server saw.
+func sendTo(t *testing.T, path string, req Request) (string, string, map[string]any) {
+	t.Helper()
+	var gotPath, gotAuth string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("body is not JSON: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+path, "tok", req); err != nil {
+		t.Fatal(err)
+	}
+	return gotPath, gotAuth, body
+}
+
+// The events route rejects unknown fields, so an event must travel as the
+// route's own body: {"type", "message", "url", "to", "tool", …}, not as the
+// attention request with an extra "event" key.
+func TestRequestEventBodyIsAnEventsRequest(t *testing.T) {
+	path, auth, body := sendTo(t, "/api/sessions/s1/attention", Request{
+		Event: "artifact", Message: "PR opened", URL: "https://github.com/x/y/pull/1", To: "review", Tool: "gh",
+	})
+	if path != "/api/sessions/s1/events" || auth != "Bearer tok" {
+		t.Fatalf("server saw %q %q", path, auth)
+	}
+	want := map[string]any{"type": "artifact", "message": "PR opened", "url": "https://github.com/x/y/pull/1", "to": "review", "tool": "gh"}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body %v, want %v", body, want)
+	}
+}
+
+func TestRequestEventBodyKeepsKindAndOptions(t *testing.T) {
+	_, _, body := sendTo(t, "/api/sessions/s1/attention", Request{Event: "needs_input", Message: "Allow?", Kind: "permission", Options: permissionOptions()})
+	if body["type"] != "needs_input" || body["kind"] != "permission" || len(body["options"].([]any)) != 3 {
+		t.Fatalf("body %v", body)
+	}
+	for _, key := range []string{"state", "event"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("body carries %q: %v", key, body)
+		}
+	}
+}
+
+// Without Event the request goes to /attention exactly as before, and the
+// body keeps the attention shape.
+func TestRequestWithoutEventKeepsTheAttentionRoute(t *testing.T) {
+	path, _, body := sendTo(t, "/api/sessions/s1/attention", Request{State: "needs_input", Message: "m"})
+	if path != "/api/sessions/s1/attention" {
+		t.Fatalf("path %q", path)
+	}
+	want := map[string]any{"state": "needs_input", "message": "m"}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body %v, want %v", body, want)
+	}
+}
+
+// Only a URL that ends in /attention is rewritten; anything else is where the
+// caller pointed it.
+func TestRequestEventLeavesOtherURLsAlone(t *testing.T) {
+	for _, in := range []string{"/api/x", "/api/sessions/s1/attention/more", "/attentions"} {
+		if path, _, _ := sendTo(t, in, Request{Event: "progress"}); path != in {
+			t.Fatalf("%s was sent to %s", in, path)
+		}
+	}
+}
+
+// An attention word the server refuses with 429 (the session's bucket is
+// empty) is tried again after a short wait, a few times, within the 5 s Send
+// has. An event is not: a hook must not hold up its agent for one.
+func TestSendRetriesARateLimitedAttentionWord(t *testing.T) {
+	old := retryDelays
+	retryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { retryDelays = old })
+	var calls atomic.Int32
+	limited := func(first int32) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls.Add(1) <= first {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	srv := limited(2)
+	for _, req := range []Request{{State: "needs_input"}, {Event: "done"}} {
+		calls.Store(0)
+		if err := Send(t.Context(), srv.URL+"/api/sessions/s/attention", "tok", req); err != nil || calls.Load() != 3 {
+			t.Fatalf("%+v: %v after %d calls", req, err, calls.Load())
+		}
+	}
+	calls.Store(0)
+	if err := Send(t.Context(), srv.URL+"/api/sessions/s/attention", "tok", Request{Event: "tool_use", Tool: "Bash"}); err == nil || !strings.Contains(err.Error(), "429") || calls.Load() != 1 {
+		t.Fatalf("event: %v after %d calls", err, calls.Load())
+	}
+	// A server that never lets up: the word is given up after the last wait.
+	always := limited(1 << 30)
+	calls.Store(0)
+	if err := Send(t.Context(), always.URL+"/api/sessions/s/attention", "tok", Request{State: "working"}); err == nil || calls.Load() != int32(len(retryDelays)+1) {
+		t.Fatalf("always limited: %v after %d calls", err, calls.Load())
+	}
+}
+
+// The waits fit the budget, and a deadline that comes first ends them.
+func TestSendRetriesWithinItsBudget(t *testing.T) {
+	var total time.Duration
+	for _, d := range retryDelays {
+		total += d
+	}
+	if total >= sendTimeout {
+		t.Fatalf("the waits add up to %v, not within %v", total, sendTimeout)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := Send(ctx, srv.URL+"/a/attention", "tok", Request{State: "working"}); err == nil || !strings.Contains(err.Error(), "429") || time.Since(start) > time.Second {
+		t.Fatalf("%v after %v", err, time.Since(start))
+	}
+}
+
+// A server that predates the agent-session fields refuses them as unknown:
+// the state goes again without them, once.
+func TestSendDropsTheAgentSessionForAnOlderServer(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if _, ok := body["agentSession"]; ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"json: unknown field \"agentSession\""}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+"/api/sessions/s1/attention", "tok", Request{State: "done", AgentSession: "s1", Turn: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[1]["state"] != "done" || bodies[1]["agentSession"] != nil || bodies[1]["turn"] != nil {
+		t.Fatalf("bodies %v", bodies)
 	}
 }

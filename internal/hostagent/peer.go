@@ -1,9 +1,11 @@
 package hostagent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -45,6 +47,9 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 	}
 	se := webrtc.SettingEngine{}
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6})
+	if err := applyICE(&se, p.a.opts.ICE); err != nil {
+		return err
+	}
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 	pc, err := api.NewPeerConnection(cfg)
 	if err != nil {
@@ -156,6 +161,18 @@ func (p *peer) startRelay() {
 	}
 }
 
+// buffered returns the bytes the peer's data channel holds that the viewer has
+// not acknowledged; zero for a viewer on the relay or one not connected yet.
+func (p *peer) buffered() uint64 {
+	p.mu.Lock()
+	sink := p.dc
+	p.mu.Unlock()
+	if sink == nil {
+		return 0
+	}
+	return sink.buffered()
+}
+
 // handleFrame processes a terminal frame from the viewer over either transport.
 func (p *peer) handleFrame(f proto.Frame) {
 	p.mu.Lock()
@@ -196,6 +213,28 @@ func (p *peer) handleFrame(f proto.Frame) {
 			var m proto.Ping
 			_ = json.Unmarshal(f.Payload, &m)
 			p.a.local.Send(sub, proto.MustControl(proto.Ping{T: proto.CtlPong, TS: m.TS}))
+		case proto.CtlSubmit:
+			var m proto.Submit
+			if json.Unmarshal(f.Payload, &m) != nil || len(m.Text) > proto.MaxSubmit {
+				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad submit message"))
+				return
+			}
+			// Off the frame loop, which also carries the relay's other
+			// viewers: the submission pauses before its Enter.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if _, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub}); err != nil {
+					code := "input_failed"
+					switch {
+					case errors.Is(err, session.ErrReadOnly):
+						code = proto.ErrCodeReadOnly
+					case errors.Is(err, session.ErrSessionEnded):
+						code = proto.ErrCodeSessionEnded
+					}
+					p.a.local.Send(sub, proto.NewError(code, err.Error()))
+				}
+			}()
 		case proto.CtlFileGet:
 			var m proto.FileGet
 			if json.Unmarshal(f.Payload, &m) != nil {

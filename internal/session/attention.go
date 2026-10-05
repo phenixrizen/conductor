@@ -28,11 +28,13 @@ func (s AttentionState) Valid() bool {
 
 // Attention sources.
 const (
-	SourceAPI   = "api"
-	SourceBell  = "bell"
-	SourceOSC   = "osc"
-	SourceInput = "input"
-	SourceAdmin = "admin"
+	SourceAPI     = "api"
+	SourceBell    = "bell"
+	SourceOSC     = "osc"
+	SourcePattern = "pattern" // the last line of the screen matched Options.Pattern
+	SourceInput   = "input"
+	SourceAdmin   = "admin"
+	SourceTrust   = "trust" // the agent's workspace-trust question is on the screen (Options.TrustPattern)
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can
@@ -63,7 +65,7 @@ type Option struct {
 const (
 	MaxAttentionOptions = 6
 	MaxOptionLabel      = 60 // runes
-	MaxOptionInput      = 16 // bytes
+	MaxOptionInput      = 48 // bytes: a choice of 40 and the CR that enters it, or a digit
 )
 
 // CleanOptions drops entries without a label or input, trims both to their
@@ -100,25 +102,14 @@ type Attention struct {
 	Options []Option       `json:"options,omitempty"`
 }
 
-// CleanName normalises a display name from a client: control characters are
-// dropped, surrounding space trimmed, length capped at proto.MaxNameLen runes.
-// An empty result becomes "guest".
+// CleanName normalises a display name from a client: oneLine at
+// proto.MaxNameLen runes (control characters dropped, surrounding space
+// trimmed), and "guest" when nothing is left.
 func CleanName(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			continue
-		}
-		b.WriteRune(r)
+	if out := oneLine(s, proto.MaxNameLen); out != "" {
+		return out
 	}
-	out := strings.TrimSpace(b.String())
-	if n := []rune(out); len(n) > proto.MaxNameLen {
-		out = strings.TrimSpace(string(n[:proto.MaxNameLen]))
-	}
-	if out == "" {
-		return "guest"
-	}
-	return out
+	return "guest"
 }
 
 // MaxAttentionMessage bounds messages from any source.

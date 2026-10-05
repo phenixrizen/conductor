@@ -1,0 +1,41 @@
+# The image build reads web/ (stage 1: npm ci, then nuxt generate) and go.mod,
+# go.sum, cmd/ and internal/ (stage 2: go build, with the stage 1 bundle copied
+# into internal/web/dist). Everything else stays out of the context, above all
+# what a dev checkout adds: packages installed for the host (glibc binaries in
+# web/node_modules would land on top of the Alpine ones), build output, and
+# local configuration and state that hold tokens and secrets.
+
+# Version control, CI, editor and build files
+.git
+.github
+.editorconfig
+.gitignore
+.dockerignore
+Dockerfile
+Makefile
+**/.DS_Store
+**/*.log
+
+# Documentation, scripts and local notes
+*.md
+docs
+scripts
+.superpowers
+
+# Configuration and state: config files hold the admin token, the data
+# directory holds agent secrets
+conductor.json
+conductor.example.json
+conductor.d
+
+# Build output and host-installed packages; web/.env* would be read by
+# nuxt generate and baked into the bundle
+bin
+web/node_modules
+web/.nuxt
+web/.output
+web/.data
+web/dist
+web/.env*
+internal/web/dist/*
+!internal/web/dist/.gitkeep

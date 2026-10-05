@@ -30,22 +30,41 @@ type Option struct {
 	Input string `json:"input"`
 }
 
-// Request is the attention update to send. Kind and Options let the
-// workbench offer one-click answers (see docs/protocol.md, Attention).
+// Request is the update to send: an attention state, or an event when Event
+// is set. Kind and Options let the workbench offer one-click answers (see
+// docs/protocol.md, Attention).
 type Request struct {
 	State   string   `json:"state"`
 	Message string   `json:"message,omitempty"`
 	Kind    string   `json:"kind,omitempty"`
 	Options []Option `json:"options,omitempty"`
+	// Event reports something the agent did instead of a state: one of the
+	// six event types of docs/protocol.md (Events), or an attention word
+	// (needs_input, working, done, clear). URL, To and Tool go with the events
+	// that use them. Send ignores State for an event.
+	Event string `json:"event,omitempty"`
+	URL   string `json:"url,omitempty"`
+	To    string `json:"to,omitempty"`
+	Tool  string `json:"tool,omitempty"`
+	// AgentSession is the agent's own session id, as its hook payload names
+	// it (Claude Code's session_id, Codex's thread-id…), and Turn says the
+	// payload reports a turn: a prompt taken or finished. They go with an
+	// attention state only; the server keeps the id for Resume.
+	AgentSession string `json:"agentSession,omitempty"`
+	Turn         bool   `json:"turn,omitempty"`
 }
 
-// permissionOptions mirrors Claude Code's permission dialog. It assumes the
-// dialog selects and confirms on the digit key (so no trailing Enter is
-// sent) and offers three choices; this is the one place to change if a
-// Claude Code release differs. Not yet verified against a live dialog from
-// an automated test: see docs/features.md.
-func permissionOptions() []Option {
-	return []Option{{Label: "Yes", Input: "1"}, {Label: "Always for this session", Input: "2"}, {Label: "No, explain…", Input: "3"}}
+// eventBody is what the events route reads: the same report under its own
+// names. The route refuses fields it does not know, so an event cannot travel
+// as a Request.
+type eventBody struct {
+	Type    string   `json:"type"`
+	Message string   `json:"message,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	To      string   `json:"to,omitempty"`
+	Tool    string   `json:"tool,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Options []Option `json:"options,omitempty"`
 }
 
 // ErrNotInSession is returned when the environment is not set. Callers treat
@@ -61,117 +80,99 @@ func FromEnv(getenv func(string) string) (url, token string, err error) {
 	return url, token, nil
 }
 
-// Send posts the request to url with the agent token. Redirects are refused
-// so a token never follows a rewrite, and only one attempt is made.
+// eventsURL turns a session's attention URL, which is the one Conductor puts
+// in the environment, into the URL of its events route. Any other URL is
+// where the caller pointed it, and stays.
+func eventsURL(u string) string {
+	if base, ok := strings.CutSuffix(u, "/attention"); ok {
+		return base + "/events"
+	}
+	return u
+}
+
+// sendTimeout bounds a Send, its retries included: a hook waits at most this.
+const sendTimeout = 5 * time.Second
+
+// retryDelays are the waits between the attempts of an attention word the
+// server answers 429: the session's bucket refills at 20 tokens a second, so a
+// short wait usually finds one. They add up to well under sendTimeout, which
+// still ends them.
+var retryDelays = []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second}
+
+// attentionWord reports whether r reports an attention state, by the
+// attention route or as an attention word of the events route: what a 429
+// retries.
+func (r Request) attentionWord() bool {
+	switch r.Event {
+	case "", "needs_input", "working", "done", "clear":
+		return true
+	}
+	return false
+}
+
+// Send posts the request to url with the agent token. A request with Event
+// set goes to the session's events route (url with /attention replaced by
+// /events) as an event; any other goes to url as an attention update.
+// Redirects are refused so a token never follows a rewrite. An attention word
+// answered 429 is tried again after each of retryDelays, while the 5 s budget
+// lasts; anything else is tried once.
 func Send(ctx context.Context, url, token string, req Request) error {
-	body, err := json.Marshal(req)
+	var payload any = req
+	if req.Event != "" {
+		url = eventsURL(url)
+		payload = eventBody{Type: req.Event, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Kind: req.Kind, Options: req.Options}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
+	for attempt := 0; ; attempt++ {
+		status, msg, err := post(ctx, url, token, body)
+		if err != nil {
+			return err
+		}
+		if status < 300 {
+			return nil
+		}
+		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn) && req.Event == "" {
+			// A server older than the agent-session fields: the state alone.
+			req.AgentSession, req.Turn = "", false
+			if body, err = json.Marshal(req); err != nil {
+				return err
+			}
+			continue
+		}
+		failed := fmt.Errorf("notify: server returned %d: %s", status, msg)
+		if status != http.StatusTooManyRequests || !req.attentionWord() || attempt >= len(retryDelays) {
+			return failed
+		}
+		select {
+		case <-ctx.Done():
+			return failed
+		case <-time.After(retryDelays[attempt]):
+		}
+	}
+}
+
+// post makes one attempt: the status and, for a failure, the start of the
+// reply.
+func post(ctx context.Context, url, token string, body []byte) (int, string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("notify: server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
-	}
-	return nil
-}
-
-// ClaudeHook is the subset of the Claude Code hook stdin payload we use.
-// Field names follow the documented common fields; message/title/
-// notification_type are read when present.
-type ClaudeHook struct {
-	HookEventName        string `json:"hook_event_name"`
-	NotificationType     string `json:"notification_type"`
-	Message              string `json:"message"`
-	Title                string `json:"title"`
-	LastAssistantMessage string `json:"last_assistant_message"`
-	ToolName             string `json:"tool_name"`
-}
-
-// MapClaudeHook turns a Claude Code hook payload into an attention update.
-// ok is false for events that carry no attention meaning.
-func MapClaudeHook(raw []byte) (req Request, ok bool) {
-	var h ClaudeHook
-	if json.Unmarshal(raw, &h) != nil {
-		return Request{}, false
-	}
-	switch h.HookEventName {
-	case "PermissionRequest":
-		msg := strings.TrimSpace(h.Message)
-		if msg == "" && h.ToolName != "" {
-			msg = "Allow " + h.ToolName + "?"
-		}
-		if msg == "" {
-			msg = "Allow this action?"
-		}
-		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
-	case "Notification":
-		msg := strings.TrimSpace(h.Message)
-		if msg == "" {
-			msg = strings.TrimSpace(h.Title)
-		}
-		if msg == "" {
-			msg = strings.ReplaceAll(h.NotificationType, "_", " ")
-		}
-		if msg == "" {
-			msg = "Claude Code needs your input"
-		}
-		switch h.NotificationType {
-		case "auth_success", "elicitation_complete", "elicitation_response", "agent_completed":
-			return Request{State: "working", Message: truncate(msg, 200)}, true
-		case "permission_prompt":
-			return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
-		}
-		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "prompt"}, true
-	case "Stop":
-		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done"}, true
-	case "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart":
-		return Request{State: "working"}, true
-	}
-	return Request{}, false
-}
-
-// CodexPayload is the subset of the Codex notify payload we use.
-type CodexPayload struct {
-	Type                 string `json:"type"`
-	LastAssistantMessage string `json:"last-assistant-message"`
-}
-
-// MapCodex turns a Codex notify payload into an attention update.
-func MapCodex(raw []byte) (req Request, ok bool) {
-	var p CodexPayload
-	if json.Unmarshal(raw, &p) != nil {
-		return Request{}, false
-	}
-	switch p.Type {
-	case "agent-turn-complete":
-		msg := truncate(strings.TrimSpace(p.LastAssistantMessage), 200)
-		if msg == "" {
-			msg = "Codex finished its turn"
-		}
-		return Request{State: "needs_input", Message: msg, Kind: "prompt"}, true
-	}
-	return Request{}, false
-}
-
-func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return resp.StatusCode, strings.TrimSpace(string(msg)), nil
 }
 
 // ReadAllBounded reads at most 1 MiB from r.

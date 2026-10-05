@@ -1,0 +1,63 @@
+name: live
+
+# The live tier: the real agents, with test accounts, driven by the
+# Playwright live spec (web/e2e/live.spec.ts). Weekly and on demand only; the
+# keys live in the `live` environment, whose reviewers approve each run. A
+# row whose key is absent is skipped, not failed.
+on:
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # The latest patch of the go.mod line's minor: the standard library's
+          # fixes (govulncheck) land in patches.
+          go-version: '~1.26.0'
+          check-latest: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: make build
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: install the agents
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex
+      - name: a never-trusted scratch repository
+        run: |
+          mkdir -p "$RUNNER_TEMP/live-repo" && cd "$RUNNER_TEMP/live-repo"
+          git init -q && git config user.name live && git config user.email live@conductor.invalid
+          echo "# live" > README.md && git add README.md && git commit -q -m init
+      - name: the live spec
+        env:
+          CONDUCTOR_E2E_LIVE: '1'
+          CONDUCTOR_E2E_LIVE_REPO: ${{ runner.temp }}/live-repo
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: make test-live
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: live-report
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore

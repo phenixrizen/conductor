@@ -8,7 +8,7 @@ import { shortCwd } from '~/utils/sessions'
 
 const route = useRoute()
 const api = useSessions()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const toast = useToast()
 const live = useAttention()
 const { httpBase } = useApiBase()
@@ -44,9 +44,24 @@ watch(inspector, (v) => {
   }
 })
 
+// Opening a session takes its event badge away, and one arriving while it is
+// open never stays.
+const events = useEvents()
+watch(
+  [id, () => events.marks.value[id.value]],
+  ([sid, mark]) => {
+    if (mark) events.clearMark(sid)
+  },
+  { immediate: true },
+)
+
 // The live store is the source of truth for attention (it is what the sidebar
 // shows); the terminal's own attention message arrives a moment earlier.
 const stored = computed(() => live.sessions.value.find((s) => s.id === id.value))
+/** The session as the live store has it, else as read: its yolo badge and its agent session follow the stream. */
+const current = computed(() => stored.value ?? session.value)
+const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
+const copy = useCopy()
 watch(
   () => stored.value?.attention,
   (a) => {
@@ -79,9 +94,9 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 
-// "Priya is typing…": anyone else whose last input is under four seconds old.
+// "<name> is typing…": anyone else whose last input is under four seconds old.
 const now = ref(Date.now())
 let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 1000)))
@@ -175,7 +190,7 @@ async function stop() {
 }
 
 function reply(text: string) {
-  if (!terminal.value?.sendInput(text + '\r')) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+  if (!terminal.value?.submit(text)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
 }
 
 function option(index: number) {
@@ -260,28 +275,41 @@ watch(id, () => {
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
       <UDashboardNavbar :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
-        <template #leading>
-          <SidebarReveal />
-        </template>
         <template #title>
           <div class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">
               <span class="truncate text-[15px] font-semibold">{{ session?.name || 'Session' }}</span>
               <AttentionBadge :attention="attention" />
               <SessionStatusBadge v-if="session && session.status !== 'running'" :status="session.status" :exit-code="session.exitCode" />
+              <YoloBadge v-if="current?.yolo" />
             </div>
-            <span class="truncate font-mono text-[11.5px] text-muted">{{ meta }}</span>
+            <span class="flex min-w-0 items-center gap-2 font-mono text-[11.5px] text-muted">
+              <span class="truncate">{{ meta }}</span>
+              <button
+                v-if="current?.agentSession"
+                type="button"
+                class="hidden max-w-40 flex-none truncate hover:text-default md:inline"
+                :title="`The agent's own session (${current.agentSession.source}): ${current.agentSession.id}. Click to copy.`"
+                data-agent-session
+                @click="copy(current.agentSession.id, 'Agent session copied')"
+              >
+                {{ current.agentSession.id }}
+              </button>
+            </span>
           </div>
         </template>
         <template #right>
+          <ResumeButton v-if="ended && current" :session="current" />
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
-          <UButton label="Files" icon="i-lucide-folder-open" color="neutral" variant="outline" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles" />
-          <UButton label="Share" icon="i-lucide-share-2" @click="share = true" />
+          <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
+          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
+          <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
           <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
           </UDropdownMenu>
+          <FullscreenButton />
         </template>
       </UDashboardNavbar>
     </template>

@@ -56,6 +56,11 @@ export abstract class BaseTransport implements TerminalTransport {
     this.send(encodeInput(data))
   }
 
+  submit(text: string): void {
+    if (this.state.value !== 'open') return
+    this.send(encodeControl({ t: 'submit', text }))
+  }
+
   resize(cols: number, rows: number): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'resize', cols, rows }))

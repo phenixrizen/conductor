@@ -123,12 +123,28 @@ func keepalive(ctx context.Context, c *websocket.Conn) {
 	}
 }
 
+// hostGone ends a hosted viewer whose host has left. ErrHostGone comes back
+// only once HostDisconnected has detached the host, and it closes every viewer
+// right after, so Pump soon writes what the host still owed and then closes
+// the sink with one error frame. The reader waits for that rather than closing
+// the sink under Pump. Should Pump's drain and close take longer than
+// writeTimeout (a viewer that reads slowly), the reader closes the sink
+// itself, under Pump: that is safe, for Close runs once and the connection
+// takes concurrent writes.
+func hostGone(sink *wsSink, pumped <-chan struct{}) {
+	select {
+	case <-pumped:
+	case <-time.After(writeTimeout):
+		sink.Close(signal.ErrHostGone)
+	}
+}
+
 // hostTokenOK reports whether tok authorizes a host registration.
 func (s *Server) hostTokenOK(tok string) bool {
 	if tok == "" {
 		return false
 	}
-	if share.Equal(tok, s.cfg.AdminToken) {
+	if share.Equal(tok, s.cfg.WorkbenchToken) {
 		return true
 	}
 	for _, ht := range s.cfg.HostTokens {

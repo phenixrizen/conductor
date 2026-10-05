@@ -6,6 +6,8 @@ package hostagent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,12 +17,15 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -43,14 +48,33 @@ type Options struct {
 	Stdin       *os.File
 	Stdout      *os.File
 	// ICEServers override the servers handed out by the conductor server.
-	ICEServers      []proto.ICEServer
+	ICEServers []proto.ICEServer
+	// ICE is how the peers gather: one UDP port and an address to advertise
+	// (a forwarder's), or pion's defaults.
+	ICE             ICE
 	ScrollbackBytes int
 	MaxViewers      int
 	FileView        string
 	Log             *slog.Logger
+	// Pattern, when set, is matched against the last line of the terminal after
+	// 500 ms without output; a match marks the session needs_input. See
+	// session.Options.Pattern.
+	Pattern *regexp.Regexp
+	// Adapter names the hook adapter of the command (`conductor host --agent`).
+	// When it is one with a launch route, the hook assets are written to
+	// HooksDir and the command is started with the adapter's flags and
+	// environment, as the server starts an agent whose signal is "hook". An
+	// adapter without one (its agent reads hooks only from its own config)
+	// and any other name change nothing and write nothing.
+	Adapter string
+	// HooksDir is where the host writes the hook assets; empty means
+	// agents.HostHooksDir().
+	HooksDir string
 	// ReconnectMax bounds the reconnect backoff.
 	ReconnectMax time.Duration
-	// Registered is called once the first registration succeeds (tests, CLI banner).
+	// Registered is called once the first registration succeeds (tests, CLI
+	// banner), and again when the server lost the session (a restarted
+	// switchyard) and the host registered afresh under a new id.
 	Registered func(sessionID, shareBaseURL string)
 }
 
@@ -77,6 +101,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if opts.AgentID == "" {
 		opts.AgentID = filepath.Base(opts.Argv[0])
 	}
+	// The flags are part of the command from the start, so the server lists
+	// the command as it runs.
+	var adapterEnv map[string]string
+	opts.Argv, adapterEnv = injectHooks(opts)
 	dir := opts.Dir
 	if dir == "" {
 		dir, _ = os.Getwd()
@@ -99,13 +127,25 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// the server. Register first so the session ID is known before the
 	// process starts and can be placed in its environment.
 	agentToken, _ := share.NewToken()
-	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken}
+	// An instance of its own, so a switchyard that restarts gives the session its id back.
+	instance, _ := share.NewToken()
+	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
+	a.activity = newActivityForwarder(a.sendActivity, opts.Log)
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return Result{}, err
 	}
 	notifyURL := strings.TrimRight(opts.ServerURL, "/") + "/api/sessions/" + registered.SessionID + "/attention"
-	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, Env: hostEnv(pty.Inject(registered.SessionID, notifyURL, agentToken)), Cols: cols, Rows: rows})
+	// The binary the hooks run (the one the assets name when injectHooks
+	// wrote them), for what the agent runs itself (the skill).
+	bin, _ := agents.Binary()
+	env := pty.Inject(registered.SessionID, notifyURL, agentToken, bin)
+	for k, v := range adapterEnv {
+		if _, ok := env[k]; !ok {
+			env[k] = v
+		}
+	}
+	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, Env: hostEnv(env), Cols: cols, Rows: rows})
 	if err != nil {
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
@@ -132,6 +172,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Transport:       proto.TransportWebRTC,
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,
+		OnActivity:      a.onLocalActivity,
+		Pattern:         opts.Pattern,
 	})
 	a.mu.Lock()
 	a.local, a.proc = local, proc
@@ -139,6 +181,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go a.activity.run(runCtx)
 
 	if opts.LocalAttach && opts.Stdin != nil && opts.Stdout != nil {
 		restore, err := a.attachLocal(runCtx)
@@ -158,8 +201,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		_ = local.Stop(stopCtx)
 		stopCancel()
 	}
-	// Give the control connection a moment to deliver the final status.
-	a.flushStatus()
+	// Give the control connection a moment to deliver the final status, the
+	// last activity entries and what the viewers are still to be sent, unless
+	// it is gone already: ctx is cancelled when the host is stopped from
+	// outside.
+	a.settle(ctx)
 	cancel()
 	a.closeAllPeers()
 	exit := proc.Exit()
@@ -186,6 +232,22 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
+	// instance and localID fix the session's id on the server across its
+	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
+	instance, localID string
+	// held is what the server last said it holds of the links minted for
+	// the session (registered.links, then link_created and link_revoked);
+	// heldKnown is false until a server said. Guarded by mu.
+	held      map[string]bool
+	heldKnown bool
+	// links are the link requests waiting for the server's answer, by
+	// request id. Guarded by mu.
+	links map[string]chan linkAnswer
+
+	// activity carries the local session's activity entries to the server;
+	// statusQueued says the session's final (status) entry is in it.
+	activity     *activityForwarder
+	statusQueued atomic.Bool
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
@@ -236,7 +298,7 @@ func currentUser() string {
 
 // hostEnv forwards the developer's full environment (agents need their own
 // credentials) minus conductor tokens and loader overrides, then adds the
-// per-session variables.
+// per-session variables, which win over what the environment says.
 func hostEnv(inject map[string]string) []string {
 	var out []string
 	for _, kv := range os.Environ() {
@@ -301,9 +363,12 @@ func (a *agent) controlLoop(ctx context.Context, first *websocket.Conn) {
 // the session. On success the connection is stored as the active one.
 func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Registered, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	c, _, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{
-		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + a.opts.Token}},
-	})
+	// No token, no header: an open host on a switchyard that admits them.
+	header := map[string][]string{}
+	if a.opts.Token != "" {
+		header["Authorization"] = []string{"Bearer " + a.opts.Token}
+	}
+	c, _, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header})
 	cancel()
 	if err != nil {
 		return nil, proto.Registered{}, err
@@ -319,10 +384,10 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	reg := proto.Register{
 		T:     proto.HostRegister,
 		Proto: proto.ProtoVersion,
-		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser()},
+		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser(), Instance: a.instance},
 		Session: proto.HostSession{
 			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
-			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir),
+			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir), LocalID: a.localID,
 		},
 	}
 	if a.sessID != "" {
@@ -340,6 +405,17 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	typ, data, err := c.Read(rctx)
 	rcancel()
 	if err != nil {
+		if reg.Resume != nil && websocket.CloseStatus(err) == websocket.StatusCode(proto.CloseNotFound) {
+			// The server no longer knows the session (it restarted and keeps
+			// hosted sessions in memory): resuming would fail forever, so the
+			// next attempt registers afresh, under the same instance and local
+			// id, which give the same session id on a server that keeps them.
+			a.mu.Lock()
+			old := a.sessID
+			a.sessID, a.secret = "", ""
+			a.mu.Unlock()
+			return fail(fmt.Errorf("registration: the server no longer knows session %s; registering afresh", old))
+		}
 		return fail(fmt.Errorf("registration: %w", err))
 	}
 	var registered proto.Registered
@@ -351,6 +427,12 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.sessID = registered.SessionID
 	a.secret = registered.Secret
 	a.ice = registered.ICEServers
+	if registered.Links != nil {
+		a.held, a.heldKnown = map[string]bool{}, true
+		for _, id := range registered.Links {
+			a.held[id] = true
+		}
+	}
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
 	}
@@ -382,6 +464,96 @@ func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttenti
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
 	return m
+}
+
+// onLocalActivity is the local session's OnActivity hook: it queues the entry,
+// with the attention state an attention entry records, for the server, whose
+// admin stream shows every entry of every session. The session calls it on the
+// goroutine that recorded the entry, so it never waits for the connection.
+// Entries recorded while the connection is down are lost to the stream; the
+// session log has them.
+func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
+	a.activity.push(e, state)
+	if e.Type == session.ActivityStatus {
+		a.statusQueued.Store(true)
+	}
+}
+
+// sendActivity delivers one entry, and the attention state it records, on the
+// control connection.
+func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionState) {
+	m := hostActivityMsg(a.sessionID(), e)
+	m.State = string(state)
+	a.send(m)
+}
+
+// settle gives the control connection a moment to deliver what the session
+// leaves behind when it ends: the final status message, the activity entries
+// queued for the server, the final status entry among them, and the frames
+// queued for the viewers, whose final status is the last thing a viewer hears
+// before its connection closes. It gives up at once when ctx is cancelled. That
+// is how the host is stopped from outside (SIGINT, SIGTERM), and it ends the
+// control connection and the forwarder before the session records its last
+// entry, so there is nothing left to wait for.
+func (a *agent) settle(ctx context.Context) {
+	a.flushStatus(ctx)
+	a.flushActivity(ctx)
+	a.flushViewers(ctx)
+}
+
+// flushViewers waits for the viewers to be handed the frames queued for them,
+// and for the data channels of the WebRTC viewers to have what they were given
+// acknowledged. A relay viewer's frames go out on the control connection, which
+// closes once settle returns, and a data channel drops what it still holds when
+// its connection is closed: a frame that is queued or held by then is lost, and
+// the viewer is left without the status that says the session ended. Run it
+// after flushActivity: the session announces its end, and only then queues the
+// status entry for its viewers.
+func (a *agent) flushViewers(ctx context.Context) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if a.local.Drained() && !a.channelsBuffered() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// channelsBuffered reports whether the data channel of a WebRTC viewer still
+// holds bytes that the viewer has not acknowledged.
+func (a *agent) channelsBuffered() bool {
+	a.mu.Lock()
+	peers := make([]*peer, 0, len(a.peers))
+	for _, p := range a.peers {
+		peers = append(peers, p)
+	}
+	a.mu.Unlock()
+	for _, p := range peers {
+		if p.buffered() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// flushActivity gives the entries the local session recorded a moment to
+// reach the server before the connection closes. Once the process has ended
+// that includes the final status entry, which the session records just after
+// it announces the end. See settle for ctx.
+func (a *agent) flushActivity(ctx context.Context) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if (!a.local.Info().Status.Ended() || a.statusQueued.Load()) && a.activity.idle() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// hostActivityMsg wraps an entry in the host `activity` message. The host
+// names its session; the server ignores it, and takes the connection's.
+func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivityMsg {
+	return proto.HostActivityMsg{T: proto.HostActivity, SessionID: sessionID, Entry: session.EntryToProto(e)}
 }
 
 // serveConn processes messages on an established control connection until
@@ -445,8 +617,9 @@ func (a *agent) watchStatus(ctx context.Context, c *websocket.Conn) {
 	a.mu.Unlock()
 }
 
-// flushStatus waits briefly for the final status message to be sent.
-func (a *agent) flushStatus() {
+// flushStatus waits briefly for the final status message to be sent. It gives
+// up at once when ctx is cancelled: watchStatus stops then without sending it.
+func (a *agent) flushStatus(ctx context.Context) {
 	deadline := time.After(2 * time.Second)
 	for {
 		a.mu.Lock()
@@ -457,6 +630,8 @@ func (a *agent) flushStatus() {
 		}
 		select {
 		case <-deadline:
+			return
+		case <-ctx.Done():
 			return
 		case <-time.After(50 * time.Millisecond):
 		}
@@ -530,6 +705,18 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+	case proto.HostActivity:
+		// An event an agent reported through the API for this session. It is
+		// recorded like any other entry, so the people watching the host see
+		// it, and the OnActivity hook reports it back to the server.
+		var m proto.HostActivityMsg
+		if err := json.Unmarshal(data, &m); err != nil {
+			return err
+		}
+		if !session.ValidEventType(m.Entry.Type) {
+			return errors.New("activity of an unknown type")
+		}
+		a.local.Record(session.EntryFromProto(m.Entry))
 	case proto.HostStop:
 		a.log.Info("stop requested by server")
 		go func() {
@@ -537,12 +724,117 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			defer cancel()
 			_ = a.local.Stop(stopCtx)
 		}()
+	case proto.HostLinkCreated:
+		var m proto.LinkCreated
+		if json.Unmarshal(data, &m) == nil {
+			a.noteHeld(m.LinkID, true)
+			a.answerLink(m.RequestID, m, nil)
+		}
+	case proto.HostLinkRevoked:
+		var m proto.LinkRevoked
+		if json.Unmarshal(data, &m) == nil {
+			a.noteHeld(m.LinkID, false)
+			a.answerLink(m.RequestID, proto.LinkCreated{LinkID: m.LinkID}, nil)
+		}
+	case proto.HostRunLinkUpdated:
+		var m proto.RunLinkUpdated
+		if json.Unmarshal(data, &m) == nil {
+			a.answerLink(m.RequestID, proto.LinkCreated{RunID: m.RunID}, nil)
+		}
 	case proto.HostError:
 		var m proto.ErrorMsg
 		_ = json.Unmarshal(data, &m)
+		if m.RequestID != "" {
+			a.answerLink(m.RequestID, proto.LinkCreated{}, fmt.Errorf("%s: %s", m.Code, m.Message))
+			return nil
+		}
 		a.log.Warn("server error", "code", m.Code, "message", m.Message)
 	}
 	return nil
+}
+
+// linkAnswer is what a link request waits for.
+type linkAnswer struct {
+	link proto.LinkCreated
+	err  error
+}
+
+// requestLink asks the server for a share link to the session and waits
+// for its answer (link_created, or an error naming the request), at most
+// until ctx ends.
+func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration, label string) (proto.LinkCreated, error) {
+	return a.ask(ctx, func(id string) any {
+		return proto.HostLinkMsg{T: proto.HostLink, RequestID: id, Role: role, TTLSeconds: int(ttl / time.Second), Label: label}
+	})
+}
+
+// requestRevoke asks the server to revoke a link it minted for the session
+// and waits for the answer; a link the server does not know answers
+// "not_found: …".
+func (a *agent) requestRevoke(ctx context.Context, linkID string) error {
+	_, err := a.ask(ctx, func(id string) any {
+		return proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: id, LinkID: linkID}
+	})
+	return err
+}
+
+// requestRunLink asks the server for one link to the sessions of a run's
+// members (proto.HostRunLinkMsg) and waits for link_created.
+func (a *agent) requestRunLink(ctx context.Context, role string, ttl time.Duration, label string, run proto.RunGroup) (proto.LinkCreated, error) {
+	return a.ask(ctx, func(id string) any {
+		return proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: id, Role: role, TTLSeconds: int(ttl / time.Second), Label: label, Run: run}
+	})
+}
+
+// requestRunUpdate tells the server a run's members now and waits for
+// link_run_updated; a run without links there answers "not_found: …".
+func (a *agent) requestRunUpdate(ctx context.Context, run proto.RunGroup) error {
+	_, err := a.ask(ctx, func(id string) any {
+		return proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: id, Run: run}
+	})
+	return err
+}
+
+// ask sends the request build makes with a fresh request id and waits for
+// the server's answer to it (answerLink), or for ctx.
+func (a *agent) ask(ctx context.Context, build func(requestID string) any) (proto.LinkCreated, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return proto.LinkCreated{}, err
+	}
+	id := hex.EncodeToString(b[:])
+	ch := make(chan linkAnswer, 1)
+	a.mu.Lock()
+	if a.links == nil {
+		a.links = map[string]chan linkAnswer{}
+	}
+	a.links[id] = ch
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.links, id)
+		a.mu.Unlock()
+	}()
+	a.send(build(id))
+	select {
+	case ans := <-ch:
+		return ans.link, ans.err
+	case <-ctx.Done():
+		return proto.LinkCreated{}, ctx.Err()
+	}
+}
+
+// answerLink hands the server's answer to the request waiting for it.
+func (a *agent) answerLink(id string, link proto.LinkCreated, err error) {
+	a.mu.Lock()
+	ch := a.links[id]
+	a.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- linkAnswer{link, err}:
+		default:
+		}
+	}
 }
 
 // send delivers a JSON message on the current control connection.
@@ -640,3 +932,31 @@ func writeJSON(ctx context.Context, c *websocket.Conn, v any) error {
 
 // discard is used when no stdout is configured.
 var _ io.Writer = io.Discard
+
+// noteHeld keeps held in step with a link the server minted or revoked.
+func (a *agent) noteHeld(linkID string, on bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.heldKnown || linkID == "" {
+		return
+	}
+	if on {
+		a.held[linkID] = true
+	} else {
+		delete(a.held, linkID)
+	}
+}
+
+// heldLinks is what the server last said it holds, and whether it said.
+func (a *agent) heldLinks() ([]string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.heldKnown {
+		return nil, false
+	}
+	out := make([]string, 0, len(a.held))
+	for id := range a.held {
+		out = append(out, id)
+	}
+	return out, true
+}

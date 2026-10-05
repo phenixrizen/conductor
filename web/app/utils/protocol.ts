@@ -13,6 +13,15 @@ export const FrameType = {
 
 export const ProtoVersion = 1
 
+/**
+ * A hello of 0 × 0 follows the session's size (proto.HelloSize): a scaled tile or a quick reply never resizes a
+ * session. Any other size a controller sends sets it, latest controller wins (docs/protocol.md, Resize policy).
+ */
+export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
+
+/** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
+export const MAX_SUBMIT = 4096
+
 export const CloseCode = {
   Normal: 1000,
   GoingAway: 1001,
@@ -59,11 +68,24 @@ export interface ViewerInfo {
 /** One line of a session's activity log (`activity` control message). */
 export interface ActivityEntry {
   at: string
-  type: 'attention' | 'input' | 'join' | 'leave' | 'link' | 'status'
+  type:
+    | 'attention' | 'input' | 'join' | 'leave' | 'link' | 'status'
+    | 'progress' | 'artifact' | 'handoff' | 'tool_use' | 'tool_denied' | 'error'
   by?: string
   byName?: string
   message?: string
+  /** `artifact`: where the result lives (≤ 2048 bytes). Stored as sent: link it only when it is http(s). */
+  url?: string
+  /** `handoff`: who the work goes to (≤ 40 characters). */
+  to?: string
+  /** `tool_use`, `tool_denied`, `error`: the tool involved (≤ 100 bytes). */
+  tool?: string
+  /** GET /api/events only: for an attention entry, the state it records. Absent from a session's own replay and from an older host's entries. */
+  state?: 'needs_input' | 'working' | 'done'
 }
+
+/** Data of an `activity` event on GET /api/events: an activity entry and the session it belongs to. */
+export type SessionActivity = ActivityEntry & { sessionId: string }
 
 export interface ICEServer {
   urls: string[]
@@ -96,7 +118,7 @@ export type ControlMessage =
   | { t: 'status'; status: string; exitCode?: number }
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
-  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string }
+  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string }
   | { t: 'error'; code: string; message: string }
   | { t: 'pong'; ts: number }
 
@@ -235,3 +257,102 @@ export function closeReason(code: number, reason: string): string {
   }
   return reason || `Connection closed (${code})`
 }
+
+/**
+ * Host control connection (`/ws/host`, docs/protocol.md): a host asks the
+ * server for a share link to its session and the server answers, or refuses
+ * with an `error` naming the request. The web never sends these; they are
+ * mirrored here with their limits, as every message is.
+ */
+export interface HostLinkMessage {
+  t: 'link'
+  /** ≤ 32 bytes. */
+  requestId: string
+  role: 'view' | 'control'
+  /** ≤ 86400 (a day). */
+  ttlSeconds?: number
+  /** ≤ 120 bytes. */
+  label?: string
+}
+
+export interface HostLinkCreatedMessage {
+  t: 'link_created'
+  requestId: string
+  url: string
+  /** `conductor://<host>/join/<token>`, which the desktop app opens itself. */
+  invite: string
+  linkId: string
+  role: 'view' | 'control'
+  label?: string
+  expiresAt?: string
+}
+
+export interface HostLinkRevokeMessage {
+  t: 'link_revoke'
+  /** ≤ 32 bytes. */
+  requestId: string
+  /** ≤ 64 bytes: a linkId from link_created. */
+  linkId: string
+}
+
+export interface HostLinkRevokedMessage {
+  t: 'link_revoked'
+  requestId: string
+  linkId: string
+}
+
+/** A host connection may ask for this many links a minute (a revoke is never counted). */
+export const HOST_LINK_REQUESTS_PER_MINUTE = 5
+/** A link id in a revoke is at most this long. */
+export const HOST_MAX_LINK_ID = 64
+
+/** What a host's register says of the host and its session that fixes the session's id across a server restart (docs/protocol.md). */
+export interface HostIdentity {
+  /** A secret of the host process: with the session's local id, the session's id on the server. Never shown or logged. */
+  instance?: string
+  /** The session's id on the host. */
+  localId?: string
+}
+/** The bounds of HostIdentity's fields. */
+export const HOST_MAX_INSTANCE = 64
+export const HOST_MAX_LOCAL_ID = 64
+
+/** The part of registered that says which links the server still holds for the session; absent from an older server. */
+export interface HostRegisteredLinks {
+  links?: string[]
+}
+
+/** A crew run as a switchyard shows it: what a host sends with link_run and link_run_update. */
+export interface HostRunGroup {
+  id: string
+  name: string
+  members: Array<{ name: string; sessionId?: string; agentId: string; status: 'pending' | 'starting' | 'running' | 'ended' }>
+}
+/** host → server: one link to the sessions of a run's members; answered by link_created with runId. */
+export interface HostRunLinkMessage {
+  t: 'link_run'
+  requestId: string
+  role: 'view' | 'control'
+  ttlSeconds?: number
+  label?: string
+  run: HostRunGroup
+}
+/** host → server: the run's members now; answered by link_run_updated, or error not_found. */
+export interface HostRunLinkUpdateMessage {
+  t: 'link_run_update'
+  requestId: string
+  run: HostRunGroup
+}
+/** server → host: how many of the run's links follow the new members. */
+export interface HostRunLinkUpdatedMessage {
+  t: 'link_run_updated'
+  requestId: string
+  runId: string
+  links: number
+}
+/** The bounds of a run group, and how many updates a connection may send a minute. */
+export const HOST_MAX_RUN_LINK_MEMBERS = 32
+export const HOST_MAX_RUN_ID = 64
+export const HOST_MAX_RUN_NAME = 120
+export const HOST_MAX_RUN_MEMBER_NAME = 40
+export const HOST_RUN_LINK_UPDATES_PER_MINUTE = 30

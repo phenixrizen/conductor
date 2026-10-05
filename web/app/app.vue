@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const attention = useAttention()
-const admin = useAdminToken()
+const admin = useWorkbenchToken()
 const identity = useIdentity()
 const api = useSessions()
 useAttentionHead()

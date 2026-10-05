@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -8,8 +9,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
@@ -31,6 +35,11 @@ type Options struct {
 	MaxViewers      int
 	// FileView decides which roles may read files: "view" (both), "control", "off".
 	FileView string
+	// FileDeny lists what no file read may reach, even inside the working
+	// directory: a directory with everything in it, or a single file. The
+	// server passes its data directory, whose catalog.json holds agent
+	// secrets, its config file and its catalog file; `conductor host` has none.
+	FileDeny []string
 	// Transport is reported in welcome messages ("ws" on the server, "webrtc"/"relay" on hosts).
 	Transport string
 	Log       *slog.Logger
@@ -39,7 +48,49 @@ type Options struct {
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.
 	OnChange func(Info)
+	// OnActivity is called (outside the session lock) with the session ID,
+	// the stored entry and, for the attention entry of a change the session
+	// applied, the attention state it records: the state set in the same
+	// critical section as the entry's stamp ("" for every other entry). It
+	// runs on the recording goroutine, which may be the one reading the
+	// process, so it must not block. Because it runs after the lock is
+	// released, calls for different entries can overlap and arrive out of
+	// order: implementations must be safe for concurrent use, and must take
+	// the state from here, never from Info, which may have moved on. An entry
+	// the event bucket drops never reaches it; the attention entry of an
+	// attention change the session applied always does.
+	OnActivity func(sessionID string, e ActivityEntry, state AttentionState)
+	// Pattern, when set, is matched against the last line of the terminal
+	// after patternQuiet without output. A match marks the session needs_input
+	// (source "pattern", kind "prompt") unless it is that already. It is for
+	// agents that neither run hooks nor ring the bell; a TUI that redraws
+	// without pause never goes quiet and is not served by it.
+	Pattern *regexp.Regexp
+	// TrustPattern, when set, matches the agent's workspace-trust question in
+	// the text of its screen, each escape sequence read as a space
+	// (ScreenTail), after patternQuiet without output other than title
+	// updates. A match marks the session needs_input (source "trust", kind
+	// "prompt", the matched words as the message) unless it waits already,
+	// until the first submission's Enter: the run engine types no prompt
+	// while it shows, and a person answers the question.
+	TrustPattern *regexp.Regexp
+	// SubmitPause is the pause between a submission's text and its Enter;
+	// SubmitPause when zero.
+	SubmitPause time.Duration
+	// ConfirmSubmit says the agent reports taking a prompt (Claude Code's
+	// UserPromptSubmit hook reports working): a submission that asks for it
+	// (Submission.Confirm) and is not taken within ConfirmWait gets one more
+	// Enter.
+	ConfirmSubmit bool
+	// ConfirmWait is that wait; ConfirmWait when zero.
+	ConfirmWait time.Duration
+	// Launched is what the session was launched with, for Resume.
+	Launched Launched
 }
+
+// patternQuiet is how long the output must stay silent before the last line is
+// matched against Options.Pattern.
+const patternQuiet = 500 * time.Millisecond
 
 // Local owns a PTY process and serves attached clients. It is used by the
 // server for server-hosted sessions and by `conductor host` for hosted ones.
@@ -50,18 +101,33 @@ type Local struct {
 	hub  *Hub
 	log  *slog.Logger
 
-	mu   sync.Mutex // guards info and orders ring writes against attaches
+	mu   sync.Mutex // guards info, events and lastOutput, and orders ring writes against attaches
 	info Info
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
+	// lastOutput is when the pump last read output; zero until it has.
+	lastOutput time.Time
 
 	activity       activityRing
+	events         EventBucket // guarded by mu
+	dropped        atomic.Uint64
 	scanner        Scanner
+	pattern        *PatternWatcher // nil without Options.Pattern
+	trust          *PatternWatcher // nil without Options.TrustPattern
 	lastBell       time.Time
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
 	ended chan struct{}
+
+	// submitting holds a token while a submission runs (Submit): one at a
+	// time per session.
+	submitting chan struct{}
+	// paste follows the program's bracketed-paste mode (Submit, BracketedPaste).
+	paste pasteMode
+	// attnChanged is closed and replaced, under mu, on every attention change:
+	// Submit waits on it for the agent to take a prompt.
+	attnChanged chan struct{}
 }
 
 // NewLocal wraps a started process and begins pumping its output.
@@ -84,6 +150,12 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if opts.StopGrace <= 0 {
 		opts.StopGrace = 5 * time.Second
 	}
+	if opts.SubmitPause <= 0 {
+		opts.SubmitPause = SubmitPause
+	}
+	if opts.ConfirmWait <= 0 {
+		opts.ConfirmWait = ConfirmWait
+	}
 	if info.Status == "" {
 		info.Status = StatusRunning
 	}
@@ -98,6 +170,15 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		log:   opts.Log.With("session", info.ID),
 		info:  info,
 		ended: make(chan struct{}),
+
+		submitting:  make(chan struct{}, 1),
+		attnChanged: make(chan struct{}),
+	}
+	if opts.Pattern != nil {
+		s.pattern = NewPatternWatcher(opts.Pattern, patternQuiet, s.firePattern)
+	}
+	if opts.TrustPattern != nil {
+		s.trust = NewScreenWatcher(opts.TrustPattern, patternQuiet, s.fireTrust)
 	}
 	go s.pump()
 	return s
@@ -110,11 +191,25 @@ func (s *Local) pump() {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			// Output that only sets the window title (a spinner in it) does
+			// not count as output for the quiet the run engine and the
+			// trust watcher wait for.
+			title := titleOnly.Match(chunk)
 			s.mu.Lock()
 			s.ring.Write(chunk)
 			s.hub.Broadcast(proto.Encode(proto.TypeOutput, chunk))
+			if !title {
+				s.lastOutput = time.Now()
+			}
 			s.mu.Unlock()
+			s.paste.feed(chunk)
 			s.scanOutput(chunk)
+			if s.pattern != nil {
+				s.pattern.Feed(chunk)
+			}
+			if s.trust != nil && !title {
+				s.trust.Feed(chunk)
+			}
 		}
 		if err != nil {
 			break
@@ -135,12 +230,31 @@ func (s *Local) pump() {
 }
 
 func (s *Local) markEnded(status Status) {
+	// A prompt left on the screen by a process that is gone must not raise
+	// needs_input after the session has ended, where typing could not clear it.
+	// Stop waits for a fire in flight, so it comes before the lock: that fire
+	// takes it.
+	if s.pattern != nil {
+		s.pattern.Stop()
+	}
+	if s.trust != nil {
+		s.trust.Stop()
+	}
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		s.mu.Unlock()
 		return
 	}
 	s.info.Status = status
+	// An ended session needs nothing: what it waited on goes with its
+	// process, in the critical section that ends it, so nothing ever sees an
+	// ended session that still needs input. Its history stays in the activity
+	// log.
+	cleared := s.info.Attention.State != AttentionNone
+	if cleared {
+		s.info.Attention = Attention{}
+		s.signalAttention()
+	}
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
 	var exitCode *int
@@ -152,33 +266,88 @@ func (s *Local) markEnded(status Status) {
 		s.info.ExitCode = exitCode
 	default:
 	}
+	if cleared {
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+	}
 	frame := proto.MustControl(proto.Status{T: proto.CtlStatus, Status: string(status), ExitCode: exitCode})
 	s.hub.Broadcast(frame)
 	s.mu.Unlock()
 	close(s.ended)
-	s.log.Info("session ended", "status", status, "exitCode", exitCode)
+	attrs := []any{"status", status}
 	msg := string(status)
 	if exitCode != nil {
+		attrs = append(attrs, "exitCode", *exitCode)
 		msg = fmt.Sprintf("%s (exit %d)", status, *exitCode)
 	}
+	s.log.Info("session ended", attrs...)
 	s.Record(ActivityEntry{Type: ActivityStatus, Message: msg})
 	s.notifyChange()
 }
 
-// Record appends an activity entry and broadcasts it to attached clients.
-func (s *Local) Record(e ActivityEntry) {
-	e = s.activity.Add(e)
-	s.mu.Lock()
-	s.hub.Broadcast(proto.MustControl(activityMessage(e)))
-	s.mu.Unlock()
+// Record appends an activity entry, broadcasts it to attached clients and
+// passes it to OnActivity. What an agent reports (the six event types) is
+// limited to EventRatePerSecond entries a second on average and EventBurst at
+// once: beyond that Record does nothing else, counts the entry in Dropped and
+// returns false. join, leave, input, link and status entries are the
+// session's and the server's own; they skip the limit and spend no tokens, so
+// a chatty hook cannot starve the roster rows or the final status row. The
+// attention entry of an attention change the session applies skips it too:
+// the session records that one itself (recordOwn). An attention entry handed
+// to Record comes from outside the session and is limited like an event,
+// although nothing records one that way today.
+func (s *Local) Record(e ActivityEntry) bool {
+	return s.record(e, bucketed(e.Type), "")
 }
+
+// recordOwn records an entry the session makes itself without asking the
+// event bucket, whatever its type, and hands OnActivity the attention state
+// it records. It records the attention entry of an attention change the
+// session has applied, which must not be dropped while the state it records
+// is showing: a report from outside paid its token before the change
+// (TrySetAttentionFull), and what the session observes itself (the bell, OSC
+// notifications, the screen pattern) is held to its own pace and spends none.
+func (s *Local) recordOwn(e ActivityEntry, state AttentionState) {
+	s.record(e, false, state)
+}
+
+// record is Record, with limited saying whether the entry spends a token of
+// the event bucket, and state what OnActivity is told the entry records.
+func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool {
+	s.mu.Lock()
+	if limited && !s.events.Take(time.Now()) {
+		log := s.log
+		s.mu.Unlock()
+		countDrop(&s.dropped, log, e.Type)
+		return false
+	}
+	// The ring write and the broadcast share one critical section, so a client
+	// attaching meanwhile finds the entry in its replay or receives the
+	// broadcast, never both.
+	e = s.activity.Add(e)
+	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
+	id := s.info.ID
+	s.mu.Unlock()
+	if s.opts.OnActivity != nil {
+		s.opts.OnActivity(id, e, state)
+	}
+	return true
+}
+
+// countDrop counts in dropped something of type typ that the event bucket
+// refused, an entry or a report, and logs the first and every 100th at debug
+// level, so that a flood does not become a log flood.
+func countDrop(dropped *atomic.Uint64, log *slog.Logger, typ string) {
+	if n := dropped.Add(1); n == 1 || n%100 == 0 {
+		log.Debug("activity dropped by the event rate limit", "type", typ, "dropped", n)
+	}
+}
+
+// Dropped counts what the session's event bucket refused: the entries Record
+// did not record and the reports TrySetAttentionFull did not apply.
+func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 
 // Activity returns the activity log, oldest first.
 func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
-
-func activityMessage(e ActivityEntry) proto.Activity {
-	return proto.Activity{T: proto.CtlActivity, At: e.At.UTC().Format(time.RFC3339Nano), Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message}
-}
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
@@ -188,7 +357,8 @@ func (s *Local) notifyChange() {
 }
 
 // scanOutput looks for bell/OSC signals in a chunk of terminal output. A
-// burst of bells produces at most one change per 500 ms.
+// burst of bells produces at most one change per 500 ms. They are the
+// session's own observations and spend no token of the event bucket.
 func (s *Local) scanOutput(chunk []byte) {
 	for _, ev := range s.scanner.Scan(chunk) {
 		s.mu.Lock()
@@ -206,6 +376,52 @@ func (s *Local) scanOutput(chunk []byte) {
 	}
 }
 
+// firePattern is the pattern watcher's fire: the last line matched after the
+// output went quiet. A session that is waiting already keeps what marked it so
+// (a hook's message, kind and options, the bell), and the same prompt does not
+// report itself again while it stays on the screen. That is decided under the
+// lock that sets the state: a report that lands between a look at the state and
+// the set would be overwritten.
+func (s *Local) firePattern(line string) {
+	s.setAttention(AttentionNeedsInput, promptMessage(line), SourcePattern, KindPrompt, nil, unlessWaiting)
+}
+
+// fireTrust is the trust watcher's fire: the agent's workspace-trust question
+// is on the screen, text its last ScreenTail. The session needs input, with
+// the question's words, unless it waits already.
+func (s *Local) fireTrust(text string) {
+	words := s.opts.TrustPattern.FindString(text)
+	if words == "" {
+		return
+	}
+	s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, nil, unlessWaiting)
+}
+
+// signalAttention wakes whoever waits for an attention change (Submit). The
+// caller holds s.mu.
+func (s *Local) signalAttention() {
+	close(s.attnChanged)
+	s.attnChanged = make(chan struct{})
+}
+
+// promptMessage is the attention message for the prompt on a line. A message
+// is cut at MaxAttentionMessage bytes from its start, and it is the end of a
+// long line that says what the agent waits for, so the line is trimmed at its
+// start instead, on a character boundary.
+func promptMessage(line string) string {
+	const prefix = "prompt: "
+	if room := MaxAttentionMessage - len(prefix); len(line) > room {
+		line = line[len(line)-room:]
+		// The cut may have landed inside a character (so may the tracker's, on
+		// a line longer than it keeps): the next character starts at most 3
+		// bytes on.
+		for i := 0; i < utf8.UTFMax-1 && len(line) > 0 && !utf8.RuneStart(line[0]); i++ {
+			line = line[1:]
+		}
+	}
+	return prefix + line
+}
+
 // SetAttention records an attention change without prompt details. See
 // SetAttentionFull.
 func (s *Local) SetAttention(state AttentionState, message, source string) {
@@ -214,10 +430,50 @@ func (s *Local) SetAttention(state AttentionState, message, source string) {
 
 // SetAttentionFull records an attention change, broadcasts it to attached
 // clients and notifies OnChange. AttentionNone clears the signal along with
-// any kind and options. Unknown kinds are dropped rather than rejected.
+// any kind and options. Unknown kinds are dropped rather than rejected. It
+// asks the event bucket for nothing, and the attention entry of the change is
+// always recorded: it is for what the session observes itself and for a
+// report that has paid already, such as one the server sends on to a hosted
+// session's host once it has spent the token it keeps for that host. A report
+// from outside the session goes through TrySetAttentionFull.
 func (s *Local) SetAttentionFull(state AttentionState, message, source, kind string, options []Option) {
+	s.setAttention(state, message, source, kind, options, 0)
+}
+
+// TrySetAttentionFull is SetAttentionFull for a report from outside the
+// session, an agent's or an admin's through the API. The report spends a
+// token of the session's event bucket, the one Record spends on the events an
+// agent reports, before it changes anything and whether or not it changes
+// anything; the attention entry of the change it applies spends no second
+// one. With no token left it returns ErrRateLimited having changed nothing,
+// and the refusal counts in Dropped. The server spends a token of a bucket of
+// the same size before it sends a report on to a hosted session's host, so a
+// report is limited alike on both kinds of session.
+func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind string, options []Option) error {
+	return s.setAttention(state, message, source, kind, options, spendToken)
+}
+
+// attentionRules say how setAttention applies a change.
+type attentionRules uint8
+
+const (
+	// unlessWaiting changes nothing when the session is needs_input already.
+	unlessWaiting attentionRules = 1 << iota
+	// spendToken spends a token of the event bucket before anything changes,
+	// and refuses the change with ErrRateLimited when there is none.
+	spendToken
+)
+
+// setAttention is SetAttentionFull, applied as rules say. The token, the look
+// at the current state and the change share one critical section. The
+// attention entry of an applied change is recorded without asking the bucket
+// (recordOwn), stamped with the change's Since, taken in that section: whoever
+// sees the new state sees it no earlier than the entry's At, however late the
+// entry reaches OnActivity. An invalid state changes nothing and spends
+// nothing.
+func (s *Local) setAttention(state AttentionState, message, source, kind string, options []Option, rules attentionRules) error {
 	if !state.Valid() {
-		return
+		return nil
 	}
 	message = CleanMessage(message)
 	if !ValidKind(kind) {
@@ -228,10 +484,20 @@ func (s *Local) SetAttentionFull(state AttentionState, message, source, kind str
 		kind, options = "", nil
 	}
 	s.mu.Lock()
+	if rules&spendToken != 0 && !s.events.Take(time.Now()) {
+		log := s.log
+		s.mu.Unlock()
+		countDrop(&s.dropped, log, ActivityAttention)
+		return ErrRateLimited
+	}
 	cur := s.info.Attention
+	if rules&unlessWaiting != 0 && cur.State == AttentionNeedsInput {
+		s.mu.Unlock()
+		return nil
+	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != AttentionNone {
@@ -239,6 +505,7 @@ func (s *Local) SetAttentionFull(state AttentionState, message, source, kind str
 		att.Since = &now
 	}
 	s.info.Attention = att
+	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
 	s.mu.Unlock()
 	if state != AttentionNone {
@@ -246,9 +513,10 @@ func (s *Local) SetAttentionFull(state AttentionState, message, source, kind str
 		if label == "" {
 			label = string(state)
 		}
-		s.Record(ActivityEntry{Type: ActivityAttention, Message: label})
+		s.recordOwn(ActivityEntry{At: *att.Since, Type: ActivityAttention, Message: label}, state)
 	}
 	s.notifyChange()
+	return nil
 }
 
 func sameOptions(a, b []Option) bool {
@@ -311,7 +579,19 @@ func (s *Local) Info() Info {
 	defer s.mu.Unlock()
 	info := s.info
 	info.Viewers = s.hub.Count()
+	if info.AgentSession != nil {
+		as := *info.AgentSession
+		info.AgentSession = &as
+	}
 	return info
+}
+
+// LastOutputAt is when the process last wrote output, zero until it has. A
+// crew run reads it to tell when a member's terminal has gone quiet.
+func (s *Local) LastOutputAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastOutput
 }
 
 // AttachOptions describe a client joining a session.
@@ -352,7 +632,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
 	}
-	if role == RoleControl && proto.ValidDimension(cols) && proto.ValidDimension(rows) && !s.info.Status.Ended() {
+	// The hello's size: a controller's sets the PTY's, (0, 0) follows it
+	// (proto.HelloSize). The role comes from the token, never from the hello.
+	if role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended() {
 		if cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
 				s.info.Cols, s.info.Rows = cols, rows
@@ -388,7 +670,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	sub.send(proto.MustControl(proto.Simple{T: proto.CtlReady}))
 	for _, e := range s.activity.Tail(ActivityReplay) {
-		sub.send(proto.MustControl(activityMessage(e)))
+		sub.send(proto.MustControl(EntryToProto(e)))
 	}
 	s.hub.add(sub)
 	s.hub.Broadcast(s.viewersFrame())
@@ -421,44 +703,82 @@ func (s *Local) Detach(sub *Subscription) {
 	}
 }
 
-// Input forwards keystrokes from a controller.
+// Input forwards keystrokes from a controller, raw. They answer the
+// needs_input prompt that was showing as they were written, unless they are
+// only a terminal's own report (isTerminalReport: xterm answering a cursor
+// position query), which is written and answers nothing.
 func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
+	// The prompt this input answers is the one on the screen as it is typed.
+	// A process that reacts before Write returns (an echo that rings the bell)
+	// may raise the next one meanwhile, and typing must not clear that one.
+	// Each attention change gets a new Since, which tells the prompts apart.
+	promptSince := s.info.Attention.Since
 	s.mu.Unlock()
 	if ended {
 		return ErrSessionEnded
 	}
-	_, err := s.proc.Write(data)
-	if err == nil {
-		// Presence: stamp the typist and refresh the roster at most every 2 s.
-		now := time.Now().UnixMilli()
-		if prev := sub.lastInput.Swap(now); now-prev > 2000 {
-			s.mu.Lock()
-			s.hub.Broadcast(s.viewersFrame())
-			s.mu.Unlock()
-		}
-		// First reply wins: the check, the answer record and the clear all
-		// happen in one critical section so two concurrent typists cannot
-		// both claim the prompt.
-		s.mu.Lock()
-		waiting := s.info.Attention.State == AttentionNeedsInput
-		prompt := s.info.Attention.Message
-		if waiting {
-			s.info.LastAnswer = &Answer{By: sub.ID, ByName: sub.Name, At: time.Now().UTC(), Message: prompt}
-			s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
-			s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
-		}
-		s.mu.Unlock()
-		if waiting {
-			s.Record(ActivityEntry{Type: ActivityInput, By: sub.ID, ByName: sub.Name, Message: prompt})
-			s.notifyChange()
-		}
+	if _, err := s.proc.Write(data); err != nil {
+		return err
 	}
-	return err
+	if isTerminalReport(data) {
+		return nil
+	}
+	s.stampTyping(sub)
+	s.answer(promptSince, sub.ID, sub.Name, true, bytes.IndexByte(data, '\r') >= 0)
+	return nil
+}
+
+// ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
+// bytes once cleaned: nothing was written.
+var ErrTextTooLong = fmt.Errorf("session: text to submit is longer than %d bytes", MaxSubmitText)
+
+// stampTyping marks sub as typing now and refreshes the roster at most every
+// 2 s (presence).
+func (s *Local) stampTyping(sub *Subscription) {
+	now := time.Now().UnixMilli()
+	if prev := sub.lastInput.Swap(now); now-prev > 2000 {
+		s.mu.Lock()
+		s.hub.Broadcast(s.viewersFrame())
+		s.mu.Unlock()
+	}
+}
+
+// answer settles the needs_input prompt a write answered: the one stamped
+// promptSince, when it is still showing, is cleared and recorded as answered
+// by by (a subscriber ID, "" for Conductor) and byName. A trust question is
+// answered only by a write with Enter in it (enter): an arrow key that moves
+// its selection leaves it showing, so that no prompt is typed into it. First
+// reply wins: the check, the answer and the clear share one critical
+// section, so two concurrent typists cannot both claim the prompt. With
+// record, an input entry with the question records the answer.
+func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter bool) {
+	s.mu.Lock()
+	att := s.info.Attention
+	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || att.Source != SourceTrust)
+	question := att.Message
+	if waiting {
+		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
+		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		s.signalAttention()
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+	}
+	s.mu.Unlock()
+	if !waiting {
+		return
+	}
+	if att.Source == SourceTrust && s.trust != nil {
+		// What showed the question is behind: only a new one counts.
+		s.trust.Reset()
+	}
+	if record {
+		s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: question})
+	}
+	s.notifyChange()
 }
 
 // Resize applies the latest-controller-wins policy and broadcasts the result.
@@ -518,6 +838,10 @@ func (s *Local) Send(sub *Subscription, frame []byte) { sub.send(frame) }
 
 // Viewers returns the number of attached clients.
 func (s *Local) Viewers() int { return s.hub.Count() }
+
+// Drained reports whether every attached client has been handed all the frames
+// the session sent it, the final status among them once the session has ended.
+func (s *Local) Drained() bool { return s.hub.Drained() }
 
 // LinkViewers counts attached clients per share link id.
 func (s *Local) LinkViewers() map[string]int { return s.hub.CountByLink() }

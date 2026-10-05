@@ -61,6 +61,16 @@ func (s *dcSink) WriteFrame(frame []byte) error {
 	return nil
 }
 
+// buffered returns the bytes the data channel has taken that the other end has
+// not acknowledged yet, which closing the connection drops. It is zero for a
+// channel that is not open.
+func (s *dcSink) buffered() uint64 {
+	if s.closed.Load() || s.dc.ReadyState() != webrtc.DataChannelStateOpen {
+		return 0
+	}
+	return s.dc.BufferedAmount()
+}
+
 func (s *dcSink) waitForRoom() error {
 	deadline := time.NewTimer(dcSendTimeout)
 	defer deadline.Stop()

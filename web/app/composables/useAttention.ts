@@ -1,7 +1,18 @@
-import type { SessionInfo } from './useSessions'
+import type { RunInfo, SessionInfo } from './useSessions'
+import { ApiError } from './useApi'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
+import { eventAlert, type RoutedEvent } from '~/utils/events'
+import { formedCrew } from '~/utils/activity'
+import type { ActivityEntry, SessionActivity } from '~/utils/protocol'
+import { RunStore } from '~/utils/runs'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
+/** Shortest gap between two chimes, so a burst of routed events plays one. */
+const CHIME_GAP_MS = 1500
+let lastChime = 0
+let stopEvents: (() => void) | undefined
+/** The runs of the live store: one per app, made by the first useAttention. */
+let runStore: RunStore | undefined
 
 export interface AttentionSettings {
   notifications: boolean
@@ -58,24 +69,61 @@ interface AttentionStore {
   error: string
 }
 
+/** The live session store behind useAttention, for readers that must not start it (useEvents). */
+export function useAttentionStore() {
+  return useState<AttentionStore>('attentionStore', () => ({ sessions: new Map(), connected: false, started: false, error: '' }))
+}
+
 /**
  * Live session state for the whole app: one streaming fetch of
- * /api/events (admin token in the Authorization header, never in the URL)
+ * /api/events (workbench token in the Authorization header, never in the URL)
  * with polling as a fallback. Drives badges, counters, the tab title, the
- * favicon, browser notifications and the chime.
+ * favicon, browser notifications and the chime, as the Events page routes
+ * them, and hands every activity entry to useEvents.
  */
 export function useAttention() {
-  const store = useState<AttentionStore>('attentionStore', () => ({ sessions: new Map(), connected: false, started: false, error: '' }))
+  const store = useAttentionStore()
   const version = useState<number>('attentionVersion', () => 0)
-  const admin = useAdminToken()
+  const admin = useWorkbenchToken()
   const { httpBase } = useApiBase()
   const api = useSessions()
+  const events = useEvents()
   const { settings } = useAttentionSettings()
+  const toast = useToast()
 
   const sessions = computed(() => {
     void version.value
     return Array.from(store.value.sessions.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   })
+
+  // The runs, beside the sessions: read on every snapshot (a stream that
+  // starts, or starts again), when a run event names one, and when a member
+  // session of one changes status; never on a timer. A reply older than one
+  // already applied is dropped (RunStore's tickets).
+  const runsVersion = useState<number>('attentionRunsVersion', () => 0)
+  const runs: RunStore = (runStore ??= new RunStore(
+    {
+      get: (id) =>
+        api.getRun(id).catch((e) => {
+          if (e instanceof ApiError && e.status === 404) return null
+          throw e
+        }),
+      list: () => api.listRuns(),
+    },
+    () => runsVersion.value++,
+  ))
+  /** Every run the server keeps, newest first. */
+  const runList = computed<RunInfo[]>(() => {
+    void runsVersion.value
+    return runs.list()
+  })
+  /** The runs' names by id, for the sidebar's run headers. */
+  const runNames = computed<Record<string, string>>(() => Object.fromEntries(runList.value.map((r) => [r.id, r.label || r.name])))
+  /** The run with this id as last read, if the store has it. */
+  function runOf(id: string): RunInfo | undefined {
+    void runsVersion.value
+    return runs.runs.get(id)
+  }
   const needsInput = computed(() => needingInput(sessions.value))
   const count = computed(() => needsInput.value.length)
   const connected = computed(() => store.value.connected)
@@ -85,44 +133,90 @@ export function useAttention() {
     version.value++
   }
 
+  // Each change also settles the activity entries useEvents holds for the
+  // session change that carries their state; a snapshot also drops the holds
+  // and badges of sessions it no longer lists.
   function replaceAll(list: SessionInfo[]) {
     const next = new Map(list.map((s) => [s.id, s]))
     react(store.value.sessions, next)
     store.value.sessions = next
     bump()
+    events.retain(new Set(next.keys()))
+    events.settle()
   }
 
   function upsert(s: SessionInfo) {
     const prev = new Map(store.value.sessions)
+    // A member that starts, ends or goes changes its run as the run reports it.
+    if (s.crew && prev.get(s.id)?.status !== s.status) runs.schedule(s.crew.runId)
     store.value.sessions.set(s.id, s)
     react(prev, store.value.sessions)
     bump()
+    events.settle(s.id)
   }
 
   function remove(id: string) {
+    const gone = store.value.sessions.get(id)
+    if (gone?.crew) runs.schedule(gone.crew.runId)
     store.value.sessions.delete(id)
     bump()
+    events.forget(id)
   }
 
+  /**
+   * Alerts for sessions that newly need input, when the Events page routes
+   * needs_input to Browser. They come from the session state, so each prompt
+   * alerts once.
+   */
   function react(prev: Map<string, SessionInfo>, next: Map<string, SessionInfo>) {
     if (!import.meta.client) return
     const fresh = newlyNeedingInput(prev, next)
-    if (!fresh.length) return
-    if (settings.value.notifications && 'Notification' in window && Notification.permission === 'granted') {
-      for (const s of fresh) {
-        try {
-          const n = new Notification(`${s.name} needs input`, { body: s.attention?.message || 'The agent is waiting for you.', tag: `conductor-${s.id}` })
-          n.onclick = () => {
-            window.focus()
-            navigateTo(`/sessions/${s.id}`)
-            n.close()
-          }
-        } catch {
-          /* notification blocked */
-        }
+    if (!fresh.length || !events.routes.value.needs_input.browser) return
+    for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id)
+    chime()
+  }
+
+  /** A session that formed a crew around itself and asked for it to be offered (conductor crew create --open): a toast with Open. Nothing navigates on its own. */
+  function offerFormedCrew(sessionId: string, entry: ActivityEntry) {
+    if (!import.meta.client) return
+    const s = store.value.sessions.get(sessionId)
+    const formed = formedCrew(s?.name || sessionId, entry)
+    if (!formed) return
+    toast.add({
+      title: formed.title,
+      description: 'The run is in the sidebar. Open shows it.',
+      icon: 'i-lucide-users',
+      color: 'neutral',
+      actions: [{ label: 'Open', icon: 'i-lucide-arrow-right', onClick: () => navigateTo(formed.path) }],
+    })
+  }
+
+  /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
+  function reactToEvent(e: RoutedEvent) {
+    const alert = eventAlert(e, events.routes.value)
+    if (!alert) return
+    notify(alert.title, alert.body, alert.tag, e.sessionId)
+    chime()
+  }
+
+  function notify(title: string, body: string, tag: string, sessionId: string) {
+    if (!settings.value.notifications || !('Notification' in window) || Notification.permission !== 'granted') return
+    try {
+      const n = new Notification(title, { body, tag })
+      n.onclick = () => {
+        window.focus()
+        navigateTo(`/sessions/${sessionId}`)
+        n.close()
       }
+    } catch {
+      /* notification blocked */
     }
-    if (settings.value.chime) playChime()
+  }
+
+  function chime() {
+    if (!settings.value.chime || Date.now() - lastChime < CHIME_GAP_MS) return
+    lastChime = Date.now()
+    playChime()
   }
 
   let abort: AbortController | undefined
@@ -130,15 +224,16 @@ export function useAttention() {
   let backoff = 1000
 
   async function stream() {
-    if (!admin.token.value) return
+    // The stream of the token before goes first, even with no token now: after "Forget token" it must not refill the store.
     abort?.abort()
+    if (!admin.token.value) return
     abort = new AbortController()
     const signal = abort.signal
     try {
       const res = await fetch(`${httpBase.value}/api/events`, { headers: { Authorization: `Bearer ${admin.token.value}` }, signal })
       if (res.status === 401) {
         admin.needsToken.value = true
-        store.value.error = 'Admin token required'
+        store.value.error = 'Workbench token required'
         return
       }
       if (!res.ok || !res.body) throw new Error(`events ${res.status}`)
@@ -184,9 +279,21 @@ export function useAttention() {
     if (!data.length) return
     try {
       const payload = JSON.parse(data.join('\n'))
-      if (event === 'snapshot') replaceAll(payload as SessionInfo[])
-      else if (event === 'session') upsert(payload as SessionInfo)
+      if (event === 'snapshot') {
+        replaceAll(payload as SessionInfo[])
+        // What changed while the stream was away: every run, once.
+        runs.readAll().catch(() => {})
+      } else if (event === 'session') upsert(payload as SessionInfo)
       else if (event === 'removed') remove((payload as { id: string }).id)
+      else if (event === 'run') {
+        const r = payload as { id: string; removed?: boolean }
+        if (r.removed) runs.remove(r.id)
+        else runs.schedule(r.id)
+      } else if (event === 'activity') {
+        const { sessionId, ...entry } = payload as SessionActivity
+        offerFormedCrew(sessionId, entry)
+        events.push(sessionId, entry)
+      }
     } catch {
       /* ignore malformed event */
     }
@@ -196,6 +303,8 @@ export function useAttention() {
     if (!admin.token.value) return
     try {
       replaceAll(await api.list())
+      // The fallback while the stream is down reads the runs with the sessions.
+      await runs.readAll()
       store.value.error = ''
     } catch (e) {
       store.value.error = (e as Error).message
@@ -206,6 +315,8 @@ export function useAttention() {
   function start() {
     if (!import.meta.client || store.value.started) return
     store.value.started = true
+    stopEvents?.()
+    stopEvents = events.onEvent(reactToEvent)
     stream()
     pollTimer = window.setInterval(() => {
       if (!store.value.connected && document.visibilityState === 'visible') poll()
@@ -215,6 +326,8 @@ export function useAttention() {
       () => {
         store.value.sessions = new Map()
         bump()
+        runs.clear()
+        events.reset()
         stream()
       },
     )
@@ -222,12 +335,24 @@ export function useAttention() {
 
   function stop() {
     abort?.abort()
+    stopEvents?.()
+    stopEvents = undefined
     window.clearInterval(pollTimer)
     store.value.started = false
     store.value.connected = false
   }
 
-  return { sessions, needsInput, count, connected, error, start, stop, refresh: poll }
+  /** Reads one run now (a page that shows it, as it opens); resolves to it, or null when the server does not have it. */
+  function refreshRun(id: string): Promise<RunInfo | null> {
+    return runs.read(id)
+  }
+
+  /** Takes a run an action answered with (a start, a stop, a member added): it is the newest there is. */
+  function applyRun(run: RunInfo) {
+    runs.apply(run)
+  }
+
+  return { sessions, needsInput, count, connected, error, start, stop, refresh: poll, runs: runList, runNames, runOf, refreshRun, applyRun }
 }
 
 /** Tab title prefix and favicon dot while sessions need input. Call once, in app.vue. */

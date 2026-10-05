@@ -11,7 +11,7 @@ function readStored(): string {
 
 /**
  * The display name other people on a session see. It is a label, not
- * authentication: access still comes from the admin token or a share link.
+ * authentication: access still comes from the workbench token or a share link.
  */
 export function useIdentity() {
   const name = useState<string>('displayName', () => (import.meta.client ? readStored() : ''))

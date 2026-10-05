@@ -5,13 +5,15 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
-import { closeReason, encodeText, type ActivityEntry, type ControlMessage, type FileResponse, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
+import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
 const props = withDefaults(
   defineProps<{
     /** Creates a fresh transport for each (re)connection. */
     createTransport: () => TerminalTransport
+    /** No input: keys and pastes reach nothing. How the terminal is sized is the `fit` prop's alone. */
     readOnly?: boolean
     /** Connect on mount. Vue casts absent booleans to false, hence the explicit default. */
     autoConnect?: boolean
@@ -20,11 +22,16 @@ const props = withDefaults(
     /** Tile mode: no frame, overlays or notices, just the terminal. */
     compact?: boolean
     /**
-     * `fill` (default) fits the terminal to the pane and, for controllers,
-     * resizes the session. `scale` keeps the owner's cols × rows and scales
-     * the whole terminal down to fit: previews, thumbnails, wall tiles.
+     * How the terminal meets its pane. `fill` (default, the full view) fits
+     * the pane and, with control, sizes the session to it. `tile` does the
+     * same for a wall or crew tile, at the font size given and with no
+     * scrollback (so no scrollbar gutter is reserved), and scales the screen
+     * down to show it whole while another viewer has made the session larger
+     * than the tile. `scale` keeps the session's cols × rows and scales the
+     * whole terminal into the pane: a view-only tile; its hello asks for no
+     * size (0 × 0, follow the session).
      */
-    fit?: 'fill' | 'scale'
+    fit?: 'fill' | 'scale' | 'tile'
     /** Focus the terminal once connected (controllers only). */
     autoFocus?: boolean
   }>(),
@@ -44,10 +51,16 @@ const emit = defineEmits<{
 }>()
 
 const host = ref<HTMLDivElement>()
+/** The renderer xterm draws with: webgl, or dom when WebGL is not available. */
+const renderer = ref<'webgl' | 'dom' | ''>('')
 const overlay = ref<{ title: string; detail?: string } | null>(null)
 const connecting = ref(false)
 const fileView = ref(false)
 const notice = ref('')
+/** The role the server gave this connection: a view-only one never sizes the session, whatever the page asked for. */
+const role = ref<Role | ''>('')
+/** The size the last hello carried: 0 × 0 when this view did not size the session as it connected. */
+let helloSent: { cols: number; rows: number } = { ...FOLLOW_SIZE }
 /** True once the process is gone: the cursor is hidden and stops blinking. */
 const ended = ref(false)
 let endedAtWelcome = false
@@ -103,18 +116,85 @@ const fileLinkProvider: ILinkProvider = {
   },
 }
 
-function measure(): { cols: number; rows: number } {
-  if (!props.readOnly) fit?.fit()
-  return { cols: term?.cols ?? 80, rows: term?.rows ?? 24 }
+/**
+ * Whether this view sizes the session: a full view or a tile that takes input, unless the server said this connection may only watch. A
+ * scaled or read-only view follows the session's size instead.
+ */
+function sizes(): boolean {
+  return props.fit !== 'scale' && !props.readOnly && role.value !== 'view'
 }
 
+/** Fits the terminal to its pane when this view sizes the session, and returns the size to ask for: 0 × 0 (follow) otherwise, or before the pane is laid out. */
+function measure(): { cols: number; rows: number } {
+  const h = host.value
+  if (!sizes() || !term || !fit || !h?.clientWidth || !h.clientHeight) return helloSize(false, 0, 0)
+  fit.fit()
+  return helloSize(true, term.cols, term.rows)
+}
+
+/**
+ * Fits and resizes the session once this view's own pane has stopped changing size (FIT_DEBOUNCE_MS), as it becomes visible again, or once
+ * the font has loaded. Never in answer to another viewer's resize: two views of one session take turns only when one of them attaches or
+ * its pane changes (latest controller wins), never back and forth.
+ */
 function scheduleResize() {
-  if (props.readOnly) return
+  if (!sizes()) return
   window.clearTimeout(resizeTimer)
-  resizeTimer = window.setTimeout(() => {
-    const { cols, rows } = measure()
-    transport?.resize(cols, rows)
-  }, 100)
+  resizeTimer = window.setTimeout(() => fitAndResize(2), FIT_DEBOUNCE_MS)
+}
+
+/**
+ * Fits, resizes the session, and checks a frame later that the screen fits its pane: xterm may measure its cells again as it renders the
+ * new size (the bundled font settling in), and then the fit is done again, `retries` times at most.
+ */
+function fitAndResize(retries: number) {
+  const { cols, rows } = measure()
+  if (cols) transport?.resize(cols, rows)
+  window.requestAnimationFrame(() => {
+    if (retries > 0 && cols && overflows()) fitAndResize(retries - 1)
+    else scheduleTileScale()
+  })
+}
+
+/** Whether the terminal's screen, with its padding, is wider or taller than its pane. */
+function overflows(): boolean {
+  const el = term?.element
+  const h = host.value
+  const screen = el?.querySelector<HTMLElement>('.xterm-screen')
+  if (!el || !h || !screen) return false
+  const style = getComputedStyle(el)
+  const padX = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+  const padY = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom)
+  return screen.offsetWidth + padX > h.clientWidth || screen.offsetHeight + padY > h.clientHeight
+}
+
+function onVisibility() {
+  if (document.visibilityState === 'visible') scheduleResize()
+}
+
+// Tile mode's safety net: while another viewer has made the session larger
+// than the tile, the screen is scaled down to show it whole; at the tile's own
+// size it is not scaled at all.
+let tileFrame: number | undefined
+function applyTileScale() {
+  const el = term?.element
+  const h = host.value
+  if (props.fit !== 'tile' || !el || !h) return
+  const screen = el.querySelector<HTMLElement>('.xterm-screen')
+  if (!screen) return
+  const style = getComputedStyle(el)
+  const padX = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+  const padY = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom)
+  const s = tileScale({ width: h.clientWidth, height: h.clientHeight }, { width: screen.offsetWidth + padX, height: screen.offsetHeight + padY })
+  el.style.transform = s < 1 ? `scale(${s})` : ''
+}
+
+function scheduleTileScale() {
+  if (props.fit !== 'tile' || tileFrame !== undefined) return
+  tileFrame = window.requestAnimationFrame(() => {
+    tileFrame = undefined
+    applyTileScale()
+  })
 }
 
 // Scale mode: pick a font size that roughly fills the pane, then apply the
@@ -173,18 +253,24 @@ function markEnded() {
 function handleControl(msg: ControlMessage) {
   switch (msg.t) {
     case 'welcome':
+      role.value = msg.role
       fileView.value = msg.fileView
       existsCache.clear()
       // Sessions that already ended are marked once the scrollback has replayed.
       endedAtWelcome = isEnded(msg.status)
-      if (props.readOnly && msg.cols && msg.rows) term?.resize(msg.cols, msg.rows)
+      // A view that does not size the session shows it at its size, and so
+      // does one whose pane was not laid out as it connected, until it fits.
+      if (msg.cols && msg.rows && (!sizes() || !helloSent.cols)) term?.resize(msg.cols, msg.rows)
+      scheduleTileScale()
       emit('welcome', msg)
       break
     case 'ready':
       if (endedAtWelcome) markEnded()
       break
     case 'resize':
+      // Another viewer's resize is followed, never answered with one of this view's own.
       if (msg.cols && msg.rows && (term?.cols !== msg.cols || term?.rows !== msg.rows)) term?.resize(msg.cols, msg.rows)
+      scheduleTileScale()
       break
     case 'status':
       emit('status', msg.status, msg.exitCode)
@@ -200,7 +286,7 @@ function handleControl(msg: ControlMessage) {
       emit('viewers', { count: msg.count, list: msg.list })
       break
     case 'activity':
-      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message })
+      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message, url: msg.url, to: msg.to, tool: msg.tool })
       break
     case 'error':
       if (msg.code === 'read_only') notice.value = 'This link is view-only'
@@ -232,9 +318,14 @@ async function connect() {
   term.options.cursorBlink = !props.compact
   term.reset()
   try {
-    await t.connect(measure())
+    role.value = ''
+    helloSent = measure()
+    await t.connect(helloSent)
     t.ping()
-    if (!props.readOnly) t.resize(term.cols, term.rows)
+    if (sizes()) {
+      const { cols, rows } = measure()
+      if (cols) t.resize(cols, rows)
+    }
     if (props.autoFocus && !props.readOnly) term.focus()
   } catch (e) {
     if (!overlay.value) overlay.value = { title: (e as Error).message }
@@ -264,7 +355,14 @@ function sendInput(text: string): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, sendInput, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+/** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open. */
+function submit(text: string): boolean {
+  if (!transport || transport.state.value !== 'open') return false
+  transport.submit(text)
+  return true
+}
+
+defineExpose({ connect, disconnect, requestFile, sendInput, submit, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({
@@ -299,10 +397,18 @@ onMounted(() => {
     if (props.fit === 'scale') scheduleScale()
     else scheduleResize()
   })
+  // The renderer in use, for anyone measuring the tiles (data-renderer on
+  // the host): webgl once the addon is up, dom when it is not available or
+  // its context is lost.
+  renderer.value = 'dom'
   try {
     const webgl = new WebglAddon()
-    webgl.onContextLoss(() => webgl.dispose())
+    webgl.onContextLoss(() => {
+      webgl.dispose()
+      renderer.value = 'dom'
+    })
     term.loadAddon(webgl)
+    renderer.value = 'webgl'
   } catch {
     /* canvas renderer fallback */
   }
@@ -312,7 +418,7 @@ onMounted(() => {
     for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff
     transport?.sendInput(bytes)
   })
-  if (!props.readOnly) fit.fit()
+  if (sizes() && host.value?.clientWidth && host.value.clientHeight) fit.fit()
   observer = new ResizeObserver((entries) => {
     if (props.fit === 'scale') {
       if (entries.some((e) => e.target === host.value)) fontAdjustments = 0
@@ -323,14 +429,18 @@ onMounted(() => {
   })
   observer.observe(host.value!)
   if (props.fit === 'scale' && term.element) observer.observe(term.element)
+  // A tab brought back sizes its session again: the view the person looks at wins.
+  document.addEventListener('visibilitychange', onVisibility)
   pingTimer = window.setInterval(() => transport?.ping(), 10000)
   if (props.autoConnect) connect()
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
+  document.removeEventListener('visibilitychange', onVisibility)
   stopTheme?.()
   if (scaleFrame !== undefined) window.cancelAnimationFrame(scaleFrame)
+  if (tileFrame !== undefined) window.cancelAnimationFrame(tileFrame)
   window.clearTimeout(resizeTimer)
   window.clearInterval(pingTimer)
   disconnect(false)
@@ -341,7 +451,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
-    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale' }" :data-ended="ended ? 'true' : undefined" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale', 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />

@@ -14,42 +14,43 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'KeyA', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'KeyA', 'KeyE', 'KeyR', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   title: 'Everywhere',
   rows: [
-    { keys: ['meta', 'B'], label: 'Show or hide the sidebar (Alt+B in a terminal)' },
+    { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it (Alt+B in a terminal)' },
     { keys: ['?'], label: 'Keyboard shortcuts (Alt+H in a terminal)' },
     { keys: ['N'], label: 'Launch an agent (Alt+N in a terminal)' },
     { keys: ['/'], label: 'Filter sessions (Alt+S in a terminal)' },
-    { keys: ['G', 'W'], label: 'Go to the Wall (Alt+W in a terminal)' },
-    { keys: ['G', 'C'], label: 'Go to the Carousel (Alt+C in a terminal)' },
+    { keys: ['G', 'W'], label: 'Go to the Yard (Alt+W in a terminal)' },
+    { keys: ['G', 'C'], label: 'Go to the Roundhouse (Alt+C in a terminal)' },
     { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
+    { keys: ['G', 'E'], label: 'Go to Events (Alt+E in a terminal)' },
+    { keys: ['G', 'R'], label: 'Go to Crews (Alt+R in a terminal)' },
+    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 
 export const WALL_SHORTCUTS: ShortcutGroup = {
-  title: 'Wall',
+  title: 'Yard',
   rows: [
     { keys: ['escape'], label: 'Back to the grid (Alt+Esc in a terminal)' },
     { keys: ['J'], label: 'Next in the queue (Alt+J in a terminal)' },
     { keys: ['K'], label: 'Previous in the queue (Alt+K in a terminal)' },
     { keys: ['enter'], label: 'Reply to the selected queue item' },
-    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 
 export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
-  title: 'Carousel',
+  title: 'Roundhouse',
   rows: [
     { keys: ['arrowleft'], label: 'Previous session (Alt+← in a terminal)' },
     { keys: ['arrowright'], label: 'Next session (Alt+→ in a terminal)' },
     { keys: ['enter'], label: 'Type into the current session' },
     { keys: ['space'], label: 'Pause or resume rotation (Alt+P in a terminal)' },
     { keys: ['escape'], label: 'Leave the terminal (Alt+Esc in a terminal)' },
-    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
   ],
 }
 

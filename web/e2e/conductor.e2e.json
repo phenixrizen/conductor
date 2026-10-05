@@ -1,0 +1,68 @@
+{
+  "iceServers": [],
+  "catalog": {
+    "disableDefaults": false,
+    "agents": [
+      {
+        "id": "claude",
+        "name": "Claude Code (e2e stub)",
+        "description": "web/e2e/stub-agent.sh in place of Claude Code, with its hooks, yolo, trust and session recipes: the example crews run without the real agent.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "claude" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "yolo": { "args": ["--dangerously-skip-permissions"] },
+        "trustPrompt": "Is\\s*this\\s*a\\s*project\\s*you\\s*created\\s*or\\s*one\\s*you\\s*trust\\?",
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
+        "id": "codex",
+        "name": "Codex CLI (e2e stub)",
+        "description": "web/e2e/stub-agent.sh in place of Codex, with its notify, yolo, trust and session recipes, and its hidden title thread.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "codex", "STUB_REPORT": "codex", "STUB_CODEX_TITLE": "1" },
+        "adapter": "codex",
+        "signal": { "kind": "hook" },
+        "yolo": { "args": ["--dangerously-bypass-approvals-and-sandbox"] },
+        "trustPrompt": "Trust\\s*this\\s*folder\\?",
+        "session": { "idFrom": "hook", "idPolicy": "lowest", "resumeArgs": ["resume", "{id}", "-c", "tui.resume_cwd=\"session\""], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "resumeNeedsCwd": true }
+      },
+      {
+        "id": "codex-untrusted",
+        "name": "Codex CLI, untrusted (e2e stub)",
+        "description": "The Codex stub that asks to trust the folder first, as Codex does in a repository it has not seen.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "codex", "STUB_REPORT": "codex", "STUB_TRUST_DIALOG": "1" },
+        "adapter": "codex",
+        "signal": { "kind": "hook" },
+        "yolo": { "args": ["--dangerously-bypass-approvals-and-sandbox"] },
+        "trustPrompt": "Trust\\s*this\\s*folder\\?",
+        "session": { "idFrom": "hook", "idPolicy": "lowest", "resumeArgs": ["resume", "{id}", "-c", "tui.resume_cwd=\"session\""], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "resumeNeedsCwd": true }
+      },
+      {
+        "id": "asker",
+        "name": "Asker (e2e stub)",
+        "description": "The stub that asks a question with choices (notify --choices) as soon as it starts, for the quick-reply buttons.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_ASK": "Which database?", "STUB_CHOICES": "Postgres|SQLite|Keep both" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
+        "id": "goose",
+        "name": "Goose (e2e stub)",
+        "description": "The stub answering `goose --version` as the Go migrations tool does: an impostor on the PATH, which the identity probe must name.",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "pressly-goose", "STUB_REPORT": "plain" },
+        "adapter": "goose",
+        "signal": { "kind": "bell" }
+      }
+    ]
+  }
+}

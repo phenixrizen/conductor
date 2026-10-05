@@ -96,8 +96,28 @@ decorative shadows. Show one visually primary next action within each work area.
 Keep design prose readable and evidence compact but legible.
 
 The browser workbench imports these tokens for its light canvas, flat panels,
-buttons, typography and focus treatment. Dark-panel tokens remain reference values,
-not a completed application dark mode.
+buttons, typography and focus treatment. The workbench opens dark (Nuxt UI's
+dark palette with forest-300 as the primary) whatever the OS prefers; light is
+a choice its theme button makes. The switchyard's own pages are dark always (zinc
+surfaces, forest-300 as the action colour, terracotta-400 for links), whatever
+the system prefers; `tokens.css` keeps that palette under
+`data-conductor-theme="dark"`.
+
+## The sponsor credit
+
+From the RockSolid Labs Sponsor Kit (claude.ai/design): the same words
+everywhere, **Sponsored and maintained by RockSolid Labs**, linking to
+rocksolidlabs.io, in footers and About screens and never in the workspace.
+Conductor shows it as the last row of Settings → The app (with the
+RockSolid Labs mark in a 32 px tile), in the switchyard pages' footer (the
+link `#F3AC89` on dark), under the card of a guest's join page on a
+switchyard, as the last line of `conductor version` and `--help`, at the end
+of the README (the light logo), and on the desktop splash as the kit's dark
+badge ("SPONSORED BY" and the reversed logo, 40 px tall, 20 px logo). The
+logos are RockSolid Labs' own, used as they are: `web/public/sponsor/` and
+`desktop/static/sponsor/` (`rocksolidlabs-logo.png` on light,
+`rocksolidlabs-logo-reversed.png` on dark, `rocksolidlabs-mark.png` the
+square mark). The copyright beside it is "© 2026 the Conductor authors".
 
 ## Placement and accessibility
 

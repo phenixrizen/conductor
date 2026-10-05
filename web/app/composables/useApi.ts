@@ -1,7 +1,7 @@
 import type { FetchError } from 'ofetch'
 
 export interface ApiErrorBody {
-  error?: { code: string; message: string }
+  error?: { code: string; message: string; [field: string]: unknown }
 }
 
 export class ApiError extends Error {
@@ -9,6 +9,8 @@ export class ApiError extends Error {
     public status: number,
     public code: string,
     message: string,
+    /** The error object as the server sent it, with the fields its route adds (docs/protocol.md). */
+    public details: Record<string, unknown> = {},
   ) {
     super(message)
   }
@@ -30,15 +32,15 @@ export function useApiBase() {
   return { httpBase, wsBase }
 }
 
-/** $fetch wrapper that attaches the admin token and normalises errors. */
+/** $fetch wrapper that attaches the workbench token and normalises errors. */
 export function useApi() {
   const { httpBase } = useApiBase()
-  const admin = useAdminToken()
+  const admin = useWorkbenchToken()
 
-  async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string> } = {}): Promise<T> {
+  async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string } = {}): Promise<T> {
     const token = opts.token ?? admin.token.value
     try {
-      return await $fetch<T>(httpBase.value + path, {
+      return await $fetch<T>((opts.base ?? httpBase.value) + path, {
         method: (opts.method ?? 'GET') as 'GET',
         body: opts.body as Record<string, unknown> | undefined,
         query: opts.query,
@@ -50,7 +52,7 @@ export function useApi() {
       const code = fe.data?.error?.code ?? (status === 0 ? 'network' : 'http_error')
       const message = fe.data?.error?.message ?? (status === 0 ? 'Cannot reach the server' : fe.message)
       if (status === 401 && opts.token === undefined) admin.needsToken.value = true
-      throw new ApiError(status, code, message)
+      throw new ApiError(status, code, message, fe.data?.error ?? {})
     }
   }
 

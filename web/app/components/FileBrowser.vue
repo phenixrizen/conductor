@@ -17,7 +17,7 @@ const props = defineProps<{
 const target = defineModel<FileTarget | null>('target', { default: null })
 const url = defineModel<string | null>('url', { default: null })
 
-const toast = useToast()
+const copy = useCopy()
 const loading = ref(false)
 const header = ref<FileHeader | null>(null)
 const text = ref('')
@@ -155,13 +155,8 @@ function openCrumb(path: string) {
   target.value = { path }
 }
 
-async function copyPath() {
-  try {
-    await navigator.clipboard.writeText(header.value?.path || target.value?.path || '')
-    toast.add({ title: 'Path copied', icon: 'i-lucide-clipboard-check', color: 'success' })
-  } catch {
-    toast.add({ title: 'Copy failed', color: 'warning' })
-  }
+function copyPath() {
+  return copy(header.value?.path || target.value?.path || '', 'Path copied')
 }
 
 function refresh() {

@@ -18,8 +18,9 @@ type Registry struct {
 	mu    sync.RWMutex
 	max   int
 	items map[string]Driver
-	// OnRemove is called after a session leaves the registry (e.g. to delete links).
-	OnRemove func(id string)
+	// OnRemove is called after a session leaves the registry (e.g. to delete
+	// links), with the session as it was.
+	OnRemove func(id string, d Driver)
 }
 
 // NewRegistry creates a registry holding at most max sessions.
@@ -67,11 +68,11 @@ func (r *Registry) List() []Info {
 // Remove deletes a session from the index.
 func (r *Registry) Remove(id string) {
 	r.mu.Lock()
-	_, ok := r.items[id]
+	d, ok := r.items[id]
 	delete(r.items, id)
 	r.mu.Unlock()
 	if ok && r.OnRemove != nil {
-		r.OnRemove(id)
+		r.OnRemove(id, d)
 	}
 }
 

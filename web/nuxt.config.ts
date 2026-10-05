@@ -1,3 +1,5 @@
+import { AGENT_ICONS } from './app/utils/agentIcons'
+
 // Nuxt configuration for the Conductor workbench. The app is a client-only
 // SPA generated into internal/web/dist and embedded in the Go binary.
 export default defineNuxtConfig({
@@ -5,6 +7,24 @@ export default defineNuxtConfig({
   ssr: false,
   modules: ['@nuxt/ui'],
   css: ['~/assets/css/main.css'],
+  // Dark is the theme, whatever the OS prefers; the sidebar's theme button
+  // switches to light and that choice is kept (under a key of our own, so a
+  // "light" an earlier build saved while following the OS does not carry over).
+  colorMode: { preference: 'dark', fallback: 'dark', storageKey: 'conductor-color-mode' },
+  // The workbench never fetches icons at runtime: every icon it shows is
+  // bundled from @iconify-json/lucide. The scan finds the names in the app's
+  // sources (.ts too: event icons are named in app/utils); the built-in
+  // catalog's icons come from the server (internal/catalog/defaults.go), so
+  // they are listed, in app/utils/agentIcons.ts. A catalog icon outside that
+  // list shows the generic agent icon (agentIcon).
+  icon: {
+    provider: 'none',
+    clientBundle: {
+      scan: { globInclude: ['app/**/*.{vue,ts}'] },
+      icons: AGENT_ICONS.map((name) => name.replace(/^i-lucide-/, 'lucide:')),
+      sizeLimitKb: 256,
+    },
+  },
   devtools: { enabled: false },
   app: {
     head: {

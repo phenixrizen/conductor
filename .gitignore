@@ -1,11 +1,19 @@
 bin/
+conductor.d/
 internal/web/dist/*
 !internal/web/dist/.gitkeep
 web/node_modules/
 web/.nuxt/
 web/.output/
+web/playwright-report/
+web/test-results/
 web/.data/
 web/dist
 *.log
 .DS_Store
 .superpowers/
+
+# desktop shell
+desktop/node_modules/
+desktop/dist/
+desktop/release/

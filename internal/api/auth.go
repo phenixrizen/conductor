@@ -14,16 +14,38 @@ type principal struct {
 	admin bool
 	host  bool
 	link  *share.Link
+	// runOf answers the run a session is a member of, for a run link
+	// (Server.runOf).
+	runOf func(sessionID string) (runID string, ok bool)
 }
 
 // role returns the terminal role the principal has on sessionID, or "" when
-// it has no access.
+// it has no access. A session's link grants its role on that session; a
+// run's link on the session of every member of the run, whenever it joined.
 func (p principal) role(sessionID string) session.Role {
 	if p.admin {
 		return session.RoleControl
 	}
-	if p.link != nil && p.link.SessionID == sessionID {
-		return p.link.Role
+	if p.link == nil || sessionID == "" {
+		return ""
+	}
+	if p.link.RunID == "" {
+		if p.link.SessionID == sessionID {
+			return p.link.Role
+		}
+		return ""
+	}
+	// A host's run link on a switchyard names its members' sessions itself.
+	if p.link.Group != nil {
+		if p.link.Group.Names(sessionID) {
+			return p.link.Role
+		}
+		return ""
+	}
+	if p.runOf != nil {
+		if runID, ok := p.runOf(sessionID); ok && runID == p.link.RunID {
+			return p.link.Role
+		}
 	}
 	return ""
 }
@@ -58,7 +80,7 @@ func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
 	if tok == "" {
 		return principal{}
 	}
-	if share.Equal(tok, s.cfg.AdminToken) {
+	if share.Equal(tok, s.cfg.WorkbenchToken) {
 		return principal{admin: true, host: true}
 	}
 	for _, ht := range s.cfg.HostTokens {
@@ -67,14 +89,14 @@ func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
 		}
 	}
 	if link, err := s.links.Resolve(tok); err == nil {
-		return principal{link: link}
+		return principal{link: link, runOf: s.runOf}
 	} else if !errors.Is(err, share.ErrUnknownToken) {
 		s.log.Debug("share token rejected", "reason", err)
 	}
 	return principal{}
 }
 
-// requireAdmin wraps handlers that need the admin token.
+// requireAdmin wraps handlers that need the workbench token (the admin principal).
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authenticate(r, false).admin {
@@ -83,7 +105,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="conductor"`)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "admin token required")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 			return
 		}
 		next(w, r)

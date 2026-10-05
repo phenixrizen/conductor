@@ -25,10 +25,16 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates bash git curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u 10001 conductor
+    && useradd -m -u 10001 conductor \
+    && install -d -o conductor -g conductor -m 0700 /var/lib/conductor
 COPY --from=build /out/conductor /usr/local/bin/conductor
 USER conductor
 WORKDIR /home/conductor
-ENV CONDUCTOR_LISTEN=:8080 CONDUCTOR_ALLOWED_ROOTS=/home/conductor CONDUCTOR_DEFAULT_CWD=/home/conductor
+# Sessions run under /home/conductor. The data directory (catalog.json with the
+# env secrets of agents added in the UI) stays outside it, on a volume so it
+# survives the container.
+ENV CONDUCTOR_LISTEN=:8080 CONDUCTOR_ALLOWED_ROOTS=/home/conductor CONDUCTOR_DEFAULT_CWD=/home/conductor \
+    CONDUCTOR_DATA_DIR=/var/lib/conductor
+VOLUME /var/lib/conductor
 EXPOSE 8080
 ENTRYPOINT ["conductor", "serve"]

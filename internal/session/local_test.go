@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,9 @@ type fakeProc struct {
 	cols   uint16
 	rows   uint16
 	resize chan [2]uint16
+	// onWrite, when set, runs in Write before the bytes arrive: what a
+	// process does as it is written to.
+	onWrite func()
 }
 
 func newFakeProc() *fakeProc {
@@ -34,6 +38,9 @@ func newFakeProc() *fakeProc {
 
 func (f *fakeProc) Read(b []byte) (int, error) { return f.out.Read(b) }
 func (f *fakeProc) Write(b []byte) (int, error) {
+	if f.onWrite != nil {
+		f.onWrite()
+	}
 	f.input <- append([]byte(nil), b...)
 	return len(b), nil
 }
@@ -68,10 +75,45 @@ func decodeControl(t *testing.T, frame []byte) map[string]any {
 	return m
 }
 
+// waitControl returns the first control message that sink has received, or
+// receives within 3 s, for which match is true; nil on timeout. State that
+// Info() already shows is not proof that its broadcast frame reached the sink:
+// a subscription delivers from a queue on its own goroutine.
+func waitControl(sink *chanSink, match func(m map[string]any) bool) map[string]any {
+	deadline := time.After(3 * time.Second)
+	for i := 0; ; {
+		for ; i < sink.count(); i++ {
+			f, err := proto.Decode(sink.frame(i))
+			if err != nil || f.Type != proto.TypeControl {
+				continue
+			}
+			var m map[string]any
+			if json.Unmarshal(f.Payload, &m) == nil && match(m) {
+				return m
+			}
+		}
+		select {
+		case <-sink.writeCh:
+		case <-deadline:
+			return nil
+		}
+	}
+}
+
 func newLocal(t *testing.T, cwd string) (*Local, *fakeProc) {
 	t.Helper()
 	p := newFakeProc()
 	s := NewLocal(Info{ID: "sess", Cwd: cwd, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096})
+	t.Cleanup(func() { p.exit() })
+	return s, p
+}
+
+// newLocalWith is newLocal with the caller's Options and a temporary
+// working directory.
+func newLocalWith(t *testing.T, opts Options) (*Local, *fakeProc) {
+	t.Helper()
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "sess", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, opts)
 	t.Cleanup(func() { p.exit() })
 	return s, p
 }
@@ -214,6 +256,39 @@ func TestExitBroadcastsStatus(t *testing.T) {
 	}
 }
 
+func TestSessionEndedLogShowsTheExitCode(t *testing.T) {
+	t.Run("exited", func(t *testing.T) {
+		logs := &syncBuffer{}
+		status := make(chan struct{}, 1)
+		_, p := newLocalWith(t, Options{
+			Log: slog.New(slog.NewTextHandler(logs, nil)),
+			// The status row is recorded after the log line, in the same goroutine.
+			OnActivity: func(_ string, e ActivityEntry, _ AttentionState) {
+				if e.Type == ActivityStatus {
+					status <- struct{}{}
+				}
+			},
+		})
+		p.exit()
+		select {
+		case <-status:
+		case <-time.After(3 * time.Second):
+			t.Fatal("session did not end")
+		}
+		if line := logs.String(); !strings.Contains(line, "status=exited") || !strings.Contains(line, "exitCode=7") {
+			t.Fatalf("want the exit code in the log line, got %q", line)
+		}
+	})
+	t.Run("no exit status", func(t *testing.T) {
+		logs := &syncBuffer{}
+		s, _ := newLocalWith(t, Options{Log: slog.New(slog.NewTextHandler(logs, nil))})
+		s.markEnded(StatusStopped) // ended before the process reported an exit status
+		if line := logs.String(); !strings.Contains(line, "status=stopped") || strings.Contains(line, "exitCode") {
+			t.Fatalf("want no exitCode in the log line, got %q", line)
+		}
+	})
+}
+
 func TestDisconnectLink(t *testing.T) {
 	s, _ := newLocal(t, t.TempDir())
 	a, b := newChanSink(false), newChanSink(false)
@@ -318,18 +393,11 @@ func TestAttentionFromBellAndClearOnInput(t *testing.T) {
 	if att.State != AttentionNeedsInput || att.Message != "need approval" || att.Source != SourceOSC || att.Since == nil {
 		t.Fatalf("attention %+v", att)
 	}
-	// broadcast reached the viewer
-	found := false
-	for i := 0; i < viewer.count(); i++ {
-		if f, _ := proto.Decode(viewer.frame(i)); f.Type == proto.TypeControl {
-			var m map[string]any
-			json.Unmarshal(f.Payload, &m)
-			if m["t"] == proto.CtlAttention && m["state"] == "needs_input" {
-				found = true
-			}
-		}
-	}
-	if !found {
+	// The broadcast reaches the viewer after Info() already shows the state,
+	// so wait for the frame instead of scanning what has arrived so far.
+	if waitControl(viewer, func(m map[string]any) bool {
+		return m["t"] == proto.CtlAttention && m["state"] == "needs_input"
+	}) == nil {
 		t.Fatal("attention control frame not broadcast")
 	}
 	// view-role input is rejected and does not clear
@@ -347,18 +415,11 @@ func TestAttentionFromBellAndClearOnInput(t *testing.T) {
 	s.SetAttention(AttentionNeedsInput, "again", SourceAPI)
 	late := newChanSink(false)
 	s.Attach("", RoleView, "", 80, 24, late)
-	late.waitFrames(t, 4)
-	seen := false
-	for i := 0; i < late.count(); i++ {
-		if f, _ := proto.Decode(late.frame(i)); f.Type == proto.TypeControl {
-			var m map[string]any
-			json.Unmarshal(f.Payload, &m)
-			if m["t"] == proto.CtlAttention && m["message"] == "again" {
-				seen = true
-			}
-		}
-	}
-	if !seen {
+	// The current attention is the last thing a late attach queues, behind the
+	// scrollback and the activity replay.
+	if waitControl(late, func(m map[string]any) bool {
+		return m["t"] == proto.CtlAttention && m["message"] == "again"
+	}) == nil {
 		t.Fatal("late attach did not receive attention state")
 	}
 	cmu.Lock()
@@ -410,7 +471,11 @@ func TestViewersRosterCarriesNamesAndTyping(t *testing.T) {
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Cols: 80, Rows: 24}, b); err != nil {
 		t.Fatal(err)
 	}
-	b.waitFrames(t, 3) // welcome, ready, viewers
+	// B receives welcome, ready, A's replayed join, the roster and its own
+	// join, one at a time from its queue: wait for the roster itself.
+	if waitControl(b, func(m map[string]any) bool { return m["t"] == proto.CtlViewers && m["count"] == float64(2) }) == nil {
+		t.Fatal("no viewers message listing both clients received")
+	}
 	msg, list := rosterOf(t, b)
 	if msg["count"].(float64) != 2 || len(list) != 2 {
 		t.Fatalf("roster: %v", msg)
@@ -428,20 +493,25 @@ func TestViewersRosterCarriesNamesAndTyping(t *testing.T) {
 	if byName["guest"]["link"] != nil {
 		t.Fatalf("guest should have no link label: %v", byName["guest"])
 	}
-	// Typing: input from A stamps lastInputAt and rebroadcasts the roster.
-	before := b.count()
+	// Typing: input from A stamps lastInputAt and rebroadcasts the roster. Wait
+	// for that roster, not for one more frame: B's own join may still be queued.
 	if err := s.Input(subA, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	b.waitFrames(t, before+1)
-	_, list = rosterOf(t, b)
-	var typed bool
-	for _, v := range list {
-		if v["name"] == "Priya" && v["lastInputAt"] != nil {
-			typed = true
+	typed := waitControl(b, func(m map[string]any) bool {
+		if m["t"] != proto.CtlViewers {
+			return false
 		}
-	}
-	if !typed {
+		raw, _ := m["list"].([]any)
+		for _, v := range raw {
+			if e, ok := v.(map[string]any); ok && e["name"] == "Priya" && e["lastInputAt"] != nil {
+				return true
+			}
+		}
+		return false
+	})
+	if typed == nil {
+		_, list = rosterOf(t, b)
 		t.Fatalf("expected lastInputAt on Priya after input: %v", list)
 	}
 }
@@ -496,7 +566,7 @@ func TestSetAttentionFullBroadcastsOptionsAndInputClears(t *testing.T) {
 func TestCleanOptionsBounds(t *testing.T) {
 	in := make([]Option, 10)
 	for i := range in {
-		in[i] = Option{Label: strings.Repeat("l", 100), Input: strings.Repeat("i", 40)}
+		in[i] = Option{Label: strings.Repeat("l", 100), Input: strings.Repeat("i", 100)}
 	}
 	out := CleanOptions(in)
 	if len(out) != MaxAttentionOptions || len([]rune(out[0].Label)) != MaxOptionLabel || len(out[0].Input) != MaxOptionInput {
@@ -534,39 +604,59 @@ func TestInputDuringNeedsInputRecordsOneAnswer(t *testing.T) {
 	}
 }
 
-func TestActivityBroadcastAndReplay(t *testing.T) {
-	s, _ := newLocal(t, t.TempDir())
-	for i := 0; i < 60; i++ {
-		s.Record(ActivityEntry{Type: "link", Message: "x"})
-	}
+// reactingProc answers a write at once, before Write returns, the way an echo
+// does.
+type reactingProc struct {
+	*fakeProc
+	react func()
+}
+
+func (r *reactingProc) Write(b []byte) (int, error) {
+	n, err := r.fakeProc.Write(b)
+	r.react()
+	return n, err
+}
+
+// Typing answers the prompt that was on the screen when it was typed. A process
+// that reacts before the write returns, cat echoing a bell for one, may raise
+// the next prompt in that time, and that one is not answered yet.
+func TestInputDoesNotClearAPromptItsOwnOutputRaised(t *testing.T) {
+	fp := newFakeProc()
 	sink := newChanSink(false)
-	s.Attach("", RoleView, "", 80, 24, sink)
-	sink.waitFrames(t, 3+ActivityReplay)
-	replayed := 0
-	for i := 0; i < sink.count(); i++ {
-		f, err := proto.Decode(sink.frame(i))
-		if err != nil || f.Type != proto.TypeControl {
-			continue
+	reacted := false // Input, and so react, runs on this goroutine only
+	p := &reactingProc{fakeProc: fp}
+	p.react = func() {
+		if reacted {
+			return
 		}
-		var m map[string]any
-		json.Unmarshal(f.Payload, &m)
-		if m["t"] == proto.CtlActivity {
-			replayed++
-			if m["at"] == nil || m["type"] == nil {
-				t.Fatalf("activity frame missing fields: %v", m)
-			}
+		reacted = true
+		fp.outW.Write([]byte("\a")) // returns once the pump has read it
+		// The prompt the bell raises reaches the viewer as a frame: the
+		// session has applied it before Input goes on.
+		if waitControl(sink, func(m map[string]any) bool {
+			return m["t"] == proto.CtlAttention && m["state"] == string(AttentionNeedsInput)
+		}) == nil {
+			t.Error("the bell raised no prompt")
 		}
 	}
-	// ActivityReplay history entries plus this viewer's own join entry.
-	if replayed != ActivityReplay+1 {
-		t.Fatalf("replayed %d, want %d", replayed, ActivityReplay+1)
+	s := NewLocal(Info{ID: "sess", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, Options{})
+	t.Cleanup(fp.exit)
+	sub, err := s.Attach("", RoleControl, "", 80, 24, sink)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A live entry is broadcast to attached viewers.
-	before := sink.count()
-	s.Record(ActivityEntry{Type: "link", Message: "live"})
-	sink.waitFrames(t, before+1)
-	if m := decodeControl(t, sink.frame(before)); m["t"] != proto.CtlActivity || m["message"] != "live" {
-		t.Fatalf("live entry: %v", m)
+	if err := s.Input(sub, []byte("\n")); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceBell {
+		t.Fatalf("typing cleared the prompt its own output raised: %+v", att)
+	}
+	// The next input does answer it.
+	if err := s.Input(sub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.State != AttentionNone {
+		t.Fatalf("the answer left %+v", att)
 	}
 }
 
@@ -613,5 +703,90 @@ func TestConcurrentAnswersRecordExactlyOne(t *testing.T) {
 				t.Fatalf("round %d: entry by %q but lastAnswer by %q", round, e.ByName, info.LastAnswer.ByName)
 			}
 		}
+	}
+}
+
+// inputEntries returns the input entries of the activity log, oldest first.
+func inputEntries(s *Local) []ActivityEntry {
+	var out []ActivityEntry
+	for _, e := range s.Activity() {
+		if e.Type == ActivityInput {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// LastOutputAt is when the process last wrote output: zero before it has.
+func TestLastOutputAtFollowsTheOutput(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	if at := s.LastOutputAt(); !at.IsZero() {
+		t.Fatalf("no output yet, but LastOutputAt %v", at)
+	}
+	waitAfter := func(after time.Time) time.Time {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if at := s.LastOutputAt(); at.After(after) {
+				return at
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("LastOutputAt stayed at %v", s.LastOutputAt())
+		return time.Time{}
+	}
+	before := time.Now()
+	p.outW.Write([]byte("hello"))
+	first := waitAfter(before.Add(-time.Nanosecond))
+	if first.Before(before) || first.After(time.Now()) {
+		t.Fatalf("LastOutputAt %v, output written after %v", first, before)
+	}
+	time.Sleep(20 * time.Millisecond)
+	p.outW.Write([]byte(" again"))
+	if second := waitAfter(first); second.Sub(first) < 20*time.Millisecond {
+		t.Fatalf("second output at %v, first at %v", second, first)
+	}
+}
+
+// A hello's size: a controller's two dimensions in range set the PTY's, as
+// they always did; (0, 0) follows it, and so does an out-of-range pair; a
+// viewer's never changes it. The welcome carries the size that holds.
+func TestAHelloOfZeroFollowsTheSize(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	for _, tc := range []struct {
+		role       Role
+		cols, rows uint16
+		resized    bool
+	}{
+		{RoleControl, 0, 0, false},
+		{RoleControl, 0, 40, false},
+		{RoleControl, 501, 40, false},
+		{RoleView, 148, 57, false},
+		{RoleControl, 148, 57, true},
+		{RoleControl, 0, 0, false},
+	} {
+		sink := newChanSink(false)
+		if _, err := s.Attach("", tc.role, "", tc.cols, tc.rows, sink); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitFrames(t, 1)
+		w := decodeControl(t, sink.frame(0))
+		select {
+		case got := <-p.resize:
+			if !tc.resized || got != [2]uint16{tc.cols, tc.rows} {
+				t.Fatalf("%s %dx%d resized the PTY to %v", tc.role, tc.cols, tc.rows, got)
+			}
+		case <-time.After(20 * time.Millisecond):
+			if tc.resized {
+				t.Fatalf("%s %dx%d did not resize the PTY", tc.role, tc.cols, tc.rows)
+			}
+		}
+		info := s.Info()
+		if w["cols"] != float64(info.Cols) || w["rows"] != float64(info.Rows) {
+			t.Fatalf("welcome %v, session %dx%d", w, info.Cols, info.Rows)
+		}
+	}
+	if info := s.Info(); info.Cols != 148 || info.Rows != 57 {
+		t.Fatalf("size %dx%d", info.Cols, info.Rows)
 	}
 }

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Conductor needs WSL</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; padding: 32px; font: 15px/1.5 system-ui, sans-serif; background: #f6f7f5; color: #18211c; }
+      @media (prefers-color-scheme: dark) { body { background: #0f1613; color: #e6ebe7; } }
+      h1 { font-size: 22px; margin: 0 0 12px; }
+      code { font-family: ui-monospace, Menlo, Consolas, monospace; background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+      ol { padding-left: 22px; }
+      button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid #4a6a5a; background: #4a6a5a; color: white; cursor: pointer; margin-right: 8px; }
+      button.secondary { background: transparent; color: inherit; }
+      .reason { color: #a1332f; }
+    </style>
+  </head>
+  <body>
+    <h1>Conductor runs its server in WSL 2</h1>
+    <p class="reason" id="reason"></p>
+    <p>On Windows the Conductor server (which launches the agents in terminals) runs inside the Windows Subsystem for Linux. Set it up once:</p>
+    <ol>
+      <li>Install WSL: press <strong>Install WSL</strong> below (an administrator prompt opens and runs <code>wsl --install</code>), or run that in a PowerShell as administrator.</li>
+      <li>Restart Windows when asked, open the distribution once to create your Linux user.</li>
+      <li>Install the agents inside it (<code>npm install -g @anthropic-ai/claude-code</code>, <code>@openai/codex</code>, …): Conductor finds them on the distribution's PATH, not on Windows's.</li>
+      <li>Come back and press <strong>Try again</strong>.</li>
+    </ol>
+    <p>Projects under <code>/mnt/c</code> work but are slow; keep repositories in the distribution's home when you can. WSL's networking stays as it is: the app forwards WebRTC into the distribution itself, so nothing in <code>.wslconfig</code> needs changing.</p>
+    <p>
+      <button id="install">Install WSL</button>
+      <button id="retry" class="secondary">Try again</button>
+    </p>
+    <script>
+      document.getElementById('reason').textContent = new URLSearchParams(location.search).get('reason') || ''
+      document.getElementById('install').addEventListener('click', () => window.conductorSetup?.installWsl())
+      document.getElementById('retry').addEventListener('click', () => window.conductorSetup?.retry())
+    </script>
+  </body>
+</html>

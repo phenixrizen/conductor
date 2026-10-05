@@ -2,6 +2,7 @@ import type { TerminalTransport } from '~/utils/transport/types'
 import { WebSocketTransport } from '~/utils/transport/ws'
 import { WebRTCTransport } from '~/utils/transport/webrtc'
 import type { SessionKind } from './useSessions'
+import { wsBaseOf } from '~/utils/invite'
 
 export interface TransportSpec {
   sessionId: string
@@ -10,6 +11,8 @@ export interface TransportSpec {
   forceRelay?: boolean
   /** Display name sent in the hello; defaults to the stored identity. */
   name?: string
+  /** The server to connect to (`https://host`, utils/invite.ts joinServer) instead of this page's: an invite's switchyard. */
+  server?: string
 }
 
 /** Builds the right transport for a session kind. Each call creates a fresh connection object. */
@@ -19,7 +22,8 @@ export function useTerminalTransport() {
   const identity = useIdentity()
 
   function create(spec: TransportSpec): TerminalTransport {
-    const url = `${wsBase.value}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(spec.token)}`
+    const base = spec.server ? wsBaseOf(spec.server) : wsBase.value
+    const url = `${base}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(spec.token)}`
     const name = spec.name ?? identity.name.value
     if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay, name })
     return new WebSocketTransport(url, { name })

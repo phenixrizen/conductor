@@ -13,6 +13,7 @@ const (
 	CtlResize  = "resize"
 	CtlPing    = "ping"
 	CtlFileGet = "file_get"
+	CtlSubmit  = "submit"
 
 	// owner -> client
 	CtlAttention = "attention"
@@ -33,6 +34,7 @@ const (
 	ErrCodeHelloTimeout     = "hello_timeout"
 	ErrCodeRevoked          = "revoked"
 	ErrCodeSessionEnded     = "session_ended"
+	ErrCodeRelayOff         = "relay_off" // a switchyard without a relay refused the viewer's relay request
 	ErrCodeHostDisconnected = "host_disconnected"
 	ErrCodeFileDenied       = "file_denied"
 	ErrCodeTooManyRequests  = "too_many_requests"
@@ -85,6 +87,18 @@ type Resize struct {
 	Rows uint16 `json:"rows"`
 	By   string `json:"by,omitempty"`
 }
+
+// Submit asks the owner to submit Text as a line, as a reply box does: the
+// text, as a paste when the program asks for one, then Enter on its own after
+// a pause (session.Local.Submit). Controllers only; Text is at most MaxSubmit
+// bytes.
+type Submit struct {
+	T    string `json:"t"`
+	Text string `json:"text"`
+}
+
+// MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
+const MaxSubmit = 4096
 
 // Ping and Pong carry an opaque client timestamp.
 type Ping struct {
@@ -157,6 +171,9 @@ type ErrorMsg struct {
 	T       string `json:"t"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID names the host's link request an error answers (host
+	// control connection), empty otherwise.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // ErrorInfo is the nested error object used inside other messages.
@@ -183,7 +200,9 @@ type Attention struct {
 }
 
 // Activity is one entry of the session activity log (owner -> client). The
-// last 50 entries are replayed after ready; new ones follow live.
+// last 50 entries are replayed after ready; new ones follow live. URL, To and
+// Tool belong to the event types (docs/protocol.md, Events). The owner bounds
+// the text fields (session.CleanEntry) so that the message fits MaxControl.
 type Activity struct {
 	T       string `json:"t"`
 	At      string `json:"at"`
@@ -191,6 +210,9 @@ type Activity struct {
 	By      string `json:"by,omitempty"`
 	ByName  string `json:"byName,omitempty"`
 	Message string `json:"message,omitempty"`
+	URL     string `json:"url,omitempty"`
+	To      string `json:"to,omitempty"`
+	Tool    string `json:"tool,omitempty"`
 }
 
 // Simple is a message with only a discriminator (ready).
@@ -216,6 +238,18 @@ func ParseHeader(payload []byte) (string, error) {
 // ValidDimension reports whether a terminal dimension is acceptable.
 func ValidDimension(v uint16) bool {
 	return v >= 1 && v <= MaxTerminalDimension
+}
+
+// HelloSize reports whether a hello's size asks for a size: two dimensions in
+// 1–MaxTerminalDimension do, and a controller's hello sets the session to it
+// (latest controller wins). (0, 0) is the hello of a viewer that shows the
+// session at the session's size, a scaled tile or a quick reply: it follows
+// the current size and changes nothing, and so does any other pair (a zero
+// with a nonzero, a dimension over 500), as such a hello always did. A resize
+// message has no such case: there zero is invalid. The size never decides the
+// role, which comes from the token on both transports.
+func HelloSize(cols, rows uint16) bool {
+	return ValidDimension(cols) && ValidDimension(rows)
 }
 
 // NewError builds an encoded error control frame.

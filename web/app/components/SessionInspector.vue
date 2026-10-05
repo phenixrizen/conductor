@@ -4,6 +4,7 @@ import type { ActivityEntry, FileResponse, Role, ViewerInfo } from '~/utils/prot
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import { initials, relativeTime } from '~/utils/sessions'
 import { parseLocation } from '~/utils/links'
+import { COLOR_TEXT, entryIcon, linkableUrl } from '~/utils/events'
 
 export type InspectorTab = 'people' | 'files' | 'activity'
 
@@ -67,12 +68,20 @@ function openPath() {
   pathInput.value = ''
 }
 
-const activityDesc = computed(() => [...props.activity].reverse())
+// Newest first. Text only: nothing an agent sends is rendered as HTML, and a
+// URL is a link only when linkableUrl allows it.
+const activityRows = computed(() =>
+  [...props.activity].reverse().map((e) => {
+    const icon = entryIcon(e)
+    return { e, text: describe(e), icon: icon.icon, color: COLOR_TEXT[icon.color], link: linkableUrl(e.url) }
+  }),
+)
 function describe(e: ActivityEntry) {
   const by = e.byName ? `${e.byName} ` : ''
+  const msg = e.message ? `: ${e.message}` : ''
   switch (e.type) {
     case 'input':
-      return `${by}answered${e.message ? `: ${e.message}` : ''}`
+      return `${by}answered${msg}`
     case 'join':
       return `${by}joined`
     case 'leave':
@@ -83,6 +92,18 @@ function describe(e: ActivityEntry) {
       return e.message || 'link changed'
     case 'status':
       return e.message || 'status changed'
+    case 'progress':
+      return e.message || 'progress'
+    case 'artifact':
+      return e.message || (e.url ? '' : 'artifact')
+    case 'handoff':
+      return `handed off${e.to ? ` to ${e.to}` : ''}${msg}`
+    case 'tool_use':
+      return `used ${e.tool || 'a tool'}${msg}`
+    case 'tool_denied':
+      return `${e.tool || 'a tool'} denied${msg}`
+    case 'error':
+      return `${e.tool ? `${e.tool}: ` : ''}${e.message || 'error'}`
   }
   return e.message || e.type
 }
@@ -142,11 +163,18 @@ function describe(e: ActivityEntry) {
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-y-auto p-4">
-      <p v-if="!activityDesc.length" class="text-xs text-muted">Nothing yet.</p>
+      <p v-if="!activityRows.length" class="text-xs text-muted">Nothing yet.</p>
       <ol v-else class="flex flex-col gap-2 text-sm">
-        <li v-for="(e, i) in activityDesc" :key="i" class="flex gap-2.5">
-          <span class="font-mono text-[11px] text-muted pt-0.5 flex-none">{{ new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
-          <span class="min-w-0 break-words">{{ describe(e) }}</span>
+        <li v-for="(r, i) in activityRows" :key="i" class="flex gap-2.5" :data-activity="r.e.type">
+          <span class="font-mono text-[11px] text-muted pt-0.5 flex-none">{{ new Date(r.e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
+          <UIcon :name="r.icon" class="mt-0.5 size-4 flex-none" :class="r.color" aria-hidden="true" />
+          <span class="min-w-0 break-words">
+            {{ r.text }}
+            <template v-if="r.e.url">
+              <a v-if="r.link" :href="r.link" target="_blank" rel="noopener noreferrer" class="break-all text-primary underline underline-offset-2">{{ r.e.url }}</a>
+              <span v-else class="break-all font-mono text-xs text-muted">{{ r.e.url }}</span>
+            </template>
+          </span>
         </li>
       </ol>
     </div>

@@ -7,50 +7,141 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/phenixrizen/conductor/internal/notify"
 )
 
-// runNotify reports an attention state from inside a Conductor session. It is
-// designed for agent hooks: outside a session it exits 0 without output.
+// runNotify reports an attention state, or with --event something the agent
+// did, from inside a Conductor session. It is designed for agent hooks:
+// outside a session it exits 0 without output.
 func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("notify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	state := fs.String("state", "needs_input", "needs_input, working, done or clear")
 	message := fs.String("message", "", "short message shown next to the badge")
-	claudeHook := fs.Bool("claude-hook", false, "read a Claude Code hook payload from stdin and map it")
+	event := fs.String("event", "", "report an event instead of a state: progress, artifact, handoff, tool_use, tool_denied or error")
+	link := fs.String("url", "", "with --event artifact: where the result lives")
+	to := fs.String("to", "", "with --event handoff: who the work goes to")
+	tool := fs.String("tool", "", "with --event tool_use, tool_denied or error: the tool involved")
+	choices := fs.String("choices", "", "with --state needs_input: answers to offer as buttons, separated by |, at most 6 of 40 bytes; a click types the choice as a line")
 	codex := fs.Bool("codex", false, "read a Codex notify payload from the last argument and map it")
+	// Each agent's hooks write their payload to stdin; the flag says whose it is.
+	type hookFlag struct {
+		flag    string
+		set     *bool
+		mapHook func([]byte) (notify.Request, bool)
+	}
+	hooks := make([]hookFlag, 0, len(hookPayloads))
+	for _, h := range hookPayloads {
+		hooks = append(hooks, hookFlag{"--" + h.name, fs.Bool(h.name, false, h.usage), h.mapHook})
+	}
 	quiet := fs.Bool("quiet", true, "exit 0 silently when not running inside a conductor session")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] | --claude-hook | --codex <json>")
+		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] | --<agent>-hook | --codex <json>")
 		fs.PrintDefaults()
+	}
+	// Agents' hooks run this command, and a hook runner reads exit 2 as
+	// "block the agent": a mistake in a hook's command line exits 1.
+	misuse := 2
+	if hookMode(args) {
+		misuse = 1
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
 		}
-		return 2, err
+		return misuse, err
+	}
+	// The payload flags given, in the order of the usage: at most one may be.
+	var payload []string
+	for _, h := range hooks {
+		if *h.set {
+			payload = append(payload, h.flag)
+		}
+	}
+	if *codex {
+		payload = append(payload, "--codex")
+	}
+	if len(payload) > 1 {
+		return misuse, fmt.Errorf("%s cannot be combined: a payload is read one way", strings.Join(payload, " and "))
+	}
+	if *event != "" {
+		// --state has a default, so only Visit can tell that it was given.
+		stateGiven := false
+		fs.Visit(func(f *flag.Flag) { stateGiven = stateGiven || f.Name == "state" })
+		with := payload
+		if stateGiven {
+			with = append([]string{"--state"}, payload...)
+		}
+		if len(with) > 0 {
+			return misuse, fmt.Errorf("--event cannot be combined with %s", strings.Join(with, " or "))
+		}
+	} else if fields := eventFieldsGiven(fs); len(fields) > 0 {
+		// A state, or what a payload maps to, carries none of them: they would
+		// be dropped without a word.
+		verb := "goes"
+		if len(fields) > 1 {
+			verb = "go"
+		}
+		return misuse, fmt.Errorf("%s only %s with --event: conductor notify --event E [--message M] [--url U] [--to T] [--tool N]", joinFlags(fields), verb)
+	}
+	// Choices go with a needs_input state of the agent's own, and nothing else.
+	var options []notify.Option
+	if *choices != "" {
+		switch {
+		case *event != "":
+			return misuse, errors.New("--choices goes with --state needs_input, not with --event")
+		case len(payload) > 0:
+			return misuse, fmt.Errorf("--choices goes with --state needs_input, not with %s", strings.Join(payload, " or "))
+		case *state != "needs_input":
+			return misuse, fmt.Errorf("--choices goes with --state needs_input, not with --state %s", *state)
+		}
+		opts, err := parseChoices(*choices)
+		if err != nil {
+			return misuse, err
+		}
+		options = opts
 	}
 	url, token, err := notify.FromEnv(os.Getenv)
 	if err != nil {
+		// A hook runner writes the payload whether or not there is a session
+		// to report to: read it, so the runner never writes into a closed
+		// pipe. (--codex has its payload in an argument, and its stdin is
+		// Codex's own.)
+		if len(payload) == 1 && payload[0] != "--codex" {
+			_, _ = readPayload(stdin)
+		}
 		if *quiet {
 			return 0, nil
 		}
 		return 1, err
 	}
 	req := notify.Request{State: *state, Message: *message}
-	switch {
-	case *claudeHook:
-		raw, err := notify.ReadAllBounded(stdin)
+	if len(options) > 0 {
+		req.Kind = "prompt"
+		req.Options = options
+	}
+	if *event != "" {
+		req = notify.Request{Event: *event, Message: *message, URL: *link, To: *to, Tool: *tool}
+	}
+	for _, h := range hooks {
+		if !*h.set {
+			continue
+		}
+		raw, err := readPayload(stdin)
 		if err != nil {
 			return 1, err
 		}
-		mapped, ok := notify.MapClaudeHook(raw)
+		mapped, ok := h.mapHook(raw)
 		if !ok {
 			return 0, nil
 		}
 		req = mapped
-	case *codex:
+	}
+	if *codex {
 		rest := fs.Args()
 		if len(rest) == 0 {
 			return 0, nil
@@ -70,4 +161,116 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return 1, err
 	}
 	return 0, nil
+}
+
+// eventFieldsGiven returns the flags that describe an event (--url, --to,
+// --tool) given on the command line, in the order of the usage, even with an
+// empty value.
+func eventFieldsGiven(fs *flag.FlagSet) []string {
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	var out []string
+	for _, name := range []string{"url", "to", "tool"} {
+		if given[name] {
+			out = append(out, "--"+name)
+		}
+	}
+	return out
+}
+
+// joinFlags lists flags as prose: "--url", "--url and --to", "--url, --to and
+// --tool".
+func joinFlags(flags []string) string {
+	if len(flags) < 2 {
+		return strings.Join(flags, "")
+	}
+	return strings.Join(flags[:len(flags)-1], ", ") + " and " + flags[len(flags)-1]
+}
+
+// hookPayload is an agent whose hooks write their payload to stdin: the flag
+// that says whose it is, its usage, and the mapper.
+type hookPayload struct {
+	name, usage string
+	mapHook     func([]byte) (notify.Request, bool)
+}
+
+// hookPayloads lists them in the order of the usage.
+var hookPayloads = []hookPayload{
+	{"claude-hook", "read a Claude Code hook payload from stdin and map it", notify.MapClaudeHook},
+	{"codex-hook", "read a Codex hooks.json payload from stdin and map it", notify.MapCodexHook},
+	{"copilot-hook", "read a GitHub Copilot CLI hook payload from stdin and map it", notify.MapCopilotHook},
+	{"cursor-hook", "read a Cursor CLI hook payload from stdin and map it", notify.MapCursorHook},
+	{"agy-hook", "read an Antigravity hook payload from stdin and map it", notify.MapAgyHook},
+	{"goose-hook", "read a Goose hook payload from stdin and map it", notify.MapGooseHook},
+}
+
+// payloadFlags are the flags that make the command map an agent's payload:
+// one per hookPayloads entry, and --codex.
+var payloadFlags = func() []string {
+	out := make([]string, 0, len(hookPayloads)+1)
+	for _, h := range hookPayloads {
+		out = append(out, h.name)
+	}
+	return append(out, "codex")
+}()
+
+// hookMode reports whether args ask for an agent's payload to be mapped, which
+// is how agents' hooks run the command, whether or not the rest of args parses.
+func hookMode(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		name, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !strings.HasPrefix(a, "-") || !slices.Contains(payloadFlags, name) {
+			continue
+		}
+		if on, err := strconv.ParseBool(value); !hasValue || err != nil || on {
+			return true
+		}
+	}
+	return false
+}
+
+// readPayload reads a hook's payload from stdin, at most 1 MiB. A terminal is
+// not read: nothing writes a payload to one, and what is typed there is the
+// agent's.
+func readPayload(stdin io.Reader) ([]byte, error) {
+	if f, ok := stdin.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return nil, nil
+		}
+	}
+	return notify.ReadAllBounded(stdin)
+}
+
+// Bounds of --choices: how many, and the bytes of one (the typed line).
+const (
+	maxChoices    = 6
+	maxChoiceSize = 40
+)
+
+// parseChoices turns "a|b|c" into quick-reply options: the label is the
+// choice, the input is the choice and a carriage return, so a click types
+// it as a line. At most maxChoices, none empty, none over maxChoiceSize
+// bytes, none holding a control character.
+func parseChoices(s string) ([]notify.Option, error) {
+	parts := strings.Split(s, "|")
+	if len(parts) > maxChoices {
+		return nil, fmt.Errorf("--choices: %d choices, at most %d", len(parts), maxChoices)
+	}
+	out := make([]notify.Option, 0, len(parts))
+	for _, c := range parts {
+		c = strings.TrimSpace(c)
+		switch {
+		case c == "":
+			return nil, errors.New("--choices: an empty choice (a|b|c, each a word or a short phrase)")
+		case len(c) > maxChoiceSize:
+			return nil, fmt.Errorf("--choices: %q is longer than %d bytes", c, maxChoiceSize)
+		case strings.ContainsFunc(c, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+			return nil, fmt.Errorf("--choices: %q holds a control character", c)
+		}
+		out = append(out, notify.Option{Label: c, Input: c + "\r"})
+	}
+	return out, nil
 }

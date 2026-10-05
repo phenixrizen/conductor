@@ -68,3 +68,74 @@ func clientKey(r *http.Request) string {
 	}
 	return host
 }
+
+// addrCounter counts what one address holds at a time (an open host's live
+// sessions on a switchyard): acquire takes one place under max, release
+// gives it back.
+type addrCounter struct {
+	mu   sync.Mutex
+	held map[string]int
+}
+
+func (c *addrCounter) acquire(key string, max int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held == nil {
+		c.held = map[string]int{}
+	}
+	if c.held[key] >= max {
+		return false
+	}
+	c.held[key]++
+	return true
+}
+
+// addrBuckets shares one byte bucket among the connections of an address:
+// the open hosts of one address on a switchyard relay under one bound, so
+// holding openHostSessions sessions buys no more relay than one. acquire hands
+// out the address's bucket, made at the rate when the address holds none;
+// release drops it with the last holder, so an address that left costs nothing.
+type addrBuckets struct {
+	mu   sync.Mutex
+	held map[string]*sharedBucket
+}
+
+type sharedBucket struct {
+	bucket *byteBucket
+	n      int
+}
+
+func (c *addrBuckets) acquire(key string, bytesPerSecond int) *byteBucket {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held == nil {
+		c.held = map[string]*sharedBucket{}
+	}
+	sb := c.held[key]
+	if sb == nil {
+		sb = &sharedBucket{bucket: newByteBucket(bytesPerSecond)}
+		c.held[key] = sb
+	}
+	sb.n++
+	return sb.bucket
+}
+
+func (c *addrBuckets) release(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if sb := c.held[key]; sb != nil {
+		if sb.n--; sb.n <= 0 {
+			delete(c.held, key)
+		}
+	}
+}
+
+func (c *addrCounter) release(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held[key] <= 1 {
+		delete(c.held, key)
+		return
+	}
+	c.held[key]--
+}

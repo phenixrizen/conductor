@@ -68,13 +68,20 @@ func BuildEnv(parent []string, extraAllow []string, set map[string]string, injec
 }
 
 // Inject returns the per-session variables agents use to talk back to
-// Conductor: the session ID, the attention endpoint and its token.
-func Inject(sessionID, notifyURL, token string) map[string]string {
-	return map[string]string{
+// Conductor: the session ID, the attention endpoint and its token, and
+// CONDUCTOR_BIN, the conductor binary the session's hooks run, unless bin is
+// empty. Only this sets them: BuildEnv keeps CONDUCTOR_* from the parent and
+// the catalog out.
+func Inject(sessionID, notifyURL, token, bin string) map[string]string {
+	env := map[string]string{
 		"CONDUCTOR_SESSION_ID":   sessionID,
 		"CONDUCTOR_NOTIFY_URL":   notifyURL,
 		"CONDUCTOR_NOTIFY_TOKEN": token,
 	}
+	if bin != "" {
+		env["CONDUCTOR_BIN"] = bin
+	}
+	return env
 }
 
 // ParentEnv returns the current process environment.
