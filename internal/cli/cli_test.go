@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -529,5 +531,25 @@ func TestHooksInstallByHandPrintsOnlyWhatIsNeeded(t *testing.T) {
 	code, stdout, stderr, err := runHooksWith(t, "install", "claude", "--home", home, "--data-dir", t.TempDir())
 	if code != 1 || err != nil || !strings.Contains(stdout, "is not Conductor's skill") || strings.Contains(stdout, "notify --claude-hook") {
 		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
+	}
+}
+
+// version and --help end with the sponsor line; a bad command's usage on
+// stderr carries it too, being the same text.
+func TestVersionAndHelpCarryTheCredit(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"--version"}, {"--help"}} {
+		var out, errOut bytes.Buffer
+		code, err := Run(context.Background(), args, strings.NewReader(""), &out, &errOut)
+		if code != 0 || err != nil {
+			t.Fatalf("%v: %d %v", args, code, err)
+		}
+		if !strings.HasSuffix(strings.TrimSpace(out.String()), Credit) {
+			t.Fatalf("%v: no credit at the end:\n%s", args, out.String())
+		}
+	}
+	var out bytes.Buffer
+	Run(context.Background(), []string{"version"}, strings.NewReader(""), &out, io.Discard)
+	if first, _, _ := strings.Cut(out.String(), "\n"); !strings.HasPrefix(first, "conductor ") || strings.Contains(first, "RockSolid") {
+		t.Fatalf("the first line is the version alone: %q", first)
 	}
 }

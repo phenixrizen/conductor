@@ -36,7 +36,12 @@ Usage:
   conductor version            print the version
 
 Run "conductor <command> -h" for command flags.
-`
+
+` + Credit + "\n"
+
+// Credit is the sponsor line --version and --help end with, and nothing else
+// prints: never in run output or a log.
+const Credit = "Sponsored and maintained by RockSolid Labs · rocksolidlabs.io"
 
 // Run executes the CLI and returns the process exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
@@ -69,6 +74,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runCompletion(args[1:], stdout, stderr)
 	case "version", "-v", "--version":
 		fmt.Fprintln(stdout, "conductor", version.String())
+		fmt.Fprintln(stdout, Credit)
 		return 0, nil
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)

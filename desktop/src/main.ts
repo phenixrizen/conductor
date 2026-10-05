@@ -19,6 +19,7 @@ import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
 import { RELEASES_URL, startUpdater, updateChannel } from './updater'
+import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
 const dev = !app.isPackaged
 const resources = app.isPackaged ? process.resourcesPath : join(__dirname, '..')
@@ -53,6 +54,12 @@ if (!app.requestSingleInstanceLock()) {
 
 async function run() {
   await app.whenReady()
+  // Up first: in WSL the server takes a while to start, and the window comes only once it answers.
+  let splash: Splash | null = showSplash(join(resources, 'static/splash.html'), splashQuery({ version: app.getVersion(), build: buildLine(app.getVersion(), process.platform, process.arch, process.versions.electron ?? '') }), iconPath())
+  const endSplash = () => {
+    splash?.close()
+    splash = null
+  }
   const userData = app.getPath('userData')
   const logs = new Logs(join(userData, 'logs'))
   const log = (kind: 'main' | 'server', line: string) => logs.line(kind, line)
@@ -72,14 +79,17 @@ async function run() {
   const source = sourceBinary()
   let launcher: Launcher
   if (process.platform === 'win32') {
+    splash?.status(SPLASH_STEPS.wsl)
     const wsl = await wslAvailable(settings.wslDistro)
     if (!wsl.ok) {
+      endSplash()
       await showSetup(wsl.reason)
       return
     }
     launcher = new WslLauncher({ source, distro: wsl.distro, version: app.getVersion(), log: (l) => log('main', l), windowsHome: settings.wslWindowsHome })
   } else {
     if (!existsSync(source)) {
+      endSplash()
       await dialog.showMessageBox({ type: 'error', title: 'Conductor', message: `The server binary is missing: ${source}`, detail: dev ? 'Run make build-go first, or set CONDUCTOR_DESKTOP_BIN.' : 'Reinstall Conductor.' })
       app.quit()
       return
@@ -87,6 +97,7 @@ async function run() {
     launcher = new NativeLauncher({ source, stable: app.isPackaged ? stableBinaryPath(process.platform, homedir()) : '', version: app.getVersion(), ensureStable: ensureStableBinary, log: (l) => log('main', l) })
   }
   log('main', `conductor desktop ${app.getVersion()} (${process.platform}), server ${launcher.describe()}`)
+  splash?.status(SPLASH_STEPS.prepare)
   await launcher.prepare()
   if (launcher instanceof WslLauncher) {
     // The settings are the distribution's paths; ones saved as Windows
@@ -239,17 +250,24 @@ async function run() {
     void dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server keeps failing', detail: `${st.lastError ?? ''}\nSee the server log (Server › Server log), then Restart server.` })
   })
 
+  splash?.status(SPLASH_STEPS.start)
   try {
     await supervisor.start()
   } catch (e) {
+    endSplash()
     await dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server did not start', detail: (e as Error).message })
     showLog()
     return
   }
   // An invite the app was started with (Windows and Linux pass it in argv; macOS through open-url, taken below or before this point).
   const first = inviteInArgv(process.argv) ?? openUrlInvite
+  splash?.status(SPLASH_STEPS.open)
   if (first) openInvite(first)
   else show()
+  // The splash goes when the workbench window shows (or after a while, should it never be ready).
+  const opened = main as BrowserWindow | null
+  if (opened && !opened.isDestroyed()) opened.once('show', endSplash)
+  setTimeout(endSplash, 20_000)
   tray = createTray({ icon: iconPath(), show, openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
   log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)

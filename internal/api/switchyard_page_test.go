@@ -219,3 +219,15 @@ func TestSwitchyardPagesAreDark(t *testing.T) {
 		}
 	}
 }
+
+// Every switchyard page ends with the sponsor line in its footer, linking
+// to rocksolidlabs.io.
+func TestSwitchyardPagesCarryTheCredit(t *testing.T) {
+	e := switchyardEnv(t, true)
+	for _, p := range []string{"/", "/crews"} {
+		_, body := getPage(t, e, p)
+		if !strings.Contains(body, `Sponsored and maintained by <a class="credit" href="https://rocksolidlabs.io">RockSolid Labs</a>`) {
+			t.Fatalf("%s has no credit", p)
+		}
+	}
+}

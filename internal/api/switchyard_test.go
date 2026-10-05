@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/phenixrizen/conductor/internal/version"
 	"net/http"
 	"strings"
 	"sync"
@@ -43,7 +44,7 @@ func TestSwitchyardLaunchesNothing(t *testing.T) {
 		t.Fatalf("health: %d %v", resp.StatusCode, out)
 	}
 	resp, out = e.do("GET", "/api/whoami", adminToken, nil)
-	if resp.StatusCode != http.StatusOK || out["switchyard"] != true || out["host"] == nil {
+	if resp.StatusCode != http.StatusOK || out["switchyard"] != true || out["host"] == nil || out["version"] != version.String() {
 		t.Fatalf("whoami: %d %v", resp.StatusCode, out)
 	}
 	// Sessions are listed (the hosted ones), and a plain server says it is no switchyard.

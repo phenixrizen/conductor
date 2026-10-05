@@ -401,6 +401,8 @@ dl{margin:0;display:flex;flex-direction:column;gap:8px}
 .back{font-size:14px}
 footer.sy{display:flex;flex-wrap:wrap;gap:8px 16px;padding:16px 32px;border-top:1px solid var(--conductor-border);font-size:13px;line-height:20px;color:var(--conductor-muted)}
 footer.sy .right{margin-left:auto}
+footer.sy .note{flex-basis:100%}
+a.credit{color:#F3AC89;font-weight:600;text-decoration:none}a.credit:hover{color:var(--conductor-text)}
 @media (max-width:640px){header.sy,footer.sy{padding-left:16px;padding-right:16px}header.sy .host{display:none}main.sy{padding:32px 16px}h1{font-size:24px}footer.sy .right{margin-left:0}}
 </style>
 </head>
@@ -418,7 +420,8 @@ footer.sy .right{margin-left:auto}
 {{define "foot"}}
 <footer class="sy">
 <span>Conductor switchyard <span class="mono">{{.Version}}</span> · <a href="{{.DocsURL}}">Docs</a> · <a href="{{.SourceURL}}">Source</a></span>
-<span class="right">No cookies. An operator token you paste stays in this browser.</span>
+<span class="right" data-credit>Sponsored and maintained by <a class="credit" href="https://rocksolidlabs.io">RockSolid Labs</a></span>
+<span class="note">No cookies. An operator token you paste stays in this browser.</span>
 </footer>
 </body>
 </html>

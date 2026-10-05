@@ -41,7 +41,9 @@ async function list(path: string) {
   const n = ++seq
   loading.value = true
   try {
-    const r = await api.listPaths(dirQuery(path.endsWith('/') ? path : `${path}/`), 50, props.anywhere ? 'any' : 'roots')
+    // Empty asks for the server's default working directory: inside the roots the listing starts there.
+    const prefix = path === '' ? '' : dirQuery(path.endsWith('/') ? path : `${path}/`)
+    const r = await api.listPaths(prefix, 50, props.anywhere ? 'any' : 'roots')
     if (n !== seq) return
     dir.value = r.dir
     entries.value = r.entries
@@ -61,7 +63,8 @@ function go(path: string) {
 watch(
   open,
   (o) => {
-    if (o) go(props.start || serverHost.home.value || '')
+    // Inside the roots an empty start lists the server's default directory; the whole machine opens at home.
+    if (o) go(props.start || (props.anywhere ? serverHost.home.value : '') || '')
   },
   { immediate: true },
 )
@@ -103,7 +106,7 @@ function onListKey(e: KeyboardEvent) {
       <div class="flex flex-col gap-3">
         <div class="flex items-center gap-1.5">
           <UButton icon="i-lucide-arrow-up" color="neutral" variant="outline" size="sm" aria-label="Up one folder" :disabled="!dir || dir === '/'" data-dir-picker-up @click="go(parentDir(dir))" />
-          <UButton v-if="serverHost.home.value" icon="i-lucide-house" color="neutral" variant="outline" size="sm" aria-label="Home" data-dir-picker-home @click="go(serverHost.home.value)" />
+          <UButton v-if="anywhere && serverHost.home.value" icon="i-lucide-house" color="neutral" variant="outline" size="sm" aria-label="Home" data-dir-picker-home @click="go(serverHost.home.value)" />
           <UInput v-model="typed" class="flex-1" size="sm" :ui="{ base: 'font-mono text-xs' }" aria-label="Folder" data-dir-picker-path @update:model-value="onTyped" @keydown.enter.prevent="go(typed)" />
         </div>
         <nav class="flex flex-wrap items-center gap-0.5 font-mono text-xs" aria-label="Folders above">

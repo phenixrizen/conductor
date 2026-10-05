@@ -62,4 +62,38 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(state.repo)
+  // The page uses the whole width: two columns of cards at this size.
+  const grid = await page.locator('[data-settings-grid]').boundingBox()
+  expect(grid!.width).toBeGreaterThan(1000)
+  // The app card ends with the sponsor credit (the Sponsor Kit's 1c).
+  const about = page.locator('[data-about-card]')
+  await expect(about.locator('[data-about-row="app"]')).toHaveText('e2e')
+  await expect(about.locator('[data-about-copyright]')).toContainText('the Conductor authors')
+  await expect(about.locator('[data-about-credit]')).toContainText('Sponsored and maintained by RockSolid Labs')
+  await expect(about.locator('[data-about-credit] a')).toHaveAttribute('href', 'https://rocksolidlabs.io')
+})
+
+test('in a browser, Settings says what the server is and who sponsors it', async ({ page }) => {
+  await page.goto('/settings')
+  const about = page.locator('[data-about-card]')
+  await expect(about.locator('[data-about-row="server"]')).not.toBeEmpty()
+  await expect(about.locator('[data-about-credit]')).toContainText('Sponsored and maintained by RockSolid Labs')
+})
+
+test('a "Runs in" field has a folder button that browses the allowed roots and fills it', async ({ page, state }) => {
+  await page.goto('/crews/new')
+  const field = page.locator('[data-crew-editor] [data-dir-input] input[role="combobox"]')
+  await page.locator('[data-crew-editor] [data-dir-input-pick]').click()
+  const picker = page
+  // An empty field opens on the server's default directory.
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.repo)
+  // Inside the roots there is no Home to jump outside them.
+  await expect(picker.locator('[data-dir-picker-home]')).toHaveCount(0)
+  await picker.locator('[data-dir-picker-up]').click()
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.root)
+  await picker.locator('[data-dir-picker-entry="repo"]').click()
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.repo)
+  await picker.locator('[data-dir-picker-use]').click()
+  await expect(page.locator('[data-dir-picker-path]')).toHaveCount(0)
+  await expect(field).toHaveValue(state.repo)
 })

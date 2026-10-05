@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SPONSOR_NAME, SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
 import type { Attention, TransportKind } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
@@ -213,7 +214,7 @@ function requestFile(path: string, stat?: boolean) {
   <NuxtLayout :name="inWorkbench ? 'default' : 'bare'">
     <JoinFrame :workbench="inWorkbench">
   <template v-if="!joined">
-    <main class="flex flex-1 items-center justify-center p-6">
+    <main class="flex flex-1 flex-col items-center justify-center gap-4 p-6">
       <div class="flex w-full max-w-sm flex-col gap-4 rounded-lg border border-default bg-default p-6 shadow-sm">
         <img src="/brand/conductor-mark.svg" alt="" class="size-8 dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-8 hidden dark:block" />
@@ -246,6 +247,10 @@ function requestFile(path: string, stat?: boolean) {
         </template>
         <div v-else class="text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking link…</div>
       </div>
+      <!-- The Sponsor Kit's line under the card, on a switchyard's own join page (a guest's), never inside the workbench. -->
+      <p v-if="!inWorkbench && info?.switchyard" class="text-[13px] text-muted" data-join-credit>
+        Sponsored and maintained by <a :href="SPONSOR_URL" target="_blank" rel="noopener" class="font-semibold text-[#A44727] no-underline hover:text-default dark:text-[#F3AC89]">{{ SPONSOR_NAME }}</a>
+      </p>
     </main>
   </template>
 

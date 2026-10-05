@@ -8,6 +8,8 @@ export function useServerHost() {
   const switchyard = useState<boolean>('serverSwitchyard', () => false)
   /** The server user's home directory; '' until known or when it has none. */
   const home = useState<string>('serverHome', () => '')
+  /** The server's version (`conductor version`); '' until known. */
+  const version = useState<string>('serverVersion', () => '')
   const asked = useState<boolean>('serverHostAsked', () => false)
   const api = useSessions()
   async function load() {
@@ -18,9 +20,10 @@ export function useServerHost() {
       host.value = me.host ?? ''
       switchyard.value = me.switchyard === true
       home.value = me.home ?? ''
+      version.value = me.version ?? ''
     } catch {
       asked.value = false
     }
   }
-  return { host, switchyard, home, load }
+  return { host, switchyard, home, version, load }
 }

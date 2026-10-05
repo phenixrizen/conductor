@@ -649,6 +649,44 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
+
+Asked on 2026-10-05, with the round 9 checks: "whenever we show 'runs in' we
+should have the same folder button to the right"; "the settings page we
+should use the whole width"; a startup banner while the app starts, with the
+logo and the build; a copyright; and "sponsored by RockSolid Labs" following
+the RockSolid Labs Sponsor Kit (claude.ai/design).
+
+### Decisions
+
+- **The folder button is part of the directory field**, so the crew editor's
+  "Runs in" and the launch dialog's working directory both have it. Its
+  picker browses the allowed roots only (scope `roots`, no Home), opening on
+  the field's text or, when empty, the server's default directory.
+- **Settings uses the whole width**: two columns of cards from `xl`, the
+  save row under them.
+- **The splash** is a small frameless window shown as soon as Electron is
+  ready, until the workbench window shows (or 20 s): the Conductor mark, the
+  version, platform and Electron, what the app is doing (checking WSL,
+  preparing the server, starting it, opening the workbench), the copyright,
+  and the kit's "Sponsored by" badge. It is dark, the switchyard pages'
+  palette, with no preload; its link opens in the system browser.
+- **The credit, in the kit's words** ("Sponsored and maintained by RockSolid
+  Labs", linking to rocksolidlabs.io), only where the kit puts it: the last
+  row of Settings → The app (desktop and browser), the switchyard pages'
+  footer, under the card of a guest's join page on a switchyard, the last
+  line of `conductor version` and `--help`, the README, and the splash. Never
+  in the workspace, a log or run output. The logos are RockSolid Labs' own,
+  bundled (`web/public/sponsor`, `desktop/static/sponsor`), never fetched.
+- **The copyright** is the package's holder, "© 2026 the Conductor authors"
+  (electron-builder's `copyright`), on the splash and in Settings → The app.
+- `GET /api/whoami` gains `version`, for The app card in a browser.
+
+### Open verification (round 10)
+
+- The splash on the installed app on Windows: shown at once, its steps
+  change while WSL starts, gone when the workbench shows.
+
 ## Round 9: the Events page, the switchyard dark, remote sessions in the sidebar, the WSL picker, and the leftovers of rounds 7 and 8 (2026-10-04)
 
 Asked on 2026-10-04: the Events page from its design hand-off; the
@@ -701,13 +739,17 @@ picked.
   crew run's link is minted there (`link_run`, kept current by
   `link_run_update`).
 
-### Open verification (round 9)
+### Verified (round 9)
 
-- The deployed switchyard renders dark (a phone in light mode too), keeps a link across `systemctl
-  restart`, and a run link from the app opens on a phone.
-- The installed app (rc.3): a `conductor://` invite opens beside the sidebar;
-  Settings' pickers list `/home/<user>` folders; the publishing notice shows
-  once after installing over rc.2.
+- 2026-10-05, by the owner on the installed v0.6.0-rc.4 and the deployed
+  switchyard: all nine by-hand checks passed. The upgrade notice, the
+  Settings picker inside WSL, an invite beside the sidebar under "Shared with
+  you", a `conductor host` session under its machine, a run link from a phone
+  across a switchyard restart, the dark switchyard pages, the Events page and
+  the Yard / Roundhouse names, the View / Control switch on a Share link, and
+  a session that ends taking its links (no revoke error). The one follow-up
+  (a folder button beside every "Runs in", Settings using the whole width)
+  is round 10.
 
 ### Deferred
 

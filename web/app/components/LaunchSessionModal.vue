@@ -173,7 +173,7 @@ async function submit() {
 
         <template v-if="state.runsOn === 'server'">
           <UFormField label="Working directory" name="cwd" hint="must be under an allowed root">
-            <DirInput v-model="state.cwd" :placeholder="selected?.cwd || 'server default'" name="cwd" />
+            <DirInput v-model="state.cwd" :placeholder="selected?.cwd || 'server default'" name="cwd" picker-title="Where the session runs" />
           </UFormField>
           <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args" hint="appended to the command">
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" />

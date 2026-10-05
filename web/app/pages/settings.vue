@@ -118,10 +118,11 @@ onMounted(load)
       </UDashboardNavbar>
     </template>
     <template #body>
-      <div v-if="!desktop.isDesktop.value" class="max-w-2xl">
+      <div v-if="!desktop.isDesktop.value" class="grid w-full items-start gap-6 xl:grid-cols-2">
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" title="This server is configured by its file" description="These settings belong to the desktop app, which starts a server of its own. A server you run yourself takes its configuration file and CONDUCTOR_* variables (see the README)." />
+        <AboutCard />
       </div>
-      <div v-else class="flex max-w-3xl flex-col gap-6" data-desktop-settings>
+      <div v-else class="flex w-full flex-col gap-6" data-desktop-settings>
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
         <UAlert
           v-if="desktop.serverState.value"
@@ -132,6 +133,7 @@ onMounted(load)
           :description="desktop.serverState.value.lastError || (desktop.serverState.value.version ? `conductor ${desktop.serverState.value.version}` : '')"
           data-server-state
         />
+        <div class="grid items-start gap-6 xl:grid-cols-2" data-settings-grid>
         <UCard v-if="ice" data-ice-status>
           <template #header><h2 class="font-semibold">WebRTC from WSL</h2></template>
           <div class="flex flex-col gap-3 text-sm">
@@ -208,19 +210,6 @@ onMounted(load)
           </div>
         </UCard>
 
-        <UCard>
-          <template #header><h2 class="font-semibold">The app</h2></template>
-          <div class="flex flex-col gap-4">
-            <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" />
-            <div v-if="versions" class="text-xs text-muted font-mono">app {{ versions.app }} · server {{ versions.server }} · electron {{ versions.electron }} · chrome {{ versions.chrome }}</div>
-          </div>
-        </UCard>
-
-        <div class="flex items-center gap-3">
-          <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty" data-save-settings @click="save" />
-          <span v-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
-        </div>
-
         <UCard v-if="agents.length">
           <template #header><h2 class="font-semibold">Agents on this machine</h2></template>
           <ul class="flex flex-col gap-1.5 text-sm">
@@ -232,6 +221,17 @@ onMounted(load)
             </li>
           </ul>
         </UCard>
+
+        <AboutCard :versions="versions">
+          <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" />
+        </AboutCard>
+        </div>
+
+        <div class="flex items-center gap-3" data-settings-save-bar>
+          <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty" data-save-settings @click="save" />
+          <span v-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
+        </div>
+
 
         <DirPickerModal v-if="picker" v-model:open="pickerOpen" :start="picker.start" :title="picker.title" anywhere :roots="form.allowedRoots" :expect="picker.expect" @pick="onPick" />
       </div>

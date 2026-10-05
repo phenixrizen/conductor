@@ -546,7 +546,7 @@ export function useSessions() {
     revokeRunLink: (runId: string, linkId: string) =>
       request<void>(`/api/runs/${encodeURIComponent(runId)}/links/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
     /** OS user running the server; the default display name for admins. */
-    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string }>('/api/whoami'),
+    whoami: () => request<{ user: string; host: string; switchyard: boolean; home?: string; version?: string }>('/api/whoami'),
     /** The server's reach: its public address, the mapped port and the certificate's readiness. */
     reach: () => request<ReachInfo>('/api/reach'),
     /**

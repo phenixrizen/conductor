@@ -149,7 +149,7 @@ function refused(message: string) {
 
       <!-- The git line is the field's help: announced with the input, and wrapped anywhere so a long path keeps the column's width. -->
       <UFormField label="Runs in" name="cwd" :help="runsInHelp" :ui="{ help: 'mt-1 text-xs' }">
-        <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" @update:model-value="set('cwd', $event)" />
+        <DirInput :model-value="crew.cwd" placeholder="server default" name="cwd" picker-title="Where the crew runs" @update:model-value="set('cwd', $event)" />
         <template #help>
           <span class="[overflow-wrap:anywhere]" :class="{ 'text-success': gitLine.tone === 'success', 'text-warning': gitLine.tone === 'warning', 'text-muted': gitLine.tone === 'neutral' }" data-git-state>{{ runsInHelp }}</span>
         </template>

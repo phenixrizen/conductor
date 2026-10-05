@@ -21,7 +21,18 @@ import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, mo
  * picked.
  */
 const model = defineModel<string>({ default: '' })
-defineProps<{ placeholder?: string; name?: string }>()
+const props = defineProps<{ placeholder?: string; name?: string; /** The folder picker's title; the button beside the field opens it. */ pickerTitle?: string }>()
+
+// The folder button: the picker browses the allowed roots, opening on the text or the server's default directory.
+const pickerOpen = ref(false)
+const pickerStart = ref('')
+function openPicker() {
+  pickerStart.value = model.value.trim()
+  pickerOpen.value = true
+}
+function onPicked(path: string) {
+  model.value = path
+}
 
 const api = useSessions()
 const admin = useWorkbenchToken()
@@ -165,7 +176,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" data-dir-input @keydown.esc="onEscape" @keydown="onKeydown" @keydown.enter.capture="onEnter" @focusin="onFocus">
+  <div class="flex w-full min-w-0 items-start gap-2">
+  <div ref="root" class="min-w-0 flex-1" data-dir-input @keydown.esc="onEscape" @keydown="onKeydown" @keydown.enter.capture="onEnter" @focusin="onFocus">
     <UInputMenu
       ref="menu"
       :model-value="model"
@@ -205,5 +217,8 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </UInputMenu>
+  </div>
+  <UButton icon="i-lucide-folder" color="neutral" variant="outline" :aria-label="props.pickerTitle || 'Choose a folder'" data-dir-input-pick @click="openPicker" />
+  <DirPickerModal v-if="pickerOpen" v-model:open="pickerOpen" :start="pickerStart" :title="props.pickerTitle || 'Choose a folder'" @pick="onPicked" />
   </div>
 </template>

@@ -750,7 +750,7 @@ saved crew never says "Running": status belongs to runs.
 (edit it there), **Duplicate**, a menu with **Delete crew**, and **Launch
 run**. A banner says when a run of it is live ("started 08:31 · 3 running ·
 review needs you · docs waits for Start now") and leads to it. **Setup** holds
-the goal, where runs work (**Runs in**, with the directory's git state), what
+the goal, where runs work (**Runs in**, with the directory's git state and a folder button that browses the allowed roots), what
 each run does (one working directory or a git worktree each; the line under
 it, which opens the switches, says whether a launch opens the run page,
 makes a view link and which yolo it uses), and the members as a table (name,
@@ -989,8 +989,9 @@ holds what the server starts with (the data directory, the allowed roots,
 the default directory, yolo, reach) and restarts the server when those
 change; **Open in browser** opens the same server in your browser, signed
 in. On Windows the server runs inside your WSL 2 distribution (the app sets
-it up on first run; the agents are the ones installed there). `make
-desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
+it up on first run; the agents are the ones installed there). While the
+server starts, a small splash shows the version and what the app is doing.
+`make desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
 
 **Windows.** There is no Windows build of the server: the installer bundles
 the Linux binary and the app runs it inside your WSL 2 distribution
@@ -1302,3 +1303,10 @@ architecture in [docs/architecture.md](docs/architecture.md), and the brand in
 [docs/design/brand.md](docs/design/brand.md). A `Dockerfile` builds a server
 image without agent CLIs; install them in a derived image or use `conductor host`.
 The image keeps its data directory on the `/var/lib/conductor` volume.
+
+---
+
+<a href="https://rocksolidlabs.io"><img src="web/public/sponsor/rocksolidlabs-logo.png" alt="RockSolid Labs" height="20"></a>
+
+Sponsored and maintained by [RockSolid Labs](https://rocksolidlabs.io).
+© 2026 the Conductor authors.
