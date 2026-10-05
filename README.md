@@ -92,7 +92,8 @@ role, a label and an expiry of your own. Opening Share again shows the link alre
 `<base>/join/<token>`; the token is shown once. Guests type a display name
 before joining; nothing connects until they press **Join**, so a fetched link
 never exposes terminal content. Revoking a link disconnects everyone using
-it, a link minted at the switchyard too.
+it, a link minted at the switchyard too. A session that ends takes its links
+with it: they stop working and leave the dialog.
 
 The base is the address you opened the workbench at (`http://192.168.1.20:8080`,
 a tunnel's URL, a reverse proxy's host, with the scheme and host the proxy

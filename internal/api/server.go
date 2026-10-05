@@ -260,7 +260,18 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
-	s.hosts.OnChange = s.events.publish
+	s.hosts.OnChange = func(info session.Info) {
+		s.events.publish(info)
+		// A hosted session that ended takes its links with it, as a server session does.
+		if info.Status.Ended() {
+			for _, l := range s.links.ListBySession(info.ID) {
+				s.links.Revoke(info.ID, l.ID)
+			}
+			for _, lid := range s.links.DeleteSession(info.ID, true) {
+				s.dropLinkFile(lid)
+			}
+		}
+	}
 	s.hosts.OnActivity = s.events.activity
 	s.registry.OnRemove = func(id string, d session.Driver) {
 		// A durable link outlives a host that went away (its session only

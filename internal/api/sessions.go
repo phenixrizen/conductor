@@ -283,6 +283,9 @@ func noYoloRecipe(agent catalog.Agent) string {
 func (s *Server) localChange(info session.Info) {
 	s.events.publish(info)
 	s.runs.OnChange(info)
+	if info.Status.Ended() {
+		s.endLinks(info.ID)
+	}
 	if pub := s.publishedOf(info.ID); pub != nil {
 		pub.OnChange(info)
 	}

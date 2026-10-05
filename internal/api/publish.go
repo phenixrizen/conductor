@@ -264,3 +264,30 @@ func (s *Server) localActivity(id string, e session.ActivityEntry, state session
 		pub.OnActivity(id, e, state)
 	}
 }
+
+// endLinks takes a session's links with it when it ends: there is nothing
+// left to share. Its links here are revoked (closing whoever used them) and
+// forgotten; those minted at the rendezvous are revoked there, in the
+// background and within a few seconds each, and forgotten here whatever the
+// rendezvous answers. Calling it again finds nothing to do.
+func (s *Server) endLinks(id string) {
+	for _, l := range s.links.ListBySession(id) {
+		s.links.Revoke(id, l.ID)
+	}
+	s.links.DeleteSession(id, true)
+	s.pubMu.Lock()
+	pub := s.published[id]
+	remote := s.remoteLinks[id]
+	delete(s.remoteLinks, id)
+	s.pubMu.Unlock()
+	if pub == nil || len(remote) == 0 {
+		return
+	}
+	s.track(func() {
+		for lid := range remote {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = pub.Revoke(ctx, lid)
+			cancel()
+		}
+	})
+}

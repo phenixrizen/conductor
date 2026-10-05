@@ -363,6 +363,11 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		// An ended session took its links with it: revoking one a dialog still shows is done.
+		if d, ok := s.registry.Get(id); ok && d.Info().Status.Ended() {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "no such link")
 		return
 	}

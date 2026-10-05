@@ -1383,9 +1383,9 @@ func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 	if resp, _ := e.do("GET", "/api/sessions/"+coreID, token, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("the member's session: %d", resp.StatusCode)
 	}
-	if resp, out := e.do("GET", "/api/join/"+sessionToken, "", nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("the session's own link: %d %v", resp.StatusCode, out)
-	}
+	// The member's own link went when its session ended, with the stop.
+	resp, out = e.do("GET", "/api/join/"+sessionToken, "", nil)
+	wantAPIError(t, "the ended session's own link", resp, out, http.StatusNotFound, "invalid_link", "")
 }
 
 // GET /api/join/{token} answers a run link with its run: every member, with

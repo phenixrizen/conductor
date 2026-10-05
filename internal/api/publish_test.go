@@ -329,3 +329,68 @@ func TestARunLinkFallsBackToALocalLinkWhenNoMemberIsPublished(t *testing.T) {
 		t.Fatalf("fallback: %d %v", resp.StatusCode, out)
 	}
 }
+
+// A session that ended takes its links with it: none are listed, local or
+// minted at the rendezvous, the rendezvous no longer resolves them, and a
+// revoke of one (a dialog still showing it) succeeds rather than erring.
+func TestASessionThatEndedTakesItsLinks(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	remoteID := out["link"].(map[string]any)["id"].(string)
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	local.srv.SetPublisher(nil)
+	_, out = local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	localID := out["link"].(map[string]any)["id"].(string)
+	if resp, _ := local.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode >= 300 {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		d, _ := local.srv.registry.Get(id)
+		if d != nil && d.Info().Status.Ended() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session never ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		_, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
+		if ls, _ := out["links"].([]any); len(ls) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("an ended session still lists links: %v", out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, lid := range []string{remoteID, localID} {
+		start := time.Now()
+		if resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+lid, adminToken, nil); resp.StatusCode != http.StatusNoContent || time.Since(start) > 3*time.Second {
+			t.Fatalf("revoking %s after the end: %d %v in %v", lid, resp.StatusCode, out, time.Since(start))
+		}
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		resp, _ := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the ended session's link: %d", resp.StatusCode)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

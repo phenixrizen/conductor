@@ -219,3 +219,29 @@ func TestAHostMintsARunLinkAtTheServer(t *testing.T) {
 		t.Fatalf("after revoke: %d %v", resp.StatusCode, out)
 	}
 }
+
+// A hosted session that ends takes its links with it: none listed, the join
+// says the link is revoked, and a revoke of it afterwards succeeds.
+func TestAHostedSessionThatEndedTakesItsLinks(t *testing.T) {
+	e := switchyardEnv(t, true)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	linkID, token := mintHostLink(t, host, "r1")
+	host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, out := e.do("GET", "/api/sessions/"+host.sessionID+"/links", adminToken, nil)
+		if ls, _ := out["links"].([]any); len(ls) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still listed: %v", out)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if resp, _ := e.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the join of an ended session's link: %d", resp.StatusCode)
+	}
+	if resp, out := e.do("DELETE", "/api/sessions/"+host.sessionID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke after the end: %d %v", resp.StatusCode, out)
+	}
+}
