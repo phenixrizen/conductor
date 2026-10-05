@@ -25,7 +25,7 @@ describe('settings', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-settings-'))
     const file = join(dir, 'settings.json')
     expect(loadSettings(file, defaults)).toEqual(defaults)
-    const s = { ...defaults, yolo: true, reach: 'off' as const, allowedRoots: ['/home/me', '/srv'] }
+    const s = { ...defaults, yolo: true, reach: 'off' as const, allowedRoots: ['/home/me', '/srv'], zoomLevel: 1.5 }
     saveSettings(file, s)
     expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(loadSettings(file, defaults)).toEqual(s)
@@ -37,6 +37,9 @@ describe('settings', () => {
     // A file without the noticed list is an earlier build's: every notice is owed to it.
     expect(loadSettings(file, defaults)).toEqual({ ...defaults, closeToTray: false, noticed: [] })
     expect(readFileSync(file, 'utf8')).toContain('closeToTray')
+    // The zoom kept is bounded; a file without one is at 100%.
+    writeFileSync(file, JSON.stringify({ ...defaults, zoomLevel: 40 }))
+    expect(loadSettings(file, defaults).zoomLevel).toBe(5)
   })
   it('knows which changes restart the server', () => {
     expect(serverAffecting(defaults, { ...defaults, closeToTray: false })).toBe(false)

@@ -991,6 +991,8 @@ change; **Open in browser** opens the same server in your browser, signed
 in. On Windows the server runs inside your WSL 2 distribution (the app sets
 it up on first run; the agents are the ones installed there). While the
 server starts, a small splash shows the version and what the app is doing.
+Ctrl+= and Ctrl+- (Cmd on macOS) zoom the workbench, Ctrl+0 resets it, and
+the app remembers the level.
 `make desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
 
 **Windows.** There is no Windows build of the server: the installer bundles

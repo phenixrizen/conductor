@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
+import { clampZoom } from './zoom'
 
 /** The desktop app's settings (userData/settings.json): what it starts the server with. */
 export interface DesktopSettings {
@@ -29,6 +30,8 @@ export interface DesktopSettings {
   switchyardName: string
   /** The one-time notices already shown (or not owed: a fresh install owes none), by name. */
   noticed: string[]
+  /** The workbench's zoom level (0 is 100%), kept by the app as Ctrl+= and Ctrl+- move it; never set from the Settings page. */
+  zoomLevel: number
 }
 
 /** The notices the app owes once: publishing, the round that turned sharing through the public switchyard on by default. */
@@ -38,7 +41,7 @@ export type Notice = (typeof NOTICES)[number]
 export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [...NOTICES] }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [...NOTICES], zoomLevel: 0 }
 }
 
 /**
@@ -119,6 +122,7 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
   if (typeof raw.switchyardName === 'string') out.switchyardName = raw.switchyardName
   // A file from before the notices existed has no noticed list: every notice is owed to it.
   out.noticed = Array.isArray(raw.noticed) ? raw.noticed.filter((n): n is string => typeof n === 'string') : []
+  out.zoomLevel = clampZoom(raw.zoomLevel)
   return out
 }
 

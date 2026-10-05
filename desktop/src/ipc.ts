@@ -53,7 +53,8 @@ export function registerIpc(d: IpcDeps): void {
     'conductor:settings:set',
     guard(async (_e, patch) => {
       const cur = d.settings.get()
-      const next = { ...cur, ...(patch as Partial<DesktopSettings>) } as DesktopSettings
+      // The zoom is the app's own (Ctrl+= and Ctrl+-): a form saved with an older level leaves the current one.
+      const next = { ...cur, ...(patch as Partial<DesktopSettings>), zoomLevel: cur.zoomLevel } as DesktopSettings
       const problems = validate(next, !!d.wsl?.())
       if (problems.length) throw new Error(problems.join('; '))
       d.settings.set(next)

@@ -13,7 +13,8 @@ import { ServerSupervisor } from './server'
 import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, restrictPermissions } from './window'
+import { createWindow, restrictPermissions, sameOrigin } from './window'
+import { nextZoom, zoomKey, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
@@ -234,12 +235,36 @@ async function run() {
     },
   })
   restrictPermissions()
+  // The workbench's zoom: the app's level, on every window of the server's origin, the keys taken before the page sees them.
+  const applyZoom = (wc: Electron.WebContents) => {
+    if (!wc.isDestroyed() && sameOrigin(wc.getURL(), origin())) wc.setZoomLevel(settings.zoomLevel)
+  }
+  const zoom = (move: ZoomMove) => {
+    const level = nextZoom(settings.zoomLevel, move)
+    if (level !== settings.zoomLevel) {
+      settings = { ...settings, zoomLevel: level }
+      saveSettings(settingsFile, settings)
+    }
+    for (const w of BrowserWindow.getAllWindows()) applyZoom(w.webContents)
+  }
+  app.on('web-contents-created', (_e, wc) => {
+    if (wc.getType() !== 'window') return
+    wc.on('before-input-event', (e, input) => {
+      if (!sameOrigin(wc.getURL(), origin())) return
+      const move = zoomKey(input, process.platform)
+      if (!move) return
+      e.preventDefault()
+      zoom(move)
+    })
+    wc.on('did-finish-load', () => applyZoom(wc))
+  })
   Menu.setApplicationMenu(
     buildMenu({
       settings: () => void show().loadURL(origin() + '/settings'),
       openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
       restart: () => void supervisor.restart().catch(() => {}),
       showLog,
+      zoom,
       dev,
     }),
   )

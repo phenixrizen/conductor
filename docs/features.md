@@ -681,6 +681,13 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
 - **The copyright** is the package's holder, "© 2026 the Conductor authors"
   (electron-builder's `copyright`), on the splash and in Settings → The app.
 - `GET /api/whoami` gains `version`, for The app card in a browser.
+- **Zoom in the desktop app** (reported on Windows: zoom in did nothing).
+  Electron's zoom roles bind Ctrl+Plus, which needs Shift, and on Windows and
+  Linux the page sees a key before the menu, where the terminal takes Ctrl+-
+  as a control character. The app now takes Ctrl+= / Ctrl++ / numpad +,
+  Ctrl+- and Ctrl+0 (Cmd on macOS) before the page sees them, and keeps the
+  level in its settings, since the server's port, and with it Chromium's
+  per-origin zoom, changes at every start.
 - **A stopped run is recorded as stopped.** Stopping a run ends its members'
   sessions first, and the last one ending recorded the run as finished on a
   goroutine racing the stop's own record: about one stop in twenty kept
@@ -692,6 +699,8 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
 
 - The splash on the installed app on Windows: shown at once, its steps
   change while WSL starts, gone when the workbench shows.
+- Zoom on Windows: Ctrl+= and Ctrl+- with the terminal focused, Ctrl+0, the
+  View menu's items, and the level kept after a restart of the app.
 
 ## Round 9: the Events page, the switchyard dark, remote sessions in the sidebar, the WSL picker, and the leftovers of rounds 7 and 8 (2026-10-04)
 

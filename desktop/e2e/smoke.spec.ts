@@ -54,6 +54,25 @@ test('the app opens the workbench on its own server and stops it on quit', async
   const token = await page.evaluate(() => (window as unknown as { conductorDesktop: { token(): Promise<string> } }).conductorDesktop.token())
   expect(token.length).toBeGreaterThanOrEqual(32)
   expect(await page.evaluate(() => localStorage.getItem('conductor.workbenchToken'))).toBeNull()
+  // Ctrl+= zooms in without Shift and Ctrl+- out, taken before the page sees them (the terminal would eat Ctrl+-); Ctrl+0 resets.
+  const level = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith('http'))?.webContents.getZoomLevel() ?? NaN)
+  // Through the native input path (sendInputEvent), as a key pressed on the keyboard arrives; Playwright's keys go straight to the page.
+  const press = (keyCode: string) =>
+    app.evaluate(({ BrowserWindow }, keyCode) => {
+      const wc = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith('http'))!.webContents
+      const modifiers: Array<'control' | 'meta'> = [process.platform === 'darwin' ? 'meta' : 'control']
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+    }, keyCode)
+  await press('0')
+  await expect.poll(level).toBe(0)
+  await press('=')
+  await expect.poll(level).toBe(0.5)
+  await press('-')
+  await press('-')
+  await expect.poll(level).toBe(-0.5)
+  await press('0')
+  await expect.poll(level).toBe(0)
   const health = await fetch(`${url.origin}/api/health`)
   expect(health.ok).toBe(true)
   await app.close()

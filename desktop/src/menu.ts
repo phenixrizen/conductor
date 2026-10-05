@@ -1,10 +1,13 @@
 import { Menu, app, type MenuItemConstructorOptions } from 'electron'
+import type { ZoomMove } from './zoom'
 
 export interface MenuDeps {
   settings: () => void
   openInBrowser: () => void
   restart: () => void
   showLog: () => void
+  /** Zooms the workbench (the app keeps the level); the keys are taken before the page sees them, see zoom.ts. */
+  zoom: (move: ZoomMove) => void
   dev: boolean
 }
 
@@ -24,7 +27,7 @@ export function buildMenu(d: MenuDeps): Menu {
       ],
     },
     { role: 'editMenu' },
-    { label: 'View', submenu: [{ role: 'reload' }, ...(d.dev ? [{ role: 'toggleDevTools' as const }] : []), { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+    { label: 'View', submenu: [{ role: 'reload' }, ...(d.dev ? [{ role: 'toggleDevTools' as const }] : []), { type: 'separator' }, { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => d.zoom('reset') }, { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', click: () => d.zoom('in') }, { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => d.zoom('out') }, { type: 'separator' }, { role: 'togglefullscreen' }] },
     { role: 'windowMenu' },
     { role: 'help', submenu: [{ label: `Conductor ${app.getVersion()}`, enabled: false }] },
   ]
