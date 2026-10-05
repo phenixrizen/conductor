@@ -668,8 +668,8 @@ picked.
   Integrations (a table, the snippet of an agent nothing wires open below).
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
-- **The switchyard's pages are dark by default**, light under
-  `prefers-color-scheme: light`; no toggle.
+- **The switchyard's pages are dark always**, whatever the system prefers
+  (the owner: "the switchyard UI should be the dark mode theme"); no toggle.
 - **The Yard and the Roundhouse.** `/yard` and `/roundhouse`; `/wall` and
   `/carousel` redirect, a focus query kept; the keys stay G W and G C.
 - **Remote sessions in the sidebar.** Hosted sessions sit under their machine
@@ -703,7 +703,7 @@ picked.
 
 ### Open verification (round 9)
 
-- The deployed switchyard renders dark, keeps a link across `systemctl
+- The deployed switchyard renders dark (a phone in light mode too), keeps a link across `systemctl
   restart`, and a run link from the app opens on a phone.
 - The installed app (rc.3): a `conductor://` invite opens beside the sidebar;
   Settings' pickers list `/home/<user>` folders; the publishing notice shows

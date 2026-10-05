@@ -34,10 +34,9 @@
   --conductor-focus-width: 3px;
 }
 
-/* The values the switchyard's own pages use: dark by default, light when the
-   system prefers it (the workbench's zinc surfaces; forest-300 is the action
-   colour on dark, forest-700 on light). The workbench's own dark mode is
-   Nuxt UI's. */
+/* The values the switchyard's own pages use, dark always (the workbench's
+   zinc surfaces, forest-300 as the action colour). The workbench's own dark
+   mode is Nuxt UI's. */
 [data-conductor-theme="dark"] {
   --conductor-surface: #18181B;
   --conductor-panel: #18181B;
@@ -53,20 +52,4 @@
   --conductor-success: #6FAE83;
   --conductor-idle: #71717A;
   --conductor-mark: #EEF1E9;
-}
-[data-conductor-theme="light"] {
-  --conductor-surface: #FFFFFF;
-  --conductor-panel: #FFFFFF;
-  --conductor-text: #18181B;
-  --conductor-body: #3F3F46;
-  --conductor-muted: #71717A;
-  --conductor-border: #E4E4E7;
-  --conductor-action: #263D35;
-  --conductor-on-action: #FFFFFF;
-  --conductor-accent-text: #A44727;
-  --conductor-code: #F4F4F5;
-  --conductor-warning: #C98A1B;
-  --conductor-success: #3F8F5F;
-  --conductor-idle: #A1A1AA;
-  --conductor-mark: #263D35;
 }

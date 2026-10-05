@@ -98,10 +98,10 @@ Keep design prose readable and evidence compact but legible.
 The browser workbench imports these tokens for its light canvas, flat panels,
 buttons, typography and focus treatment. The workbench opens dark (Nuxt UI's
 dark palette with forest-300 as the primary) whatever the OS prefers; light is
-a choice its theme button makes. The switchyard's own pages are dark by default
-too (zinc surfaces, forest-300 as the action colour, terracotta-400 for links)
-and light when the system prefers it; `tokens.css` carries both palettes under
-`data-conductor-theme`.
+a choice its theme button makes. The switchyard's own pages are dark always (zinc
+surfaces, forest-300 as the action colour, terracotta-400 for links), whatever
+the system prefers; `tokens.css` keeps that palette under
+`data-conductor-theme="dark"`.
 
 ## Placement and accessibility
 

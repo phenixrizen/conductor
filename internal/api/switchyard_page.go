@@ -321,10 +321,9 @@ func (s *Server) serveSwitchyardPage(w http.ResponseWriter, status int, name str
 
 var switchyardTemplates = template.Must(template.New("switchyard").Parse(switchyardTemplateText))
 
-// The pages. Classes over inline styles; dark by default (the workbench's
-// zinc surfaces with forest-300 as the action colour, as the design has it),
-// the light values under prefers-color-scheme: light, no toggle; tokens.css
-// carries both. No JavaScript but the operator form.
+// The pages. Classes over inline styles; dark always (the workbench's zinc
+// surfaces with forest-300 as the action colour, as the design has it), whatever
+// the system prefers, no toggle. No JavaScript but the operator form.
 const switchyardTemplateText = `
 {{define "head"}}<!doctype html>
 <html lang="en">
@@ -332,11 +331,11 @@ const switchyardTemplateText = `
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
 <title>{{template "title" .}}</title>
 <link rel="icon" href="/brand/conductor-favicon.svg" type="image/svg+xml">
 <style>
 :root{--conductor-surface:#18181B;--conductor-panel:#18181B;--conductor-text:#FFFFFF;--conductor-body:#E4E4E7;--conductor-muted:#A1A1AA;--conductor-border:#27272A;--conductor-action:#9BB3A3;--conductor-on-action:#18181B;--conductor-accent-text:#DF8259;--conductor-warning:#DBA63E;--conductor-warning-bg:rgba(219,166,62,.12);--conductor-success:#6FAE83;--conductor-idle:#71717A;--conductor-mark:#EEF1E9;--sy-code:#27272A;--conductor-font-ui:Inter,ui-sans-serif,system-ui,sans-serif;--conductor-font-code:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace}
-@media (prefers-color-scheme:light){:root{--conductor-surface:#FFFFFF;--conductor-panel:#FFFFFF;--conductor-text:#18181B;--conductor-body:#3F3F46;--conductor-muted:#71717A;--conductor-border:#E4E4E7;--conductor-action:#263D35;--conductor-on-action:#FFFFFF;--conductor-accent-text:#A44727;--conductor-warning:#C98A1B;--conductor-warning-bg:rgba(201,138,27,.1);--conductor-success:#3F8F5F;--conductor-idle:#A1A1AA;--conductor-mark:#263D35;--sy-code:#F4F4F5}}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:var(--conductor-surface);color:var(--conductor-body);font-family:var(--conductor-font-ui);-webkit-font-smoothing:antialiased}
 a{color:var(--conductor-accent-text)}a:hover{color:var(--conductor-text)}

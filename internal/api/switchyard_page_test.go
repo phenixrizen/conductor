@@ -200,23 +200,22 @@ func TestSwitchyardLandingSaysWhatAPublisherNeeds(t *testing.T) {
 	}
 }
 
-// The pages are dark by default and light only when the system prefers it:
-// the dark values sit on :root, the light ones under the media query.
-func TestSwitchyardPagesAreDarkByDefault(t *testing.T) {
+// The pages are dark always, whatever the system prefers.
+func TestSwitchyardPagesAreDark(t *testing.T) {
 	e := switchyardEnv(t, true)
 	for _, p := range []string{"/", "/crews"} {
 		_, body := getPage(t, e, p)
 		for _, want := range []string{
 			":root{--conductor-surface:#18181B;--conductor-panel:#18181B;--conductor-text:#FFFFFF;",
-			"@media (prefers-color-scheme:light){:root{--conductor-surface:#FFFFFF;",
+			`<meta name="color-scheme" content="dark">`,
 			"--conductor-action:#9BB3A3",
 		} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("%s lacks %q", p, want)
 			}
 		}
-		if strings.Contains(body, "prefers-color-scheme:dark") {
-			t.Fatalf("%s still switches to dark: dark is the default", p)
+		if strings.Contains(body, "prefers-color-scheme") {
+			t.Fatalf("%s switches with the system: it is dark always", p)
 		}
 	}
 }
