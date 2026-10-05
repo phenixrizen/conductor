@@ -81,13 +81,14 @@ still runs it.
 
 ## Sharing
 
-On a session page press **Share**: a **View** link (watch and open files),
-good for two hours, is made and copied at once, and the dialog says where it
-reaches. With the session published to a switchyard (the default) that is
+On a session page press **Share**: a link good for two hours is made and
+copied at once, and the dialog says where it reaches. It is **View** (watch
+and open files) until you pick **Control** (types into the agent, answers
+prompts) on the link: that makes a control link in its place, copies it, and
+the next Share makes control too, until you pick View again. With the session published to a switchyard (the default) that is
 "works from anywhere": the link is minted there and opens there, and the
-terminal comes straight to this machine. Below it, another link with the
-**Control** role (types into the agent, answers prompts), a label and an
-expiry. Opening Share again shows the link already made. The link URL is
+terminal comes straight to this machine. Below it, another link with a
+role, a label and an expiry of your own. Opening Share again shows the link already made. The link URL is
 `<base>/join/<token>`; the token is shown once. Guests type a display name
 before joining; nothing connects until they press **Join**, so a fetched link
 never exposes terminal content. Revoking a link disconnects everyone using

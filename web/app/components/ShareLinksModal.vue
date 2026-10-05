@@ -4,7 +4,9 @@ import type { Role } from '~/utils/protocol'
 import { shareReach, type ShareReach } from '~/utils/share'
 
 /**
- * Share in one click: opening the dialog makes a view link for two hours,
+ * Share in one click: opening the dialog makes a link for two hours, with the
+ * role last chosen here (view the first time; View / Control on the link
+ * switches it),
  * copies it and says where it reaches (from anywhere, through the
  * switchyard, when the session is published there). Opening it again on the
  * same target shows the link already made rather than minting another; the
@@ -69,6 +71,50 @@ const reachIcon = computed(() => {
 
 const form = reactive<{ role: Role; label: string; ttl: string }>({ role: 'view', label: '', ttl: '7200' })
 
+// The role of the one-click link: view until the person picks control on a
+// link, then that, remembered in this browser.
+const ROLE_KEY = 'conductor.share.role'
+function readRole(): Role {
+  try {
+    return localStorage.getItem(ROLE_KEY) === 'control' ? 'control' : 'view'
+  } catch {
+    return 'view'
+  }
+}
+const quickRole = ref<Role>(readRole())
+
+/**
+ * Switches the link just made to another role: a link's role is fixed, so a
+ * new one is made and copied, and the one it replaces is revoked when nobody
+ * joined through it yet.
+ */
+const switching = ref(false)
+async function setRole(role: Role) {
+  const old = created.value
+  quickRole.value = role
+  try {
+    localStorage.setItem(ROLE_KEY, role)
+  } catch {
+    /* storage refused: the choice lasts the page */
+  }
+  if (!old || old.role === role) return
+  switching.value = true
+  try {
+    await create({ role, ttlSeconds: 7200 })
+    if (created.value && created.value.linkId !== old.linkId) {
+      const used = links.value.find((l) => l.id === old.linkId)?.active ?? 0
+      if (!used) {
+        await routes()
+          .revoke(old.linkId)
+          .catch(() => {})
+        await refresh()
+      }
+    }
+  } finally {
+    switching.value = false
+  }
+}
+
 // A paste invite: the viewer's blob in, this session's answer out; no
 // server between the two once connected. Sessions alone, not runs.
 const paste = reactive<{ offer: string; role: Role; answer: string; busy: boolean; error: string }>({ offer: '', role: 'view', answer: '', busy: false, error: '' })
@@ -130,7 +176,7 @@ watch(open, async (v) => {
     return
   }
   created.value = null
-  await create({ role: 'view', ttlSeconds: 7200 })
+  await create({ role: quickRole.value, ttlSeconds: 7200 })
 })
 
 async function create(body: { role: Role; label?: string; ttlSeconds?: number }) {
@@ -206,8 +252,27 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
         <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3" data-share-created>
           <div class="flex items-center gap-2.5">
             <span class="flex-1 truncate font-mono text-xs" :title="created.url" data-created-url>{{ shortUrl(created.url) }}</span>
-            <UBadge :label="created.role === 'control' ? 'Control' : 'View'" :color="created.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
             <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="flex gap-0.5 rounded-md bg-default p-0.5 ring ring-default" role="radiogroup" aria-label="What the link allows" data-share-role>
+              <button
+                v-for="r in roles"
+                :key="r.value"
+                type="button"
+                role="radio"
+                :aria-checked="created.role === r.value"
+                :disabled="switching || creating"
+                class="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-60"
+                :class="created.role === r.value ? 'bg-inverted text-inverted' : 'text-muted hover:text-default'"
+                :data-share-role-option="r.value"
+                @click="setRole(r.value)"
+              >
+                <UIcon :name="r.value === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" class="size-3.5" />{{ r.label }}
+              </button>
+            </div>
+            <span class="text-xs text-muted">{{ roles.find((r) => r.value === created!.role)?.description }}</span>
+            <UIcon v-if="switching" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
           </div>
           <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
             <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
