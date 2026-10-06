@@ -127,6 +127,13 @@ const (
 	ChatKindMessage     = "message"
 	ChatKindSystem      = "system"
 	ChatKindSentToAgent = "sent_to_agent"
+	// ChatKindQuestion is the agent's question when its session needs
+	// input: the attention's message as Text, its choices as Options, By the
+	// agent (role "agent"). A system line with Event "answered" and Ref the
+	// question follows the input that answered it.
+	ChatKindQuestion = "question"
+	// ChatRoleAgent is the By.Role of a question: the agent, no viewer.
+	ChatRoleAgent = "agent"
 
 	// ChatToAgent is the `to` of a post that is also typed into this session's agent (controllers only).
 	ChatToAgent = "agent"
@@ -177,21 +184,25 @@ type ChatBy struct {
 }
 
 // ChatMessage is one message of a chat (owner -> client). Kind "message"
-// carries Text; "system" carries Event (join, leave) about By; "sent_to_agent"
-// marks that By typed the message Ref into the agent (To names a run's member).
+// carries Text; "system" carries Event (join, leave, or answered with Ref the
+// question) about By; "sent_to_agent" marks that By typed the message Ref into
+// the agent (To names a run's member); "question" is the agent's (By.Role
+// "agent"), its Text the question and Options its choices, On the member in a
+// run's chat.
 type ChatMessage struct {
-	T     string `json:"t"`
-	ID    string `json:"id"`
-	At    string `json:"at"`
-	Scope string `json:"scope"`
-	Kind  string `json:"kind"`
-	By    ChatBy `json:"by"`
-	Text  string `json:"text,omitempty"`
-	Ref   string `json:"ref,omitempty"`
-	To    string `json:"to,omitempty"`
-	On    string `json:"on,omitempty"`
-	Event string `json:"event,omitempty"`
-	Nonce string `json:"nonce,omitempty"`
+	T       string            `json:"t"`
+	ID      string            `json:"id"`
+	At      string            `json:"at"`
+	Scope   string            `json:"scope"`
+	Kind    string            `json:"kind"`
+	By      ChatBy            `json:"by"`
+	Text    string            `json:"text,omitempty"`
+	Ref     string            `json:"ref,omitempty"`
+	To      string            `json:"to,omitempty"`
+	On      string            `json:"on,omitempty"`
+	Event   string            `json:"event,omitempty"`
+	Nonce   string            `json:"nonce,omitempty"`
+	Options []AttentionOption `json:"options,omitempty"`
 }
 
 // ChatHistory replays the kept messages to a new viewer, oldest first, in

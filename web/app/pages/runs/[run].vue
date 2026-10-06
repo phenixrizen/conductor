@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { ChatMessage } from '~/utils/protocol'
 import { scopeItems } from '~/utils/chat'
 import { broadcastSelection, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
 import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
@@ -162,6 +163,14 @@ const runTargets = computed(() => runScope.value.slice(1))
 const runChatDescription = computed(() => (run.value ? `${runTitle(run.value)} · run started ${startedClock(run.value.startedAt)} · kept with the run` : ''))
 function runChatSendTo(ref: string, to: string) {
   if (!runChat.sendTo(ref, to)) toast.add({ title: 'Not connected', color: 'warning' })
+}
+/** A member's question answered from the run's chat: the choice's keys into that member, as the Yard's quick reply types. */
+const quick = useQuickReply()
+function runChatAnswer(m: ChatMessage, index: number) {
+  const o = m.options?.[index]
+  const t = tiles.value.find((x) => x.name === m.on)
+  if (!o || !t?.session) return
+  quick.send(t.session, o.input).catch((e: unknown) => toast.add({ title: `Reply to ${t.name} failed`, description: (e as Error).message, color: 'error' }))
 }
 watch(runChat.refused, (r) => {
   if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })
@@ -358,5 +367,6 @@ watch(() => admin.token.value, load)
     @send="(text, to) => runChat.send(text, to)"
     @send-to="runChatSendTo"
     @retry="runChat.retry"
+    @answer="runChatAnswer"
   />
 </template>

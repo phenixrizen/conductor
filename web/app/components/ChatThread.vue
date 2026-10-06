@@ -3,8 +3,8 @@ import type { PendingChat } from '~/composables/useChat'
 import type { ScopeItem } from '~/utils/chat'
 import type { ChatMessage } from '~/utils/protocol'
 import { avatarTone } from '~/utils/avatar'
-import { chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
-import { initials } from '~/utils/sessions'
+import { answeredQuestions, chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
+import { agentInitials, initials } from '~/utils/sessions'
 
 /**
  * The messages of a chat (design 2a): a person's avatar, name, a `view` tag
@@ -13,10 +13,14 @@ import { initials } from '~/utils/sessions'
  * this browser's own messages on their way, and the ones that failed with
  * Retry. Hovering a message offers Send to agent to a controller; on a run's
  * chat (design 2e) a menu of the members instead (`sendTargets`), and an
- * `on <member>` chip says which member the sender was looking at.
+ * `on <member>` chip says which member the sender was looking at. The
+ * agent's question is a row of its own, amber-tinted, its choices as
+ * buttons a controller answers with (`canAnswer`) until a line says it was
+ * answered.
  */
-const props = defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[] }>()
-const emit = defineEmits<{ sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string] }>()
+const props = withDefaults(defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[]; canAnswer?: boolean }>(), { sendTargets: undefined, canAnswer: false })
+const emit = defineEmits<{ sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
+const answered = computed(() => answeredQuestions(props.messages))
 
 function targetsFor(m: ChatMessage) {
   // `member`, never `to`: a menu item's `to` is a link.
@@ -53,6 +57,23 @@ onMounted(() => {
       <p v-else-if="m.kind === 'sent_to_agent'" class="flex items-center gap-1.5 pl-9 text-[11px] text-muted" :data-chat-message="m.id" data-chat-kind="sent_to_agent" data-chat-marker>
         <UIcon name="i-lucide-corner-down-right" class="size-3 flex-none" aria-hidden="true" />{{ markerLine(m) }}
       </p>
+      <div v-else-if="m.kind === 'question'" class="flex gap-2.5" :data-chat-message="m.id" data-chat-kind="question" data-chat-question>
+        <span class="grid size-7 flex-none place-items-center rounded-md bg-warning/15 font-mono text-[11px] font-semibold text-warning">{{ agentInitials(m.by.name) }}</span>
+        <div class="flex min-w-0 flex-1 flex-col gap-1">
+          <div class="flex items-center gap-1.5 text-xs">
+            <span class="truncate font-semibold text-highlighted">{{ m.by.name }}</span>
+            <span class="text-muted">asks</span>
+            <span v-if="m.on" class="truncate rounded-sm bg-elevated px-1 text-[10px] text-muted" :data-chat-on="m.on">on {{ m.on }}</span>
+            <span class="font-mono text-[11px] text-muted">{{ chatTime(m.at) }}</span>
+          </div>
+          <p class="whitespace-pre-wrap break-words text-sm">{{ m.text }}</p>
+          <div v-if="m.options?.length && canAnswer && !answered.has(m.id)" class="flex flex-wrap gap-1.5">
+            <UButton v-for="(o, i) in m.options" :key="i" :label="o.label" size="xs" color="neutral" variant="outline" :data-chat-option="i + 1" @click="emit('answer', m, i)">
+              <template #leading><UKbd :value="String(i + 1)" size="sm" class="opacity-70" /></template>
+            </UButton>
+          </div>
+        </div>
+      </div>
       <div v-else class="group flex gap-2.5" :data-chat-message="m.id" data-chat-kind="message">
         <span class="grid size-7 flex-none place-items-center rounded-full text-[11px] font-semibold" :class="avatarTone(m.by.name)">{{ initials(m.by.name) }}</span>
         <div class="flex min-w-0 flex-1 flex-col gap-0.5">

@@ -249,6 +249,12 @@ joins; the chat ends with the session. While the tab is closed it counts
 what others wrote. Chat lines are not events: they reach no hook, webhook
 or feed.
 
+When the agent needs input, its question is in the chat too, from the
+agent, with its choices as buttons; a controller answers there as from the
+quick-reply bar, and a line says who answered ("Answered by Nate"). In a
+run's chat a member's question comes on the member's name ("on core") and
+an answer from there goes to that member.
+
 Where the inspector has no room, the header's **Chat** button carries the
 count and opens the chat as a sheet: on a phone from the bottom, two thirds
 of the screen and dragging to full height, the terminal live behind it,

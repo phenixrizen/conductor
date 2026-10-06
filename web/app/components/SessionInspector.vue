@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatThread } from '~/composables/useChat'
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, FileResponse, Role, ViewerInfo } from '~/utils/protocol'
+import type { ActivityEntry, ChatMessage, FileResponse, Role, ViewerInfo } from '~/utils/protocol'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import { avatarTone } from '~/utils/avatar'
 import { initials, relativeTime } from '~/utils/sessions'
@@ -24,7 +24,7 @@ const props = defineProps<{
   chatOffline?: boolean
   ended?: boolean
 }>()
-const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string] }>()
+const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number] }>()
 
 const tab = defineModel<InspectorTab>('tab', { default: 'people' })
 const target = defineModel<FileTarget | null>('target', { default: null })
@@ -133,7 +133,7 @@ function describe(e: ActivityEntry) {
       </button>
     </div>
 
-    <ChatPanel v-if="tab === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" />
+    <ChatPanel v-if="tab === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" @answer="(m, i) => emit('chatAnswer', m, i)" />
 
     <div v-else-if="tab === 'people'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6">
       <section class="flex flex-col gap-2.5">

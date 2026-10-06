@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from './protocol'
 import type { MemberStatus } from './crews'
-import { SHEET_SNAPS, canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
+import { SHEET_SNAPS, answeredQuestions, canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
 
 const msg = (over: Partial<ChatMessage>): ChatMessage => ({ t: 'chat', id: 'a', at: '2026-10-06T08:32:40Z', scope: 'session', kind: 'message', by: { id: 'x', name: 'Nate', role: 'control' }, text: 'hi', ...over })
 
@@ -76,6 +76,19 @@ describe('chat lines', () => {
 
   it('opens the phone sheet to two thirds of the window, then all of it', () => {
     expect(SHEET_SNAPS).toEqual([0.66, 1])
+  })
+
+  it("says who answered a question, and which questions still take an answer", () => {
+    expect(systemLine({ by: { id: 'x', name: 'Nate', role: 'control' }, event: 'answered' })).toBe('Answered by Nate')
+    const list = [
+      msg({ id: 'q1', kind: 'question', by: { id: 'agent', name: 'codex', role: 'agent' }, text: 'Trust?' }),
+      msg({ id: 'q2', kind: 'question', by: { id: 'agent', name: 'codex', role: 'agent' }, text: 'Which?' }),
+      msg({ id: 'a1', kind: 'system', event: 'answered', ref: 'q1' }),
+      msg({ id: 'j', kind: 'system', event: 'join' }),
+    ]
+    const done = answeredQuestions(list)
+    expect(done.has('q1')).toBe(true)
+    expect(done.has('q2')).toBe(false)
   })
 
   it("offers a run chat's composer chat only, then each member, the ones that cannot take a line disabled with why", () => {

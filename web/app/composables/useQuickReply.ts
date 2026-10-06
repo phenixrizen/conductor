@@ -20,10 +20,10 @@ export function useQuickReply() {
     sending.value = next
   }
 
-  async function over(session: SessionInfo, token: string | undefined, act: (t: TerminalTransport) => void): Promise<void> {
+  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, act: (t: TerminalTransport) => void, server?: string): Promise<void> {
     if (sending.value.has(session.id)) return
     mark(session.id, true)
-    const t = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true })
+    const t = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true, server })
     try {
       const welcome = await t.connect(FOLLOW_SIZE)
       if (welcome.role !== 'control') throw new Error('This link is view-only')
@@ -36,12 +36,12 @@ export function useQuickReply() {
     }
   }
 
-  function send(session: SessionInfo, input: string, opts: { token?: string } = {}): Promise<void> {
-    return over(session, opts.token, (t) => t.sendInput(encodeText(input)))
+  function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string } = {}): Promise<void> {
+    return over(session, opts.token, (t) => t.sendInput(encodeText(input)), opts.server)
   }
 
-  function reply(session: SessionInfo, text: string, opts: { token?: string } = {}): Promise<void> {
-    return over(session, opts.token, (t) => t.submit(text))
+  function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string } = {}): Promise<void> {
+    return over(session, opts.token, (t) => t.submit(text), opts.server)
   }
 
   return { send, reply, sending }

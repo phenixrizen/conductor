@@ -674,3 +674,66 @@ func TestRunChatRingKeepsMaxRunChat(t *testing.T) {
 		t.Fatalf("ring kept %d from %s", len(snap), snap[0].ID)
 	}
 }
+
+// The agent's question goes into the chat as the session goes needs_input,
+// with its choices and from the agent; the input that answers it leaves a
+// line saying who did; a run's member says the same in the run's chat, on
+// the member.
+func TestAQuestionGoesIntoTheChatAndItsAnswerFollows(t *testing.T) {
+	room := NewChatRoom(nil, nil)
+	s, p := newLocalWith(t, Options{RunChat: room})
+	room.Join(s, "review")
+	sink := newChanSink(false)
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sink)
+	s.SetAttentionFull(AttentionNeedsInput, "Trust this folder?", "trust", KindPrompt, []Option{{Label: "Yes, trust", Input: "y\r"}, {Label: "No", Input: "n\r"}})
+	q := waitControl(sink, chatOf(proto.ChatKindQuestion))
+	if q == nil || q["text"] != "Trust this folder?" || q["scope"] != "session" {
+		t.Fatalf("question %v", q)
+	}
+	by := q["by"].(map[string]any)
+	if by["role"] != "agent" || by["name"] != s.Info().AgentID || by["id"] != "agent" {
+		t.Fatalf("the question's by %v", by)
+	}
+	if opts := q["options"].([]any); len(opts) != 2 || opts[0].(map[string]any)["label"] != "Yes, trust" || opts[1].(map[string]any)["input"] != "n\r" {
+		t.Fatalf("options %v", q["options"])
+	}
+	// The run's chat has it too, on the member.
+	var runQ *ChatMessage
+	for _, m := range room.History() {
+		if m.Kind == proto.ChatKindQuestion {
+			mm := m
+			runQ = &mm
+		}
+	}
+	if runQ == nil || runQ.On != "review" || runQ.Scope != "run" || len(runQ.Options) != 2 {
+		t.Fatalf("the run's copy %+v", runQ)
+	}
+	// Answered by a person's input, with Enter: the line says who, and names the question.
+	go func() {
+		for range p.input {
+		}
+	}()
+	if err := s.Input(sub, []byte("y\r")); err != nil {
+		t.Fatal(err)
+	}
+	a := waitControl(sink, func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["event"] == "answered" })
+	if a == nil || a["ref"] != q["id"] || a["by"].(map[string]any)["name"] != "Nate" || a["kind"] != proto.ChatKindSystem {
+		t.Fatalf("answered %v", a)
+	}
+	last := room.History()[len(room.History())-1]
+	if last.Event != "answered" || last.On != "review" || last.Ref != runQ.ID {
+		t.Fatalf("the run's answered line %+v", last)
+	}
+	// A question without a message says the session waits; the same question twice is one line.
+	s.SetAttentionFull(AttentionNeedsInput, "", "bell", "", nil)
+	s.SetAttentionFull(AttentionNeedsInput, "", "bell", "", nil)
+	n := 0
+	for _, m := range s.ChatHistory() {
+		if m.Kind == proto.ChatKindQuestion && m.Text == "Waiting for input" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d questions for one prompt", n)
+	}
+}

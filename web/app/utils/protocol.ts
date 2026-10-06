@@ -32,12 +32,13 @@ export const CHAT_BURST = 20
 export const CHAT_TO_AGENT = 'agent'
 
 export type ChatScope = 'session' | 'run'
-export type ChatKind = 'message' | 'system' | 'sent_to_agent'
+export type ChatKind = 'message' | 'system' | 'sent_to_agent' | 'question'
 /** Who a chat message is from: the viewer's subscription, as the roster names it. */
 export interface ChatBy {
   id: string
   name: string
-  role: Role
+  /** `agent` on a question: the agent's, no viewer's. */
+  role: Role | 'agent'
 }
 /** One message of a chat (`chat`, owner → client): a message, a join or leave line about `by`, or a marker that `by` typed `ref` into the agent (`to` names a run's member). */
 export interface ChatMessage {
@@ -51,9 +52,12 @@ export interface ChatMessage {
   ref?: string
   to?: string
   on?: string
-  event?: 'join' | 'leave'
+  /** `answered` names, in `ref`, the question `by` answered. */
+  event?: 'join' | 'leave' | 'answered'
   /** The sender's own id of the post, echoed. */
   nonce?: string
+  /** A question's choices (at most 6), typed as the attention's are. */
+  options?: AttentionOption[]
 }
 /** A viewer's post (`chat`, client → owner). */
 export interface ChatPost {

@@ -149,7 +149,9 @@ design is being made with Claude Design (`docs/design/briefs/chat.md`).
 - Tests at both ends: Go for the bounds, the fan-out, the run scope and the
   host hub (loopback); vitest for the thread model; Playwright with two
   contexts talking across a link, and a run chat seen by two members'
-  viewers.
+  viewers. Round 11 (C1–C6), with two differences `docs/features.md`
+  records: chat lines are not activity entries, and the agent's own
+  question is in the chat, with its choices.
 
 ### The sidebar
 

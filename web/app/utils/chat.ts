@@ -72,9 +72,17 @@ export function linkify(text: string): ChatSegment[] {
   return out.length ? out : [{ text: '' }]
 }
 
-/** "Jane joined · control", "Jane left". */
+/** "Jane joined · control", "Jane left", "Answered by Nate". */
 export function systemLine(m: Pick<ChatMessage, 'by' | 'event'>): string {
+  if (m.event === 'answered') return `Answered by ${m.by.name}`
   return m.event === 'leave' ? `${m.by.name} left` : `${m.by.name} joined · ${m.by.role}`
+}
+
+/** The questions answered so far: the refs of the `answered` lines. A question not among them still takes an answer. */
+export function answeredQuestions(messages: readonly Pick<ChatMessage, 'kind' | 'event' | 'ref'>[]): ReadonlySet<string> {
+  const out = new Set<string>()
+  for (const m of messages) if (m.kind === 'system' && m.event === 'answered' && m.ref) out.add(m.ref)
+  return out
 }
 
 /** "Sent to agent by Nate · 08:32:40", "Sent to core by Nate · 08:35:10". */
