@@ -137,16 +137,22 @@ func TestLateAttachReceivesScrollbackThenLive(t *testing.T) {
 	if m := decodeControl(t, sink.frame(2)); m["t"] != proto.CtlReady {
 		t.Fatalf("ready: %v", m)
 	}
-	// viewers broadcast and the join activity entry reach the subscriber too;
-	// live output must follow them, never precede the ready marker.
+	// The viewers broadcast, the join activity entry and the chat's join line
+	// reach the subscriber too, in their own time; live output must follow
+	// the ready marker, never precede it. The live frame is waited for by
+	// what it is, not by a count: one of those frames landing between the
+	// count and the write would otherwise stand in for it.
 	sink.waitFrames(t, 5)
-	n := sink.count()
 	p.outW.Write([]byte("live"))
-	sink.waitFrames(t, n+1)
 	var live bool
-	for i := 3; i < sink.count(); i++ {
-		if f, _ := proto.Decode(sink.frame(i)); f.Type == proto.TypeOutput && string(f.Payload) == "live" {
-			live = true
+	for deadline := time.Now().Add(5 * time.Second); !live && time.Now().Before(deadline); {
+		for i := 3; i < sink.count(); i++ {
+			if f, _ := proto.Decode(sink.frame(i)); f.Type == proto.TypeOutput && string(f.Payload) == "live" {
+				live = true
+			}
+		}
+		if !live {
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	if !live {
