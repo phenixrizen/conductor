@@ -88,6 +88,35 @@ test that would have caught it when it is fixed.
   unless an agent's mouse mode is found wanting; a check of Codex and Claude
   Code with the mouse is on the by-hand list for the next round. Round 10.
 
+### A Changes tab beside Files
+
+What the agent changed and touched, on the session page and the join page,
+beside Files (which stays the browser of the working directory; the
+owner asked about `lsof` on 2026-10-06, which shows only the descriptors
+open at that instant, never the source files an agent opens and closes in
+milliseconds).
+
+- **The list:** `git status` of the session's working directory, each file
+  with its added and removed line counts, refreshed on a timer and on every
+  tool-use event the agent's hooks report; a session outside a repository
+  says so. For a crew member in a worktree the diff is against the run's
+  base, as the run page's member counts already are (`DiffStat`).
+- **The diff:** a file opens as its diff, highlighted the way the file
+  viewer highlights, with the file viewer one click away; binary and very
+  large diffs are capped and say so.
+- **Touched files:** the hook events already name the tool and the path of
+  every read, edit and write, so files the agent looked at get a mark in the
+  Files tree and a "recently touched" group at the top of Changes, even
+  outside git.
+- **Hosted sessions:** git runs on the host, as file reads do: one new
+  request and reply in `internal/proto`, `protocol.ts` and `docs/protocol.md`,
+  bounded like the file reads, under the same `fileView` setting.
+- Tests at both ends: Go for the status and diff reads (bounds, the
+  worktree base, the deny list of the data directory, the host round trip in
+  loopback); vitest for the list and diff models; Playwright with the stub
+  editing a file in the scratch repository and the tab showing it, then its
+  diff, on the session page and through a share link. Round 10.
+
 ### Chat beside the terminal
 
 One chat per session and one per shared crew run, over the same path the
