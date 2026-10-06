@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatHistory, ChatMessage, ChatPost, ChatSend } from '~/utils/protocol'
+import type { ChatHistory, ChatMessage, ChatPost, ChatScope, ChatSend } from '~/utils/protocol'
 import { CHAT_TO_AGENT } from '~/utils/protocol'
 import { chatNonce, cleanChatText, mergeMessage } from '~/utils/chat'
 
@@ -8,6 +8,9 @@ export interface PendingChat {
   nonce: string
   text: string
   to?: string
+  /** A run's chat: the scope of the post, and the member the sender looked at. */
+  scope?: ChatScope
+  on?: string
   at: string
   state: 'queued' | 'sending' | 'failed'
   error?: string
@@ -60,12 +63,17 @@ export function useChat(key: Ref<string>) {
     if (capable) flush(via)
   }
 
-  function send(text: string, opts: { to?: string; on?: string } = {}, via: (post: ChatPost) => boolean): boolean {
+  /** The post a pending row goes out as: its scope, member and `on` travel with it. */
+  function postOf(p: Pick<PendingChat, 'nonce' | 'text' | 'to' | 'scope' | 'on'>): ChatPost {
+    return { t: 'chat', nonce: p.nonce, text: p.text, ...(p.scope ? { scope: p.scope } : {}), ...(p.to ? { to: p.to } : {}), ...(p.on ? { on: p.on } : {}) }
+  }
+
+  function send(text: string, opts: { to?: string; on?: string; scope?: ChatScope } = {}, via: (post: ChatPost) => boolean): boolean {
     const clean = cleanChatText(text)
     if (!clean) return false
     const nonce = chatNonce(++counter)
-    const row: PendingChat = { nonce, text: clean, to: opts.to, at: new Date().toISOString(), state: 'sending' }
-    const sent = via({ t: 'chat', nonce, text: clean, ...(opts.to ? { to: opts.to } : {}), ...(opts.on ? { on: opts.on } : {}) })
+    const row: PendingChat = { nonce, text: clean, to: opts.to, scope: opts.scope, on: opts.on, at: new Date().toISOString(), state: 'sending' }
+    const sent = via(postOf(row))
     put({ ...thread.value, pending: [...thread.value.pending, sent ? row : { ...row, state: 'queued' }] })
     return true
   }
@@ -74,12 +82,12 @@ export function useChat(key: Ref<string>) {
   function flush(via: (post: ChatPost) => boolean) {
     const t = thread.value
     if (!t.pending.some((p) => p.state === 'queued')) return
-    put({ ...t, pending: t.pending.map((p) => (p.state === 'queued' && via({ t: 'chat', nonce: p.nonce, text: p.text, ...(p.to ? { to: p.to } : {}) }) ? { ...p, state: 'sending' } : p)) })
+    put({ ...t, pending: t.pending.map((p) => (p.state === 'queued' && via(postOf(p)) ? { ...p, state: 'sending' } : p)) })
   }
 
   function retry(nonce: string, via: (post: ChatPost) => boolean) {
     const t = thread.value
-    put({ ...t, pending: t.pending.map((p) => (p.nonce === nonce ? { ...p, state: via({ t: 'chat', nonce: p.nonce, text: p.text, ...(p.to ? { to: p.to } : {}) }) ? 'sending' : 'queued', error: undefined } : p)) })
+    put({ ...t, pending: t.pending.map((p) => (p.nonce === nonce ? { ...p, state: via(postOf(p)) ? 'sending' : 'queued', error: undefined } : p)) })
   }
 
   /** An error the owner sent naming a post of ours: the row fails, with the owner's words. */
@@ -97,8 +105,9 @@ export function useChat(key: Ref<string>) {
     put({ ...t, pending: t.pending.map((p) => (p.state === 'sending' ? { ...p, state: 'queued' } : p)) })
   }
 
-  function sendToAgent(ref: string, via: (send: ChatSend) => boolean): boolean {
-    return via({ t: 'chat_send', ref })
+  /** Types a kept message into the agent, or into the member `to` of a run (scope `run`). */
+  function sendToAgent(ref: string, via: (send: ChatSend) => boolean, opts: { scope?: ChatScope; to?: string } = {}): boolean {
+    return via({ t: 'chat_send', ref, ...(opts.scope ? { scope: opts.scope } : {}), ...(opts.to ? { to: opts.to } : {}) })
   }
 
   function forget(nonce: string) {

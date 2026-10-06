@@ -24,7 +24,7 @@ const props = defineProps<{
   chatOffline?: boolean
   ended?: boolean
 }>()
-const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, toAgent: boolean]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string] }>()
+const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string] }>()
 
 const tab = defineModel<InspectorTab>('tab', { default: 'people' })
 const target = defineModel<FileTarget | null>('target', { default: null })
@@ -133,7 +133,7 @@ function describe(e: ActivityEntry) {
       </button>
     </div>
 
-    <ChatPanel v-if="tab === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, toAgent) => emit('chatSend', text, toAgent)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" />
+    <ChatPanel v-if="tab === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" />
 
     <div v-else-if="tab === 'people'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6">
       <section class="flex flex-col gap-2.5">

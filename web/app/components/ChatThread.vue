@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PendingChat } from '~/composables/useChat'
+import type { ScopeItem } from '~/utils/chat'
 import type { ChatMessage } from '~/utils/protocol'
 import { avatarTone } from '~/utils/avatar'
 import { chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
@@ -10,10 +11,17 @@ import { initials } from '~/utils/sessions'
  * for a view-only person, the time, the text with its links; a quiet line
  * for a join or leave; a marker where a message was typed into the agent;
  * this browser's own messages on their way, and the ones that failed with
- * Retry. Hovering a message offers Send to agent to a controller.
+ * Retry. Hovering a message offers Send to agent to a controller; on a run's
+ * chat (design 2e) a menu of the members instead (`sendTargets`), and an
+ * `on <member>` chip says which member the sender was looking at.
  */
-const props = defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean }>()
-const emit = defineEmits<{ sendToAgent: [ref: string]; retry: [nonce: string] }>()
+const props = defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[] }>()
+const emit = defineEmits<{ sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string] }>()
+
+function targetsFor(m: ChatMessage) {
+  // `member`, never `to`: a menu item's `to` is a link.
+  return [(props.sendTargets ?? []).filter((t) => t.to).map((t) => ({ label: t.to, member: t.to, detail: t.detail, disabled: t.disabled, onSelect: () => emit('sendTo', m.id, t.to) }))]
+}
 
 const scroller = useTemplateRef<HTMLElement>('scroller')
 let stick = true
@@ -52,8 +60,18 @@ onMounted(() => {
             <span class="truncate font-semibold text-highlighted">{{ m.by.name }}</span>
             <span v-if="m.by.role === 'view'" class="rounded-sm border border-default px-1 text-[10px] text-muted" data-chat-view-tag>view</span>
             <span class="font-mono text-[11px] text-muted">{{ chatTime(m.at) }}</span>
+            <span v-if="m.on" class="truncate rounded-sm bg-elevated px-1 text-[10px] text-muted" :data-chat-on="m.on">on {{ m.on }}</span>
+            <UDropdownMenu v-if="canSendToAgent && sendTargets && m.text" :items="targetsFor(m)" :content="{ align: 'end' }">
+              <UButton label="Send to…" icon="i-lucide-corner-down-right" size="xs" color="neutral" variant="ghost" class="ml-auto opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100" data-chat-send-to />
+              <template #item-label="{ item }">
+                <span class="flex flex-col" :data-chat-send-to-item="item.member">
+                  <span>{{ item.label }}</span>
+                  <span class="text-[11px] text-muted">{{ item.detail }}</span>
+                </span>
+              </template>
+            </UDropdownMenu>
             <UButton
-              v-if="canSendToAgent && m.text"
+              v-else-if="canSendToAgent && m.text"
               label="Send to agent"
               icon="i-lucide-corner-down-right"
               size="xs"

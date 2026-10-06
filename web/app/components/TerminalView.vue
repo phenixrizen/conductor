@@ -5,7 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatSend, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
@@ -51,6 +51,7 @@ const emit = defineEmits<{
   /** A chat message, live; the kept chat on each welcome; an error the owner sent about one of this client's posts or sends. */
   chat: [msg: ChatMessage]
   chatHistory: [history: ChatHistory]
+  chatRoster: [roster: ChatRoster]
   requestError: [err: { code: string; message: string; requestId: string }]
 }>()
 
@@ -297,6 +298,9 @@ function handleControl(msg: ControlMessage) {
       break
     case 'chat_history':
       emit('chatHistory', msg)
+      break
+    case 'chat_roster':
+      emit('chatRoster', msg)
       break
     case 'error':
       // An error naming a request (a chat post or send) is that request's, not the terminal's.

@@ -233,6 +233,11 @@ const SKIP_REASON: Record<BroadcastSkipReason, string> = {
   no_enter: 'typed, no Enter: a question came up',
 }
 
+/** Why a member was skipped, in words: a broadcast's reason, or a run chat's `not_sent`. */
+export function skipWords(reason: string): string {
+  return (SKIP_REASON as Record<string, string>)[reason] ?? reason
+}
+
 /** The toast after a broadcast: how many got the line, who, and who was skipped and why. */
 export function broadcastSummary(r: BroadcastResult): { title: string; description: string; color: 'success' | 'warning' | 'error' } {
   const total = r.sent.length + r.skipped.length

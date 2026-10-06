@@ -282,6 +282,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.removed(id)
 		s.unpublish(id)
 		s.pastes.closeAll(id)
+		if l, ok := d.(*session.Local); ok {
+			l.LeaveRunChat()
+		}
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)

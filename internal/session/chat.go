@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +20,12 @@ import (
 // and replays them to a new viewer; they go with the session. A chat line
 // is not an activity entry: it has its own ring, frames and hook (OnChat).
 
-// MaxChat is how many messages a session keeps.
-const MaxChat = 200
+// MaxChat is how many messages a session keeps; MaxRunChat how many a run's
+// chat keeps (ChatRoom), which goes into the run's record.
+const (
+	MaxChat    = 200
+	MaxRunChat = 500
+)
 
 var (
 	ErrChatEmpty       = errors.New("chat: nothing to say")
@@ -28,7 +33,23 @@ var (
 	ErrChatRateLimited = errors.New("chat: too many messages")
 	ErrChatUnknownRef  = errors.New("chat: no such message")
 	ErrChatBadScope    = errors.New("chat: no such chat here")
+	ErrNoRunChat       = errors.New("chat: this session is in no run")
 )
+
+// Why a run chat's send was not typed into the member it names
+// (ErrNotSent.Reason); a broadcast skips a member for the same reasons.
+const (
+	NotSentNeedsInput = "needs_input" // its session waits on a prompt, which the text must not answer
+	NotSentNotRunning = "not_running" // it is not running: no session yet, its prompt not typed yet, or ended
+	NotSentUnknown    = "unknown"     // no member of the run has the name
+	NotSentNoEnter    = "no_enter"    // typed, but a prompt came up before its Enter: the line waits in its input
+)
+
+// ErrNotSent is a run chat's send that was not typed into the member it
+// names; Reason says why (NotSentNeedsInput and the rest).
+type ErrNotSent struct{ Reason string }
+
+func (e ErrNotSent) Error() string { return "chat: not sent: " + e.Reason }
 
 // ChatBy is who a message is from: the viewer's subscription, as the roster names it.
 type ChatBy struct {
@@ -84,15 +105,21 @@ func cleanNonce(s string) string {
 	return b.String()
 }
 
-// chatRing keeps the last MaxChat messages. The owner's lock guards it.
+// chatRing keeps the last limit messages, MaxChat when zero. The owner's
+// lock guards it.
 type chatRing struct {
-	buf []ChatMessage
+	buf   []ChatMessage
+	limit int
 }
 
 func (r *chatRing) add(m ChatMessage) {
+	limit := r.limit
+	if limit <= 0 {
+		limit = MaxChat
+	}
 	r.buf = append(r.buf, m)
-	if len(r.buf) > MaxChat {
-		r.buf = r.buf[len(r.buf)-MaxChat:]
+	if len(r.buf) > limit {
+		r.buf = r.buf[len(r.buf)-limit:]
 	}
 }
 
@@ -175,8 +202,10 @@ func chatBy(sub *Subscription) ChatBy {
 }
 
 // Chat keeps and sends a viewer's post to every viewer, and returns it as
-// kept. Every role may post. With To "agent" (a controller's) the caller
-// goes on with ChatSend on the message. An ended session takes no post.
+// kept. Every role may post. With To ("agent", or a member of the run in
+// scope "run"; a controller's) the caller goes on with ChatSend on the
+// message. An ended session takes no post of its own; the run's chat stays
+// open while the run is kept.
 func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error) {
 	if !sub.chat.take(time.Now()) {
 		return ChatMessage{}, ErrChatRateLimited
@@ -185,16 +214,21 @@ func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error
 	if scope == "" {
 		scope = proto.ChatScopeSession
 	}
-	if scope != proto.ChatScopeSession {
-		return ChatMessage{}, ErrChatBadScope
-	}
-	if post.To != "" {
-		if post.To != proto.ChatToAgent {
+	var room *ChatRoom
+	switch scope {
+	case proto.ChatScopeSession:
+		if post.To != "" && post.To != proto.ChatToAgent {
 			return ChatMessage{}, ErrChatBadScope
 		}
-		if sub.Role != RoleControl {
-			return ChatMessage{}, ErrReadOnly
+	case proto.ChatScopeRun:
+		if room = s.opts.RunChat; room == nil {
+			return ChatMessage{}, ErrNoRunChat
 		}
+	default:
+		return ChatMessage{}, ErrChatBadScope
+	}
+	if post.To != "" && sub.Role != RoleControl {
+		return ChatMessage{}, ErrReadOnly
 	}
 	text := CleanChatText(post.Text)
 	if text == "" {
@@ -204,6 +238,14 @@ func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error
 		return ChatMessage{}, ErrChatTooLong
 	}
 	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: scope, Kind: proto.ChatKindMessage, By: chatBy(sub), Text: text, Nonce: cleanNonce(post.Nonce)}
+	if room != nil {
+		// The member the sender looks at, as the client says it, kept when it is one.
+		if room.hasMember(post.On) {
+			m.On = post.On
+		}
+		room.post(m)
+		return m, nil
+	}
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		s.mu.Unlock()
@@ -216,12 +258,34 @@ func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error
 }
 
 // ChatSend types the text of the kept message Ref into the agent, as a reply
-// box does (Submit), and marks it in the chat. Controllers only.
+// box does (Submit), and marks it in the chat; in scope "run", into the
+// member To of the run as a broadcast does (nothing while it waits on a
+// prompt), with the marker in the run's chat, or ErrNotSent says why not.
+// Controllers only.
 func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.ChatSend) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
-	if send.Scope != "" && send.Scope != proto.ChatScopeSession {
+	switch send.Scope {
+	case "", proto.ChatScopeSession:
+	case proto.ChatScopeRun:
+		room := s.opts.RunChat
+		if room == nil {
+			return ErrNoRunChat
+		}
+		ref, ok := room.find(send.Ref)
+		if !ok || ref.Kind != proto.ChatKindMessage {
+			return ErrChatUnknownRef
+		}
+		if send.To == "" {
+			return ErrChatBadScope
+		}
+		if err := room.sendTo(ctx, send.To, ref.Text, sub.Name); err != nil {
+			return err
+		}
+		room.post(ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeRun, Kind: proto.ChatKindSentToAgent, By: chatBy(sub), Ref: ref.ID, To: send.To})
+		return nil
+	default:
 		return ErrChatBadScope
 	}
 	s.mu.Lock()
@@ -239,6 +303,17 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 	s.mu.Unlock()
 	s.chatHook(id, m)
 	return nil
+}
+
+// RunChat is the chat of the run this session is a member of, or nil.
+func (s *Local) RunChat() *ChatRoom { return s.opts.RunChat }
+
+// LeaveRunChat takes the session out of its run's chat: it left the server
+// (the registry's OnRemove). Its viewers are gone with it.
+func (s *Local) LeaveRunChat() {
+	if room := s.opts.RunChat; room != nil {
+		room.Leave(s)
+	}
 }
 
 // ChatHistory is the kept chat, oldest first.
@@ -281,15 +356,203 @@ func (s *Local) chatSystem(sub *Subscription, event string) (ChatMessage, bool) 
 // the post's nonce or the send's ref as its requestId.
 func ChatErrorFrame(err error, requestID string) []byte {
 	code, msg := "input_failed", "could not be delivered"
+	var notSent ErrNotSent
 	switch {
+	case errors.As(err, &notSent):
+		code, msg = proto.ErrCodeNotSent, notSent.Reason
 	case errors.Is(err, ErrChatRateLimited):
 		code, msg = proto.ErrCodeTooManyRequests, "too many messages at once"
 	case errors.Is(err, ErrReadOnly):
 		code, msg = proto.ErrCodeReadOnly, "this link is view-only"
 	case errors.Is(err, ErrSessionEnded):
 		code, msg = proto.ErrCodeSessionEnded, "the session has ended"
-	case errors.Is(err, ErrChatEmpty), errors.Is(err, ErrChatTooLong), errors.Is(err, ErrChatUnknownRef), errors.Is(err, ErrChatBadScope):
+	case errors.Is(err, ErrChatEmpty), errors.Is(err, ErrChatTooLong), errors.Is(err, ErrChatUnknownRef), errors.Is(err, ErrChatBadScope), errors.Is(err, ErrNoRunChat):
 		code, msg = proto.ErrCodeBadFrame, err.Error()
 	}
 	return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: code, Message: msg, RequestID: requestID})
+}
+
+// ChatRoom is a run's chat (docs/protocol.md, Chat): one thread across every
+// member session, kept by the run engine's run and gone into its record,
+// read and posted over any member's connection with scope "run", so a run
+// published through a switchyard, or a guest on a run link, has it too. A
+// post reaches every member's viewers; the people on any member make its
+// roster (chat_roster). A controller's send types a kept message into the
+// member it names, as a broadcast does: nothing while that member waits on
+// a prompt. Lock order: a member's lock, then the room's.
+type ChatRoom struct {
+	mu      sync.Mutex
+	members []roomMember
+	ring    chatRing
+	// onPost is told of every message kept, outside the lock; running says
+	// whether the named member runs (its prompt typed), for sendTo.
+	onPost  func(m ChatMessage)
+	running func(member string) bool
+}
+
+type roomMember struct {
+	l    *Local
+	name string
+}
+
+// NewChatRoom makes an empty room. onPost, when set, is called with each
+// message kept, outside any lock, on the posting goroutine; running, when
+// set, says whether a member is running (a send to one that is not is
+// NotSentNotRunning).
+func NewChatRoom(onPost func(m ChatMessage), running func(member string) bool) *ChatRoom {
+	return &ChatRoom{ring: chatRing{limit: MaxRunChat}, onPost: onPost, running: running}
+}
+
+// Join adds l as the member name: its viewers read and post the run's chat
+// from now on, and one attaching later is replayed it. The session must be
+// made with the room (Options.RunChat).
+func (r *ChatRoom) Join(l *Local, name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.members = append(r.members, roomMember{l: l, name: name})
+}
+
+// Leave takes l out of the room: a session gone from the server.
+func (r *ChatRoom) Leave(l *Local) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.members = slices.DeleteFunc(r.members, func(m roomMember) bool { return m.l == l })
+}
+
+// History is the kept chat, oldest first.
+func (r *ChatRoom) History() []ChatMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ring.snapshot()
+}
+
+func (r *ChatRoom) replayFrames() [][]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return chatReplayFrames(proto.ChatScopeRun, r.ring.snapshot())
+}
+
+func (r *ChatRoom) find(id string) (ChatMessage, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ring.find(id)
+}
+
+func (r *ChatRoom) snapshotMembers() []roomMember {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.members)
+}
+
+func (r *ChatRoom) memberNamed(name string) (*Local, bool) {
+	for _, m := range r.snapshotMembers() {
+		if m.name == name {
+			return m.l, true
+		}
+	}
+	return nil, false
+}
+
+func (r *ChatRoom) hasMember(name string) bool {
+	_, ok := r.memberNamed(name)
+	return ok
+}
+
+// post keeps m and sends it to every member's viewers, then tells onPost.
+func (r *ChatRoom) post(m ChatMessage) {
+	r.mu.Lock()
+	r.ring.add(m)
+	members := slices.Clone(r.members)
+	r.mu.Unlock()
+	frame := proto.MustControlRaw(ChatToProto(m))
+	for _, mem := range members {
+		mem.l.hub.Broadcast(frame)
+	}
+	if r.onPost != nil {
+		r.onPost(m)
+	}
+}
+
+// sendTo types text into the member name as a broadcast does (nothing
+// while its session waits on a prompt), recorded as byName; an ErrNotSent
+// says why it was not.
+func (r *ChatRoom) sendTo(ctx context.Context, name, text, byName string) error {
+	l, ok := r.memberNamed(name)
+	if !ok {
+		return ErrNotSent{NotSentUnknown}
+	}
+	if r.running != nil && !r.running(name) {
+		return ErrNotSent{NotSentNotRunning}
+	}
+	res, err := l.Submit(ctx, Submission{Text: text, ByName: byName, UnlessWaiting: true})
+	switch {
+	case err != nil && !res.Typed:
+		return ErrNotSent{NotSentNotRunning}
+	case err != nil:
+		return ErrNotSent{NotSentNoEnter}
+	case !res.Typed:
+		return ErrNotSent{NotSentNeedsInput}
+	case !res.Entered:
+		return ErrNotSent{NotSentNoEnter}
+	}
+	return nil
+}
+
+// namePresent reports whether a live connection of the name other than
+// except is on any member: the same person elsewhere on the run.
+func (r *ChatRoom) namePresent(name, except string) bool {
+	for _, m := range r.snapshotMembers() {
+		if m.l.hub.namePresent(name, except) {
+			return true
+		}
+	}
+	return false
+}
+
+// system keeps a join or leave line about sub unless the same name is on
+// the run elsewhere: a person on three members' tiles joins and leaves once.
+func (r *ChatRoom) system(sub *Subscription, event string) {
+	if r.namePresent(sub.Name, sub.ID) {
+		return
+	}
+	r.post(ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeRun, Kind: proto.ChatKindSystem, By: chatBy(sub), Event: event})
+}
+
+// Roster is who is on the run's chat: every live connection of any member,
+// one row per name, with the member a person looks at (a connection that is
+// not quiet) when they look at one; Count counts them all, List the first
+// proto.MaxChatRoster.
+func (r *ChatRoom) Roster() proto.ChatRoster {
+	members := r.snapshotMembers()
+	seen := map[string]bool{}
+	out := proto.ChatRoster{T: proto.CtlChatRoster, Scope: proto.ChatScopeRun, List: []proto.ChatPerson{}}
+	add := func(quiet bool) {
+		for _, mem := range members {
+			for _, v := range mem.l.hub.Roster() {
+				if v.Quiet != quiet || seen[v.Name] {
+					continue
+				}
+				seen[v.Name] = true
+				out.Count++
+				if len(out.List) < proto.MaxChatRoster {
+					p := proto.ChatPerson{ID: v.ID, Name: v.Name, Role: v.Role}
+					if !quiet {
+						p.On = mem.name
+					}
+					out.List = append(out.List, p)
+				}
+			}
+		}
+	}
+	add(false)
+	add(true)
+	return out
+}
+
+// broadcastRoster sends the roster to every member's viewers.
+func (r *ChatRoom) broadcastRoster() {
+	frame := proto.MustControl(r.Roster())
+	for _, mem := range r.snapshotMembers() {
+		mem.l.hub.Broadcast(frame)
+	}
 }

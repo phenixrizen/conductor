@@ -9,7 +9,7 @@ export class WebSocketTransport extends BaseTransport {
 
   constructor(
     private readonly url: string,
-    opts: { name?: string } = {},
+    opts: { name?: string; chatOnly?: boolean } = {},
   ) {
     super('ws', opts)
   }

@@ -48,6 +48,9 @@ type Subscription struct {
 	inflight atomic.Int32 // file requests in progress
 
 	chat chatBucket // the connection's chat posts, bounded
+	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
+	// output or scrollback, not a viewer of the session.
+	quiet bool
 }
 
 func newSubscription(id string, role Role, linkID string, sink Sink) *Subscription {
@@ -58,7 +61,7 @@ func newSubscription(id string, role Role, linkID string, sink Sink) *Subscripti
 
 // Info describes the subscription for the viewers roster.
 func (s *Subscription) Info() proto.ViewerInfo {
-	v := proto.ViewerInfo{ID: s.ID, Name: s.Name, Role: string(s.Role), Link: s.LinkLabel, Since: s.Since.Format(time.RFC3339)}
+	v := proto.ViewerInfo{ID: s.ID, Name: s.Name, Role: string(s.Role), Link: s.LinkLabel, Since: s.Since.Format(time.RFC3339), Quiet: s.quiet}
 	if ms := s.lastInput.Load(); ms > 0 {
 		v.LastInputAt = time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 	}
@@ -179,6 +182,18 @@ func (h *Hub) Broadcast(frame []byte) {
 	}
 }
 
+// BroadcastLoud enqueues frame to every subscription but the quiet ones: the
+// terminal's output.
+func (h *Hub) BroadcastLoud(frame []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, s := range h.subs {
+		if !s.quiet {
+			s.send(frame)
+		}
+	}
+}
+
 // Drained reports whether every live subscription has been handed all the frames
 // sent to it: none is queued and none is being written. A host asks it before
 // it closes the connection its clients' frames travel on. It says nothing of
@@ -207,7 +222,21 @@ func (h *Hub) Count() int {
 	return n
 }
 
-// Roster lists every live subscription, oldest first.
+// LoudCount returns the number of live subscriptions that are not quiet: the
+// session's viewers.
+func (h *Hub) LoudCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for _, s := range h.subs {
+		if s.Reason() == nil && !s.quiet {
+			n++
+		}
+	}
+	return n
+}
+
+// Roster lists every live subscription, oldest first, the quiet ones marked.
 func (h *Hub) Roster() []proto.ViewerInfo {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

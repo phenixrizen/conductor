@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
-import { broadcastSelection, crewFeed, memberStatus, runCounts, takeViewLink } from '~/utils/crews'
-import { memberWords, runTitle } from '~/utils/crewWords'
+import { scopeItems } from '~/utils/chat'
+import { broadcastSelection, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
+import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 
@@ -140,6 +141,31 @@ const viewItems = [
   { label: 'Timeline', value: 'timeline', icon: 'i-lucide-chart-gantt' },
 ]
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
+
+// The run's chat (design 2e): one thread for everyone on the run, over a quiet connection to a live member; a message may also
+// be typed into a member, as the broadcast bar types, a member waiting on a prompt skipped. Counted while the drawer is closed.
+const unread = useChatUnread()
+const runChat = useRunChat(runId, computed(() => run.value?.members ?? []), { token: admin.token, kept: computed(() => run.value?.chat) })
+const runChatOpen = ref(false)
+const runChatUnread = computed(() => unread.count(runChat.key.value))
+watch(
+  [() => runChat.key.value, runChatOpen],
+  ([key, open]) => {
+    if (open) unread.openThread(key)
+    else unread.closeThread(key)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => unread.closeThread(runChat.key.value))
+const runScope = computed(() => scopeItems(run.value?.members ?? [], states.value))
+const runTargets = computed(() => runScope.value.slice(1))
+const runChatDescription = computed(() => (run.value ? `${runTitle(run.value)} · run started ${startedClock(run.value.startedAt)} · kept with the run` : ''))
+function runChatSendTo(ref: string, to: string) {
+  if (!runChat.sendTo(ref, to)) toast.add({ title: 'Not connected', color: 'warning' })
+}
+watch(runChat.refused, (r) => {
+  if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })
+})
 const handoffs = computed(() => handoffsOf(run.value?.log ?? [], events.entries.value, memberOf.value))
 const selectedMember = ref('')
 /** A node opened (Enter, a double click, Open): the member's session page, as a tile's select does. */
@@ -223,7 +249,7 @@ watch(() => admin.token.value, load)
 <template>
   <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <CrewRunHeader :run="run" :run-id="runId" :counts="counts" :now="now" @changed="changed" />
+      <CrewRunHeader :run="run" :run-id="runId" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
 
     <template #body>
@@ -316,4 +342,21 @@ watch(() => admin.token.value, load)
       </template>
     </template>
   </UDashboardPanel>
+
+  <ChatSheet
+    v-model:open="runChatOpen"
+    scope="run"
+    title="Run chat"
+    :description="runChatDescription"
+    :thread="runChat.thread.value"
+    role="control"
+    :ended="!!run?.stoppedAt"
+    :offline="runChat.offline.value"
+    :viewers="runChat.people.value"
+    :scope-items="runScope"
+    :send-targets="runTargets"
+    @send="(text, to) => runChat.send(text, to)"
+    @send-to="runChatSendTo"
+    @retry="runChat.retry"
+  />
 </template>

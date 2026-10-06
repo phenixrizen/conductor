@@ -78,6 +78,20 @@ export interface ChatHistory {
   messages: ChatMessage[]
   more?: boolean
 }
+/** One person on a run's chat: a viewer of any member, one row per name; `on` is the member they look at, when one. */
+export interface ChatPerson {
+  id: string
+  name: string
+  role: Role
+  on?: string
+}
+/** Who is on a run's chat (`chat_roster`, owner → client), sent to every member's viewers as any member's roster changes; `count` counts everyone, `list` the first 32. */
+export interface ChatRoster {
+  t: 'chat_roster'
+  scope: 'run'
+  count: number
+  list: ChatPerson[]
+}
 
 export const CloseCode = {
   Normal: 1000,
@@ -120,6 +134,8 @@ export interface ViewerInfo {
   link?: string
   since: string
   lastInputAt?: string
+  /** A connection for a run's chat alone (`hello.chatOnly`): left out of a session's `viewers`, on the run's roster. */
+  quiet?: boolean
 }
 
 /** One line of a session's activity log (`activity` control message). */
@@ -165,6 +181,8 @@ export interface Welcome {
   fileView: boolean
   /** The owner takes `chat` and `chat_send`; absent from an older owner, which must be sent neither. */
   chat?: boolean
+  /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
+  runChat?: boolean
   iceServers?: ICEServer[]
   relayTimeoutMs?: number
   relayOnly?: boolean
@@ -182,6 +200,7 @@ export type ControlMessage =
   | { t: 'pong'; ts: number }
   | ChatMessage
   | ChatHistory
+  | ChatRoster
 
 export interface FileEntry {
   name: string

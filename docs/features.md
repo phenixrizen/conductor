@@ -785,6 +785,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   is in front of the person (`useMedia` says whether the inspector is
   rendered), so a phone counts what the hidden inspector's tab would have
   swallowed. Nothing in a hello or welcome changed.
+- **Run chat** (2e, 2f, C3). One thread per run across its members:
+  `session.ChatRoom`, made by the engine's run, which every member session
+  is made with (`Options.RunChat`) and joins at launch. Read and posted
+  over any member's connection with scope `run`, so a run link's guest and
+  a run published through a switchyard have it without the switchyard or
+  a run socket knowing (option A of the plan; option B, a run socket, was
+  rejected for that). A member's new viewer is replayed the run's chat
+  after the session's; the people on any member make the roster
+  (`chat_roster`, one row per name with the member they look at, bounded
+  at 32 so a full list of the longest names fits a control frame; `count`
+  says how many); join and leave lines are counted once across the
+  members. The run page opens one quiet connection (`hello.chatOnly`) to a
+  live member and moves it when that member ends: no scrollback or output,
+  not a viewer of the session, no line in its chat, on the run's roster
+  (`useRunChat`). A controller's `chat_send` with scope `run` types a kept
+  message into the member it names as a broadcast does, nothing while it
+  waits on a prompt, answered `not_sent{needs_input|not_running|unknown|
+  no_enter}` (the broadcast's reasons, now `session.NotSent*`); the
+  composer's menu (`scopeItems`) disables such a member with the broadcast
+  bar's words before anything is sent. The run's chat goes into its record
+  (`chat` on `GET /api/runs/{run}` and the record; lists strip it; 500
+  worst-case messages stay under the 4 MiB record read) and stays open
+  while the run is kept; a resumed run starts a new one. The `send` emit of
+  the chat components now names where a message goes ('', `agent`, a
+  member).
 
 ### Verified (round 11)
 
@@ -834,6 +859,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   open over the terminal, dark and light) and at 1440 against 2d (the bare
   guest page with the panel and the note). By hand on a phone (the keyboard
   pushing the composer up, the drag to full height): pending.
+- C3: Go tests for the room (fan-out across members, the replay order, the
+  roster, joins coalesced, quiet connections, sends with every refusal),
+  the roster's bound (proto) and the run chat over WebSockets with a run
+  link, the record and the lists (`crews_test.go`); Playwright
+  `chat.spec.ts` scenario 5 (two people on the run page, the composer's
+  menu with review skipped and lead typed into, a guest on the run link
+  with the view-only note, the run stopped). Rendered headless at 1440
+  against 2e and 2f. By hand: a run published through the switchyard from
+  the LAN box with a phone on its link, pending.
 
 ## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
 

@@ -3,9 +3,12 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,7 +160,7 @@ func TestChatReachesEveryViewerWhateverTheirRole(t *testing.T) {
 	}{
 		{proto.ChatPost{Text: "  \n "}, ErrChatEmpty},
 		{proto.ChatPost{Text: strings.Repeat("y", proto.MaxChatText+1)}, ErrChatTooLong},
-		{proto.ChatPost{Text: "x", Scope: "run"}, ErrChatBadScope},
+		{proto.ChatPost{Text: "x", Scope: "run"}, ErrNoRunChat},
 		{proto.ChatPost{Text: "x", To: "core"}, ErrChatBadScope},
 	} {
 		if _, err := s.Chat(subA, bad.post); !errors.Is(err, bad.want) {
@@ -327,7 +330,7 @@ func TestChatSendTypesTheMessageAndMarksIt(t *testing.T) {
 	if err := s.ChatSend(ctx, subA, proto.ChatSend{Ref: marker["id"].(string)}); !errors.Is(err, ErrChatUnknownRef) {
 		t.Fatalf("a marker: %v", err)
 	}
-	if err := s.ChatSend(ctx, subA, proto.ChatSend{Ref: m.ID, Scope: "run"}); !errors.Is(err, ErrChatBadScope) {
+	if err := s.ChatSend(ctx, subA, proto.ChatSend{Ref: m.ID, Scope: "run", To: "core"}); !errors.Is(err, ErrNoRunChat) {
 		t.Fatalf("run scope: %v", err)
 	}
 	if history := s.ChatHistory(); len(history) < 4 || history[len(history)-1].Kind != proto.ChatKindSentToAgent {
@@ -397,5 +400,277 @@ func TestChatFrameOfTheBoundFits(t *testing.T) {
 	got := waitControl(a, chatOf(proto.ChatKindMessage))
 	if got == nil || len(got["text"].(string)) != proto.MaxChatText {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// A run's chat crosses its members: a post over one member's connection
+// reaches every member's viewers, a late viewer gets the run's history after
+// the session's, and the room keeps it for the record.
+func TestRunChatReachesEveryMembersViewers(t *testing.T) {
+	room := NewChatRoom(nil, nil)
+	a, _ := newLocalWith(t, Options{RunChat: room})
+	b, _ := newLocalWith(t, Options{RunChat: room})
+	room.Join(a, "core")
+	room.Join(b, "tests")
+	sa, sb := newChanSink(false), newChanSink(false)
+	subA, _ := a.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sa)
+	subB, _ := b.AttachWith(AttachOptions{Role: RoleView, Name: "Priya", Cols: 80, Rows: 24}, sb)
+	if w := waitControl(sa, func(m map[string]any) bool { return m["t"] == proto.CtlWelcome }); w == nil || w["runChat"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+	m, err := a.Chat(subA, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "core is green", On: "core", Nonce: "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, sink := range map[string]*chanSink{"core's viewer": sa, "tests' viewer": sb} {
+		got := waitControl(sink, chatOf(proto.ChatKindMessage))
+		if got == nil || got["id"] != m.ID || got["scope"] != "run" || got["on"] != "core" || got["text"] != "core is green" || got["nonce"] != "n1" {
+			t.Fatalf("%s got %v", name, got)
+		}
+	}
+	// A view link posts too; an `on` that names no member is dropped.
+	m2, err := b.Chat(subB, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "seen", On: "nobody"})
+	if err != nil || m2.On != "" || m2.By.Role != RoleView {
+		t.Fatalf("priya's post %+v %v", m2, err)
+	}
+	// A late viewer of tests: the session's history, then the run's.
+	late := newChanSink(false)
+	b.AttachWith(AttachOptions{Role: RoleControl, Name: "Jane", Cols: 80, Rows: 24}, late)
+	var scopes []string
+	for i := 0; i < late.count(); i++ {
+		f, err := proto.Decode(late.frame(i))
+		if err != nil || f.Type != proto.TypeControl {
+			continue
+		}
+		var h map[string]any
+		if json.Unmarshal(f.Payload, &h) == nil && h["t"] == proto.CtlChatHistory {
+			scopes = append(scopes, h["scope"].(string))
+			if h["scope"] == "run" {
+				var texts []string
+				for _, raw := range h["messages"].([]any) {
+					if mm := raw.(map[string]any); mm["kind"] == proto.ChatKindMessage {
+						texts = append(texts, mm["text"].(string))
+					}
+				}
+				if strings.Join(texts, "|") != "core is green|seen" {
+					t.Fatalf("the run's history %v", h)
+				}
+			}
+		}
+	}
+	if strings.Join(scopes, ",") != "session,run" {
+		t.Fatalf("history scopes %v", scopes)
+	}
+	// The room keeps it; the roster lists everyone on any member, with the member they look at.
+	var kept []string
+	for _, m := range room.History() {
+		if m.Kind == proto.ChatKindMessage {
+			kept = append(kept, m.Text)
+		}
+	}
+	if strings.Join(kept, "|") != "core is green|seen" {
+		t.Fatalf("room history %v", kept)
+	}
+	roster := room.Roster()
+	var people []string
+	for _, p := range roster.List {
+		people = append(people, p.Name+"@"+p.On+"/"+p.Role)
+	}
+	slices.Sort(people)
+	if roster.Count != 3 || strings.Join(people, ",") != "Jane@tests/control,Nate@core/control,Priya@tests/view" {
+		t.Fatalf("roster %+v", roster)
+	}
+	// A session in no run has no run chat.
+	c, _ := newLocal(t, t.TempDir())
+	subC, _ := c.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	if _, err := c.Chat(subC, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "x"}); !errors.Is(err, ErrNoRunChat) {
+		t.Fatalf("no run: %v", err)
+	}
+	if err := c.ChatSend(context.Background(), subC, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: "x", To: "core"}); !errors.Is(err, ErrNoRunChat) {
+		t.Fatalf("no run send: %v", err)
+	}
+}
+
+// The run's join and leave lines count a person once across its members,
+// and a quiet connection (a run page's own) joins the run's chat but is no
+// viewer of the session: no scrollback or output, not counted, no line.
+func TestRunChatJoinsCoalesceAcrossMembersAndQuietConnectionsStayOut(t *testing.T) {
+	room := NewChatRoom(nil, nil)
+	a, pa := newLocalWith(t, Options{RunChat: room})
+	b, _ := newLocalWith(t, Options{RunChat: room})
+	room.Join(a, "core")
+	room.Join(b, "tests")
+	pa.outW.Write([]byte("early\n"))
+	time.Sleep(50 * time.Millisecond)
+	subA, _ := a.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	subB, _ := b.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	subC, _ := b.AttachWith(AttachOptions{Role: RoleView, Name: "Priya", Cols: 80, Rows: 24}, newChanSink(false))
+	lines := func() string {
+		var out []string
+		for _, m := range room.History() {
+			if m.Kind == proto.ChatKindSystem {
+				out = append(out, m.By.Name+":"+m.Event)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	if got := lines(); got != "Nate:join,Priya:join" {
+		t.Fatalf("after the joins: %s", got)
+	}
+	a.Detach(subA)
+	if got := lines(); got != "Nate:join,Priya:join" {
+		t.Fatalf("after Nate left core, still on tests: %s", got)
+	}
+	b.Detach(subB)
+	b.Detach(subC)
+	if got := lines(); got != "Nate:join,Priya:join,Nate:leave,Priya:leave" {
+		t.Fatalf("after everyone left: %s", got)
+	}
+	quiet := newChanSink(false)
+	q, err := a.AttachWith(AttachOptions{Role: RoleControl, Name: "Quiet", Cols: 80, Rows: 24, ChatOnly: true}, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa.outW.Write([]byte("later\n"))
+	time.Sleep(50 * time.Millisecond)
+	if v := waitControl(quiet, func(m map[string]any) bool { return m["t"] == proto.CtlViewers }); v == nil || v["count"] != float64(0) {
+		t.Fatalf("the quiet connection counted itself: %v", v)
+	}
+	for i := 0; i < quiet.count(); i++ {
+		if f, err := proto.Decode(quiet.frame(i)); err == nil && (f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback) {
+			t.Fatalf("the quiet connection got %v %q", f.Type, f.Payload)
+		}
+	}
+	if a.Viewers() != 0 || a.Info().Viewers != 0 {
+		t.Fatalf("a quiet connection is a viewer: %d", a.Viewers())
+	}
+	for _, m := range a.ChatHistory() {
+		if m.By.Name == "Quiet" {
+			t.Fatalf("the session's chat has a line about the quiet connection: %+v", m)
+		}
+	}
+	if got := lines(); got != "Nate:join,Priya:join,Nate:leave,Priya:leave,Quiet:join" {
+		t.Fatalf("the run's lines: %s", got)
+	}
+	if r := room.Roster(); r.Count != 1 || r.List[0].Name != "Quiet" || r.List[0].On != "" {
+		t.Fatalf("roster %+v", r)
+	}
+	// It posts and reads the run's chat like anyone.
+	if _, err := a.Chat(q, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "from the run page"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitControl(quiet, chatOf(proto.ChatKindMessage)); got == nil || got["text"] != "from the run page" {
+		t.Fatalf("the quiet connection got %v", got)
+	}
+	a.Detach(q)
+	if got := lines(); !strings.HasSuffix(got, "Quiet:leave") {
+		t.Fatalf("after the quiet connection left: %s", got)
+	}
+}
+
+// A controller's send in the run's chat types the message into the member
+// it names and marks it with the member; a member waiting on a prompt, not
+// running or unknown is not typed into, with the broadcast's reasons.
+func TestRunChatSendTypesIntoAMemberOrSaysWhyNot(t *testing.T) {
+	running := map[string]bool{"core": true, "tests": true}
+	var mu sync.Mutex
+	room := NewChatRoom(nil, func(n string) bool { mu.Lock(); defer mu.Unlock(); return running[n] })
+	a, _ := newLocalWith(t, Options{RunChat: room})
+	b, pb := newLocalWith(t, Options{RunChat: room})
+	room.Join(a, "core")
+	room.Join(b, "tests")
+	sa := newChanSink(false)
+	subA, _ := a.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sa)
+	subV, _ := a.AttachWith(AttachOptions{Role: RoleView, Name: "Priya", Cols: 80, Rows: 24}, newChanSink(false))
+	m, err := a.Chat(subA, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "cover the 404 path"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := make(chan []byte, 1)
+	go func() {
+		var acc []byte
+		deadline := time.After(3 * time.Second)
+		for {
+			select {
+			case in := <-pb.input:
+				acc = append(acc, in...)
+				if bytes.Contains(acc, []byte("cover the 404 path")) && bytes.HasSuffix(acc, []byte("\r")) {
+					typed <- acc
+					return
+				}
+			case <-deadline:
+				typed <- acc
+				return
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.ChatSend(ctx, subA, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: m.ID, To: "tests"}); err != nil {
+		t.Fatal(err)
+	}
+	if acc := <-typed; !bytes.Contains(acc, []byte("cover the 404 path")) || !bytes.HasSuffix(acc, []byte("\r")) {
+		t.Fatalf("typed %q", acc)
+	}
+	marker := waitControl(sa, chatOf(proto.ChatKindSentToAgent))
+	if marker == nil || marker["ref"] != m.ID || marker["to"] != "tests" || marker["scope"] != "run" {
+		t.Fatalf("marker %v", marker)
+	}
+	if h := room.History(); h[len(h)-1].Kind != proto.ChatKindSentToAgent || h[len(h)-1].To != "tests" {
+		t.Fatalf("room history ends with %+v", h[len(h)-1])
+	}
+	want := func(what string, err error, reason string) {
+		t.Helper()
+		var ns ErrNotSent
+		if !errors.As(err, &ns) || ns.Reason != reason {
+			t.Fatalf("%s: %v, want not sent %s", what, err, reason)
+		}
+		f, _ := proto.Decode(ChatErrorFrame(err, m.ID))
+		var frame map[string]any
+		json.Unmarshal(f.Payload, &frame)
+		if frame["code"] != proto.ErrCodeNotSent || frame["message"] != reason || frame["requestId"] != m.ID {
+			t.Fatalf("%s: frame %v", what, frame)
+		}
+	}
+	b.SetAttention(AttentionNeedsInput, "Trust this folder?", "trust")
+	want("waiting", a.ChatSend(ctx, subA, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: m.ID, To: "tests"}), NotSentNeedsInput)
+	mu.Lock()
+	running["core"] = false
+	mu.Unlock()
+	want("not running", a.ChatSend(ctx, subA, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: m.ID, To: "core"}), NotSentNotRunning)
+	want("unknown", a.ChatSend(ctx, subA, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: m.ID, To: "docs"}), NotSentUnknown)
+	if err := a.ChatSend(ctx, subV, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: m.ID, To: "tests"}); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a view link: %v", err)
+	}
+	if err := a.ChatSend(ctx, subA, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: m.ID}); !errors.Is(err, ErrChatBadScope) {
+		t.Fatalf("no member named: %v", err)
+	}
+	if err := a.ChatSend(ctx, subA, proto.ChatSend{Scope: proto.ChatScopeRun, Ref: "nope", To: "tests"}); !errors.Is(err, ErrChatUnknownRef) {
+		t.Fatalf("unknown ref: %v", err)
+	}
+	// A post with `to` from a view link is refused before anything is kept.
+	if _, err := a.Chat(subV, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "x", To: "tests"}); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a view link's post to a member: %v", err)
+	}
+	// Every message told the hook, outside any lock.
+	var heard []string
+	room2 := NewChatRoom(func(m ChatMessage) { heard = append(heard, m.Kind) }, nil)
+	c, _ := newLocalWith(t, Options{RunChat: room2})
+	room2.Join(c, "solo")
+	subC, _ := c.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	c.Chat(subC, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "hi"})
+	c.Detach(subC)
+	if got := strings.Join(heard, ","); got != "system,message,system" {
+		t.Fatalf("the hook heard %s", got)
+	}
+}
+
+func TestRunChatRingKeepsMaxRunChat(t *testing.T) {
+	r := chatRing{limit: MaxRunChat}
+	for i := range MaxRunChat + 9 {
+		r.add(ChatMessage{ID: fmt.Sprint(i)})
+	}
+	if snap := r.snapshot(); len(snap) != MaxRunChat || snap[0].ID != "9" {
+		t.Fatalf("ring kept %d from %s", len(snap), snap[0].ID)
 	}
 }

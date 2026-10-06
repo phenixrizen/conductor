@@ -43,10 +43,13 @@ export abstract class BaseTransport implements TerminalTransport {
 
   /** Display name sent in the hello; a label other viewers see, not authentication. */
   protected name = ''
+  /** A quiet connection, for a run's chat alone (`hello.chatOnly`): no scrollback or output, not a viewer of the session. */
+  protected chatOnly = false
 
-  constructor(kind: TransportKind, opts: { name?: string } = {}) {
+  constructor(kind: TransportKind, opts: { name?: string; chatOnly?: boolean } = {}) {
     this.kind = ref(kind)
     this.name = (opts.name ?? '').trim().slice(0, 40)
+    this.chatOnly = !!opts.chatOnly
   }
 
   abstract connect(hello: { cols: number; rows: number }): Promise<Welcome>
@@ -109,7 +112,7 @@ export abstract class BaseTransport implements TerminalTransport {
   }
 
   protected helloFrame(hello: { cols: number; rows: number }): Uint8Array<ArrayBuffer> {
-    return encodeControl({ t: 'hello', proto: ProtoVersion, cols: hello.cols, rows: hello.rows, client: 'web/1', ...(this.name ? { name: this.name } : {}) })
+    return encodeControl({ t: 'hello', proto: ProtoVersion, cols: hello.cols, rows: hello.rows, client: 'web/1', ...(this.name ? { name: this.name } : {}), ...(this.chatOnly ? { chatOnly: true } : {}) })
   }
 
   /** Dispatches a terminal-stream frame. Returns false for unknown types. */
