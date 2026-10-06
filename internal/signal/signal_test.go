@@ -821,3 +821,53 @@ func TestRegisterUnderAnInstance(t *testing.T) {
 		t.Fatalf("instance too long: %v", err)
 	}
 }
+
+// A chat message the host reports reaches the hub's OnChat for the
+// connection's session, cleaned: the scope is this session's, the names and
+// ids are bounded, the text is cleaned and cut, a bad time is now, and a kind
+// this server does not know is dropped.
+func TestHostChatReachesTheHubHookCleaned(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var mu sync.Mutex
+	var ids []string
+	var got []session.ChatMessage
+	hub.OnChat = func(id string, m session.ChatMessage) {
+		mu.Lock()
+		defer mu.Unlock()
+		ids = append(ids, id)
+		got = append(got, m)
+	}
+	hs, _ := register(t, hub)
+	at := time.Date(2026, 10, 6, 8, 32, 0, 0, time.UTC)
+	hs.HostChat(proto.ChatMessage{T: "chat", ID: "0123456789abcdef", At: at.Format(time.RFC3339Nano), Scope: "run", Kind: "message",
+		By: proto.ChatBy{ID: "fedcba9876543210", Name: "  Ada\x00 Lovelace ", Role: "view"}, Text: "  hi <there>\x00\r\nsecond  ", Nonce: "n1", On: "core"})
+	hs.HostChat(proto.ChatMessage{ID: "bogus", Kind: "bogus", By: proto.ChatBy{Role: "view"}})
+	hs.HostChat(proto.ChatMessage{ID: "norole", Kind: "message", By: proto.ChatBy{Role: "owner"}})
+	hs.HostChat(proto.ChatMessage{ID: "", Kind: "message", By: proto.ChatBy{Role: "view"}})
+	hs.HostChat(proto.ChatMessage{ID: "m2", At: "not a time", Kind: "sent_to_agent", By: proto.ChatBy{ID: "v", Name: "Nate", Role: "control"}, Ref: "0123456789abcdef", To: "agent"})
+	hs.HostChat(proto.ChatMessage{ID: "m3", At: at.Format(time.RFC3339), Kind: "system", By: proto.ChatBy{ID: "v", Name: "Nate", Role: "control"}, Event: "leave", To: "core"})
+	hs.HostChat(proto.ChatMessage{ID: "m4", At: at.Format(time.RFC3339), Kind: "message", By: proto.ChatBy{Role: "view"}, Text: strings.Repeat("x", proto.MaxChatText+100)})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 4 || len(ids) != 4 {
+		t.Fatalf("hook saw %d messages (%v)", len(got), ids)
+	}
+	for _, id := range ids {
+		if id != hs.Info().ID {
+			t.Fatalf("attributed to %s, want %s", id, hs.Info().ID)
+		}
+	}
+	want := session.ChatMessage{ID: "0123456789abcdef", At: at, Scope: "session", Kind: "message", By: session.ChatBy{ID: "fedcba9876543210", Name: "Ada Lovelace", Role: session.RoleView}, Text: "hi <there>\nsecond"}
+	if got[0] != want {
+		t.Fatalf("message %+v, want %+v", got[0], want)
+	}
+	if m := got[1]; m.ID != "m2" || m.Kind != "sent_to_agent" || m.Ref != "0123456789abcdef" || m.To != "agent" || time.Since(m.At) > time.Minute {
+		t.Fatalf("marker %+v", m)
+	}
+	if m := got[2]; m.Event != "leave" || m.To != "" {
+		t.Fatalf("system line %+v", m)
+	}
+	if m := got[3]; len(m.Text) != proto.MaxChatText {
+		t.Fatalf("the long text was cut to %d bytes", len(m.Text))
+	}
+}

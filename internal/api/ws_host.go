@@ -305,6 +305,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		// entry of a type this server does not know (a newer host's) is
 		// dropped, not fatal.
 		hs.HostActivity(m.Entry, m.State)
+	case proto.HostChat:
+		var m proto.HostChatMsg
+		if json.Unmarshal(data, &m) != nil {
+			return false
+		}
+		// The session is the connection's, whatever m.SessionID says; the
+		// message is checked and cleaned by HostChat, and one of a kind this
+		// server does not know is dropped, not fatal.
+		hs.HostChat(m.Message)
 	case proto.HostLink:
 		var m proto.HostLinkMsg
 		if json.Unmarshal(data, &m) != nil || m.RequestID == "" || len(m.RequestID) > proto.MaxLinkRequestID {

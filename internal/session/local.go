@@ -888,11 +888,20 @@ func (s *Local) Stop(ctx context.Context) error {
 	return err
 }
 
-// DisconnectLink evicts every subscription created through linkID.
+// DisconnectLink evicts every subscription created through linkID: as
+// revoked, or, once the session has ended (its links go with it), as the
+// session's end, so that a viewer whose status frame the close overtakes
+// still learns which.
 func (s *Local) DisconnectLink(linkID string) {
+	reason := ErrRevoked
+	s.mu.Lock()
+	if s.info.Status.Ended() {
+		reason = ErrSessionEnded
+	}
+	s.mu.Unlock()
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
-			sub.closeWith(ErrRevoked)
+			sub.closeWith(reason)
 		}
 	})
 }

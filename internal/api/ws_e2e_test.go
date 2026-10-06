@@ -1217,3 +1217,37 @@ func TestEventsStreamCarriesChat(t *testing.T) {
 		t.Fatalf("run chat event %s", ev)
 	}
 }
+
+// A host's chat message reaches the admin stream as a `chat` event of the
+// connection's session, cleaned; one of a kind the server does not know is
+// dropped without costing the host its connection.
+func TestHostChatReachesTheEventStream(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	events := e.sse(t)
+	host.send(proto.HostChatMsg{T: proto.HostChat, SessionID: "someoneelse00000", Message: proto.ChatMessage{T: "chat", ID: "0123456789abcdef", At: time.Now().UTC().Format(time.RFC3339Nano), Scope: "run", Kind: "message", By: proto.ChatBy{ID: "fedcba9876543210", Name: "Ada\x00", Role: "view"}, Text: "hosted <hello>\x00"}})
+	ev := e.waitEvent(t, events, func(ev string) bool { return strings.HasPrefix(ev, "chat ") && strings.Contains(ev, "hosted") })
+	for _, want := range []string{`"sessionId":"` + host.sessionID + `"`, `"scope":"session"`, `"name":"Ada"`, `"text":"hosted \u003chello\u003e"`, `"role":"view"`} {
+		if !strings.Contains(ev, want) {
+			t.Fatalf("streamed %s, missing %s", ev, want)
+		}
+	}
+	host.send(proto.HostChatMsg{T: proto.HostChat, Message: proto.ChatMessage{ID: "x", Kind: "bogus", By: proto.ChatBy{Role: "view"}}})
+	host.send(hostActivity(session.ActivityProgress, func(a *proto.Activity) { a.Message = "still here" }))
+	e.waitEvent(t, events, func(ev string) bool { return strings.Contains(ev, `"message":"still here"`) })
+}
+
+// A view link's viewer is closed as the session's end, not as a revoked
+// link, when the session ends and takes its links with it.
+func TestAViewLinkClosesAsSessionEndedWhenTheSessionEnds(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.hello(0, 0)
+	guest.expectControl(proto.CtlReady)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	guest.expectClose(proto.CloseSessionEnded)
+}

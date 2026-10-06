@@ -790,3 +790,27 @@ func TestAHelloOfZeroFollowsTheSize(t *testing.T) {
 		t.Fatalf("size %dx%d", info.Cols, info.Rows)
 	}
 }
+
+// A link's viewers are evicted as revoked while the session runs, and as the
+// session's end once it has ended: its links go with it, and the close must
+// say so, for a viewer whose status frame the close overtakes.
+func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	live := newChanSink(false)
+	subLive, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "l1", Cols: 80, Rows: 24}, live)
+	s.DisconnectLink("l1")
+	if !errors.Is(subLive.Reason(), ErrRevoked) {
+		t.Fatalf("while running: %v", subLive.Reason())
+	}
+	after := newChanSink(false)
+	subAfter, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "l2", Cols: 80, Rows: 24}, after)
+	p.exit()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !s.Info().Status.Ended() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.DisconnectLink("l2")
+	if !errors.Is(subAfter.Reason(), ErrSessionEnded) {
+		t.Fatalf("once ended: %v", subAfter.Reason())
+	}
+}

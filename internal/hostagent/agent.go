@@ -130,7 +130,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// An instance of its own, so a switchyard that restarts gives the session its id back.
 	instance, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: dir, cols: cols, rows: rows, peers: map[string]*peer{}, log: opts.Log, agentToken: agentToken, instance: instance, localID: "1"}
-	a.activity = newActivityForwarder(a.sendActivity, opts.Log)
+	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, opts.Log)
 	firstConn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return Result{}, err
@@ -173,6 +173,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,
 		OnActivity:      a.onLocalActivity,
+		OnChat:          a.onLocalChat,
 		Pattern:         opts.Pattern,
 	})
 	a.mu.Lock()
@@ -477,6 +478,20 @@ func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)
 	}
+}
+
+// onLocalChat is the local session's OnChat hook: it queues the message for
+// the server, whose admin stream shows it to the browsers' unread counts.
+// The session calls it on the goroutine that kept the message, so it never
+// waits for the connection; a message kept while the connection is down is
+// lost to the stream, and the session's chat keeps it.
+func (a *agent) onLocalChat(_ string, m session.ChatMessage) {
+	a.activity.pushChat(m)
+}
+
+// sendChat delivers one chat message on the control connection.
+func (a *agent) sendChat(m session.ChatMessage) {
+	a.send(proto.HostChatMsg{T: proto.HostChat, SessionID: a.sessionID(), Message: session.ChatToProto(m)})
 }
 
 // sendActivity delivers one entry, and the attention state it records, on the

@@ -35,6 +35,11 @@ type Hub struct {
 	// hosts overlap, so it must be safe for concurrent use. Set it, like
 	// OnChange, before the first host registers.
 	OnActivity func(sessionID string, e session.ActivityEntry, state session.AttentionState)
+	// OnChat is called with a hosted session's ID and each chat message its
+	// host reports, after the message has been checked and cleaned. The same
+	// contract as OnActivity: it must not block, and it must be safe for
+	// concurrent use. Set it before the first host registers.
+	OnChat func(sessionID string, m session.ChatMessage)
 }
 
 // NewHub creates a hub that registers hosted sessions in registry.

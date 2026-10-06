@@ -1342,8 +1342,9 @@ func wantRunLog(t *testing.T, e *testEnv, runID, never string, messages ...strin
 
 // A run the engine forgets, past its 100 runs, takes its links with it: they
 // open nothing any more, the join page no longer knows them, and the viewers
-// attached through them are closed as on a revoke. A session's own link to a
-// member's session stays.
+// attached through them are closed, with the reason that holds for each (a
+// member that ended with the run's stop closes its viewer as the session's
+// end, not as a revoke). A session's own link to a member's session stays.
 func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.stopEverything(t)
@@ -1376,7 +1377,7 @@ func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 	resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
 	wantAPIError(t, "the forgotten run", resp, out, http.StatusNotFound, "not_found", "")
 
-	viewer.expectClose(proto.CloseForbidden)
+	viewer.expectClose(proto.CloseSessionEnded)
 	resp, out = e.do("GET", "/api/join/"+token, "", nil)
 	wantAPIError(t, "join", resp, out, http.StatusNotFound, "invalid_link", "")
 	dialViewer(t, e, coreID, token).expectClose(proto.CloseUnauthorized)

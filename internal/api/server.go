@@ -277,6 +277,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 	}
 	s.hosts.OnActivity = s.events.activity
+	// A hosted session's chat reaches the browsers' unread counts as a server session's does.
+	s.hosts.OnChat = func(id string, m session.ChatMessage) { s.events.chat(id, "", m) }
 	s.registry.OnRemove = func(id string, d session.Driver) {
 		// A durable link outlives a host that went away (its session only
 		// expired) and goes with a session that ended.
