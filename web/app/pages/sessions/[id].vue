@@ -274,7 +274,10 @@ watch(id, () => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
-      <UDashboardNavbar :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
+      <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
+        <template #leading>
+          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+        </template>
         <template #title>
           <div class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">

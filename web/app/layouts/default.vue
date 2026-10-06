@@ -4,6 +4,8 @@ import { SIDEBAR_SIZE } from '~/utils/sidebar'
 import { noticeWords } from '~/utils/desktop'
 
 const showToken = ref(false)
+/** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
+const desktopWide = useMedia('(min-width: 64rem)')
 const attention = useAttention()
 const desktop = useDesktop()
 const sidebar = useSidebar()
@@ -145,7 +147,8 @@ defineShortcuts({
 </script>
 
 <template>
-  <UDashboardGroup :persistent="false">
+  <!-- Below lg the bottom bar needs the room; with viewport-fit=cover its padding reads the safe area. -->
+  <UDashboardGroup :persistent="false" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
     <!-- The rail's classes are lg: only: below lg the slideover gets the same header, body and footer classes, and keeps the full sidebar's. -->
     <UDashboardSidebar
       :id="SIDEBAR_ID"
@@ -179,8 +182,8 @@ defineShortcuts({
       </template>
 
       <template #default="{ collapsed }">
-        <SidebarRail v-if="collapsed" @search="focusFilter" />
-        <SessionSidebar v-else ref="list" />
+        <SidebarRail v-if="collapsed && desktopWide" @search="focusFilter" />
+        <SessionSidebar v-else-if="desktopWide" ref="list" />
       </template>
 
       <!-- Nuxt UI's handle, with the width saved once a drag or a double-click has set it. -->
@@ -210,6 +213,7 @@ defineShortcuts({
 
     <slot />
 
+    <BottomBar @token="showToken = true" />
     <WorkbenchTokenGate v-model:open="showToken" />
     <ShortcutsModal />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />

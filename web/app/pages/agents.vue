@@ -129,7 +129,7 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
 <template>
   <UDashboardPanel id="agents">
     <template #header>
-      <UDashboardNavbar title="Agents">
+      <UDashboardNavbar :toggle="false" title="Agents">
         <template #right>
           <UButton label="Add agent" icon="i-lucide-plus" color="neutral" variant="outline" @click="addAgent" />
           <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />

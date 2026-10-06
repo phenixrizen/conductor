@@ -20,14 +20,8 @@ const shortcuts = useShortcutsModal()
 const colorMode = useColorMode()
 
 const nameOpen = ref(false)
-const nameDraft = ref('')
 function openName() {
-  nameDraft.value = identity.name.value
   nameOpen.value = true
-}
-function saveName() {
-  identity.set(nameDraft.value)
-  nameOpen.value = false
 }
 function toggleTheme() {
   colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
@@ -44,18 +38,7 @@ const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.va
         <UButton :icon="alerts.settings.value.notifications ? 'i-lucide-bell-ring' : 'i-lucide-bell'" color="neutral" variant="ghost" :size="collapsed ? 'sm' : 'xs'" aria-label="Alerts" data-header-alerts />
       </UTooltip>
       <template #content>
-        <div class="flex w-64 flex-col gap-3 p-3">
-          <p class="text-xs text-muted">When a session needs input, and for events routed to Browser on the Events page:</p>
-          <USwitch
-            :model-value="alerts.settings.value.notifications"
-            label="Browser notification"
-            :description="alerts.permission.value === 'denied' ? 'Blocked by the browser' : undefined"
-            :disabled="alerts.permission.value === 'denied' || alerts.permission.value === 'unsupported'"
-            @update:model-value="alerts.setNotifications"
-          />
-          <USwitch :model-value="alerts.settings.value.chime" label="Chime" @update:model-value="alerts.setChime" />
-          <p class="text-xs text-muted">The tab title and favicon always show the count.</p>
-        </div>
+        <div class="w-64 p-3"><AlertSwitches /></div>
       </template>
     </UPopover>
     <UDropdownMenu :items="items" :content="collapsed ? { side: 'right' } : { align: 'end' }">
@@ -68,13 +51,6 @@ const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.va
         </UButton>
       </UTooltip>
     </UDropdownMenu>
-    <UModal v-model:open="nameOpen" title="Your name" description="Shown to others on a session. Defaults to the server's user; a label, not a login.">
-      <template #body>
-        <form class="flex flex-col gap-3" data-name-dialog @submit.prevent="saveName">
-          <UInput v-model="nameDraft" placeholder="Your name" aria-label="Your name" maxlength="40" autofocus />
-          <UButton type="submit" label="Save" class="self-end" />
-        </form>
-      </template>
-    </UModal>
+    <NameDialog v-model:open="nameOpen" />
   </div>
 </template>

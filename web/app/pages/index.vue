@@ -6,6 +6,8 @@ useHead({ title: 'Sessions' })
 const attention = useAttention()
 const admin = useWorkbenchToken()
 const launch = useLaunchModal()
+/** Below lg the list is a page of its own (design 3e): a phone opens on it. */
+const wide = useMedia('(min-width: 64rem)')
 
 // The sidebar is the session list; this route only picks the first session
 // worth looking at (someone waiting, else the newest running one).
@@ -15,9 +17,10 @@ const target = computed(() => {
 })
 
 watch(
-  target,
-  (t) => {
-    if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
+  [target, wide],
+  ([t, w]) => {
+    if (!w) navigateTo('/sessions', { replace: true })
+    else if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
   },
   { immediate: true },
 )
@@ -31,7 +34,7 @@ onMounted(() => {
 <template>
   <UDashboardPanel id="home">
     <template #header>
-      <UDashboardNavbar title="Sessions">
+      <UDashboardNavbar :toggle="false" title="Sessions">
         <template #right>
           <FullscreenButton />
         </template>

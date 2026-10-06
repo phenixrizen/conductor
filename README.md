@@ -335,7 +335,14 @@ full sidebar back, as do **Ctrl+B** and, on a desktop-width window, **/**,
 which then focuses the filter. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`
 and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
-the rail). On a phone the sidebar is a drawer. **F** toggles fullscreen on
+the rail). On a phone the list is the home screen, not a drawer (`/sessions`):
+the filter on top, prompts answered in place with full-width buttons, a row
+opening its page and **Back** returning to the list; a long press on a row
+opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
+header: Open run, Share run, Stop run), Stop asking again, and there are no
+swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
+count), Crews, Events, and under More: Roundhouse, Agents, Settings, Alerts
+and your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
 have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,

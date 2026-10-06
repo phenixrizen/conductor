@@ -325,7 +325,7 @@ onBeforeUnmount(() => {
 <template>
   <UDashboardPanel id="carousel" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar title="Roundhouse" :ui="{ root: 'h-14' }">
+      <UDashboardNavbar :toggle="false" title="Roundhouse" :ui="{ root: 'h-14' }">
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
             <span v-if="active.length" class="font-mono text-xs text-muted">{{ selected + 1 }} / {{ active.length }}</span>

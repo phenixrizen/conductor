@@ -739,9 +739,35 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   started 08:31 · review needs you · core running · lead exited"). A capsule
   is a `div` with the play icon a link to the run and each member its own
   link (a link holds no link). `railGroups` and its types are gone.
+- **The phone** (3e, S7): the list is the home screen, `pages/sessions/index.vue`
+  (`SessionSidebar page`, `[data-session-list="page"]`), where `/` sends a
+  phone (at lg and up the route does what the home does: the first session
+  worth looking at); the layout renders the sidebar's own list only at lg and
+  up (`useMedia`, the same composable as C2's), every page navbar has no
+  hamburger (`:toggle="false"`), and `BottomBar` sits at the foot below lg:
+  Sessions, Yard (the count), Crews, Events, More (a `UDrawer` with
+  Roundhouse, Agents, Settings on the desktop app, `AlertSwitches` and
+  `accountItems` as buttons; `NameDialog` and `AlertSwitches` are split out
+  of `SidebarHeaderMenus` for it). The session, run and workbench join pages
+  get **Back** to the list below lg (`[data-back-to-list]`). A prompt in the
+  page's list takes full-width 44 px buttons (`SidebarPrompt big`). A touch
+  long press (500 ms, `pointerType` touch) on a row or a run's header opens
+  `SidebarRowSheet` (`UDrawer`, `rowMenuItems` as 44 px buttons, Cancel);
+  the context menu is off for a coarse pointer and the row's callout
+  suppressed; Stop asks again in the row. `viewport-fit=cover` lets the bar's
+  padding read the safe area, and the dashboard group leaves it room below
+  lg. No swipe actions.
 
 ### Verified (round 11)
 
+- S7: `phone.spec.ts` at 390×844 with touch: `/` lands on the list page with
+  the filter on top and no sidebar list or hamburger; the bar's five targets
+  are 44 px and the Yard's count shows; a prompt's buttons are full width and
+  44 px and one answers; a row opens its page and Back returns; a long press
+  opens the sheet with Open, Share…, Show in the Yard, Stop…, Cancel, Stop
+  asking again in the row, and a run's header's with Open run, Share run,
+  Stop run…; More lists the pages, the alerts and your menu. By hand on a
+  phone (the keyboard on a reply field, the safe area): pending.
 - S6: `sidebar.spec.ts` collapses the sidebar and reads the two counts, a
   capsule holding two members with the amber play icon while review asks
   and its tooltip in words, the news corner on a session given a `done`

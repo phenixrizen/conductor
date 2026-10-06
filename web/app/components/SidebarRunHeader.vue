@@ -10,7 +10,19 @@ import { rowMenuItems, stopQuestion } from '~/utils/sidebarActions'
  * they act on, `confirming` (a model: the hover Stop sets it too) shows the question.
  */
 const props = withDefaults(defineProps<{ block: RunBlock; needsDot?: boolean; open?: boolean; busy?: boolean; focused?: boolean }>(), { needsDot: true, open: false, busy: false, focused: false })
-const emit = defineEmits<{ share: [block: RunBlock]; stop: [block: RunBlock] }>()
+const emit = defineEmits<{ share: [block: RunBlock]; stop: [block: RunBlock]; sheet: [block: RunBlock] }>()
+
+// A touch long press (500 ms, design 3e) opens the header's sheet; the context menu is the mouse's.
+const coarse = useMedia('(pointer: coarse)')
+let press: number | undefined
+function pressStart(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  window.clearTimeout(press)
+  press = window.setTimeout(() => emit('sheet', props.block), 500)
+}
+function pressEnd() {
+  window.clearTimeout(press)
+}
 const route = useRoute()
 const router = useRouter()
 const current = computed(() => runOpen(route.path, props.block.runId))
@@ -31,8 +43,17 @@ function confirmStop() {
 </script>
 
 <template>
-  <UContextMenu :items="menu">
-    <div class="group relative flex items-center rounded-md" :class="focused && 'ring-2 ring-primary/40'" :data-row-focused="focused ? '' : undefined">
+  <UContextMenu :items="menu" :disabled="coarse">
+    <div
+      class="group relative flex items-center rounded-md [-webkit-touch-callout:none]"
+      :class="focused && 'ring-2 ring-primary/40'"
+      :data-row-focused="focused ? '' : undefined"
+      @pointerdown="pressStart"
+      @pointerup="pressEnd"
+      @pointercancel="pressEnd"
+      @pointermove="pressEnd"
+      @contextmenu="(e: Event) => coarse && e.preventDefault()"
+    >
       <NuxtLink
         :to="`/runs/${encodeURIComponent(block.runId)}`"
         class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors"

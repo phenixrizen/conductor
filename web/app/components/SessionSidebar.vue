@@ -4,8 +4,8 @@ import { newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
-import { focusRows, moveFocus, needsDotShown, reopenNeeds, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
-import { sessionLive } from '~/utils/sidebarActions'
+import { blockSubtitle, focusRows, moveFocus, needsDotShown, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 
 /**
  * The full sidebar (design 3a, 3b): sessions and runs, ordered by what needs you. Two sections, Needs you then Running, each holding
@@ -13,6 +13,8 @@ import { sessionLive } from '~/utils/sidebarActions'
  * you, below your own sessions, and Exited, folded to one line. Every section folds from its header (useSidebarFolds). The run of
  * the page open now is marked and scrolled to; nothing is filtered out for it.
  */
+/** `page`: the phone's home screen (pages/sessions/index.vue) rather than the sidebar: full-width 44 px answers, the list named so. */
+const props = withDefaults(defineProps<{ page?: boolean }>(), { page: false })
 const attention = useAttention()
 const events = useEvents()
 const route = useRoute()
@@ -291,6 +293,34 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
+// A row's sheet on a phone (design 3e): what hover offers, as 44 px buttons; Stop asks again in the row.
+const sheetFor = ref<SessionRow | RunBlock | null>(null)
+const sheetOpen = ref(false)
+function openSheet(target: SessionRow | RunBlock) {
+  sheetFor.value = target
+  sheetOpen.value = true
+}
+const sheet = computed(() => {
+  const t = sheetFor.value
+  if (!t) return null
+  if (t.kind === 'run') {
+    return {
+      title: t.title,
+      meta: blockSubtitle(t),
+      items: rowMenuItems({ kind: 'run', name: t.title, live: liveRow(t) }, { open: () => router.push(`/runs/${encodeURIComponent(t.runId)}`), share: () => shareRun(t), stop: () => askStop(`r:${t.runId}`) }),
+    }
+  }
+  const s = t.session
+  return {
+    title: s.name,
+    meta: rowMeta(s, !!s.crew, now.value).join(' · '),
+    items: rowMenuItems(
+      { kind: 'session', name: s.name, live: sessionLive(s.status), inRun: !!s.crew },
+      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), stop: () => askStop(`s:${s.id}`) },
+    ),
+  }
+})
+
 defineExpose({ focusFilter, focusList })
 
 onMounted(() => {
@@ -311,7 +341,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
       </div>
     </div>
 
-    <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" data-session-list="sidebar" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
+    <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
       <SidebarSection v-if="model.needs.length" id="needs" title="Needs you" :count="model.counts.needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
@@ -324,9 +354,11 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
               :busy="busyAll"
+              :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
               @confirm="confirmingId = $event"
+              @sheet="openSheet"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
@@ -342,6 +374,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :now="now"
               :needs-dot="needsDot"
               :busy="busyAll.has((it as SessionRow).id)"
+              :big="props.page"
               :focused="focused === `s:${(it as SessionRow).id}`"
               :confirming="confirmingId === `s:${(it as SessionRow).id}`"
               @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
@@ -351,6 +384,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @open-run="openRunOf"
               @answer="answer"
               @reply="reply"
+              @sheet="openSheet"
             />
           </template>
         </ol>
@@ -366,9 +400,11 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
               :busy="busyAll"
+              :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
               @confirm="confirmingId = $event"
+              @sheet="openSheet"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
@@ -384,6 +420,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :now="now"
               :needs-dot="needsDot"
               :busy="busyAll.has((it as SessionRow).id)"
+              :big="props.page"
               :focused="focused === `s:${(it as SessionRow).id}`"
               :confirming="confirmingId === `s:${(it as SessionRow).id}`"
               @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
@@ -393,6 +430,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @open-run="openRunOf"
               @answer="answer"
               @reply="reply"
+              @sheet="openSheet"
             />
           </template>
         </ol>
@@ -413,9 +451,11 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
               :busy="busyAll"
+              :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
               @confirm="confirmingId = $event"
+              @sheet="openSheet"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
@@ -431,6 +471,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :now="now"
               :needs-dot="needsDot"
               :busy="busyAll.has((it as SessionRow).id)"
+              :big="props.page"
               :focused="focused === `s:${(it as SessionRow).id}`"
               :confirming="confirmingId === `s:${(it as SessionRow).id}`"
               @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
@@ -440,12 +481,14 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @open-run="openRunOf"
               @answer="answer"
               @reply="reply"
+              @sheet="openSheet"
             />
           </template>
         </ol>
       </SidebarSection>
     </div>
 
+    <SidebarRowSheet v-if="sheet" v-model:open="sheetOpen" :title="sheet.title" :meta="sheet.meta" :items="sheet.items" />
     <!-- One Share dialog for every row: made afresh for each target (the dialog mints its link on open). -->
     <ShareLinksModal v-if="shareTarget" :key="'sessionId' in shareTarget ? shareTarget.sessionId : shareTarget.runId" v-model:open="shareOpen" v-bind="shareTarget" />
   </div>

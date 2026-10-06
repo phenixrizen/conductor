@@ -179,7 +179,7 @@ onMounted(() => {
 <template>
   <UDashboardPanel id="wall" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar :title="focusId ? focused?.name || 'Session' : 'Yard'" :ui="{ root: 'h-14' }">
+      <UDashboardNavbar :toggle="false" :title="focusId ? focused?.name || 'Session' : 'Yard'" :ui="{ root: 'h-14' }">
         <template #leading>
           <UTooltip v-if="focusId" text="Back to the grid" :kbds="['escape']">
             <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the grid" @click="backToGrid" />

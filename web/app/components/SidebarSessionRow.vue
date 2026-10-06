@@ -11,8 +11,20 @@ import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/side
  * menu as More. A prompt is answered in the row, below the link: its choices as numbered buttons, or a reply field. The list
  * drives the keys: `focused` marks the row they act on, `confirming` (a model: the hover Stop sets it too) shows the question.
  */
-const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false })
-const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number]; reply: [row: SessionRow, text: string] }>()
+const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false })
+const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number]; reply: [row: SessionRow, text: string]; sheet: [row: SessionRow] }>()
+
+// A touch long press (500 ms, design 3e) opens the row's sheet; the context menu is the mouse's and a coarse pointer's own is off.
+const coarse = useMedia('(pointer: coarse)')
+let press: number | undefined
+function pressStart(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  window.clearTimeout(press)
+  press = window.setTimeout(() => emit('sheet', props.row), 500)
+}
+function pressEnd() {
+  window.clearTimeout(press)
+}
 const route = useRoute()
 const router = useRouter()
 
@@ -45,9 +57,21 @@ function confirmStop() {
 </script>
 
 <template>
-  <UContextMenu :items="menu">
+  <UContextMenu :items="menu" :disabled="coarse">
     <!-- The open session's box is the row's, so that a prompt answered below the link sits inside it. -->
-    <li class="group relative flex flex-col rounded-md" :class="[current && 'bg-default border border-default shadow-xs', focused && 'ring-2 ring-primary/40']" :data-sidebar-row="`s:${s.id}`" data-row-kind="session" :data-row-state="row.state" :data-row-focused="focused ? '' : undefined">
+    <li
+      class="group relative flex flex-col rounded-md [-webkit-touch-callout:none]"
+      :class="[current && 'bg-default border border-default shadow-xs', focused && 'ring-2 ring-primary/40']"
+      :data-sidebar-row="`s:${s.id}`"
+      data-row-kind="session"
+      :data-row-state="row.state"
+      :data-row-focused="focused ? '' : undefined"
+      @pointerdown="pressStart"
+      @pointerup="pressEnd"
+      @pointercancel="pressEnd"
+      @pointermove="pressEnd"
+      @contextmenu="(e: Event) => coarse && e.preventDefault()"
+    >
       <div class="flex items-center gap-1">
       <NuxtLink
         :to="`/sessions/${s.id}`"
@@ -107,7 +131,7 @@ function confirmStop() {
           <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>
-      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" @answer="emit('answer', row, $event)" @reply="emit('reply', row, $event)" />
+      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="emit('answer', row, $event)" @reply="emit('reply', row, $event)" />
     </li>
   </UContextMenu>
 </template>

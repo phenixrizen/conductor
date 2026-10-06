@@ -107,7 +107,10 @@ async function stopAll() {
 </script>
 
 <template>
-  <UDashboardNavbar :ui="{ root: 'h-14', left: 'min-w-0 flex-1', right: 'flex-none' }" data-crew-run-header>
+  <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14', left: 'min-w-0 flex-1', right: 'flex-none' }" data-crew-run-header>
+    <template #leading>
+      <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+    </template>
     <template #title>
       <span class="flex min-w-0 items-baseline gap-2">
         <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate hover:underline" :title="`The saved crew ${run.name}`">{{ run.name }}</NuxtLink>

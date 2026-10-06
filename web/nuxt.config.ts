@@ -29,7 +29,11 @@ export default defineNuxtConfig({
   app: {
     head: {
       title: 'Conductor',
-      meta: [{ name: 'referrer', content: 'no-referrer' }],
+      meta: [
+        { name: 'referrer', content: 'no-referrer' },
+        // The phone's bottom bar sits under the home indicator: its padding reads the safe area.
+        { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
+      ],
       link: [{ key: 'icon', rel: 'icon', type: 'image/svg+xml', href: '/brand/conductor-favicon.svg' }],
     },
   },
