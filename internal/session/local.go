@@ -117,8 +117,11 @@ type Local struct {
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
-	activity       activityRing
-	chat           chatRing    // guarded by mu
+	activity activityRing
+	chat     chatRing // guarded by mu
+	// question is the id of the agent's question in the chat while one
+	// stands (askInChat), for the line that says it was answered.
+	question       string
 	events         EventBucket // guarded by mu
 	dropped        atomic.Uint64
 	scanner        Scanner
@@ -517,7 +520,17 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	s.info.Attention = att
 	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
+	// The agent's question goes into the chat too (design: the agents' questions in the chat).
+	var asked ChatMessage
+	var askedID string
+	if state == AttentionNeedsInput {
+		asked, askedID = s.askInChat(att)
+	}
 	s.mu.Unlock()
+	if askedID != "" {
+		s.chatHook(askedID, asked)
+		s.tellRun(asked)
+	}
 	if state != AttentionNone {
 		label := message
 		if label == "" {
@@ -830,15 +843,23 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 	att := s.info.Attention
 	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || att.Source != SourceTrust)
 	question := att.Message
+	var answered ChatMessage
+	var answeredID string
+	var told bool
 	if waiting {
 		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+		answered, answeredID, told = s.answeredInChat(by, byName)
 	}
 	s.mu.Unlock()
 	if !waiting {
 		return
+	}
+	if told {
+		s.chatHook(answeredID, answered)
+		s.tellRun(answered)
 	}
 	if att.Source == SourceTrust && s.trust != nil {
 		// What showed the question is behind: only a new one counts.

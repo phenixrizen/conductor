@@ -13,21 +13,26 @@ import { serverBinary, stubPath } from './server'
 // phone it is a sheet over the terminal; a crew run has one chat for everyone
 // on it, beside its tiles; what is unread shows on the sidebar's rows, run
 // headers and rail, for a session another machine hosts too; an ended
-// session's chat is read-only.
+// session's chat is read-only; the agent's own question is in the chat, with
+// its choices, answerable there.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
 let other: BrowserContext | null = null
 let crewId = ''
 let runId = ''
+let askingCrewId = ''
+let askingRunId = ''
 let host: ChildProcess | null = null
 
 test.afterAll(async ({ api }) => {
   host?.kill('SIGKILL')
   await other?.close()
   if (runId) await api.stopRun(runId)
+  if (askingRunId) await api.stopRun(askingRunId)
   for (const id of sessions) await api.stopSession(id)
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  if (askingCrewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(askingCrewId)}`)
 })
 
 function transcript(home: string, s: Session): string {
@@ -268,7 +273,10 @@ test('a run has one chat for everyone on it: beside the tiles, typed into a memb
   await nateButton.click()
   const nateChat = page.locator('[data-run-chat]')
   await expect(nateChat).toBeVisible()
-  await expect(nateChat.locator('[data-chat-empty]')).toContainText("Everyone on this run's link sees this chat", { timeout: 15_000 })
+  // Not empty: review's trust question is already in it, from the agent, on review; nobody answers it here.
+  const reviewQuestion = nateChat.locator('[data-chat-question]')
+  await expect(reviewQuestion).toBeVisible({ timeout: 15_000 })
+  await expect(reviewQuestion.locator('[data-chat-on="review"]')).toBeVisible()
   const nateInput = nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()
   await nateInput.fill('hello run')
   await page.keyboard.press('Enter')
@@ -424,4 +432,76 @@ test("a session another machine hosts: what is said in its chat counts on anothe
   await expect(chat.locator('[data-chat-kind="message"]').first()).toContainText('from the laptop', { timeout: 15_000 })
   await expect(row.locator('[data-chat-unread="1"]')).toBeVisible({ timeout: 15_000 })
   await ctx.close()
+})
+
+test("the agent's question is in the chat with its choices; answered there, a line says by whom; a member's reaches the run's chat on its name", async ({ page, api, state }) => {
+  // A session that asks as soon as it starts: the question is in its chat, from the agent, before anyone opens it.
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'asks in chat' })
+  sessions.push(s.id)
+  await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  await page.goto(`/sessions/${s.id}`)
+  const tab = page.locator('[data-inspector] [data-chat-tab]')
+  await expect(tab).toBeVisible({ timeout: 30_000 })
+  await tab.click()
+  const chat = page.locator('[data-chat]')
+  const question = chat.locator('[data-chat-question]')
+  await expect(question).toContainText('Which database?', { timeout: 15_000 })
+  await expect(question).toContainText(/asker\s*asks/)
+  await expect(question.locator('[data-chat-option]')).toHaveCount(3)
+  await expect(question.locator('[data-chat-option="3"]')).toContainText('Keep both')
+  await question.locator('[data-chat-option="3"]').click()
+  await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('Keep both\n')
+  await expect(chat.locator('[data-chat-system]').last()).toContainText('Answered by Nate', { timeout: 15_000 })
+  await expect(question.locator('[data-chat-option]')).toHaveCount(0)
+  await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
+  await expect(page.locator('[data-quick-reply]')).toBeHidden()
+
+  // A member's question reaches the run's chat on the member's name, and its answer from there goes to that member.
+  askingCrewId = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e asking crew',
+      goal: 'talk',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [{ name: 'core', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } }],
+    })
+  ).crew.id
+  askingRunId = (await api.launchCrew(askingCrewId)).id
+  let coreId = ''
+  await expect
+    .poll(
+      async () => {
+        const m = (await api.run(askingRunId)).members.find((m) => m.name === 'core')
+        coreId = m?.sessionId ?? ''
+        return coreId ? m?.status : ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('running')
+  await page.goto(`/runs/${askingRunId}`)
+  await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: 15_000 })
+  await page.locator('[data-run-chat-button]').click()
+  const runChat = page.locator('[data-run-chat]')
+  await expect(runChat).toBeVisible()
+  await expect(runChat.locator('[data-chat-empty]')).toContainText("Everyone on this run's link sees this chat", { timeout: 15_000 })
+  await api.ok('POST', `/api/sessions/${coreId}/attention`, {
+    state: 'needs_input',
+    message: 'Which branch?',
+    options: [
+      { label: 'main', input: 'main\r' },
+      { label: 'release', input: 'release\r' },
+    ],
+  })
+  const asked = runChat.locator('[data-chat-question]')
+  await expect(asked).toContainText('Which branch?', { timeout: 15_000 })
+  await expect(asked.locator('[data-chat-on="core"]')).toBeVisible()
+  await asked.locator('[data-chat-option="2"]').click()
+  const core = await api.session(coreId)
+  await expect.poll(() => transcript(state.home, core), { timeout: 20_000, message: 'core got the choice' }).toContain('release')
+  await expect(runChat.locator('[data-chat-system]').last()).toContainText('Answered by Nate', { timeout: 15_000 })
+  await expect(asked.locator('[data-chat-option]')).toHaveCount(0)
+  await expect.poll(async () => (await api.session(coreId)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
 })

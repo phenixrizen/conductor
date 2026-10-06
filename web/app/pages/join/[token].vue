@@ -177,11 +177,24 @@ function runChatSendTo(ref: string, to: string) {
 watch(runChat.refused, (r) => {
   if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })
 })
+/** A member's question answered from the run's chat: the choice's keys into that member, over the link. */
+const quick = useQuickReply()
+function runChatAnswer(m: ChatMessage, index: number) {
+  const o = m.options?.[index]
+  const member = runMembers.value.find((x) => x.name === m.on)
+  if (!o || !member?.sessionId) return
+  quick.send({ id: member.sessionId, kind: member.kind ?? 'server' }, o.input, { token: token.value, server: server.value }).catch((e: unknown) => toast.add({ title: `Reply to ${member.name} failed`, description: (e as Error).message, color: 'error' }))
+}
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', color: 'warning' })
 }
 function chatRetry(nonce: string) {
   chat.retry(nonce, viaChat)
+}
+/** A question's choice from the session's chat: its keys into the session. */
+function chatAnswer(m: ChatMessage, index: number) {
+  const o = m.options?.[index]
+  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', color: 'warning' })
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
@@ -405,6 +418,7 @@ function requestFile(path: string, stat?: boolean) {
       @send="runChatSend"
       @send-to="runChatSendTo"
       @retry="runChat.retry"
+      @answer="runChatAnswer"
     />
   </template>
 
@@ -470,12 +484,12 @@ function requestFile(path: string, stat?: boolean) {
         <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
       </div>
       <aside v-if="chatPanel && chat.thread.value.capable" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
-        <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
+        <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
       </aside>
     </main>
 
     <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />
-    <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
+    <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
     <ChatSheet
       v-if="run"
       v-model:open="runChatOpen"
@@ -492,6 +506,7 @@ function requestFile(path: string, stat?: boolean) {
       @send="runChatSend"
       @send-to="runChatSendTo"
       @retry="runChat.retry"
+      @answer="runChatAnswer"
     />
   </template>
     </JoinFrame>

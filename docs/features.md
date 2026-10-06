@@ -840,6 +840,23 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   miss that the session ended; `DisconnectLink` now closes them as the
   session's end (4410) once it has ended, which the join page already takes
   as ended.
+- **The agents' questions in the chat** (C6, the owner's fast follow-up:
+  "can we have the agents send questions to the chat as well when input is
+  needed?"). A session going `needs_input` keeps the attention's message
+  and choices in its chat as a `question` from the agent (`By.Role`
+  `agent`, `Options` the attention's, at most six; `askInChat`), and the
+  answer, whoever's input cleared the prompt, as a `system` line with
+  `event: answered` and `ref` the question's (`answeredInChat`; "Conductor"
+  when nothing named the person). A run member's question and its answer
+  go into the run's chat too, on the member (`tellRun`). The thread draws a
+  question amber-tinted, its choices as buttons for a controller while it
+  stands (`answeredQuestions` in `utils/chat.ts`), typing the choice's
+  input as the quick-reply bar does: into the session on its page and a
+  guest's, into the member from a run's chat (`useQuickReply`, which now
+  reaches a link's server too, for the guest on a run link). A question
+  counts as unread like any message; the answered line never does. A
+  question of the longest message with six of the longest choices fits the
+  control frame (`TestAQuestionFrameFits`).
 
 ### Verified (round 11)
 

@@ -54,7 +54,7 @@ Owner → client:
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type, a quiet connection (`hello.chatOnly`, a run chat's) left out. `link` is the share link's label. |
 | `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce) or send (its ref) the error answers |
 | `pong` | `ts` |
-| `chat` | `id, at, scope, kind, by{id, name, role}, text?, ref?, to?, on?, event?, nonce?` — one message of the chat (see Chat), live: `kind` `message` with `text`; `system` with `event` `join` or `leave` about `by`; `sent_to_agent` with `ref` (the message typed) and `to` (a run's member, else the session's agent). `by` is the sender's subscription as the roster lists it; `nonce` the sender's own id, echoed |
+| `chat` | `id, at, scope, kind, by{id, name, role}, text?, ref?, to?, on?, event?, nonce?, options?` — one message of the chat (see Chat), live: `kind` `message` with `text`; `system` with `event` `join` or `leave` about `by`, or `answered` with `ref` the question `by` answered; `sent_to_agent` with `ref` (the message typed) and `to` (a run's member, else the session's agent); `question` from the agent (`by` `{id: "agent", name: the agent id, role: "agent"}`) as the session goes `needs_input`, its `text` the question and `options[{label, input}]` its choices (at most 6), `on` the member in a run's chat. `by` is otherwise the sender's subscription as the roster lists it; `nonce` the sender's own id, echoed |
 | `chat_history` | `scope, messages[], more?` — the kept chat replayed to a new viewer right after the activity replay, oldest first, in frames of at most 8 KiB; `more` on every frame but the last; the session's series, then the run's (scope `run`) when the session is a member |
 | `chat_roster` | `scope: "run", count, list[{id, name, role, on?}]` — who is on the run's chat: every connection to any member, one row per name, `on` the member a person looks at (a connection that is not quiet); sent to every member's viewers whenever any member's roster changes; `count` counts everyone, `list` the first 32 |
 
@@ -100,6 +100,15 @@ session takes no post. Chat lines are not activity entries and reach no
 hook or webhook; what is unread is the browser's own count, kept per
 browser (`conductor.chat.unread`), fed by the thread it has open and by
 the `chat` events of the admin stream for the threads it has not.
+
+The agents ask in the chat too: as a session goes `needs_input`, its
+agent's question (the attention's message, or "Waiting for input", and its
+choices) is kept and sent as a `question` message from the agent, and the
+input that answers it (a choice typed, a line submitted, a key in the
+terminal) is followed by a `system` line with `event` `answered` naming the
+question and who answered; a run's member says the same in the run's chat,
+on the member. Answering from the chat takes the paths a page has: the
+choice's keys into the session, or into the member.
 
 A crew run has a chat of its own, one thread across every member: the run
 engine keeps it (the last 500 messages) and every member session is made

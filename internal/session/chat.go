@@ -58,25 +58,80 @@ type ChatBy struct {
 	Role Role
 }
 
-// ChatMessage is one message of a chat (proto.ChatMessage, with the time as a time).
+// ChatMessage is one message of a chat (proto.ChatMessage, with the time as
+// a time). A question (proto.ChatKindQuestion) carries the agent's choices.
 type ChatMessage struct {
-	ID    string
-	At    time.Time
-	Scope string
-	Kind  string
-	By    ChatBy
-	Text  string
-	Ref   string
-	To    string
-	On    string
-	Event string
-	Nonce string
+	ID      string
+	At      time.Time
+	Scope   string
+	Kind    string
+	By      ChatBy
+	Text    string
+	Ref     string
+	To      string
+	On      string
+	Event   string
+	Nonce   string
+	Options []Option
 }
+
+// RoleAgent is the By.Role of a question in the chat: the agent, no viewer
+// (Role.Valid is for subscriptions and stays view or control).
+const RoleAgent Role = proto.ChatRoleAgent
 
 // ChatToProto encodes m as the `chat` message of docs/protocol.md.
 func ChatToProto(m ChatMessage) proto.ChatMessage {
-	return proto.ChatMessage{T: proto.CtlChat, ID: m.ID, At: m.At.UTC().Format(time.RFC3339Nano), Scope: m.Scope, Kind: m.Kind,
+	out := proto.ChatMessage{T: proto.CtlChat, ID: m.ID, At: m.At.UTC().Format(time.RFC3339Nano), Scope: m.Scope, Kind: m.Kind,
 		By: proto.ChatBy{ID: m.By.ID, Name: m.By.Name, Role: string(m.By.Role)}, Text: m.Text, Ref: m.Ref, To: m.To, On: m.On, Event: m.Event, Nonce: m.Nonce}
+	for _, o := range m.Options {
+		out.Options = append(out.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+	}
+	return out
+}
+
+// askInChat keeps the agent's question in the session's chat, as the session
+// goes needs_input: its message and choices, from the agent. The caller
+// holds s.mu; the line and the session's id come back for the hook and for
+// the run's chat, which take it outside the lock.
+func (s *Local) askInChat(att Attention) (ChatMessage, string) {
+	text := att.Message
+	if text == "" {
+		text = "Waiting for input"
+	}
+	at := time.Now().UTC()
+	if att.Since != nil {
+		at = *att.Since
+	}
+	q := ChatMessage{ID: NewID(), At: at, Scope: proto.ChatScopeSession, Kind: proto.ChatKindQuestion, By: ChatBy{ID: "agent", Name: s.info.AgentID, Role: RoleAgent}, Text: text, Options: append([]Option(nil), att.Options...)}
+	s.question = q.ID
+	return q, s.keepChat(q)
+}
+
+// answeredInChat keeps the line that says the question was answered, by whom
+// (Conductor itself when by is ""). The caller holds s.mu; nothing when no
+// question was asked in the chat.
+func (s *Local) answeredInChat(by, byName string) (ChatMessage, string, bool) {
+	if s.question == "" {
+		return ChatMessage{}, "", false
+	}
+	if byName == "" {
+		byName = "Conductor"
+	}
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: s.question, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
+	s.question = ""
+	return m, s.keepChat(m), true
+}
+
+// tellRun copies a line of the session's chat into its run's chat, on this
+// member, outside the session's lock.
+func (s *Local) tellRun(m ChatMessage) {
+	room := s.opts.RunChat
+	if room == nil {
+		return
+	}
+	m.Scope = proto.ChatScopeRun
+	m.On = room.nameOf(s)
+	room.post(m)
 }
 
 // CleanChatText is a message's text as kept: valid UTF-8, line breaks as
@@ -456,6 +511,16 @@ func (r *ChatRoom) memberNamed(name string) (*Local, bool) {
 func (r *ChatRoom) hasMember(name string) bool {
 	_, ok := r.memberNamed(name)
 	return ok
+}
+
+// nameOf is the member name l joined as, "" when it is no member.
+func (r *ChatRoom) nameOf(l *Local) string {
+	for _, m := range r.snapshotMembers() {
+		if m.l == l {
+			return m.name
+		}
+	}
+	return ""
 }
 
 // post keeps m and sends it to every member's viewers, then tells onPost.

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatThread } from '~/composables/useChat'
 import type { ScopeItem } from '~/utils/chat'
-import type { Role, ViewerInfo } from '~/utils/protocol'
+import type { ChatMessage, Role, ViewerInfo } from '~/utils/protocol'
 import { SHEET_SNAPS } from '~/utils/chat'
 
 /**
@@ -42,7 +42,7 @@ withDefaults(
     sendTargets: undefined,
   },
 )
-const emit = defineEmits<{ send: [text: string, to: string]; sendTo: [ref: string, to: string]; retry: [nonce: string] }>()
+const emit = defineEmits<{ send: [text: string, to: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
 const open = defineModel<boolean>('open', { default: false })
 const phone = useIsPhone()
 const SNAPS = [...SHEET_SNAPS]
@@ -78,6 +78,7 @@ const BODY_HEIGHT = 'calc(100% - var(--snap-point-height, 0px) - 1.375rem)'
           @send="(text, to) => emit('send', text, to)"
           @send-to="(ref, to) => emit('sendTo', ref, to)"
           @retry="emit('retry', $event)"
+          @answer="(m, i) => emit('answer', m, i)"
         />
       </div>
     </template>
@@ -106,6 +107,7 @@ const BODY_HEIGHT = 'calc(100% - var(--snap-point-height, 0px) - 1.375rem)'
           @send="(text, to) => emit('send', text, to)"
           @send-to="(ref, to) => emit('sendTo', ref, to)"
           @retry="emit('retry', $event)"
+          @answer="(m, i) => emit('answer', m, i)"
         />
       </div>
     </template>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ChatThread } from '~/composables/useChat'
-import type { Role, ViewerInfo } from '~/utils/protocol'
+import type { ChatMessage, Role, ViewerInfo } from '~/utils/protocol'
 import { canSendToAgent, type ScopeItem } from '~/utils/chat'
 
 /**
@@ -36,8 +36,8 @@ const props = withDefaults(
     sendTargets: undefined,
   },
 )
-/** `to` is '' for the chat alone, `agent` for the session's agent, else a run member's name. */
-const emit = defineEmits<{ send: [text: string, to: string]; sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string] }>()
+/** `to` is '' for the chat alone, `agent` for the session's agent, else a run member's name; `answer` is a question's choice. */
+const emit = defineEmits<{ send: [text: string, to: string]; sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
 
 const agentOk = computed(() => canSendToAgent(props.role, props.ended))
 const here = computed(() => props.viewers.length)
@@ -57,7 +57,17 @@ const empty = computed(() => props.thread.messages.every((m) => m.kind === 'syst
       <template v-if="scope === 'run'">Everyone on this run's link sees this chat.</template>
       <template v-else>Everyone on this link sees this chat.</template>
     </p>
-    <ChatThread :messages="thread.messages" :pending="thread.pending" :can-send-to-agent="agentOk" :send-targets="sendTargets" @send-to-agent="emit('sendToAgent', $event)" @send-to="(ref, to) => emit('sendTo', ref, to)" @retry="emit('retry', $event)" />
+    <ChatThread
+      :messages="thread.messages"
+      :pending="thread.pending"
+      :can-send-to-agent="agentOk"
+      :can-answer="role === 'control' && !ended"
+      :send-targets="sendTargets"
+      @send-to-agent="emit('sendToAgent', $event)"
+      @send-to="(ref, to) => emit('sendTo', ref, to)"
+      @retry="emit('retry', $event)"
+      @answer="(m, i) => emit('answer', m, i)"
+    />
     <div v-if="ended" class="border-t border-default px-4 py-3 text-xs text-muted" data-chat-ended>
       <template v-if="scope === 'run'">
         <p class="font-medium text-default">This run ended</p>

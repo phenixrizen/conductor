@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -858,7 +859,7 @@ func TestHostChatReachesTheHubHookCleaned(t *testing.T) {
 		}
 	}
 	want := session.ChatMessage{ID: "0123456789abcdef", At: at, Scope: "session", Kind: "message", By: session.ChatBy{ID: "fedcba9876543210", Name: "Ada Lovelace", Role: session.RoleView}, Text: "hi <there>\nsecond"}
-	if got[0] != want {
+	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("message %+v, want %+v", got[0], want)
 	}
 	if m := got[1]; m.ID != "m2" || m.Kind != "sent_to_agent" || m.Ref != "0123456789abcdef" || m.To != "agent" || time.Since(m.At) > time.Minute {

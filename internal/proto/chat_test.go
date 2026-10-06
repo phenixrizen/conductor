@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestChatMessageWireShape(t *testing.T) {
 		t.Fatalf("wire shape:\n%s\n%s", b, want)
 	}
 	var back ChatMessage
-	if err := json.Unmarshal(b, &back); err != nil || back != msg {
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, msg) {
 		t.Fatalf("round trip: %v %+v", err, back)
 	}
 	marker := ChatMessage{T: CtlChat, ID: "1", At: "2026-10-06T08:32:41Z", Scope: ChatScopeSession, Kind: ChatKindSentToAgent, By: msg.By, Ref: msg.ID}
@@ -85,6 +86,34 @@ func TestChatFramesFitWithoutHTMLEscaping(t *testing.T) {
 	escaped := MustControl(ChatMessage{T: CtlChat, Text: strings.Repeat("<", MaxChatText)})
 	if len(escaped) <= MaxControl {
 		t.Fatalf("the escaping encoder would have fitted too (%d bytes): the raw one is not needed", len(escaped))
+	}
+}
+
+// A question of the longest message with the most and longest choices fits
+// the control frame: the attention's bounds (500 bytes, six choices of 60
+// runes and 48 bytes) leave room even when every byte is a quote, the
+// longest raw escape.
+func TestAQuestionFrameFits(t *testing.T) {
+	opts := make([]AttentionOption, 6)
+	for i := range opts {
+		opts[i] = AttentionOption{Label: strings.Repeat(`"`, 60*4), Input: strings.Repeat(`"`, 48)}
+	}
+	msg := ChatMessage{T: CtlChat, ID: strings.Repeat("0", 16), At: "2026-10-06T08:32:40.123456789Z", Scope: ChatScopeRun, Kind: ChatKindQuestion, By: ChatBy{ID: "agent", Name: strings.Repeat("a", 40), Role: ChatRoleAgent}, Text: strings.Repeat(`"`, 500), On: strings.Repeat("m", 40), Options: opts}
+	raw := MustControlRaw(msg)
+	if len(raw) > MaxControl {
+		t.Fatalf("a question's frame: %d bytes", len(raw))
+	}
+	f, err := Decode(raw)
+	if err != nil || f.Type != TypeControl {
+		t.Fatalf("decode: %v", err)
+	}
+	var back ChatMessage
+	if err := json.Unmarshal(f.Payload, &back); err != nil || back.Kind != ChatKindQuestion || back.By.Role != ChatRoleAgent || len(back.Options) != 6 || back.Options[5].Input != opts[5].Input {
+		t.Fatalf("back: %v %+v", err, back)
+	}
+	plain := MustControlRaw(ChatMessage{T: CtlChat, Kind: ChatKindMessage, Text: "hi"})
+	if bytes.Contains(plain, []byte("options")) {
+		t.Fatalf("a message carries no options field: %s", plain)
 	}
 }
 

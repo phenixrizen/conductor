@@ -76,6 +76,11 @@ function chatSendToAgent(ref: string) {
 function chatRetry(nonce: string) {
   chat.retry(nonce, viaChat)
 }
+/** A question's choice from the chat: its keys into the session, as the quick reply bar's. */
+function chatAnswer(m: ChatMessage, index: number) {
+  const o = m.options?.[index]
+  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+}
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
   // A chat_send that failed names the message it would have typed.
@@ -435,6 +440,7 @@ watch(id, () => {
             @chat-send="chatSend"
             @chat-send-to-agent="chatSendToAgent"
             @chat-retry="chatRetry"
+            @chat-answer="chatAnswer"
           />
         </div>
       </div>
@@ -443,5 +449,5 @@ watch(id, () => {
   </UDashboardPanel>
 
   <ShareLinksModal v-model:open="share" :session-id="id" :session-name="session?.name" />
-  <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
+  <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
 </template>
