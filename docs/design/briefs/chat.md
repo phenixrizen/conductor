@@ -1,10 +1,16 @@
 # Design brief: chat beside the terminal
 
-For Claude Design, project "Conductor Mockups v2". Read `brand.md` first
-(zinc surfaces, forest `#263D35` for actions, terracotta on the junction
-mark only, Inter and JetBrains Mono); the hand-offs "Crews Redesign" and
-"Events Redesign" are the shape and density to match. Nuxt UI 4 components;
-dark is the default, light exists.
+For Claude Design, project "Conductor Mockups v2". The mockup to extend is
+**Conductor UI.dc.html** in that project:
+<https://claude.ai/design/p/57dbb4ce-bb1c-40be-aed4-96d5c57ce623?file=Conductor+UI.dc.html>. It holds every screen as built today, dark and light, with ids: 1a
+Session (the inspector tabs People, Files, Activity), 1b Yard, 1c
+Roundhouse, 1d Run (grid, graph, timeline, the broadcast bar), 1e Launch
+agent, 1f Share, 1g Join, 1h Paste, 1i Agents, 1j Crews home, on to 1q
+Settings. Add the chat screens to that file as a new series (2a, 2b, …)
+drawn on 1a, 1g and 1d, in the same style, tokens and density; change
+nothing in the 1-series. Read `brand.md` first (zinc surfaces, forest
+`#263D35` for actions, terracotta on the junction mark only, Inter and
+JetBrains Mono). Nuxt UI 4 components; dark is the default, light exists.
 
 ## What it is
 
@@ -22,8 +28,8 @@ a session's chat ends with the session, a run's stays in its record.
 
 ## Screens to design
 
-1. **Session page, desktop (1440 × 900).** The terminal with the inspector
-   open on a new **Chat** tab beside People, Files and Activity. Show: a
+1. **Session page, desktop (1440 × 900), from 1a.** The terminal with the
+   inspector open on a new **Chat** tab beside People, Files and Activity. Show: a
    thread of eight messages from three people (one view-only), one system
    line ("Jane joined · control"), one message marked **sent to agent** by
    Nate with the moment it went, the composer at the bottom (Enter sends,
@@ -33,10 +39,10 @@ a session's chat ends with the session, a run's stays in its record.
 2. **Session page, phone (390 × 844).** The chat as a sheet over the
    terminal, opened from a chat button in the header with the unread count;
    the composer above the keyboard.
-3. **Guest's join page** (bare, no sidebar) with the chat open: the same
+3. **Guest's join page, from 1g** (bare, no sidebar) with the chat open: the same
    panel for a person who only has the link, view-only, with the
    "sent to agent" action absent.
-4. **Crew run page** with the run-wide chat as a right-hand drawer beside
+4. **Crew run page, from 1d,** with the run-wide chat as a right-hand drawer beside
    the member tiles: messages name which member a person is looking at when
    it matters ("on review"); a message sent to a member says which. The
    crew join page (the guest's grid of members) gets the same drawer.
@@ -54,6 +60,5 @@ a session's chat ends with the session, a run's stays in its record.
 - No new colours; a person's colour comes from the roster's existing avatar
   palette.
 - Phone first for the sheet; a 16 px gutter; no horizontal scroll.
-- Name every screen with an id (1a, 1b, …) as the earlier hand-offs did, and
-  export as one `.dc.html` with the ids, so the build can be checked against
-  it.
+- Name every screen with an id in the 2-series (2a, 2b, …) inside
+  Conductor UI.dc.html, so the build can be checked against it.

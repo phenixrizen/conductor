@@ -1,9 +1,14 @@
 # Design brief: the sidebar, simpler
 
-For Claude Design, project "Conductor Mockups v2". Read `brand.md` first;
-match the density of "Crews Redesign". Nuxt UI 4; dark default, light
-exists. The live app is the reference for what exists today; this brief
-says what is there and what confuses.
+For Claude Design, project "Conductor Mockups v2". The mockup to work from
+is **Conductor UI.dc.html** in that project:
+<https://claude.ai/design/p/57dbb4ce-bb1c-40be-aed4-96d5c57ce623?file=Conductor+UI.dc.html>. Its 1-series is every screen as built today, dark and light; the
+sidebar is on 1a Session, 1b Yard, 1d Run and 1j Crews home, and the phone
+screens are in the project's uploads (`390-*.png`). Add the new sidebar as
+a 3-series (3a, 3b, …) in that file, in its style and tokens, and leave
+the 1-series as it is. Read `brand.md` first. Nuxt UI 4; dark default,
+light exists. The live app is the reference for what exists today; this
+brief says what is there and what confuses.
 
 ## What is there today
 
@@ -42,7 +47,8 @@ a page; digits answer a prompt on a session page.
 1. **One mental model**, drawn: how a person should think of sessions, runs,
    crews and machines, and which of these the sidebar lists. Propose it in
    a sentence before the screens.
-2. **The sidebar, desktop (1440 × 900), with everything at once:** two
+2. **The sidebar, desktop (1440 × 900), on 1a's page, with everything at
+   once:** two
    loose sessions (one needs you), a run of three members (one needs you,
    one exited), a hosted session from another machine, one shared link, and
    four exited sessions folded away. Show the attention first, without
@@ -60,5 +66,5 @@ a page; digits answer a prompt on a session page.
 - The junction mark is artwork, never a status light; the status colours
   stay (amber needs you, green running, grey idle and exited).
 - Train words stay: Yard, Roundhouse, Switchyard, Conductor.
-- Name every screen with an id (1a, 1b, …) and export one `.dc.html`, as
-  the earlier hand-offs did.
+- Name every screen with an id in the 3-series (3a, 3b, …) inside
+  Conductor UI.dc.html, so the build can be checked against it.
