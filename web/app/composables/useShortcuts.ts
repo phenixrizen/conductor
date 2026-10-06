@@ -23,13 +23,29 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it (Alt+B in a terminal)' },
     { keys: ['?'], label: 'Keyboard shortcuts (Alt+H in a terminal)' },
     { keys: ['N'], label: 'Launch an agent (Alt+N in a terminal)' },
-    { keys: ['/'], label: 'Filter sessions (Alt+S in a terminal)' },
     { keys: ['G', 'W'], label: 'Go to the Yard (Alt+W in a terminal)' },
     { keys: ['G', 'C'], label: 'Go to the Roundhouse (Alt+C in a terminal)' },
     { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
     { keys: ['G', 'E'], label: 'Go to Events (Alt+E in a terminal)' },
     { keys: ['G', 'R'], label: 'Go to Crews (Alt+R in a terminal)' },
     { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
+  ],
+}
+
+/** The sidebar's keys (design 3c): in the filter, then on the focused row. Registered by the default layout, after Everywhere. */
+export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
+  title: 'The sidebar',
+  rows: [
+    { keys: ['/'], label: 'Filter sessions, runs, people (Alt+S in a terminal)' },
+    { keys: ['arrowdown'], label: 'From the filter, into the list' },
+    { keys: ['J'], label: 'Next row (or ↓)' },
+    { keys: ['K'], label: 'Previous row (or ↑)' },
+    { keys: ['enter'], label: 'Open the session, or the run from its header' },
+    { keys: ['1'], label: '1–9 answer the focused row\'s prompt, as on its page' },
+    { keys: ['R'], label: 'Open the run of the focused member' },
+    { keys: ['S'], label: 'Share the focused session or run' },
+    { keys: ['X'], label: 'Stop it: the row asks; Enter stops, Escape cancels' },
+    { keys: ['escape'], label: 'Leave the list' },
   ],
 }
 
@@ -72,7 +88,7 @@ export function useShortcutsModal() {
     })
   }
 
-  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS] : [GLOBAL_SHORTCUTS]))
+  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS]))
 
   return { open, groups, registerPage, show: () => (open.value = true) }
 }

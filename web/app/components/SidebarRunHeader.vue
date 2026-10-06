@@ -6,16 +6,17 @@ import { rowMenuItems, stopQuestion } from '~/utils/sidebarActions'
  * The header of a run block (design 3b, 3c): the play icon (amber while a member needs you, as the amber dot is), the run's own
  * name or its crew's, and when it started with how many agents. It opens the run page. `open` marks the run of the page open now
  * (the run page, or a member's page), which the list scrolls to. Hovering offers Share run, Stop run and Open run; Stop asks
- * first, in the row; a right-click or a long press opens the same menu.
+ * first, in the row; a right-click or a long press opens the same menu. The list drives the keys: `focused` marks the header
+ * they act on, `confirming` (a model: the hover Stop sets it too) shows the question.
  */
-const props = withDefaults(defineProps<{ block: RunBlock; needsDot?: boolean; open?: boolean; busy?: boolean }>(), { needsDot: true, open: false, busy: false })
+const props = withDefaults(defineProps<{ block: RunBlock; needsDot?: boolean; open?: boolean; busy?: boolean; focused?: boolean }>(), { needsDot: true, open: false, busy: false, focused: false })
 const emit = defineEmits<{ share: [block: RunBlock]; stop: [block: RunBlock] }>()
 const route = useRoute()
 const router = useRouter()
 const current = computed(() => runOpen(route.path, props.block.runId))
 const amber = computed(() => props.block.state === 'needs' && props.needsDot)
 const live = computed(() => !props.block.stoppedAt && props.block.state !== 'exited')
-const confirming = ref(false)
+const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'run', name: props.block.title }))
 const menu = computed(() =>
   rowMenuItems(
@@ -31,7 +32,7 @@ function confirmStop() {
 
 <template>
   <UContextMenu :items="menu">
-    <div class="group relative flex items-center">
+    <div class="group relative flex items-center rounded-md" :class="focused && 'ring-2 ring-primary/40'" :data-row-focused="focused ? '' : undefined">
       <NuxtLink
         :to="`/runs/${encodeURIComponent(block.runId)}`"
         class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors"

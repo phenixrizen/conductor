@@ -8,9 +8,10 @@ import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/side
  * line of agent · where · how long. A hosted session's row carries its machine with a laptop, in place of a heading. The path is
  * the row's tooltip. An exited row says how it ended and when, with Resume beside the link (a link holds no button). Hovering
  * offers Share, Stop and More in place of the dot; Stop asks first, in the row; a right-click or a long press opens the same
- * menu as More. A prompt is answered in the row, below the link: its choices as numbered buttons, or a reply field.
+ * menu as More. A prompt is answered in the row, below the link: its choices as numbered buttons, or a reply field. The list
+ * drives the keys: `focused` marks the row they act on, `confirming` (a model: the hover Stop sets it too) shows the question.
  */
-const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean }>(), { member: false, needsDot: true, busy: false })
+const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false })
 const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number]; reply: [row: SessionRow, text: string] }>()
 const route = useRoute()
 const router = useRouter()
@@ -22,7 +23,7 @@ const meta = computed(() => rowMeta(s.value, props.member, props.now))
 const metaText = computed(() => (props.row.machine ? meta.value.slice(1).map((p) => ` · ${p}`).join('') : meta.value.join(' · ')))
 const exitLine = computed(() => `${props.row.exitWord} · ${relativeTime(s.value.endedAt ?? s.value.createdAt, props.now, { suffix: true })}`)
 const live = computed(() => sessionLive(s.value.status))
-const confirming = ref(false)
+const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))
 const prompt = computed(() => rowPrompt(props.row))
 
@@ -46,7 +47,7 @@ function confirmStop() {
 <template>
   <UContextMenu :items="menu">
     <!-- The open session's box is the row's, so that a prompt answered below the link sits inside it. -->
-    <li class="group relative flex flex-col rounded-md" :class="current && 'bg-default border border-default shadow-xs'" :data-sidebar-row="`s:${s.id}`" data-row-kind="session" :data-row-state="row.state">
+    <li class="group relative flex flex-col rounded-md" :class="[current && 'bg-default border border-default shadow-xs', focused && 'ring-2 ring-primary/40']" :data-sidebar-row="`s:${s.id}`" data-row-kind="session" :data-row-state="row.state" :data-row-focused="focused ? '' : undefined">
       <div class="flex items-center gap-1">
       <NuxtLink
         :to="`/sessions/${s.id}`"

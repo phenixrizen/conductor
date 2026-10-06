@@ -7,6 +7,7 @@ import { agentInitials } from '~/utils/sessions'
  * taking the window over. Each opens its join page (which joins at once); × forgets it. The section's header is the list's
  * (SidebarSection), below your own sessions; this is its rows.
  */
+withDefaults(defineProps<{ focusedId?: string | null }>(), { focusedId: null })
 const joined = useJoined()
 const route = useRoute()
 
@@ -26,8 +27,9 @@ function title(e: JoinedEntry): string {
     <div
       v-for="e in joined.list.value"
       :key="e.id"
-      class="group flex items-center gap-1"
-      :class="(e.lastStatus === 'revoked' || e.lastStatus === 'gone') && 'opacity-75'"
+      class="group flex items-center gap-1 rounded-md"
+      :class="[(e.lastStatus === 'revoked' || e.lastStatus === 'gone') && 'opacity-75', focusedId === `j:${e.id}` && 'ring-2 ring-primary/40']"
+      :data-row-focused="focusedId === `j:${e.id}` ? '' : undefined"
       :data-shared-entry="e.id"
       :data-shared-status="e.lastStatus ?? ''"
       :data-sidebar-row="`j:${e.id}`"

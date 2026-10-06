@@ -9,7 +9,7 @@ import { serverBinary, stubPath } from './server'
 // what needs you, a run kept whole where its most urgent member is, a machine
 // as a tag on the row, Shared with you below your own, Exited folded to one
 // line, every section folding from its header and remembered; the actions on
-// a row; a prompt answered in the row.
+// a row; a prompt answered in the row; the keys on a focused row.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -267,4 +267,66 @@ test('a free-text prompt gets a reply field in the row; Enter sends the line and
   await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
   await expect(row.locator('[data-row-reply]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/crews$/)
+})
+
+test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a digit answers the focused row alone; X asks, Enter opens, R the run', async ({ page, api, state }) => {
+  // Two sessions asking: the page open on one, the other answered from its row by a digit.
+  const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e keys a' })
+  const b = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e keys b' })
+  sessions.push(a.id, b.id)
+  await expect.poll(async () => `${(await api.session(a.id)).attention?.state}/${(await api.session(b.id)).attention?.state}`, { timeout: 30_000 }).toBe('needs_input/needs_input')
+  await page.goto(`/sessions/${a.id}`)
+  await expect(page.locator('[data-quick-reply]')).toBeVisible({ timeout: 30_000 })
+  const list = page.locator('[data-session-list="sidebar"]')
+  const focused = list.locator('[data-row-focused]')
+
+  // Alt+S from the terminal (the page gave it the focus; a plain / would reach the agent), then ↓: the first row has the focus;
+  // J and K move it; Escape leaves the list.
+  await page.keyboard.press('Alt+s')
+  await expect(page.getByPlaceholder('Filter sessions, runs, people')).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(focused).toHaveCount(1)
+  const first = await focused.getAttribute('data-sidebar-row')
+  await page.keyboard.press('j')
+  await expect(focused).toHaveCount(1)
+  expect(await focused.getAttribute('data-sidebar-row')).not.toBe(first)
+  await page.keyboard.press('k')
+  expect(await focused.getAttribute('data-sidebar-row')).toBe(first)
+  await page.keyboard.press('Escape')
+  await expect(focused).toHaveCount(0)
+
+  // A digit answers the focused row's prompt and never the open page's.
+  const rowB = list.locator(`[data-sidebar-row="s:${b.id}"]`).first()
+  await rowB.locator('a[href]').first().focus()
+  await expect(rowB).toHaveAttribute('data-row-focused', '')
+  await page.keyboard.press('1')
+  await expect.poll(() => transcript(state.home, b), { timeout: 15_000, message: 'b got the choice' }).toContain('Postgres\n')
+  expect(transcript(state.home, a)).not.toContain('Postgres')
+  expect((await api.session(a.id)).attention?.state).toBe('needs_input')
+  await expect(rowB).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  // The row kept the focus as it moved sections.
+  await expect(rowB).toHaveAttribute('data-row-focused', '')
+
+  // X asks in the row and Escape takes it back; S opens the share dialog; Enter opens the row.
+  await page.keyboard.press('x')
+  await expect(rowB.locator('[data-row-stop-confirm]')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(rowB.locator('[data-row-stop-confirm]')).toHaveCount(0)
+  await expect(rowB).toHaveAttribute('data-row-focused', '')
+  await page.keyboard.press('s')
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Share e2e keys b')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await rowB.locator('a[href]').first().focus()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(new RegExp(`/sessions/${b.id}$`))
+
+  // R from a member opens its run: the crew's run, in Exited by now.
+  const exited = page.locator('[data-sidebar-section="exited"]')
+  if ((await exited.getAttribute('data-folded')) === 'true') await exited.getByRole('button', { name: /^Exited/ }).click()
+  const member = exited.locator(`[data-sidebar-row="s:${reviewId}"]`)
+  await member.locator('a[href]').first().focus()
+  await page.keyboard.press('r')
+  await expect(page).toHaveURL(new RegExp(`/runs/${runId}$`))
 })

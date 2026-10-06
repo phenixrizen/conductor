@@ -3,7 +3,9 @@ import type { SessionInfo } from '~/composables/useSessions'
 import { newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
-import { needsDotShown, reopenNeeds, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { joinedPath } from '~/utils/joined'
+import { focusRows, moveFocus, needsDotShown, reopenNeeds, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { sessionLive } from '~/utils/sidebarActions'
 
 /**
  * The full sidebar (design 3a, 3b): sessions and runs, ordered by what needs you. Two sections, Needs you then Running, each holding
@@ -143,7 +145,153 @@ function focusFilter() {
   filterInput.value?.inputRef?.focus()
 }
 
-defineExpose({ focusFilter })
+// The keys (design 3c): one handler on the list, live while a row has the focus (↓ from the filter puts the first there, a
+// click or Tab any). ↑ ↓ or J K move, Enter opens, 1–9 answer the row's prompt, R opens a member's run, S shares, X asks to
+// stop (the question's Stop takes the focus: Enter stops, Escape cancels), Escape leaves the list. Every key the list owns
+// stops here, so the Yard's J K and the quick reply's digits never see it; a field inside a row keeps its keys (the reply field
+// stops its own), Escape excepted. Focus is by row id, so a row that moves sections after an answer keeps it.
+const listEl = useTemplateRef<HTMLElement>('listEl')
+const focused = ref<string | null>(null)
+/** The row asking whether to stop (`s:<id>`, `r:<runId>`): one at a time, from the keys or a hover Stop. */
+const confirmingId = ref<string | null>(null)
+const rows = computed(() => focusRows(model.value, joined.list.value, folds.value))
+const byId = computed(() => {
+  const m = new Map<string, SessionRow | RunBlock>()
+  for (const key of ['needs', 'running', 'exited'] as const) {
+    for (const it of model.value[key]) {
+      if (it.kind === 'run') {
+        m.set(`r:${it.runId}`, it)
+        for (const member of it.members) m.set(`s:${member.id}`, member)
+      } else m.set(`s:${it.id}`, it)
+    }
+  }
+  return m
+})
+function rowEl(id: string, within = 'a[href]'): HTMLElement | null {
+  return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${within}`) ?? null
+}
+function focusRow(id: string | null) {
+  focused.value = id
+  if (id) rowEl(id)?.focus()
+}
+/** From the filter's ↓: the first row. */
+function focusList() {
+  focusRow(moveFocus(rows.value, null, 1))
+}
+function onFocusIn(e: FocusEvent) {
+  const row = (e.target as HTMLElement).closest('[data-sidebar-row]')
+  if (row) focused.value = row.getAttribute('data-sidebar-row')
+}
+function onFocusOut(e: FocusEvent) {
+  // The focus left the list; the question, if one shows, stays until answered (a hover Stop's button unmounts under the click).
+  // A row that re-renders under the focus (it moved sections after an answer) gets it back by id first (the watch below), so
+  // the focus counts as gone only once nothing in the list has it after that.
+  if (listEl.value?.contains(e.relatedTarget as Node | null)) return
+  window.setTimeout(() => {
+    if (!listEl.value?.contains(document.activeElement)) focused.value = null
+  }, 0)
+}
+watch(rows, async () => {
+  const id = focused.value
+  if (!id) return
+  await nextTick()
+  const el = rowEl(id)
+  if (el && !el.contains(document.activeElement)) el.focus()
+})
+function openRow(id: string) {
+  const f = rows.value.find((r) => r.id === id)
+  if (!f) return
+  if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
+  else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
+  else {
+    const e = joined.list.value.find((x) => x.id === f.entryId)
+    if (e) router.push(joinedPath(e))
+  }
+}
+function liveRow(row: SessionRow | RunBlock): boolean {
+  return row.kind === 'run' ? !row.stoppedAt && row.state !== 'exited' : sessionLive(row.session.status)
+}
+async function askStop(id: string) {
+  confirmingId.value = id
+  await nextTick()
+  rowEl(id, '[data-confirm-stop]')?.focus()
+}
+function onKey(e: KeyboardEvent) {
+  const target = e.target as HTMLElement
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    if (confirmingId.value) {
+      const id = confirmingId.value
+      confirmingId.value = null
+      focusRow(id)
+    } else {
+      target.blur()
+      focused.value = null
+    }
+    return
+  }
+  if (target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return
+  const id = focused.value
+  if (!id) return
+  if (confirmingId.value) {
+    // The question's Stop button has the focus: Enter is its click, nothing else is a key.
+    if (e.key === 'Enter') e.stopPropagation()
+    return
+  }
+  const row = byId.value.get(id)
+  const own = () => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  switch (e.key) {
+    case 'ArrowDown':
+    case 'j':
+    case 'J':
+      own()
+      focusRow(moveFocus(rows.value, id, 1))
+      return
+    case 'ArrowUp':
+    case 'k':
+    case 'K':
+      own()
+      focusRow(moveFocus(rows.value, id, -1))
+      return
+    case 'Enter':
+      own()
+      openRow(id)
+      return
+    case 'r':
+    case 'R':
+      if (row?.kind === 'session' && row.session.crew) {
+        own()
+        openRunOf(row)
+      }
+      return
+    case 's':
+    case 'S':
+      if (row && liveRow(row)) {
+        own()
+        if (row.kind === 'run') shareRun(row)
+        else shareSession(row)
+      }
+      return
+    case 'x':
+    case 'X':
+      if (row && liveRow(row)) {
+        own()
+        askStop(id)
+      }
+      return
+  }
+  const n = Number(e.key)
+  if (Number.isInteger(n) && n >= 1 && n <= 9) {
+    own()
+    if (row?.kind === 'session' && row.prompt?.options[n - 1]) answer(row, n - 1)
+  }
+}
+
+defineExpose({ focusFilter, focusList })
 
 onMounted(() => {
   tick = window.setInterval(() => (now.value = Date.now()), 30000)
@@ -157,10 +305,13 @@ onBeforeUnmount(() => window.clearInterval(tick))
       <UButton label="Launch agent" icon="i-lucide-plus" block @click="launch.show()">
         <template #trailing><UKbd value="N" size="sm" class="ml-auto opacity-70" /></template>
       </UButton>
-      <UInput ref="filterInput" v-model="query" placeholder="Filter sessions, runs, people" size="sm" icon="i-lucide-slash" :ui="{ base: 'font-normal' }" />
+      <!-- ↓ in the filter moves into the list (the key bubbles from the field to here). -->
+      <div @keydown.down.prevent="focusList()">
+        <UInput ref="filterInput" v-model="query" placeholder="Filter sessions, runs, people" size="sm" icon="i-lucide-slash" :ui="{ base: 'font-normal' }" />
+      </div>
     </div>
 
-    <div class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" data-session-list="sidebar">
+    <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" data-session-list="sidebar" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
       <SidebarSection v-if="model.needs.length" id="needs" title="Needs you" :count="model.counts.needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
@@ -173,6 +324,9 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
               :busy="busyAll"
+              :focused-id="focused"
+              :confirming-id="confirmingId"
+              @confirm="confirmingId = $event"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
@@ -182,7 +336,22 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @answer="answer"
               @reply="reply"
             />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busyAll.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" @answer="answer" @reply="reply" />
+            <SidebarSessionRow
+              v-else
+              :row="it as SessionRow"
+              :now="now"
+              :needs-dot="needsDot"
+              :busy="busyAll.has((it as SessionRow).id)"
+              :focused="focused === `s:${(it as SessionRow).id}`"
+              :confirming="confirmingId === `s:${(it as SessionRow).id}`"
+              @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
+              @share="shareSession"
+              @stop="stopSession"
+              @yard="showInYard"
+              @open-run="openRunOf"
+              @answer="answer"
+              @reply="reply"
+            />
           </template>
         </ol>
       </SidebarSection>
@@ -197,6 +366,9 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
               :busy="busyAll"
+              :focused-id="focused"
+              :confirming-id="confirmingId"
+              @confirm="confirmingId = $event"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
@@ -206,14 +378,29 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @answer="answer"
               @reply="reply"
             />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busyAll.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" @answer="answer" @reply="reply" />
+            <SidebarSessionRow
+              v-else
+              :row="it as SessionRow"
+              :now="now"
+              :needs-dot="needsDot"
+              :busy="busyAll.has((it as SessionRow).id)"
+              :focused="focused === `s:${(it as SessionRow).id}`"
+              :confirming="confirmingId === `s:${(it as SessionRow).id}`"
+              @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
+              @share="shareSession"
+              @stop="stopSession"
+              @yard="showInYard"
+              @open-run="openRunOf"
+              @answer="answer"
+              @reply="reply"
+            />
           </template>
         </ol>
       </SidebarSection>
 
       <!-- Yours first, then the rest: the links joined from here sit below your own sessions. -->
       <SidebarSection v-if="joined.list.value.length" id="shared" title="Shared with you" :count="joined.list.value.length" :folded="folds.shared" @update:folded="foldState.fold('shared', $event)">
-        <SidebarSharedList />
+        <SidebarSharedList :focused-id="focused" />
       </SidebarSection>
 
       <SidebarSection v-if="model.exited.length" id="exited" title="Exited" :count="model.counts.exited" :preview="preview('exited')" :folded="folds.exited" @update:folded="foldState.fold('exited', $event)">
@@ -226,6 +413,9 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
               :busy="busyAll"
+              :focused-id="focused"
+              :confirming-id="confirmingId"
+              @confirm="confirmingId = $event"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
@@ -235,7 +425,22 @@ onBeforeUnmount(() => window.clearInterval(tick))
               @answer="answer"
               @reply="reply"
             />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busyAll.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" @answer="answer" @reply="reply" />
+            <SidebarSessionRow
+              v-else
+              :row="it as SessionRow"
+              :now="now"
+              :needs-dot="needsDot"
+              :busy="busyAll.has((it as SessionRow).id)"
+              :focused="focused === `s:${(it as SessionRow).id}`"
+              :confirming="confirmingId === `s:${(it as SessionRow).id}`"
+              @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
+              @share="shareSession"
+              @stop="stopSession"
+              @yard="showInYard"
+              @open-run="openRunOf"
+              @answer="answer"
+              @reply="reply"
+            />
           </template>
         </ol>
       </SidebarSection>

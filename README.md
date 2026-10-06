@@ -331,7 +331,13 @@ the rail). On a phone the sidebar is a drawer. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
 have a select focused. Press **?** (or use **Shortcuts** in the sidebar) for
-the list of shortcuts on the current screen.
+the list of shortcuts on the current screen. The list itself takes keys once
+a row has the focus (**↓** from the filter puts the first there; a click or
+Tab, any): **↑ ↓** or **J K** move, **Enter** opens the session or the run
+from its header, **1**–**9** answer the focused row's prompt as on its page,
+**R** opens a member's run, **S** shares, **X** asks to stop in the row
+(Enter stops, Escape cancels), **Escape** leaves the list. The Yard's J and
+K and the quick reply's digits never see a key the list took.
 Plain keys reach the agent while a terminal has focus, so they only work
 outside it; hold **Alt** with the same key (**Alt+N**, **Alt+W**, **Alt+←**)
 to use a shortcut without leaving the terminal. Your display name defaults to

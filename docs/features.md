@@ -699,9 +699,33 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   stream clears the prompt and the row moves to Running by itself. The
   field stops its keydown events, so the window's digit listener and, from
   S4, the list's keys never see what is typed.
+- **The list's keys** (3c, S4): one `keydown` handler on `[data-session-list]`
+  in `SessionSidebar.vue`, live while a row has the focus (`focused`, a row
+  id, set by `focusin`; the filter's ↓ puts the first row there). ↑ ↓ or J K
+  move by `moveFocus`, Enter opens, 1–9 answer the focused row's prompt
+  through S3's path (digits are consumed even without a prompt), R opens a
+  member's run, S shares, X asks in the row with the question's Stop button
+  focused (Enter stops, Escape cancels), Escape leaves the list. Every key the
+  list owns calls `preventDefault` and `stopPropagation`, so the Yard's J K
+  and `QuickReplyBar`'s window digit listener (which also returns for a
+  target inside `[data-session-list]`) never see it; a field in a row keeps
+  its keys, Escape excepted. The stop question is one model
+  (`confirmingId`): a hover Stop and the X key set the same one, and the
+  row components take `confirming` as a `defineModel`. Focus is by row id,
+  so a row that moves sections after an answer keeps it. `SIDEBAR_SHORTCUTS`
+  ("The sidebar") lists the keys after Everywhere in the shortcuts modal;
+  the `/` row moved into it. Links stay tabbable in the usual way: no roving
+  tabindex, Tab walks the rows.
 
 ### Verified (round 11)
 
+- S4: `sidebar.spec.ts` drives the keys: `/` then ↓ focuses the first row,
+  J K move, Escape leaves; with a page open on one asking session and the
+  other's row focused, `1` answers the row's session alone (the transcripts
+  and the page's attention say so) and the row keeps the focus as it moves to
+  Running; X asks and Escape takes it back, S opens the share dialog, Enter
+  opens the row, R from an exited member opens its run. vitest covers the
+  shortcuts group.
 - S3: a choice clicked in the row (`choices.spec.ts`) and a line typed in
   the row's field (`sidebar.spec.ts`) reach the stub's transcript, clear the
   prompt and move the row to Running without leaving the page; `rowPrompt`
