@@ -5,10 +5,10 @@ import { external } from './window'
 export const CREDIT = 'Sponsored and maintained by RockSolid Labs'
 export const SPONSOR_URL = 'https://rocksolidlabs.io'
 
-/** The copyright line, from the first release's year through `year` (the package's holder, electron-builder's copyright). */
+/** The copyright line, from the first release's year through `year` (the holder of LICENSE and NOTICE, electron-builder's copyright). */
 export function copyrightLine(year: number = new Date().getFullYear()): string {
   const first = 2026
-  return `© ${year > first ? `${first}–${year}` : first} the Conductor authors`
+  return `© ${year > first ? `${first}–${year}` : first} the Conductor Authors and RockSolid Labs, Inc.`
 }
 
 /** The build line under the name: "0.6.0-rc.4 · windows x64 · electron 44.5.1". */

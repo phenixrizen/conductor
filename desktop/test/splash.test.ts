@@ -10,12 +10,12 @@ describe('splash', () => {
     expect(buildLine('0.6.0', 'linux', 'x64', '44.5.1')).toBe('0.6.0 · linux x64 · electron 44.5.1')
   })
   it('dates the copyright from the first release', () => {
-    expect(copyrightLine(2026)).toBe('© 2026 the Conductor authors')
-    expect(copyrightLine(2027)).toBe('© 2026–2027 the Conductor authors')
+    expect(copyrightLine(2026)).toBe('© 2026 the Conductor Authors and RockSolid Labs, Inc.')
+    expect(copyrightLine(2027)).toBe('© 2026–2027 the Conductor Authors and RockSolid Labs, Inc.')
   })
   it('carries the kit credit and the build to the page', () => {
     expect(CREDIT).toBe('Sponsored and maintained by RockSolid Labs')
-    expect(splashQuery({ version: '1.0.0', build: 'b', year: 2026 })).toEqual({ version: '1.0.0', build: 'b', copyright: '© 2026 the Conductor authors', credit: CREDIT })
+    expect(splashQuery({ version: '1.0.0', build: 'b', year: 2026 })).toEqual({ version: '1.0.0', build: 'b', copyright: '© 2026 the Conductor Authors and RockSolid Labs, Inc.', credit: CREDIT })
   })
   it('names each step', () => {
     expect(Object.values(SPLASH_STEPS).every((s) => s.endsWith('…'))).toBe(true)

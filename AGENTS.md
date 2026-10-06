@@ -24,7 +24,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `desktop/` | the Electron shell: starts `conductor serve` with a minted token and the settings it keeps, the handshake, health and restarts, the bridge the workbench reads the token from, WSL 2 on Windows |
-| `docs/` | `protocol.md`, `architecture.md`, `features.md` (scope and deferred work), `design/brand.md` |
+| `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `future-features.md` (what is deferred, in one place), `design/brand.md` |
 
 `internal/session.Local` is shared by the server and the host. Anything that
 changes what a viewer sees belongs there, not in a transport. Attention
@@ -35,6 +35,12 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
 
 ## Rules
 
+- **Every feature ships with tests at both ends.** The server or CLI side
+  gets a Go test (`go test -race`), and the UI side a vitest unit test for
+  its logic and a Playwright spec for what a person sees and does; a change
+  with one and not the other is not done. Only what no harness can reach (a
+  phone, a router, a real GPU, a Windows box) goes on the by-hand list, and
+  it is recorded in `docs/features.md` when a person has done it.
 - Protocol changes touch three places together: `internal/proto`,
   `web/app/utils/protocol.ts` and `docs/protocol.md`. Every new frame or message
   gets a size limit and a test.

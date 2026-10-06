@@ -68,7 +68,8 @@ test('the folder picker browses the server, outside the roots too, and fills the
   // The app card ends with the sponsor credit (the Sponsor Kit's 1c).
   const about = page.locator('[data-about-card]')
   await expect(about.locator('[data-about-row="app"]')).toHaveText('e2e')
-  await expect(about.locator('[data-about-copyright]')).toContainText('the Conductor authors')
+  await expect(about.locator('[data-about-license]')).toContainText('Apache-2.0')
+  await expect(about.locator('[data-about-copyright]')).toContainText('the Conductor Authors and RockSolid Labs, Inc.')
   await expect(about.locator('[data-about-credit]')).toContainText('Sponsored and maintained by RockSolid Labs')
   await expect(about.locator('[data-about-credit] a')).toHaveAttribute('href', 'https://rocksolidlabs.io')
 })

@@ -1,6 +1,6 @@
 appId: dev.conductor.app
 productName: Conductor
-copyright: Copyright © 2026 the Conductor authors
+copyright: Copyright © 2026 the Conductor Authors and RockSolid Labs, Inc.
 directories:
   output: release
   buildResources: build

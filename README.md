@@ -1311,4 +1311,5 @@ The image keeps its data directory on the `/var/lib/conductor` volume.
 <a href="https://rocksolidlabs.io"><img src="web/public/sponsor/rocksolidlabs-logo.png" alt="RockSolid Labs" height="20"></a>
 
 Sponsored and maintained by [RockSolid Labs](https://rocksolidlabs.io).
-© 2026 the Conductor authors.
+Open source under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE)
+for the marks. © 2026 the Conductor Authors and RockSolid Labs, Inc.

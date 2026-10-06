@@ -3,8 +3,10 @@
 Scope notes for the workbench redesign. The source mockup is the
 claude.ai/design project "Conductor Mockups" (screens 1a workbench, 1b wall,
 1c runs, 1d launch, 1e share, 1f join, 1g carousel). This file records what is
-being built, the decisions taken along the way, and what is deliberately
-deferred. Update it when scope changes.
+being built, the decisions taken along the way, and what each round left
+for a person to verify. What is deliberately deferred is listed once, in
+[future-features.md](future-features.md); the "Deferred" lists under the
+rounds below are the history of when each item was set aside.
 
 ## Delivered (2026-09-28)
 
@@ -678,9 +680,24 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   line of `conductor version` and `--help`, the README, and the splash. Never
   in the workspace, a log or run output. The logos are RockSolid Labs' own,
   bundled (`web/public/sponsor`, `desktop/static/sponsor`), never fetched.
-- **The copyright** is the package's holder, "© 2026 the Conductor authors"
-  (electron-builder's `copyright`), on the splash and in Settings → The app.
+- **The copyright and the license.** "© 2026 the Conductor Authors and
+  RockSolid Labs, Inc." (the owner's wording, 2026-10-06), on the splash, in
+  Settings → The app and the README; the repository is under the Apache
+  License 2.0 (`LICENSE`, with a `NOTICE` naming the holder and keeping the
+  RockSolid Labs and Conductor marks out of the grant), named in Settings →
+  The app, the switchyard pages' footer and the README.
 - `GET /api/whoami` gains `version`, for The app card in a browser.
+- **Tests at both ends, as a rule** (AGENTS.md, 2026-10-06): every feature
+  ships with a Go test and a UI test (vitest for logic, Playwright for what a
+  person sees); the by-hand list is only for what no harness reaches. With
+  it, the browser test of a crew run link through the switchyard, deferred
+  in round 9: a second server publishing to the spec's switchyard, Share on
+  its run page saying "Works from anywhere", the link listing the members on
+  this workbench, a member's terminal through the relay, and a revoke at
+  home ending the link there (`web/e2e/switchyard.spec.ts`).
+- **What is deferred lives in one place**, `docs/future-features.md`, by
+  area, each item with the round that set it aside; the rounds' own
+  "Deferred" lists stay as history.
 - **Zoom in the desktop app** (reported on Windows: zoom in did nothing).
   Electron's zoom roles bind Ctrl+Plus, which needs Shift, and on Windows and
   Linux the page sees a key before the menu, where the terminal takes Ctrl+-
@@ -695,12 +712,12 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   at 100 runs under race). A run being stopped is now recorded only by its
   stop, and the record saves keep the order their snapshots were taken in.
 
-### Open verification (round 10)
+### Verified (round 10)
 
-- The splash on the installed app on Windows: shown at once, its steps
-  change while WSL starts, gone when the workbench shows.
-- Zoom on Windows: Ctrl+= and Ctrl+- with the terminal focused, Ctrl+0, the
-  View menu's items, and the level kept after a restart of the app.
+- 2026-10-06, by the owner on the installed v0.6.0-rc.6: the splash, the
+  folder buttons and the full-width Settings page, the credit on the
+  switchyard pages and in `conductor version`, and zoom (Ctrl+=, Ctrl+-,
+  Ctrl+0, the View menu, the level kept) all passed.
 
 ## Round 9: the Events page, the switchyard dark, remote sessions in the sidebar, the WSL picker, and the leftovers of rounds 7 and 8 (2026-10-04)
 
