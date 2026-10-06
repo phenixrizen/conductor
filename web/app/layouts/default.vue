@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
-import { sidebarRunFor } from '~/utils/crews'
 import { SIDEBAR_SIZE } from '~/utils/sidebar'
 import { noticeWords } from '~/utils/desktop'
 
@@ -102,17 +101,8 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
   document.addEventListener(end, keepWidth, { once: true })
 }
 
-// The sidebar's group variant: on a run page (/runs/<id>), and on the page
-// of any member session of a run however it was reached, the sidebar lists
-// only that run's members. The run's name comes from the live store's runs;
-// the crew's id stands in for a run the server no longer keeps.
-const sidebarRun = computed(() => sidebarRunFor(route.path, attention.sessions.value))
+// A run page keeps the Crews page lit in the foot: a run is the Crews page's.
 const runRoute = computed(() => route.path.startsWith('/runs/'))
-const sidebarRunName = computed(() => {
-  const id = sidebarRun.value
-  if (!id) return undefined
-  return attention.runNames.value[id] || attention.sessions.value.find((s) => s.crew?.runId === id)?.crew?.crewId
-})
 
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
@@ -202,8 +192,8 @@ defineShortcuts({
       </template>
 
       <template #default="{ collapsed }">
-        <SidebarRail v-if="collapsed" :run-id="sidebarRun" :run-name="sidebarRunName" @search="focusFilter" />
-        <SessionSidebar v-else ref="list" :run-id="sidebarRun" :run-name="sidebarRunName" />
+        <SidebarRail v-if="collapsed" @search="focusFilter" />
+        <SessionSidebar v-else ref="list" />
       </template>
 
       <!-- Nuxt UI's handle, with the width saved once a drag or a double-click has set it. -->

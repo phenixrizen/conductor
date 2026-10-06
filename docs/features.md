@@ -652,6 +652,41 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 11: the sidebar made simpler, and chat beside the terminal (2026-10-06)
+
+From the design hand-off "Conductor UI.dc.html" (the 2-series is chat, the
+3-series the sidebar; the 1-series is the app as built and stays), approved
+by the owner on 2026-10-06. The plan: two tracks of pull requests, the
+sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
+
+### Decisions
+
+- **The sidebar lists sessions and runs** (3a, S1). A run is one block,
+  kept whole, placed where its most urgent member is, its members by urgency
+  then the crew's order, an exited member inside with Resume; the crew is
+  not listed; a machine is a tag on a hosted session's row, not a heading;
+  this server's own loose sessions say `server`, members say nothing (they
+  run here); the path leaves the row for its tooltip (3f). Shared with you
+  sits below your own sessions. Exited folds to one line. The model is
+  `sidebarModel` in `web/app/utils/sidebar.ts`; the rail draws from it too.
+- **Sections fold from their headers** (3c, S1), remembered per browser in
+  `conductor.sidebar.folds`; a folded header keeps its count and up to six
+  status squares; Exited starts folded; Needs you opens again by itself for a
+  new prompt (`newlyNeedingInput`, the notifications' own rule), the first
+  list a page sees priming the comparison so a reload reopens nothing.
+- **No scoping on a run page** (3f, S1): the full list shows with the open
+  run's block marked, its section unfolded and scrolled into view; the Crew
+  box and the laptop headings are gone.
+- The counts: Needs you is how many sessions need you, members included;
+  Running is that section's live sessions; Exited is that section's.
+
+### Verified (round 11)
+
+- S1 rendered headless at 1440, dark and light, against 3b: the mix of two
+  loose sessions (one asking), a run of three (one asking, one exited), a
+  hosted session with its machine, Exited folded "· 4" with squares; on a
+  run page the block is marked. By hand on the installed app: pending.
+
 ## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
 
 Asked on 2026-10-05, with the round 9 checks: "whenever we show 'runs in' we

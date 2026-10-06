@@ -1,0 +1,177 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { openSync } from 'node:fs'
+import { join } from 'node:path'
+import { expect, test, type Session } from './fixtures'
+import { serverBinary, stubPath } from './server'
+
+// The sidebar's list (design 3a, 3b, 3c's folding, 3f): sessions and runs
+// ordered by what needs you, a run kept whole where its most urgent member
+// is, a machine as a tag on the row, Shared with you below your own, Exited
+// folded to one line, every section folding from its header and remembered.
+test.describe.configure({ mode: 'serial' })
+
+const sessions: string[] = []
+let crewId = ''
+let runId = ''
+let reviewId = ''
+let alive: Session | null = null
+let host: ChildProcess | null = null
+
+test.afterAll(async ({ api }) => {
+  host?.kill('SIGKILL')
+  if (runId) await api.stopRun(runId)
+  for (const id of sessions) await api.stopSession(id)
+  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+})
+
+async function ended(api: { session: (id: string) => Promise<Session> }, id: string) {
+  await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+}
+
+test('a run sits whole in Needs you: its header, then its members, the one asking first', async ({ page, api }) => {
+  alive = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e alive' })
+  sessions.push(alive.id)
+  crewId = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e sidebar crew',
+      goal: 'be listed',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'codex-untrusted', prompt: 'review it', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  runId = (await api.launchCrew(crewId)).id
+  // review holds the trust question: it needs you; lead runs.
+  await expect
+    .poll(
+      async () => {
+        const run = await api.run(runId)
+        reviewId = run.members.find((m) => m.name === 'review')?.sessionId ?? ''
+        if (!reviewId) return ''
+        return (await api.session(reviewId)).attention?.state ?? ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('needs_input')
+  await expect.poll(async () => (await api.run(runId)).members.find((m) => m.name === 'lead')?.status, { timeout: 30_000 }).toBe('running')
+
+  await page.goto('/')
+  const needs = page.locator('[data-sidebar-section="needs"]').first()
+  const block = needs.locator(`[data-sidebar-run-block="${runId}"]`)
+  await expect(block).toBeVisible()
+  // Whole, in one section: nothing of it in Running.
+  await expect(page.locator(`[data-sidebar-section="running"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(0)
+  await expect(block).toHaveAttribute('data-row-state', 'needs')
+  const header = block.locator('[data-sidebar-run-group]')
+  await expect(header).toContainText('e2e sidebar crew')
+  await expect(header).toContainText('2 agents')
+  await expect(header).toHaveAttribute('href', `/runs/${encodeURIComponent(runId)}`)
+  await expect(block.locator('[data-run-play="needs"]')).toHaveCount(1)
+  // The members under a line, the one asking first with its question; no crew, run or path words on the rows.
+  const members = block.locator('ol > [data-sidebar-row]')
+  await expect(members).toHaveCount(2)
+  await expect(members.nth(0)).toHaveAttribute('data-row-state', 'needs')
+  await expect(members.nth(0)).toContainText('review')
+  await expect(members.nth(0).locator('[data-row-prompt]')).toContainText('Trust this folder?')
+  await expect(members.nth(1)).toContainText('lead')
+  await expect(members.nth(1).locator('[data-row-meta]')).toHaveText(/^claude · \d+[smh]/)
+  // Other specs leave sessions behind: the counts are checked by shape, not by number.
+  await expect(needs.locator('[data-section-count]')).toHaveText(/^\d+$/)
+  // The loose session runs on the server: it says so, and nothing says the path.
+  const running = page.locator('[data-sidebar-section="running"]').first()
+  await expect(running.locator(`[data-sidebar-row="s:${alive.id}"] [data-row-meta]`)).toHaveText(/^claude · server · \d+[smh]/)
+  await expect(running.locator(`[data-sidebar-row="s:${alive.id}"]`)).not.toContainText('/tmp/')
+  await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+})
+
+test('Exited starts folded with its count; opened, its session has Resume; a fold outlives a reload with a preview', async ({ page, api }) => {
+  const done = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e done' })
+  sessions.push(done.id)
+  await api.stopSession(done.id)
+  await ended(api, done.id)
+
+  await page.goto('/')
+  const exited = page.locator('[data-sidebar-section="exited"]').first()
+  await expect(exited).toHaveAttribute('data-folded', 'true')
+  await expect(exited.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+  await expect(exited.locator('[data-sidebar-row]')).toHaveCount(0)
+  expect(await exited.locator('[data-section-preview] [data-state="exited"]').count()).toBeGreaterThan(0)
+  await exited.getByRole('button', { name: /^Exited/ }).click()
+  await expect(exited).toHaveAttribute('data-folded', 'false')
+  const row = exited.locator(`[data-sidebar-row="s:${done.id}"]`)
+  await expect(row).toHaveAttribute('data-row-state', 'exited')
+  await expect(row).toContainText(/(exit \d+|stopped) · \d+[smh] ago/)
+  await expect(row.locator('[data-resume][data-resume-kind="icon"]')).toBeVisible()
+
+  // Running folds from its header, keeps its count and shows what is inside as squares; the fold survives a reload.
+  const running = page.locator('[data-sidebar-section="running"]').first()
+  await running.getByRole('button', { name: /^Running/ }).click()
+  await expect(running).toHaveAttribute('data-folded', 'true')
+  await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+  expect(await running.locator('[data-section-preview] [data-state="running"]').count()).toBeGreaterThan(0)
+  await expect(running.locator('[data-sidebar-row]')).toHaveCount(0)
+  await page.reload()
+  await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'true')
+  await expect(page.locator('[data-sidebar-section="exited"]').first()).toHaveAttribute('data-folded', 'false')
+  await page.locator('[data-sidebar-section="running"]').first().getByRole('button', { name: /^Running/ }).click()
+  await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'false')
+})
+
+test('a new prompt opens a folded Needs you by itself', async ({ page, api }) => {
+  // A page with no open run: the home redirects to the session asking, whose run the list would unfold.
+  await page.goto('/crews')
+  const needs = page.locator('[data-sidebar-section="needs"]').first()
+  const before = Number(await needs.locator('[data-section-count]').textContent())
+  await needs.getByRole('button', { name: /^Needs you/ }).click()
+  await expect(needs).toHaveAttribute('data-folded', 'true')
+  await page.reload()
+  await expect(page.locator('[data-sidebar-section="needs"]').first()).toHaveAttribute('data-folded', 'true')
+  // The live session starts asking: the section unfolds and its row shows the question.
+  await api.ok('POST', `/api/sessions/${alive!.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
+  const after = page.locator('[data-sidebar-section="needs"]').first()
+  await expect(after).toHaveAttribute('data-folded', 'false', { timeout: 15_000 })
+  await expect(after.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-prompt]`)).toHaveText('Which branch?')
+  await expect(after.locator('[data-section-count]')).toHaveText(String(before + 1))
+  await api.ok('POST', `/api/sessions/${alive!.id}/attention`, { state: 'working' })
+  await expect(page.locator(`[data-sidebar-section="running"] [data-sidebar-row="s:${alive!.id}"]`).first()).toBeVisible({ timeout: 15_000 })
+})
+
+test('a session hosted on another machine carries its machine on the row, under no heading', async ({ page, api, state }) => {
+  const log = openSync(join(state.root, 'sidebar-host.log'), 'a')
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-e2e', '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
+    stdio: ['ignore', log, log],
+  })
+  let hostedId = ''
+  await expect
+    .poll(async () => {
+      const list = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
+      const all = Array.isArray(list) ? list : (list.sessions ?? [])
+      hostedId = all.find((s) => s.name === 'hosted-e2e')?.id ?? ''
+      return hostedId
+    }, { timeout: 30_000 })
+    .not.toBe('')
+  await page.goto('/')
+  const row = page.locator(`[data-session-list] [data-sidebar-row="s:${hostedId}"]`).first()
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-row-machine="e2e-laptop"]')).toBeVisible()
+  await expect(row.locator('[data-row-meta]')).toHaveText(/^e2e-laptop · claude · /)
+  await expect(page.locator('[data-sidebar-host-group]')).toHaveCount(0)
+  await expect(page.locator('[data-rail-host]')).toHaveCount(0)
+})
+
+test('on a run page the whole list shows, the open run marked and its section open; no crew box filters it', async ({ page }) => {
+  await page.goto(`/runs/${encodeURIComponent(runId)}`)
+  const open = page.locator('[data-session-list] [data-sidebar-run-open]').first()
+  await expect(open).toBeVisible()
+  await expect(open).toHaveAttribute('aria-current', 'page')
+  await expect(page.locator('[data-sidebar-run]')).toHaveCount(0)
+  await expect(page.locator(`[data-session-list] [data-sidebar-row="s:${alive!.id}"]`).first()).toBeVisible()
+  await expect(page.locator('[data-sidebar-section="needs"]').first()).toHaveAttribute('data-folded', 'false')
+})

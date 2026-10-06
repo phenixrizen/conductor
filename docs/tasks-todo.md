@@ -159,13 +159,15 @@ design is being made with Claude Design (`docs/design/briefs/chat.md`).
   you, Running, Exited), each holding loose sessions, crew runs under a run
   header, and hosted sessions under their machine, with Shared with you on
   top, a rail of avatars when collapsed, a filter box and the Launch button.
-  To do: gather feedback first (a five-task script given to two coworkers,
-  watched: find the agent asking you something; stop a run; share one
-  member; open yesterday's run; tell a crew from a run), then a redesign
-  with Claude Design (`docs/design/briefs/sidebar.md`): one mental model
-  (what is a session, a run, a crew, a machine), the actions a row needs
-  without opening it, what the rail is for, what to drop, phones. Then the
-  build, with Playwright for every row kind and action. Round 10.
+  The redesign was made with Claude Design and approved on 2026-10-06
+  (the 3-series of "Conductor UI.dc.html": one mental model, actions on a
+  row, the rail, phones, what to drop); the build runs as pull requests
+  S1 (the model and the list), S2 (row actions), S3 (answer in the row),
+  S4 (keyboard), S5 (header and foot), S6 (the rail), S7 (phone), each with
+  Playwright for its screen. Still to do after the build: the five-task
+  feedback script with two coworkers (find the agent asking you something;
+  stop a run; share one member; open yesterday's run; tell a crew from a
+  run), watched, to catch what the design missed. Round 10.
 
 ### Releases
 
@@ -197,8 +199,6 @@ design is being made with Claude Design (`docs/design/briefs/chat.md`).
 - **The join route answering a browser origin named in Settings**, so a
   browser at a LAN address (not the desktop window) can open a joined link;
   today such a link shows as unreachable. Round 9.
-- **A page behind a machine's header in the sidebar** (the hosted sessions of
-  one `conductor host` machine). Round 9.
 - **A forgotten run revoking its links at the switchyard at once**; today
   they expire, or the orphan sweep takes them after seven days. Round 9.
 - **Switchyard rosters and invite lifetimes beyond the share store's**: who

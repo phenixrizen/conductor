@@ -4,7 +4,8 @@ import { agentInitials } from '~/utils/sessions'
 
 /**
  * "Shared with you": the share links joined from this workbench, so that a session someone shared stays beside your own instead of
- * taking the window over. Each opens its join page (which joins at once); × forgets it.
+ * taking the window over. Each opens its join page (which joins at once); × forgets it. The section's header is the list's
+ * (SidebarSection), below your own sessions; this is its rows.
  */
 const joined = useJoined()
 const route = useRoute()
@@ -22,10 +23,16 @@ function title(e: JoinedEntry): string {
 
 <template>
   <section v-if="joined.list.value.length" class="flex flex-col gap-0.5" data-sidebar-shared>
-    <h3 class="flex items-center gap-1.5 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
-      <UIcon name="i-lucide-globe" class="size-3.5" />Shared with you · {{ joined.list.value.length }}
-    </h3>
-    <div v-for="e in joined.list.value" :key="e.id" class="group flex items-center gap-1" :class="(e.lastStatus === 'revoked' || e.lastStatus === 'gone') && 'opacity-75'" :data-shared-entry="e.id" :data-shared-status="e.lastStatus ?? ''">
+    <div
+      v-for="e in joined.list.value"
+      :key="e.id"
+      class="group flex items-center gap-1"
+      :class="(e.lastStatus === 'revoked' || e.lastStatus === 'gone') && 'opacity-75'"
+      :data-shared-entry="e.id"
+      :data-shared-status="e.lastStatus ?? ''"
+      :data-sidebar-row="`j:${e.id}`"
+      data-row-kind="shared"
+    >
       <NuxtLink
         :to="joinedPath(e)"
         class="flex min-w-0 flex-1 items-start gap-2.5 rounded-md border px-2.5 py-2 transition-colors"

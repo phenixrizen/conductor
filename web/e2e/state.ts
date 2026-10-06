@@ -9,6 +9,8 @@ export interface E2EState {
   baseURL: string
   /** The workbench token, a fresh one for each run of the suite. */
   token: string
+  /** A host token the server accepts, for a `conductor host` a spec runs against it. */
+  hostToken: string
   port: number
   /** The server's process, killed by pid at teardown. */
   pid: number

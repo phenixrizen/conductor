@@ -287,19 +287,31 @@ the footer says which session is next.
 
 ## Sidebar and keyboard shortcuts
 
+The sidebar lists the agents you can talk to, the sessions, ordered by what
+needs you: **Needs you**, then **Running**. Sessions launched together are a
+run, listed once as one block where its most urgent member is, never split:
+the crew's name (or the run's own) and its start time on top, which open the
+run page, and its sessions beneath, joined by a line, the one asking first;
+an exited member stays inside with its **Resume**. The crew itself, the plan
+the run came from, is not listed (it lives on the Crews page). A session
+another machine hosts here (`conductor host`) says so on its row, a laptop
+and the machine's name; this server's own say `server`. Rows say agent ·
+where · how long; the path is the row's tooltip and the session page's. The
+links shared with you (see Sharing) sit below your own sessions, and
+**Exited** folds to one line. Every section folds from its header, which keeps
+its count and a preview of what is inside; the choice is remembered per
+browser (`conductor.sidebar.folds`), Exited starts folded, and Needs you opens
+again by itself when a new prompt arrives. The run of the page you are on is
+marked and scrolled into view; nothing is filtered out for it. A session
+launched with yolo carries the **yolo** badge.
+
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch
 button, a search button that opens the full sidebar on its filter, the pages
 and the sidebar's buttons as icons with tooltips (the Yard's count as an amber
 chip), and every session as its agent's initials with the amber dot when it
-needs you, the members of a running crew together under its name, which links
-to the run page. The full sidebar groups them the same way: inside each
-section (**Needs you**, **Running**, **Exited**) the sessions of no crew come
-first, then one group per crew run under a header naming the run, which links
-to its run page, then the sessions other machines host here (`conductor
-host`), one group per machine under a laptop icon and its name. A session launched with yolo carries the **yolo** badge
-there, and an ended one a **Resume** (or **Relaunch**) button. Click one to
-open it. The panel button at the bottom of the
+needs you, the members of a run together under its name, in the list's order.
+The panel button at the bottom of the
 rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width
 window, **/**, which then focuses the filter. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`

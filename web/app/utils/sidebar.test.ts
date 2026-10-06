@@ -1,22 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionInfo } from '~/composables/useSessions'
+import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { DEFAULT_ROUTES } from './events'
 import {
+  DEFAULT_FOLDS,
   LEGACY_SIDEBAR_KEY,
+  SIDEBAR_FOLDS_KEY,
   SIDEBAR_KEY,
   SIDEBAR_SIZE,
   SIDEBAR_SIZE_KEY,
+  blockSubtitle,
+  focusRows,
+  moveFocus,
   needsDotShown,
   railGroups,
+  readFolds,
   readSidebarMode,
   readSidebarSize,
+  reopenNeeds,
+  rowMeta,
+  rowState,
   runOpen,
+  sectionPreview,
   sessionOpen,
-  sidebarGroups,
-  sidebarSessions,
+  sidebarModel,
+  writeFolds,
   writeSidebarMode,
   writeSidebarSize,
+  type Folds,
   type KeyValueStore,
+  type RunBlock,
+  type SessionRow,
 } from './sidebar'
 
 function memory(initial: Record<string, string> = {}): KeyValueStore & { data: Map<string, string> } {
@@ -24,8 +37,23 @@ function memory(initial: Record<string, string> = {}): KeyValueStore & { data: M
   return { data, getItem: (k) => data.get(k) ?? null, setItem: (k, v) => void data.set(k, v), removeItem: (k) => void data.delete(k) }
 }
 
+const broken: KeyValueStore = {
+  getItem: () => {
+    throw new Error('blocked')
+  },
+  setItem: () => {
+    throw new Error('blocked')
+  },
+  removeItem: () => {},
+}
+
 const session = (over: Partial<SessionInfo>): SessionInfo =>
   ({ id: 'id', name: 'name', kind: 'server', agentId: 'claude', command: [], cwd: '/w', status: 'running', cols: 80, rows: 24, viewers: 0, createdAt: '2026-10-01T09:00:00Z', ...over }) as SessionInfo
+
+const run = (over: Partial<RunInfo>): RunInfo =>
+  ({ id: 'r1', crewId: 'api-sweep', name: 'API sweep', goal: '', cwd: '/w', isolation: 'none', startedAt: '2026-10-01T08:31:00Z', members: [], log: [], state: 'running', needsInput: 0, yolo: false, ...over }) as RunInfo
+
+const member = (name: string, agentId = 'claude'): RunInfo['members'][number] => ({ name, agentId, start: { when: 'immediately' }, status: 'running' })
 
 describe('readSidebarMode', () => {
   it('reads the saved mode', () => {
@@ -48,15 +76,6 @@ describe('readSidebarMode', () => {
   })
 
   it('is full when storage throws, and writing never throws', () => {
-    const broken: KeyValueStore = {
-      getItem: () => {
-        throw new Error('blocked')
-      },
-      setItem: () => {
-        throw new Error('blocked')
-      },
-      removeItem: () => {},
-    }
     expect(readSidebarMode(broken)).toBe('full')
     expect(() => writeSidebarMode(broken, 'rail')).not.toThrow()
     const s = memory()
@@ -80,13 +99,6 @@ describe('readSidebarMode', () => {
 })
 
 describe('the sidebars share', () => {
-  it('lists every session, or with a run only its members', () => {
-    const list = [session({ id: 'a' }), session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' } }), session({ id: 'c', crew: { runId: 'r2', crewId: 'c', member: 'c' } })]
-    expect(sidebarSessions(list).map((s) => s.id)).toEqual(['a', 'b', 'c'])
-    expect(sidebarSessions(list, 'r1').map((s) => s.id)).toEqual(['b'])
-    expect(sidebarSessions(list, 'r9')).toEqual([])
-  })
-
   it('knows the page that is open', () => {
     expect(sessionOpen('/sessions/a', 'a')).toBe(true)
     expect(sessionOpen('/sessions/ab', 'a')).toBe(false)
@@ -127,97 +139,203 @@ describe('readSidebarSize', () => {
   })
 
   it('is the default when storage throws, and writing never throws', () => {
-    const broken: KeyValueStore = {
-      getItem: () => {
-        throw new Error('blocked')
-      },
-      setItem: () => {
-        throw new Error('blocked')
-      },
-      removeItem: () => {},
-    }
     expect(readSidebarSize(broken)).toBe(18)
     expect(() => writeSidebarSize(broken, 20)).not.toThrow()
   })
 })
 
+describe('rowState', () => {
+  it('is exited once ended, needs while waiting on input, running while the process runs, idle otherwise', () => {
+    expect(rowState(session({ status: 'exited' }))).toBe('exited')
+    expect(rowState(session({ status: 'stopped', attention: { state: 'needs_input' } }))).toBe('exited')
+    expect(rowState(session({ attention: { state: 'needs_input' } }))).toBe('needs')
+    expect(rowState(session({ status: 'starting', attention: { state: 'needs_input' } }))).toBe('needs')
+    expect(rowState(session({ status: 'running' }))).toBe('running')
+    expect(rowState(session({ status: 'starting' }))).toBe('idle')
+    expect(rowState(session({ status: 'host_disconnected' as SessionInfo['status'] }))).toBe('idle')
+  })
+})
+
+describe('sidebarModel', () => {
+  const ids = (items: readonly (SessionRow | RunBlock)[]) => items.map((it) => (it.kind === 'run' ? `${it.runId}[${it.members.map((m) => m.id).join(',')}]` : it.id))
+
+  it('keeps a run whole where its most urgent member is, the members by urgency then the crew order', () => {
+    const list = [
+      session({ id: 'core', crew: { runId: 'r1', crewId: 'api-sweep', member: 'core' }, createdAt: '2026-10-01T09:04:00Z' }),
+      session({ id: 'review', crew: { runId: 'r1', crewId: 'api-sweep', member: 'review' }, status: 'starting', attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z', message: 'Trust this folder?' } }),
+      session({ id: 'lead', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, status: 'exited', exitCode: 0, endedAt: '2026-10-01T09:07:00Z' }),
+      session({ id: 'alone', createdAt: '2026-10-01T09:05:00Z' }),
+    ]
+    const r1 = run({ members: [member('lead'), member('core'), member('tests', 'codex'), member('review', 'codex-untrusted')] })
+    const m = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined))
+    expect(ids(m.needs)).toEqual(['r1[review,core,lead]'])
+    expect(ids(m.running)).toEqual(['alone'])
+    expect(m.exited).toEqual([])
+    const block = m.needs[0] as RunBlock
+    expect(block.title).toBe('API sweep')
+    expect(block.agents).toBe(4)
+    expect(block.state).toBe('needs')
+    expect(block.needs).toBe(1)
+    expect(block.members.map((x) => x.state)).toEqual(['needs', 'running', 'exited'])
+    expect(block.members[0]!.prompt).toEqual({ message: 'Trust this folder?', options: [], kind: undefined, since: '2026-10-01T09:06:00Z' })
+    expect(block.members[2]!.exitWord).toBe('exit 0')
+    // The counts: who needs you, the Running section's live sessions, the Exited section's.
+    expect(m.counts).toEqual({ needs: 1, running: 1, exited: 0 })
+  })
+
+  it('places a wholly exited run in Exited, a run of running members in Running, and names a forgotten run by its crew', () => {
+    const list = [
+      session({ id: 'a', crew: { runId: 'r1', crewId: 'docs', member: 'w' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
+      session({ id: 'b', crew: { runId: 'r1', crewId: 'docs', member: 'x' }, status: 'stopped', endedAt: '2026-10-01T09:08:00Z' }),
+      session({ id: 'c', crew: { runId: 'r2', crewId: 'api', member: 'core' }, createdAt: '2026-10-01T09:02:00Z' }),
+      session({ id: 'd', crew: { runId: 'r2', crewId: 'api', member: 'lead' }, status: 'starting', createdAt: '2026-10-01T09:01:00Z' }),
+      session({ id: 'e', status: 'exited', endedAt: '2026-10-01T09:09:00Z' }),
+    ]
+    const m = sidebarModel(list, (id) => (id === 'r2' ? run({ id: 'r2', crewId: 'api', name: 'API', label: 'Monday run', members: [member('lead'), member('core')] }) : undefined))
+    expect(ids(m.running)).toEqual(['r2[c,d]'])
+    expect((m.running[0] as RunBlock).title).toBe('Monday run')
+    expect((m.running[0] as RunBlock).state).toBe('running')
+    // A run the server forgot keeps its members in the order they came.
+    expect(ids(m.exited)).toEqual(['e', 'r1[a,b]'])
+    expect((m.exited[1] as RunBlock).title).toBe('docs')
+    expect((m.exited[1] as RunBlock).agents).toBe(2)
+    expect(m.counts).toEqual({ needs: 0, running: 2, exited: 3 })
+  })
+
+  it('tags a hosted session with its machine, under no heading, and never says "server" for it', () => {
+    const list = [session({ id: 'h1', kind: 'hosted', hostName: 'priya-mbp' }), session({ id: 'h2', kind: 'hosted', hostName: '' }), session({ id: 'm' })]
+    const m = sidebarModel(list)
+    const rows = m.running as SessionRow[]
+    expect(rows.map((r) => [r.id, r.machine])).toEqual([
+      ['h1', 'priya-mbp'],
+      ['h2', 'unnamed host'],
+      ['m', undefined],
+    ])
+    expect(rowMeta(list[0]!, false, Date.parse('2026-10-01T09:12:00Z'))).toEqual(['priya-mbp', 'claude', '12m'])
+    expect(rowMeta(list[2]!, false, Date.parse('2026-10-01T09:12:00Z'))).toEqual(['claude', 'server', '12m'])
+    expect(rowMeta(list[2]!, true, Date.parse('2026-10-01T09:12:00Z'))).toEqual(['claude', '12m'])
+    expect(rowMeta(session({ viewers: 2 }), false)).toEqual(['claude', 'server', '2 here'])
+  })
+
+  it('orders a section loose rows first, then blocks, each by its newest signal', () => {
+    const list = [
+      session({ id: 'old', attention: { state: 'needs_input', since: '2026-10-01T09:01:00Z' } }),
+      session({ id: 'new', attention: { state: 'needs_input', since: '2026-10-01T09:09:00Z' } }),
+      session({ id: 'b1', crew: { runId: 'r1', crewId: 'one', member: 'a' }, attention: { state: 'needs_input', since: '2026-10-01T09:05:00Z' } }),
+      session({ id: 'b2', crew: { runId: 'r2', crewId: 'two', member: 'a' }, attention: { state: 'needs_input', since: '2026-10-01T09:08:00Z' } }),
+      session({ id: 'r-old', createdAt: '2026-10-01T09:00:00Z' }),
+      session({ id: 'r-new', createdAt: '2026-10-01T09:10:00Z' }),
+    ]
+    const m = sidebarModel(list)
+    expect(ids(m.needs)).toEqual(['new', 'old', 'r2[b2]', 'r1[b1]'])
+    expect(ids(m.running)).toEqual(['r-new', 'r-old'])
+  })
+
+  it('has empty sections and zero counts for no sessions', () => {
+    expect(sidebarModel([])).toEqual({ needs: [], running: [], exited: [], counts: { needs: 0, running: 0, exited: 0 } })
+  })
+})
+
+describe('blockSubtitle', () => {
+  const at = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  it('says when the run started or stopped, and how many agents', () => {
+    expect(blockSubtitle({ startedAt: '2026-10-01T08:31:00Z', agents: 3 })).toBe(`started ${at('2026-10-01T08:31:00Z')} · 3 agents`)
+    expect(blockSubtitle({ startedAt: '2026-10-01T08:31:00Z', stoppedAt: '2026-10-01T08:40:00Z', agents: 1 })).toBe(`stopped ${at('2026-10-01T08:40:00Z')} · 1 agent`)
+    expect(blockSubtitle({ agents: 2 })).toBe('2 agents')
+    expect(blockSubtitle({ startedAt: 'never', agents: 2 })).toBe('started  · 2 agents')
+  })
+})
+
+describe('sectionPreview', () => {
+  it('lists the states of a section, a run by its members, six at most', () => {
+    const m = sidebarModel([
+      session({ id: 'a', attention: { state: 'needs_input' } }),
+      session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' }, attention: { state: 'needs_input' } }),
+      session({ id: 'c', crew: { runId: 'r1', crewId: 'c', member: 'c' } }),
+      session({ id: 'd', crew: { runId: 'r1', crewId: 'c', member: 'd' }, status: 'exited' }),
+    ])
+    expect(sectionPreview(m.needs)).toEqual(['needs', 'needs', 'running', 'exited'])
+    expect(sectionPreview(Array.from({ length: 9 }, (_, i) => sidebarModel([session({ id: String(i) })]).running[0]!))).toHaveLength(6)
+  })
+})
+
+describe('folds', () => {
+  it('starts with Exited folded and the rest open, and reads what was saved, field by field', () => {
+    expect(DEFAULT_FOLDS).toEqual({ needs: false, running: false, shared: false, exited: true })
+    expect(readFolds(memory())).toEqual(DEFAULT_FOLDS)
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: true, exited: false }) }))).toEqual({ needs: false, running: true, shared: false, exited: false })
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: 'yes', other: true }) }))).toEqual(DEFAULT_FOLDS)
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: '{not json' }))).toEqual(DEFAULT_FOLDS)
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: '[]' }))).toEqual(DEFAULT_FOLDS)
+    expect(readFolds(broken)).toEqual(DEFAULT_FOLDS)
+  })
+
+  it('writes the folds and never throws', () => {
+    const s = memory()
+    const folds: Folds = { needs: true, running: false, shared: true, exited: true }
+    writeFolds(s, folds)
+    expect(readFolds(s)).toEqual(folds)
+    expect(() => writeFolds(broken, folds)).not.toThrow()
+  })
+
+  it('reopens Needs you for a new prompt and otherwise leaves the folds alone', () => {
+    const folded: Folds = { ...DEFAULT_FOLDS, needs: true }
+    expect(reopenNeeds(folded, [])).toBe(folded)
+    expect(reopenNeeds(folded, [session({ attention: { state: 'needs_input' } })])).toEqual({ ...folded, needs: false })
+    const open: Folds = { ...DEFAULT_FOLDS }
+    expect(reopenNeeds(open, [session({ attention: { state: 'needs_input' } })])).toBe(open)
+  })
+})
+
+describe('focusRows and moveFocus', () => {
+  const m = sidebarModel([
+    session({ id: 'a', attention: { state: 'needs_input', options: [{ label: 'Yes', input: 'y\r' }] } }),
+    session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' } }),
+    session({ id: 'c', crew: { runId: 'r1', crewId: 'c', member: 'c' } }),
+    session({ id: 'd', status: 'exited' }),
+  ])
+  const shared = [{ id: 'j1' }]
+
+  it('lists the rows a key can land on, in order, a run header among them, and nothing from a folded section', () => {
+    const rows = focusRows(m, shared, { ...DEFAULT_FOLDS, exited: false })
+    expect(rows.map((r) => r.id)).toEqual(['s:a', 'r:r1', 's:b', 's:c', 'j:j1', 's:d'])
+    expect(rows[0]).toEqual({ id: 's:a', kind: 'session', sessionId: 'a', runId: undefined, options: 1 })
+    expect(rows[2]).toEqual({ id: 's:b', kind: 'session', sessionId: 'b', runId: 'r1', options: 0 })
+    expect(focusRows(m, shared, DEFAULT_FOLDS).map((r) => r.id)).toEqual(['s:a', 'r:r1', 's:b', 's:c', 'j:j1'])
+    expect(focusRows(m, shared, { needs: true, running: true, shared: true, exited: true })).toEqual([])
+  })
+
+  it('moves between rows, clamped at the ends, and enters the list at the first or the last', () => {
+    const rows = focusRows(m, shared, DEFAULT_FOLDS)
+    expect(moveFocus(rows, null, 1)).toBe('s:a')
+    expect(moveFocus(rows, null, -1)).toBe('j:j1')
+    expect(moveFocus(rows, 's:a', 1)).toBe('r:r1')
+    expect(moveFocus(rows, 'r:r1', -1)).toBe('s:a')
+    expect(moveFocus(rows, 's:a', -1)).toBe('s:a')
+    expect(moveFocus(rows, 'j:j1', 1)).toBe('j:j1')
+    expect(moveFocus(rows, 'gone', 1)).toBe('s:a')
+    expect(moveFocus([], 's:a', 1)).toBeNull()
+  })
+})
+
 describe('railGroups', () => {
-  it('keeps the sidebar order and puts the members of a run together under its name', () => {
+  it('keeps the list order: loose sessions as one group a section, every run as one group under its title', () => {
     const list = [
       session({ id: 'a', name: 'alone', createdAt: '2026-10-01T09:05:00Z' }),
       session({ id: 'b', name: 'core', crew: { runId: 'r1', crewId: 'api-sweep', member: 'core' }, createdAt: '2026-10-01T09:04:00Z' }),
       session({ id: 'c', name: 'waits', attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z', message: 'Allow?' } }),
       session({ id: 'd', name: 'lead', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, createdAt: '2026-10-01T09:03:00Z' }),
       session({ id: 'e', name: 'other', crew: { runId: 'r2', crewId: 'docs', member: 'w' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
+      session({ id: 'h', name: 'laptop one', kind: 'hosted', hostName: 'laptop', status: 'starting' }),
     ]
-    const groups = railGroups(list, { r1: 'API sweep' })
-    expect(groups.map((g) => [g.label, g.items.map((i) => `${i.id}:${i.dot}`)])).toEqual([
-      [undefined, ['c:needs']],
-      [undefined, ['a:running']],
-      ['API sweep', ['b:running', 'd:running']],
-      ['docs', ['e:exited']],
+    const groups = railGroups(sidebarModel(list, (id) => (id === 'r1' ? run({ members: [member('lead'), member('core')] }) : undefined)))
+    expect(groups.map((g) => [g.key, g.label, g.items.map((i) => `${i.id}:${i.dot}`)])).toEqual([
+      ['needs:', undefined, ['c:needs']],
+      ['running:', undefined, ['a:running', 'h:idle']],
+      ['running:r1', 'API sweep', ['d:running', 'b:running']],
+      ['exited:r2', 'docs', ['e:exited']],
     ])
     expect(groups[0]!.items[0]!.message).toBe('Allow?')
-  })
-
-  it('gives every group its own key, a run in two sections included', () => {
-    const list = [
-      session({ id: 'a', crew: { runId: 'r1', crewId: 'c', member: 'a' }, attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z' } }),
-      session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' } }),
-      session({ id: 'c', crew: { runId: 'r1', crewId: 'c', member: 'c' }, status: 'exited' }),
-      session({ id: 'd' }),
-    ]
-    const keys = railGroups(list).map((g) => g.key)
-    expect(keys).toEqual(['needs:r1', 'running:', 'running:r1', 'exited:r1'])
-    expect(new Set(keys).size).toBe(keys.length)
-  })
-
-  it('shows a starting session with the idle dot', () => {
-    expect(railGroups([session({ status: 'starting' })])[0]!.items[0]!.dot).toBe('idle')
-  })
-})
-
-describe('sidebarGroups', () => {
-  it('puts the sessions of no run first in each section, then one group per run under its name', () => {
-    const list = [
-      session({ id: 'a', name: 'alone', createdAt: '2026-10-01T09:05:00Z' }),
-      session({ id: 'b', crew: { runId: 'r1', crewId: 'api-sweep', member: 'core' }, createdAt: '2026-10-01T09:04:00Z' }),
-      session({ id: 'c', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z' } }),
-      session({ id: 'd', crew: { runId: 'r2', crewId: 'docs', member: 'w' }, createdAt: '2026-10-01T09:03:00Z' }),
-      session({ id: 'e', crew: { runId: 'r1', crewId: 'api-sweep', member: 'tests' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
-    ]
-    const g = sidebarGroups(list, { r1: 'API sweep' })
-    const shape = (k: 'needs' | 'running' | 'exited') => g[k].map((x) => [x.key, x.label, x.sessions.map((s) => s.id)])
-    expect(shape('needs')).toEqual([['needs:r1', 'API sweep', ['c']]])
-    expect(shape('running')).toEqual([
-      ['running:', undefined, ['a']],
-      ['running:r1', 'API sweep', ['b']],
-      ['running:r2', 'docs', ['d']],
-    ])
-    expect(shape('exited')).toEqual([['exited:r1', 'API sweep', ['e']]])
-  })
-
-  it('puts the sessions other machines host here last in each section, one group per machine', () => {
-    const list = [
-      session({ id: 'a', name: 'mine', createdAt: '2026-10-01T09:05:00Z' }),
-      session({ id: 'h1', kind: 'hosted', hostName: 'laptop', createdAt: '2026-10-01T09:04:00Z' }),
-      session({ id: 'h2', kind: 'hosted', hostName: '', createdAt: '2026-10-01T09:03:00Z' }),
-      session({ id: 'h3', kind: 'hosted', hostName: 'laptop', attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z' } }),
-      session({ id: 'b', crew: { runId: 'r1', crewId: 'api', member: 'core' }, createdAt: '2026-10-01T09:02:00Z' }),
-    ]
-    const g = sidebarGroups(list, { r1: 'API' })
-    const shape = (k: 'needs' | 'running' | 'exited') => g[k].map((x) => [x.key, x.host, x.label, x.sessions.map((s) => s.id)])
-    expect(shape('needs')).toEqual([['needs:host:laptop', 'laptop', 'laptop', ['h3']]])
-    expect(shape('running')).toEqual([
-      ['running:', undefined, undefined, ['a']],
-      ['running:r1', undefined, 'API', ['b']],
-      ['running:host:laptop', 'laptop', 'laptop', ['h1']],
-      ['running:host:', '', 'unnamed host', ['h2']],
-    ])
-    expect(railGroups(list, { r1: 'API' }).map((r) => r.host)).toEqual(['laptop', undefined, undefined, 'laptop', ''])
-  })
-
-  it('has empty sections for no sessions', () => {
-    expect(sidebarGroups([])).toEqual({ needs: [], running: [], exited: [] })
+    expect(new Set(groups.map((g) => g.key)).size).toBe(groups.length)
   })
 })
