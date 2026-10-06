@@ -772,6 +772,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   by name. Unread is the browser's own count, in memory for now; the
   sidebar's pills come with C4. A per-connection bucket of 10 a second,
   burst 20, is new: viewer connections had no message bound before.
+- **Chat on a phone and on a guest's page** (2c, 2d, C2). No server
+  change. Where the inspector is not rendered (below `xl`) the session
+  page's header gets a Chat button with the unread count that opens the
+  chat as a sheet: `UDrawer` from the bottom on a phone (snap points two
+  thirds and full, no overlay, not modal, so the terminal stays live and
+  usable behind it), `USlideover` from the right in between. The join page
+  wires the same thread over the guest's own connection (so a switchyard
+  guest has it too): a panel beside the terminal at `md` and up, which the
+  header's button folds away, the sheet below; a view-only guest reads the
+  2d note and sees no agent actions. A thread counts as open only while it
+  is in front of the person (`useMedia` says whether the inspector is
+  rendered), so a phone counts what the hidden inspector's tab would have
+  swallowed. Nothing in a hello or welcome changed.
 
 ### Verified (round 11)
 
@@ -817,6 +830,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   run page the block is marked. By hand on the installed app: pending.
 - C1 rendered headless at 1440 against 2a (dark and light, the hover
   action) and 2b (the closed tab's count). By hand: pending.
+- C2 rendered headless at 390 against 2c (the header's count, the sheet
+  open over the terminal, dark and light) and at 1440 against 2d (the bare
+  guest page with the panel and the note). By hand on a phone (the keyboard
+  pushing the composer up, the drag to full height): pending.
 
 ## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
 

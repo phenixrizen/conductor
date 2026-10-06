@@ -6,15 +6,17 @@ import { canSendToAgent } from '~/utils/chat'
 /**
  * The chat beside a terminal (design 2a, 2d, 2h): who is here, the thread,
  * the composer; empty, offline and ended states. `note` is the line a
- * view-only guest reads above the composer.
+ * view-only guest reads above the composer; `bare` drops the header row for
+ * a sheet that has its own (design 2c).
  */
-const props = withDefaults(defineProps<{ thread: ChatThread; role: Role; ended?: boolean; offline?: boolean; viewers?: ViewerInfo[]; note?: string; scope?: 'session' | 'run'; phone?: boolean }>(), {
+const props = withDefaults(defineProps<{ thread: ChatThread; role: Role; ended?: boolean; offline?: boolean; viewers?: ViewerInfo[]; note?: string; scope?: 'session' | 'run'; phone?: boolean; bare?: boolean }>(), {
   ended: false,
   offline: false,
   viewers: () => [],
   note: '',
   scope: 'session',
   phone: false,
+  bare: false,
 })
 const emit = defineEmits<{ send: [text: string, toAgent: boolean]; sendToAgent: [ref: string]; retry: [nonce: string] }>()
 
@@ -26,9 +28,9 @@ const empty = computed(() => props.thread.messages.every((m) => m.kind === 'syst
 
 <template>
   <div class="flex h-full min-h-0 flex-col" data-chat :data-chat-scope="scope">
-    <div class="flex items-center gap-2 border-b border-default px-4 py-2.5 text-xs text-muted">
+    <div v-if="!bare" class="flex items-center gap-2 border-b border-default px-4 py-2.5 text-xs text-muted">
       <ViewerAvatars :viewers="viewers" :max="3" />
-      <span class="truncate"><template v-if="here">{{ here }} here · </template>{{ words }}</span>
+      <span class="min-w-0 leading-snug"><template v-if="here">{{ here }} here · </template>{{ words }}</span>
     </div>
     <p v-if="offline && !ended" class="flex items-center gap-2 border-b border-default bg-elevated/60 px-4 py-2 text-xs text-muted" data-chat-offline-banner><UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Offline. Reconnecting…</p>
     <p v-if="empty && !ended" class="px-4 pt-6 text-center text-sm text-muted" data-chat-empty>Nobody has said anything.<br />Everyone on this link sees this chat.</p>

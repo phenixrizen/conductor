@@ -3,10 +3,11 @@ import { join } from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
-// Chat beside the terminal (design 2a, 2b, 2h): the people on a session talk
-// over the terminal's own connection; a controller can have a message typed
-// into the agent; the tab counts what arrived while it was closed; an ended
-// session's chat is read-only.
+// Chat beside the terminal (design 2a, 2b, 2c, 2d, 2h): the people on a
+// session talk over the terminal's own connection; a controller can have a
+// message typed into the agent; the tab counts what arrived while it was
+// closed; a guest on a link gets the same chat on the bare join page; on a
+// phone it is a sheet over the terminal; an ended session's chat is read-only.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -97,7 +98,7 @@ test('two people on one session see each other, the closed tab counts, and a lin
   await expect.poll(() => transcript(state.home, info), { timeout: 20_000 }).toContain('line one line two')
 })
 
-test('a view link can talk and cannot reach the agent; the chat ends with the session', async ({ page, api, browser }) => {
+test('a view link can talk beside the terminal and cannot reach the agent; the chat ends with the session', async ({ page, api, browser }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'chat ends' })
   sessions.push(s.id)
   await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
@@ -113,15 +114,100 @@ test('a view link can talk and cannot reach the agent; the chat ends with the se
   await expect(guest.locator('[data-join-frame]')).toHaveAttribute('data-join-frame', 'bare')
   await guest.getByRole('button', { name: 'Join session' }).click()
   await expect(guest.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+  // The bare page has the chat beside the terminal (design 2d): the view-only note, nothing that reaches the agent.
+  const guestChat = guest.locator('[data-chat-aside] [data-chat]')
+  await expect(guestChat).toBeVisible({ timeout: 15_000 })
+  await expect(guestChat.locator('[data-chat-note]')).toHaveText('You are view only: what you write reaches the people here, not the agent.')
+  await expect(guestChat.locator('[data-chat-to-agent]')).toHaveCount(0)
+  await expect(guest.locator('[data-chat-button]')).toBeVisible()
   // The guest's join and words reach Nate's chat; her row carries the view tag.
   await expect(nateChat.locator('[data-chat-system]').last()).toContainText('Priya joined · view', { timeout: 15_000 })
   await nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first().fill('welcome, Priya')
   await page.keyboard.press('Enter')
   await expect(nateChat.locator('[data-chat-kind="message"]').first()).toContainText('welcome, Priya')
+  const toPriya = guestChat.locator('[data-chat-kind="message"]').first()
+  await expect(toPriya).toContainText('welcome, Priya', { timeout: 15_000 })
+  await toPriya.hover()
+  await expect(guestChat.locator('[data-chat-send-to-agent]')).toHaveCount(0)
+  await guestChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first().fill('hi from the link')
+  await guest.keyboard.press('Enter')
+  const fromPriya = nateChat.locator('[data-chat-kind="message"]').nth(1)
+  await expect(fromPriya).toContainText('hi from the link', { timeout: 15_000 })
+  await expect(fromPriya.locator('[data-chat-view-tag]')).toBeVisible()
+  // The panel folds away behind the header's button and comes back.
+  await guest.locator('[data-chat-button]').click()
+  await expect(guest.locator('[data-chat-aside]')).toHaveCount(0)
+  await guest.locator('[data-chat-button]').click()
+  await expect(guestChat).toBeVisible()
 
-  // Stopped, the session's chat is read-only.
+  // Stopped, the session's chat is read-only, for the guest too.
   await api.stopSession(s.id)
   await expect(nateChat.locator('[data-chat-ended]')).toBeVisible({ timeout: 15_000 })
   await expect(nateChat.locator('[data-chat-composer]')).toHaveCount(0)
+  await expect(guestChat.locator('[data-chat-ended]')).toBeVisible({ timeout: 15_000 })
   await guestCtx.close()
+})
+
+test('on a phone the header button carries the count and the chat opens as a sheet over the live terminal', async ({ page, api, state, browser }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'chat phone' })
+  sessions.push(s.id)
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  await page.goto(`/sessions/${s.id}`)
+  await page.locator('[data-inspector] [data-chat-tab]').click()
+  const nateChat = page.locator('[data-chat]')
+  const nateInput = nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()
+  // Priya, on her phone (design 2c): no inspector, the Chat button in the header.
+  const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true })
+  const priya = await personPage(phoneCtx, state.token, 'Priya')
+  await priya.goto(`/sessions/${s.id}`)
+  const button = priya.locator('[data-chat-button]')
+  await expect(button).toBeVisible({ timeout: 15_000 })
+  await expect(priya.locator('[data-inspector]')).toBeHidden()
+  await expect(priya.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+
+  // A message while the sheet is closed raises the count, never a toast over the terminal.
+  await nateInput.fill('ping from the desk')
+  await page.keyboard.press('Enter')
+  await expect(button.locator('[data-chat-unread="1"]')).toBeVisible({ timeout: 15_000 })
+  await expect(priya.locator('[data-slot="viewport"] [data-slot="root"]')).toHaveCount(0)
+
+  // Tapping it opens the sheet with the thread and clears the count; Return sends; the terminal stays live behind it.
+  await button.tap()
+  const sheet = priya.locator('[data-chat-sheet]')
+  await expect(sheet).toBeVisible()
+  await expect(sheet.locator('[data-chat-kind="message"]').first()).toContainText('ping from the desk')
+  await expect(button.locator('[data-chat-unread]')).toHaveCount(0)
+  await expect(sheet.locator('[data-chat-composer]')).not.toContainText('Shift+Enter')
+  const sheetInput = sheet.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()
+  await sheetInput.fill('pong from the phone')
+  await priya.keyboard.press('Enter')
+  await expect(nateChat.locator('[data-chat-kind="message"]').nth(1)).toContainText('pong from the phone', { timeout: 15_000 })
+  await expect(priya.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open')
+  await expect(priya.locator('.xterm-screen').first()).toBeVisible()
+  // × closes it; what arrives then counts again.
+  await priya.locator('[data-chat-close]').tap()
+  await expect(sheet).toBeHidden()
+  await nateInput.fill('and again')
+  await page.keyboard.press('Enter')
+  await expect(button.locator('[data-chat-unread="1"]')).toBeVisible({ timeout: 15_000 })
+
+  // A guest on a phone gets the same button and sheet on the bare page, with the view-only note.
+  const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'view' })
+  const guestCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true })
+  await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Jane'))
+  const jane = await guestCtx.newPage()
+  await jane.goto(`/join/${token}`)
+  await expect(jane.locator('[data-join-frame]')).toHaveAttribute('data-join-frame', 'bare')
+  await jane.getByRole('button', { name: 'Join session' }).tap()
+  const janeButton = jane.locator('[data-chat-button]')
+  await expect(janeButton).toBeVisible({ timeout: 30_000 })
+  await expect(jane.locator('[data-chat-aside]')).toBeHidden()
+  await janeButton.tap()
+  const janeSheet = jane.locator('[data-chat-sheet]')
+  await expect(janeSheet).toBeVisible()
+  await expect(janeSheet.locator('[data-chat-note]')).toContainText('You are view only')
+  await expect(janeSheet.locator('[data-chat-to-agent]')).toHaveCount(0)
+  await expect(janeSheet.locator('[data-chat-kind="message"]')).toHaveCount(3)
+  await guestCtx.close()
+  await phoneCtx.close()
 })

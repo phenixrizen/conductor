@@ -123,3 +123,6 @@ export function canSendToAgent(role: Role, ended: boolean): boolean {
 export function chatNonce(n: number): string {
   return `c${Date.now().toString(36)}${n.toString(36)}`
 }
+
+/** The phone sheet's snap points (design 2c): two thirds of the window, then all of it. */
+export const SHEET_SNAPS: readonly number[] = [0.66, 1]
