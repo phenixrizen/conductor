@@ -181,6 +181,38 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		if err != nil {
 			s.sendInputError(sub, local, err)
 		}
+	case proto.CtlChat:
+		var m proto.ChatPost
+		if json.Unmarshal(payload, &m) != nil {
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat message"))
+			return true
+		}
+		msg, err := local.Chat(sub, m)
+		if err != nil {
+			local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
+			return true
+		}
+		if m.To == proto.ChatToAgent {
+			// Typed into the agent as a submit is, on the read loop, so what the client sends next comes after it.
+			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+			err := local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID})
+			cancel()
+			if err != nil {
+				local.Send(sub, session.ChatErrorFrame(err, msg.ID))
+			}
+		}
+	case proto.CtlChatSend:
+		var m proto.ChatSend
+		if json.Unmarshal(payload, &m) != nil {
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
+			return true
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+		err := local.ChatSend(ctx, sub, m)
+		cancel()
+		if err != nil {
+			local.Send(sub, session.ChatErrorFrame(err, m.Ref))
+		}
 	case proto.CtlHello:
 		// duplicate hello is harmless
 	default:

@@ -394,3 +394,73 @@ func TestASessionThatEndedTakesItsLinks(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// The people on a published session talk across the rendezvous: a viewer
+// relayed through it and a viewer at home see each other's messages, and a
+// controller there can have a message typed into the session at home.
+func TestChatCrossesTheRendezvous(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	var hosted session.Info
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && hosted.ID == "" {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" {
+				hosted = i
+			}
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hosted.ID == "" {
+		t.Fatal("the rendezvous never listed the session")
+	}
+	far := dialViewer(t, rendezvous, hosted.ID, adminToken)
+	far.expectControl(proto.CtlWelcome)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
+	far.send(relay)
+	for {
+		f, err := far.read()
+		if err != nil {
+			t.Fatalf("waiting for relay_ok: %v", err)
+		}
+		if f.Type == proto.TypeSignal {
+			var m map[string]any
+			json.Unmarshal(f.Payload, &m)
+			if m["t"] == proto.SigRelayOK {
+				break
+			}
+		}
+	}
+	far.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Priya"}))
+	if w := far.expectControl(proto.CtlWelcome); w["chat"] != true || w["transport"] != "relay" {
+		t.Fatalf("relay welcome %v", w)
+	}
+	far.expectControl(proto.CtlReady)
+	near := dialViewer(t, local, id, adminToken)
+	near.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	near.expectControl(proto.CtlReady)
+
+	near.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "from the office"}))
+	if m := far.expectChat(proto.ChatKindMessage); m["text"] != "from the office" || m["by"].(map[string]any)["name"] != "Nate" {
+		t.Fatalf("far got %v", m)
+	}
+	if own := near.expectChat(proto.ChatKindMessage); own["text"] != "from the office" {
+		t.Fatalf("near's own copy %v", own)
+	}
+	far.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "from afar", Nonce: "f1"}))
+	m := near.expectChat(proto.ChatKindMessage)
+	if m["text"] != "from afar" || m["by"].(map[string]any)["name"] != "Priya" || m["nonce"] != "f1" {
+		t.Fatalf("near got %v", m)
+	}
+	// Typed into the session at home from the rendezvous (its admin holds control there), and marked for everyone.
+	far.send(proto.MustControl(proto.ChatSend{T: proto.CtlChatSend, Ref: m["id"].(string)}))
+	near.expectOutput("from afar")
+	if marker := near.expectChat(proto.ChatKindSentToAgent); marker["ref"] != m["id"] {
+		t.Fatalf("marker at home %v", marker)
+	}
+	if marker := far.expectChat(proto.ChatKindSentToAgent); marker["ref"] != m["id"] {
+		t.Fatalf("marker afar %v", marker)
+	}
+}

@@ -8,6 +8,8 @@ import {
   encodeControl,
   encodeInput,
   parseJSON,
+  type ChatPost,
+  type ChatSend,
   type ControlMessage,
   type FileResponse,
   type TransportKind,
@@ -59,6 +61,16 @@ export abstract class BaseTransport implements TerminalTransport {
   submit(text: string): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'submit', text }))
+  }
+
+  chat(post: ChatPost): void {
+    if (this.state.value !== 'open') return
+    this.send(encodeControl({ ...post, t: 'chat' }))
+  }
+
+  chatSend(send: ChatSend): void {
+    if (this.state.value !== 'open') return
+    this.send(encodeControl({ ...send, t: 'chat_send' }))
   }
 
   resize(cols: number, rows: number): void {

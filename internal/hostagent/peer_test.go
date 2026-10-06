@@ -312,3 +312,55 @@ func mustJSON(v any) []byte {
 	}
 	return b
 }
+
+// A chat post over the data channel reaches the host's session and comes
+// back as a chat message; the host's welcome says chat is taken.
+func TestPeerCarriesChatOverTheDataChannel(t *testing.T) {
+	dir := t.TempDir()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	out := make(chan any, 64)
+	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a.sendHook = func(v any) { out <- v }
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	dc, frames := loopbackViewer(t, p, out)
+	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 100, Rows: 40, Name: "Nate"}))
+	control := func(want func(m map[string]any) bool) map[string]any {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case raw := <-frames:
+				f, err := proto.Decode(raw)
+				if err != nil || f.Type != proto.TypeControl {
+					continue
+				}
+				var m map[string]any
+				if json.Unmarshal(f.Payload, &m) == nil && want(m) {
+					return m
+				}
+			case <-deadline:
+				t.Fatal("no such control frame")
+			}
+		}
+	}
+	if w := control(func(m map[string]any) bool { return m["t"] == proto.CtlWelcome }); w["chat"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+	dc.Send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "over the channel", Nonce: "c1"}))
+	m := control(func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["kind"] == proto.ChatKindMessage })
+	if m["text"] != "over the channel" || m["nonce"] != "c1" || m["by"].(map[string]any)["name"] != "Nate" {
+		t.Fatalf("chat %v", m)
+	}
+	if h := local.ChatHistory(); len(h) == 0 || h[len(h)-1].Text != "over the channel" {
+		t.Fatalf("history %+v", h)
+	}
+}

@@ -60,6 +60,11 @@ type Options struct {
 	// the event bucket drops never reaches it; the attention entry of an
 	// attention change the session applied always does.
 	OnActivity func(sessionID string, e ActivityEntry, state AttentionState)
+	// OnChat is called (outside the session lock) with the session ID and a
+	// chat message as kept: a post, a join or leave line, a sent-to-agent
+	// marker. The same contract as OnActivity: it runs on the posting
+	// goroutine and must not block; calls can overlap.
+	OnChat func(sessionID string, m ChatMessage)
 	// Pattern, when set, is matched against the last line of the terminal
 	// after patternQuiet without output. A match marks the session needs_input
 	// (source "pattern", kind "prompt") unless it is that already. It is for
@@ -109,6 +114,7 @@ type Local struct {
 	lastOutput time.Time
 
 	activity       activityRing
+	chat           chatRing    // guarded by mu
 	events         EventBucket // guarded by mu
 	dropped        atomic.Uint64
 	scanner        Scanner
@@ -661,6 +667,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		ScrollbackBytes: s.ring.Cap(),
 		Transport:       transport,
 		FileView:        s.fileAllowed(role),
+		Chat:            true,
 	}))
 	snap := s.ring.Snapshot()
 	for len(snap) > 0 {
@@ -672,12 +679,22 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	for _, e := range s.activity.Tail(ActivityReplay) {
 		sub.send(proto.MustControl(EntryToProto(e)))
 	}
+	// The kept chat, after the activity replay and before the hub holds the
+	// viewer: a message posted meanwhile reaches it live, never twice.
+	for _, f := range chatReplayFrames(proto.ChatScopeSession, s.chat.snapshot()) {
+		sub.send(f)
+	}
 	s.hub.add(sub)
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
 		sub.send(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
+	joined, told := s.chatSystem(sub, "join")
+	sessionID := s.info.ID
 	s.mu.Unlock()
+	if told {
+		s.chatHook(sessionID, joined)
+	}
 	go func() {
 		<-sub.done
 		s.Detach(sub)
@@ -693,10 +710,17 @@ func (s *Local) Detach(sub *Subscription) {
 	_, present := s.hub.subs[sub.ID]
 	s.hub.remove(sub.ID)
 	sub.closeWith(nil)
+	var left ChatMessage
+	var told bool
 	if present {
 		s.hub.Broadcast(s.viewersFrame())
+		left, told = s.chatSystem(sub, "leave")
 	}
+	sessionID := s.info.ID
 	s.mu.Unlock()
+	if told {
+		s.chatHook(sessionID, left)
+	}
 	if present {
 		s.Record(ActivityEntry{Type: ActivityLeave, By: sub.ID, ByName: sub.Name})
 		s.notifyChange()

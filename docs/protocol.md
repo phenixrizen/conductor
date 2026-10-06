@@ -37,25 +37,30 @@ Client → owner:
 | `resize` | `cols, rows` | Controllers only; 1–500 |
 | `ping` | `ts` | Answered with `pong` |
 | `file_get` | `reqId, path, stat?` | Answered with a FILE frame |
+| `chat` | `nonce?, scope?, text, on?, to?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that; `scope` is `session` when absent (`run` comes with run chats); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to: "agent"`, a controller's, also types the text into the agent as `chat_send` does. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended` |
+| `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. `bad_frame` with `requestId: ref` for a message not kept or not a message |
 | `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile. The reply boxes use it; keys typed into the terminal stay INPUT |
 
 Owner → client:
 
 | `t` | Fields |
 |---|---|
-| `welcome` | `proto, sessionId, role, subscriberId, cols, rows, status, scrollbackBytes, transport, fileView` (+ `viewerId, iceServers, relayTimeoutMs` on the signaling welcome) |
+| `welcome` | `proto, sessionId, role, subscriberId, cols, rows, status, scrollbackBytes, transport, fileView, chat` (+ `viewerId, iceServers, relayTimeoutMs` on the signaling welcome); `chat: true` says the owner takes `chat` and `chat_send` |
 | `ready` | end of scrollback; live output follows |
 | `resize` | `cols, rows, by` (subscriber that resized) |
 | `status` | `status, exitCode?` |
 | `attention` | `state, message?, source?, kind?, options?[{label, input}]` (see Attention) |
 | `activity` | `at, type, by?, byName?, message?, url?, to?, tool?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type. `link` is the share link's label. |
-| `error` | `code, message` |
+| `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce) or send (its ref) the error answers |
 | `pong` | `ts` |
+| `chat` | `id, at, scope, kind, by{id, name, role}, text?, ref?, to?, on?, event?, nonce?` — one message of the chat (see Chat), live: `kind` `message` with `text`; `system` with `event` `join` or `leave` about `by`; `sent_to_agent` with `ref` (the message typed) and `to` (a run's member, else the session's agent). `by` is the sender's subscription as the roster lists it; `nonce` the sender's own id, echoed |
+| `chat_history` | `scope, messages[], more?` — the kept chat replayed to a new viewer right after the activity replay, oldest first, in frames of at most 8 KiB; `more` on every frame but the last |
 
 Error codes: `read_only`, `slow_consumer`, `bad_frame`, `hello_timeout`,
 `revoked`, `session_ended`, `host_disconnected`, `file_denied`,
-`too_many_requests`.
+`too_many_requests`, `not_sent` (a run chat's `chat_send` whose member could
+not take the text; the message says why).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
 error, `4401` unauthorized, `4403` link revoked, `4404` unknown session, `4409`
@@ -73,6 +78,25 @@ attributes, focus in and out, colour replies; at most 256 bytes, nothing else
 in the frame) are written to the process like any INPUT but do not answer the
 prompt the session waits on. When a session's process ends, its attention is
 cleared in the same change that sets `exited` or `stopped`.
+
+## Chat
+
+The people on a session talk to each other beside the terminal, over the
+connection the terminal takes, so the chat exists wherever a share link
+works: on a server session, on a `conductor host` session (the host keeps
+it), and on a session published through a switchyard (the switchyard relays
+the frames and never reads them). Every viewer may post, whatever its role;
+a controller may also have a message typed into the agent, which leaves a
+`sent_to_agent` marker in the chat. The owner keeps the last 200 messages
+of a session, join and leave lines and markers among them (a person on two
+tabs joins and leaves once), replays them to a new viewer as
+`chat_history` (the newest that fit 128 KiB), and sends each new one to
+every viewer as `chat`. A message's text is at most 2048 bytes after
+cleaning; chat frames are encoded without HTML escaping, so a message of
+the bound always fits a control frame. Each connection may post 10 a second
+with a burst of 20. A session's chat ends with the session: an ended
+session takes no post. Chat lines are not activity entries and reach no
+hook or webhook; what is unread is the browser's own count.
 
 ## Hosted sessions: signaling and relay
 
@@ -99,7 +123,7 @@ that many KiB a second (a burst of twice it): the host is slowed by its own
 connection, and every frame still arrives whole and in order. After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
-View-role INPUT, `resize` and `submit` are dropped by the server before they reach the host (`read_only`).
+View-role INPUT, `resize`, `submit` and `chat_send` are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent.
 
 ## Host control connection
 
