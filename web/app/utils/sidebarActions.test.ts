@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { HOST_AWAY, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
+import { HOST_AWAY, accountItems, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
 
 const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, stop: () => {}, forget: () => {} }
 const shape = (groups: ReturnType<typeof rowMenuItems>) => groups.map((g) => g.map((i) => `${i.label}${i.kbds ? ` [${i.kbds.join('+')}]` : ''}${i.disabled ? ' (off)' : ''}${i.color ? ` ${i.color}` : ''}`))
@@ -61,5 +61,19 @@ describe('rowPrompt', () => {
     expect(p?.placeholder).toBe(HOST_AWAY)
     expect(p?.choices).toEqual(options)
     expect(rowPrompt({ session: session('running') })).toBeNull()
+  })
+})
+
+describe('accountItems', () => {
+  const on = { name: () => {}, shortcuts: () => {}, theme: () => {}, token: () => {}, forget: () => {} }
+  it('lists your name, the shortcuts, the theme and the token; Forget token only with one', () => {
+    expect(shape(accountItems(true, on))).toEqual([['Your name…'], ['Keyboard shortcuts [?]', 'Toggle theme'], ['Workbench token…', 'Forget token error']])
+    expect(shape(accountItems(false, on))).toEqual([['Your name…'], ['Keyboard shortcuts [?]', 'Toggle theme'], ['Set workbench token…']])
+  })
+  it('wires every item to its handler', () => {
+    const calls: string[] = []
+    const h = Object.fromEntries(Object.keys(on).map((k) => [k, () => void calls.push(k)])) as unknown as typeof on
+    for (const g of accountItems(true, h)) for (const i of g) i.onSelect?.(new Event('select'))
+    expect(calls).toEqual(['name', 'shortcuts', 'theme', 'token', 'forget'])
   })
 })

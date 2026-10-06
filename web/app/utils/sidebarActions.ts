@@ -78,3 +78,25 @@ export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPromp
   const away = row.session.status === 'host_disconnected'
   return { message: row.prompt.message, choices: row.prompt.options, away, placeholder: away ? HOST_AWAY : 'Reply…' }
 }
+
+/** What the account menu beside the sidebar's name offers (design 3b): your name, the shortcuts, the theme, the workbench token. */
+export interface AccountHandlers {
+  name: () => void
+  shortcuts: () => void
+  theme: () => void
+  token: () => void
+  forget: () => void
+}
+
+export function accountItems(hasToken: boolean, on: AccountHandlers): DropdownMenuItem[][] {
+  const token: DropdownMenuItem[] = [{ label: hasToken ? 'Workbench token…' : 'Set workbench token…', icon: hasToken ? 'i-lucide-key-round' : 'i-lucide-lock', onSelect: on.token }]
+  if (hasToken) token.push({ label: 'Forget token', icon: 'i-lucide-log-out', color: 'error', onSelect: on.forget })
+  return [
+    [{ label: 'Your name…', icon: 'i-lucide-user-round', onSelect: on.name }],
+    [
+      { label: 'Keyboard shortcuts', icon: 'i-lucide-keyboard', kbds: ['?'], onSelect: on.shortcuts },
+      { label: 'Toggle theme', icon: 'i-lucide-sun-moon', onSelect: on.theme },
+    ],
+    token,
+  ]
+}

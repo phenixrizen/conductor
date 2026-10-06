@@ -330,8 +330,11 @@ and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
 the rail). On a phone the sidebar is a drawer. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
-have a select focused. Press **?** (or use **Shortcuts** in the sidebar) for
-the list of shortcuts on the current screen. The list itself takes keys once
+have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,
+behind your initials beside the sidebar's name, with **Your name…**, **Toggle
+theme**, **Workbench token…** and **Forget token**; **Alerts** sits beside it,
+so the foot holds only the pages) for the list of shortcuts on the current
+screen. The list itself takes keys once
 a row has the focus (**↓** from the filter puts the first there; a click or
 Tab, any): **↑ ↓** or **J K** move, **Enter** opens the session or the run
 from its header, **1**–**9** answer the focused row's prompt as on its page,

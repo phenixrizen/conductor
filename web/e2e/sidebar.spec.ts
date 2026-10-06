@@ -9,7 +9,8 @@ import { serverBinary, stubPath } from './server'
 // what needs you, a run kept whole where its most urgent member is, a machine
 // as a tag on the row, Shared with you below your own, Exited folded to one
 // line, every section folding from its header and remembered; the actions on
-// a row; a prompt answered in the row; the keys on a focused row.
+// a row; a prompt answered in the row; the keys on a focused row; alerts and
+// your menu beside the name, the foot holding only the pages.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -329,4 +330,23 @@ test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a d
   await member.locator('a[href]').first().focus()
   await page.keyboard.press('r')
   await expect(page).toHaveURL(new RegExp(`/runs/${runId}$`))
+})
+
+test('alerts and your menu sit beside the name; the foot holds only the pages', async ({ page }) => {
+  await page.goto('/crews')
+  await expect(page.locator('[data-sidebar-tools]')).toHaveCount(0)
+  await page.locator('[data-header-alerts]').click()
+  await expect(page.getByText('Browser notification')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.locator('[data-header-account]').click()
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await page.getByRole('menuitem', { name: /Your name/ }).click()
+  const dialog = page.locator('[data-name-dialog]')
+  await dialog.getByRole('textbox', { name: 'Your name' }).fill('Nate R')
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.locator('[data-header-account]')).toHaveAttribute('aria-label', 'Your menu, Nate R')
+  // The foot: the pages, nothing else.
+  const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
+  await expect(foot.getByRole('link')).toHaveText([/Yard/, /Roundhouse/, /Agents/, /Crews/, /Events/])
 })

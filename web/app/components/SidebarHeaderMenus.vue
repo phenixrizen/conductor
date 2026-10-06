@@ -1,0 +1,80 @@
+<script setup lang="ts">
+import { initials } from '~/utils/sessions'
+import { accountItems } from '~/utils/sidebarActions'
+
+/**
+ * Beside the name in the sidebar's header (design 3b): Alerts, and your menu
+ * behind your initials (an amber chip while no workbench token is set):
+ * Your name…, Keyboard shortcuts, Toggle theme, Workbench token…, Forget
+ * token. The foot then holds only the pages. On the rail the same two stack
+ * in the foot, their tooltips and menus to the right.
+ */
+const props = withDefaults(defineProps<{ collapsed?: boolean }>(), { collapsed: false })
+/** Asks the layout for its workbench token dialog. */
+const emit = defineEmits<{ token: [] }>()
+
+const alerts = useAttentionSettings()
+const identity = useIdentity()
+const { hasToken, clear } = useWorkbenchToken()
+const shortcuts = useShortcutsModal()
+const colorMode = useColorMode()
+
+const nameOpen = ref(false)
+const nameDraft = ref('')
+function openName() {
+  nameDraft.value = identity.name.value
+  nameOpen.value = true
+}
+function saveName() {
+  identity.set(nameDraft.value)
+  nameOpen.value = false
+}
+function toggleTheme() {
+  colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
+}
+const items = computed(() => accountItems(hasToken.value, { name: openName, shortcuts: () => shortcuts.show(), theme: toggleTheme, token: () => emit('token'), forget: () => clear() }))
+const side = computed(() => (props.collapsed ? { side: 'right' as const } : undefined))
+const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.value}` : 'Your menu'))
+</script>
+
+<template>
+  <div class="flex items-center gap-0.5" :class="collapsed && 'flex-col'" data-sidebar-menus>
+    <UPopover :content="side">
+      <UTooltip text="Alerts" :content="side">
+        <UButton :icon="alerts.settings.value.notifications ? 'i-lucide-bell-ring' : 'i-lucide-bell'" color="neutral" variant="ghost" :size="collapsed ? 'sm' : 'xs'" aria-label="Alerts" data-header-alerts />
+      </UTooltip>
+      <template #content>
+        <div class="flex w-64 flex-col gap-3 p-3">
+          <p class="text-xs text-muted">When a session needs input, and for events routed to Browser on the Events page:</p>
+          <USwitch
+            :model-value="alerts.settings.value.notifications"
+            label="Browser notification"
+            :description="alerts.permission.value === 'denied' ? 'Blocked by the browser' : undefined"
+            :disabled="alerts.permission.value === 'denied' || alerts.permission.value === 'unsupported'"
+            @update:model-value="alerts.setNotifications"
+          />
+          <USwitch :model-value="alerts.settings.value.chime" label="Chime" @update:model-value="alerts.setChime" />
+          <p class="text-xs text-muted">The tab title and favicon always show the count.</p>
+        </div>
+      </template>
+    </UPopover>
+    <UDropdownMenu :items="items" :content="collapsed ? { side: 'right' } : { align: 'end' }">
+      <UTooltip :text="identity.name.value ? `You are ${identity.name.value}` : 'Your menu'" :content="side">
+        <UButton color="neutral" variant="ghost" :size="collapsed ? 'sm' : 'xs'" :aria-label="who" data-header-account>
+          <UChip :show="!hasToken" color="warning" inset>
+            <span v-if="identity.name.value" class="grid size-5 place-items-center rounded-full bg-elevated text-[10px] font-semibold text-highlighted">{{ initials(identity.name.value) }}</span>
+            <UIcon v-else name="i-lucide-user-round" class="size-4" />
+          </UChip>
+        </UButton>
+      </UTooltip>
+    </UDropdownMenu>
+    <UModal v-model:open="nameOpen" title="Your name" description="Shown to others on a session. Defaults to the server's user; a label, not a login.">
+      <template #body>
+        <form class="flex flex-col gap-3" data-name-dialog @submit.prevent="saveName">
+          <UInput v-model="nameDraft" placeholder="Your name" aria-label="Your name" maxlength="40" autofocus />
+          <UButton type="submit" label="Save" class="self-end" />
+        </form>
+      </template>
+    </UModal>
+  </div>
+</template>

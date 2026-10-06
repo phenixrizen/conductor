@@ -716,9 +716,23 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   ("The sidebar") lists the keys after Everywhere in the shortcuts modal;
   the `/` row moved into it. Links stay tabbable in the usual way: no roving
   tabindex, Tab walks the rows.
+- **The header's menus and a foot of pages** (3b, S5): `SidebarHeaderMenus`
+  beside the name holds Alerts (the two switches of `useAttentionSettings`)
+  and your menu behind your initials, an amber chip while no workbench
+  token is set (`accountItems` in `utils/sidebarActions.ts`: Your name…,
+  Keyboard shortcuts, Toggle theme, Workbench token…, Forget token). The
+  foot holds the pages alone; the six-icon `[data-sidebar-tools]` row is
+  gone. On the rail the same two stack in the foot above the expand button.
+  Your name is a small dialog (`[data-name-dialog]`, its input still labelled
+  "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
 
 ### Verified (round 11)
 
+- S5: `sidebar.spec.ts` finds no `[data-sidebar-tools]`, opens Alerts from
+  the header, lists the account menu's five items, sets a name through the
+  dialog (the button then says whose menu it is), and reads the foot as the
+  five pages; `theme.spec.ts` toggles the theme from the menu; vitest covers
+  `accountItems`.
 - S4: `sidebar.spec.ts` drives the keys: `/` then ↓ focuses the first row,
   J K move, Escape leaves; with a page open on one asking session and the
   other's row focused, `1` answers the row's session alone (the transcripts
