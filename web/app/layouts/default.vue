@@ -74,6 +74,9 @@ onMounted(() => (sidebarDefaultSize.value = SIDEBAR_SIZE.default))
 // The share links joined from here: looked at again every minute, for the sidebar's Shared with you.
 const joined = useJoined()
 onMounted(() => joined.start())
+// The unread chat counts, as another tab changes them.
+const chatUnread = useChatUnread()
+onMounted(() => chatUnread.listen())
 
 // A notice the desktop app owes once (an upgrade that changed what sharing does): one toast with the way to Settings.
 onMounted(async () => {

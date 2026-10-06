@@ -242,6 +242,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// Its links at the switchyard follow its members (nothing for a run without any).
 		s.scheduleRunSync(runID)
 	}
+	// A run's chat reaches the browsers' unread counts the same way a session's does.
+	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {
+		s.events.chat("", runID, m)
+	}
 	if st != nil {
 		records, err := crew.NewRecords(st)
 		if err != nil {

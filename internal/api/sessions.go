@@ -251,6 +251,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Log:             s.log,
 		OnChange:        s.localChange,
 		OnActivity:      s.localActivity,
+		OnChat:          s.localChat,
 		RunChat:         req.runChat,
 		Pattern:         pattern,
 		TrustPattern:    trust,
@@ -283,6 +284,12 @@ func noYoloRecipe(agent catalog.Agent) string {
 // the event hub, and to the runs, whose waiting handoffs a member's change
 // may let go (a prompt cleared records no activity entry). The runs' hook
 // never waits.
+// localChat is the OnChat hook of a server session: its chat reaches the
+// browsers' unread counts over the events stream.
+func (s *Server) localChat(id string, m session.ChatMessage) {
+	s.events.chat(id, "", m)
+}
+
 func (s *Server) localChange(info session.Info) {
 	s.events.publish(info)
 	s.runs.OnChange(info)

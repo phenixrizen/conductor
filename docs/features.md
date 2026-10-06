@@ -810,6 +810,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   while the run is kept; a resumed run starts a new one. The `send` emit of
   the chat components now names where a message goes ('', `agent`, a
   member).
+- **Unread elsewhere** (2g, C4). The admin stream carries `chat` events
+  (`eventHub.chat`, from `Options.OnChat` and `Engine.OnRunChat`, as
+  droppable as `activity`, reaching no sink), so the browser counts the
+  chats it has no page on. `utils/chatUnread.ts` keeps the counts per
+  thread in `conductor.chat.unread` with the thread's last opening and the
+  last 64 message ids, so the same message from the connection and the
+  stream counts once, nothing older than the opening counts, a reload
+  recounts nothing seen, and another tab's writes are read back
+  (`storage`). `ChatUnreadPill` sits on every session row and run header
+  (neutral, never a status colour); the rail's bottom-right number is the
+  Events badge plus the unread chat, a capsule's its members' plus the run's
+  own, and the tooltip names both ("alone · running · done · 3 unread in
+  chat"). A hosted session's chat stays on the host until C5.
 
 ### Verified (round 11)
 
@@ -859,6 +872,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   open over the terminal, dark and light) and at 1440 against 2d (the bare
   guest page with the panel and the note). By hand on a phone (the keyboard
   pushing the composer up, the drag to full height): pending.
+- C4: Go tests for the `chat` event's shape and its reach (no sink) and
+  for the stream carrying a session's and a run's chat; vitest for the
+  store (counted once, never a system line or one's own, nothing older than
+  the opening, bounded ids, the read and write) and the rail's unread;
+  Playwright `chat.spec.ts` scenario 6 (two messages count on another
+  person's row and rail corner, survive a reload, clear on opening and stay
+  clear; a run's header counts the run's own chat).
 - C3: Go tests for the room (fan-out across members, the replay order, the
   roster, joins coalesced, quiet connections, sends with every refusal),
   the roster's bound (proto) and the run chat over WebSockets with a run

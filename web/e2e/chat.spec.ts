@@ -8,7 +8,8 @@ import { expect, test, type Session } from './fixtures'
 // a message typed into the agent; the tab counts what arrived while it was
 // closed; a guest on a link gets the same chat on the bare join page; on a
 // phone it is a sheet over the terminal; a crew run has one chat for everyone
-// on it, beside its tiles; an ended session's chat is read-only.
+// on it, beside its tiles; what is unread shows on the sidebar's rows, run
+// headers and rail; an ended session's chat is read-only.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -316,4 +317,70 @@ test('a run has one chat for everyone on it: beside the tiles, typed into a memb
   await expect(nateChat.locator('[data-chat-ended]')).toContainText('This run ended', { timeout: 20_000 })
   await expect.poll(async () => ((await api.run(runId)).chat ?? []).filter((m) => m.kind === 'message').length, { timeout: 15_000 }).toBe(4)
   await guestCtx.close()
+})
+
+test('unread elsewhere: the sidebar row, the rail and a run header count what others wrote, cleared on opening, kept across a reload', async ({ page, api, state, browser }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'chat elsewhere' })
+  sessions.push(s.id)
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  await page.goto(`/sessions/${s.id}`)
+  await page.locator('[data-inspector] [data-chat-tab]').click()
+  const nateChat = page.locator('[data-chat]')
+  const nateInput = nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()
+  // Priya is on another page: the sidebar counts what Nate writes.
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const priya = await personPage(ctx, state.token, 'Priya')
+  await priya.goto('/crews')
+  const row = priya.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toBeVisible({ timeout: 15_000 })
+  await nateInput.fill('first')
+  await page.keyboard.press('Enter')
+  await nateInput.fill('second')
+  await page.keyboard.press('Enter')
+  await expect(row.locator('[data-chat-unread="2"]')).toBeVisible({ timeout: 15_000 })
+  // Nate's own sidebar counts nothing of his own, nor while his thread is open.
+  await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"] [data-chat-unread]`)).toHaveCount(0)
+  // The rail's corner carries the same number; a reload keeps it.
+  await priya.locator('[data-sidebar-collapse]').click()
+  await expect(priya.locator(`[data-rail-session="${s.id}"] [data-rail-news="2"]`)).toBeVisible()
+  await priya.locator('[data-rail-expand]').click()
+  await priya.reload()
+  await expect(priya.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"] [data-chat-unread="2"]`)).toBeVisible({ timeout: 15_000 })
+  // Opening the thread clears it, for good.
+  await priya.goto(`/sessions/${s.id}`)
+  await priya.locator('[data-inspector] [data-chat-tab]').click()
+  await expect(priya.locator('[data-chat]').locator('[data-chat-kind="message"]')).toHaveCount(2)
+  await expect(priya.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"] [data-chat-unread]`)).toHaveCount(0)
+  await priya.goto('/crews')
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-chat-unread]')).toHaveCount(0)
+  await priya.reload()
+  await expect(priya.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()).toBeVisible({ timeout: 15_000 })
+  await expect(priya.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"] [data-chat-unread]`)).toHaveCount(0)
+  // A run's header counts the run's own chat.
+  const crew = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e unread crew',
+      goal: 'count',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [{ name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } }],
+    })
+  ).crew.id
+  const run = (await api.launchCrew(crew)).id
+  await expect.poll(async () => (await api.run(run)).members.find((m) => m.name === 'lead')?.status, { timeout: 30_000 }).toBe('running')
+  const header = priya.locator(`[data-session-list="sidebar"] [data-sidebar-run-block="${run}"] [data-sidebar-run-group]`)
+  await expect(header).toBeVisible({ timeout: 15_000 })
+  await page.goto(`/runs/${run}`)
+  await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: 15_000 })
+  await page.locator('[data-run-chat-button]').click()
+  await page.locator('[data-run-chat] [data-chat-input] textarea, [data-run-chat] textarea[data-chat-input]').first().fill('for the run')
+  await page.keyboard.press('Enter')
+  await expect(header.locator('[data-chat-unread="1"]')).toBeVisible({ timeout: 15_000 })
+  await expect(row.locator('[data-chat-unread]')).toHaveCount(0)
+  await api.stopRun(run)
+  await api.call('DELETE', `/api/crews/${encodeURIComponent(crew)}`)
+  await ctx.close()
 })
