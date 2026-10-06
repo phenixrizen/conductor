@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, Attention, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
+import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
@@ -28,6 +28,35 @@ const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 const tab = ref<InspectorTab>('people')
 const attention = ref<Attention>({ state: '' })
+
+// The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.
+const chatKey = computed(() => `session:${id.value}`)
+const chat = useChat(chatKey)
+const unread = useChatUnread()
+const chatUnread = computed(() => unread.count(chatKey.value))
+const chatOffline = computed(() => transport.value.state !== 'open')
+const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
+const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
+function onChat(m: ChatMessage) {
+  chat.accept(m, { live: true })
+}
+function onChatHistory(h: ChatHistory) {
+  chat.history(h)
+}
+function chatSend(text: string, toAgent: boolean) {
+  chat.send(text, toAgent ? { to: chat.toAgent } : {}, viaChat)
+}
+function chatSendToAgent(ref: string) {
+  if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+}
+function chatRetry(nonce: string) {
+  chat.retry(nonce, viaChat)
+}
+function onRequestError(err: { code: string; message: string; requestId: string }) {
+  if (chat.fail(err.requestId, err.message)) return
+  // A chat_send that failed names the message it would have typed.
+  toast.add({ title: 'Not sent to the agent', description: err.message, color: 'warning' })
+}
 
 const INSPECTOR_KEY = 'conductor.inspector'
 const inspector = ref(true)
@@ -94,7 +123,18 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+
+// The thread counts nothing while it is open in front of this person.
+watch(
+  [chatKey, inspector, tab],
+  ([key, shown, t]) => {
+    if (shown && t === 'chat') unread.openThread(key)
+    else unread.closeThread(key)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => unread.closeThread(chatKey.value))
 
 // "<name> is typing…": anyone else whose last input is under four seconds old.
 const now = ref(Date.now())
@@ -161,10 +201,12 @@ function onActivity(e: ActivityEntry) {
   activity.value = [...activity.value.slice(-199), e]
 }
 
-// Every (re)connection replays the last 50 entries, so start the log afresh.
+// Every (re)connection replays the last 50 entries and the kept chat, so start both afresh.
 function onWelcome(w: Welcome) {
   selfId.value = w.subscriberId ?? w.viewerId ?? ''
   activity.value = []
+  unread.registerSelf(selfId.value)
+  chat.welcome(!!w.chat, viaChat)
 }
 
 function createTransport() {
@@ -331,6 +373,10 @@ watch(id, () => {
               @viewers="onViewers"
               @activity="onActivity"
               @transport="transport = $event"
+              @closed="chat.offline()"
+              @chat="onChat"
+              @chat-history="onChatHistory"
+              @request-error="onRequestError"
               @open-file="openFile"
               @open-url="openUrl"
             />
@@ -350,8 +396,15 @@ watch(id, () => {
             :links="links"
             :request="requestFile"
             :raw-url="rawUrl"
+            :chat="chat.thread.value"
+            :chat-unread="chatUnread"
+            :chat-offline="chatOffline"
+            :ended="ended"
             @new-link="share = true"
             @revoke="revoke"
+            @chat-send="chatSend"
+            @chat-send-to-agent="chatSendToAgent"
+            @chat-retry="chatRetry"
           />
         </div>
       </div>

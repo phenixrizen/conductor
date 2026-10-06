@@ -233,6 +233,22 @@ error); the account key and the certificates live under `dataDir/tls`, mode
 `0600`. The certificate flow is tested against Let's Encrypt's Pebble in CI
 (`make test-pebble`).
 
+## Chat beside the terminal
+
+The inspector's **Chat** tab is for the people watching a session together:
+everyone on it, the owner and anyone who joined by a link, view or control.
+It goes over the terminal's own connection, so it works wherever a link
+works, on a `conductor host` session and through a switchyard too, and
+needs no account: people are the names they joined with. Plain text, up to
+2 KiB, links clickable; Enter sends, Shift+Enter is a new line. A
+controller's **To agent** sends the message and types it into the agent,
+and **Send to agent** on any message does the same later; the thread marks
+what went ("Sent to agent by Nate · 08:32:40"). The session keeps the last
+200 messages, joins and leaves among them, and replays them to whoever
+joins; the chat ends with the session. While the tab is closed it counts
+what others wrote. Chat lines are not events: they reach no hook, webhook
+or feed.
+
 ## Clickable links and file viewer
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or

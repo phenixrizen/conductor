@@ -757,6 +757,21 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   suppressed; Stop asks again in the row. `viewport-fit=cover` lets the bar's
   padding read the safe area, and the dashboard group leaves it room below
   lg. No swipe actions.
+- **Chat beside the terminal** (2a, 2b, 2h, C1). One chat per session,
+  over the connection the terminal takes (`chat`, `chat_send`,
+  `chat_history`; `welcome.chat` gates a client), so it works wherever a
+  link works and the switchyard never reads it. Every viewer may post; a
+  controller's "To agent" and "Send to agent" type a message into the
+  agent through `Submit` and leave a `sent_to_agent` marker. The session
+  keeps 200 (`session.chatRing`), replays the newest that fit 128 KiB, and
+  takes no post once ended. Chat lines are not activity entries: their own
+  ring, frames and hook (`Options.OnChat`), no bucket shared with hook
+  reports, no 500-byte cut, nothing in the run log or the webhooks. Chat
+  frames are encoded without HTML escaping (`proto.MustControlRaw`) so a
+  2 KiB message fits the 8 KiB control frame. Join and leave lines coalesce
+  by name. Unread is the browser's own count, in memory for now; the
+  sidebar's pills come with C4. A per-connection bucket of 10 a second,
+  burst 20, is new: viewer connections had no message bound before.
 
 ### Verified (round 11)
 
@@ -800,6 +815,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   loose sessions (one asking), a run of three (one asking, one exited), a
   hosted session with its machine, Exited folded "· 4" with squares; on a
   run page the block is marked. By hand on the installed app: pending.
+- C1 rendered headless at 1440 against 2a (dark and light, the hover
+  action) and 2b (the closed tab's count). By hand: pending.
 
 ## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
 

@@ -7,6 +7,7 @@
 package proto
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -78,6 +79,20 @@ func MustControl(v any) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// MustControlRaw encodes a control message without HTML escaping: `<`, `>`
+// and `&` stay one byte each instead of six (`<`), so a chat message of
+// MaxChatText bytes always fits MaxControl. Frames never land in HTML, and
+// JSON.parse reads both forms alike.
+func MustControlRaw(v any) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		panic(err)
+	}
+	return Encode(TypeControl, bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
 // Decode validates the frame type and payload size limit.

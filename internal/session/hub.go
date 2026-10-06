@@ -46,6 +46,8 @@ type Subscription struct {
 	reason error
 
 	inflight atomic.Int32 // file requests in progress
+
+	chat chatBucket // the connection's chat posts, bounded
 }
 
 func newSubscription(id string, role Role, linkID string, sink Sink) *Subscription {
@@ -142,6 +144,19 @@ type Hub struct {
 
 // NewHub creates an empty hub.
 func NewHub() *Hub { return &Hub{subs: map[string]*Subscription{}} }
+
+// namePresent reports whether a live subscription other than `except` carries
+// the name: the same person on another tab, for the chat's join and leave lines.
+func (h *Hub) namePresent(name, except string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for id, s := range h.subs {
+		if id != except && s.Name == name && s.Reason() == nil {
+			return true
+		}
+	}
+	return false
+}
 
 func (h *Hub) add(s *Subscription) {
 	h.mu.Lock()

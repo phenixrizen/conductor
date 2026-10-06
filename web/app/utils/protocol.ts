@@ -22,6 +22,63 @@ export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
 /** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
 export const MAX_SUBMIT = 4096
 
+/** A chat message's text, in bytes after cleaning (proto.MaxChatText); the composer counts from CHAT_COUNTER_FROM. */
+export const MAX_CHAT_TEXT = 2048
+export const CHAT_COUNTER_FROM = 1536
+/** One connection may post this many a second, this many at once (proto.ChatRatePerSecond, ChatBurst). */
+export const CHAT_RATE_PER_SECOND = 10
+export const CHAT_BURST = 20
+/** The `to` of a post that is also typed into this session's agent. */
+export const CHAT_TO_AGENT = 'agent'
+
+export type ChatScope = 'session' | 'run'
+export type ChatKind = 'message' | 'system' | 'sent_to_agent'
+/** Who a chat message is from: the viewer's subscription, as the roster names it. */
+export interface ChatBy {
+  id: string
+  name: string
+  role: Role
+}
+/** One message of a chat (`chat`, owner → client): a message, a join or leave line about `by`, or a marker that `by` typed `ref` into the agent (`to` names a run's member). */
+export interface ChatMessage {
+  t: 'chat'
+  id: string
+  at: string
+  scope: ChatScope
+  kind: ChatKind
+  by: ChatBy
+  text?: string
+  ref?: string
+  to?: string
+  on?: string
+  event?: 'join' | 'leave'
+  /** The sender's own id of the post, echoed. */
+  nonce?: string
+}
+/** A viewer's post (`chat`, client → owner). */
+export interface ChatPost {
+  t: 'chat'
+  nonce?: string
+  scope?: ChatScope
+  text: string
+  on?: string
+  to?: string
+}
+/** Types a kept message into the agent (`chat_send`, client → owner, controllers only). */
+export interface ChatSend {
+  t: 'chat_send'
+  ref: string
+  scope?: ChatScope
+  to?: string
+}
+/** The kept chat replayed to a new viewer, oldest first; `more` says another frame follows. */
+export interface ChatHistory {
+  t: 'chat_history'
+  scope: ChatScope
+  messages: ChatMessage[]
+  more?: boolean
+}
+
 export const CloseCode = {
   Normal: 1000,
   GoingAway: 1001,
@@ -106,6 +163,8 @@ export interface Welcome {
   scrollbackBytes: number
   transport: TransportKind
   fileView: boolean
+  /** The owner takes `chat` and `chat_send`; absent from an older owner, which must be sent neither. */
+  chat?: boolean
   iceServers?: ICEServer[]
   relayTimeoutMs?: number
   relayOnly?: boolean
@@ -119,8 +178,10 @@ export type ControlMessage =
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
   | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string }
-  | { t: 'error'; code: string; message: string }
+  | { t: 'error'; code: string; message: string; requestId?: string }
   | { t: 'pong'; ts: number }
+  | ChatMessage
+  | ChatHistory
 
 export interface FileEntry {
   name: string

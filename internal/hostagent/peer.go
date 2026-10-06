@@ -235,6 +235,40 @@ func (p *peer) handleFrame(f proto.Frame) {
 					p.a.local.Send(sub, proto.NewError(code, err.Error()))
 				}
 			}()
+		case proto.CtlChat:
+			var m proto.ChatPost
+			if json.Unmarshal(f.Payload, &m) != nil {
+				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat message"))
+				return
+			}
+			msg, err := p.a.local.Chat(sub, m)
+			if err != nil {
+				p.a.local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
+				return
+			}
+			if m.To == proto.ChatToAgent {
+				// Off the frame loop, as a submit is: the typing pauses before its Enter.
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := p.a.local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID}); err != nil {
+						p.a.local.Send(sub, session.ChatErrorFrame(err, msg.ID))
+					}
+				}()
+			}
+		case proto.CtlChatSend:
+			var m proto.ChatSend
+			if json.Unmarshal(f.Payload, &m) != nil {
+				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
+				return
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := p.a.local.ChatSend(ctx, sub, m); err != nil {
+					p.a.local.Send(sub, session.ChatErrorFrame(err, m.Ref))
+				}
+			}()
 		case proto.CtlFileGet:
 			var m proto.FileGet
 			if json.Unmarshal(f.Payload, &m) != nil {
