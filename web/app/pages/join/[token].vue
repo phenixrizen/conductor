@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { SPONSOR_NAME, SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
-import type { Attention, TransportKind } from '~/utils/protocol'
+import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileViewer.vue'
 import { parseLocation } from '~/utils/links'
@@ -38,13 +38,18 @@ const error = ref('')
 const joined = ref(false)
 const nameDraft = ref('')
 const viewers = ref(0)
+const viewerList = ref<ViewerInfo[]>([])
+function onViewers(info: { count: number; list?: ViewerInfo[] }) {
+  viewers.value = info.count
+  viewerList.value = info.list ?? []
+}
 const status = ref('')
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 const fileOpen = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 const pathInput = ref('')
-const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean } | null>(null)
+const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
@@ -79,6 +84,61 @@ function hearFocused(patch: { status?: string; attention?: string }) {
   const name = focus.value?.name
   if (!name) return
   tileState.value = { ...tileState.value, [name]: { ...tileState.value[name], ...patch } }
+}
+
+// The chat for whoever holds the link (design 2d): the session's own thread, over this page's connection, so it works through a
+// switchyard too. A panel beside the terminal where there is room, a sheet over it on a phone (2c). A view-only guest can talk
+// and never reaches the agent; the owner's welcome says whether chat exists at all.
+const chatKey = computed(() => `session:${current.value?.id ?? ''}`)
+const chat = useChat(chatKey)
+const unread = useChatUnread()
+const chatUnread = computed(() => unread.count(chatKey.value))
+const chatOffline = computed(() => transport.value.state !== 'open')
+const ended = computed(() => status.value === 'exited' || status.value === 'stopped')
+const chatNote = computed(() => (info.value?.role === 'control' ? '' : 'You are view only: what you write reaches the people here, not the agent.'))
+const wide = useMedia('(min-width: 48rem)')
+const chatPanel = ref(true)
+const chatSheet = ref(false)
+/** The thread is in front of the person: the panel beside the terminal where it shows, or the sheet. */
+const chatShown = computed(() => joined.value && !!current.value && ((wide.value && chatPanel.value) || chatSheet.value))
+function showChat() {
+  if (wide.value) chatPanel.value = !chatPanel.value
+  else chatSheet.value = true
+}
+watch(
+  [chatKey, chatShown],
+  ([key, shown]) => {
+    if (shown) unread.openThread(key)
+    else unread.closeThread(key)
+  },
+  { immediate: true },
+)
+watch(chatKey, (_, old) => old && unread.closeThread(old))
+onBeforeUnmount(() => unread.closeThread(chatKey.value))
+const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
+const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
+function onWelcome(w: Welcome) {
+  unread.registerSelf(w.subscriberId ?? w.viewerId ?? '')
+  chat.welcome(!!w.chat, viaChat)
+}
+function onChat(m: ChatMessage) {
+  chat.accept(m, { live: true })
+}
+function onChatHistory(h: ChatHistory) {
+  chat.history(h)
+}
+function chatSend(text: string, toAgent: boolean) {
+  chat.send(text, toAgent ? { to: chat.toAgent } : {}, viaChat)
+}
+function chatSendToAgent(ref: string) {
+  if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', color: 'warning' })
+}
+function chatRetry(nonce: string) {
+  chat.retry(nonce, viaChat)
+}
+function onRequestError(err: { code: string; message: string; requestId: string }) {
+  if (chat.fail(err.requestId, err.message)) return
+  toast.add({ title: 'Not sent to the agent', description: err.message, color: 'warning' })
 }
 
 useHead({ title: computed(() => (run.value ? `${run.value.name} (shared)` : info.value?.session ? `${info.value.session.name} (shared)` : 'Join session')) })
@@ -135,6 +195,7 @@ function leave() {
   attention.value = { state: '' }
   fileTarget.value = null
   previewUrl.value = null
+  chatSheet.value = false
   left.value = true
 }
 
@@ -300,32 +361,49 @@ function requestFile(path: string, stat?: boolean) {
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
       <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
+      <ViewerAvatars :viewers="viewerList" class="hidden lg:flex" />
       <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
         <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
       </form>
+      <!-- The chat (design 2c, 2d): the count while the thread is closed; the panel beside the terminal where there is room, a sheet below. -->
+      <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+        <span class="hidden sm:inline">Chat</span>
+        <ChatUnreadPill :count="chatUnread" />
+      </UButton>
       <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
     </header>
 
-    <main class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">
-      <div class="flex-1 min-h-0">
-        <TerminalView
-          :key="current.id"
-          ref="terminal"
-          :create-transport="createTransport"
-          :read-only="info.role !== 'control'"
-          @status="onStatus"
-          @attention="onAttention"
-          @viewers="viewers = $event.count"
-          @transport="transport = $event"
-          @open-file="openFile"
-          @open-url="openUrl"
-        />
+    <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
+      <div class="flex flex-1 min-w-0 flex-col gap-2">
+        <div class="flex-1 min-h-0">
+          <TerminalView
+            :key="current.id"
+            ref="terminal"
+            :create-transport="createTransport"
+            :read-only="info.role !== 'control'"
+            @welcome="onWelcome"
+            @status="onStatus"
+            @attention="onAttention"
+            @viewers="onViewers"
+            @transport="transport = $event"
+            @closed="chat.offline()"
+            @chat="onChat"
+            @chat-history="onChatHistory"
+            @request-error="onRequestError"
+            @open-file="openFile"
+            @open-url="openUrl"
+          />
+        </div>
+        <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
       </div>
-      <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
+      <aside v-if="chatPanel && chat.thread.value.capable" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
+        <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
+      </aside>
     </main>
 
     <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />
+    <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
   </template>
     </JoinFrame>
   </NuxtLayout>

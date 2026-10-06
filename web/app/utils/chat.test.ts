@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from './protocol'
-import { canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, systemLine } from './chat'
+import { SHEET_SNAPS, canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, systemLine } from './chat'
 
 const msg = (over: Partial<ChatMessage>): ChatMessage => ({ t: 'chat', id: 'a', at: '2026-10-06T08:32:40Z', scope: 'session', kind: 'message', by: { id: 'x', name: 'Nate', role: 'control' }, text: 'hi', ...over })
 
@@ -71,5 +71,9 @@ describe('chat lines', () => {
     expect(canSendToAgent('control', true)).toBe(false)
     expect(chatNonce(1)).toMatch(/^c[0-9a-z]+1$/)
     expect(chatNonce(1)).not.toBe(chatNonce(2))
+  })
+
+  it('opens the phone sheet to two thirds of the window, then all of it', () => {
+    expect(SHEET_SNAPS).toEqual([0.66, 1])
   })
 })

@@ -35,6 +35,19 @@ const chat = useChat(chatKey)
 const unread = useChatUnread()
 const chatUnread = computed(() => unread.count(chatKey.value))
 const chatOffline = computed(() => transport.value.state !== 'open')
+// Below xl the inspector is not rendered: the header's Chat button opens the chat as a sheet (design 2c).
+const xl = useMedia('(min-width: 80rem)')
+const chatSheet = ref(false)
+/** The thread is in front of the person: on the inspector's Chat tab where the inspector shows, or in the sheet. */
+const chatShown = computed(() => (xl.value && inspector.value && tab.value === 'chat') || chatSheet.value)
+function showChat() {
+  if (!xl.value) chatSheet.value = true
+  else if (inspector.value && tab.value === 'chat') inspector.value = false
+  else {
+    tab.value = 'chat'
+    inspector.value = true
+  }
+}
 const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
 const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
 function onChat(m: ChatMessage) {
@@ -127,13 +140,14 @@ const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: st
 
 // The thread counts nothing while it is open in front of this person.
 watch(
-  [chatKey, inspector, tab],
-  ([key, shown, t]) => {
-    if (shown && t === 'chat') unread.openThread(key)
+  [chatKey, chatShown],
+  ([key, shown]) => {
+    if (shown) unread.openThread(key)
     else unread.closeThread(key)
   },
   { immediate: true },
 )
+watch(chatKey, (_, old) => old && unread.closeThread(old))
 onBeforeUnmount(() => unread.closeThread(chatKey.value))
 
 // "<name> is typing…": anyone else whose last input is under four seconds old.
@@ -350,6 +364,11 @@ watch(id, () => {
           <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
           <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
           <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
+          <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
+          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+            <span class="hidden sm:inline">Chat</span>
+            <ChatUnreadPill :count="chatUnread" />
+          </UButton>
           <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
@@ -413,4 +432,5 @@ watch(id, () => {
   </UDashboardPanel>
 
   <ShareLinksModal v-model:open="share" :session-id="id" :session-name="session?.name" />
+  <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
 </template>

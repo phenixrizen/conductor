@@ -249,6 +249,14 @@ joins; the chat ends with the session. While the tab is closed it counts
 what others wrote. Chat lines are not events: they reach no hook, webhook
 or feed.
 
+Where the inspector has no room, the header's **Chat** button carries the
+count and opens the chat as a sheet: on a phone from the bottom, two thirds
+of the screen and dragging to full height, the terminal live behind it,
+Return sends. A guest on a link gets the same chat beside the terminal on
+their join page (the button folds it away), as a sheet on a phone; a
+view-only guest reads "You are view only: what you write reaches the people
+here, not the agent." and has no agent actions.
+
 ## Clickable links and file viewer
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
