@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from './protocol'
-import { SHEET_SNAPS, canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, systemLine } from './chat'
+import type { MemberStatus } from './crews'
+import { SHEET_SNAPS, canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
 
 const msg = (over: Partial<ChatMessage>): ChatMessage => ({ t: 'chat', id: 'a', at: '2026-10-06T08:32:40Z', scope: 'session', kind: 'message', by: { id: 'x', name: 'Nate', role: 'control' }, text: 'hi', ...over })
 
@@ -75,5 +76,26 @@ describe('chat lines', () => {
 
   it('opens the phone sheet to two thirds of the window, then all of it', () => {
     expect(SHEET_SNAPS).toEqual([0.66, 1])
+  })
+
+  it("offers a run chat's composer chat only, then each member, the ones that cannot take a line disabled with why", () => {
+    const states = new Map<string, MemberStatus>([
+      ['core', 'running'],
+      ['tests', 'running'],
+      ['review', 'needs_input'],
+      ['lead', 'pending'],
+      ['docs', 'ended'],
+    ])
+    const items = scopeItems([{ name: 'core' }, { name: 'tests' }, { name: 'review' }, { name: 'lead' }, { name: 'docs' }, { name: 'new' }], states)
+    expect(items.map((i) => `${i.to || '-'}: ${i.label} · ${i.detail}${i.disabled ? ' (off)' : ''}`)).toEqual([
+      '-: Chat only · everyone here reads it',
+      'core: Also send to core · typed into its terminal',
+      'tests: Also send to tests · typed into its terminal',
+      'review: Also send to review · waiting on a prompt: skipped (off)',
+      'lead: Also send to lead · not started (off)',
+      'docs: Also send to docs · ended (off)',
+      'new: Also send to new · not started (off)',
+    ])
+    expect(markerLine({ by: { id: 'x', name: 'Nate', role: 'control' }, to: 'core', at: '2026-10-06T08:35:10Z' })).toMatch(/^Sent to core by Nate · \d\d:35:10$/)
   })
 })

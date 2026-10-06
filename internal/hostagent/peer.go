@@ -246,12 +246,12 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
 				return
 			}
-			if m.To == proto.ChatToAgent {
+			if m.To != "" {
 				// Off the frame loop, as a submit is: the typing pauses before its Enter.
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					if err := p.a.local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID}); err != nil {
+					if err := p.a.local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}); err != nil {
 						p.a.local.Send(sub, session.ChatErrorFrame(err, msg.ID))
 					}
 				}()

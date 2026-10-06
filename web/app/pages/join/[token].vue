@@ -2,11 +2,14 @@
 import { SPONSOR_NAME, SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
 import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
-import type { TransportState } from '~/utils/transport/types'
+import { CloseCode } from '~/utils/protocol'
+import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileViewer.vue'
 import { parseLocation } from '~/utils/links'
 import { joinServer } from '~/utils/invite'
 import { joinedFromInfo } from '~/utils/joined'
+import { scopeItems } from '~/utils/chat'
+import { skipWords, type MemberStatus } from '~/utils/crews'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -58,6 +61,11 @@ function onAttention(msg: { state: string; message?: string; source?: string }) 
 function onStatus(s: string) {
   status.value = s
   hearFocused({ status: s })
+}
+/** The connection closed: what was being said waits; a close for the session's end says so, should the status frame not have been read first. */
+function onClosed(info: CloseInfo) {
+  chat.offline()
+  if (info.code === CloseCode.SessionEnded && info.reason === 'session ended' && !ended.value) onStatus('exited')
 }
 
 // A run link opens every member of a crew run: a tile each, and one member
@@ -122,14 +130,53 @@ function onWelcome(w: Welcome) {
   chat.welcome(!!w.chat, viaChat)
 }
 function onChat(m: ChatMessage) {
-  chat.accept(m, { live: true })
+  // The run's chat comes over its own connection (useRunChat); a member's frames of it are dropped here.
+  if (m.scope !== 'run') chat.accept(m, { live: true })
 }
 function onChatHistory(h: ChatHistory) {
-  chat.history(h)
+  if (h.scope !== 'run') chat.history(h)
 }
-function chatSend(text: string, toAgent: boolean) {
-  chat.send(text, toAgent ? { to: chat.toAgent } : {}, viaChat)
+function chatSend(text: string, to: string) {
+  chat.send(text, to ? { to } : {}, viaChat)
 }
+
+// The run's chat for a run link (design 2f): one thread for everyone on the link, over a quiet connection of its own to a live
+// member, read and posted beside the tiles and while a member is open in full (`on` names that member). A view-only guest talks
+// here and reaches no member; a guest with control may also have a message typed into a running member.
+const runMembers = computed(() => info.value?.run?.members ?? [])
+const runChat = useRunChat(
+  computed(() => info.value?.run?.id ?? ''),
+  runMembers,
+  { token, server },
+)
+const runChatOpen = ref(false)
+const runChatUnread = computed(() => unread.count(runChat.key.value))
+const runChatShown = computed(() => joined.value && !!run.value && runChatOpen.value)
+watch(
+  [() => runChat.key.value, runChatShown],
+  ([key, shown]) => {
+    if (!key.endsWith(':')) {
+      if (shown) unread.openThread(key)
+      else unread.closeThread(key)
+    }
+  },
+  { immediate: true },
+)
+const runChatNote = computed(() => (info.value?.role === 'control' ? '' : 'You are view only: you can talk here; nothing you write reaches a member.'))
+/** The members' states for the composer's menu: the tiles' word on a prompt, else the run's status. */
+const runStates = computed(() => new Map(runMembers.value.map((m) => [m.name, (tileState.value[m.name]?.attention === 'needs_input' ? 'needs_input' : m.status) as MemberStatus])))
+const runScope = computed(() => scopeItems(runMembers.value, runStates.value))
+const runTargets = computed(() => runScope.value.slice(1))
+const runChatDescription = computed(() => (run.value ? `${run.value.name} · kept with the run` : ''))
+function runChatSend(text: string, to: string) {
+  runChat.send(text, to, focus.value?.name ?? '')
+}
+function runChatSendTo(ref: string, to: string) {
+  if (!runChat.sendTo(ref, to)) toast.add({ title: 'Not connected', color: 'warning' })
+}
+watch(runChat.refused, (r) => {
+  if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })
+})
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', color: 'warning' })
 }
@@ -196,6 +243,7 @@ function leave() {
   fileTarget.value = null
   previewUrl.value = null
   chatSheet.value = false
+  runChatOpen.value = false
   left.value = true
 }
 
@@ -330,6 +378,10 @@ function requestFile(path: string, stat?: boolean) {
       <div class="flex-1" />
       <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
       <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="fetchInfo" />
+      <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
+        <span class="hidden sm:inline">Chat</span>
+        <ChatUnreadPill :count="runChatUnread" />
+      </UButton>
       <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
     </header>
@@ -338,6 +390,22 @@ function requestFile(path: string, stat?: boolean) {
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
       <JoinCrewGrid v-model:heard="tileState" :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
+    <ChatSheet
+      v-model:open="runChatOpen"
+      scope="run"
+      title="Run chat"
+      :description="runChatDescription"
+      :thread="runChat.thread.value"
+      :role="info!.role"
+      :offline="runChat.offline.value"
+      :viewers="runChat.people.value"
+      :note="runChatNote"
+      :scope-items="runScope"
+      :send-targets="runTargets"
+      @send="runChatSend"
+      @send-to="runChatSendTo"
+      @retry="runChat.retry"
+    />
   </template>
 
   <template v-else-if="info && current">
@@ -370,6 +438,10 @@ function requestFile(path: string, stat?: boolean) {
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
+      <UButton v-if="run" icon="i-lucide-messages-square" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
+        <span class="hidden sm:inline">Run chat</span>
+        <ChatUnreadPill :count="runChatUnread" />
+      </UButton>
       <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
       <FullscreenButton size="sm" />
     </header>
@@ -387,7 +459,7 @@ function requestFile(path: string, stat?: boolean) {
             @attention="onAttention"
             @viewers="onViewers"
             @transport="transport = $event"
-            @closed="chat.offline()"
+            @closed="onClosed"
             @chat="onChat"
             @chat-history="onChatHistory"
             @request-error="onRequestError"
@@ -404,6 +476,23 @@ function requestFile(path: string, stat?: boolean) {
 
     <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />
     <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" />
+    <ChatSheet
+      v-if="run"
+      v-model:open="runChatOpen"
+      scope="run"
+      title="Run chat"
+      :description="runChatDescription"
+      :thread="runChat.thread.value"
+      :role="info.role"
+      :offline="runChat.offline.value"
+      :viewers="runChat.people.value"
+      :note="runChatNote"
+      :scope-items="runScope"
+      :send-targets="runTargets"
+      @send="runChatSend"
+      @send-to="runChatSendTo"
+      @retry="runChat.retry"
+    />
   </template>
     </JoinFrame>
   </NuxtLayout>

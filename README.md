@@ -257,6 +257,18 @@ their join page (the button folds it away), as a sheet on a phone; a
 view-only guest reads "You are view only: what you write reaches the people
 here, not the agent." and has no agent actions.
 
+A crew run has one chat for everyone on it, over the members' own
+connections: the run page's **Chat** button (and a run link's, for a guest
+beside the tiles or with a member open in full) opens it as a drawer beside
+the tiles, a sheet on a phone. A message says which member its sender was
+looking at ("on review"). A person with control picks beside Send where a
+message goes: **Chat only**, or **Also send to core**, typed into that
+member's terminal as the broadcast bar types it; a member waiting on a prompt
+is skipped, with the same words; hovering a message offers **Send to…** the
+same way. The run keeps the last 500 messages, replays them to whoever
+joins, and keeps them in its record once it ends, read-only there; a resumed
+run starts a new chat.
+
 ## Clickable links and file viewer
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or

@@ -288,6 +288,8 @@ func (s *Server) handleCrewRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, run := range all {
 			if !seen[run.ID] {
+				// A list carries no chat; a run read alone does.
+				run.Chat = nil
 				recorded = append(recorded, run)
 			}
 		}

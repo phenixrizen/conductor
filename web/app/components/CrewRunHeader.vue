@@ -11,8 +11,8 @@ import { relativeTime } from '~/utils/sessions'
  * stopped resume it as a new run. Each action calls the server and hands the
  * run as it is after it to the page (`changed`).
  */
-const props = defineProps<{ run: RunInfo | null; runId: string; counts: { needs: number; running: number }; now: number }>()
-const emit = defineEmits<{ changed: [run: RunInfo] }>()
+const props = withDefaults(defineProps<{ run: RunInfo | null; runId: string; counts: { needs: number; running: number }; now: number; chatUnread?: number; chatOpen?: boolean; chatOffline?: boolean }>(), { chatUnread: 0, chatOpen: false, chatOffline: false })
+const emit = defineEmits<{ changed: [run: RunInfo]; chat: [] }>()
 
 const api = useSessions()
 const toast = useToast()
@@ -130,6 +130,11 @@ async function stopAll() {
       <!-- Icons only on a phone: the labels would push the name off the bar. -->
       <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
       <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share</span></UButton>
+      <!-- The run's chat (design 2e): the count while the drawer is closed. -->
+      <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
+        <span class="hidden sm:inline">Chat</span>
+        <ChatUnreadPill :count="chatUnread" />
+      </UButton>
       <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
       <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />

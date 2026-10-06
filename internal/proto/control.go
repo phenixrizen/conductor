@@ -18,6 +18,8 @@ const (
 	CtlChat = "chat"
 	// CtlChatSend types a kept chat message into the agent (ChatSend); controllers only.
 	CtlChatSend = "chat_send"
+	// CtlChatRoster lists the people on a run's chat (ChatRoster); owner -> client.
+	CtlChatRoster = "chat_roster"
 
 	// owner -> client
 	CtlAttention   = "attention"
@@ -85,6 +87,11 @@ type Hello struct {
 	Client string `json:"client,omitempty"`
 	// Name is the display name other viewers see; a label, not authentication.
 	Name string `json:"name,omitempty"`
+	// ChatOnly asks for a quiet connection, for a run's chat alone: no
+	// scrollback, output or files, not counted among the session's viewers
+	// and no join line in its chat; it is on the run's roster. An older
+	// owner ignores it and sends output, which the client drops.
+	ChatOnly bool `json:"chatOnly,omitempty"`
 }
 
 // Resize is sent by controllers to change the PTY size and broadcast by the
@@ -135,6 +142,9 @@ const (
 	ChatBurst         = 20
 	// ChatReplayBytes bounds what a new viewer is sent of the kept chat: the newest messages that fit.
 	ChatReplayBytes = 128 << 10
+	// MaxChatRoster bounds the people a chat_roster lists (a full list of the
+	// longest names fits MaxControl); Count says how many there are.
+	MaxChatRoster = 32
 )
 
 // ChatPost is a viewer's message (client -> owner). Scope is "session" when
@@ -193,6 +203,25 @@ type ChatHistory struct {
 	More     bool          `json:"more,omitempty"`
 }
 
+// ChatPerson is one person on a run's chat: a viewer of any of its members,
+// one row per name. On is the member they look at, when they look at one.
+type ChatPerson struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+	On   string `json:"on,omitempty"`
+}
+
+// ChatRoster lists who is on a run's chat (owner -> client), sent to every
+// member's viewers whenever any member's roster changes: Count is how many,
+// List the first MaxChatRoster of them.
+type ChatRoster struct {
+	T     string       `json:"t"`
+	Scope string       `json:"scope"`
+	Count int          `json:"count"`
+	List  []ChatPerson `json:"list"`
+}
+
 // Ping and Pong carry an opaque client timestamp.
 type Ping struct {
 	T  string `json:"t"`
@@ -223,7 +252,10 @@ type Welcome struct {
 	FileView        bool   `json:"fileView"`
 	// Chat says the owner takes chat and chat_send: a client sends neither
 	// to an owner whose welcome lacks it (an older server closes on them).
-	Chat           bool        `json:"chat,omitempty"`
+	Chat bool `json:"chat,omitempty"`
+	// RunChat says the session is a run's member with a run chat: `chat` and
+	// `chat_send` take scope `run`, and `chat_roster` arrives.
+	RunChat        bool        `json:"runChat,omitempty"`
 	ICEServers     []ICEServer `json:"iceServers,omitempty"`
 	RelayTimeoutMs int         `json:"relayTimeoutMs,omitempty"`
 	RelayOnly      bool        `json:"relayOnly,omitempty"`
@@ -253,6 +285,9 @@ type ViewerInfo struct {
 	Since string `json:"since"`
 	// LastInputAt is refreshed at most every 2 s while the viewer types.
 	LastInputAt string `json:"lastInputAt,omitempty"`
+	// Quiet marks a connection for a run's chat alone (hello.chatOnly): it
+	// is left out of a session's `viewers` and listed on the run's roster.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // Viewers reports the attached clients: the count and the full roster.

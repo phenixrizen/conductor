@@ -50,14 +50,25 @@ function showChat() {
 }
 const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
 const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
+// A member's connection carries its run's chat too (scope run): it feeds the run's thread, so its count is right everywhere.
+const runKey = computed(() => (current.value?.crew?.runId ? `run:${current.value.crew.runId}` : ''))
+const runChat = useChat(runKey)
 function onChat(m: ChatMessage) {
+  if (m.scope === 'run') {
+    if (runKey.value) runChat.accept(m, { live: true })
+    return
+  }
   chat.accept(m, { live: true })
 }
 function onChatHistory(h: ChatHistory) {
+  if (h.scope === 'run') {
+    if (runKey.value) runChat.history(h)
+    return
+  }
   chat.history(h)
 }
-function chatSend(text: string, toAgent: boolean) {
-  chat.send(text, toAgent ? { to: chat.toAgent } : {}, viaChat)
+function chatSend(text: string, to: string) {
+  chat.send(text, to ? { to } : {}, viaChat)
 }
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })

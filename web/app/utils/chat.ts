@@ -1,3 +1,4 @@
+import type { MemberStatus } from './crews'
 import type { ChatMessage, Role } from './protocol'
 import { CHAT_COUNTER_FROM, MAX_CHAT_TEXT } from './protocol'
 import { linkableUrl } from './events'
@@ -126,3 +127,35 @@ export function chatNonce(n: number): string {
 
 /** The phone sheet's snap points (design 2c): two thirds of the window, then all of it. */
 export const SHEET_SNAPS: readonly number[] = [0.66, 1]
+
+/** One choice of a run chat's composer menu (design 2e): chat only, or also typed into a member. */
+export interface ScopeItem {
+  /** '' for chat only, else the member's name. */
+  to: string
+  label: string
+  detail: string
+  disabled: boolean
+}
+
+/** What a member's state means for a message typed into it, as the broadcast bar says it. */
+const SCOPE_DETAIL: Record<MemberStatus, { detail: string; ok: boolean }> = {
+  running: { detail: 'typed into its terminal', ok: true },
+  needs_input: { detail: 'waiting on a prompt: skipped', ok: false },
+  pending: { detail: 'not started', ok: false },
+  starting: { detail: 'starting', ok: false },
+  ended: { detail: 'ended', ok: false },
+}
+
+/**
+ * The composer's menu on a run's chat: "Chat only · everyone here reads it",
+ * then "Also send to <member>" for each member, typed into its terminal when
+ * it runs and disabled with why not otherwise, as the broadcast bar does.
+ */
+export function scopeItems(members: readonly { name: string }[], states: ReadonlyMap<string, MemberStatus>): ScopeItem[] {
+  const out: ScopeItem[] = [{ to: '', label: 'Chat only', detail: 'everyone here reads it', disabled: false }]
+  for (const m of members) {
+    const st = SCOPE_DETAIL[states.get(m.name) ?? 'pending']
+    out.push({ to: m.name, label: `Also send to ${m.name}`, detail: st.detail, disabled: !st.ok })
+  }
+  return out
+}

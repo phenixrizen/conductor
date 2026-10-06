@@ -16,6 +16,8 @@ export interface RunMember {
 }
 
 export interface Run {
+  /** GET /api/runs/{run} only: the run's chat, oldest first. */
+  chat?: Array<{ id: string; kind: string; text?: string; to?: string }>
   id: string
   crewId: string
   name: string

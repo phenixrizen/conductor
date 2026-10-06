@@ -3,19 +3,24 @@ import { join } from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
-// Chat beside the terminal (design 2a, 2b, 2c, 2d, 2h): the people on a
-// session talk over the terminal's own connection; a controller can have a
-// message typed into the agent; the tab counts what arrived while it was
+// Chat beside the terminal (design 2a, 2b, 2c, 2d, 2e, 2f, 2h): the people
+// on a session talk over the terminal's own connection; a controller can have
+// a message typed into the agent; the tab counts what arrived while it was
 // closed; a guest on a link gets the same chat on the bare join page; on a
-// phone it is a sheet over the terminal; an ended session's chat is read-only.
+// phone it is a sheet over the terminal; a crew run has one chat for everyone
+// on it, beside its tiles; an ended session's chat is read-only.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
 let other: BrowserContext | null = null
+let crewId = ''
+let runId = ''
 
 test.afterAll(async ({ api }) => {
   await other?.close()
+  if (runId) await api.stopRun(runId)
   for (const id of sessions) await api.stopSession(id)
+  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
 
 function transcript(home: string, s: Session): string {
@@ -210,4 +215,105 @@ test('on a phone the header button carries the count and the chat opens as a she
   await expect(janeSheet.locator('[data-chat-kind="message"]')).toHaveCount(3)
   await guestCtx.close()
   await phoneCtx.close()
+})
+
+test('a run has one chat for everyone on it: beside the tiles, typed into a member on request, open to a guest on the run link, kept when it ends', async ({ page, api, state, browser }) => {
+  // A crew of two: lead runs, review holds the stub's trust question.
+  crewId = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e chat crew',
+      goal: 'talk',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'codex-untrusted', prompt: 'review it', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  runId = (await api.launchCrew(crewId)).id
+  let leadId = ''
+  await expect
+    .poll(
+      async () => {
+        const run = await api.run(runId)
+        leadId = run.members.find((m) => m.name === 'lead')?.sessionId ?? ''
+        const reviewId = run.members.find((m) => m.name === 'review')?.sessionId ?? ''
+        if (!leadId || !reviewId) return ''
+        return `${run.members.find((m) => m.name === 'lead')?.status}/${(await api.session(reviewId)).attention?.state ?? ''}`
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('running/needs_input')
+
+  // Nate opens the run chat from the run page; Priya, on the same page, sees the count, then the message.
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  await page.goto(`/runs/${runId}`)
+  const nateButton = page.locator('[data-run-chat-button]')
+  await expect(nateButton).toBeVisible({ timeout: 15_000 })
+  other = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const priya = await personPage(other, state.token, 'Priya')
+  await priya.goto(`/runs/${runId}`)
+  // Her run chat connection is up before Nate writes: a message that arrives as history is read, not counted.
+  await expect(priya.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: 15_000 })
+  await nateButton.click()
+  const nateChat = page.locator('[data-run-chat]')
+  await expect(nateChat).toBeVisible()
+  await expect(nateChat.locator('[data-chat-empty]')).toContainText("Everyone on this run's link sees this chat", { timeout: 15_000 })
+  const nateInput = nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()
+  await nateInput.fill('hello run')
+  await page.keyboard.press('Enter')
+  await expect(nateChat.locator('[data-chat-kind="message"]').first()).toContainText('hello run', { timeout: 15_000 })
+  await expect(priya.locator('[data-run-chat-button] [data-chat-unread="1"]')).toBeVisible({ timeout: 15_000 })
+  await priya.locator('[data-run-chat-button]').click()
+  const priyaChat = priya.locator('[data-run-chat]')
+  await expect(priyaChat.locator('[data-chat-kind="message"]').first()).toContainText('hello run')
+  await expect(priya.locator('[data-run-chat-button] [data-chat-unread]')).toHaveCount(0)
+  await priyaChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first().fill('hi back')
+  await priya.keyboard.press('Enter')
+  await expect(nateChat.locator('[data-chat-kind="message"]').nth(1)).toContainText('hi back', { timeout: 15_000 })
+
+  // The composer's menu: review waits on a prompt and is skipped; lead takes the line, marked for everyone.
+  await nateChat.locator('[data-chat-scope-menu]').click()
+  const skipped = page.getByRole('menuitem', { name: /Also send to review/ })
+  await expect(skipped).toContainText('waiting on a prompt: skipped')
+  await expect(skipped).toHaveAttribute('data-disabled', '')
+  await page.getByRole('menuitem', { name: /Also send to lead/ }).click()
+  await expect(nateChat.locator('[data-chat-scope-menu]')).toContainText('Also send to lead')
+  await nateInput.fill('echo run-chat-to-lead')
+  await page.keyboard.press('Enter')
+  await expect(nateChat.locator('[data-chat-marker]').first()).toContainText('Sent to lead by Nate', { timeout: 15_000 })
+  await expect(priyaChat.locator('[data-chat-marker]').first()).toContainText('Sent to lead by Nate', { timeout: 15_000 })
+  const lead = await api.session(leadId)
+  await expect.poll(() => transcript(state.home, lead), { timeout: 20_000, message: 'lead got the line' }).toContain('echo run-chat-to-lead')
+
+  // A guest on the run link, in a browser with no workbench token: the tiles, the same chat, view only.
+  const { token } = await api.ok<{ token: string }>('POST', `/api/runs/${runId}/links`, { role: 'view', ttlSeconds: 3600 })
+  const guestCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Jane'))
+  const jane = await guestCtx.newPage()
+  await jane.goto(`/join/${token}`)
+  await expect(jane.locator('[data-join-frame]')).toHaveAttribute('data-join-frame', 'bare')
+  await jane.getByRole('button', { name: 'Join crew' }).click()
+  await expect(jane.locator('[data-join-tiles] [data-member]')).toHaveCount(2, { timeout: 30_000 })
+  await jane.locator('[data-run-chat-button]').click()
+  const janeChat = jane.locator('[data-run-chat]')
+  await expect(janeChat.locator('[data-chat-kind="message"]').first()).toContainText('hello run', { timeout: 15_000 })
+  await expect(janeChat.locator('[data-chat-note]')).toHaveText('You are view only: you can talk here; nothing you write reaches a member.')
+  await expect(janeChat.locator('[data-chat-scope-menu]')).toHaveCount(0)
+  await janeChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first().fill('watching from the link')
+  await jane.keyboard.press('Enter')
+  // The fourth message: hello run, hi back, the line sent to lead, then Jane's.
+  const fromJane = nateChat.locator('[data-chat-kind="message"]').nth(3)
+  await expect(fromJane).toContainText('watching from the link', { timeout: 15_000 })
+  await expect(fromJane.locator('[data-chat-view-tag]')).toBeVisible()
+  await expect(nateChat.locator('[data-chat-system]').last()).toContainText('Jane joined · view')
+
+  // Stopped, the run's chat is read-only and its record keeps it.
+  await api.stopRun(runId)
+  await expect(nateChat.locator('[data-chat-ended]')).toContainText('This run ended', { timeout: 20_000 })
+  await expect.poll(async () => ((await api.run(runId)).chat ?? []).filter((m) => m.kind === 'message').length, { timeout: 15_000 }).toBe(4)
+  await guestCtx.close()
 })

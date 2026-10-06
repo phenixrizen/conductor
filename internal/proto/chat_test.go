@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -84,5 +85,27 @@ func TestChatFramesFitWithoutHTMLEscaping(t *testing.T) {
 	escaped := MustControl(ChatMessage{T: CtlChat, Text: strings.Repeat("<", MaxChatText)})
 	if len(escaped) <= MaxControl {
 		t.Fatalf("the escaping encoder would have fitted too (%d bytes): the raw one is not needed", len(escaped))
+	}
+}
+
+// A run's roster names each person once with the member they look at; the
+// list stops at MaxChatRoster while the count goes on, and a full list of
+// the longest names fits the control frame.
+func TestChatRosterShapeAndBound(t *testing.T) {
+	r := ChatRoster{T: CtlChatRoster, Scope: ChatScopeRun, Count: 2, List: []ChatPerson{{ID: "s1", Name: "Nate", Role: "control", On: "core"}, {ID: "s2", Name: "Priya", Role: "view"}}}
+	want := `{"t":"chat_roster","scope":"run","count":2,"list":[{"id":"s1","name":"Nate","role":"control","on":"core"},{"id":"s2","name":"Priya","role":"view"}]}`
+	f, err := Decode(MustControl(r))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(f.Payload); got != want {
+		t.Fatalf("roster\n got %s\nwant %s", got, want)
+	}
+	full := ChatRoster{T: CtlChatRoster, Scope: ChatScopeRun, Count: 1000}
+	for i := range MaxChatRoster {
+		full.List = append(full.List, ChatPerson{ID: fmt.Sprintf("%032x", i), Name: strings.Repeat("名", MaxNameLen), Role: "control", On: strings.Repeat("m", 40)})
+	}
+	if n := len(MustControl(full)); n > MaxControl {
+		t.Fatalf("a full roster is %d bytes, over %d", n, MaxControl)
 	}
 }

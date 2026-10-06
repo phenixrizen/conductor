@@ -1,4 +1,4 @@
-import type { ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
+import type { ChatMessage, ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 
 export type SessionKind = 'server' | 'hosted'
@@ -375,6 +375,8 @@ export interface RunInfo {
   needsInput: number
   /** The run's yolo choice, fixed at launch: every member, one added later included, follows it. */
   yolo: boolean
+  /** `GET /api/runs/{run}` and the record only: the run's chat, oldest first, at most 500 messages. */
+  chat?: ChatMessage[]
   /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
