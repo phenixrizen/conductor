@@ -679,9 +679,24 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   box and the laptop headings are gone.
 - The counts: Needs you is how many sessions need you, members included;
   Running is that section's live sessions; Exited is that section's.
+- **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
+  place of the dot, outside the row's link (a link holds no button); a run
+  header offers Share run, Stop run and Open run; a member has its own Share
+  and Stop. Stop asks in the row, with the design's words
+  (`stopQuestion`). A right-click or a touch long press (Reka's context
+  menu) opens the same list as More (`rowMenuItems` in
+  `utils/sidebarActions.ts`): Open, Open the run, Share…, Show in the Yard
+  (`/yard?focus=<id>`), Stop…; a run header Open run, Share run, Stop run.
+  One Share dialog serves every row, mounted on its target a tick before it
+  opens so that it mints the link.
 
 ### Verified (round 11)
 
+- S2: the hover actions, the in-row stop question, the context menu and the
+  run header's actions are Playwright-covered in `sidebar.spec.ts`
+  (share from a row, Show in the Yard, a member stopped from its row, a run
+  stopped from its header landing whole in Exited, a loose session stopped).
+  By hand: the long press on a phone, pending.
 - S1 rendered headless at 1440, dark and light, against 3b: the mix of two
   loose sessions (one asking), a run of three (one asking, one exited), a
   hosted session with its machine, Exited folded "· 4" with squares; on a

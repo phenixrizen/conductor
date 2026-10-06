@@ -303,7 +303,13 @@ its count and a preview of what is inside; the choice is remembered per
 browser (`conductor.sidebar.folds`), Exited starts folded, and Needs you opens
 again by itself when a new prompt arrives. The run of the page you are on is
 marked and scrolled into view; nothing is filtered out for it. A session
-launched with yolo carries the **yolo** badge.
+launched with yolo carries the **yolo** badge. Hovering a row offers
+**Share**, **Stop** and **More** in place of the dot; a run's header offers
+**Share run**, **Stop run** and **Open run**, and a member its own Share and
+Stop. Stop asks first, in the row ("Stop docs-sweep? Its terminal closes.
+Resume brings the conversation back from Exited."). A right-click, or a long
+press on a touch screen, opens the same menu as More: Open, Open the run (a
+member), Share…, Show in the Yard, Stop….
 
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch

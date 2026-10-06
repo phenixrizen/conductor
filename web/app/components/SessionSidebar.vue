@@ -14,9 +14,12 @@ import { needsDotShown, reopenNeeds, sectionPreview, sidebarModel, type ListSect
 const attention = useAttention()
 const events = useEvents()
 const route = useRoute()
+const router = useRouter()
 const launch = useLaunchModal()
 const joined = useJoined()
 const foldState = useSidebarFolds()
+const api = useSessions()
+const toast = useToast()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
@@ -67,6 +70,59 @@ watch(
   { immediate: true },
 )
 
+// The row actions (design 3c): Share opens the one dialog on the row's target; Stop stops after the row asked; the Yard
+// focuses the session there; a member's "Open the run" goes to its run page.
+const busy = ref<Set<string>>(new Set())
+function mark(key: string, on: boolean) {
+  const next = new Set(busy.value)
+  if (on) next.add(key)
+  else next.delete(key)
+  busy.value = next
+}
+const shareTarget = ref<{ sessionId: string; sessionName?: string } | { runId: string; sessionName?: string } | null>(null)
+const shareOpen = ref(false)
+/** The dialog mints its link when it opens: it is mounted on the target first, then opened, so that it sees the opening. */
+async function openShare(target: NonNullable<typeof shareTarget.value>) {
+  shareOpen.value = false
+  shareTarget.value = target
+  await nextTick()
+  shareOpen.value = true
+}
+function shareSession(row: SessionRow) {
+  openShare({ sessionId: row.session.id, sessionName: row.session.name })
+}
+function shareRun(block: RunBlock) {
+  openShare({ runId: block.runId, sessionName: block.title })
+}
+async function stopSession(row: SessionRow) {
+  mark(row.id, true)
+  try {
+    await api.stop(row.session.id)
+    toast.add({ title: `Stopping ${row.session.name}`, icon: 'i-lucide-square', color: 'neutral' })
+  } catch (e) {
+    toast.add({ title: `Stop ${row.session.name} failed`, description: (e as Error).message, color: 'error' })
+  } finally {
+    mark(row.id, false)
+  }
+}
+async function stopRun(block: RunBlock) {
+  mark(`run:${block.runId}`, true)
+  try {
+    attention.applyRun(await api.stopRun(block.runId))
+    toast.add({ title: `Stopping ${block.title}`, description: "Every member's session is stopped.", icon: 'i-lucide-square', color: 'neutral' })
+  } catch (e) {
+    toast.add({ title: `Stop ${block.title} failed`, description: (e as Error).message, color: 'error' })
+  } finally {
+    mark(`run:${block.runId}`, false)
+  }
+}
+function showInYard(row: SessionRow) {
+  router.push({ path: '/yard', query: { focus: row.session.id } })
+}
+function openRunOf(row: SessionRow) {
+  if (row.session.crew) router.push(`/runs/${encodeURIComponent(row.session.crew.runId)}`)
+}
+
 function focusFilter() {
   filterInput.value?.inputRef?.focus()
 }
@@ -94,8 +150,21 @@ onBeforeUnmount(() => window.clearInterval(tick))
       <SidebarSection v-if="model.needs.length" id="needs" title="Needs you" :count="model.counts.needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.needs" :key="it.id">
-            <SidebarRunBlock v-if="isRun(it)" :block="it as RunBlock" :now="now" :needs-dot="needsDot" :open="(it as RunBlock).runId === openRun" />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" />
+            <SidebarRunBlock
+              v-if="isRun(it)"
+              :block="it as RunBlock"
+              :now="now"
+              :needs-dot="needsDot"
+              :open="(it as RunBlock).runId === openRun"
+              :busy="busy"
+              @share-run="shareRun"
+              @stop-run="stopRun"
+              @share="shareSession"
+              @stop="stopSession"
+              @yard="showInYard"
+              @open-run="openRunOf"
+            />
+            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busy.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" />
           </template>
         </ol>
       </SidebarSection>
@@ -103,8 +172,21 @@ onBeforeUnmount(() => window.clearInterval(tick))
       <SidebarSection v-if="model.running.length" id="running" title="Running" :count="model.counts.running" :preview="preview('running')" :folded="folds.running" @update:folded="foldState.fold('running', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.running" :key="it.id">
-            <SidebarRunBlock v-if="isRun(it)" :block="it as RunBlock" :now="now" :needs-dot="needsDot" :open="(it as RunBlock).runId === openRun" />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" />
+            <SidebarRunBlock
+              v-if="isRun(it)"
+              :block="it as RunBlock"
+              :now="now"
+              :needs-dot="needsDot"
+              :open="(it as RunBlock).runId === openRun"
+              :busy="busy"
+              @share-run="shareRun"
+              @stop-run="stopRun"
+              @share="shareSession"
+              @stop="stopSession"
+              @yard="showInYard"
+              @open-run="openRunOf"
+            />
+            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busy.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" />
           </template>
         </ol>
       </SidebarSection>
@@ -117,11 +199,27 @@ onBeforeUnmount(() => window.clearInterval(tick))
       <SidebarSection v-if="model.exited.length" id="exited" title="Exited" :count="model.counts.exited" :preview="preview('exited')" :folded="folds.exited" @update:folded="foldState.fold('exited', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.exited" :key="it.id">
-            <SidebarRunBlock v-if="isRun(it)" :block="it as RunBlock" :now="now" :needs-dot="needsDot" :open="(it as RunBlock).runId === openRun" />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" />
+            <SidebarRunBlock
+              v-if="isRun(it)"
+              :block="it as RunBlock"
+              :now="now"
+              :needs-dot="needsDot"
+              :open="(it as RunBlock).runId === openRun"
+              :busy="busy"
+              @share-run="shareRun"
+              @stop-run="stopRun"
+              @share="shareSession"
+              @stop="stopSession"
+              @yard="showInYard"
+              @open-run="openRunOf"
+            />
+            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busy.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" />
           </template>
         </ol>
       </SidebarSection>
     </div>
+
+    <!-- One Share dialog for every row: made afresh for each target (the dialog mints its link on open). -->
+    <ShareLinksModal v-if="shareTarget" :key="'sessionId' in shareTarget ? shareTarget.sessionId : shareTarget.runId" v-model:open="shareOpen" v-bind="shareTarget" />
   </div>
 </template>
