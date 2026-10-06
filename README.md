@@ -317,14 +317,22 @@ session whose host is away keeps its prompt, disabled, with "The host is
 away".
 
 The sidebar collapses to an icon rail with the panel button in its header or
-**Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch
-button, a search button that opens the full sidebar on its filter, the pages
-and the sidebar's buttons as icons with tooltips (the Yard's count as an amber
-chip), and every session as its agent's initials with the amber dot when it
-needs you, the members of a run together under its name, in the list's order.
-The panel button at the bottom of the
-rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width
-window, **/**, which then focuses the filter. The mode and the full sidebar's
+**Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
+initials, solid while it needs you, dashed once exited), a capsule is a run
+with its sessions inside (the play icon amber while one needs you), and the
+corners say the rest: top right the state (amber needs you, green running,
+grey idle), bottom right new events on it (the badges the Events page routes
+to the sidebar), bottom left where it comes from (a laptop for another
+machine, a globe for a link shared with you). Two counts sit on top: how many
+need you, then how many have new events. The order is the list's: needs you,
+running, shared, exited; loose exited sessions fold into **+N**, which opens
+the full sidebar on Exited. Every shape has a tooltip naming it in words
+("users api · run started 08:31 · review needs you · core running · lead
+exited"). The rail keeps the mark, Launch, a search button that opens the
+full sidebar on its filter, the pages (the Yard's count as an amber chip) and
+the header's two menus. The panel button at the bottom of the rail brings the
+full sidebar back, as do **Ctrl+B** and, on a desktop-width window, **/**,
+which then focuses the filter. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`
 and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
 the rail). On a phone the sidebar is a drawer. **F** toggles fullscreen on

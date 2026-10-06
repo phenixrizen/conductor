@@ -1,6 +1,6 @@
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
-import type { EventType, RouteRow } from './events'
-import type { JoinedEntry } from './joined'
+import type { EventMark, EventType, RouteRow } from './events'
+import { joinedPath, type JoinedEntry } from './joined'
 import type { AttentionKind, AttentionOption } from './protocol'
 import { isEnded } from './attention'
 import { relativeTime } from './sessions'
@@ -359,32 +359,120 @@ export function moveFocus(rows: readonly FocusRow[], current: string | null, del
 }
 
 // ---------------------------------------------------------------------------
-// The rail, drawn from the same model.
+// The rail, drawn from the same model (design 3d): a square is a session, a
+// capsule a run with its sessions inside, a corner tile a machine or a share;
+// the counts sit on top. Every shape has a tooltip naming it in words.
 
-export type RailDot = RowState
-export interface RailItem {
+export interface RailShape {
   id: string
-  name: string
+  shape: 'square' | 'capsule'
+  to: string
+  /** The tooltip: the shape named in words. */
+  label: string
+  state: RowState
+  /** Exited. */
+  dashed: boolean
+  /** A square's agent (its initials); a run link shared with you shows a crew instead. */
   agentId: string
-  dot: RailDot
-  message?: string
-}
-export interface RailGroup {
-  /** Unique in the rail: `<section>:` for a section's loose sessions, `<section>:<runId>` for a run. */
-  key: string
-  runId?: string
-  label?: string
-  items: RailItem[]
+  kind: 'session' | 'run' | 'shared'
+  /** Bottom left: where it comes from. */
+  tile?: 'machine' | 'share'
+  /** Bottom right: new events on it (the badges the Events page routes here). */
+  news: number
+  /** A capsule's sessions, the one needing you first. */
+  members?: RailShape[]
+  /** A capsule: the play icon amber while one of its sessions needs you. */
+  amber?: boolean
 }
 
-/** The rail's groups in the list's order: a section's loose sessions as one group, then each run as one group under its title. */
-export function railGroups(model: SidebarModel): RailGroup[] {
-  const item = (r: SessionRow): RailItem => ({ id: r.id, name: r.session.name, agentId: r.session.agentId, dot: r.state, message: r.session.attention?.message || undefined })
-  const out: RailGroup[] = []
-  for (const key of ['needs', 'running', 'exited'] as const) {
-    const loose = model[key].filter((it): it is SessionRow => it.kind === 'session')
-    if (loose.length) out.push({ key: `${key}:`, items: loose.map(item) })
-    for (const it of model[key]) if (it.kind === 'run') out.push({ key: `${key}:${it.runId}`, runId: it.runId, label: it.title, items: it.members.map(item) })
+export interface RailModel {
+  /** On top: how many need you, then how many have new events. */
+  needs: number
+  news: number
+  /** In the sidebar's order: needs you, running, shared, exited. */
+  items: RailShape[]
+  /** Loose exited sessions fold into +N; an exited run stays a capsule, dashed. */
+  exitedFolded: number
+}
+
+const STATE_WORDS: Record<RowState, string> = { needs: 'needs you', running: 'running', idle: 'idle', exited: 'exited' }
+
+function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>): RailShape {
+  const s = row.session
+  const parts = [s.name, STATE_WORDS[row.state]]
+  if (row.state === 'needs' && s.attention?.message) parts.push(s.attention.message)
+  if (row.machine) parts.push(`on ${row.machine}`)
+  const mark = marks[s.id]
+  if (mark) parts.push(mark.label)
+  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: mark ? 1 : 0 }
+}
+
+/** "users api · run started 08:31 · review needs you · core running · lead exited". */
+export function railRunLabel(block: RunBlock): string {
+  const sub = blockSubtitle(block).split(' · ')[0]!
+  const when = /^(started|stopped) /.test(sub) ? `run ${sub}` : sub
+  return [block.title, when, ...block.members.map((m) => `${m.session.name} ${STATE_WORDS[m.state]}`)].join(' · ')
+}
+
+function railCapsule(block: RunBlock, marks: Readonly<Record<string, EventMark>>): RailShape {
+  const members = block.members.map((m) => railSquare(m, marks))
+  return {
+    id: `run:${block.runId}`,
+    shape: 'capsule',
+    to: `/runs/${encodeURIComponent(block.runId)}`,
+    label: railRunLabel(block),
+    state: block.state,
+    dashed: block.state === 'exited',
+    agentId: '',
+    kind: 'run',
+    news: members.reduce((n, m) => n + m.news, 0),
+    members,
+    amber: block.state === 'needs',
   }
-  return out
+}
+
+/** The rail from the list's model, the links shared with you and the Events page's badges (`useEvents().marks`). */
+export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], marks: Readonly<Record<string, EventMark>>): RailModel {
+  const items: RailShape[] = []
+  let news = 0
+  const count = (sq: RailShape) => {
+    if (sq.news) news++
+  }
+  const add = (it: SidebarItem) => {
+    if (it.kind === 'run') {
+      const c = railCapsule(it, marks)
+      c.members!.forEach(count)
+      items.push(c)
+    } else {
+      const sq = railSquare(it, marks)
+      count(sq)
+      items.push(sq)
+    }
+  }
+  for (const it of model.needs) add(it)
+  for (const it of model.running) add(it)
+  for (const e of shared) {
+    const gone = e.lastStatus === 'revoked' || e.lastStatus === 'gone'
+    items.push({
+      id: `j:${e.id}`,
+      shape: 'square',
+      to: joinedPath(e),
+      label: `${e.name} · ${e.role === 'control' ? 'control' : 'view only'} · through ${e.host}`,
+      state: gone ? 'exited' : 'idle',
+      dashed: gone,
+      agentId: e.agentId ?? '',
+      kind: e.kind === 'run' ? 'run' : 'shared',
+      tile: 'share',
+      news: 0,
+    })
+  }
+  let exitedFolded = 0
+  for (const it of model.exited) {
+    if (it.kind === 'run') add(it)
+    else {
+      if (marks[it.id]) news++
+      exitedFolded++
+    }
+  }
+  return { needs: model.counts.needs, news, items, exitedFolded }
 }

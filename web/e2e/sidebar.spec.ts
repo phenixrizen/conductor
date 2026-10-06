@@ -10,7 +10,7 @@ import { serverBinary, stubPath } from './server'
 // as a tag on the row, Shared with you below your own, Exited folded to one
 // line, every section folding from its header and remembered; the actions on
 // a row; a prompt answered in the row; the keys on a focused row; alerts and
-// your menu beside the name, the foot holding only the pages.
+// your menu beside the name, the foot holding only the pages; the rail.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -349,4 +349,62 @@ test('alerts and your menu sit beside the name; the foot holds only the pages', 
   // The foot: the pages, nothing else.
   const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
   await expect(foot.getByRole('link')).toHaveText([/Yard/, /Roundhouse/, /Agents/, /Crews/, /Events/])
+})
+
+
+test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
+  // A crew asking for the capsule (review holds the trust question); a session with an event badge for the news corner.
+  const crew2 = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e rail crew',
+      goal: 'show',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'codex-untrusted', prompt: 'review it', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  const run2 = (await api.launchCrew(crew2)).id
+  await expect
+    .poll(
+      async () => {
+        const run = await api.run(run2)
+        const id = run.members.find((m) => m.name === 'review')?.sessionId ?? ''
+        return id ? ((await api.session(id)).attention?.state ?? '') : ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('needs_input')
+  const marked = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e marked' })
+  sessions.push(marked.id)
+
+  await page.goto('/crews')
+  await page.locator('[data-sidebar-collapse]').click()
+  const rail = page.locator('[data-rail]')
+  await expect(rail).toBeVisible()
+  await expect(rail.locator(`[data-rail-session="${marked.id}"]`)).toBeVisible()
+  // A badge the Events page routes to the sidebar, arriving live (badges come from the stream the page watches).
+  await api.ok('POST', `/api/sessions/${marked.id}/attention`, { state: 'done', message: 'finished the sweep' })
+  await expect(rail.locator('[data-rail-count="needs"]')).toHaveText(/^[1-9]\d*$/)
+  await expect(rail.locator('[data-rail-count="news"]')).toHaveText(/^[1-9]\d*$/)
+  // The run as a capsule, its members inside, the play icon amber while review asks; the tooltip in words.
+  const capsule = rail.locator(`[data-rail-run="${run2}"]`)
+  await expect(capsule.locator('[data-rail-member]')).toHaveCount(2)
+  await expect(capsule.locator('[data-rail-play="needs"]')).toBeVisible()
+  await expect(capsule.locator('a').first()).toHaveAttribute('aria-label', /^e2e rail crew · run started \d\d:\d\d · review needs you · lead running$/)
+  // The corners: new events bottom right, the machine bottom left; the exited run dashed; loose exited folded into +N.
+  await expect(rail.locator(`[data-rail-session="${marked.id}"] [data-rail-news]`)).toBeVisible()
+  await expect(rail.locator('[data-rail-session][data-rail-tile="machine"]')).toHaveCount(1)
+  await expect(rail.locator(`[data-rail-run="${runId}"][data-rail-dashed] [data-rail-member][data-rail-dashed]`)).toHaveCount(2)
+  const plus = rail.locator('[data-rail-exited]')
+  await expect(plus).toHaveText(/^\+[1-9]\d*$/)
+  await plus.click()
+  await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  await expect(page.locator('[data-sidebar-section="exited"]')).toHaveAttribute('data-folded', 'false')
+  await api.stopRun(run2)
+  await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
 })

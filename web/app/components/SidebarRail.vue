@@ -1,83 +1,71 @@
 <script setup lang="ts">
-import { joinedOpen, joinedPath } from '~/utils/joined'
-import { needsDotShown, railGroups, runOpen, sessionOpen, sidebarModel } from '~/utils/sidebar'
+import { needsDotShown, railModel, sidebarModel } from '~/utils/sidebar'
 
 /**
- * The sidebar as a rail: Launch, a search button that opens the full
- * sidebar on its filter, and every session as its agent's avatar with the
- * attention dot, the members of a run together under its name, which links
- * to the run page as the full sidebar's run header does. The order is the
- * list's (sidebarModel): needs you, running, shared, exited. The mark, the
- * pages, the utility buttons and the expand button are the layout's header
- * and footer.
+ * The sidebar as a rail (design 3d): the counts on top (how many need you,
+ * then how many have new events), Launch, a search button that opens the
+ * full sidebar on its filter, then every session as a square and every run
+ * as a capsule with its sessions inside, the play icon amber while one needs
+ * you, in the list's order: needs you, running, shared, exited. Loose exited
+ * sessions fold into +N, which opens the full sidebar on Exited. The mark,
+ * the pages, the menus and the expand button are the layout's header and
+ * footer.
  */
 const emit = defineEmits<{ search: [] }>()
 
 const attention = useAttention()
 const events = useEvents()
 const launch = useLaunchModal()
-const route = useRoute()
-
-const groups = computed(() => railGroups(sidebarModel(attention.sessions.value, attention.runOf)))
-const needsDot = computed(() => needsDotShown(events.routes.value))
 const joined = useJoined()
+const sidebar = useSidebar()
+const folds = useSidebarFolds()
+
+const rail = computed(() => railModel(sidebarModel(attention.sessions.value, attention.runOf), joined.list.value, events.marks.value))
+const needsDot = computed(() => needsDotShown(events.routes.value))
+
+/** +N: the full sidebar, its Exited open. */
+function openExited() {
+  folds.unfold('exited')
+  sidebar.expand()
+}
 </script>
 
 <template>
   <div class="flex h-full min-h-0 flex-col items-center gap-2" data-rail>
+    <div v-if="rail.needs || rail.news" class="flex items-center gap-1" data-rail-counts>
+      <UTooltip v-if="rail.needs" :text="`${rail.needs} ${rail.needs === 1 ? 'needs' : 'need'} you`" :content="{ side: 'right' }">
+        <span class="rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-inverted" data-rail-count="needs">{{ rail.needs }}</span>
+      </UTooltip>
+      <UTooltip v-if="rail.news" :text="`${rail.news} with new events`" :content="{ side: 'right' }">
+        <span class="rounded-full bg-elevated px-1.5 text-[10px] font-semibold leading-4 text-muted" data-rail-count="news">{{ rail.news }}</span>
+      </UTooltip>
+    </div>
     <UTooltip text="Launch agent" :kbds="['N']" :content="{ side: 'right' }">
       <UButton icon="i-lucide-plus" size="sm" aria-label="Launch agent" @click="launch.show()" />
     </UTooltip>
     <UTooltip text="Filter sessions" :kbds="['/']" :content="{ side: 'right' }">
       <UButton icon="i-lucide-search" color="neutral" variant="ghost" size="sm" aria-label="Filter sessions" @click="emit('search')" />
     </UTooltip>
-    <div class="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto" data-rail-sessions>
-      <template v-for="g in groups" :key="g.key">
-        <UTooltip v-if="g.runId" :text="`Run · ${g.label ?? g.runId}`" :content="{ side: 'right' }">
-          <NuxtLink
-            :to="`/runs/${encodeURIComponent(g.runId)}`"
-            class="block w-full truncate rounded-sm px-0.5 text-center text-[11px] font-semibold"
-            :class="runOpen(route.path, g.runId) ? 'text-highlighted' : 'text-muted hover:text-highlighted'"
-            :aria-label="`Run ${g.label ?? g.runId}`"
-            :aria-current="runOpen(route.path, g.runId) ? 'page' : undefined"
-            data-rail-run
-          >{{ g.label ?? g.runId }}</NuxtLink>
-        </UTooltip>
-        <UTooltip v-for="it in g.items" :key="it.id" :text="it.message ? `${it.name} · ${it.message}` : it.name" :content="{ side: 'right' }">
-          <NuxtLink
-            :to="`/sessions/${it.id}`"
-            class="relative grid place-items-center rounded-md p-0.5 transition-colors"
-            :class="sessionOpen(route.path, it.id) ? 'bg-default ring-1 ring-default shadow-xs' : 'hover:bg-elevated/60'"
-            :aria-label="it.name"
-            :aria-current="sessionOpen(route.path, it.id) ? 'page' : undefined"
-            data-rail-session
+    <div class="flex min-h-0 w-full flex-1 flex-col items-center gap-1.5 overflow-y-auto py-0.5" data-rail-sessions>
+      <template v-for="it in rail.items" :key="it.id">
+        <UTooltip v-if="it.shape === 'capsule'" :text="it.label" :content="{ side: 'right' }">
+          <div
+            class="flex w-full flex-col items-center gap-1 rounded-full border px-0.5 py-1"
+            :class="it.dashed ? 'border-dashed border-accented' : 'border-default bg-elevated/40'"
+            :data-rail-run="it.id.slice(4)"
+            :data-rail-dashed="it.dashed ? '' : undefined"
           >
-            <SessionAvatar :agent-id="it.agentId" :solid="it.dot === 'needs'" :dashed="it.dot === 'exited'" />
-            <span v-if="it.dot === 'needs' && needsDot" class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-warning ring-2 ring-default" aria-hidden="true" />
-            <span v-else-if="it.dot === 'running'" class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-success ring-2 ring-default" aria-hidden="true" />
-            <span v-else-if="it.dot === 'idle'" class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-neutral-400 ring-2 ring-default" aria-hidden="true" />
-          </NuxtLink>
+            <NuxtLink :to="it.to" class="grid size-5 place-items-center rounded-full hover:bg-elevated" :aria-label="it.label" :aria-current="$route.path === it.to ? 'page' : undefined">
+              <UIcon name="i-lucide-play" class="size-3.5" :class="it.amber && needsDot ? 'text-warning' : 'text-muted'" :data-rail-play="it.amber && needsDot ? 'needs' : undefined" />
+            </NuxtLink>
+            <SidebarRailSquare v-for="m in it.members" :key="m.id" :shape="m" :needs-dot="needsDot" member />
+          </div>
         </UTooltip>
+        <SidebarRailSquare v-else :shape="it" :needs-dot="needsDot" />
       </template>
-      <!-- Shared with you comes after your own sessions, as in the list. -->
-      <template v-if="joined.list.value.length">
-        <UTooltip text="Shared with you" :content="{ side: 'right' }">
-          <span class="grid w-full place-items-center text-muted" aria-label="Shared with you" data-rail-shared><UIcon name="i-lucide-globe" class="size-3.5" /></span>
-        </UTooltip>
-        <UTooltip v-for="e in joined.list.value" :key="e.id" :text="`${e.name} · ${e.role === 'control' ? 'control' : 'view only'} · through ${e.host}`" :content="{ side: 'right' }">
-          <NuxtLink
-            :to="joinedPath(e)"
-            class="grid place-items-center rounded-md p-0.5 transition-colors"
-            :class="joinedOpen(route.path, e.token) ? 'bg-default ring-1 ring-default shadow-xs' : 'hover:bg-elevated/60'"
-            :aria-label="`${e.name}, shared with you`"
-            :aria-current="joinedOpen(route.path, e.token) ? 'page' : undefined"
-            :data-rail-shared-entry="e.id"
-          >
-            <SessionAvatar v-if="e.kind === 'session'" :agent-id="e.agentId ?? ''" :dashed="e.lastStatus === 'revoked' || e.lastStatus === 'gone'" />
-            <span v-else class="grid size-6 place-items-center rounded-md bg-elevated text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
-          </NuxtLink>
-        </UTooltip>
-      </template>
+      <UTooltip v-if="rail.exitedFolded" :text="`${rail.exitedFolded} exited · open the sidebar on them`" :content="{ side: 'right' }">
+        <button type="button" class="grid size-6 place-items-center rounded-md border border-dashed border-accented font-mono text-[10px] text-muted hover:bg-elevated/60" :aria-label="`${rail.exitedFolded} exited, open the sidebar on them`" data-rail-exited @click="openExited">+{{ rail.exitedFolded }}</button>
+      </UTooltip>
     </div>
   </div>
 </template>

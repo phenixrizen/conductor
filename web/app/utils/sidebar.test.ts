@@ -12,7 +12,7 @@ import {
   focusRows,
   moveFocus,
   needsDotShown,
-  railGroups,
+  railModel,
   readFolds,
   readSidebarMode,
   readSidebarSize,
@@ -318,24 +318,40 @@ describe('focusRows and moveFocus', () => {
   })
 })
 
-describe('railGroups', () => {
-  it('keeps the list order: loose sessions as one group a section, every run as one group under its title', () => {
+describe('railModel', () => {
+  it('draws the list in order: squares, a capsule holding its members, the shared squares, exited runs dashed and loose exited folded into +N', () => {
     const list = [
       session({ id: 'a', name: 'alone', createdAt: '2026-10-01T09:05:00Z' }),
       session({ id: 'b', name: 'core', crew: { runId: 'r1', crewId: 'api-sweep', member: 'core' }, createdAt: '2026-10-01T09:04:00Z' }),
       session({ id: 'c', name: 'waits', attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z', message: 'Allow?' } }),
-      session({ id: 'd', name: 'lead', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, createdAt: '2026-10-01T09:03:00Z' }),
+      session({ id: 'd', name: 'lead', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, attention: { state: 'needs_input', since: '2026-10-01T09:07:00Z', message: 'Trust this folder?' }, createdAt: '2026-10-01T09:03:00Z' }),
       session({ id: 'e', name: 'other', crew: { runId: 'r2', crewId: 'docs', member: 'w' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
       session({ id: 'h', name: 'laptop one', kind: 'hosted', hostName: 'laptop', status: 'starting' }),
+      session({ id: 'x', name: 'old', status: 'exited', endedAt: '2026-10-01T09:01:00Z' }),
+      session({ id: 'y', name: 'older', status: 'stopped', endedAt: '2026-10-01T09:00:00Z' }),
     ]
-    const groups = railGroups(sidebarModel(list, (id) => (id === 'r1' ? run({ members: [member('lead'), member('core')] }) : undefined)))
-    expect(groups.map((g) => [g.key, g.label, g.items.map((i) => `${i.id}:${i.dot}`)])).toEqual([
-      ['needs:', undefined, ['c:needs']],
-      ['running:', undefined, ['a:running', 'h:idle']],
-      ['running:r1', 'API sweep', ['d:running', 'b:running']],
-      ['exited:r2', 'docs', ['e:exited']],
+    const marks = { a: { type: 'done' as const, at: '2026-10-01T09:08:00Z', label: 'done', color: 'success' as const, detail: '' }, x: { type: 'error' as const, at: '2026-10-01T09:08:00Z', label: 'error', color: 'error' as const, detail: '' } }
+    const shared = [{ id: 'j1', token: 't', server: '', kind: 'session' as const, name: 'api-review', role: 'view' as const, host: 'switchyard.example.net', agentId: 'codex', addedAt: '2026-10-01T09:00:00Z' }]
+    const rail = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ startedAt: '2026-10-01T08:31:00Z', members: [member('lead'), member('core')] }) : undefined)), shared, marks)
+    expect(rail.needs).toBe(2)
+    expect(rail.news).toBe(2)
+    expect(rail.exitedFolded).toBe(2)
+    expect(rail.items.map((i) => `${i.shape}:${i.id}:${i.state}${i.dashed ? ':dashed' : ''}${i.tile ? ':' + i.tile : ''}${i.news ? ':news' + i.news : ''}`)).toEqual([
+      'square:c:needs',
+      'capsule:run:r1:needs',
+      'square:a:running:news1',
+      'square:h:idle:machine',
+      'square:j:j1:idle:share',
+      'capsule:run:r2:exited:dashed',
     ])
-    expect(groups[0]!.items[0]!.message).toBe('Allow?')
-    expect(new Set(groups.map((g) => g.key)).size).toBe(groups.length)
+    const capsule = rail.items[1]!
+    expect(capsule.amber).toBe(true)
+    expect(capsule.members!.map((m) => `${m.id}:${m.state}`)).toEqual(['d:needs', 'b:running'])
+    expect(capsule.label).toMatch(/^API sweep · run started \d\d:\d\d · lead needs you · core running$/)
+    expect(rail.items[0]!.label).toBe('waits · needs you · Allow?')
+    expect(rail.items[2]!.label).toBe('alone · running · done')
+    expect(rail.items[3]!.label).toBe('laptop one · idle · on laptop')
+    expect(rail.items[4]!.label).toBe('api-review · view only · through switchyard.example.net')
+    expect(rail.items[5]!.members![0]!.dashed).toBe(true)
   })
 })

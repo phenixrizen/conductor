@@ -725,9 +725,30 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The rail** (3d, S6): `railModel` (`utils/sidebar.ts`) draws the rail
+  from the list's model, the links shared with you and the Events page's
+  marks: `RailShape`s in the list's order, a square a session, a capsule a
+  run holding its members' squares (`SidebarRailSquare`), the shared
+  squares with a globe, exited runs dashed, loose exited sessions folded
+  into `+N`; two counts on top (`counts.needs`, and how many sessions carry
+  a mark). The corners: the state top right (the amber one following the
+  Events page's Badge route as the rows' dot does), new events bottom right
+  (one per session today: the Events page keeps one badge a session; C4
+  folds the unread chat into the same number), the origin tile bottom left.
+  Every shape's tooltip names it in words (`railRunLabel`: "users api · run
+  started 08:31 · review needs you · core running · lead exited"). A capsule
+  is a `div` with the play icon a link to the run and each member its own
+  link (a link holds no link). `railGroups` and its types are gone.
 
 ### Verified (round 11)
 
+- S6: `sidebar.spec.ts` collapses the sidebar and reads the two counts, a
+  capsule holding two members with the amber play icon while review asks
+  and its tooltip in words, the news corner on a session given a `done`
+  attention, the machine tile on the hosted stub, the stopped run's capsule
+  and members dashed, and `+N` opening the full sidebar on Exited; vitest
+  covers `railModel` (the order, the counts, the capsule's members and
+  label, the folded exited, every tooltip).
 - S5: `sidebar.spec.ts` finds no `[data-sidebar-tools]`, opens Alerts from
   the header, lists the account menu's five items, sets a name through the
   dialog (the button then says whose menu it is), and reads the foot as the
