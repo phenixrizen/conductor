@@ -4,9 +4,10 @@ Scope notes for the workbench redesign. The source mockup is the
 claude.ai/design project "Conductor Mockups" (screens 1a workbench, 1b wall,
 1c runs, 1d launch, 1e share, 1f join, 1g carousel). This file records what is
 being built, the decisions taken along the way, and what each round left
-for a person to verify. What is deliberately deferred is listed once, in
-[future-features.md](future-features.md); the "Deferred" lists under the
-rounds below are the history of when each item was set aside.
+for a person to verify. The bugs known and what is deliberately
+deferred are listed once, in [tasks-todo.md](tasks-todo.md); the "Deferred"
+lists under the rounds below are the history of when each item was set
+aside.
 
 ## Delivered (2026-09-28)
 
@@ -695,9 +696,9 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   its run page saying "Works from anywhere", the link listing the members on
   this workbench, a member's terminal through the relay, and a revoke at
   home ending the link there (`web/e2e/switchyard.spec.ts`).
-- **What is deferred lives in one place**, `docs/future-features.md`, by
-  area, each item with the round that set it aside; the rounds' own
-  "Deferred" lists stay as history.
+- **What is owed lives in one place**, `docs/tasks-todo.md`: the bugs known
+  and the features set aside, by area, each item with the round that found
+  or deferred it; the rounds' own "Deferred" lists stay as history.
 - **Zoom in the desktop app** (reported on Windows: zoom in did nothing).
   Electron's zoom roles bind Ctrl+Plus, which needs Shift, and on Windows and
   Linux the page sees a key before the menu, where the terminal takes Ctrl+-

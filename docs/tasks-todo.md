@@ -1,11 +1,21 @@
-# Future features
+# Tasks to do
 
-What Conductor has set aside, in one place. Each item names the round that
-deferred it (its decisions are in [features.md](features.md)) and why it
-waits. An item leaves this list when it ships, with its tests at both ends
-(AGENTS.md), or when the owner drops it.
+What Conductor still owes, in one place: the bugs known and the features set
+aside. Each item names the round that found or deferred it (its decisions
+are in [features.md](features.md)) and why it waits. An item leaves this
+list when it ships, with its tests at both ends (AGENTS.md), or when the
+owner drops it.
 
-## The desktop app
+## Bugs
+
+None known open. A bug goes here with how to see it (the page, the steps,
+the platform), what was expected, and the round or pull request that fixes
+it; one that a person found by hand says so, and gets a test that would
+have caught it when it is fixed.
+
+## Features
+
+### The desktop app
 
 - **The app forwards the TLS listener into WSL and maps the router from
   Windows** (UPnP, PCP, NAT-PMP from the Windows side), so the public-address
@@ -20,7 +30,7 @@ waits. An item leaves this list when it ships, with its tests at both ends
 - **Signing and notarisation of the desktop builds**, once the secrets
   exist; the builds ship unsigned. Round 5.
 
-## The switchyard and sharing
+### The switchyard and sharing
 
 - **The join route answering a browser origin named in Settings**, so a
   browser at a LAN address (not the desktop window) can open a joined link;
@@ -34,7 +44,7 @@ waits. An item leaves this list when it ships, with its tests at both ends
 - **TURN credential minting**, should a network need it; the relay covers
   the no-ICE case. Round 5.
 
-## Crews and runs
+### Crews and runs
 
 - **Hosted crews** ("Runs on: my machine"), and with them the field in the
   crew editor. Round 8.
@@ -47,7 +57,7 @@ waits. An item leaves this list when it ships, with its tests at both ends
 - **`conductor up --resume <run>`**; the API has
   `POST /api/runs/{run}/resume`. Round 4.
 
-## Agents and sessions
+### Agents and sessions
 
 - **The agent's session id through the plugin agents** (OpenCode, oh-my-pi,
   pi's mid-process changes, Amp, DeepSeek Harness): their plugins would pass
@@ -58,7 +68,7 @@ waits. An item leaves this list when it ships, with its tests at both ends
   the data directory), so a session can be resumed after it leaves the
   list; runs have this (`runs/`), sessions do not. Round 4.
 
-## Hosted sessions (`conductor host`)
+### Hosted sessions (`conductor host`)
 
 - **Yolo and Resume for hosted sessions.** Round 4.
 - **A multi-session host protocol**: one `conductor host` serving several
