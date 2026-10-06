@@ -689,9 +689,23 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`/yard?focus=<id>`), Stop…; a run header Open run, Share run, Stop run.
   One Share dialog serves every row, mounted on its target a tick before it
   opens so that it mints the link.
+- **Answer in the row** (3b, 3c, S3): `rowPrompt` (`utils/sidebarActions.ts`)
+  turns a row's prompt into choices (numbered 1..9, `UKbd`) or a reply
+  field, and marks a hosted session whose host is away, where the controls
+  wait disabled with "The host is away". `SidebarPrompt` sits below the
+  row's link (a link holds no button). The answer takes the Yard's path,
+  `useQuickReply` (a short-lived control connection, the relay for a hosted
+  session), and its busy set, so the Yard's card and the row agree; the
+  stream clears the prompt and the row moves to Running by itself. The
+  field stops its keydown events, so the window's digit listener and, from
+  S4, the list's keys never see what is typed.
 
 ### Verified (round 11)
 
+- S3: a choice clicked in the row (`choices.spec.ts`) and a line typed in
+  the row's field (`sidebar.spec.ts`) reach the stub's transcript, clear the
+  prompt and move the row to Running without leaving the page; `rowPrompt`
+  in vitest, the host-away state among it.
 - S2: the hover actions, the in-row stop question, the context menu and the
   run header's actions are Playwright-covered in `sidebar.spec.ts`
   (share from a row, Show in the Yard, a member stopped from its row, a run

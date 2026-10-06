@@ -3,7 +3,7 @@ import type { RunBlock, SessionRow } from '~/utils/sidebar'
 
 /** A run as one block (design 3b): its header, then its members joined by a line, an exited member inside with Resume. The members' and the header's actions pass up to the list. */
 withDefaults(defineProps<{ block: RunBlock; now: number; needsDot?: boolean; open?: boolean; busy?: Set<string> }>(), { needsDot: true, open: false, busy: () => new Set() })
-const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBlock]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow] }>()
+const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBlock]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number]; reply: [row: SessionRow, text: string] }>()
 </script>
 
 <template>
@@ -23,6 +23,8 @@ const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBloc
         @stop="emit('stop', $event)"
         @yard="emit('yard', $event)"
         @open-run="emit('openRun', $event)"
+        @answer="(row, i) => emit('answer', row, i)"
+        @reply="(row, text) => emit('reply', row, text)"
       />
     </ol>
   </li>

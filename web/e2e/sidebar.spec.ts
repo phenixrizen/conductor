@@ -1,14 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { openSync } from 'node:fs'
+import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
 import { serverBinary, stubPath } from './server'
 
-// The sidebar's list (design 3a, 3b, 3c's folding, 3f): sessions and runs
-// ordered by what needs you, a run kept whole where its most urgent member
-// is, a machine as a tag on the row, Shared with you below your own, Exited
-// folded to one line, every section folding from its header and remembered.
+// The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
+// what needs you, a run kept whole where its most urgent member is, a machine
+// as a tag on the row, Shared with you below your own, Exited folded to one
+// line, every section folding from its header and remembered; the actions on
+// a row; a prompt answered in the row.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -24,6 +25,11 @@ test.afterAll(async ({ api }) => {
   for (const id of sessions) await api.stopSession(id)
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
+
+function transcript(home: string, s: Session): string {
+  const file = join(home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
+  return existsSync(file) ? readFileSync(file, 'utf8') : ''
+}
 
 async function ended(api: { session: (id: string) => Promise<Session> }, id: string) {
   await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
@@ -243,4 +249,22 @@ test('a loose session stops from its row and moves to Exited', async ({ page, ap
   if ((await exited.getAttribute('data-folded')) === 'true') await exited.getByRole('button', { name: /^Exited/ }).click()
   await expect(exited.locator(`[data-sidebar-row="s:${alive!.id}"]`)).toBeVisible({ timeout: 15_000 })
   await expect(exited.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-stop]`)).toHaveCount(0)
+})
+
+test('a free-text prompt gets a reply field in the row; Enter sends the line and the row moves on', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e branch' })
+  sessions.push(s.id)
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch should I base it on?' })
+  await page.goto('/crews')
+  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  await expect(row.locator('[data-row-prompt]')).toHaveText('Which branch should I base it on?')
+  await expect(row.locator('[data-row-choice]')).toHaveCount(0)
+  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  await field.fill('main')
+  await field.press('Enter')
+  await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('main\n')
+  await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row.locator('[data-row-reply]')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/crews$/)
 })

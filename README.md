@@ -309,7 +309,12 @@ launched with yolo carries the **yolo** badge. Hovering a row offers
 Stop. Stop asks first, in the row ("Stop docs-sweep? Its terminal closes.
 Resume brings the conversation back from Exited."). A right-click, or a long
 press on a touch screen, opens the same menu as More: Open, Open the run (a
-member), Share…, Show in the Yard, Stop….
+member), Share…, Show in the Yard, Stop…. A prompt is answered in the row:
+its choices are numbered buttons (1 Yes, 2 No), a free-text prompt gets a
+reply field where Enter sends; the answer goes over a short-lived connection
+as the Yard's does, and the row moves on as the prompt clears. A hosted
+session whose host is away keeps its prompt, disabled, with "The host is
+away".
 
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch

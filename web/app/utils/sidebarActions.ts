@@ -1,4 +1,6 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
+import type { AttentionOption } from './protocol'
+import type { SessionRow } from './sidebar'
 
 /**
  * What a row of the sidebar offers without opening it (design 3c): the same
@@ -57,4 +59,22 @@ export function stopQuestion(t: Pick<RowActionTarget, 'kind' | 'name'>): { title
 /** Whether a session in this state can be stopped (and so shared). */
 export function sessionLive(status: string): boolean {
   return status === 'running' || status === 'starting'
+}
+
+/** What a row's prompt offers (design 3b, 3c): choices as numbered buttons, or a reply field; waiting, disabled, while a host is away. */
+export interface RowPrompt {
+  message: string
+  /** The choices, numbered 1..9 in the row; a prompt with none takes a typed line. */
+  choices: AttentionOption[]
+  /** A hosted session whose host is away: nothing reaches it until the host is back. */
+  away: boolean
+  placeholder: string
+}
+
+export const HOST_AWAY = 'The host is away'
+
+export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPrompt | null {
+  if (!row.prompt) return null
+  const away = row.session.status === 'host_disconnected'
+  return { message: row.prompt.message, choices: row.prompt.options, away, placeholder: away ? HOST_AWAY : 'Reply…' }
 }

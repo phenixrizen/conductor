@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { rowMenuItems, sessionLive, stopQuestion } from './sidebarActions'
+import type { SessionInfo } from '~/composables/useSessions'
+import { HOST_AWAY, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
 
 const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, stop: () => {}, forget: () => {} }
 const shape = (groups: ReturnType<typeof rowMenuItems>) => groups.map((g) => g.map((i) => `${i.label}${i.kbds ? ` [${i.kbds.join('+')}]` : ''}${i.disabled ? ' (off)' : ''}${i.color ? ` ${i.color}` : ''}`))
@@ -39,5 +40,26 @@ describe('stopQuestion and sessionLive', () => {
     expect(sessionLive('starting')).toBe(true)
     expect(sessionLive('exited')).toBe(false)
     expect(sessionLive('host_disconnected')).toBe(false)
+  })
+})
+
+describe('rowPrompt', () => {
+  const session = (status: SessionInfo['status']) => ({ id: 's1', status } as SessionInfo)
+  const options = [
+    { label: 'Yes', input: 'Yes\r' },
+    { label: 'No', input: 'No\r' },
+  ]
+
+  it('gives a prompt with choices its buttons and one without a reply field', () => {
+    expect(rowPrompt({ session: session('running'), prompt: { message: 'Run the migration on staging?', options } })).toEqual({ message: 'Run the migration on staging?', choices: options, away: false, placeholder: 'Reply…' })
+    expect(rowPrompt({ session: session('running'), prompt: { message: 'Which branch should I base it on?', options: [] } })).toEqual({ message: 'Which branch should I base it on?', choices: [], away: false, placeholder: 'Reply…' })
+  })
+
+  it('waits, with the words, while the host is away; nothing without a prompt', () => {
+    const p = rowPrompt({ session: session('host_disconnected'), prompt: { message: 'Trust this folder?', options } })
+    expect(p?.away).toBe(true)
+    expect(p?.placeholder).toBe(HOST_AWAY)
+    expect(p?.choices).toEqual(options)
+    expect(rowPrompt({ session: session('running') })).toBeNull()
   })
 })

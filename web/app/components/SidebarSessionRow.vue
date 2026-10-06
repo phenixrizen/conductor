@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { relativeTime, sessionMeta } from '~/utils/sessions'
 import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
-import { rowMenuItems, sessionLive, stopQuestion } from '~/utils/sidebarActions'
+import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
 
 /**
  * One session in the list (design 3b, 3c): the agent's initials, the name, a status dot, what it asks when it asks, and a meta
  * line of agent · where · how long. A hosted session's row carries its machine with a laptop, in place of a heading. The path is
  * the row's tooltip. An exited row says how it ended and when, with Resume beside the link (a link holds no button). Hovering
  * offers Share, Stop and More in place of the dot; Stop asks first, in the row; a right-click or a long press opens the same
- * menu as More.
+ * menu as More. A prompt is answered in the row, below the link: its choices as numbered buttons, or a reply field.
  */
 const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean }>(), { member: false, needsDot: true, busy: false })
-const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow] }>()
+const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number]; reply: [row: SessionRow, text: string] }>()
 const route = useRoute()
 const router = useRouter()
 
@@ -24,6 +24,7 @@ const exitLine = computed(() => `${props.row.exitWord} · ${relativeTime(s.value
 const live = computed(() => sessionLive(s.value.status))
 const confirming = ref(false)
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))
+const prompt = computed(() => rowPrompt(props.row))
 
 const target = computed(() => ({ kind: 'session' as const, name: s.value.name, live: live.value, inRun: !!s.value.crew }))
 const menu = computed(() =>
@@ -44,11 +45,13 @@ function confirmStop() {
 
 <template>
   <UContextMenu :items="menu">
-    <li class="group relative flex items-center gap-1" :data-sidebar-row="`s:${s.id}`" data-row-kind="session" :data-row-state="row.state">
+    <!-- The open session's box is the row's, so that a prompt answered below the link sits inside it. -->
+    <li class="group relative flex flex-col rounded-md" :class="current && 'bg-default border border-default shadow-xs'" :data-sidebar-row="`s:${s.id}`" data-row-kind="session" :data-row-state="row.state">
+      <div class="flex items-center gap-1">
       <NuxtLink
         :to="`/sessions/${s.id}`"
         class="flex min-w-0 flex-1 gap-2.5 rounded-md px-2.5 py-1.5 transition-colors"
-        :class="[current ? 'bg-default border border-default shadow-xs' : 'hover:bg-elevated/60', row.state === 'exited' && !current && 'opacity-75']"
+        :class="[!current && 'hover:bg-elevated/60', row.state === 'exited' && !current && 'opacity-75']"
         :aria-current="current ? 'page' : undefined"
         :title="sessionMeta(s, now)"
       >
@@ -81,6 +84,8 @@ function confirmStop() {
           </template>
         </span>
       </NuxtLink>
+      <ResumeButton v-if="row.state === 'exited' && s.kind === 'server'" :session="s" icon-only size="xs" />
+      </div>
       <!-- The confirm's buttons and the hover actions sit beside the link: a link holds no button. -->
       <span v-if="confirming" class="absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-md bg-default/95 p-0.5 shadow-xs ring ring-default">
         <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
@@ -101,7 +106,7 @@ function confirmStop() {
           <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>
-      <ResumeButton v-if="row.state === 'exited' && s.kind === 'server'" :session="s" icon-only size="xs" />
+      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" @answer="emit('answer', row, $event)" @reply="emit('reply', row, $event)" />
     </li>
   </UContextMenu>
 </template>

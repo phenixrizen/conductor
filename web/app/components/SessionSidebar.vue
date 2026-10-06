@@ -20,6 +20,7 @@ const joined = useJoined()
 const foldState = useSidebarFolds()
 const api = useSessions()
 const toast = useToast()
+const quick = useQuickReply()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
@@ -123,6 +124,21 @@ function openRunOf(row: SessionRow) {
   if (row.session.crew) router.push(`/runs/${encodeURIComponent(row.session.crew.runId)}`)
 }
 
+// Answering in the row (design 3b, 3c): a choice sends its keys, a typed line is submitted, over the Yard's short-lived connection
+// (the relay for a hosted session); the stream clears the prompt and the row moves on by itself. Busy is the Yard's set too, so a
+// card there and the row here agree.
+const busyAll = computed(() => new Set([...busy.value, ...quick.sending.value]))
+function fail(title: string) {
+  return (e: unknown) => toast.add({ title, description: (e as Error).message, color: 'error' })
+}
+function answer(row: SessionRow, i: number) {
+  const o = row.prompt?.options[i]
+  if (o) quick.send(row.session, o.input).catch(fail(`Reply to ${row.session.name} failed`))
+}
+function reply(row: SessionRow, text: string) {
+  quick.reply(row.session, text).catch(fail(`Reply to ${row.session.name} failed`))
+}
+
 function focusFilter() {
   filterInput.value?.inputRef?.focus()
 }
@@ -156,15 +172,17 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :now="now"
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
-              :busy="busy"
+              :busy="busyAll"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
               @stop="stopSession"
               @yard="showInYard"
               @open-run="openRunOf"
+              @answer="answer"
+              @reply="reply"
             />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busy.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" />
+            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busyAll.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" @answer="answer" @reply="reply" />
           </template>
         </ol>
       </SidebarSection>
@@ -178,15 +196,17 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :now="now"
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
-              :busy="busy"
+              :busy="busyAll"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
               @stop="stopSession"
               @yard="showInYard"
               @open-run="openRunOf"
+              @answer="answer"
+              @reply="reply"
             />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busy.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" />
+            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busyAll.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" @answer="answer" @reply="reply" />
           </template>
         </ol>
       </SidebarSection>
@@ -205,15 +225,17 @@ onBeforeUnmount(() => window.clearInterval(tick))
               :now="now"
               :needs-dot="needsDot"
               :open="(it as RunBlock).runId === openRun"
-              :busy="busy"
+              :busy="busyAll"
               @share-run="shareRun"
               @stop-run="stopRun"
               @share="shareSession"
               @stop="stopSession"
               @yard="showInYard"
               @open-run="openRunOf"
+              @answer="answer"
+              @reply="reply"
             />
-            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busy.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" />
+            <SidebarSessionRow v-else :row="it as SessionRow" :now="now" :needs-dot="needsDot" :busy="busyAll.has((it as SessionRow).id)" @share="shareSession" @stop="stopSession" @yard="showInYard" @open-run="openRunOf" @answer="answer" @reply="reply" />
           </template>
         </ol>
       </SidebarSection>
