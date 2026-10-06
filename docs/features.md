@@ -823,6 +823,23 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Events badge plus the unread chat, a capsule's its members' plus the run's
   own, and the tooltip names both ("alone · running · done · 3 unread in
   chat"). A hosted session's chat stays on the host until C5.
+- **Hosted chats on the stream** (2g for `conductor host`, C5). A host sends
+  each message its session keeps as `chat{sessionId, message}` on its
+  control connection (the local session's `OnChat` hook queues it on the
+  same bounded forwarder as activity, one goroutine sends in order); the
+  server's `HostedSession.HostChat` cleans it (the connection's session
+  whatever the host named, the known kinds only, scope `session`, bounded
+  ids, cleaned names, the text cleaned and cut to the bound, `to` only as
+  `agent`) and the hub's `OnChat` hands it to `eventHub.chat`. A server
+  publishing its sessions to a switchyard sends their chat up the same way
+  (`Published.OnChat`), so the switchyard's stream shows it as a hosted
+  session's. `HostedSession` stays a pass-through for the chat itself: the
+  host keeps it and serves its viewers. Found by the chat tests on the way:
+  a session's end revoked its links and closed their viewers as "link
+  revoked" (4403), racing the status frame, so a guest on a view link could
+  miss that the session ended; `DisconnectLink` now closes them as the
+  session's end (4410) once it has ended, which the join page already takes
+  as ended.
 
 ### Verified (round 11)
 
@@ -872,6 +889,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   open over the terminal, dark and light) and at 1440 against 2d (the bare
   guest page with the panel and the note). By hand on a phone (the keyboard
   pushing the composer up, the drag to full height): pending.
+- C5: Go tests for the cleaning in `signal` (every kind, a bad role, no
+  id, a bad time, the cut), for the fake host's message reaching the stream
+  and a bogus kind costing nothing (`ws_e2e_test.go`), and for a real host
+  whose relay viewer's post reaches the stream (`hostagent`); Playwright
+  `chat.spec.ts` scenario 7 (a line said in a hosted session counts on
+  another person's sidebar row).
 - C4: Go tests for the `chat` event's shape and its reach (no sink) and
   for the stream carrying a session's and a run's chat; vitest for the
   store (counted once, never a system line or one's own, nothing older than

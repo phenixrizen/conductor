@@ -536,3 +536,55 @@ func TestHostRegistersAfreshWhenTheServerForgotTheSession(t *testing.T) {
 	want(idents, first, "the second attempt's instance")
 	want(idents, first, "the third attempt's instance")
 }
+
+// What is said in a hosted session's chat reaches the server's admin stream
+// as a `chat` event of the hosted session: the host's own OnChat hook queues
+// it for the control connection.
+func TestHostChatTravelsToTheServerStream(t *testing.T) {
+	_, hs := startServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registered := make(chan string, 1)
+	done := make(chan Result, 1)
+	go func() {
+		res, err := Run(ctx, Options{
+			ServerURL: hs.URL, Token: hostToken, Name: "chat test", Argv: []string{"/bin/cat"}, RelayOnly: true,
+			Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Registered: func(id, _ string) { registered <- id },
+		})
+		if err != nil {
+			t.Errorf("run: %v", err)
+		}
+		done <- res
+	}()
+	var sessionID string
+	select {
+	case sessionID = <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("host did not register")
+	}
+	feed := adminFeed(t, hs.URL)
+	v := dialViewer(t, hs.URL, sessionID, adminToken)
+	v.expectJSON(proto.TypeControl, proto.CtlWelcome)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
+	v.send(relay)
+	v.expectJSON(proto.TypeSignal, proto.SigRelayOK)
+	v.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 90, Rows: 25, Name: "Nate"}))
+	v.expectJSON(proto.TypeControl, proto.CtlWelcome)
+	v.expectJSON(proto.TypeControl, proto.CtlReady)
+	v.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "hosted hello", Nonce: "h1"}))
+	ev := waitFeed(t, feed, "the chat message", func(ev string) bool {
+		return strings.HasPrefix(ev, "chat ") && strings.Contains(ev, `"text":"hosted hello"`)
+	})
+	for _, want := range []string{`"sessionId":"` + sessionID + `"`, `"kind":"message"`, `"name":"Nate"`, `"role":"control"`} {
+		if !strings.Contains(ev, want) {
+			t.Fatalf("streamed %s, missing %s", ev, want)
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("host did not stop")
+	}
+}

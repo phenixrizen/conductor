@@ -274,8 +274,10 @@ bubble on a session's row and a run's header in the sidebar, the number in
 the rail square's bottom-right corner (with new events, the tooltip naming
 both), one count per session and a run's own chat on its header. The count
 is this browser's, kept across reloads and tabs, fed by the chat you have open
-and by the server's event stream for the chats you do not; it clears when you
-open the thread, and nothing counts for system lines or what you sent.
+and by the server's event stream for the chats you do not (a `conductor
+host` session's chat reaches that stream too, sent by the host as it is
+said); it clears when you open the thread, and nothing counts for system
+lines or what you sent.
 
 ## Clickable links and file viewer
 

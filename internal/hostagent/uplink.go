@@ -127,7 +127,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	// server, so this one is used by nobody, and is fresh for every publish.
 	agentToken, _ := share.NewToken()
 	a := &agent{opts: opts, wsURL: wsURL, dir: info.Cwd, cols: info.Cols, rows: info.Rows, peers: map[string]*peer{}, log: log, agentToken: agentToken, local: local, instance: u.instanceID(), localID: info.ID}
-	a.activity = newActivityForwarder(a.sendActivity, log)
+	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, log)
 	conn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
 		return nil, err
@@ -163,6 +163,9 @@ func (p *Published) OnChange(info session.Info) { p.a.onLocalChange(info) }
 
 // OnActivity forwards an activity entry of the local session; the caller
 // chains it from the session's OnActivity hook. It never waits.
+// OnChat is the local session's OnChat hook: the message goes to the rendezvous, whose stream shows it as a hosted session's.
+func (p *Published) OnChat(id string, m session.ChatMessage) { p.a.onLocalChat(id, m) }
+
 func (p *Published) OnActivity(id string, e session.ActivityEntry, state session.AttentionState) {
 	p.a.onLocalActivity(id, e, state)
 }

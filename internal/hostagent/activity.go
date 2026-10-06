@@ -11,40 +11,52 @@ import (
 // activityQueue bounds the entries waiting for the control connection.
 const activityQueue = 256
 
-// activityForwarder carries the activity entries of the local session to the
-// server. The session calls its OnActivity hook on the goroutine that
-// recorded the entry, which may be the one reading the process or the one
-// serving a viewer, and that goroutine must not wait for a network write. So
-// the hook only queues, and one goroutine sends, in the order queued. The
-// queue is bounded: past it entries are dropped, which costs the admin stream
-// a line and nothing else, because the session keeps its own log.
+// activityForwarder carries the activity entries of the local session, and
+// its chat messages, to the server. The session calls its OnActivity and
+// OnChat hooks on the goroutine that recorded the entry or kept the message,
+// which may be the one reading the process or the one serving a viewer, and
+// that goroutine must not wait for a network write. So the hooks only queue,
+// and one goroutine sends, in the order queued. The queue is bounded: past
+// it entries are dropped, which costs the admin stream a line and nothing
+// else, because the session keeps its own log and its own chat.
 type activityForwarder struct {
-	queue   chan forwarded
-	send    func(session.ActivityEntry, session.AttentionState)
-	log     *slog.Logger
-	pending atomic.Int64 // entries queued or being sent
-	dropped atomic.Uint64
+	queue    chan forwarded
+	send     func(session.ActivityEntry, session.AttentionState)
+	sendChat func(session.ChatMessage)
+	log      *slog.Logger
+	pending  atomic.Int64 // entries queued or being sent
+	dropped  atomic.Uint64
 }
 
 // forwarded is an entry waiting for the connection, with the attention state
 // it records when it is an attention entry: the session hands the state on
 // with the entry (set with the entry's stamp), for by the time the entry is
-// sent the session may be in another.
+// sent the session may be in another. Or a chat message (chat set).
 type forwarded struct {
 	entry session.ActivityEntry
 	state session.AttentionState
+	chat  *session.ChatMessage
 }
 
-func newActivityForwarder(send func(session.ActivityEntry, session.AttentionState), log *slog.Logger) *activityForwarder {
-	return &activityForwarder{queue: make(chan forwarded, activityQueue), send: send, log: log}
+func newActivityForwarder(send func(session.ActivityEntry, session.AttentionState), sendChat func(session.ChatMessage), log *slog.Logger) *activityForwarder {
+	return &activityForwarder{queue: make(chan forwarded, activityQueue), send: send, sendChat: sendChat, log: log}
 }
 
 // push queues e, with the attention state it records, without waiting. It
 // reports false, and drops e, when the queue is full.
 func (f *activityForwarder) push(e session.ActivityEntry, state session.AttentionState) bool {
+	return f.queueOne(forwarded{entry: e, state: state})
+}
+
+// pushChat queues a chat message the session kept, the same way.
+func (f *activityForwarder) pushChat(m session.ChatMessage) bool {
+	return f.queueOne(forwarded{chat: &m})
+}
+
+func (f *activityForwarder) queueOne(q forwarded) bool {
 	f.pending.Add(1) // before the entry is visible, so idle never misses it
 	select {
-	case f.queue <- forwarded{e, state}:
+	case f.queue <- q:
 		return true
 	default:
 	}
@@ -62,7 +74,11 @@ func (f *activityForwarder) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case q := <-f.queue:
-			f.send(q.entry, q.state)
+			if q.chat != nil {
+				f.sendChat(*q.chat)
+			} else {
+				f.send(q.entry, q.state)
+			}
 			f.pending.Add(-1)
 		}
 	}

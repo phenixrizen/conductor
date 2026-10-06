@@ -16,6 +16,9 @@ const (
 	HostICE         = "ice"
 	HostViewerError = "viewer_error"
 	HostViewerClose = "viewer_closed"
+	// HostChat carries a chat message the host's session kept (HostChatMsg):
+	// host -> server, for the browsers' unread counts on the admin stream.
+	HostChat = "chat"
 	// both directions
 	HostAttention = "attention"
 	HostActivity  = "activity"
@@ -201,6 +204,15 @@ type HostActivityMsg struct {
 	SessionID string   `json:"sessionId,omitempty"`
 	Entry     Activity `json:"entry"`
 	State     string   `json:"state,omitempty"`
+}
+
+// HostChatMsg carries a chat message the host's session kept, as `chat`
+// carries it to a viewer. The server ignores SessionID and takes the
+// connection's, and cleans the message before it reaches the stream.
+type HostChatMsg struct {
+	T         string      `json:"t"`
+	SessionID string      `json:"sessionId,omitempty"`
+	Message   ChatMessage `json:"message"`
 }
 
 // HostStopMsg asks the host to stop its process.

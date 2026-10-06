@@ -29,7 +29,7 @@ func TestActivityForwarderSendsInOrder(t *testing.T) {
 		mu.Lock()
 		got = append(got, e.Message)
 		mu.Unlock()
-	}, discardLog)
+	}, func(session.ChatMessage) {}, discardLog)
 	go f.run(t.Context())
 	want := make([]string, 0, 100)
 	for i := 0; i < 100; i++ {
@@ -62,7 +62,7 @@ func waitIdle(t *testing.T, f *activityForwarder) {
 // the process: a connection that takes seconds to write must not hold it.
 func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 	release := make(chan struct{})
-	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { <-release }, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { <-release }, func(session.ChatMessage) {}, discardLog)
 	go f.run(t.Context())
 	defer close(release)
 
@@ -93,7 +93,7 @@ func TestActivityForwarderNeverBlocksTheRecorder(t *testing.T) {
 func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 	var sent sync.WaitGroup
 	sent.Add(800)
-	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { sent.Done() }, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) { sent.Done() }, func(session.ChatMessage) {}, discardLog)
 	go f.run(t.Context())
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
@@ -119,7 +119,7 @@ func TestActivityForwarderIsSafeFromManyGoroutines(t *testing.T) {
 }
 
 func TestActivityForwarderStopsWithItsContext(t *testing.T) {
-	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) {}, discardLog)
+	f := newActivityForwarder(func(session.ActivityEntry, session.AttentionState) {}, func(session.ChatMessage) {}, discardLog)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { f.run(ctx); close(done) }()
@@ -146,7 +146,7 @@ func activityTestAgent(t *testing.T, delayStatus time.Duration) (*agent, chan an
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
 	a.sendHook = func(v any) { out <- v }
-	a.activity = newActivityForwarder(a.sendActivity, a.log)
+	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, a.log)
 	go a.activity.run(t.Context())
 	hook := a.onLocalActivity
 	if delayStatus > 0 {

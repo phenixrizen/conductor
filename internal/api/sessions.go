@@ -288,6 +288,9 @@ func noYoloRecipe(agent catalog.Agent) string {
 // browsers' unread counts over the events stream.
 func (s *Server) localChat(id string, m session.ChatMessage) {
 	s.events.chat(id, "", m)
+	if pub := s.publishedOf(id); pub != nil {
+		pub.OnChat(id, m)
+	}
 }
 
 func (s *Server) localChange(info session.Info) {
