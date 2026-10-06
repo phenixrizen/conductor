@@ -3,7 +3,7 @@ import { ApiError } from './useApi'
 import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
 import { formedCrew } from '~/utils/activity'
-import type { ActivityEntry, SessionActivity } from '~/utils/protocol'
+import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
@@ -88,6 +88,7 @@ export function useAttention() {
   const { httpBase } = useApiBase()
   const api = useSessions()
   const events = useEvents()
+  const unread = useChatUnread()
   const { settings } = useAttentionSettings()
   const toast = useToast()
 
@@ -161,6 +162,7 @@ export function useAttention() {
     store.value.sessions.delete(id)
     bump()
     events.forget(id)
+    unread.forget(`session:${id}`)
   }
 
   /**
@@ -293,6 +295,10 @@ export function useAttention() {
         const { sessionId, ...entry } = payload as SessionActivity
         offerFormedCrew(sessionId, entry)
         events.push(sessionId, entry)
+      } else if (event === 'chat') {
+        // A chat message of a session or a run: the unread counts, for the threads no page has open.
+        const { sessionId, runId, ...m } = payload as { sessionId?: string; runId?: string } & ChatMessage
+        if (sessionId || runId) unread.accept(sessionId ? `session:${sessionId}` : `run:${runId}`, m)
       }
     } catch {
       /* ignore malformed event */

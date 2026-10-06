@@ -1179,3 +1179,41 @@ func TestChatRateLimitLeavesTheConnectionOpen(t *testing.T) {
 		t.Fatalf("%d kept", len(h))
 	}
 }
+
+// The admin stream carries a session's chat and a run's as `chat` events,
+// for the counts the sidebar keeps while no page has the thread open.
+func TestEventsStreamCarriesChat(t *testing.T) {
+	e := newTestEnv(t, nil)
+	stream := e.sse(t)
+	id := e.createSession("cat")
+	owner := dialViewer(t, e, id, adminToken)
+	owner.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	owner.expectControl(proto.CtlReady)
+	owner.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "on the stream"}))
+	owner.expectChat(proto.ChatKindMessage)
+	next := func(what string) string {
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case ev := <-stream:
+				if strings.HasPrefix(ev, "chat ") && strings.Contains(ev, what) {
+					return ev
+				}
+			case <-deadline:
+				t.Fatalf("no chat event with %q", what)
+			}
+		}
+	}
+	if ev := next(`"text":"on the stream"`); !strings.Contains(ev, `"sessionId":"`+id+`"`) || strings.Contains(ev, `"runId"`) {
+		t.Fatalf("session chat event %s", ev)
+	}
+	runID := e.launchCrew(t, "Streamed", catMember("core", "immediately"))
+	coreID := e.waitRunning(t, runID, "core")
+	member := dialViewer(t, e, coreID, adminToken)
+	member.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	member.expectControl(proto.CtlReady)
+	member.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "run on the stream"}))
+	if ev := next(`"text":"run on the stream"`); !strings.Contains(ev, `"runId":"`+runID+`"`) || strings.Contains(ev, `"sessionId"`) {
+		t.Fatalf("run chat event %s", ev)
+	}
+}

@@ -251,3 +251,31 @@ func TestEventHubRunEvent(t *testing.T) {
 		t.Fatalf("an event over %d bytes was sent", maxRunEvent)
 	}
 }
+
+// A chat message goes to the clients as a `chat` event naming its session or
+// its run, as droppable as activity and reaching no sink.
+func TestEventHubChatFormat(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	var sunk atomic.Int32
+	h.addSink(func(string, session.ActivityEntry, session.AttentionState) { sunk.Add(1) })
+	at := time.Date(2026, 10, 6, 8, 32, 0, 0, time.UTC)
+	h.chat("s1", "", session.ChatMessage{ID: "m1", At: at, Scope: "session", Kind: "message", By: session.ChatBy{ID: "v1", Name: "Nate", Role: session.RoleControl}, Text: "hello <all>", Nonce: "n1"})
+	want := "event: chat\n" +
+		`data: {"sessionId":"s1","t":"chat","id":"m1","at":"2026-10-06T08:32:00Z","scope":"session","kind":"message","by":{"id":"v1","name":"Nate","role":"control"},"text":"hello \u003call\u003e","nonce":"n1"}` + "\n\n"
+	select {
+	case got := <-ch:
+		if string(got) != want {
+			t.Fatalf("got\n%s\nwant\n%s", got, want)
+		}
+	default:
+		t.Fatal("nothing queued")
+	}
+	h.chat("", "r1", session.ChatMessage{ID: "m2", At: at, Scope: "run", Kind: "sent_to_agent", By: session.ChatBy{ID: "v1", Name: "Nate", Role: session.RoleControl}, Ref: "m1", To: "core"})
+	if got := string(<-ch); !strings.HasPrefix(got, "event: chat\ndata: {\"runId\":\"r1\",") || !strings.Contains(got, `"to":"core"`) {
+		t.Fatalf("run chat event %q", got)
+	}
+	if sunk.Load() != 0 {
+		t.Fatal("a chat message reached a sink")
+	}
+}

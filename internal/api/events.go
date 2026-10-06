@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -135,6 +136,38 @@ func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state ses
 }
 
 // removed announces that a session left the registry.
+// chatEvent is the data of a `chat` event: a chat message as kept
+// (proto.ChatMessage) and the session or the run whose chat it is.
+type chatEvent struct {
+	SessionID string `json:"sessionId,omitempty"`
+	RunID     string `json:"runId,omitempty"`
+	proto.ChatMessage
+}
+
+// chat queues a chat message of a session (sessionID) or a run (runID) for
+// every client, as droppable as activity: a client past activityQueueLimit
+// misses it and keeps its stream. It is the OnChat hook of every server
+// session and the OnRunChat hook of the run engine, so it runs on the posting
+// goroutines and never waits. Chat reaches no sink: no webhook or feed.
+func (h *eventHub) chat(sessionID, runID string, m session.ChatMessage) {
+	b, err := json.Marshal(chatEvent{SessionID: sessionID, RunID: runID, ChatMessage: session.ChatToProto(m)})
+	if err != nil {
+		return
+	}
+	msg := []byte("event: chat\ndata: " + string(b) + "\n\n")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.clients {
+		if len(ch) >= activityQueueLimit {
+			continue
+		}
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+}
+
 func (h *eventHub) removed(id string) {
 	h.broadcast([]byte("event: removed\ndata: " + fmt.Sprintf("{\"id\":%q}", id) + "\n\n"))
 }

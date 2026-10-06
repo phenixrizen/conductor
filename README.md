@@ -269,6 +269,14 @@ same way. The run keeps the last 500 messages, replays them to whoever
 joins, and keeps them in its record once it ends, read-only there; a resumed
 run starts a new chat.
 
+What you have not read shows where you are: a neutral pill with a speech
+bubble on a session's row and a run's header in the sidebar, the number in
+the rail square's bottom-right corner (with new events, the tooltip naming
+both), one count per session and a run's own chat on its header. The count
+is this browser's, kept across reloads and tabs, fed by the chat you have open
+and by the server's event stream for the chats you do not; it clears when you
+open the thread, and nothing counts for system lines or what you sent.
+
 ## Clickable links and file viewer
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
