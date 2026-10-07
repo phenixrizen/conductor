@@ -652,6 +652,47 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## After round 11: a newline in the prompt, the page chords, the installer's art and the sponsor badge (2026-10-07)
+
+Four small things the owner asked for after the stack merged, in one pull
+request from main (not stacked, each its own commit):
+
+- **Shift+Enter and Ctrl+Enter are a newline in the agent's prompt.** The
+  browser terminal sent a plain carriage return for Enter whatever the
+  modifier, so both submitted (the bug the owner found on 2026-10-06, now
+  off the todo list). `TerminalView`'s key handler takes the chord before
+  xterm does and sends ESC CR (`NEWLINE_IN_PROMPT`, `utils/terminalKeys.ts`),
+  what Claude Code's own `/terminal-setup` teaches VS Code and iTerm2 to
+  send for Shift+Enter and what a terminal sends for Option+Enter: Claude
+  Code reads it as a newline, Codex as Alt+Enter, a newline too. Plain
+  Enter, Alt+Enter and Meta+Enter are untouched. vitest for the chord;
+  Playwright types two chords and an Enter into the stub and finds the ESC
+  at the end of each line in its transcript. Codex's reading is the live
+  tier's to confirm (`make test-live`); the by-hand list names it.
+- **The page chords go by each page's initial**: G then Y the Yard (was W),
+  G then R the Roundhouse (was C), G then C Crews (was R); A and E as
+  before; the Alt twins in a terminal follow (Alt+Y, Alt+R, Alt+C), and
+  Alt+W reaches the agent again. vitest on the rows and the passthrough
+  set; Playwright presses the three chords.
+- **The installer's own artwork.** electron-builder's stock bitmaps (a blue
+  laptop and a box) gave way to ours: `scripts/installer-art.mjs` renders
+  `scripts/installer-art.html` headless at 1:1 and writes the 24-bit BMPs
+  NSIS reads into `desktop/build/`: the welcome and finish pages' sidebar
+  (164 × 314, the lockup on forest with an orange rule, the sponsor kit's
+  badge "Sponsored by" + the RockSolid Labs logo at its foot) and the other
+  pages' header (150 × 57, the lockup on the dialog's white). The
+  uninstaller takes the same sidebar. A desktop vitest reads the bitmaps'
+  headers (size, 24-bit, uncompressed) and the config naming them. The
+  installer itself is a Windows runner's build: checked by eye on the
+  next release candidate.
+- **The sponsor badge on the switchyard's pages.** The footer's text line
+  gave way to the kit's badge (1b) at the lower right: "Sponsored by" and
+  the logo, linking to rocksolidlabs.io, on the landing page and the 404
+  page (`switchyard_page.go`; the Go test and the switchyard e2e check it
+  and that the logo is served beside the app). A switchyard's own join
+  page shows the same badge under the card (light and dark logos), never
+  inside the workbench.
+
 ## Round 11: the sidebar made simpler, and chat beside the terminal (2026-10-06)
 
 From the design hand-off "Conductor UI.dc.html" (the 2-series is chat, the
