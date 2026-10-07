@@ -198,6 +198,45 @@ design is being made with Claude Design (`docs/design/briefs/chat.md`).
 
 ### The switchyard and sharing
 
+The rule for everything here (the owner, 2026-10-07): the terminal, the
+chat and the files go over the WebRTC tunnel between the viewer and the
+machine that runs the session; the switchyard introduces, relays only
+when ICE fails, and serves as little as it can, so that its egress,
+compute and cloud bill stay the cheapest possible.
+
+- **Egress off the switchyard: the next pull request, on its own, not in
+  the round 11 stack.** Measured 2026-10-07 on a phone-sized headless
+  Chromium against a local server: a first join page load is 1.9 MiB on
+  the wire, uncompressed (every `/_nuxt/` asset is immutable for a year,
+  so a later link on the same browser costs 8 KiB, until a release changes
+  the hashes), and the viewer and host WebSockets accept with the
+  library's default, no permessage-deflate, so a relayed terminal's
+  redraws leave the switchyard byte for byte; a TUI that redraws while it
+  works is the likelier cost than the page. (1) `CompressionContextTakeover`
+  on the viewer and host accepts and in `conductor host`'s dial: a relayed
+  terminal compresses several times over, and the direct path is
+  untouched. (2) Pre-compressed assets at build (`.br` and `.gz` beside
+  each `/_nuxt/` file, `make web-build`) that `internal/web/embed.go`
+  serves by `Accept-Encoding`, with `Vary`; the first load should come to
+  about a quarter. (3) A list of what the join page loads first (xterm is
+  half of it and needed) and the rest deferred. Tests: Go for the handler
+  (the compressed file with its headers when accepted, the plain one
+  otherwise) and for a viewer accept negotiating compression; Playwright
+  that the join page's responses carry `content-encoding`. The
+  switchyard's status page reports the bytes relayed this hour: the number
+  to read before and after.
+- **The workbench on a CDN.** The same `web/` build on Netlify, or another
+  CDN, whichever costs the least for reasonable performance (Cloudflare
+  Pages and GitHub Pages are the other candidates), so a join page and the
+  workbench load from the edge and the switchyard serves only the API, the
+  links and the relay. What it needs: the SPA built with its API origin
+  configurable (the join page's `?server=` is the start; the workbench
+  reads its server from where it was loaded), the switchyard's
+  `allowedOrigins` naming the CDN origin for the join route and the
+  session WebSocket, cache headers the CDN keeps (the immutable `/_nuxt/`
+  ones), a release step that publishes the build, and a by-hand check from
+  a phone. The desktop app and a self-hosted server keep serving their
+  own copy. The owner, 2026-10-07.
 - **The join route answering a browser origin named in Settings**, so a
   browser at a LAN address (not the desktop window) can open a joined link;
   today such a link shows as unreachable. Round 9.
@@ -231,6 +270,19 @@ design is being made with Claude Design (`docs/design/briefs/chat.md`).
 - **A resume record that outlives `exitedRetention`** (a bounded store in
   the data directory), so a session can be resumed after it leaves the
   list; runs have this (`runs/`), sessions do not. Round 4.
+
+### A mobile app
+
+- **A Capacitor app** ([capacitorjs.com](https://capacitorjs.com)) wrapping
+  the same workbench for iOS and Android: the sessions list, a session's
+  page, the quick replies, the chat and the join page as an installed app,
+  with push notifications for "needs you", the links in the OS keychain
+  and the terminal over the WebRTC tunnel as the browser does it; the
+  bundle ships inside the app, so the switchyard serves it nothing but the
+  API and, when ICE fails, the relay. Needs the SPA built with its API
+  origin configurable (shared with the CDN item), a Capacitor project under
+  `mobile/`, the store accounts, and by-hand checks on a phone, as the
+  phone layout's (3e) are. The owner, 2026-10-07.
 
 ### Hosted sessions (`conductor host`)
 
