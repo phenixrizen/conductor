@@ -409,7 +409,7 @@ from its header, **1**–**9** answer the focused row's prompt as on its page,
 (Enter stops, Escape cancels), **Escape** leaves the list. The Yard's J and
 K and the quick reply's digits never see a key the list took.
 Plain keys reach the agent while a terminal has focus, so they only work
-outside it; hold **Alt** with the same key (**Alt+N**, **Alt+W**, **Alt+←**)
+outside it; hold **Alt** with the same key (**Alt+N**, **Alt+Y**, **Alt+←**)
 to use a shortcut without leaving the terminal. Your display name defaults to
 the server's user and can be changed from the person button in the sidebar.
 
@@ -684,7 +684,7 @@ your own network.
 
 A crew is a saved team of agents; launching one starts a **run**, with a
 session for each member as it starts. Build crews on the **Crews** page (**G**
-then **R**): a name, a shared goal, a working directory, and up to 12 members.
+then **C**): a name, a shared goal, a working directory, and up to 12 members.
 Each member has a name, an agent from the catalog, optional extra arguments (for
 agents that take them), a role prompt and a start condition. The goal reaches the role prompts
 as `$GOAL` (or `${GOAL}`), which is replaced by the goal before the prompt is
