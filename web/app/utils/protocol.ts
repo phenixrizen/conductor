@@ -22,6 +22,81 @@ export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
 /** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
 export const MAX_SUBMIT = 4096
 
+/** A chat message's text, in bytes after cleaning (proto.MaxChatText); the composer counts from CHAT_COUNTER_FROM. */
+export const MAX_CHAT_TEXT = 2048
+export const CHAT_COUNTER_FROM = 1536
+/** One connection may post this many a second, this many at once (proto.ChatRatePerSecond, ChatBurst). */
+export const CHAT_RATE_PER_SECOND = 10
+export const CHAT_BURST = 20
+/** The `to` of a post that is also typed into this session's agent. */
+export const CHAT_TO_AGENT = 'agent'
+
+export type ChatScope = 'session' | 'run'
+export type ChatKind = 'message' | 'system' | 'sent_to_agent' | 'question'
+/** Who a chat message is from: the viewer's subscription, as the roster names it. */
+export interface ChatBy {
+  id: string
+  name: string
+  /** `agent` on a question: the agent's, no viewer's. */
+  role: Role | 'agent'
+}
+/** One message of a chat (`chat`, owner → client): a message, a join or leave line about `by`, or a marker that `by` typed `ref` into the agent (`to` names a run's member). */
+export interface ChatMessage {
+  t: 'chat'
+  id: string
+  at: string
+  scope: ChatScope
+  kind: ChatKind
+  by: ChatBy
+  text?: string
+  ref?: string
+  to?: string
+  on?: string
+  /** `answered` names, in `ref`, the question `by` answered. */
+  event?: 'join' | 'leave' | 'answered'
+  /** The sender's own id of the post, echoed. */
+  nonce?: string
+  /** A question's choices (at most 6), typed as the attention's are. */
+  options?: AttentionOption[]
+}
+/** A viewer's post (`chat`, client → owner). */
+export interface ChatPost {
+  t: 'chat'
+  nonce?: string
+  scope?: ChatScope
+  text: string
+  on?: string
+  to?: string
+}
+/** Types a kept message into the agent (`chat_send`, client → owner, controllers only). */
+export interface ChatSend {
+  t: 'chat_send'
+  ref: string
+  scope?: ChatScope
+  to?: string
+}
+/** The kept chat replayed to a new viewer, oldest first; `more` says another frame follows. */
+export interface ChatHistory {
+  t: 'chat_history'
+  scope: ChatScope
+  messages: ChatMessage[]
+  more?: boolean
+}
+/** One person on a run's chat: a viewer of any member, one row per name; `on` is the member they look at, when one. */
+export interface ChatPerson {
+  id: string
+  name: string
+  role: Role
+  on?: string
+}
+/** Who is on a run's chat (`chat_roster`, owner → client), sent to every member's viewers as any member's roster changes; `count` counts everyone, `list` the first 32. */
+export interface ChatRoster {
+  t: 'chat_roster'
+  scope: 'run'
+  count: number
+  list: ChatPerson[]
+}
+
 export const CloseCode = {
   Normal: 1000,
   GoingAway: 1001,
@@ -63,6 +138,8 @@ export interface ViewerInfo {
   link?: string
   since: string
   lastInputAt?: string
+  /** A connection for a run's chat alone (`hello.chatOnly`): left out of a session's `viewers`, on the run's roster. */
+  quiet?: boolean
 }
 
 /** One line of a session's activity log (`activity` control message). */
@@ -106,6 +183,10 @@ export interface Welcome {
   scrollbackBytes: number
   transport: TransportKind
   fileView: boolean
+  /** The owner takes `chat` and `chat_send`; absent from an older owner, which must be sent neither. */
+  chat?: boolean
+  /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
+  runChat?: boolean
   iceServers?: ICEServer[]
   relayTimeoutMs?: number
   relayOnly?: boolean
@@ -119,8 +200,11 @@ export type ControlMessage =
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
   | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string }
-  | { t: 'error'; code: string; message: string }
+  | { t: 'error'; code: string; message: string; requestId?: string }
   | { t: 'pong'; ts: number }
+  | ChatMessage
+  | ChatHistory
+  | ChatRoster
 
 export interface FileEntry {
   name: string

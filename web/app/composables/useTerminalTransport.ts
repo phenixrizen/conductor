@@ -13,6 +13,8 @@ export interface TransportSpec {
   name?: string
   /** The server to connect to (`https://host`, utils/invite.ts joinServer) instead of this page's: an invite's switchyard. */
   server?: string
+  /** A quiet connection for a run's chat alone (`hello.chatOnly`): no scrollback or output, not a viewer of the session. */
+  chatOnly?: boolean
 }
 
 /** Builds the right transport for a session kind. Each call creates a fresh connection object. */
@@ -25,8 +27,8 @@ export function useTerminalTransport() {
     const base = spec.server ? wsBaseOf(spec.server) : wsBase.value
     const url = `${base}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(spec.token)}`
     const name = spec.name ?? identity.name.value
-    if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay, name })
-    return new WebSocketTransport(url, { name })
+    if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay, name, chatOnly: spec.chatOnly })
+    return new WebSocketTransport(url, { name, chatOnly: spec.chatOnly })
   }
 
   return { create }

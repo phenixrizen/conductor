@@ -9,9 +9,11 @@ import (
 	"crypto/subtle"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -466,7 +468,9 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 		case proto.TypeInput:
 			return session.ErrReadOnly
 		case proto.TypeControl:
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit {
+			// A chat post passes for every role (the host refuses one that is
+			// also for the agent); typing a message into the agent does not.
+			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlChatSend {
 				return session.ErrReadOnly
 			}
 		}
@@ -574,6 +578,57 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {
 		h.hub.OnActivity(id, e, recorded)
+	}
+}
+
+// HostChat takes a chat message the host's session kept and hands it to the
+// hub's OnChat, cleaned as the host is not trusted with it: a kind this
+// server does not know is dropped, the scope is this session's (a host has
+// no run), the ids are bounded, the names cleaned, the text cleaned and cut
+// to proto.MaxChatText, a missing or unreadable time becomes the time of
+// receipt, and `to` is the agent or nothing. The message is attributed to
+// this session whatever session the host named. Nothing goes back to the
+// host.
+func (h *HostedSession) HostChat(m proto.ChatMessage) {
+	switch m.Kind {
+	case proto.ChatKindMessage, proto.ChatKindSystem, proto.ChatKindSentToAgent:
+	default:
+		return
+	}
+	id := session.CleanID(m.ID, maxEntryBy)
+	role := session.Role(m.By.Role)
+	if id == "" || !role.Valid() {
+		return
+	}
+	at, err := time.Parse(time.RFC3339Nano, m.At)
+	if err != nil {
+		at = time.Now().UTC()
+	}
+	text := session.CleanChatText(m.Text)
+	for len(text) > proto.MaxChatText {
+		_, size := utf8.DecodeLastRuneInString(text)
+		text = text[:len(text)-size]
+	}
+	out := session.ChatMessage{
+		ID:    id,
+		At:    at.UTC(),
+		Scope: proto.ChatScopeSession,
+		Kind:  m.Kind,
+		By:    session.ChatBy{ID: session.CleanID(m.By.ID, maxEntryBy), Name: session.CleanName(m.By.Name), Role: role},
+		Text:  strings.TrimSpace(text),
+		Ref:   session.CleanID(m.Ref, maxEntryBy),
+	}
+	if m.To == proto.ChatToAgent {
+		out.To = m.To
+	}
+	if m.Event == "join" || m.Event == "leave" {
+		out.Event = m.Event
+	}
+	h.mu.Lock()
+	sid := h.info.ID
+	h.mu.Unlock()
+	if h.hub != nil && h.hub.OnChat != nil {
+		h.hub.OnChat(sid, out)
 	}
 }
 

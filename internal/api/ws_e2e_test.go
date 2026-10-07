@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1041,4 +1042,212 @@ func TestSubmitMessageTypesALine(t *testing.T) {
 	if m := v.expectControl(proto.CtlError); m["code"] != proto.ErrCodeReadOnly {
 		t.Fatalf("view: %v", m)
 	}
+}
+
+// expectChat waits for the next chat message of the kind.
+func (w *wsClient) expectChat(kind string) map[string]any {
+	w.t.Helper()
+	for {
+		f, err := w.read()
+		if err != nil {
+			w.t.Fatalf("waiting for a chat %s: %v", kind, err)
+		}
+		if f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(f.Payload, &m)
+		if m["t"] == proto.CtlChat && m["kind"] == kind {
+			return m
+		}
+	}
+}
+
+func TestWelcomeSaysChat(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	c := dialViewer(t, e, id, adminToken)
+	c.hello(0, 0)
+	if w := c.expectControl(proto.CtlWelcome); w["chat"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+}
+
+// A post reaches every viewer of the session, the sender included, whatever
+// the roles; a late viewer gets what was said as its history.
+func TestChatReachesEveryViewer(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	owner := dialViewer(t, e, id, adminToken)
+	owner.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	owner.expectControl(proto.CtlReady)
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Priya"}))
+	guest.expectControl(proto.CtlReady)
+
+	owner.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "hello from the owner", Nonce: "o1"}))
+	m := guest.expectChat(proto.ChatKindMessage)
+	by := m["by"].(map[string]any)
+	if m["text"] != "hello from the owner" || m["nonce"] != "o1" || by["name"] != "Nate" || by["role"] != "control" || m["scope"] != "session" || m["id"] == "" {
+		t.Fatalf("the guest got %v", m)
+	}
+	if own := owner.expectChat(proto.ChatKindMessage); own["id"] != m["id"] {
+		t.Fatalf("the owner's own copy %v", own)
+	}
+	guest.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "hi from a link"}))
+	if r := owner.expectChat(proto.ChatKindMessage); r["text"] != "hi from a link" || r["by"].(map[string]any)["role"] != "view" || r["by"].(map[string]any)["name"] != "Priya" {
+		t.Fatalf("the owner got %v", r)
+	}
+	late := dialViewer(t, e, id, adminToken)
+	late.hello(0, 0)
+	h := late.expectControl(proto.CtlChatHistory)
+	var texts []string
+	for _, raw := range h["messages"].([]any) {
+		if mm := raw.(map[string]any); mm["kind"] == proto.ChatKindMessage {
+			texts = append(texts, mm["text"].(string))
+		}
+	}
+	if strings.Join(texts, "|") != "hello from the owner|hi from a link" {
+		t.Fatalf("history %v", h)
+	}
+}
+
+// A controller's "to agent" post is typed into the session and marked in the
+// chat; a view link can neither send to the agent nor type a kept message.
+func TestChatToAgentTypesALineAndMarksIt(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	owner := dialViewer(t, e, id, adminToken)
+	owner.hello(0, 0)
+	owner.expectControl(proto.CtlReady)
+	owner.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "typed into cat", To: proto.ChatToAgent}))
+	msg := owner.expectChat(proto.ChatKindMessage)
+	owner.expectOutput("typed into cat")
+	if marker := owner.expectChat(proto.ChatKindSentToAgent); marker["ref"] != msg["id"] || marker["to"] != nil {
+		t.Fatalf("marker %v for %v", marker, msg)
+	}
+	// Any kept message can be typed later, by a controller.
+	owner.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "later", Nonce: "l"}))
+	later := owner.expectChat(proto.ChatKindMessage)
+	owner.send(proto.MustControl(proto.ChatSend{T: proto.CtlChatSend, Ref: later["id"].(string)}))
+	owner.expectOutput("later")
+	owner.expectChat(proto.ChatKindSentToAgent)
+	owner.send(proto.MustControl(proto.ChatSend{T: proto.CtlChatSend, Ref: "nope"}))
+	if m := owner.expectControl(proto.CtlError); m["code"] != proto.ErrCodeBadFrame || m["requestId"] != "nope" {
+		t.Fatalf("unknown ref: %v", m)
+	}
+
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	v := dialViewer(t, e, id, lo["token"].(string))
+	v.hello(0, 0)
+	v.expectControl(proto.CtlReady)
+	v.send(proto.MustControl(proto.ChatSend{T: proto.CtlChatSend, Ref: msg["id"].(string)}))
+	if m := v.expectControl(proto.CtlError); m["code"] != proto.ErrCodeReadOnly || m["requestId"] != msg["id"] {
+		t.Fatalf("view chat_send: %v", m)
+	}
+	v.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "me too", To: proto.ChatToAgent, Nonce: "v1"}))
+	if m := v.expectControl(proto.CtlError); m["code"] != proto.ErrCodeReadOnly || m["requestId"] != "v1" {
+		t.Fatalf("view to agent: %v", m)
+	}
+	// The connection is intact: a plain post still goes.
+	v.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "still here"}))
+	if m := v.expectChat(proto.ChatKindMessage); m["text"] != "still here" {
+		t.Fatalf("after the refusals: %v", m)
+	}
+}
+
+// Past the burst a connection's posts are refused with too_many_requests,
+// and the connection stays open.
+func TestChatRateLimitLeavesTheConnectionOpen(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	c := dialViewer(t, e, id, adminToken)
+	c.hello(0, 0)
+	c.expectControl(proto.CtlReady)
+	for i := range proto.ChatBurst + 3 {
+		c.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: strconv.Itoa(i), Nonce: strconv.Itoa(i)}))
+	}
+	if m := c.expectControl(proto.CtlError); m["code"] != proto.ErrCodeTooManyRequests || m["requestId"] != strconv.Itoa(proto.ChatBurst) {
+		t.Fatalf("limit: %v", m)
+	}
+	c.send(proto.MustControl(proto.Ping{T: proto.CtlPing, TS: 7}))
+	if m := c.expectControl(proto.CtlPong); m["ts"] != float64(7) {
+		t.Fatalf("pong after the limit: %v", m)
+	}
+	if h := e.local(id).ChatHistory(); len(h) < proto.ChatBurst {
+		t.Fatalf("%d kept", len(h))
+	}
+}
+
+// The admin stream carries a session's chat and a run's as `chat` events,
+// for the counts the sidebar keeps while no page has the thread open.
+func TestEventsStreamCarriesChat(t *testing.T) {
+	e := newTestEnv(t, nil)
+	stream := e.sse(t)
+	id := e.createSession("cat")
+	owner := dialViewer(t, e, id, adminToken)
+	owner.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	owner.expectControl(proto.CtlReady)
+	owner.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: "on the stream"}))
+	owner.expectChat(proto.ChatKindMessage)
+	next := func(what string) string {
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case ev := <-stream:
+				if strings.HasPrefix(ev, "chat ") && strings.Contains(ev, what) {
+					return ev
+				}
+			case <-deadline:
+				t.Fatalf("no chat event with %q", what)
+			}
+		}
+	}
+	if ev := next(`"text":"on the stream"`); !strings.Contains(ev, `"sessionId":"`+id+`"`) || strings.Contains(ev, `"runId"`) {
+		t.Fatalf("session chat event %s", ev)
+	}
+	runID := e.launchCrew(t, "Streamed", catMember("core", "immediately"))
+	coreID := e.waitRunning(t, runID, "core")
+	member := dialViewer(t, e, coreID, adminToken)
+	member.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	member.expectControl(proto.CtlReady)
+	member.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "run on the stream"}))
+	if ev := next(`"text":"run on the stream"`); !strings.Contains(ev, `"runId":"`+runID+`"`) || strings.Contains(ev, `"sessionId"`) {
+		t.Fatalf("run chat event %s", ev)
+	}
+}
+
+// A host's chat message reaches the admin stream as a `chat` event of the
+// connection's session, cleaned; one of a kind the server does not know is
+// dropped without costing the host its connection.
+func TestHostChatReachesTheEventStream(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	events := e.sse(t)
+	host.send(proto.HostChatMsg{T: proto.HostChat, SessionID: "someoneelse00000", Message: proto.ChatMessage{T: "chat", ID: "0123456789abcdef", At: time.Now().UTC().Format(time.RFC3339Nano), Scope: "run", Kind: "message", By: proto.ChatBy{ID: "fedcba9876543210", Name: "Ada\x00", Role: "view"}, Text: "hosted <hello>\x00"}})
+	ev := e.waitEvent(t, events, func(ev string) bool { return strings.HasPrefix(ev, "chat ") && strings.Contains(ev, "hosted") })
+	for _, want := range []string{`"sessionId":"` + host.sessionID + `"`, `"scope":"session"`, `"name":"Ada"`, `"text":"hosted \u003chello\u003e"`, `"role":"view"`} {
+		if !strings.Contains(ev, want) {
+			t.Fatalf("streamed %s, missing %s", ev, want)
+		}
+	}
+	host.send(proto.HostChatMsg{T: proto.HostChat, Message: proto.ChatMessage{ID: "x", Kind: "bogus", By: proto.ChatBy{Role: "view"}}})
+	host.send(hostActivity(session.ActivityProgress, func(a *proto.Activity) { a.Message = "still here" }))
+	e.waitEvent(t, events, func(ev string) bool { return strings.Contains(ev, `"message":"still here"`) })
+}
+
+// A view link's viewer is closed as the session's end, not as a revoked
+// link, when the session ends and takes its links with it.
+func TestAViewLinkClosesAsSessionEndedWhenTheSessionEnds(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.hello(0, 0)
+	guest.expectControl(proto.CtlReady)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	guest.expectClose(proto.CloseSessionEnded)
 }

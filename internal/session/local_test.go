@@ -137,16 +137,22 @@ func TestLateAttachReceivesScrollbackThenLive(t *testing.T) {
 	if m := decodeControl(t, sink.frame(2)); m["t"] != proto.CtlReady {
 		t.Fatalf("ready: %v", m)
 	}
-	// viewers broadcast and the join activity entry reach the subscriber too;
-	// live output must follow them, never precede the ready marker.
+	// The viewers broadcast, the join activity entry and the chat's join line
+	// reach the subscriber too, in their own time; live output must follow
+	// the ready marker, never precede it. The live frame is waited for by
+	// what it is, not by a count: one of those frames landing between the
+	// count and the write would otherwise stand in for it.
 	sink.waitFrames(t, 5)
-	n := sink.count()
 	p.outW.Write([]byte("live"))
-	sink.waitFrames(t, n+1)
 	var live bool
-	for i := 3; i < sink.count(); i++ {
-		if f, _ := proto.Decode(sink.frame(i)); f.Type == proto.TypeOutput && string(f.Payload) == "live" {
-			live = true
+	for deadline := time.Now().Add(5 * time.Second); !live && time.Now().Before(deadline); {
+		for i := 3; i < sink.count(); i++ {
+			if f, _ := proto.Decode(sink.frame(i)); f.Type == proto.TypeOutput && string(f.Payload) == "live" {
+				live = true
+			}
+		}
+		if !live {
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	if !live {
@@ -788,5 +794,29 @@ func TestAHelloOfZeroFollowsTheSize(t *testing.T) {
 	}
 	if info := s.Info(); info.Cols != 148 || info.Rows != 57 {
 		t.Fatalf("size %dx%d", info.Cols, info.Rows)
+	}
+}
+
+// A link's viewers are evicted as revoked while the session runs, and as the
+// session's end once it has ended: its links go with it, and the close must
+// say so, for a viewer whose status frame the close overtakes.
+func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	live := newChanSink(false)
+	subLive, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "l1", Cols: 80, Rows: 24}, live)
+	s.DisconnectLink("l1")
+	if !errors.Is(subLive.Reason(), ErrRevoked) {
+		t.Fatalf("while running: %v", subLive.Reason())
+	}
+	after := newChanSink(false)
+	subAfter, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "l2", Cols: 80, Rows: 24}, after)
+	p.exit()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !s.Info().Status.Ended() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.DisconnectLink("l2")
+	if !errors.Is(subAfter.Reason(), ErrSessionEnded) {
+		t.Fatalf("once ended: %v", subAfter.Reason())
 	}
 }

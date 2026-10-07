@@ -68,6 +68,7 @@ function confirmStop() {
           <span class="flex min-w-0 items-center gap-1.5">
             <span class="truncate text-sm font-semibold text-highlighted">{{ block.title }}</span>
             <slot name="pill" />
+            <ChatUnreadPill :run-id="block.runId" />
           </span>
           <template v-if="confirming">
             <span class="text-xs font-medium text-highlighted" data-run-stop-confirm>{{ question.title }}</span>

@@ -1342,8 +1342,9 @@ func wantRunLog(t *testing.T, e *testEnv, runID, never string, messages ...strin
 
 // A run the engine forgets, past its 100 runs, takes its links with it: they
 // open nothing any more, the join page no longer knows them, and the viewers
-// attached through them are closed as on a revoke. A session's own link to a
-// member's session stays.
+// attached through them are closed, with the reason that holds for each (a
+// member that ended with the run's stop closes its viewer as the session's
+// end, not as a revoke). A session's own link to a member's session stays.
 func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.stopEverything(t)
@@ -1376,7 +1377,7 @@ func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 	resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
 	wantAPIError(t, "the forgotten run", resp, out, http.StatusNotFound, "not_found", "")
 
-	viewer.expectClose(proto.CloseForbidden)
+	viewer.expectClose(proto.CloseSessionEnded)
 	resp, out = e.do("GET", "/api/join/"+token, "", nil)
 	wantAPIError(t, "join", resp, out, http.StatusNotFound, "invalid_link", "")
 	dialViewer(t, e, coreID, token).expectClose(proto.CloseUnauthorized)
@@ -1641,5 +1642,150 @@ func TestCrewLaunchTakesALabel(t *testing.T) {
 	for _, body := range []map[string]any{{"label": strings.Repeat("x", 61)}, {"name": "x"}} {
 		resp, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, body)
 		wantAPIError(t, fmt.Sprint(body), resp, out, http.StatusBadRequest, "invalid_request", "")
+	}
+}
+
+// A run's chat over the members' own connections: a post on one member
+// reaches every member's viewers (a run link's among them), the roster
+// names who is on the run, a controller's send types a kept message into
+// the member it names and marks it, a member not there is answered
+// not_sent, the run read alone carries the chat and its record keeps it
+// once it ends, while lists carry none.
+func TestRunChatReachesEveryMembersViewers(t *testing.T) {
+	e := newTestEnv(t, nil)
+	runID := e.launchCrew(t, "Chatty", catMember("core", "immediately"), catMember("tests", "immediately"))
+	coreID := e.waitRunning(t, runID, "core")
+	testsID := e.waitRunning(t, runID, "tests")
+	resp, lo := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "control", "ttlSeconds": 3600})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("run link: %d %v", resp.StatusCode, lo)
+	}
+	nate := dialViewer(t, e, coreID, adminToken)
+	nate.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	if w := nate.expectControl(proto.CtlWelcome); w["runChat"] != true || w["chat"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+	nate.expectControl(proto.CtlReady)
+	priya := dialViewer(t, e, testsID, lo["token"].(string))
+	priya.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Priya"}))
+	priya.expectControl(proto.CtlReady)
+	// Priya's arrival sends everyone on the run the roster: who is on which member.
+	roster := priya.expectControl(proto.CtlChatRoster)
+	names := map[string]string{}
+	for _, raw := range roster["list"].([]any) {
+		p := raw.(map[string]any)
+		names[p["name"].(string)], _ = p["on"].(string)
+	}
+	if roster["scope"] != "run" || names["Nate"] != "core" || names["Priya"] != "tests" {
+		t.Fatalf("roster %v", roster)
+	}
+
+	nate.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "core is green", On: "core", Nonce: "r1"}))
+	m := priya.expectChat(proto.ChatKindMessage)
+	if m["scope"] != "run" || m["on"] != "core" || m["text"] != "core is green" || m["by"].(map[string]any)["name"] != "Nate" || m["nonce"] != "r1" {
+		t.Fatalf("priya got %v", m)
+	}
+	if own := nate.expectChat(proto.ChatKindMessage); own["id"] != m["id"] {
+		t.Fatalf("nate's own copy %v", own)
+	}
+
+	// Typed into tests (cat echoes it), marked for everyone with the member.
+	nate.send(proto.MustControl(proto.ChatSend{T: proto.CtlChatSend, Scope: proto.ChatScopeRun, Ref: m["id"].(string), To: "tests"}))
+	priya.expectOutput("core is green")
+	if marker := priya.expectChat(proto.ChatKindSentToAgent); marker["ref"] != m["id"] || marker["to"] != "tests" || marker["scope"] != "run" {
+		t.Fatalf("marker %v", marker)
+	}
+	nate.send(proto.MustControl(proto.ChatSend{T: proto.CtlChatSend, Scope: proto.ChatScopeRun, Ref: m["id"].(string), To: "docs"}))
+	if er := nate.expectControl(proto.CtlError); er["code"] != proto.ErrCodeNotSent || er["message"] != session.NotSentUnknown || er["requestId"] != m["id"] {
+		t.Fatalf("a member not there: %v", er)
+	}
+
+	// The run read alone has the chat; the lists do not.
+	_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	chat, _ := out["run"].(map[string]any)["chat"].([]any)
+	var texts []string
+	for _, raw := range chat {
+		if mm := raw.(map[string]any); mm["kind"] == proto.ChatKindMessage {
+			texts = append(texts, mm["text"].(string))
+		}
+	}
+	if strings.Join(texts, "|") != "core is green" {
+		t.Fatalf("the run's chat %v", chat)
+	}
+	_, list := e.do("GET", "/api/runs", adminToken, nil)
+	for _, raw := range list["runs"].([]any) {
+		if r := raw.(map[string]any); r["id"] == runID && r["chat"] != nil {
+			t.Fatalf("the list carries the chat: %v", r["chat"])
+		}
+	}
+
+	// Stopped, the record keeps it.
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, ok, err := e.srv.records.Get(runID)
+		if err == nil && ok && len(rec.Chat) > 0 {
+			var kept []string
+			for _, mm := range rec.Chat {
+				if mm.Kind == proto.ChatKindMessage {
+					kept = append(kept, mm.Text)
+				}
+			}
+			if strings.Join(kept, "|") != "core is green" {
+				t.Fatalf("the record's chat %v", rec.Chat)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the record never kept the chat: %v %v", ok, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, runs := e.do("GET", "/api/crews/chatty/runs", adminToken, nil)
+	for _, raw := range runs["runs"].([]any) {
+		if r := raw.(map[string]any); r["chat"] != nil {
+			t.Fatalf("the crew's runs carry the chat: %v", r["chat"])
+		}
+	}
+}
+
+// A quiet connection (a run page's own) on one member hears the run's chat
+// posted and sent from another member's viewer, before and after a line is
+// typed into its own member.
+func TestRunChatReachesAQuietConnectionOnAnotherMember(t *testing.T) {
+	e := newTestEnv(t, nil)
+	runID := e.launchCrew(t, "Quietly", catMember("lead", "immediately"), catMember("review", "immediately"))
+	leadID := e.waitRunning(t, runID, "lead")
+	reviewID := e.waitRunning(t, runID, "review")
+	priya := dialViewer(t, e, leadID, adminToken)
+	priya.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Priya", ChatOnly: true}))
+	priya.expectControl(proto.CtlReady)
+	nate := dialViewer(t, e, reviewID, adminToken)
+	nate.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
+	nate.expectControl(proto.CtlReady)
+	// Priya posts from her quiet connection; Nate posts; both see both.
+	priya.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "hi back"}))
+	if m := nate.expectChat(proto.ChatKindMessage); m["text"] != "hi back" {
+		t.Fatalf("nate got %v", m)
+	}
+	if m := priya.expectChat(proto.ChatKindMessage); m["text"] != "hi back" {
+		t.Fatalf("priya's own copy %v", m)
+	}
+	nate.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "echo run-chat-to-lead", To: "lead"}))
+	if m := priya.expectChat(proto.ChatKindMessage); m["text"] != "echo run-chat-to-lead" {
+		t.Fatalf("priya got %v", m)
+	}
+	if marker := priya.expectChat(proto.ChatKindSentToAgent); marker["to"] != "lead" {
+		t.Fatalf("priya's marker %v", marker)
+	}
+	if marker := nate.expectChat(proto.ChatKindSentToAgent); marker["to"] != "lead" {
+		t.Fatalf("nate's marker %v", marker)
+	}
+	// Still there after the line was typed into her member.
+	nate.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "and after"}))
+	if m := priya.expectChat(proto.ChatKindMessage); m["text"] != "and after" {
+		t.Fatalf("priya after the send got %v", m)
 	}
 }

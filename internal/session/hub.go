@@ -46,6 +46,11 @@ type Subscription struct {
 	reason error
 
 	inflight atomic.Int32 // file requests in progress
+
+	chat chatBucket // the connection's chat posts, bounded
+	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
+	// output or scrollback, not a viewer of the session.
+	quiet bool
 }
 
 func newSubscription(id string, role Role, linkID string, sink Sink) *Subscription {
@@ -56,7 +61,7 @@ func newSubscription(id string, role Role, linkID string, sink Sink) *Subscripti
 
 // Info describes the subscription for the viewers roster.
 func (s *Subscription) Info() proto.ViewerInfo {
-	v := proto.ViewerInfo{ID: s.ID, Name: s.Name, Role: string(s.Role), Link: s.LinkLabel, Since: s.Since.Format(time.RFC3339)}
+	v := proto.ViewerInfo{ID: s.ID, Name: s.Name, Role: string(s.Role), Link: s.LinkLabel, Since: s.Since.Format(time.RFC3339), Quiet: s.quiet}
 	if ms := s.lastInput.Load(); ms > 0 {
 		v.LastInputAt = time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 	}
@@ -143,6 +148,19 @@ type Hub struct {
 // NewHub creates an empty hub.
 func NewHub() *Hub { return &Hub{subs: map[string]*Subscription{}} }
 
+// namePresent reports whether a live subscription other than `except` carries
+// the name: the same person on another tab, for the chat's join and leave lines.
+func (h *Hub) namePresent(name, except string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for id, s := range h.subs {
+		if id != except && s.Name == name && s.Reason() == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Hub) add(s *Subscription) {
 	h.mu.Lock()
 	h.subs[s.ID] = s
@@ -161,6 +179,18 @@ func (h *Hub) Broadcast(frame []byte) {
 	defer h.mu.RUnlock()
 	for _, s := range h.subs {
 		s.send(frame)
+	}
+}
+
+// BroadcastLoud enqueues frame to every subscription but the quiet ones: the
+// terminal's output.
+func (h *Hub) BroadcastLoud(frame []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, s := range h.subs {
+		if !s.quiet {
+			s.send(frame)
+		}
 	}
 }
 
@@ -192,7 +222,21 @@ func (h *Hub) Count() int {
 	return n
 }
 
-// Roster lists every live subscription, oldest first.
+// LoudCount returns the number of live subscriptions that are not quiet: the
+// session's viewers.
+func (h *Hub) LoudCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for _, s := range h.subs {
+		if s.Reason() == nil && !s.quiet {
+			n++
+		}
+	}
+	return n
+}
+
+// Roster lists every live subscription, oldest first, the quiet ones marked.
 func (h *Hub) Roster() []proto.ViewerInfo {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

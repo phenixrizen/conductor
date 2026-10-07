@@ -233,6 +233,58 @@ error); the account key and the certificates live under `dataDir/tls`, mode
 `0600`. The certificate flow is tested against Let's Encrypt's Pebble in CI
 (`make test-pebble`).
 
+## Chat beside the terminal
+
+The inspector's **Chat** tab is for the people watching a session together:
+everyone on it, the owner and anyone who joined by a link, view or control.
+It goes over the terminal's own connection, so it works wherever a link
+works, on a `conductor host` session and through a switchyard too, and
+needs no account: people are the names they joined with. Plain text, up to
+2 KiB, links clickable; Enter sends, Shift+Enter is a new line. A
+controller's **To agent** sends the message and types it into the agent,
+and **Send to agent** on any message does the same later; the thread marks
+what went ("Sent to agent by Nate · 08:32:40"). The session keeps the last
+200 messages, joins and leaves among them, and replays them to whoever
+joins; the chat ends with the session. While the tab is closed it counts
+what others wrote. Chat lines are not events: they reach no hook, webhook
+or feed.
+
+When the agent needs input, its question is in the chat too, from the
+agent, with its choices as buttons; a controller answers there as from the
+quick-reply bar, and a line says who answered ("Answered by Nate"). In a
+run's chat a member's question comes on the member's name ("on core") and
+an answer from there goes to that member.
+
+Where the inspector has no room, the header's **Chat** button carries the
+count and opens the chat as a sheet: on a phone from the bottom, two thirds
+of the screen and dragging to full height, the terminal live behind it,
+Return sends. A guest on a link gets the same chat beside the terminal on
+their join page (the button folds it away), as a sheet on a phone; a
+view-only guest reads "You are view only: what you write reaches the people
+here, not the agent." and has no agent actions.
+
+A crew run has one chat for everyone on it, over the members' own
+connections: the run page's **Chat** button (and a run link's, for a guest
+beside the tiles or with a member open in full) opens it as a drawer beside
+the tiles, a sheet on a phone. A message says which member its sender was
+looking at ("on review"). A person with control picks beside Send where a
+message goes: **Chat only**, or **Also send to core**, typed into that
+member's terminal as the broadcast bar types it; a member waiting on a prompt
+is skipped, with the same words; hovering a message offers **Send to…** the
+same way. The run keeps the last 500 messages, replays them to whoever
+joins, and keeps them in its record once it ends, read-only there; a resumed
+run starts a new chat.
+
+What you have not read shows where you are: a neutral pill with a speech
+bubble on a session's row and a run's header in the sidebar, the number in
+the rail square's bottom-right corner (with new events, the tooltip naming
+both), one count per session and a run's own chat on its header. The count
+is this browser's, kept across reloads and tabs, fed by the chat you have open
+and by the server's event stream for the chats you do not (a `conductor
+host` session's chat reaches that stream too, sent by the host as it is
+said); it clears when you open the thread, and nothing counts for system
+lines or what you sent.
+
 ## Clickable links and file viewer
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or

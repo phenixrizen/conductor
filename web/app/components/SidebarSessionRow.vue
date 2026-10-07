@@ -87,6 +87,8 @@ function confirmStop() {
             <EventMarkBadge :session-id="s.id" />
             <YoloBadge v-if="s.yolo" icon />
             <slot name="pill" />
+            <!-- Unread chat (design 2g): a neutral pill, never a status colour. -->
+            <ChatUnreadPill :session-id="s.id" />
             <!-- The dot gives way to the actions on hover. -->
             <span v-if="row.state === 'needs' && needsDot" class="ml-auto size-2 flex-none rounded-full bg-warning group-hover:opacity-0" data-row-dot="needs" aria-hidden="true" />
             <span v-else-if="row.state === 'running'" class="ml-auto size-2 flex-none rounded-full bg-success group-hover:opacity-0" data-row-dot="running" aria-hidden="true" />

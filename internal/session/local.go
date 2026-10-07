@@ -60,6 +60,15 @@ type Options struct {
 	// the event bucket drops never reaches it; the attention entry of an
 	// attention change the session applied always does.
 	OnActivity func(sessionID string, e ActivityEntry, state AttentionState)
+	// OnChat is called (outside the session lock) with the session ID and a
+	// chat message as kept: a post, a join or leave line, a sent-to-agent
+	// marker. The same contract as OnActivity: it runs on the posting
+	// goroutine and must not block; calls can overlap.
+	OnChat func(sessionID string, m ChatMessage)
+	// RunChat, when set, is the chat of the run this session is a member of
+	// (ChatRoom): its viewers read and post it over their own connection,
+	// with scope "run", and are listed on its roster.
+	RunChat *ChatRoom
 	// Pattern, when set, is matched against the last line of the terminal
 	// after patternQuiet without output. A match marks the session needs_input
 	// (source "pattern", kind "prompt") unless it is that already. It is for
@@ -108,7 +117,11 @@ type Local struct {
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
-	activity       activityRing
+	activity activityRing
+	chat     chatRing // guarded by mu
+	// question is the id of the agent's question in the chat while one
+	// stands (askInChat), for the line that says it was answered.
+	question       string
 	events         EventBucket // guarded by mu
 	dropped        atomic.Uint64
 	scanner        Scanner
@@ -197,7 +210,7 @@ func (s *Local) pump() {
 			title := titleOnly.Match(chunk)
 			s.mu.Lock()
 			s.ring.Write(chunk)
-			s.hub.Broadcast(proto.Encode(proto.TypeOutput, chunk))
+			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
 			if !title {
 				s.lastOutput = time.Now()
 			}
@@ -507,7 +520,17 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	s.info.Attention = att
 	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
+	// The agent's question goes into the chat too (design: the agents' questions in the chat).
+	var asked ChatMessage
+	var askedID string
+	if state == AttentionNeedsInput {
+		asked, askedID = s.askInChat(att)
+	}
 	s.mu.Unlock()
+	if askedID != "" {
+		s.chatHook(askedID, asked)
+		s.tellRun(asked)
+	}
 	if state != AttentionNone {
 		label := message
 		if label == "" {
@@ -578,7 +601,7 @@ func (s *Local) Info() Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info := s.info
-	info.Viewers = s.hub.Count()
+	info.Viewers = s.hub.LoudCount()
 	if info.AgentSession != nil {
 		as := *info.AgentSession
 		info.AgentSession = &as
@@ -603,6 +626,9 @@ type AttachOptions struct {
 	Name      string // cleaned with CleanName
 	Cols      uint16
 	Rows      uint16
+	// ChatOnly makes the connection quiet (hello.chatOnly): for a run's
+	// chat alone, with no scrollback or output, uncounted among the viewers.
+	ChatOnly bool
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -610,9 +636,15 @@ func (s *Local) Attach(id string, role Role, linkID string, cols, rows uint16, s
 	return s.AttachWith(AttachOptions{ID: id, Role: role, LinkID: linkID, Cols: cols, Rows: rows}, sink)
 }
 
-// viewersFrame encodes the current roster. Callers hold s.mu.
+// viewersFrame encodes the current roster: the session's viewers, a quiet
+// connection for the run's chat left out. Callers hold s.mu.
 func (s *Local) viewersFrame() []byte {
-	roster := s.hub.Roster()
+	roster := make([]proto.ViewerInfo, 0)
+	for _, v := range s.hub.Roster() {
+		if !v.Quiet {
+			roster = append(roster, v)
+		}
+	}
 	return proto.MustControl(proto.Viewers{T: proto.CtlViewers, Count: len(roster), List: roster})
 }
 
@@ -649,6 +681,8 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub := newSubscription(id, role, o.LinkID, sink)
 	sub.Name = CleanName(o.Name)
 	sub.LinkLabel = o.LinkLabel
+	sub.quiet = o.ChatOnly
+	room := s.opts.RunChat
 	sub.send(proto.MustControl(proto.Welcome{
 		T:               proto.CtlWelcome,
 		Proto:           proto.ProtoVersion,
@@ -661,28 +695,60 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		ScrollbackBytes: s.ring.Cap(),
 		Transport:       transport,
 		FileView:        s.fileAllowed(role),
+		Chat:            true,
+		RunChat:         room != nil,
 	}))
-	snap := s.ring.Snapshot()
-	for len(snap) > 0 {
-		n := min(len(snap), proto.MaxOutput)
-		sub.send(proto.Encode(proto.TypeScrollback, snap[:n]))
-		snap = snap[n:]
+	if !sub.quiet {
+		snap := s.ring.Snapshot()
+		for len(snap) > 0 {
+			n := min(len(snap), proto.MaxOutput)
+			sub.send(proto.Encode(proto.TypeScrollback, snap[:n]))
+			snap = snap[n:]
+		}
 	}
 	sub.send(proto.MustControl(proto.Simple{T: proto.CtlReady}))
 	for _, e := range s.activity.Tail(ActivityReplay) {
 		sub.send(proto.MustControl(EntryToProto(e)))
+	}
+	// The kept chat, after the activity replay and before the hub holds the
+	// viewer: a message posted meanwhile reaches it live, never twice. The
+	// run's chat follows the session's; a run message posted meanwhile may
+	// arrive twice (the room posts without this lock), which clients take
+	// once by id.
+	for _, f := range chatReplayFrames(proto.ChatScopeSession, s.chat.snapshot()) {
+		sub.send(f)
+	}
+	if room != nil {
+		for _, f := range room.replayFrames() {
+			sub.send(f)
+		}
 	}
 	s.hub.add(sub)
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
 		sub.send(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
+	var joined ChatMessage
+	var told bool
+	if !sub.quiet {
+		joined, told = s.chatSystem(sub, "join")
+	}
+	sessionID := s.info.ID
 	s.mu.Unlock()
+	if told {
+		s.chatHook(sessionID, joined)
+	}
+	if room != nil {
+		room.system(sub, "join")
+		room.broadcastRoster()
+	}
 	go func() {
 		<-sub.done
 		s.Detach(sub)
 	}()
-	s.Record(ActivityEntry{Type: ActivityJoin, By: sub.ID, ByName: sub.Name})
+	if !sub.quiet {
+		s.Record(ActivityEntry{Type: ActivityJoin, By: sub.ID, ByName: sub.Name})
+	}
 	s.notifyChange()
 	return sub, nil
 }
@@ -693,12 +759,28 @@ func (s *Local) Detach(sub *Subscription) {
 	_, present := s.hub.subs[sub.ID]
 	s.hub.remove(sub.ID)
 	sub.closeWith(nil)
+	var left ChatMessage
+	var told bool
 	if present {
 		s.hub.Broadcast(s.viewersFrame())
+		if !sub.quiet {
+			left, told = s.chatSystem(sub, "leave")
+		}
 	}
+	sessionID := s.info.ID
+	room := s.opts.RunChat
 	s.mu.Unlock()
+	if told {
+		s.chatHook(sessionID, left)
+	}
+	if present && room != nil {
+		room.system(sub, "leave")
+		room.broadcastRoster()
+	}
 	if present {
-		s.Record(ActivityEntry{Type: ActivityLeave, By: sub.ID, ByName: sub.Name})
+		if !sub.quiet {
+			s.Record(ActivityEntry{Type: ActivityLeave, By: sub.ID, ByName: sub.Name})
+		}
 		s.notifyChange()
 	}
 }
@@ -761,15 +843,23 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 	att := s.info.Attention
 	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || att.Source != SourceTrust)
 	question := att.Message
+	var answered ChatMessage
+	var answeredID string
+	var told bool
 	if waiting {
 		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+		answered, answeredID, told = s.answeredInChat(by, byName)
 	}
 	s.mu.Unlock()
 	if !waiting {
 		return
+	}
+	if told {
+		s.chatHook(answeredID, answered)
+		s.tellRun(answered)
 	}
 	if att.Source == SourceTrust && s.trust != nil {
 		// What showed the question is behind: only a new one counts.
@@ -819,11 +909,20 @@ func (s *Local) Stop(ctx context.Context) error {
 	return err
 }
 
-// DisconnectLink evicts every subscription created through linkID.
+// DisconnectLink evicts every subscription created through linkID: as
+// revoked, or, once the session has ended (its links go with it), as the
+// session's end, so that a viewer whose status frame the close overtakes
+// still learns which.
 func (s *Local) DisconnectLink(linkID string) {
+	reason := ErrRevoked
+	s.mu.Lock()
+	if s.info.Status.Ended() {
+		reason = ErrSessionEnded
+	}
+	s.mu.Unlock()
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
-			sub.closeWith(ErrRevoked)
+			sub.closeWith(reason)
 		}
 	})
 }
@@ -837,7 +936,7 @@ func (s *Local) CloseAll(reason error) {
 func (s *Local) Send(sub *Subscription, frame []byte) { sub.send(frame) }
 
 // Viewers returns the number of attached clients.
-func (s *Local) Viewers() int { return s.hub.Count() }
+func (s *Local) Viewers() int { return s.hub.LoudCount() }
 
 // Drained reports whether every attached client has been handed all the frames
 // the session sent it, the final status among them once the session has ended.

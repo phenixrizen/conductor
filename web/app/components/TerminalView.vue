@@ -5,7 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
@@ -48,6 +48,11 @@ const emit = defineEmits<{
   closed: [info: CloseInfo]
   openFile: [loc: { path: string; line?: number }]
   openUrl: [url: string]
+  /** A chat message, live; the kept chat on each welcome; an error the owner sent about one of this client's posts or sends. */
+  chat: [msg: ChatMessage]
+  chatHistory: [history: ChatHistory]
+  chatRoster: [roster: ChatRoster]
+  requestError: [err: { code: string; message: string; requestId: string }]
 }>()
 
 const host = ref<HTMLDivElement>()
@@ -288,7 +293,21 @@ function handleControl(msg: ControlMessage) {
     case 'activity':
       emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message, url: msg.url, to: msg.to, tool: msg.tool })
       break
+    case 'chat':
+      emit('chat', msg)
+      break
+    case 'chat_history':
+      emit('chatHistory', msg)
+      break
+    case 'chat_roster':
+      emit('chatRoster', msg)
+      break
     case 'error':
+      // An error naming a request (a chat post or send) is that request's, not the terminal's.
+      if (msg.requestId) {
+        emit('requestError', { code: msg.code, message: msg.message, requestId: msg.requestId })
+        break
+      }
       if (msg.code === 'read_only') notice.value = 'This link is view-only'
       else if (msg.code !== 'bad_frame') notice.value = msg.message
       break
@@ -362,7 +381,21 @@ function submit(text: string): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, sendInput, submit, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+/** Posts to the chat; false when the transport is not open (the caller queues it). */
+function chat(post: ChatPost): boolean {
+  if (!transport || transport.state.value !== 'open') return false
+  transport.chat(post)
+  return true
+}
+
+/** Types a kept chat message into the agent; false when the transport is not open. */
+function chatSend(send: ChatSend): boolean {
+  if (!transport || transport.state.value !== 'open') return false
+  transport.chatSend(send)
+  return true
+}
+
+defineExpose({ connect, disconnect, requestFile, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({

@@ -1,12 +1,14 @@
 <script setup lang="ts">
+import type { ChatThread } from '~/composables/useChat'
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, FileResponse, Role, ViewerInfo } from '~/utils/protocol'
+import type { ActivityEntry, ChatMessage, FileResponse, Role, ViewerInfo } from '~/utils/protocol'
 import type { FileTarget } from '~/components/FileBrowser.vue'
+import { avatarTone } from '~/utils/avatar'
 import { initials, relativeTime } from '~/utils/sessions'
 import { parseLocation } from '~/utils/links'
 import { COLOR_TEXT, entryIcon, linkableUrl } from '~/utils/events'
 
-export type InspectorTab = 'people' | 'files' | 'activity'
+export type InspectorTab = 'people' | 'files' | 'activity' | 'chat'
 
 const props = defineProps<{
   session: SessionInfo
@@ -16,18 +18,24 @@ const props = defineProps<{
   links: ShareLink[]
   request: (path: string, stat?: boolean) => Promise<FileResponse>
   rawUrl?: (path: string) => string | null
+  /** The session's chat (design 2a); the tab shows once the owner said it takes chat. */
+  chat?: ChatThread
+  chatUnread?: number
+  chatOffline?: boolean
+  ended?: boolean
 }>()
-const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink] }>()
+const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number] }>()
 
 const tab = defineModel<InspectorTab>('tab', { default: 'people' })
 const target = defineModel<FileTarget | null>('target', { default: null })
 const url = defineModel<string | null>('url', { default: null })
 
-const tabs: Array<{ id: InspectorTab; label: string }> = [
+const tabs = computed<Array<{ id: InspectorTab; label: string }>>(() => [
   { id: 'people', label: 'People' },
   { id: 'files', label: 'Files' },
   { id: 'activity', label: 'Activity' },
-]
+  ...(props.chat?.capable ? [{ id: 'chat' as const, label: 'Chat' }] : []),
+])
 
 const now = ref(Date.now())
 let tick: number | undefined
@@ -118,18 +126,21 @@ function describe(e: ActivityEntry) {
         type="button"
         class="px-2.5 py-2 -mb-px border-b-2 transition-colors"
         :class="tab === t.id ? 'border-primary font-semibold text-highlighted' : 'border-transparent text-muted hover:text-default'"
+        :data-chat-tab="t.id === 'chat' ? '' : undefined"
         @click="tab = t.id"
       >
-        {{ t.label }}
+        <span class="inline-flex items-center gap-1.5">{{ t.label }}<ChatUnreadPill v-if="t.id === 'chat' && tab !== 'chat'" :count="chatUnread ?? 0" /></span>
       </button>
     </div>
 
-    <div v-if="tab === 'people'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6">
+    <ChatPanel v-if="tab === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" @answer="(m, i) => emit('chatAnswer', m, i)" />
+
+    <div v-else-if="tab === 'people'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6">
       <section class="flex flex-col gap-2.5">
         <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Here now · {{ viewers.length || session.viewers }}</h3>
         <p v-if="!viewers.length" class="text-xs text-muted">Names arrive once everyone reconnects.</p>
         <div v-for="v in viewers" :key="v.id" class="flex items-center gap-2.5">
-          <span class="grid size-7 place-items-center rounded-full bg-primary text-[11px] font-semibold text-inverted flex-none" :class="typing(v) && 'ring-2 ring-warning ring-offset-2 ring-offset-default'">{{ initials(v.name) }}</span>
+          <span class="grid size-7 place-items-center rounded-full text-[11px] font-semibold flex-none" :class="[avatarTone(v.name), typing(v) && 'ring-2 ring-warning ring-offset-2 ring-offset-default']">{{ initials(v.name) }}</span>
           <div class="min-w-0 flex-1 flex flex-col">
             <span class="truncate text-sm font-medium">{{ v.name }}</span>
             <span class="truncate text-xs text-muted">{{ who(v) }}</span>

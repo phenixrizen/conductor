@@ -757,6 +757,106 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   suppressed; Stop asks again in the row. `viewport-fit=cover` lets the bar's
   padding read the safe area, and the dashboard group leaves it room below
   lg. No swipe actions.
+- **Chat beside the terminal** (2a, 2b, 2h, C1). One chat per session,
+  over the connection the terminal takes (`chat`, `chat_send`,
+  `chat_history`; `welcome.chat` gates a client), so it works wherever a
+  link works and the switchyard never reads it. Every viewer may post; a
+  controller's "To agent" and "Send to agent" type a message into the
+  agent through `Submit` and leave a `sent_to_agent` marker. The session
+  keeps 200 (`session.chatRing`), replays the newest that fit 128 KiB, and
+  takes no post once ended. Chat lines are not activity entries: their own
+  ring, frames and hook (`Options.OnChat`), no bucket shared with hook
+  reports, no 500-byte cut, nothing in the run log or the webhooks. Chat
+  frames are encoded without HTML escaping (`proto.MustControlRaw`) so a
+  2 KiB message fits the 8 KiB control frame. Join and leave lines coalesce
+  by name. Unread is the browser's own count, in memory for now; the
+  sidebar's pills come with C4. A per-connection bucket of 10 a second,
+  burst 20, is new: viewer connections had no message bound before.
+- **Chat on a phone and on a guest's page** (2c, 2d, C2). No server
+  change. Where the inspector is not rendered (below `xl`) the session
+  page's header gets a Chat button with the unread count that opens the
+  chat as a sheet: `UDrawer` from the bottom on a phone (snap points two
+  thirds and full, no overlay, not modal, so the terminal stays live and
+  usable behind it), `USlideover` from the right in between. The join page
+  wires the same thread over the guest's own connection (so a switchyard
+  guest has it too): a panel beside the terminal at `md` and up, which the
+  header's button folds away, the sheet below; a view-only guest reads the
+  2d note and sees no agent actions. A thread counts as open only while it
+  is in front of the person (`useMedia` says whether the inspector is
+  rendered), so a phone counts what the hidden inspector's tab would have
+  swallowed. Nothing in a hello or welcome changed.
+- **Run chat** (2e, 2f, C3). One thread per run across its members:
+  `session.ChatRoom`, made by the engine's run, which every member session
+  is made with (`Options.RunChat`) and joins at launch. Read and posted
+  over any member's connection with scope `run`, so a run link's guest and
+  a run published through a switchyard have it without the switchyard or
+  a run socket knowing (option A of the plan; option B, a run socket, was
+  rejected for that). A member's new viewer is replayed the run's chat
+  after the session's; the people on any member make the roster
+  (`chat_roster`, one row per name with the member they look at, bounded
+  at 32 so a full list of the longest names fits a control frame; `count`
+  says how many); join and leave lines are counted once across the
+  members. The run page opens one quiet connection (`hello.chatOnly`) to a
+  live member and moves it when that member ends: no scrollback or output,
+  not a viewer of the session, no line in its chat, on the run's roster
+  (`useRunChat`). A controller's `chat_send` with scope `run` types a kept
+  message into the member it names as a broadcast does, nothing while it
+  waits on a prompt, answered `not_sent{needs_input|not_running|unknown|
+  no_enter}` (the broadcast's reasons, now `session.NotSent*`); the
+  composer's menu (`scopeItems`) disables such a member with the broadcast
+  bar's words before anything is sent. The run's chat goes into its record
+  (`chat` on `GET /api/runs/{run}` and the record; lists strip it; 500
+  worst-case messages stay under the 4 MiB record read) and stays open
+  while the run is kept; a resumed run starts a new one. The `send` emit of
+  the chat components now names where a message goes ('', `agent`, a
+  member).
+- **Unread elsewhere** (2g, C4). The admin stream carries `chat` events
+  (`eventHub.chat`, from `Options.OnChat` and `Engine.OnRunChat`, as
+  droppable as `activity`, reaching no sink), so the browser counts the
+  chats it has no page on. `utils/chatUnread.ts` keeps the counts per
+  thread in `conductor.chat.unread` with the thread's last opening and the
+  last 64 message ids, so the same message from the connection and the
+  stream counts once, nothing older than the opening counts, a reload
+  recounts nothing seen, and another tab's writes are read back
+  (`storage`). `ChatUnreadPill` sits on every session row and run header
+  (neutral, never a status colour); the rail's bottom-right number is the
+  Events badge plus the unread chat, a capsule's its members' plus the run's
+  own, and the tooltip names both ("alone · running · done · 3 unread in
+  chat"). A hosted session's chat stays on the host until C5.
+- **Hosted chats on the stream** (2g for `conductor host`, C5). A host sends
+  each message its session keeps as `chat{sessionId, message}` on its
+  control connection (the local session's `OnChat` hook queues it on the
+  same bounded forwarder as activity, one goroutine sends in order); the
+  server's `HostedSession.HostChat` cleans it (the connection's session
+  whatever the host named, the known kinds only, scope `session`, bounded
+  ids, cleaned names, the text cleaned and cut to the bound, `to` only as
+  `agent`) and the hub's `OnChat` hands it to `eventHub.chat`. A server
+  publishing its sessions to a switchyard sends their chat up the same way
+  (`Published.OnChat`), so the switchyard's stream shows it as a hosted
+  session's. `HostedSession` stays a pass-through for the chat itself: the
+  host keeps it and serves its viewers. Found by the chat tests on the way:
+  a session's end revoked its links and closed their viewers as "link
+  revoked" (4403), racing the status frame, so a guest on a view link could
+  miss that the session ended; `DisconnectLink` now closes them as the
+  session's end (4410) once it has ended, which the join page already takes
+  as ended.
+- **The agents' questions in the chat** (C6, the owner's fast follow-up:
+  "can we have the agents send questions to the chat as well when input is
+  needed?"). A session going `needs_input` keeps the attention's message
+  and choices in its chat as a `question` from the agent (`By.Role`
+  `agent`, `Options` the attention's, at most six; `askInChat`), and the
+  answer, whoever's input cleared the prompt, as a `system` line with
+  `event: answered` and `ref` the question's (`answeredInChat`; "Conductor"
+  when nothing named the person). A run member's question and its answer
+  go into the run's chat too, on the member (`tellRun`). The thread draws a
+  question amber-tinted, its choices as buttons for a controller while it
+  stands (`answeredQuestions` in `utils/chat.ts`), typing the choice's
+  input as the quick-reply bar does: into the session on its page and a
+  guest's, into the member from a run's chat (`useQuickReply`, which now
+  reaches a link's server too, for the guest on a run link). A question
+  counts as unread like any message; the answered line never does. A
+  question of the longest message with six of the longest choices fits the
+  control frame (`TestAQuestionFrameFits`).
 
 ### Verified (round 11)
 
@@ -800,6 +900,34 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   loose sessions (one asking), a run of three (one asking, one exited), a
   hosted session with its machine, Exited folded "· 4" with squares; on a
   run page the block is marked. By hand on the installed app: pending.
+- C1 rendered headless at 1440 against 2a (dark and light, the hover
+  action) and 2b (the closed tab's count). By hand: pending.
+- C2 rendered headless at 390 against 2c (the header's count, the sheet
+  open over the terminal, dark and light) and at 1440 against 2d (the bare
+  guest page with the panel and the note). By hand on a phone (the keyboard
+  pushing the composer up, the drag to full height): pending.
+- C5: Go tests for the cleaning in `signal` (every kind, a bad role, no
+  id, a bad time, the cut), for the fake host's message reaching the stream
+  and a bogus kind costing nothing (`ws_e2e_test.go`), and for a real host
+  whose relay viewer's post reaches the stream (`hostagent`); Playwright
+  `chat.spec.ts` scenario 7 (a line said in a hosted session counts on
+  another person's sidebar row).
+- C4: Go tests for the `chat` event's shape and its reach (no sink) and
+  for the stream carrying a session's and a run's chat; vitest for the
+  store (counted once, never a system line or one's own, nothing older than
+  the opening, bounded ids, the read and write) and the rail's unread;
+  Playwright `chat.spec.ts` scenario 6 (two messages count on another
+  person's row and rail corner, survive a reload, clear on opening and stay
+  clear; a run's header counts the run's own chat).
+- C3: Go tests for the room (fan-out across members, the replay order, the
+  roster, joins coalesced, quiet connections, sends with every refusal),
+  the roster's bound (proto) and the run chat over WebSockets with a run
+  link, the record and the lists (`crews_test.go`); Playwright
+  `chat.spec.ts` scenario 5 (two people on the run page, the composer's
+  menu with review skipped and lead typed into, a guest on the run link
+  with the view-only note, the run stopped). Rendered headless at 1440
+  against 2e and 2f. By hand: a run published through the switchyard from
+  the LAN box with a phone on its link, pending.
 
 ## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
 

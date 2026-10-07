@@ -14,16 +14,23 @@ const (
 	CtlPing    = "ping"
 	CtlFileGet = "file_get"
 	CtlSubmit  = "submit"
+	// CtlChat is a post from a viewer and, owner -> client, one message of the chat (ChatPost, ChatMessage).
+	CtlChat = "chat"
+	// CtlChatSend types a kept chat message into the agent (ChatSend); controllers only.
+	CtlChatSend = "chat_send"
+	// CtlChatRoster lists the people on a run's chat (ChatRoster); owner -> client.
+	CtlChatRoster = "chat_roster"
 
 	// owner -> client
-	CtlAttention = "attention"
-	CtlActivity  = "activity"
-	CtlWelcome   = "welcome"
-	CtlReady     = "ready"
-	CtlStatus    = "status"
-	CtlViewers   = "viewers"
-	CtlError     = "error"
-	CtlPong      = "pong"
+	CtlAttention   = "attention"
+	CtlActivity    = "activity"
+	CtlWelcome     = "welcome"
+	CtlReady       = "ready"
+	CtlStatus      = "status"
+	CtlViewers     = "viewers"
+	CtlError       = "error"
+	CtlPong        = "pong"
+	CtlChatHistory = "chat_history"
 )
 
 // Error codes carried by CtlError.
@@ -38,6 +45,9 @@ const (
 	ErrCodeHostDisconnected = "host_disconnected"
 	ErrCodeFileDenied       = "file_denied"
 	ErrCodeTooManyRequests  = "too_many_requests"
+	// ErrCodeNotSent answers a chat_send whose text could not be typed into
+	// the member it names (a run's chat): the message says why.
+	ErrCodeNotSent = "not_sent"
 )
 
 // Transport labels reported in Welcome.
@@ -77,6 +87,11 @@ type Hello struct {
 	Client string `json:"client,omitempty"`
 	// Name is the display name other viewers see; a label, not authentication.
 	Name string `json:"name,omitempty"`
+	// ChatOnly asks for a quiet connection, for a run's chat alone: no
+	// scrollback, output or files, not counted among the session's viewers
+	// and no join line in its chat; it is on the run's roster. An older
+	// owner ignores it and sends output, which the client drops.
+	ChatOnly bool `json:"chatOnly,omitempty"`
 }
 
 // Resize is sent by controllers to change the PTY size and broadcast by the
@@ -100,6 +115,124 @@ type Submit struct {
 // MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
 const MaxSubmit = 4096
 
+// Chat beside the terminal (docs/protocol.md, Chat): the people on a session
+// talk to each other over the connection the terminal takes. A viewer posts
+// with `chat`; the owner keeps the last session.MaxChat messages, sends each
+// to every viewer as `chat`, and the kept ones to a new viewer as
+// `chat_history`. `chat_send` types a kept message into the agent.
+const (
+	ChatScopeSession = "session"
+	ChatScopeRun     = "run"
+
+	ChatKindMessage     = "message"
+	ChatKindSystem      = "system"
+	ChatKindSentToAgent = "sent_to_agent"
+	// ChatKindQuestion is the agent's question when its session needs
+	// input: the attention's message as Text, its choices as Options, By the
+	// agent (role "agent"). A system line with Event "answered" and Ref the
+	// question follows the input that answered it.
+	ChatKindQuestion = "question"
+	// ChatRoleAgent is the By.Role of a question: the agent, no viewer.
+	ChatRoleAgent = "agent"
+
+	// ChatToAgent is the `to` of a post that is also typed into this session's agent (controllers only).
+	ChatToAgent = "agent"
+
+	// MaxChatText bounds a message's text in bytes, after cleaning. A frame of
+	// one message always fits MaxControl: chat frames are encoded without
+	// HTML escaping (MustControlRaw), so the worst case doubles it.
+	MaxChatText = 2048
+	// MaxChatNonce bounds a post's own id, echoed in the message so the sender knows it.
+	MaxChatNonce = 32
+	// ChatRatePerSecond and ChatBurst bound the posts of one connection.
+	ChatRatePerSecond = 10
+	ChatBurst         = 20
+	// ChatReplayBytes bounds what a new viewer is sent of the kept chat: the newest messages that fit.
+	ChatReplayBytes = 128 << 10
+	// MaxChatRoster bounds the people a chat_roster lists (a full list of the
+	// longest names fits MaxControl); Count says how many there are.
+	MaxChatRoster = 32
+)
+
+// ChatPost is a viewer's message (client -> owner). Scope is "session" when
+// empty. To is "agent" for a controller's post that is also typed into the
+// agent, or a member's name in a run's chat. On is the member the sender is
+// looking at (a run's chat). Nonce is the client's own id of the post.
+type ChatPost struct {
+	T     string `json:"t"`
+	Nonce string `json:"nonce,omitempty"`
+	Scope string `json:"scope,omitempty"`
+	Text  string `json:"text"`
+	On    string `json:"on,omitempty"`
+	To    string `json:"to,omitempty"`
+}
+
+// ChatSend asks the owner to type the text of the kept message Ref into the
+// agent (client -> owner, controllers only), or into member To of a run.
+type ChatSend struct {
+	T     string `json:"t"`
+	Ref   string `json:"ref"`
+	Scope string `json:"scope,omitempty"`
+	To    string `json:"to,omitempty"`
+}
+
+// ChatBy is who a chat message is from: the viewer's subscription id, name and role.
+type ChatBy struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+// ChatMessage is one message of a chat (owner -> client). Kind "message"
+// carries Text; "system" carries Event (join, leave, or answered with Ref the
+// question) about By; "sent_to_agent" marks that By typed the message Ref into
+// the agent (To names a run's member); "question" is the agent's (By.Role
+// "agent"), its Text the question and Options its choices, On the member in a
+// run's chat.
+type ChatMessage struct {
+	T       string            `json:"t"`
+	ID      string            `json:"id"`
+	At      string            `json:"at"`
+	Scope   string            `json:"scope"`
+	Kind    string            `json:"kind"`
+	By      ChatBy            `json:"by"`
+	Text    string            `json:"text,omitempty"`
+	Ref     string            `json:"ref,omitempty"`
+	To      string            `json:"to,omitempty"`
+	On      string            `json:"on,omitempty"`
+	Event   string            `json:"event,omitempty"`
+	Nonce   string            `json:"nonce,omitempty"`
+	Options []AttentionOption `json:"options,omitempty"`
+}
+
+// ChatHistory replays the kept messages to a new viewer, oldest first, in
+// frames of at most MaxControl; More says another frame follows.
+type ChatHistory struct {
+	T        string        `json:"t"`
+	Scope    string        `json:"scope"`
+	Messages []ChatMessage `json:"messages"`
+	More     bool          `json:"more,omitempty"`
+}
+
+// ChatPerson is one person on a run's chat: a viewer of any of its members,
+// one row per name. On is the member they look at, when they look at one.
+type ChatPerson struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+	On   string `json:"on,omitempty"`
+}
+
+// ChatRoster lists who is on a run's chat (owner -> client), sent to every
+// member's viewers whenever any member's roster changes: Count is how many,
+// List the first MaxChatRoster of them.
+type ChatRoster struct {
+	T     string       `json:"t"`
+	Scope string       `json:"scope"`
+	Count int          `json:"count"`
+	List  []ChatPerson `json:"list"`
+}
+
 // Ping and Pong carry an opaque client timestamp.
 type Ping struct {
 	T  string `json:"t"`
@@ -116,21 +249,27 @@ type FileGet struct {
 
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).
 type Welcome struct {
-	T               string      `json:"t"`
-	Proto           int         `json:"proto"`
-	SessionID       string      `json:"sessionId"`
-	Role            string      `json:"role"`
-	SubscriberID    string      `json:"subscriberId,omitempty"`
-	ViewerID        string      `json:"viewerId,omitempty"`
-	Cols            uint16      `json:"cols"`
-	Rows            uint16      `json:"rows"`
-	Status          string      `json:"status"`
-	ScrollbackBytes int         `json:"scrollbackBytes"`
-	Transport       string      `json:"transport"`
-	FileView        bool        `json:"fileView"`
-	ICEServers      []ICEServer `json:"iceServers,omitempty"`
-	RelayTimeoutMs  int         `json:"relayTimeoutMs,omitempty"`
-	RelayOnly       bool        `json:"relayOnly,omitempty"`
+	T               string `json:"t"`
+	Proto           int    `json:"proto"`
+	SessionID       string `json:"sessionId"`
+	Role            string `json:"role"`
+	SubscriberID    string `json:"subscriberId,omitempty"`
+	ViewerID        string `json:"viewerId,omitempty"`
+	Cols            uint16 `json:"cols"`
+	Rows            uint16 `json:"rows"`
+	Status          string `json:"status"`
+	ScrollbackBytes int    `json:"scrollbackBytes"`
+	Transport       string `json:"transport"`
+	FileView        bool   `json:"fileView"`
+	// Chat says the owner takes chat and chat_send: a client sends neither
+	// to an owner whose welcome lacks it (an older server closes on them).
+	Chat bool `json:"chat,omitempty"`
+	// RunChat says the session is a run's member with a run chat: `chat` and
+	// `chat_send` take scope `run`, and `chat_roster` arrives.
+	RunChat        bool        `json:"runChat,omitempty"`
+	ICEServers     []ICEServer `json:"iceServers,omitempty"`
+	RelayTimeoutMs int         `json:"relayTimeoutMs,omitempty"`
+	RelayOnly      bool        `json:"relayOnly,omitempty"`
 }
 
 // ICEServer is the WebRTC ICE server description sent to clients.
@@ -157,6 +296,9 @@ type ViewerInfo struct {
 	Since string `json:"since"`
 	// LastInputAt is refreshed at most every 2 s while the viewer types.
 	LastInputAt string `json:"lastInputAt,omitempty"`
+	// Quiet marks a connection for a run's chat alone (hello.chatOnly): it
+	// is left out of a session's `viewers` and listed on the run's roster.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // Viewers reports the attached clients: the count and the full roster.

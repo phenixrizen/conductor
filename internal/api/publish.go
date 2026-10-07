@@ -24,6 +24,7 @@ type Publisher interface {
 type PublishedSession interface {
 	OnChange(info session.Info)
 	OnActivity(id string, e session.ActivityEntry, state session.AttentionState)
+	OnChat(id string, m session.ChatMessage)
 	Stop()
 	Base() string
 	ID() string

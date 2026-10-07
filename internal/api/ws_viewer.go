@@ -69,7 +69,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 	}
 	sink := newWSSink(c)
 	sub, err := local.AttachWith(session.AttachOptions{
-		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
+		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 	}, sink)
 	if err != nil {
 		if errors.Is(err, session.ErrTooManyViewers) {
@@ -180,6 +180,38 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		cancel()
 		if err != nil {
 			s.sendInputError(sub, local, err)
+		}
+	case proto.CtlChat:
+		var m proto.ChatPost
+		if json.Unmarshal(payload, &m) != nil {
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat message"))
+			return true
+		}
+		msg, err := local.Chat(sub, m)
+		if err != nil {
+			local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
+			return true
+		}
+		if m.To != "" {
+			// Typed into the agent (or the run's member named) as a submit is, on the read loop, so what the client sends next comes after it.
+			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+			err := local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To})
+			cancel()
+			if err != nil {
+				local.Send(sub, session.ChatErrorFrame(err, msg.ID))
+			}
+		}
+	case proto.CtlChatSend:
+		var m proto.ChatSend
+		if json.Unmarshal(payload, &m) != nil {
+			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
+			return true
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+		err := local.ChatSend(ctx, sub, m)
+		cancel()
+		if err != nil {
+			local.Send(sub, session.ChatErrorFrame(err, m.Ref))
 		}
 	case proto.CtlHello:
 		// duplicate hello is harmless

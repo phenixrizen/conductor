@@ -37,6 +37,8 @@ type createSessionRequest struct {
 	// resume, set by Resume, is the agent session id the launch resumes with
 	// the agent's recipe; resumedFrom the session it resumes or relaunches.
 	resume, resumedFrom string
+	// runChat, set by Launch, is the chat of the run the session is a member of.
+	runChat *session.ChatRoom
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -249,6 +251,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Log:             s.log,
 		OnChange:        s.localChange,
 		OnActivity:      s.localActivity,
+		OnChat:          s.localChat,
+		RunChat:         req.runChat,
 		Pattern:         pattern,
 		TrustPattern:    trust,
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
@@ -280,6 +284,15 @@ func noYoloRecipe(agent catalog.Agent) string {
 // the event hub, and to the runs, whose waiting handoffs a member's change
 // may let go (a prompt cleared records no activity entry). The runs' hook
 // never waits.
+// localChat is the OnChat hook of a server session: its chat reaches the
+// browsers' unread counts over the events stream.
+func (s *Server) localChat(id string, m session.ChatMessage) {
+	s.events.chat(id, "", m)
+	if pub := s.publishedOf(id); pub != nil {
+		pub.OnChat(id, m)
+	}
+}
+
 func (s *Server) localChange(info session.Info) {
 	s.events.publish(info)
 	s.runs.OnChange(info)

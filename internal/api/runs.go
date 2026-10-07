@@ -34,12 +34,13 @@ const (
 	maxBroadcast = 4096
 )
 
-// Why a broadcast skips a member (broadcastSkip.Reason).
+// Why a broadcast skips a member (broadcastSkip.Reason): the reasons a run
+// chat's send is not typed either (session.ErrNotSent).
 const (
-	skipNeedsInput = "needs_input" // its session waits on a prompt, which the text must not answer
-	skipNotRunning = "not_running" // it is not running: no session yet, its prompt not typed yet, or ended
-	skipUnknown    = "unknown"     // no member of the run has the name
-	skipNoEnter    = "no_enter"    // typed, but a prompt came up before its Enter: the line waits in its input
+	skipNeedsInput = session.NotSentNeedsInput
+	skipNotRunning = session.NotSentNotRunning
+	skipUnknown    = session.NotSentUnknown
+	skipNoEnter    = session.NotSentNoEnter
 )
 
 // broadcastTimeout bounds a broadcast's submissions, which go on when the
@@ -54,9 +55,14 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	}
 	yolo := spec.Yolo
 	ref := spec.Ref
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom}, &ref)
+	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
+	room := s.runs.ChatRoom(ref.RunID)
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom, runChat: room}, &ref)
 	if aerr != nil {
 		return nil, aerr
+	}
+	if room != nil {
+		room.Join(local, spec.Name)
 	}
 	if yolo && !local.Info().Yolo {
 		if a, ok := s.Catalog().Get(spec.AgentID); ok {

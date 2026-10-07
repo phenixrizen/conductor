@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ControlMessage, FileResponse, TransportKind, Welcome } from '../protocol'
+import type { ChatPost, ChatSend, ControlMessage, FileResponse, TransportKind, Welcome } from '../protocol'
 
 export type TransportState = 'idle' | 'connecting' | 'signaling' | 'open' | 'closed'
 
@@ -23,6 +23,10 @@ export interface TerminalTransport {
    * Enter 250 ms later, so that a TUI takes the Enter as Enter. Controllers only; at most MAX_SUBMIT bytes.
    */
   submit(text: string): void
+  /** Posts to the session's chat (every role); only once the owner's welcome said `chat`. */
+  chat(post: ChatPost): void
+  /** Types a kept chat message into the agent (controllers only). */
+  chatSend(send: ChatSend): void
   resize(cols: number, rows: number): void
   ping(): void
   requestFile(path: string, stat?: boolean): Promise<FileResponse>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, Attention, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
+import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
@@ -28,6 +28,64 @@ const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 const tab = ref<InspectorTab>('people')
 const attention = ref<Attention>({ state: '' })
+
+// The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.
+const chatKey = computed(() => `session:${id.value}`)
+const chat = useChat(chatKey)
+const unread = useChatUnread()
+const chatUnread = computed(() => unread.count(chatKey.value))
+const chatOffline = computed(() => transport.value.state !== 'open')
+// Below xl the inspector is not rendered: the header's Chat button opens the chat as a sheet (design 2c).
+const xl = useMedia('(min-width: 80rem)')
+const chatSheet = ref(false)
+/** The thread is in front of the person: on the inspector's Chat tab where the inspector shows, or in the sheet. */
+const chatShown = computed(() => (xl.value && inspector.value && tab.value === 'chat') || chatSheet.value)
+function showChat() {
+  if (!xl.value) chatSheet.value = true
+  else if (inspector.value && tab.value === 'chat') inspector.value = false
+  else {
+    tab.value = 'chat'
+    inspector.value = true
+  }
+}
+const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
+const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
+// A member's connection carries its run's chat too (scope run): it feeds the run's thread, so its count is right everywhere.
+const runKey = computed(() => (current.value?.crew?.runId ? `run:${current.value.crew.runId}` : ''))
+const runChat = useChat(runKey)
+function onChat(m: ChatMessage) {
+  if (m.scope === 'run') {
+    if (runKey.value) runChat.accept(m, { live: true })
+    return
+  }
+  chat.accept(m, { live: true })
+}
+function onChatHistory(h: ChatHistory) {
+  if (h.scope === 'run') {
+    if (runKey.value) runChat.history(h)
+    return
+  }
+  chat.history(h)
+}
+function chatSend(text: string, to: string) {
+  chat.send(text, to ? { to } : {}, viaChat)
+}
+function chatSendToAgent(ref: string) {
+  if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+}
+function chatRetry(nonce: string) {
+  chat.retry(nonce, viaChat)
+}
+/** A question's choice from the chat: its keys into the session, as the quick reply bar's. */
+function chatAnswer(m: ChatMessage, index: number) {
+  const o = m.options?.[index]
+  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+}
+function onRequestError(err: { code: string; message: string; requestId: string }) {
+  if (chat.fail(err.requestId, err.message)) return
+  // A chat_send that failed names the message it would have typed.
+  toast.add({ title: 'Not sent to the agent', description: err.message, color: 'warning' })
+}
 
 const INSPECTOR_KEY = 'conductor.inspector'
 const inspector = ref(true)
@@ -94,7 +152,19 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+
+// The thread counts nothing while it is open in front of this person.
+watch(
+  [chatKey, chatShown],
+  ([key, shown]) => {
+    if (shown) unread.openThread(key)
+    else unread.closeThread(key)
+  },
+  { immediate: true },
+)
+watch(chatKey, (_, old) => old && unread.closeThread(old))
+onBeforeUnmount(() => unread.closeThread(chatKey.value))
 
 // "<name> is typing…": anyone else whose last input is under four seconds old.
 const now = ref(Date.now())
@@ -161,10 +231,12 @@ function onActivity(e: ActivityEntry) {
   activity.value = [...activity.value.slice(-199), e]
 }
 
-// Every (re)connection replays the last 50 entries, so start the log afresh.
+// Every (re)connection replays the last 50 entries and the kept chat, so start both afresh.
 function onWelcome(w: Welcome) {
   selfId.value = w.subscriberId ?? w.viewerId ?? ''
   activity.value = []
+  unread.registerSelf(selfId.value)
+  chat.welcome(!!w.chat, viaChat)
 }
 
 function createTransport() {
@@ -308,6 +380,11 @@ watch(id, () => {
           <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
           <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
           <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
+          <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
+          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+            <span class="hidden sm:inline">Chat</span>
+            <ChatUnreadPill :count="chatUnread" />
+          </UButton>
           <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
@@ -331,6 +408,10 @@ watch(id, () => {
               @viewers="onViewers"
               @activity="onActivity"
               @transport="transport = $event"
+              @closed="chat.offline()"
+              @chat="onChat"
+              @chat-history="onChatHistory"
+              @request-error="onRequestError"
               @open-file="openFile"
               @open-url="openUrl"
             />
@@ -350,8 +431,16 @@ watch(id, () => {
             :links="links"
             :request="requestFile"
             :raw-url="rawUrl"
+            :chat="chat.thread.value"
+            :chat-unread="chatUnread"
+            :chat-offline="chatOffline"
+            :ended="ended"
             @new-link="share = true"
             @revoke="revoke"
+            @chat-send="chatSend"
+            @chat-send-to-agent="chatSendToAgent"
+            @chat-retry="chatRetry"
+            @chat-answer="chatAnswer"
           />
         </div>
       </div>
@@ -360,4 +449,5 @@ watch(id, () => {
   </UDashboardPanel>
 
   <ShareLinksModal v-model:open="share" :session-id="id" :session-name="session?.name" />
+  <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
 </template>

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -173,6 +174,9 @@ type Run struct {
 	// prompt typed, handoff queued, delivered or dropped, stopped, and the
 	// rest docs/protocol.md lists. At most maxRunLog entries.
 	Log []session.ActivityEntry `json:"log"`
+	// Chat is the run's chat, oldest first, at most session.MaxRunChat
+	// messages: on a run read alone (Get) and in its record, not in a list.
+	Chat []proto.ChatMessage `json:"chat,omitempty"`
 }
 
 // Engine launches crews and runs their runs. It never holds its lock while
@@ -210,6 +214,11 @@ type Engine struct {
 	// mu, so it must not call the engine or wait. Set it before the first
 	// launch.
 	OnRunChange func(runID string)
+
+	// OnRunChat is called with the ID of a run and each message kept in its
+	// chat (ChatRoom), outside the engine's lock, on the posting goroutine:
+	// it must not block or call the engine. Set it before the first launch.
+	OnRunChat func(runID string, m session.ChatMessage)
 
 	// OnEnd is called with a run each time it ends: stopped (Stop), or
 	// finished, every member ended, as the change of the last member's
@@ -250,6 +259,8 @@ type run struct {
 	stoppedAt *time.Time
 	members   []*member
 	log       []session.ActivityEntry
+	// chat is the run's chat, which every member session joins at launch.
+	chat *session.ChatRoom
 
 	// ctx ends when the run stops; every member start runs under it.
 	ctx    context.Context
@@ -600,6 +611,11 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
+	r.chat = session.NewChatRoom(func(m session.ChatMessage) {
+		if e.OnRunChat != nil {
+			e.OnRunChat(r.id, m)
+		}
+	}, func(name string) bool { return e.memberRunning(r, name) })
 	immediate := 0
 	for _, m := range c.Members {
 		r.members = append(r.members, newMember(m))
@@ -621,6 +637,26 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 		r.note(session.ActivityStatus, "launched %s: %d members, %d starting now", c.Name, len(c.Members), immediate)
 	}
 	return r
+}
+
+// memberRunning reports whether r's member name runs: its prompt typed and
+// its session not ended, as the engine knows it.
+func (e *Engine) memberRunning(r *run, name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := r.member(name)
+	return m != nil && m.state.Status == MemberRunning
+}
+
+// ChatRoom is the chat of the run with the given ID, which a member's
+// session is made with (Options.RunChat) and joins; nil for no such run.
+func (e *Engine) ChatRoom(runID string) *session.ChatRoom {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.runs[runID]; r != nil {
+		return r.chat
+	}
+	return nil
 }
 
 // launched marks r launched: from now on evict may forget it.
@@ -1237,7 +1273,7 @@ func (e *Engine) Get(runID string) (Run, bool) {
 	r, ok := e.runs[runID]
 	var out Run
 	if ok {
-		out = r.snapshot(false)
+		out = r.snapshot(false, true)
 	}
 	e.mu.Unlock()
 	if !ok {
@@ -1252,7 +1288,7 @@ func (e *Engine) List() []Run {
 	e.mu.Lock()
 	out := make([]Run, 0, len(e.order))
 	for i := len(e.order) - 1; i >= 0; i-- {
-		out = append(out, e.order[i].snapshot(false))
+		out = append(out, e.order[i].snapshot(false, false))
 	}
 	e.mu.Unlock()
 	for i := range out {
@@ -1310,14 +1346,15 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 	}
 	wg.Wait()
 	e.mu.Lock()
-	out := r.snapshot(true)
+	out := r.snapshot(true, true)
 	e.mu.Unlock()
 	e.refresh(&out)
 	return out, true
 }
 
-// snapshot copies r, with the members' diffs when withDiffs. The caller holds e.mu.
-func (r *run) snapshot(withDiffs bool) Run {
+// snapshot copies r, with the members' diffs when withDiffs and the run's
+// chat when withChat. The caller holds e.mu.
+func (r *run) snapshot(withDiffs, withChat bool) Run {
 	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
@@ -1330,6 +1367,11 @@ func (r *run) snapshot(withDiffs bool) Run {
 			st.Diff = &d
 		}
 		out.Members = append(out.Members, st)
+	}
+	if withChat {
+		for _, m := range r.chat.History() {
+			out.Chat = append(out.Chat, session.ChatToProto(m))
+		}
 	}
 	return out
 }
