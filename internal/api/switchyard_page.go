@@ -402,7 +402,7 @@ dl{margin:0;display:flex;flex-direction:column;gap:8px}
 footer.sy{display:flex;flex-wrap:wrap;gap:8px 16px;padding:16px 32px;border-top:1px solid var(--conductor-border);font-size:13px;line-height:20px;color:var(--conductor-muted)}
 footer.sy .right{margin-left:auto}
 footer.sy .note{flex-basis:100%}
-a.credit{color:#F3AC89;font-weight:600;text-decoration:none}a.credit:hover{color:var(--conductor-text)}
+.badge{display:inline-flex;align-items:center;gap:10px;height:36px;padding:0 12px;border:1px solid #333;border-radius:6px;background:#000;color:#999;text-decoration:none}.badge:hover{border-color:var(--conductor-muted);color:var(--conductor-body)}.badge span{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}.badge img{height:18px;width:auto;display:block}
 @media (max-width:640px){header.sy,footer.sy{padding-left:16px;padding-right:16px}header.sy .host{display:none}main.sy{padding:32px 16px}h1{font-size:24px}footer.sy .right{margin-left:0}}
 </style>
 </head>
@@ -420,7 +420,7 @@ a.credit{color:#F3AC89;font-weight:600;text-decoration:none}a.credit:hover{color
 {{define "foot"}}
 <footer class="sy">
 <span>Conductor switchyard <span class="mono">{{.Version}}</span> · Apache-2.0 · <a href="{{.DocsURL}}">Docs</a> · <a href="{{.SourceURL}}">Source</a></span>
-<span class="right" data-credit>Sponsored and maintained by <a class="credit" href="https://rocksolidlabs.io">RockSolid Labs</a></span>
+<a class="right badge" href="https://rocksolidlabs.io" data-credit><span>Sponsored by</span><img src="/sponsor/rocksolidlabs-logo-reversed.png" alt="RockSolid Labs" width="82" height="18"></a>
 <span class="note">No cookies. An operator token you paste stays in this browser.</span>
 </footer>
 </body>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { SPONSOR_NAME, SPONSOR_URL } from '~/utils/about'
+import { SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
 import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
 import { CloseCode } from '~/utils/protocol'
@@ -369,10 +369,12 @@ function requestFile(path: string, stat?: boolean) {
         </template>
         <div v-else class="text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking link…</div>
       </div>
-      <!-- The Sponsor Kit's line under the card, on a switchyard's own join page (a guest's), never inside the workbench. -->
-      <p v-if="!inWorkbench && info?.switchyard" class="text-[13px] text-muted" data-join-credit>
-        Sponsored and maintained by <a :href="SPONSOR_URL" target="_blank" rel="noopener" class="font-semibold text-[#A44727] no-underline hover:text-default dark:text-[#F3AC89]">{{ SPONSOR_NAME }}</a>
-      </p>
+      <!-- The Sponsor Kit's badge under the card, on a switchyard's own join page (a guest's), never inside the workbench. -->
+      <a v-if="!inWorkbench && info?.switchyard" :href="SPONSOR_URL" target="_blank" rel="noopener" class="inline-flex h-9 w-max items-center gap-2.5 rounded-md border border-[#ddd] bg-white px-3.5 no-underline dark:border-[#333] dark:bg-black" data-join-credit>
+        <span class="text-[11px] font-bold uppercase tracking-[.04em] text-[#777] dark:text-[#999]">Sponsored by</span>
+        <img src="/sponsor/rocksolidlabs-logo.png" alt="RockSolid Labs" class="block h-[18px] w-auto dark:hidden" />
+        <img src="/sponsor/rocksolidlabs-logo-reversed.png" alt="RockSolid Labs" class="hidden h-[18px] w-auto dark:block" />
+      </a>
     </main>
   </template>
 
