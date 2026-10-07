@@ -229,5 +229,8 @@ func TestSwitchyardPagesCarryTheCredit(t *testing.T) {
 		if !strings.Contains(body, `Sponsored and maintained by <a class="credit" href="https://rocksolidlabs.io">RockSolid Labs</a>`) {
 			t.Fatalf("%s has no credit", p)
 		}
+		if !strings.Contains(body, "· Apache-2.0 ·") {
+			t.Fatalf("%s does not name the license", p)
+		}
 	}
 }

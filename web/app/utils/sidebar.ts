@@ -1,6 +1,9 @@
-import type { SessionInfo } from '~/composables/useSessions'
-import type { EventType, RouteRow } from './events'
-import { groupSessions, type SessionGroupKey } from './sessions'
+import type { RunInfo, SessionInfo } from '~/composables/useSessions'
+import type { EventMark, EventType, RouteRow } from './events'
+import { joinedPath, type JoinedEntry } from './joined'
+import type { AttentionKind, AttentionOption } from './protocol'
+import { isEnded } from './attention'
+import { relativeTime } from './sessions'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
 export type SidebarMode = 'full' | 'rail'
@@ -79,11 +82,6 @@ export function writeSidebarSize(storage: KeyValueStore, size: number): void {
   }
 }
 
-/** The sessions a sidebar lists, full or rail: every one, or with `runId` only that run's members. */
-export function sidebarSessions(sessions: SessionInfo[], runId?: string): SessionInfo[] {
-  return runId ? sessions.filter((s) => s.crew?.runId === runId) : sessions
-}
-
 /** Whether `path` is the page of session `id`: its sidebar entry is marked as the current page. */
 export function sessionOpen(path: string, id: string): boolean {
   return path === `/sessions/${id}`
@@ -99,75 +97,382 @@ export function needsDotShown(routes: Readonly<Record<EventType, RouteRow>>): bo
   return routes.needs_input.badge
 }
 
-/** The sidebar's three sections, in its order. */
-export const SIDEBAR_SECTIONS = ['needs', 'running', 'exited'] as const satisfies readonly SessionGroupKey[]
-
-/** One group of a sidebar section: the sessions of no run (no `runId`), or the members of one run under its name. */
-export interface SidebarGroup {
-  /** Unique in the sidebar: a run's members can sit in several sections (one needs you, one runs), each its own group. */
-  key: string
-  runId?: string
-  /** The machine of a group of hosted sessions ('' for one that gave no name); absent for the loose and run groups. */
-  host?: string
-  /** The run's name from `runNames`, else its crew's id; the machine's name ("unnamed host" when blank). */
-  label?: string
-  sessions: SessionInfo[]
-}
-
-/** The label of hosted sessions whose machine gave no name. */
+/** The machine tag of a hosted session whose machine gave no name. */
 export const UNNAMED_HOST = 'unnamed host'
 
+// ---------------------------------------------------------------------------
+// The list's model (design 3a, 3b): sessions and runs, ordered by what needs
+// you. A run is one block, kept whole, placed where its most urgent member
+// is. A crew is not listed (it names the run). A machine is a tag on a row.
+
+/** A row's state and colour: amber, green, grey, grey dashed. */
+export type RowState = 'needs' | 'running' | 'idle' | 'exited'
+/** The list's sections, in order; `shared` holds the links joined from here. */
+export type SectionKey = 'needs' | 'running' | 'shared' | 'exited'
+export const SECTION_KEYS: readonly SectionKey[] = ['needs', 'running', 'shared', 'exited']
+/** The sections holding sessions (every one but shared). */
+export type ListSection = 'needs' | 'running' | 'exited'
+
+export interface SessionRow {
+  kind: 'session'
+  /** The session's id. */
+  id: string
+  session: SessionInfo
+  state: RowState
+  /** The machine of a hosted session (UNNAMED_HOST when it gave none); absent for this server's own. */
+  machine?: string
+  /** What the session asks, while it needs you. */
+  prompt?: { message: string; options: AttentionOption[]; kind?: AttentionKind; since?: string }
+  /** `exit 0`, `stopped`: an exited row's first word; the age is added with `now` where it shows. */
+  exitWord?: string
+}
+
+export interface RunBlock {
+  kind: 'run'
+  /** `run:<runId>`. */
+  id: string
+  runId: string
+  /** The run's own name, else its crew's; the crew's id when the server no longer keeps the run. */
+  title: string
+  startedAt?: string
+  stoppedAt?: string
+  /** The run's member count (pending ones included), else the sessions seen. */
+  agents: number
+  /** The most urgent member's. */
+  state: RowState
+  /** How many members need you. */
+  needs: number
+  /** The members with a session, the most urgent first, then the crew's order. */
+  members: SessionRow[]
+}
+
+export type SidebarItem = SessionRow | RunBlock
+
+export interface SidebarModel {
+  needs: SidebarItem[]
+  running: SidebarItem[]
+  /** Loose exited sessions and wholly exited runs. */
+  exited: SidebarItem[]
+  /** For the headers: sessions needing you (anywhere); the Running section's sessions that are not exited; the Exited section's. */
+  counts: Record<ListSection, number>
+}
+
+const RANK: Record<RowState, number> = { needs: 0, running: 1, idle: 2, exited: 3 }
+
+/** A session's row state: exited once ended; needs while it waits on input; running while its process runs; idle otherwise (starting, a host away). */
+export function rowState(s: SessionInfo): RowState {
+  if (isEnded(s.status)) return 'exited'
+  if (s.attention?.state === 'needs_input') return 'needs'
+  return s.status === 'running' ? 'running' : 'idle'
+}
+
+export function sessionRow(s: SessionInfo): SessionRow {
+  const state = rowState(s)
+  const row: SessionRow = { kind: 'session', id: s.id, session: s, state }
+  if (s.kind === 'hosted') row.machine = s.hostName || UNNAMED_HOST
+  if (state === 'needs') row.prompt = { message: s.attention?.message || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since }
+  if (state === 'exited') row.exitWord = s.status === 'exited' && s.exitCode !== undefined ? `exit ${s.exitCode}` : s.status
+  return row
+}
+
+/** The state of a run block: its most urgent member's (needs, then running, idle, exited). */
+export function blockState(members: readonly SessionRow[]): RowState {
+  let best: RowState = 'exited'
+  for (const m of members) if (RANK[m.state] < RANK[best]) best = m.state
+  return best
+}
+
+/** When a row last signalled, for the order within a section: the prompt's time, the end, else the start. */
+function signalTime(row: SessionRow): string {
+  const s = row.session
+  if (row.state === 'needs') return s.attention?.since ?? s.createdAt
+  if (row.state === 'exited') return s.endedAt ?? s.createdAt
+  return s.createdAt
+}
+
+function sectionOf(state: RowState): ListSection {
+  return state === 'needs' ? 'needs' : state === 'exited' ? 'exited' : 'running'
+}
+
 /**
- * The sidebar's sessions by section (needs you, running, exited, in groupSessions' order), and in each section this server's own
- * sessions of no run first, then one group per run, in the order its first member comes, named from `runNames` (the live store's runs)
- * or its crew's id, then one group per machine for the sessions other machines host here (`conductor host`), named by the machine.
- * The full sidebar and the rail both draw from it.
+ * The list: every run as one block where its most urgent member belongs, never split; loose sessions by their own state. In a
+ * section the loose rows come first, then the blocks, each newest signal first. `runOf` is the live store's run (its name, start,
+ * members and their order); a run it does not know is named by its crew's id.
  */
-export function sidebarGroups(sessions: readonly SessionInfo[], runNames: Readonly<Record<string, string>> = {}): Record<SessionGroupKey, SidebarGroup[]> {
-  const g = groupSessions([...sessions])
-  const out = { needs: [], running: [], exited: [] } as Record<SessionGroupKey, SidebarGroup[]>
-  for (const key of SIDEBAR_SECTIONS) {
-    const list = g[key]
-    const loose = list.filter((s) => !s.crew && s.kind !== 'hosted')
-    if (loose.length) out[key].push({ key: `${key}:`, sessions: loose })
-    const byRun = new Map<string, SessionInfo[]>()
-    for (const s of list) if (s.crew) byRun.set(s.crew.runId, [...(byRun.get(s.crew.runId) ?? []), s])
-    for (const [runId, members] of byRun) out[key].push({ key: `${key}:${runId}`, runId, label: runNames[runId] || members[0]?.crew?.crewId, sessions: members })
-    const byHost = new Map<string, SessionInfo[]>()
-    for (const s of list) if (!s.crew && s.kind === 'hosted') byHost.set(s.hostName ?? '', [...(byHost.get(s.hostName ?? '') ?? []), s])
-    for (const [host, hosted] of byHost) out[key].push({ key: `${key}:host:${host}`, host, label: host || UNNAMED_HOST, sessions: hosted })
+export function sidebarModel(sessions: readonly SessionInfo[], runOf: (runId: string) => RunInfo | undefined = () => undefined): SidebarModel {
+  const loose: SessionRow[] = []
+  const byRun = new Map<string, SessionRow[]>()
+  for (const s of sessions) {
+    const row = sessionRow(s)
+    if (s.crew) {
+      const list = byRun.get(s.crew.runId) ?? []
+      list.push(row)
+      byRun.set(s.crew.runId, list)
+    } else loose.push(row)
+  }
+  const blocks: RunBlock[] = []
+  for (const [runId, rows] of byRun) {
+    const run = runOf(runId)
+    const order = new Map((run?.members ?? []).map((m, i) => [m.name, i]))
+    const place = (r: SessionRow) => order.get(r.session.crew?.member ?? '') ?? Number.MAX_SAFE_INTEGER
+    const members = [...rows].sort((a, b) => RANK[a.state] - RANK[b.state] || place(a) - place(b) || b.session.createdAt.localeCompare(a.session.createdAt))
+    blocks.push({
+      kind: 'run',
+      id: `run:${runId}`,
+      runId,
+      title: run ? run.label || run.name : (rows[0]?.session.crew?.crewId ?? runId),
+      startedAt: run?.startedAt,
+      stoppedAt: run?.stoppedAt,
+      agents: run ? run.members.length : rows.length,
+      state: blockState(members),
+      needs: members.filter((m) => m.state === 'needs').length,
+      members,
+    })
+  }
+  const newestFirst = (a: string, b: string) => b.localeCompare(a)
+  const out: SidebarModel = { needs: [], running: [], exited: [], counts: { needs: 0, running: 0, exited: 0 } }
+  for (const key of ['needs', 'running', 'exited'] as const) {
+    const rows = loose.filter((r) => sectionOf(r.state) === key).sort((a, b) => newestFirst(signalTime(a), signalTime(b)))
+    const bs = blocks.filter((b) => sectionOf(b.state) === key).sort((a, b) => newestFirst(signalTime(a.members[0]!), signalTime(b.members[0]!)))
+    out[key] = [...rows, ...bs]
+  }
+  out.counts.needs = loose.filter((r) => r.state === 'needs').length + blocks.reduce((n, b) => n + b.needs, 0)
+  out.counts.running = out.running.reduce((n, it) => n + (it.kind === 'run' ? it.members.filter((m) => m.state !== 'exited').length : 1), 0)
+  out.counts.exited = out.exited.reduce((n, it) => n + (it.kind === 'run' ? it.members.length : 1), 0)
+  return out
+}
+
+/**
+ * A row's meta line, in parts: the machine (a hosted session), the agent, "server" (a loose session of this server's own; a run's
+ * members say nothing, they run here), and who is here or how long it has run. The path is not among them (design 3f): it stays
+ * on the session page and in the row's tooltip.
+ */
+export function rowMeta(s: SessionInfo, member: boolean, now = Date.now()): string[] {
+  const tail = s.viewers > 0 ? `${s.viewers} here` : relativeTime(s.createdAt, now)
+  if (s.kind === 'hosted') return [s.hostName || UNNAMED_HOST, s.agentId, tail]
+  return member ? [s.agentId, tail] : [s.agentId, 'server', tail]
+}
+
+/** A clock for the narrow sidebar: 24-hour, as the design writes it ("started 08:31"), so the line fits. */
+function clock(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+/** A run block's second line: "started 08:31 · 3 agents", "stopped 08:40 · 3 agents", or the count alone for a run the server forgot. */
+export function blockSubtitle(block: Pick<RunBlock, 'startedAt' | 'stoppedAt' | 'agents'>): string {
+  const agents = `${block.agents} ${block.agents === 1 ? 'agent' : 'agents'}`
+  if (block.stoppedAt) return `stopped ${clock(block.stoppedAt)} · ${agents}`
+  if (block.startedAt) return `started ${clock(block.startedAt)} · ${agents}`
+  return agents
+}
+
+/** The states a folded section shows as squares: a run contributes its members'. At most six. */
+export function sectionPreview(items: readonly SidebarItem[]): RowState[] {
+  const out: RowState[] = []
+  for (const it of items) {
+    if (it.kind === 'run') out.push(...it.members.map((m) => m.state))
+    else out.push(it.state)
+    if (out.length >= 6) break
+  }
+  return out.slice(0, 6)
+}
+
+// ---------------------------------------------------------------------------
+// Folds (design 3c): every section folds from its header, remembered per
+// browser; Exited starts folded; Needs you opens again by itself when a new
+// prompt arrives, so folding it never hides one.
+
+export const SIDEBAR_FOLDS_KEY = 'conductor.sidebar.folds'
+/** true = folded. */
+export type Folds = Record<SectionKey, boolean>
+export const DEFAULT_FOLDS: Readonly<Folds> = { needs: false, running: false, shared: false, exited: true }
+
+/** The folds saved for this browser; anything unreadable or missing takes the default. */
+export function readFolds(storage: KeyValueStore): Folds {
+  const out: Folds = { ...DEFAULT_FOLDS }
+  try {
+    const raw = storage.getItem(SIDEBAR_FOLDS_KEY)
+    if (!raw) return out
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object') {
+      for (const k of SECTION_KEYS) {
+        const v = (parsed as Record<string, unknown>)[k]
+        if (typeof v === 'boolean') out[k] = v
+      }
+    }
+  } catch {
+    /* the defaults */
   }
   return out
 }
 
-export type RailDot = 'needs' | 'running' | 'idle' | 'exited'
-export interface RailItem {
-  id: string
-  name: string
-  agentId: string
-  dot: RailDot
-  message?: string
-}
-export interface RailGroup {
-  /** Unique in the list: a run's members can sit in several sections (one needs you, one runs), each its own group. */
-  key: string
-  runId?: string
-  host?: string
-  label?: string
-  items: RailItem[]
+export function writeFolds(storage: KeyValueStore, folds: Folds): void {
+  try {
+    storage.setItem(SIDEBAR_FOLDS_KEY, JSON.stringify(folds))
+  } catch {
+    /* ignore */
+  }
 }
 
-/** The rail's avatars: sidebarGroups' groups in order, each session as an avatar with its dot. */
-export function railGroups(sessions: readonly SessionInfo[], runNames: Readonly<Record<string, string>> = {}): RailGroup[] {
-  const sections = sidebarGroups(sessions, runNames)
-  const dot = (key: SessionGroupKey, s: SessionInfo): RailDot => (key === 'needs' ? 'needs' : key === 'exited' ? 'exited' : s.status === 'running' ? 'running' : 'idle')
-  return SIDEBAR_SECTIONS.flatMap((key) =>
-    sections[key].map((g) => ({
-      key: g.key,
-      runId: g.runId,
-      host: g.host,
-      label: g.label,
-      items: g.sessions.map((s) => ({ id: s.id, name: s.name, agentId: s.agentId, dot: dot(key, s), message: s.attention?.message || undefined })),
-    })),
-  )
+/** The folds after new prompts arrived (`newlyNeedingInput`'s sessions): Needs you unfolds; the same object when nothing changes. */
+export function reopenNeeds(folds: Folds, fresh: readonly SessionInfo[]): Folds {
+  return fresh.length && folds.needs ? { ...folds, needs: false } : folds
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard focus (design 3c): one flat list of the rows a key can land on,
+// in the list's order, a run's header among them; a folded section holds none.
+
+export type FocusRow =
+  | { id: string; kind: 'session'; sessionId: string; runId?: string; options: number }
+  | { id: string; kind: 'run'; runId: string }
+  | { id: string; kind: 'shared'; entryId: string }
+
+function sessionFocus(row: SessionRow, runId?: string): FocusRow {
+  return { id: `s:${row.id}`, kind: 'session', sessionId: row.id, runId, options: row.prompt?.options.length ?? 0 }
+}
+
+export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds): FocusRow[] {
+  const out: FocusRow[] = []
+  const add = (items: readonly SidebarItem[]) => {
+    for (const it of items) {
+      if (it.kind === 'run') {
+        out.push({ id: `r:${it.runId}`, kind: 'run', runId: it.runId })
+        for (const m of it.members) out.push(sessionFocus(m, it.runId))
+      } else out.push(sessionFocus(it))
+    }
+  }
+  if (!folds.needs) add(model.needs)
+  if (!folds.running) add(model.running)
+  if (!folds.shared) for (const e of shared) out.push({ id: `j:${e.id}`, kind: 'shared', entryId: e.id })
+  if (!folds.exited) add(model.exited)
+  return out
+}
+
+/** The id of the row `delta` steps from `current`, clamped to the ends; from nowhere, the first (down) or the last (up); null when there are none. */
+export function moveFocus(rows: readonly FocusRow[], current: string | null, delta: 1 | -1): string | null {
+  if (!rows.length) return null
+  const i = current === null ? -1 : rows.findIndex((r) => r.id === current)
+  if (i < 0) return (delta === 1 ? rows[0] : rows[rows.length - 1])!.id
+  return rows[Math.min(rows.length - 1, Math.max(0, i + delta))]!.id
+}
+
+// ---------------------------------------------------------------------------
+// The rail, drawn from the same model (design 3d): a square is a session, a
+// capsule a run with its sessions inside, a corner tile a machine or a share;
+// the counts sit on top. Every shape has a tooltip naming it in words.
+
+export interface RailShape {
+  id: string
+  shape: 'square' | 'capsule'
+  to: string
+  /** The tooltip: the shape named in words. */
+  label: string
+  state: RowState
+  /** Exited. */
+  dashed: boolean
+  /** A square's agent (its initials); a run link shared with you shows a crew instead. */
+  agentId: string
+  kind: 'session' | 'run' | 'shared'
+  /** Bottom left: where it comes from. */
+  tile?: 'machine' | 'share'
+  /** Bottom right: new events on it (the badges the Events page routes here). */
+  news: number
+  /** A capsule's sessions, the one needing you first. */
+  members?: RailShape[]
+  /** A capsule: the play icon amber while one of its sessions needs you. */
+  amber?: boolean
+}
+
+export interface RailModel {
+  /** On top: how many need you, then how many have new events. */
+  needs: number
+  news: number
+  /** In the sidebar's order: needs you, running, shared, exited. */
+  items: RailShape[]
+  /** Loose exited sessions fold into +N; an exited run stays a capsule, dashed. */
+  exitedFolded: number
+}
+
+const STATE_WORDS: Record<RowState, string> = { needs: 'needs you', running: 'running', idle: 'idle', exited: 'exited' }
+
+function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>): RailShape {
+  const s = row.session
+  const parts = [s.name, STATE_WORDS[row.state]]
+  if (row.state === 'needs' && s.attention?.message) parts.push(s.attention.message)
+  if (row.machine) parts.push(`on ${row.machine}`)
+  const mark = marks[s.id]
+  if (mark) parts.push(mark.label)
+  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: mark ? 1 : 0 }
+}
+
+/** "users api · run started 08:31 · review needs you · core running · lead exited". */
+export function railRunLabel(block: RunBlock): string {
+  const sub = blockSubtitle(block).split(' · ')[0]!
+  const when = /^(started|stopped) /.test(sub) ? `run ${sub}` : sub
+  return [block.title, when, ...block.members.map((m) => `${m.session.name} ${STATE_WORDS[m.state]}`)].join(' · ')
+}
+
+function railCapsule(block: RunBlock, marks: Readonly<Record<string, EventMark>>): RailShape {
+  const members = block.members.map((m) => railSquare(m, marks))
+  return {
+    id: `run:${block.runId}`,
+    shape: 'capsule',
+    to: `/runs/${encodeURIComponent(block.runId)}`,
+    label: railRunLabel(block),
+    state: block.state,
+    dashed: block.state === 'exited',
+    agentId: '',
+    kind: 'run',
+    news: members.reduce((n, m) => n + m.news, 0),
+    members,
+    amber: block.state === 'needs',
+  }
+}
+
+/** The rail from the list's model, the links shared with you and the Events page's badges (`useEvents().marks`). */
+export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], marks: Readonly<Record<string, EventMark>>): RailModel {
+  const items: RailShape[] = []
+  let news = 0
+  const count = (sq: RailShape) => {
+    if (sq.news) news++
+  }
+  const add = (it: SidebarItem) => {
+    if (it.kind === 'run') {
+      const c = railCapsule(it, marks)
+      c.members!.forEach(count)
+      items.push(c)
+    } else {
+      const sq = railSquare(it, marks)
+      count(sq)
+      items.push(sq)
+    }
+  }
+  for (const it of model.needs) add(it)
+  for (const it of model.running) add(it)
+  for (const e of shared) {
+    const gone = e.lastStatus === 'revoked' || e.lastStatus === 'gone'
+    items.push({
+      id: `j:${e.id}`,
+      shape: 'square',
+      to: joinedPath(e),
+      label: `${e.name} · ${e.role === 'control' ? 'control' : 'view only'} · through ${e.host}`,
+      state: gone ? 'exited' : 'idle',
+      dashed: gone,
+      agentId: e.agentId ?? '',
+      kind: e.kind === 'run' ? 'run' : 'shared',
+      tile: 'share',
+      news: 0,
+    })
+  }
+  let exitedFolded = 0
+  for (const it of model.exited) {
+    if (it.kind === 'run') add(it)
+    else {
+      if (marks[it.id]) news++
+      exitedFolded++
+    }
+  }
+  return { needs: model.counts.needs, news, items, exitedFolded }
 }

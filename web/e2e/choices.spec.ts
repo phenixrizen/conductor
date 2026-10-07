@@ -3,8 +3,9 @@ import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
 
 // A needs-input report with choices (conductor notify --choices): the
-// session page and the wall queue show them as buttons, and a click types
-// the choice into the session as a line, which the stub's transcript holds.
+// session page, the wall queue and the sidebar's row show them as buttons,
+// and a click types the choice into the session as a line, which the stub's
+// transcript holds.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -55,4 +56,21 @@ test('the wall queue offers the same buttons', async ({ page, api, state }) => {
   await card.getByRole('button', { name: /SQLite/ }).click()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('SQLite\n')
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
+})
+
+test('the sidebar row offers the choices, numbered, and a click types one without opening the session', async ({ page, api, state }) => {
+  const s = await ask(api)
+  await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
+  await page.goto('/crews')
+  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  await expect(row.locator('[data-row-prompt]')).toHaveText('Which database?')
+  await expect(row.locator('[data-row-choice]')).toHaveCount(3)
+  await expect(row.locator('[data-row-choice="3"]')).toContainText('Keep both')
+  await row.locator('[data-row-choice="1"]').click()
+  await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('Postgres\n')
+  // The prompt clears and the row moves to Running, its buttons gone; the page never left /crews.
+  await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row.locator('[data-row-choice]')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/crews$/)
 })

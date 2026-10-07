@@ -27,7 +27,8 @@ function pick(i: number) {
 function onKey(e: KeyboardEvent) {
   if (!options.value.length || e.metaKey || e.ctrlKey || e.altKey) return
   const target = e.target as HTMLElement | null
-  if (target?.closest?.('input, textarea, select, [contenteditable], .terminal-host')) return
+  // Nor while the sidebar's list has the focus: a digit there answers the focused row (SessionSidebar).
+  if (target?.closest?.('input, textarea, select, [contenteditable], .terminal-host, [data-session-list]')) return
   const n = Number(e.key)
   if (Number.isInteger(n) && n >= 1 && n <= options.value.length) {
     e.preventDefault()

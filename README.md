@@ -287,28 +287,75 @@ the footer says which session is next.
 
 ## Sidebar and keyboard shortcuts
 
+The sidebar lists the agents you can talk to, the sessions, ordered by what
+needs you: **Needs you**, then **Running**. Sessions launched together are a
+run, listed once as one block where its most urgent member is, never split:
+the crew's name (or the run's own) and its start time on top, which open the
+run page, and its sessions beneath, joined by a line, the one asking first;
+an exited member stays inside with its **Resume**. The crew itself, the plan
+the run came from, is not listed (it lives on the Crews page). A session
+another machine hosts here (`conductor host`) says so on its row, a laptop
+and the machine's name; this server's own say `server`. Rows say agent ·
+where · how long; the path is the row's tooltip and the session page's. The
+links shared with you (see Sharing) sit below your own sessions, and
+**Exited** folds to one line. Every section folds from its header, which keeps
+its count and a preview of what is inside; the choice is remembered per
+browser (`conductor.sidebar.folds`), Exited starts folded, and Needs you opens
+again by itself when a new prompt arrives. The run of the page you are on is
+marked and scrolled into view; nothing is filtered out for it. A session
+launched with yolo carries the **yolo** badge. Hovering a row offers
+**Share**, **Stop** and **More** in place of the dot; a run's header offers
+**Share run**, **Stop run** and **Open run**, and a member its own Share and
+Stop. Stop asks first, in the row ("Stop docs-sweep? Its terminal closes.
+Resume brings the conversation back from Exited."). A right-click, or a long
+press on a touch screen, opens the same menu as More: Open, Open the run (a
+member), Share…, Show in the Yard, Stop…. A prompt is answered in the row:
+its choices are numbered buttons (1 Yes, 2 No), a free-text prompt gets a
+reply field where Enter sends; the answer goes over a short-lived connection
+as the Yard's does, and the row moves on as the prompt clears. A hosted
+session whose host is away keeps its prompt, disabled, with "The host is
+away".
+
 The sidebar collapses to an icon rail with the panel button in its header or
-**Ctrl+B** (**⌘B** on a Mac). The rail keeps everything: the mark, a Launch
-button, a search button that opens the full sidebar on its filter, the pages
-and the sidebar's buttons as icons with tooltips (the Yard's count as an amber
-chip), and every session as its agent's initials with the amber dot when it
-needs you, the members of a running crew together under its name, which links
-to the run page. The full sidebar groups them the same way: inside each
-section (**Needs you**, **Running**, **Exited**) the sessions of no crew come
-first, then one group per crew run under a header naming the run, which links
-to its run page, then the sessions other machines host here (`conductor
-host`), one group per machine under a laptop icon and its name. A session launched with yolo carries the **yolo** badge
-there, and an ended one a **Resume** (or **Relaunch**) button. Click one to
-open it. The panel button at the bottom of the
-rail brings the full sidebar back, as do **Ctrl+B** and, on a desktop-width
-window, **/**, which then focuses the filter. The mode and the full sidebar's
+**Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
+initials, solid while it needs you, dashed once exited), a capsule is a run
+with its sessions inside (the play icon amber while one needs you), and the
+corners say the rest: top right the state (amber needs you, green running,
+grey idle), bottom right new events on it (the badges the Events page routes
+to the sidebar), bottom left where it comes from (a laptop for another
+machine, a globe for a link shared with you). Two counts sit on top: how many
+need you, then how many have new events. The order is the list's: needs you,
+running, shared, exited; loose exited sessions fold into **+N**, which opens
+the full sidebar on Exited. Every shape has a tooltip naming it in words
+("users api · run started 08:31 · review needs you · core running · lead
+exited"). The rail keeps the mark, Launch, a search button that opens the
+full sidebar on its filter, the pages (the Yard's count as an amber chip) and
+the header's two menus. The panel button at the bottom of the rail brings the
+full sidebar back, as do **Ctrl+B** and, on a desktop-width window, **/**,
+which then focuses the filter. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`
 and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
-the rail). On a phone the sidebar is a drawer. **F** toggles fullscreen on
+the rail). On a phone the list is the home screen, not a drawer (`/sessions`):
+the filter on top, prompts answered in place with full-width buttons, a row
+opening its page and **Back** returning to the list; a long press on a row
+opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
+header: Open run, Share run, Stop run), Stop asking again, and there are no
+swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
+count), Crews, Events, and under More: Roundhouse, Agents, Settings, Alerts
+and your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
-have a select focused. Press **?** (or use **Shortcuts** in the sidebar) for
-the list of shortcuts on the current screen.
+have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,
+behind your initials beside the sidebar's name, with **Your name…**, **Toggle
+theme**, **Workbench token…** and **Forget token**; **Alerts** sits beside it,
+so the foot holds only the pages) for the list of shortcuts on the current
+screen. The list itself takes keys once
+a row has the focus (**↓** from the filter puts the first there; a click or
+Tab, any): **↑ ↓** or **J K** move, **Enter** opens the session or the run
+from its header, **1**–**9** answer the focused row's prompt as on its page,
+**R** opens a member's run, **S** shares, **X** asks to stop in the row
+(Enter stops, Escape cancels), **Escape** leaves the list. The Yard's J and
+K and the quick reply's digits never see a key the list took.
 Plain keys reach the agent while a terminal has focus, so they only work
 outside it; hold **Alt** with the same key (**Alt+N**, **Alt+W**, **Alt+←**)
 to use a shortcut without leaving the terminal. Your display name defaults to
@@ -1311,4 +1358,5 @@ The image keeps its data directory on the `/var/lib/conductor` volume.
 <a href="https://rocksolidlabs.io"><img src="web/public/sponsor/rocksolidlabs-logo.png" alt="RockSolid Labs" height="20"></a>
 
 Sponsored and maintained by [RockSolid Labs](https://rocksolidlabs.io).
-© 2026 the Conductor authors.
+Open source under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE)
+for the marks. © 2026 the Conductor Authors and RockSolid Labs, Inc.

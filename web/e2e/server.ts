@@ -89,6 +89,10 @@ export async function startServer(o: {
   log: string
   /** Names of the caller's variables to pass on as well, when set (the live check's USER, SHELL, XDG_*). */
   passEnv?: string[]
+  /** Variables set last, over the defaults above: a spec's own server, such as one publishing to the spec's switchyard. */
+  env?: Record<string, string>
+  /** A host token the server accepts (CONDUCTOR_HOST_TOKENS), for a `conductor host` a spec runs against it. */
+  hostToken?: string
 }): Promise<Started> {
   const bin = serverBinary()
   const port = await pickPort()
@@ -110,7 +114,9 @@ export async function startServer(o: {
       CONDUCTOR_RENDEZVOUS: '0',
       // As the desktop app sets it: the Settings picker browses outside the roots.
       CONDUCTOR_PATHS_BROWSE: 'any',
+      ...(o.hostToken ? { CONDUCTOR_HOST_TOKENS: o.hostToken } : {}),
       ...Object.fromEntries((o.passEnv ?? []).flatMap((k) => (process.env[k] === undefined || k.startsWith('CONDUCTOR_') ? [] : [[k, process.env[k]!]]))),
+      ...(o.env ?? {}),
     },
     stdio: ['ignore', out, out],
   })

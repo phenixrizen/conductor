@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { copyrightLine, CREDIT, SOURCE_URL, SPONSOR_HOST, SPONSOR_URL, versionOn } from '~/utils/about'
+import { copyrightLine, CREDIT, LICENSE, LICENSE_URL, SOURCE_URL, SPONSOR_HOST, SPONSOR_URL, versionOn } from '~/utils/about'
 
 /**
  * Settings → The app (the Sponsor Kit's 1c): what runs, where its source is, the copyright, and the sponsor credit as the
@@ -30,8 +30,8 @@ const rows = computed(() => {
           <dt class="text-muted">{{ r.label }}</dt>
           <dd class="min-w-0 truncate text-highlighted" :class="{ 'font-mono': r.mono }" :data-about-row="r.key">{{ r.value }}</dd>
         </template>
-        <dt class="text-muted">Source</dt>
-        <dd><ULink :to="SOURCE_URL" target="_blank" class="text-primary">github.com/phenixrizen/conductor</ULink></dd>
+        <dt class="text-muted">License</dt>
+        <dd data-about-license><ULink :to="LICENSE_URL" target="_blank" class="text-primary">{{ LICENSE }}</ULink> · <ULink :to="SOURCE_URL" target="_blank" class="text-primary">Source</ULink></dd>
         <dt class="text-muted">Copyright</dt>
         <dd data-about-copyright>{{ copyrightLine() }}</dd>
       </dl>

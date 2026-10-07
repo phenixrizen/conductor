@@ -6,9 +6,10 @@ export const SPONSOR_NAME = 'RockSolid Labs'
 export const SPONSOR_URL = 'https://rocksolidlabs.io'
 export const SPONSOR_HOST = 'rocksolidlabs.io'
 export const SOURCE_URL = 'https://github.com/phenixrizen/conductor'
-/** The holder as the desktop package names it (electron-builder's copyright). */
-export const COPYRIGHT_HOLDER = 'the Conductor authors'
-
+/** The holder, as LICENSE, NOTICE and the desktop package name it. */
+export const COPYRIGHT_HOLDER = 'the Conductor Authors and RockSolid Labs, Inc.'
+export const LICENSE = 'Apache-2.0'
+export const LICENSE_URL = `${SOURCE_URL}/blob/main/LICENSE`
 /** The copyright line: the year of the first release, through `year` when later. */
 export function copyrightLine(year: number = new Date().getFullYear()): string {
   const first = 2026

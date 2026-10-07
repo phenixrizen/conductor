@@ -97,7 +97,7 @@ const skillCommands = [
 <template>
   <UDashboardPanel id="events" :ui="{ body: 'p-0 sm:p-0 gap-0' }">
     <template #header>
-      <UDashboardNavbar title="Events">
+      <UDashboardNavbar :toggle="false" title="Events">
         <template #right>
           <UButton label="Refresh" icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="loading" @click="refresh" />
           <FullscreenButton />

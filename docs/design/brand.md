@@ -117,7 +117,7 @@ badge ("SPONSORED BY" and the reversed logo, 40 px tall, 20 px logo). The
 logos are RockSolid Labs' own, used as they are: `web/public/sponsor/` and
 `desktop/static/sponsor/` (`rocksolidlabs-logo.png` on light,
 `rocksolidlabs-logo-reversed.png` on dark, `rocksolidlabs-mark.png` the
-square mark). The copyright beside it is "© 2026 the Conductor authors".
+square mark). The copyright beside it is "© 2026 the Conductor Authors and RockSolid Labs, Inc." (LICENSE and NOTICE), and the license Apache-2.0.
 
 ## Placement and accessibility
 

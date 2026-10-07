@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -25,9 +26,10 @@ export default async function globalSetup(): Promise<void> {
     const config = join(root, 'conductor.json')
     renderConfig(join(here, 'conductor.e2e.json'), config)
     const log = join(root, 'server.log')
-    const started = await startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log })
+    const hostToken = 'e2e-host-' + randomBytes(12).toString('hex')
+    const started = await startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, hostToken })
     pid = started.pid
-    const state: E2EState = { ...started, root, home, data, repo, log }
+    const state: E2EState = { ...started, hostToken, root, home, data, repo, log }
     const file = join(root, 'state.json')
     writeState(file, state)
     process.env[STATE_ENV] = file

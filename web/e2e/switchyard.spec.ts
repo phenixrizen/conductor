@@ -1,11 +1,12 @@
 import { hostname } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from './fixtures'
-import { serverBinary, stubPath } from './server'
+import { renderConfig, scratchRepo, serverBinary, startServer, stopServer, stubPath, type Started } from './server'
 
 // A switchyard: a second Conductor in switchyard mode, a conductor host
 // publishing a stub session to it, a link minted there, and this workbench's
@@ -22,6 +23,8 @@ const syAdmin = randomBytes(16).toString('hex')
 const hostToken = 'sy-host-' + randomBytes(8).toString('hex')
 const agentSession = randomUUID()
 let home = ''
+/** A second server of the suite's shape, publishing to the switchyard: the crew run link test's. */
+let publisher: Started | null = null
 
 function pickPort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -73,7 +76,8 @@ test.beforeAll(async ({ state }) => {
   })
 })
 
-test.afterAll(({ state }) => {
+test.afterAll(async ({ state }) => {
+  if (publisher) await stopServer(publisher.pid)
   host?.kill('SIGKILL')
   switchyard?.kill('SIGKILL')
   // The log stays readable in the run's output: the scratch root goes with the teardown.
@@ -181,4 +185,107 @@ test('the switchyard launches nothing, and its join route answers no stranger or
   expect(((await r.json()) as { error: { code: string } }).error.code).toBe('switchyard')
   const made = await fetch(`${syURL}/api/health`, { headers: { Origin: 'https://evil.example' } })
   expect(made.headers.get('access-control-allow-origin')).toBeNull()
+})
+
+// A crew run on a server that publishes to the switchyard: its Share mints
+// the link there (link_run), the switchyard's join lists the members, a
+// member's terminal comes through the relay, and a revoke from the home
+// server takes the link away there. The Go loopback test covers the
+// protocol; this is what a person sees.
+test('a crew run published to the switchyard is shared through it: Share says works from anywhere, the link lists the members there, and a revoke ends it', async ({ page, browser, state }) => {
+  test.setTimeout(150_000)
+  const here = dirname(fileURLToPath(import.meta.url))
+  const home2 = join(state.root, 'publisher-home')
+  const data2 = join(state.root, 'publisher-data')
+  const repo2 = join(state.root, 'publisher-repo')
+  for (const d of [home2, data2, repo2]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo2)
+  const config = join(state.root, 'publisher.json')
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  publisher = await startServer({
+    config,
+    home: home2,
+    data: data2,
+    allowedRoot: state.root,
+    defaultCwd: repo2,
+    log: join(state.root, 'publisher.log'),
+    env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher' },
+  })
+  const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
+    const r = await fetch(publisher!.baseURL + path, { method, headers: { Authorization: `Bearer ${publisher!.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const text = await r.text()
+    return { status: r.status, body: (text ? JSON.parse(text) : undefined) as T }
+  }
+  const crew = await pub<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e crew link',
+    goal: 'be shared',
+    cwd: '',
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    members: [
+      { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+      { name: 'review', agentId: 'claude', prompt: 'review it', start: { when: 'immediately' } },
+    ],
+  })
+  expect(crew.status).toBe(201)
+  const launched = await pub<{ run: { id: string } }>('POST', `/api/crews/${crew.body.crew.id}/launch`)
+  expect(launched.status).toBe(201)
+  const runId = launched.body.run.id
+  await until('both members run', async () => {
+    const r = await pub<{ run: { members: Array<{ status: string }> } }>('GET', `/api/runs/${runId}`)
+    return r.body.run.members.length === 2 && r.body.run.members.every((m) => m.status === 'running')
+  })
+
+  // Share on the run page of the publisher's own workbench: minted at the switchyard, and a control link on request.
+  const ctx = await browser.newContext()
+  await ctx.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), publisher.token)
+  const owner = await ctx.newPage()
+  await owner.goto(`${publisher.baseURL}/runs/${runId}`)
+  await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+  const dialog = owner.getByRole('dialog')
+  await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
+  await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
+  await expect(dialog).toContainText('Works from anywhere')
+  await expect(dialog).toContainText('opens every agent of the crew there')
+  await dialog.locator('[data-share-role-option="control"]').click()
+  await expect(dialog.locator('[data-share-link]').first()).toContainText('Control', { timeout: 30_000 })
+  const url = (await dialog.locator('[data-created-url]').getAttribute('title')) ?? ''
+  expect(url.startsWith(`${syURL}/join/`), url).toBe(true)
+  const token = url.slice(`${syURL}/join/`.length)
+  await ctx.close()
+
+  // The link joins through the switchyard from this workbench: the crew's members, one opened, its terminal over the relay.
+  const port = new URL(syURL).port
+  await page.goto(`/join/${token}?server=${encodeURIComponent(syURL)}`)
+  await expect(page.getByRole('heading', { name: 'Join e2e crew link' })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(`Shared through 127.0.0.1:${port}`)).toBeVisible()
+  await page.getByRole('textbox', { name: 'Your name' }).fill('e2e crew guest')
+  await page.getByRole('button', { name: 'Join crew' }).click()
+  await expect(page.locator('[data-join-tiles] [data-member]')).toHaveCount(2)
+  await expect(page.locator('[data-join-tiles] [data-member="lead"]')).toBeVisible()
+  await expect(page.locator('[data-join-tiles] [data-member="review"]')).toBeVisible()
+  await page.locator('[data-join-tiles] [data-member="lead"] [data-tile-open]').click()
+  const badge = page.locator('[data-transport-state]').first()
+  await expect(badge).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+  await expect(badge).toHaveAttribute('data-transport-kind', 'relay')
+  await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: 30_000 })
+  await page.locator('.terminal-host .xterm-helper-textarea').first().focus()
+  await page.keyboard.type('hello crew through the switchyard')
+  await page.keyboard.press('Enter')
+  const transcripts = join(home2, '.stub-sessions')
+  await expect
+    .poll(() => existsSync(transcripts) && readdirSync(transcripts).some((f) => readFileSync(join(transcripts, f), 'utf8').includes('hello crew through the switchyard')), { timeout: 20_000, message: 'the member got the line' })
+    .toBe(true)
+
+  // Revoked at home, the link is gone at the switchyard and the viewer is cut off.
+  const links = await pub<{ links: Array<{ id: string; remote?: boolean; runId?: string }> }>('GET', `/api/runs/${runId}/links`)
+  expect(links.body.links.length).toBeGreaterThan(0)
+  expect(links.body.links.every((l) => l.remote === true)).toBe(true)
+  for (const l of links.body.links) expect((await pub('DELETE', `/api/runs/${runId}/links/${l.id}`)).status).toBe(204)
+  await expect.poll(async () => (await fetch(`${syURL}/api/join/${token}`)).status, { timeout: 15_000 }).toBe(404)
+  await expect.poll(() => badge.getAttribute('data-transport-state'), { timeout: 30_000 }).not.toBe('open')
+  await pub('POST', `/api/runs/${runId}/stop`)
+  await stopServer(publisher.pid)
+  publisher = null
 })

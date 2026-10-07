@@ -3,8 +3,11 @@
 Scope notes for the workbench redesign. The source mockup is the
 claude.ai/design project "Conductor Mockups" (screens 1a workbench, 1b wall,
 1c runs, 1d launch, 1e share, 1f join, 1g carousel). This file records what is
-being built, the decisions taken along the way, and what is deliberately
-deferred. Update it when scope changes.
+being built, the decisions taken along the way, and what each round left
+for a person to verify. The bugs known and what is deliberately
+deferred are listed once, in [tasks-todo.md](tasks-todo.md); the "Deferred"
+lists under the rounds below are the history of when each item was set
+aside.
 
 ## Delivered (2026-09-28)
 
@@ -649,6 +652,155 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 11: the sidebar made simpler, and chat beside the terminal (2026-10-06)
+
+From the design hand-off "Conductor UI.dc.html" (the 2-series is chat, the
+3-series the sidebar; the 1-series is the app as built and stays), approved
+by the owner on 2026-10-06. The plan: two tracks of pull requests, the
+sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
+
+### Decisions
+
+- **The sidebar lists sessions and runs** (3a, S1). A run is one block,
+  kept whole, placed where its most urgent member is, its members by urgency
+  then the crew's order, an exited member inside with Resume; the crew is
+  not listed; a machine is a tag on a hosted session's row, not a heading;
+  this server's own loose sessions say `server`, members say nothing (they
+  run here); the path leaves the row for its tooltip (3f). Shared with you
+  sits below your own sessions. Exited folds to one line. The model is
+  `sidebarModel` in `web/app/utils/sidebar.ts`; the rail draws from it too.
+- **Sections fold from their headers** (3c, S1), remembered per browser in
+  `conductor.sidebar.folds`; a folded header keeps its count and up to six
+  status squares; Exited starts folded; Needs you opens again by itself for a
+  new prompt (`newlyNeedingInput`, the notifications' own rule), the first
+  list a page sees priming the comparison so a reload reopens nothing.
+- **No scoping on a run page** (3f, S1): the full list shows with the open
+  run's block marked, its section unfolded and scrolled into view; the Crew
+  box and the laptop headings are gone.
+- The counts: Needs you is how many sessions need you, members included;
+  Running is that section's live sessions; Exited is that section's.
+- **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
+  place of the dot, outside the row's link (a link holds no button); a run
+  header offers Share run, Stop run and Open run; a member has its own Share
+  and Stop. Stop asks in the row, with the design's words
+  (`stopQuestion`). A right-click or a touch long press (Reka's context
+  menu) opens the same list as More (`rowMenuItems` in
+  `utils/sidebarActions.ts`): Open, Open the run, Share…, Show in the Yard
+  (`/yard?focus=<id>`), Stop…; a run header Open run, Share run, Stop run.
+  One Share dialog serves every row, mounted on its target a tick before it
+  opens so that it mints the link.
+- **Answer in the row** (3b, 3c, S3): `rowPrompt` (`utils/sidebarActions.ts`)
+  turns a row's prompt into choices (numbered 1..9, `UKbd`) or a reply
+  field, and marks a hosted session whose host is away, where the controls
+  wait disabled with "The host is away". `SidebarPrompt` sits below the
+  row's link (a link holds no button). The answer takes the Yard's path,
+  `useQuickReply` (a short-lived control connection, the relay for a hosted
+  session), and its busy set, so the Yard's card and the row agree; the
+  stream clears the prompt and the row moves to Running by itself. The
+  field stops its keydown events, so the window's digit listener and, from
+  S4, the list's keys never see what is typed.
+- **The list's keys** (3c, S4): one `keydown` handler on `[data-session-list]`
+  in `SessionSidebar.vue`, live while a row has the focus (`focused`, a row
+  id, set by `focusin`; the filter's ↓ puts the first row there). ↑ ↓ or J K
+  move by `moveFocus`, Enter opens, 1–9 answer the focused row's prompt
+  through S3's path (digits are consumed even without a prompt), R opens a
+  member's run, S shares, X asks in the row with the question's Stop button
+  focused (Enter stops, Escape cancels), Escape leaves the list. Every key the
+  list owns calls `preventDefault` and `stopPropagation`, so the Yard's J K
+  and `QuickReplyBar`'s window digit listener (which also returns for a
+  target inside `[data-session-list]`) never see it; a field in a row keeps
+  its keys, Escape excepted. The stop question is one model
+  (`confirmingId`): a hover Stop and the X key set the same one, and the
+  row components take `confirming` as a `defineModel`. Focus is by row id,
+  so a row that moves sections after an answer keeps it. `SIDEBAR_SHORTCUTS`
+  ("The sidebar") lists the keys after Everywhere in the shortcuts modal;
+  the `/` row moved into it. Links stay tabbable in the usual way: no roving
+  tabindex, Tab walks the rows.
+- **The header's menus and a foot of pages** (3b, S5): `SidebarHeaderMenus`
+  beside the name holds Alerts (the two switches of `useAttentionSettings`)
+  and your menu behind your initials, an amber chip while no workbench
+  token is set (`accountItems` in `utils/sidebarActions.ts`: Your name…,
+  Keyboard shortcuts, Toggle theme, Workbench token…, Forget token). The
+  foot holds the pages alone; the six-icon `[data-sidebar-tools]` row is
+  gone. On the rail the same two stack in the foot above the expand button.
+  Your name is a small dialog (`[data-name-dialog]`, its input still labelled
+  "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The rail** (3d, S6): `railModel` (`utils/sidebar.ts`) draws the rail
+  from the list's model, the links shared with you and the Events page's
+  marks: `RailShape`s in the list's order, a square a session, a capsule a
+  run holding its members' squares (`SidebarRailSquare`), the shared
+  squares with a globe, exited runs dashed, loose exited sessions folded
+  into `+N`; two counts on top (`counts.needs`, and how many sessions carry
+  a mark). The corners: the state top right (the amber one following the
+  Events page's Badge route as the rows' dot does), new events bottom right
+  (one per session today: the Events page keeps one badge a session; C4
+  folds the unread chat into the same number), the origin tile bottom left.
+  Every shape's tooltip names it in words (`railRunLabel`: "users api · run
+  started 08:31 · review needs you · core running · lead exited"). A capsule
+  is a `div` with the play icon a link to the run and each member its own
+  link (a link holds no link). `railGroups` and its types are gone.
+- **The phone** (3e, S7): the list is the home screen, `pages/sessions/index.vue`
+  (`SessionSidebar page`, `[data-session-list="page"]`), where `/` sends a
+  phone (at lg and up the route does what the home does: the first session
+  worth looking at); the layout renders the sidebar's own list only at lg and
+  up (`useMedia`, the same composable as C2's), every page navbar has no
+  hamburger (`:toggle="false"`), and `BottomBar` sits at the foot below lg:
+  Sessions, Yard (the count), Crews, Events, More (a `UDrawer` with
+  Roundhouse, Agents, Settings on the desktop app, `AlertSwitches` and
+  `accountItems` as buttons; `NameDialog` and `AlertSwitches` are split out
+  of `SidebarHeaderMenus` for it). The session, run and workbench join pages
+  get **Back** to the list below lg (`[data-back-to-list]`). A prompt in the
+  page's list takes full-width 44 px buttons (`SidebarPrompt big`). A touch
+  long press (500 ms, `pointerType` touch) on a row or a run's header opens
+  `SidebarRowSheet` (`UDrawer`, `rowMenuItems` as 44 px buttons, Cancel);
+  the context menu is off for a coarse pointer and the row's callout
+  suppressed; Stop asks again in the row. `viewport-fit=cover` lets the bar's
+  padding read the safe area, and the dashboard group leaves it room below
+  lg. No swipe actions.
+
+### Verified (round 11)
+
+- S7: `phone.spec.ts` at 390×844 with touch: `/` lands on the list page with
+  the filter on top and no sidebar list or hamburger; the bar's five targets
+  are 44 px and the Yard's count shows; a prompt's buttons are full width and
+  44 px and one answers; a row opens its page and Back returns; a long press
+  opens the sheet with Open, Share…, Show in the Yard, Stop…, Cancel, Stop
+  asking again in the row, and a run's header's with Open run, Share run,
+  Stop run…; More lists the pages, the alerts and your menu. By hand on a
+  phone (the keyboard on a reply field, the safe area): pending.
+- S6: `sidebar.spec.ts` collapses the sidebar and reads the two counts, a
+  capsule holding two members with the amber play icon while review asks
+  and its tooltip in words, the news corner on a session given a `done`
+  attention, the machine tile on the hosted stub, the stopped run's capsule
+  and members dashed, and `+N` opening the full sidebar on Exited; vitest
+  covers `railModel` (the order, the counts, the capsule's members and
+  label, the folded exited, every tooltip).
+- S5: `sidebar.spec.ts` finds no `[data-sidebar-tools]`, opens Alerts from
+  the header, lists the account menu's five items, sets a name through the
+  dialog (the button then says whose menu it is), and reads the foot as the
+  five pages; `theme.spec.ts` toggles the theme from the menu; vitest covers
+  `accountItems`.
+- S4: `sidebar.spec.ts` drives the keys: `/` then ↓ focuses the first row,
+  J K move, Escape leaves; with a page open on one asking session and the
+  other's row focused, `1` answers the row's session alone (the transcripts
+  and the page's attention say so) and the row keeps the focus as it moves to
+  Running; X asks and Escape takes it back, S opens the share dialog, Enter
+  opens the row, R from an exited member opens its run. vitest covers the
+  shortcuts group.
+- S3: a choice clicked in the row (`choices.spec.ts`) and a line typed in
+  the row's field (`sidebar.spec.ts`) reach the stub's transcript, clear the
+  prompt and move the row to Running without leaving the page; `rowPrompt`
+  in vitest, the host-away state among it.
+- S2: the hover actions, the in-row stop question, the context menu and the
+  run header's actions are Playwright-covered in `sidebar.spec.ts`
+  (share from a row, Show in the Yard, a member stopped from its row, a run
+  stopped from its header landing whole in Exited, a loose session stopped).
+  By hand: the long press on a phone, pending.
+- S1 rendered headless at 1440, dark and light, against 3b: the mix of two
+  loose sessions (one asking), a run of three (one asking, one exited), a
+  hosted session with its machine, Exited folded "· 4" with squares; on a
+  run page the block is marked. By hand on the installed app: pending.
+
 ## Round 10: the startup splash, the sponsor credit, a folder button on every "Runs in" (2026-10-05)
 
 Asked on 2026-10-05, with the round 9 checks: "whenever we show 'runs in' we
@@ -678,9 +830,24 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   line of `conductor version` and `--help`, the README, and the splash. Never
   in the workspace, a log or run output. The logos are RockSolid Labs' own,
   bundled (`web/public/sponsor`, `desktop/static/sponsor`), never fetched.
-- **The copyright** is the package's holder, "© 2026 the Conductor authors"
-  (electron-builder's `copyright`), on the splash and in Settings → The app.
+- **The copyright and the license.** "© 2026 the Conductor Authors and
+  RockSolid Labs, Inc." (the owner's wording, 2026-10-06), on the splash, in
+  Settings → The app and the README; the repository is under the Apache
+  License 2.0 (`LICENSE`, with a `NOTICE` naming the holder and keeping the
+  RockSolid Labs and Conductor marks out of the grant), named in Settings →
+  The app, the switchyard pages' footer and the README.
 - `GET /api/whoami` gains `version`, for The app card in a browser.
+- **Tests at both ends, as a rule** (AGENTS.md, 2026-10-06): every feature
+  ships with a Go test and a UI test (vitest for logic, Playwright for what a
+  person sees); the by-hand list is only for what no harness reaches. With
+  it, the browser test of a crew run link through the switchyard, deferred
+  in round 9: a second server publishing to the spec's switchyard, Share on
+  its run page saying "Works from anywhere", the link listing the members on
+  this workbench, a member's terminal through the relay, and a revoke at
+  home ending the link there (`web/e2e/switchyard.spec.ts`).
+- **What is owed lives in one place**, `docs/tasks-todo.md`: the bugs known
+  and the features set aside, by area, each item with the round that found
+  or deferred it; the rounds' own "Deferred" lists stay as history.
 - **Zoom in the desktop app** (reported on Windows: zoom in did nothing).
   Electron's zoom roles bind Ctrl+Plus, which needs Shift, and on Windows and
   Linux the page sees a key before the menu, where the terminal takes Ctrl+-
@@ -695,12 +862,12 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   at 100 runs under race). A run being stopped is now recorded only by its
   stop, and the record saves keep the order their snapshots were taken in.
 
-### Open verification (round 10)
+### Verified (round 10)
 
-- The splash on the installed app on Windows: shown at once, its steps
-  change while WSL starts, gone when the workbench shows.
-- Zoom on Windows: Ctrl+= and Ctrl+- with the terminal focused, Ctrl+0, the
-  View menu's items, and the level kept after a restart of the app.
+- 2026-10-06, by the owner on the installed v0.6.0-rc.6: the splash, the
+  folder buttons and the full-width Settings page, the credit on the
+  switchyard pages and in `conductor version`, and zoom (Ctrl+=, Ctrl+-,
+  Ctrl+0, the View menu, the level kept) all passed.
 
 ## Round 9: the Events page, the switchyard dark, remote sessions in the sidebar, the WSL picker, and the leftovers of rounds 7 and 8 (2026-10-04)
 

@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
-import { sidebarRunFor } from '~/utils/crews'
 import { SIDEBAR_SIZE } from '~/utils/sidebar'
 import { noticeWords } from '~/utils/desktop'
 
-const { hasToken, clear } = useWorkbenchToken()
 const showToken = ref(false)
-const colorMode = useColorMode()
+/** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
+const desktopWide = useMedia('(min-width: 64rem)')
 const attention = useAttention()
 const desktop = useDesktop()
-const alerts = useAttentionSettings()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
 const launch = useLaunchModal()
@@ -17,14 +15,6 @@ const launch = useLaunchModal()
 const fs = useFullscreenToggle()
 fs.listen()
 fs.shortcuts()
-const identity = useIdentity()
-const nameDraft = ref('')
-const nameOpen = ref(false)
-
-function saveName() {
-  identity.set(nameDraft.value)
-  nameOpen.value = false
-}
 const router = useRouter()
 const toast = useToast()
 const route = useRoute()
@@ -102,17 +92,8 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
   document.addEventListener(end, keepWidth, { once: true })
 }
 
-// The sidebar's group variant: on a run page (/runs/<id>), and on the page
-// of any member session of a run however it was reached, the sidebar lists
-// only that run's members. The run's name comes from the live store's runs;
-// the crew's id stands in for a run the server no longer keeps.
-const sidebarRun = computed(() => sidebarRunFor(route.path, attention.sessions.value))
+// A run page keeps the Crews page lit in the foot: a run is the Crews page's.
 const runRoute = computed(() => route.path.startsWith('/runs/'))
-const sidebarRunName = computed(() => {
-  const id = sidebarRun.value
-  if (!id) return undefined
-  return attention.runNames.value[id] || attention.sessions.value.find((s) => s.crew?.runId === id)?.crew?.crewId
-})
 
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
@@ -138,9 +119,6 @@ const railNav = computed<NavigationMenuItem[]>(() =>
   }),
 )
 
-function toggleTheme() {
-  colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
-}
 
 // Shortcuts pause while a terminal or a text field has focus (see useShortcuts).
 // Plain keys work outside terminals and text fields; the Alt chords also
@@ -169,7 +147,8 @@ defineShortcuts({
 </script>
 
 <template>
-  <UDashboardGroup :persistent="false">
+  <!-- Below lg the bottom bar needs the room; with viewport-fit=cover its padding reads the safe area. -->
+  <UDashboardGroup :persistent="false" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
     <!-- The rail's classes are lg: only: below lg the slideover gets the same header, body and footer classes, and keeps the full sidebar's. -->
     <UDashboardSidebar
       :id="SIDEBAR_ID"
@@ -190,20 +169,21 @@ defineShortcuts({
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
         </div>
-        <div v-else class="flex items-center gap-2 px-1 w-full min-w-0">
+        <div v-else class="flex items-center gap-1.5 px-1 w-full min-w-0">
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
           <span class="font-semibold truncate">Conductor</span>
-          <div class="flex-1" />
+          <!-- Alerts and your menu beside the name (design 3b): the foot holds only the pages. -->
+          <SidebarHeaderMenus class="ml-auto" @token="showToken = true" />
           <UTooltip text="Collapse to the rail" :kbds="['meta', 'B']" ignore-non-keyboard-focus>
-            <UButton icon="i-lucide-panel-left-close" color="neutral" variant="ghost" size="sm" aria-label="Collapse sidebar" class="hidden lg:inline-flex" data-sidebar-collapse @click="collapseByButton" />
+            <UButton icon="i-lucide-panel-left-close" color="neutral" variant="ghost" size="xs" aria-label="Collapse sidebar" class="hidden lg:inline-flex" data-sidebar-collapse @click="collapseByButton" />
           </UTooltip>
         </div>
       </template>
 
       <template #default="{ collapsed }">
-        <SidebarRail v-if="collapsed" :run-id="sidebarRun" :run-name="sidebarRunName" @search="focusFilter" />
-        <SessionSidebar v-else ref="list" :run-id="sidebarRun" :run-name="sidebarRunName" />
+        <SidebarRail v-if="collapsed && desktopWide" @search="focusFilter" />
+        <SessionSidebar v-else-if="desktopWide" ref="list" />
       </template>
 
       <!-- Nuxt UI's handle, with the width saved once a drag or a double-click has set it. -->
@@ -221,46 +201,10 @@ defineShortcuts({
 
       <template #footer="{ collapsed }">
         <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: collapsed ? 'justify-center' : undefined }" class="w-full" />
-        <!-- The same utility buttons in both modes: in a row on the full sidebar, stacked with their tooltips to the right on the rail. -->
-        <div class="flex items-center px-1 pt-1" :class="collapsed ? 'flex-col gap-1' : 'justify-between'" data-sidebar-tools>
-          <UPopover :content="collapsed ? { side: 'right' } : undefined">
-            <UTooltip text="Alerts" :content="collapsed ? { side: 'right' } : undefined">
-              <UButton :icon="alerts.settings.value.notifications ? 'i-lucide-bell-ring' : 'i-lucide-bell'" color="neutral" variant="ghost" size="sm" aria-label="Alerts" />
-            </UTooltip>
-            <template #content>
-              <div class="p-3 flex flex-col gap-3 w-64">
-                <p class="text-xs text-muted">When a session needs input, and for events routed to Browser on the Events page:</p>
-                <USwitch :model-value="alerts.settings.value.notifications" label="Browser notification" :description="alerts.permission.value === 'denied' ? 'Blocked by the browser' : undefined" :disabled="alerts.permission.value === 'denied' || alerts.permission.value === 'unsupported'" @update:model-value="alerts.setNotifications" />
-                <USwitch :model-value="alerts.settings.value.chime" label="Chime" @update:model-value="alerts.setChime" />
-                <p class="text-xs text-muted">The tab title and favicon always show the count.</p>
-              </div>
-            </template>
-          </UPopover>
-          <UPopover v-model:open="nameOpen" :content="collapsed ? { side: 'right' } : undefined" @update:open="(o: boolean) => o && (nameDraft = identity.name.value)">
-            <UTooltip :text="identity.name.value ? `You are ${identity.name.value}` : 'Set your name'" :content="collapsed ? { side: 'right' } : undefined">
-              <UButton :icon="identity.name.value ? 'i-lucide-user-round-check' : 'i-lucide-user-round'" color="neutral" variant="ghost" size="sm" aria-label="Your name" />
-            </UTooltip>
-            <template #content>
-              <form class="p-3 flex flex-col gap-2 w-64" @submit.prevent="saveName">
-                <p class="text-xs text-muted">Shown to others on a session. Defaults to the server's user; a label, not a login.</p>
-                <UInput v-model="nameDraft" placeholder="Your name" size="sm" maxlength="40" />
-                <UButton type="submit" label="Save" size="sm" class="self-end" />
-              </form>
-            </template>
-          </UPopover>
-          <UTooltip text="Keyboard shortcuts" :kbds="['?']" :content="collapsed ? { side: 'right' } : undefined">
-            <UButton icon="i-lucide-keyboard" color="neutral" variant="ghost" size="sm" aria-label="Keyboard shortcuts" @click="shortcuts.show()" />
-          </UTooltip>
-          <UTooltip :text="hasToken ? 'Workbench token set' : 'Set workbench token'" :content="collapsed ? { side: 'right' } : undefined">
-            <UButton :icon="hasToken ? 'i-lucide-key-round' : 'i-lucide-lock'" :color="hasToken ? 'neutral' : 'warning'" variant="ghost" size="sm" :aria-label="hasToken ? 'Workbench token set' : 'Set workbench token'" @click="showToken = true" />
-          </UTooltip>
-          <UTooltip text="Toggle theme" :content="collapsed ? { side: 'right' } : undefined">
-            <UButton icon="i-lucide-sun-moon" color="neutral" variant="ghost" size="sm" aria-label="Toggle theme" @click="toggleTheme" />
-          </UTooltip>
-          <UTooltip v-if="hasToken" text="Forget token" :content="collapsed ? { side: 'right' } : undefined">
-            <UButton icon="i-lucide-log-out" color="neutral" variant="ghost" size="sm" aria-label="Forget token" @click="clear()" />
-          </UTooltip>
-          <UTooltip v-if="collapsed" text="Expand sidebar" :kbds="['meta', 'B']" :content="{ side: 'right' }" ignore-non-keyboard-focus>
+        <!-- On the rail the header's menus and the expand button stack in the foot. -->
+        <div v-if="collapsed" class="flex flex-col items-center gap-1 px-1 pt-1" data-rail-foot>
+          <SidebarHeaderMenus collapsed @token="showToken = true" />
+          <UTooltip text="Expand sidebar" :kbds="['meta', 'B']" :content="{ side: 'right' }" ignore-non-keyboard-focus>
             <UButton icon="i-lucide-panel-left-open" color="neutral" variant="ghost" size="sm" aria-label="Expand sidebar" class="hidden lg:inline-flex" data-rail-expand @click="expandByButton" />
           </UTooltip>
         </div>
@@ -269,6 +213,7 @@ defineShortcuts({
 
     <slot />
 
+    <BottomBar @token="showToken = true" />
     <WorkbenchTokenGate v-model:open="showToken" />
     <ShortcutsModal />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />

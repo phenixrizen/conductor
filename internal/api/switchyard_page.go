@@ -419,7 +419,7 @@ a.credit{color:#F3AC89;font-weight:600;text-decoration:none}a.credit:hover{color
 
 {{define "foot"}}
 <footer class="sy">
-<span>Conductor switchyard <span class="mono">{{.Version}}</span> · <a href="{{.DocsURL}}">Docs</a> · <a href="{{.SourceURL}}">Source</a></span>
+<span>Conductor switchyard <span class="mono">{{.Version}}</span> · Apache-2.0 · <a href="{{.DocsURL}}">Docs</a> · <a href="{{.SourceURL}}">Source</a></span>
 <span class="right" data-credit>Sponsored and maintained by <a class="credit" href="https://rocksolidlabs.io">RockSolid Labs</a></span>
 <span class="note">No cookies. An operator token you paste stays in this browser.</span>
 </footer>

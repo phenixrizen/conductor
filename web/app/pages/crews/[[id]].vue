@@ -455,13 +455,13 @@ watch(crewId, loadSelected)
 <template>
   <UDashboardPanel id="crews" :ui="{ body: 'p-0 sm:p-0 gap-0' }">
     <template #header>
-      <UDashboardNavbar v-if="home" title="Crews">
+      <UDashboardNavbar :toggle="false" v-if="home" title="Crews">
         <template #right>
           <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" data-new-crew @click="newCrew" />
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
-      <UDashboardNavbar v-else :ui="{ root: 'h-14' }" data-crew-header>
+      <UDashboardNavbar :toggle="false" v-else :ui="{ root: 'h-14' }" data-crew-header>
         <template #title>
           <div class="flex min-w-0 items-center gap-2">
             <NuxtLink to="/crews" class="flex-none text-[15px] text-muted hover:text-default">Crews /</NuxtLink>

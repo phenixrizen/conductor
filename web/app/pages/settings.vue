@@ -105,7 +105,7 @@ onMounted(load)
 <template>
   <UDashboardPanel id="settings">
     <template #header>
-      <UDashboardNavbar title="Settings" :ui="{ root: 'h-14' }">
+      <UDashboardNavbar :toggle="false" title="Settings" :ui="{ root: 'h-14' }">
         <template #leading><UDashboardSidebarCollapse /></template>
         <template #right>
           <template v-if="desktop.isDesktop.value">

@@ -22,9 +22,10 @@
     "vitest": "3.2.4",
     "@playwright/test": "1.44.1"
   },
-  "author": "the Conductor authors",
+  "author": "the Conductor Authors and RockSolid Labs, Inc.",
   "homepage": "https://github.com/phenixrizen/conductor",
   "dependencies": {
     "electron-updater": "6.8.9"
-  }
+  },
+  "license": "Apache-2.0"
 }

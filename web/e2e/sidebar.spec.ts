@@ -1,0 +1,410 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { existsSync, openSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { expect, test, type Session } from './fixtures'
+import { serverBinary, stubPath } from './server'
+
+// The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
+// what needs you, a run kept whole where its most urgent member is, a machine
+// as a tag on the row, Shared with you below your own, Exited folded to one
+// line, every section folding from its header and remembered; the actions on
+// a row; a prompt answered in the row; the keys on a focused row; alerts and
+// your menu beside the name, the foot holding only the pages; the rail.
+test.describe.configure({ mode: 'serial' })
+
+const sessions: string[] = []
+let crewId = ''
+let runId = ''
+let reviewId = ''
+let alive: Session | null = null
+let host: ChildProcess | null = null
+
+test.afterAll(async ({ api }) => {
+  host?.kill('SIGKILL')
+  if (runId) await api.stopRun(runId)
+  for (const id of sessions) await api.stopSession(id)
+  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+})
+
+function transcript(home: string, s: Session): string {
+  const file = join(home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
+  return existsSync(file) ? readFileSync(file, 'utf8') : ''
+}
+
+async function ended(api: { session: (id: string) => Promise<Session> }, id: string) {
+  await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+}
+
+test('a run sits whole in Needs you: its header, then its members, the one asking first', async ({ page, api }) => {
+  alive = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e alive' })
+  sessions.push(alive.id)
+  crewId = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e sidebar crew',
+      goal: 'be listed',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'codex-untrusted', prompt: 'review it', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  runId = (await api.launchCrew(crewId)).id
+  // review holds the trust question: it needs you; lead runs.
+  await expect
+    .poll(
+      async () => {
+        const run = await api.run(runId)
+        reviewId = run.members.find((m) => m.name === 'review')?.sessionId ?? ''
+        if (!reviewId) return ''
+        return (await api.session(reviewId)).attention?.state ?? ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('needs_input')
+  await expect.poll(async () => (await api.run(runId)).members.find((m) => m.name === 'lead')?.status, { timeout: 30_000 }).toBe('running')
+
+  await page.goto('/')
+  const needs = page.locator('[data-sidebar-section="needs"]').first()
+  const block = needs.locator(`[data-sidebar-run-block="${runId}"]`)
+  await expect(block).toBeVisible()
+  // Whole, in one section: nothing of it in Running.
+  await expect(page.locator(`[data-sidebar-section="running"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(0)
+  await expect(block).toHaveAttribute('data-row-state', 'needs')
+  const header = block.locator('[data-sidebar-run-group]')
+  await expect(header).toContainText('e2e sidebar crew')
+  await expect(header).toContainText('2 agents')
+  await expect(header).toHaveAttribute('href', `/runs/${encodeURIComponent(runId)}`)
+  await expect(block.locator('[data-run-play="needs"]')).toHaveCount(1)
+  // The members under a line, the one asking first with its question; no crew, run or path words on the rows.
+  const members = block.locator('ol > [data-sidebar-row]')
+  await expect(members).toHaveCount(2)
+  await expect(members.nth(0)).toHaveAttribute('data-row-state', 'needs')
+  await expect(members.nth(0)).toContainText('review')
+  await expect(members.nth(0).locator('[data-row-prompt]')).toContainText('Trust this folder?')
+  await expect(members.nth(1)).toContainText('lead')
+  await expect(members.nth(1).locator('[data-row-meta]')).toHaveText(/^claude · \d+[smh]/)
+  // Other specs leave sessions behind: the counts are checked by shape, not by number.
+  await expect(needs.locator('[data-section-count]')).toHaveText(/^\d+$/)
+  // The loose session runs on the server: it says so, and nothing says the path.
+  const running = page.locator('[data-sidebar-section="running"]').first()
+  await expect(running.locator(`[data-sidebar-row="s:${alive.id}"] [data-row-meta]`)).toHaveText(/^claude · server · \d+[smh]/)
+  await expect(running.locator(`[data-sidebar-row="s:${alive.id}"]`)).not.toContainText('/tmp/')
+  await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+})
+
+test('Exited starts folded with its count; opened, its session has Resume; a fold outlives a reload with a preview', async ({ page, api }) => {
+  const done = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e done' })
+  sessions.push(done.id)
+  await api.stopSession(done.id)
+  await ended(api, done.id)
+
+  await page.goto('/')
+  const exited = page.locator('[data-sidebar-section="exited"]').first()
+  await expect(exited).toHaveAttribute('data-folded', 'true')
+  await expect(exited.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+  await expect(exited.locator('[data-sidebar-row]')).toHaveCount(0)
+  expect(await exited.locator('[data-section-preview] [data-state="exited"]').count()).toBeGreaterThan(0)
+  await exited.getByRole('button', { name: /^Exited/ }).click()
+  await expect(exited).toHaveAttribute('data-folded', 'false')
+  const row = exited.locator(`[data-sidebar-row="s:${done.id}"]`)
+  await expect(row).toHaveAttribute('data-row-state', 'exited')
+  await expect(row).toContainText(/(exit \d+|stopped) · \d+[smh] ago/)
+  await expect(row.locator('[data-resume][data-resume-kind="icon"]')).toBeVisible()
+
+  // Running folds from its header, keeps its count and shows what is inside as squares; the fold survives a reload.
+  const running = page.locator('[data-sidebar-section="running"]').first()
+  await running.getByRole('button', { name: /^Running/ }).click()
+  await expect(running).toHaveAttribute('data-folded', 'true')
+  await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+  expect(await running.locator('[data-section-preview] [data-state="running"]').count()).toBeGreaterThan(0)
+  await expect(running.locator('[data-sidebar-row]')).toHaveCount(0)
+  await page.reload()
+  await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'true')
+  await expect(page.locator('[data-sidebar-section="exited"]').first()).toHaveAttribute('data-folded', 'false')
+  await page.locator('[data-sidebar-section="running"]').first().getByRole('button', { name: /^Running/ }).click()
+  await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'false')
+})
+
+test('a new prompt opens a folded Needs you by itself', async ({ page, api }) => {
+  // A page with no open run: the home redirects to the session asking, whose run the list would unfold.
+  await page.goto('/crews')
+  const needs = page.locator('[data-sidebar-section="needs"]').first()
+  const before = Number(await needs.locator('[data-section-count]').textContent())
+  await needs.getByRole('button', { name: /^Needs you/ }).click()
+  await expect(needs).toHaveAttribute('data-folded', 'true')
+  await page.reload()
+  await expect(page.locator('[data-sidebar-section="needs"]').first()).toHaveAttribute('data-folded', 'true')
+  // The live session starts asking: the section unfolds and its row shows the question.
+  await api.ok('POST', `/api/sessions/${alive!.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
+  const after = page.locator('[data-sidebar-section="needs"]').first()
+  await expect(after).toHaveAttribute('data-folded', 'false', { timeout: 15_000 })
+  await expect(after.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-prompt]`)).toHaveText('Which branch?')
+  await expect(after.locator('[data-section-count]')).toHaveText(String(before + 1))
+  await api.ok('POST', `/api/sessions/${alive!.id}/attention`, { state: 'working' })
+  await expect(page.locator(`[data-sidebar-section="running"] [data-sidebar-row="s:${alive!.id}"]`).first()).toBeVisible({ timeout: 15_000 })
+})
+
+test('a session hosted on another machine carries its machine on the row, under no heading', async ({ page, api, state }) => {
+  const log = openSync(join(state.root, 'sidebar-host.log'), 'a')
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-e2e', '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
+    stdio: ['ignore', log, log],
+  })
+  let hostedId = ''
+  await expect
+    .poll(async () => {
+      const list = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
+      const all = Array.isArray(list) ? list : (list.sessions ?? [])
+      hostedId = all.find((s) => s.name === 'hosted-e2e')?.id ?? ''
+      return hostedId
+    }, { timeout: 30_000 })
+    .not.toBe('')
+  await page.goto('/')
+  const row = page.locator(`[data-session-list] [data-sidebar-row="s:${hostedId}"]`).first()
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-row-machine="e2e-laptop"]')).toBeVisible()
+  await expect(row.locator('[data-row-meta]')).toHaveText(/^e2e-laptop · claude · /)
+  await expect(page.locator('[data-sidebar-host-group]')).toHaveCount(0)
+  await expect(page.locator('[data-rail-host]')).toHaveCount(0)
+})
+
+test('on a run page the whole list shows, the open run marked and its section open; no crew box filters it', async ({ page }) => {
+  await page.goto(`/runs/${encodeURIComponent(runId)}`)
+  const open = page.locator('[data-session-list] [data-sidebar-run-open]').first()
+  await expect(open).toBeVisible()
+  await expect(open).toHaveAttribute('aria-current', 'page')
+  await expect(page.locator('[data-sidebar-run]')).toHaveCount(0)
+  await expect(page.locator(`[data-session-list] [data-sidebar-row="s:${alive!.id}"]`).first()).toBeVisible()
+  await expect(page.locator('[data-sidebar-section="needs"]').first()).toHaveAttribute('data-folded', 'false')
+})
+
+test('a row offers Share, Stop and More on hover, with the same menu on a right-click', async ({ page }) => {
+  await page.goto('/crews')
+  const row = page.locator(`[data-session-list] [data-sidebar-row="s:${alive!.id}"]`).first()
+  await row.hover()
+  await expect(row.locator('[data-row-actions]')).toBeVisible()
+  // Share opens the dialog on this session, with one link made and copied.
+  await row.locator('[data-row-share]').click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Share e2e alive')
+  await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 15_000 })
+  await expect(dialog.locator('[data-share-link]')).toHaveCount(1)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  // More lists the actions; Show in the Yard focuses the session there.
+  await row.hover()
+  await row.locator('[data-row-more]').click()
+  await expect(page.getByRole('menuitem', { name: /Share/ })).toBeVisible()
+  await page.getByRole('menuitem', { name: /Show in the Yard/ }).click()
+  await expect(page).toHaveURL(new RegExp(`/yard\\?focus=${alive!.id}`))
+  // A right-click opens the same menu.
+  await page.goto('/crews')
+  await page.locator(`[data-session-list] [data-sidebar-row="s:${alive!.id}"]`).first().click({ button: 'right' })
+  await expect(page.getByRole('menuitem', { name: /^Open/ }).first()).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: /Stop/ })).toBeVisible()
+  await page.keyboard.press('Escape')
+})
+
+test('a member stops from its own row after the row asks; the run stops from its header; the block lands in Exited whole', async ({ page, api }) => {
+  await page.goto('/crews')
+  const leadId = (await api.run(runId)).members.find((m) => m.name === 'lead')!.sessionId!
+  const block = page.locator(`[data-session-list] [data-sidebar-run-block="${runId}"]`).first()
+  const lead = block.locator(`[data-sidebar-row="s:${leadId}"]`)
+  await lead.hover()
+  await lead.locator('[data-row-stop]').click()
+  await expect(lead.locator('[data-row-stop-confirm]')).toHaveText('Stop lead?')
+  await expect(lead).toContainText('Its terminal closes')
+  await lead.locator('[data-confirm-stop]').click()
+  await expect.poll(async () => (await api.session(leadId)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+  // Exited inside its run, with Resume; the run stays where review still asks.
+  await expect(lead).toHaveAttribute('data-row-state', 'exited', { timeout: 15_000 })
+  await expect(lead.locator('[data-resume]')).toBeVisible()
+  await expect(page.locator(`[data-sidebar-section="needs"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(1)
+  // The run from its header: it asks in the row, then every member ends and the block moves to Exited, whole.
+  await block.locator('[data-sidebar-run-group]').hover()
+  await block.locator('[data-run-stop]').click()
+  await expect(block.locator('[data-run-stop-confirm]')).toHaveText('Stop e2e sidebar crew?')
+  await block.locator('[data-confirm-stop]').click()
+  await expect.poll(async () => !!(await api.run(runId)).stoppedAt, { timeout: 20_000 }).toBe(true)
+  const exited = page.locator('[data-sidebar-section="exited"]').first()
+  await expect(exited).toBeVisible({ timeout: 20_000 })
+  if ((await exited.getAttribute('data-folded')) === 'true') await exited.getByRole('button', { name: /^Exited/ }).click()
+  await expect(exited.locator(`[data-sidebar-run-block="${runId}"]`)).toBeVisible({ timeout: 20_000 })
+  await expect(exited.locator(`[data-sidebar-run-block="${runId}"] [data-sidebar-row]`)).toHaveCount(2)
+  await expect(page.locator(`[data-sidebar-section="needs"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(0)
+})
+
+test('a loose session stops from its row and moves to Exited', async ({ page, api }) => {
+  await page.goto('/crews')
+  const row = page.locator(`[data-session-list] [data-sidebar-row="s:${alive!.id}"]`).first()
+  await row.hover()
+  await row.locator('[data-row-stop]').click()
+  await row.locator('[data-confirm-stop]').click()
+  await expect.poll(async () => (await api.session(alive!.id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+  const exited = page.locator('[data-sidebar-section="exited"]').first()
+  if ((await exited.getAttribute('data-folded')) === 'true') await exited.getByRole('button', { name: /^Exited/ }).click()
+  await expect(exited.locator(`[data-sidebar-row="s:${alive!.id}"]`)).toBeVisible({ timeout: 15_000 })
+  await expect(exited.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-stop]`)).toHaveCount(0)
+})
+
+test('a free-text prompt gets a reply field in the row; Enter sends the line and the row moves on', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e branch' })
+  sessions.push(s.id)
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch should I base it on?' })
+  await page.goto('/crews')
+  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  await expect(row.locator('[data-row-prompt]')).toHaveText('Which branch should I base it on?')
+  await expect(row.locator('[data-row-choice]')).toHaveCount(0)
+  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  await field.fill('main')
+  await field.press('Enter')
+  await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('main\n')
+  await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row.locator('[data-row-reply]')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/crews$/)
+})
+
+test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a digit answers the focused row alone; X asks, Enter opens, R the run', async ({ page, api, state }) => {
+  // Two sessions asking: the page open on one, the other answered from its row by a digit.
+  const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e keys a' })
+  const b = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e keys b' })
+  sessions.push(a.id, b.id)
+  await expect.poll(async () => `${(await api.session(a.id)).attention?.state}/${(await api.session(b.id)).attention?.state}`, { timeout: 30_000 }).toBe('needs_input/needs_input')
+  await page.goto(`/sessions/${a.id}`)
+  await expect(page.locator('[data-quick-reply]')).toBeVisible({ timeout: 30_000 })
+  const list = page.locator('[data-session-list="sidebar"]')
+  const focused = list.locator('[data-row-focused]')
+
+  // Alt+S from the terminal (the page gave it the focus; a plain / would reach the agent), then ↓: the first row has the focus;
+  // J and K move it; Escape leaves the list.
+  await page.keyboard.press('Alt+s')
+  await expect(page.getByPlaceholder('Filter sessions, runs, people')).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(focused).toHaveCount(1)
+  const first = await focused.getAttribute('data-sidebar-row')
+  await page.keyboard.press('j')
+  await expect(focused).toHaveCount(1)
+  expect(await focused.getAttribute('data-sidebar-row')).not.toBe(first)
+  await page.keyboard.press('k')
+  expect(await focused.getAttribute('data-sidebar-row')).toBe(first)
+  await page.keyboard.press('Escape')
+  await expect(focused).toHaveCount(0)
+
+  // A digit answers the focused row's prompt and never the open page's.
+  const rowB = list.locator(`[data-sidebar-row="s:${b.id}"]`).first()
+  await rowB.locator('a[href]').first().focus()
+  await expect(rowB).toHaveAttribute('data-row-focused', '')
+  await page.keyboard.press('1')
+  await expect.poll(() => transcript(state.home, b), { timeout: 15_000, message: 'b got the choice' }).toContain('Postgres\n')
+  expect(transcript(state.home, a)).not.toContain('Postgres')
+  expect((await api.session(a.id)).attention?.state).toBe('needs_input')
+  await expect(rowB).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  // The row kept the focus as it moved sections.
+  await expect(rowB).toHaveAttribute('data-row-focused', '')
+
+  // X asks in the row and Escape takes it back; S opens the share dialog; Enter opens the row.
+  await page.keyboard.press('x')
+  await expect(rowB.locator('[data-row-stop-confirm]')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(rowB.locator('[data-row-stop-confirm]')).toHaveCount(0)
+  await expect(rowB).toHaveAttribute('data-row-focused', '')
+  await page.keyboard.press('s')
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Share e2e keys b')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await rowB.locator('a[href]').first().focus()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(new RegExp(`/sessions/${b.id}$`))
+
+  // R from a member opens its run: the crew's run, in Exited by now.
+  const exited = page.locator('[data-sidebar-section="exited"]')
+  if ((await exited.getAttribute('data-folded')) === 'true') await exited.getByRole('button', { name: /^Exited/ }).click()
+  const member = exited.locator(`[data-sidebar-row="s:${reviewId}"]`)
+  await member.locator('a[href]').first().focus()
+  await page.keyboard.press('r')
+  await expect(page).toHaveURL(new RegExp(`/runs/${runId}$`))
+})
+
+test('alerts and your menu sit beside the name; the foot holds only the pages', async ({ page }) => {
+  await page.goto('/crews')
+  await expect(page.locator('[data-sidebar-tools]')).toHaveCount(0)
+  await page.locator('[data-header-alerts]').click()
+  await expect(page.getByText('Browser notification')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.locator('[data-header-account]').click()
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await page.getByRole('menuitem', { name: /Your name/ }).click()
+  const dialog = page.locator('[data-name-dialog]')
+  await dialog.getByRole('textbox', { name: 'Your name' }).fill('Nate R')
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.locator('[data-header-account]')).toHaveAttribute('aria-label', 'Your menu, Nate R')
+  // The foot: the pages, nothing else.
+  const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
+  await expect(foot.getByRole('link')).toHaveText([/Yard/, /Roundhouse/, /Agents/, /Crews/, /Events/])
+})
+
+
+test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
+  // A crew asking for the capsule (review holds the trust question); a session with an event badge for the news corner.
+  const crew2 = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e rail crew',
+      goal: 'show',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'codex-untrusted', prompt: 'review it', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  const run2 = (await api.launchCrew(crew2)).id
+  await expect
+    .poll(
+      async () => {
+        const run = await api.run(run2)
+        const id = run.members.find((m) => m.name === 'review')?.sessionId ?? ''
+        return id ? ((await api.session(id)).attention?.state ?? '') : ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('needs_input')
+  const marked = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e marked' })
+  sessions.push(marked.id)
+
+  await page.goto('/crews')
+  await page.locator('[data-sidebar-collapse]').click()
+  const rail = page.locator('[data-rail]')
+  await expect(rail).toBeVisible()
+  await expect(rail.locator(`[data-rail-session="${marked.id}"]`)).toBeVisible()
+  // A badge the Events page routes to the sidebar, arriving live (badges come from the stream the page watches).
+  await api.ok('POST', `/api/sessions/${marked.id}/attention`, { state: 'done', message: 'finished the sweep' })
+  await expect(rail.locator('[data-rail-count="needs"]')).toHaveText(/^[1-9]\d*$/)
+  await expect(rail.locator('[data-rail-count="news"]')).toHaveText(/^[1-9]\d*$/)
+  // The run as a capsule, its members inside, the play icon amber while review asks; the tooltip in words.
+  const capsule = rail.locator(`[data-rail-run="${run2}"]`)
+  await expect(capsule.locator('[data-rail-member]')).toHaveCount(2)
+  await expect(capsule.locator('[data-rail-play="needs"]')).toBeVisible()
+  await expect(capsule.locator('a').first()).toHaveAttribute('aria-label', /^e2e rail crew · run started \d\d:\d\d · review needs you · lead running$/)
+  // The corners: new events bottom right, the machine bottom left; the exited run dashed; loose exited folded into +N.
+  await expect(rail.locator(`[data-rail-session="${marked.id}"] [data-rail-news]`)).toBeVisible()
+  await expect(rail.locator('[data-rail-session][data-rail-tile="machine"]')).toHaveCount(1)
+  await expect(rail.locator(`[data-rail-run="${runId}"][data-rail-dashed] [data-rail-member][data-rail-dashed]`)).toHaveCount(2)
+  const plus = rail.locator('[data-rail-exited]')
+  await expect(plus).toHaveText(/^\+[1-9]\d*$/)
+  await plus.click()
+  await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  await expect(page.locator('[data-sidebar-section="exited"]')).toHaveAttribute('data-folded', 'false')
+  await api.stopRun(run2)
+  await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
+})
