@@ -249,6 +249,34 @@ compute and cloud bill stay the cheapest possible.
 
 ### Crews and runs
 
+- **Progress reported by the agents: how far a run's goal is, and each
+  member's part of it.** The owner, 2026-10-07. The report comes from the
+  agent, since only it knows: `conductor notify --event progress --done 3
+  --of 7 --message "handlers done; tests next"`, steps done of steps
+  planned and a few words, never a bare percentage (a model's "90 %" sits
+  at 90 % for an hour; a count of steps moves when something ships), the
+  same as an MCP tool, and the Conductor skill asks for it at each step
+  done. Two agents give it for free: Claude Code's plan is its `TodoWrite`
+  tool, whose `PostToolUse` payload the hook mapper already reads
+  (`tool_name`; `tool_input.todos`, a status each), and Codex's
+  `update_plan` is the same shape, so a session on either reports its
+  steps without being asked; the others go through the skill. The server
+  keeps `Progress{Done, Of, Note, At}` on the session (the note bounded as
+  an activity message is), records a `progress` activity entry (routed as
+  "worth knowing", so the feed and the webhooks see it), and on the run
+  the goal's progress: the members' steps summed, equal weights unless the
+  crew definition weights a member, a `done` report counting as complete,
+  a report older than a bound marked stale, and never a substitute for
+  `done`. Where it shows: a thin neutral bar (never a status colour; the
+  state stays amber, green and grey) under a member's name on the run
+  page's tiles, the graph's nodes and the timeline's rows; the goal's bar
+  in the run header with "3 of 7 · handlers done; tests next · 4 min ago";
+  the run's subtitle in the sidebar and the Yard's card; and for a single
+  session working through a plan, the same bar in its header and on its
+  row. Tests at both ends: Go for the report and its bounds, the mappers
+  (a `TodoWrite` payload becomes steps), the aggregate and the staleness;
+  vitest for the aggregate and the words; Playwright with the stub
+  reporting steps and the bar moving on a tile and in the header.
 - **Hosted crews** ("Runs on: my machine"), and with them the field in the
   crew editor. Round 8.
 - **Resuming a run from its record after a server restart**; the record
