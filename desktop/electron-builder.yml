@@ -67,3 +67,8 @@ nsis:
   allowToChangeInstallationDirectory: true
   perMachine: false
   include: build/installer.nsh
+  # Our own artwork in place of electron-builder's stock bitmaps (scripts/installer-art.mjs renders them):
+  # the welcome and finish pages' sidebar with the lockup and the sponsor badge, the other pages' header with the lockup.
+  installerSidebar: build/installerSidebar.bmp
+  uninstallerSidebar: build/installerSidebar.bmp
+  installerHeader: build/installerHeader.bmp

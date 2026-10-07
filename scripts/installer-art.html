@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Installer art</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; padding: 24px; background: #888; font-family: Inter, system-ui, sans-serif; display: flex; gap: 24px; align-items: flex-start; }
+  /* The sidebar of the welcome and finish pages (164 × 314): the lockup on forest, the sponsor badge at the foot. */
+  #sidebar { width: 164px; height: 314px; background: #263D35; position: relative; overflow: hidden; }
+  #sidebar .logo { position: absolute; left: 14px; top: 26px; width: 136px; }
+  #sidebar .rule { position: absolute; left: 14px; width: 28px; top: 70px; height: 3px; background: #D26B3F; border-radius: 2px; }
+  #sidebar .badge { position: absolute; left: 12px; right: 12px; bottom: 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 8px 12px; border: 1px solid rgba(238, 241, 233, .3); border-radius: 6px; }
+  #sidebar .badge .w { font: 700 9.5px/1 Inter, system-ui, sans-serif; text-transform: uppercase; letter-spacing: .07em; color: rgba(238, 241, 233, .75); }
+  #sidebar .badge img { height: 19px; width: auto; display: block; }
+  /* The header of the other pages (150 × 57): the lockup on the dialog's white. */
+  #header { width: 150px; height: 57px; background: #fff; position: relative; overflow: hidden; }
+  #header .logo { position: absolute; left: 10px; top: 14px; width: 130px; }
+</style>
+<div id="sidebar">
+  <img class="logo" src="../web/public/brand/conductor-logo-reversed.svg" alt="Conductor">
+  <div class="rule"></div>
+  <div class="badge"><span class="w">Sponsored by</span><img src="../web/public/sponsor/rocksolidlabs-logo-reversed.png" alt="RockSolid Labs"></div>
+</div>
+<div id="header">
+  <img class="logo" src="../web/public/brand/conductor-logo.svg" alt="Conductor">
+</div>

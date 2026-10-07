@@ -13,21 +13,6 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
-- **No newline in a Claude Code prompt from the browser terminal.** Seen by
-  the owner, 2026-10-06, on Windows: Ctrl+Enter (and Shift+Enter) in a
-  session's terminal submits the message instead of adding a line, as it
-  would in Windows Terminal. Cause: xterm.js sends a plain carriage return
-  for Enter whatever the modifier, and no key reaches Claude Code as a
-  newline; Claude Code's own `/terminal-setup` teaches VS Code and iTerm2
-  to send ESC CR (`\x1b\r`) for Shift+Enter, which it reads as a newline,
-  and `\` then Enter is its fallback everywhere. Fix: the terminal's key
-  handler (`TerminalView.vue`, `attachCustomKeyEventHandler`) sends
-  `\x1b\r` for Shift+Enter and Ctrl+Enter, and the reply bar's
-  multi-line submissions keep going through the paste path. Codex takes
-  Ctrl+J for a newline; whether it reads ESC CR as one is to be checked,
-  and a per-agent `newline` recipe added if the agents differ. Tests: vitest
-  for the mapping; Playwright typing Shift+Enter into the stub and finding
-  the sequence in its transcript.
 - **The server log window is an empty dark box.** Seen by the owner,
   2026-10-06, on Windows, from the tray's Server log; it is the same on
   every platform. Cause: `showLog` in `desktop/src/main.ts` makes the window

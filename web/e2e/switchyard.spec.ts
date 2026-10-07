@@ -160,6 +160,11 @@ test('the switchyard serves its landing page, a 404 for workbench paths, and the
   expect(body).toContain('This is a Conductor switchyard.')
   expect(body).toContain(`conductor://127.0.0.1:${port}/join/`)
   expect(body).toContain('Off · plain http')
+  // The sponsor kit's badge at the footer's lower right, its logo served beside the app.
+  expect(body).toContain('<a class="right badge" href="https://rocksolidlabs.io" data-credit><span>Sponsored by</span><img src="/sponsor/rocksolidlabs-logo-reversed.png" alt="RockSolid Labs"')
+  const logo = await fetch(`${syURL}/sponsor/rocksolidlabs-logo-reversed.png`)
+  expect(logo.status).toBe(200)
+  expect(logo.headers.get('content-type')).toContain('image/png')
   for (const p of ['/crews', '/sessions/x', '/wall', '/yard', '/roundhouse', '/agents', '/events', '/settings']) {
     const r = await fetch(`${syURL}${p}`)
     expect(r.status, p).toBe(404)

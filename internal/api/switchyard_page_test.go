@@ -220,14 +220,15 @@ func TestSwitchyardPagesAreDark(t *testing.T) {
 	}
 }
 
-// Every switchyard page ends with the sponsor line in its footer, linking
-// to rocksolidlabs.io.
+// Every switchyard page ends with the sponsor kit's badge at the lower right
+// of its footer: "Sponsored by" and the RockSolid Labs logo, linking to
+// rocksolidlabs.io.
 func TestSwitchyardPagesCarryTheCredit(t *testing.T) {
 	e := switchyardEnv(t, true)
 	for _, p := range []string{"/", "/crews"} {
 		_, body := getPage(t, e, p)
-		if !strings.Contains(body, `Sponsored and maintained by <a class="credit" href="https://rocksolidlabs.io">RockSolid Labs</a>`) {
-			t.Fatalf("%s has no credit", p)
+		if !strings.Contains(body, `<a class="right badge" href="https://rocksolidlabs.io" data-credit><span>Sponsored by</span><img src="/sponsor/rocksolidlabs-logo-reversed.png" alt="RockSolid Labs"`) {
+			t.Fatalf("%s has no sponsor badge", p)
 		}
 		if !strings.Contains(body, "· Apache-2.0 ·") {
 			t.Fatalf("%s does not name the license", p)

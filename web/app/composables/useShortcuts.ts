@@ -1,7 +1,9 @@
 export interface ShortcutRow {
-  /** Keys as UKbd values: 'meta', 'shift', 'escape', 'arrowleft', single characters… */
+  /** Keys as UKbd values ('meta', 'shift', 'escape', 'arrowleft', single characters…) outside a terminal: when no terminal or text field has the focus. */
   keys: string[]
   label: string
+  /** The same action while typing into an agent: the Alt twin the terminal hands back to the page; none when the action needs the list or the page focused. */
+  terminal?: string[]
 }
 
 export interface ShortcutGroup {
@@ -14,21 +16,21 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyW', 'KeyC', 'KeyA', 'KeyE', 'KeyR', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   title: 'Everywhere',
   rows: [
-    { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it (Alt+B in a terminal)' },
-    { keys: ['?'], label: 'Keyboard shortcuts (Alt+H in a terminal)' },
-    { keys: ['N'], label: 'Launch an agent (Alt+N in a terminal)' },
-    { keys: ['G', 'W'], label: 'Go to the Yard (Alt+W in a terminal)' },
-    { keys: ['G', 'C'], label: 'Go to the Roundhouse (Alt+C in a terminal)' },
-    { keys: ['G', 'A'], label: 'Go to Agents (Alt+A in a terminal)' },
-    { keys: ['G', 'E'], label: 'Go to Events (Alt+E in a terminal)' },
-    { keys: ['G', 'R'], label: 'Go to Crews (Alt+R in a terminal)' },
-    { keys: ['F'], label: 'Toggle fullscreen (Alt+F in a terminal)' },
+    { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it', terminal: ['alt', 'B'] },
+    { keys: ['?'], label: 'Keyboard shortcuts', terminal: ['alt', 'H'] },
+    { keys: ['N'], label: 'Launch an agent', terminal: ['alt', 'N'] },
+    { keys: ['G', 'Y'], label: 'Go to the Yard', terminal: ['alt', 'Y'] },
+    { keys: ['G', 'R'], label: 'Go to the Roundhouse', terminal: ['alt', 'R'] },
+    { keys: ['G', 'C'], label: 'Go to Crews', terminal: ['alt', 'C'] },
+    { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
+    { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
+    { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
   ],
 }
 
@@ -36,7 +38,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
 export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
   title: 'The sidebar',
   rows: [
-    { keys: ['/'], label: 'Filter sessions, runs, people (Alt+S in a terminal)' },
+    { keys: ['/'], label: 'Filter sessions, runs, people', terminal: ['alt', 'S'] },
     { keys: ['arrowdown'], label: 'From the filter, into the list' },
     { keys: ['J'], label: 'Next row (or ↓)' },
     { keys: ['K'], label: 'Previous row (or ↑)' },
@@ -52,9 +54,9 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
 export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Yard',
   rows: [
-    { keys: ['escape'], label: 'Back to the grid (Alt+Esc in a terminal)' },
-    { keys: ['J'], label: 'Next in the queue (Alt+J in a terminal)' },
-    { keys: ['K'], label: 'Previous in the queue (Alt+K in a terminal)' },
+    { keys: ['escape'], label: 'Back to the grid', terminal: ['alt', 'escape'] },
+    { keys: ['J'], label: 'Next in the queue', terminal: ['alt', 'J'] },
+    { keys: ['K'], label: 'Previous in the queue', terminal: ['alt', 'K'] },
     { keys: ['enter'], label: 'Reply to the selected queue item' },
   ],
 }
@@ -62,11 +64,11 @@ export const WALL_SHORTCUTS: ShortcutGroup = {
 export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
   title: 'Roundhouse',
   rows: [
-    { keys: ['arrowleft'], label: 'Previous session (Alt+← in a terminal)' },
-    { keys: ['arrowright'], label: 'Next session (Alt+→ in a terminal)' },
+    { keys: ['arrowleft'], label: 'Previous session', terminal: ['alt', 'arrowleft'] },
+    { keys: ['arrowright'], label: 'Next session', terminal: ['alt', 'arrowright'] },
     { keys: ['enter'], label: 'Type into the current session' },
-    { keys: ['space'], label: 'Pause or resume rotation (Alt+P in a terminal)' },
-    { keys: ['escape'], label: 'Leave the terminal (Alt+Esc in a terminal)' },
+    { keys: ['space'], label: 'Pause or resume rotation', terminal: ['alt', 'P'] },
+    { keys: ['escape'], label: 'Leave the terminal', terminal: ['alt', 'escape'] },
   ],
 }
 
