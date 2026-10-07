@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
+import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
@@ -420,9 +421,17 @@ onMounted(() => {
     }),
   )
   term.registerLinkProvider(fileLinkProvider)
-  // Alt+<page shortcut> is for the page, not the agent: xterm skips it and the
-  // keydown bubbles to the shortcut handlers. Everything else reaches the PTY.
-  term.attachCustomKeyEventHandler((e) => !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code)))
+  // Shift+Enter and Ctrl+Enter are a newline in the agent's prompt, not a
+  // submit: the session gets ESC CR instead of xterm's plain CR. Alt+<page
+  // shortcut> is for the page, not the agent: xterm skips it and the keydown
+  // bubbles to the shortcut handlers. Everything else reaches the PTY.
+  term.attachCustomKeyEventHandler((e) => {
+    if (newlineChord(e)) {
+      if (e.type === 'keydown') sendInput(NEWLINE_IN_PROMPT)
+      return false
+    }
+    return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code))
+  })
   term.open(host.value!)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
