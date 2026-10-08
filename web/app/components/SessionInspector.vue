@@ -5,7 +5,6 @@ import type { ActivityEntry, ChatMessage, FileResponse, Role, ViewerInfo } from 
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import { avatarTone } from '~/utils/avatar'
 import { initials, relativeTime } from '~/utils/sessions'
-import { parseLocation } from '~/utils/links'
 import { COLOR_TEXT, entryIcon, linkableUrl } from '~/utils/events'
 
 export type InspectorTab = 'people' | 'files' | 'activity' | 'chat'
@@ -67,14 +66,6 @@ function expiry(l: ShareLink) {
   return `expires in ${Math.floor(h / 24)}d`
 }
 
-const pathInput = ref('')
-function openPath() {
-  const loc = parseLocation(pathInput.value)
-  if (!loc.path) return
-  url.value = null
-  target.value = { path: loc.path, line: loc.line }
-  pathInput.value = ''
-}
 
 // Newest first. Text only: nothing an agent sends is rendered as HTML, and a
 // URL is a link only when linkableUrl allows it.
@@ -167,9 +158,6 @@ function describe(e: ActivityEntry) {
     </div>
 
     <div v-else-if="tab === 'files'" class="flex-1 min-h-0 flex flex-col">
-      <form class="flex items-center gap-1 border-b border-default px-2 py-1.5" @submit.prevent="openPath">
-        <UInput v-model="pathInput" placeholder="open path[:line]" size="xs" class="w-full font-mono" icon="i-lucide-file-search" />
-      </form>
       <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" class="flex-1 min-h-0" />
     </div>
 

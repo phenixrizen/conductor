@@ -285,14 +285,21 @@ host` session's chat reaches that stream too, sent by the host as it is
 said); it clears when you open the thread, and nothing counts for system
 lines or what you sent.
 
-## Clickable links and file viewer
+## Files, clickable links and the file viewer
+
+The inspector's **Files** tab opens on the session's working directory as a
+tree: folders expand in place, files show their size, the breadcrumb runs
+from the top of the path, and the box above the tree filters it as you type
+or, given a path (or `path:line`) and Enter, opens that file at that line.
+A crumb brings the tree back, opened down to that folder. Paths the agent
+prints in the terminal are clickable too, as the tab's last line says.
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
 File locations such as `internal/api/server.go:42`, `./README.md` or Python
 traceback lines are underlined when the file exists in the session's working
-directory; clicking opens it in a side panel at that line with syntax
-highlighting, directory browsing and a copy-path button. Reads go through the
+directory; clicking opens it in the Files tab at that line with syntax
+highlighting and a copy-path button. Reads go through the
 terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`;
 `--file-view` for `conductor host`). Server sessions never serve the server's
