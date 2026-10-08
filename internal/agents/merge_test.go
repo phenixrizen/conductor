@@ -191,6 +191,8 @@ func TestStaleCommand(t *testing.T) {
 		"/usr/bin/python3 notify --x-hook":                 false, // not conductor: not Conductor's to rewrite
 		"/opt/old/conductor-dev notify --x-hook":           false,
 		"'/opt/my apps/notconductor' notify --x-hook":      false,
+		"/opt/old/conductor notify --x-hook --files":       true, // the file tools' entry, moved
+		ours + " --files":                                  false,
 	} {
 		if got := staleCommand(in, marker, ours); got != want {
 			t.Errorf("staleCommand(%q) = %v, want %v", in, got, want)
@@ -413,5 +415,16 @@ func TestHomeWrite(t *testing.T) {
 	os.Mkdir(filepath.Join(dir, "dir.json"), 0o700)
 	if _, err := h.write("dir.json", []byte("x")); err == nil {
 		t.Fatal("a directory was replaced")
+	}
+}
+
+// The file tools' entry keeps its --files when its binary moves.
+func TestStaleRewriterKeepsTheFilesSuffix(t *testing.T) {
+	rw := staleRewriter("notify --x-hook", "/opt/new/conductor notify --x-hook")
+	if got, ok := rw("/opt/old/conductor notify --x-hook --files"); !ok || got != "/opt/new/conductor notify --x-hook --files" {
+		t.Fatalf("%q %v", got, ok)
+	}
+	if _, ok := rw("/opt/new/conductor notify --x-hook --files"); ok {
+		t.Fatal("ours is not stale")
 	}
 }

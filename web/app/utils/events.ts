@@ -7,7 +7,7 @@ import type { ActivityEntry } from '~/utils/protocol'
  * as the state it recorded) and `exit_nonzero`, a process that exited on its
  * own with a non-zero code.
  */
-export type EventType = 'needs_input' | 'done' | 'working' | 'tool_denied' | 'progress' | 'artifact' | 'handoff' | 'error' | 'exit_nonzero' | 'tool_use'
+export type EventType = 'needs_input' | 'done' | 'working' | 'tool_denied' | 'progress' | 'artifact' | 'handoff' | 'error' | 'exit_nonzero' | 'tool_use' | 'file'
 
 /**
  * Where events of one type go in this browser: a badge on the session in the
@@ -17,7 +17,7 @@ export type EventType = 'needs_input' | 'done' | 'working' | 'tool_denied' | 'pr
 export interface RouteRow { badge: boolean; browser: boolean; wall: boolean; feed: boolean }
 
 /** Every event type, in the order the routing lists them by default. */
-export const EVENT_TYPES: readonly EventType[] = ['needs_input', 'done', 'working', 'tool_denied', 'progress', 'artifact', 'handoff', 'error', 'exit_nonzero', 'tool_use']
+export const EVENT_TYPES: readonly EventType[] = ['needs_input', 'done', 'working', 'tool_denied', 'progress', 'artifact', 'handoff', 'error', 'exit_nonzero', 'tool_use', 'file']
 
 function row(badge: boolean, browser: boolean, wall: boolean, feed: boolean): RouteRow {
   return Object.freeze({ badge, browser, wall, feed })
@@ -38,6 +38,7 @@ export const DEFAULT_ROUTES: Record<EventType, RouteRow> = Object.freeze({
   error: row(true, true, false, true),
   exit_nonzero: row(true, true, false, true),
   tool_use: row(false, false, false, true),
+  file: row(false, false, false, true),
 })
 
 export type EventColor = 'warning' | 'success' | 'error' | 'info' | 'neutral'
@@ -65,6 +66,7 @@ export const EVENT_INFO: Record<EventType, EventInfo> = {
   error: { title: 'An agent hit an error', label: 'error', icon: 'i-lucide-triangle-alert', color: 'error', source: 'an error the agent hit' },
   exit_nonzero: { title: 'A process exited badly', label: 'exited', icon: 'i-lucide-circle-x', color: 'error', source: 'the process exited with a non-zero code' },
   tool_use: { title: 'Every tool call', label: 'tool', icon: 'i-lucide-wrench', color: 'neutral', source: 'every tool call (chatty)' },
+  file: { title: 'A file the agent touched', label: 'file', icon: 'i-lucide-file-pen', color: 'neutral', source: 'the files the agent reads, edits, writes and deletes (quiet)' },
 }
 
 type StateEvent = 'needs_input' | 'working' | 'done'
@@ -121,6 +123,7 @@ export function eventTypeOf(entry: ActivityEntry, session?: SessionInfo): EventT
     case 'tool_use':
     case 'tool_denied':
     case 'error':
+    case 'file':
       return entry.type
   }
   return null
@@ -351,6 +354,21 @@ export function eventAlert(e: RoutedEvent, routes: Record<EventType, RouteRow>):
   return { title: `${e.session?.name || e.sessionId}: ${what}`, body: mark.detail || EVENT_INFO[e.type].source, tag: `conductor-${e.sessionId}-${e.type}` }
 }
 
+/** The past tense of a file event's op: "edited", "read", "wrote", "deleted". */
+export function fileOpWords(op?: string): string {
+  switch (op) {
+    case 'edit':
+      return 'edited'
+    case 'write':
+      return 'wrote'
+    case 'delete':
+      return 'deleted'
+    case 'read':
+      return 'read'
+  }
+  return 'touched'
+}
+
 /** What an entry says beyond its type, for one line of the feed or a tooltip. The URL of an artifact is rendered on its own. */
 export function eventDetail(e: ActivityEntry): string {
   const msg = e.message ?? ''
@@ -363,6 +381,8 @@ export function eventDetail(e: ActivityEntry): string {
     case 'tool_denied':
     case 'error':
       return [e.tool, msg].filter(Boolean).join(': ')
+    case 'file':
+      return `${fileOpWords(e.op)} ${e.path ?? ''}${e.tool ? ` · ${e.tool}` : ''}`.trim()
   }
   return msg
 }
@@ -493,7 +513,7 @@ export class EntryHold {
 export const ROUTE_GROUPS: ReadonlyArray<{ key: string; title: string; note: string; types: readonly EventType[] }> = [
   { key: 'loud', title: 'Needs you', note: 'interrupts', types: ['needs_input', 'tool_denied', 'error', 'exit_nonzero'] },
   { key: 'notice', title: 'Worth knowing', note: 'shows up, never interrupts', types: ['done', 'handoff', 'artifact'] },
-  { key: 'quiet', title: 'Background', note: 'feed only', types: ['working', 'progress', 'tool_use'] },
+  { key: 'quiet', title: 'Background', note: 'feed only', types: ['working', 'progress', 'tool_use', 'file'] },
 ]
 
 /** The destinations a route row has, as the routing pills and the readout name them. */
@@ -516,6 +536,7 @@ const SUMMARY_NAMES: Record<EventType, string> = {
   error: 'errors',
   exit_nonzero: 'exit ≠ 0',
   tool_use: 'tool calls',
+  file: 'files touched',
 }
 
 /** "Where they go": per destination that interrupts or marks (browser, wall, badge), the types routed there; destinations with none are left out. */

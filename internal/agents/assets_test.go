@@ -521,8 +521,9 @@ func TestAssetsEscapeTheBinaryPath(t *testing.T) {
 					t.Fatalf("%s runs no command", rel)
 				}
 				for _, c := range cmds {
-					_, flag, _ := strings.Cut(c, " notify ")
-					if got := runShell(t, c, out); got != "notify\n"+flag+"\n" {
+					_, flags, _ := strings.Cut(c, " notify ")
+					// The flags are plain words (`--claude-hook --files`): one argument each.
+					if got := runShell(t, c, out); got != "notify\n"+strings.ReplaceAll(flags, " ", "\n")+"\n" {
 						t.Fatalf("%s: %q ran with %q", rel, c, got)
 					}
 				}

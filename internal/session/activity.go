@@ -25,6 +25,10 @@ type ActivityEntry struct {
 	URL     string    `json:"url,omitempty"`     // artifact link, ≤ MaxEventURL bytes
 	To      string    `json:"to,omitempty"`      // handoff target, ≤ MaxEventTo runes
 	Tool    string    `json:"tool,omitempty"`    // tool involved, ≤ MaxEventTool bytes
+	// A `file` event (design 4e): what the agent did to a file (FileOp*)
+	// and its path, ≤ MaxEventPath bytes, as the agent named it.
+	Op   string `json:"op,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 // Activity entry types the session records itself.
@@ -46,12 +50,17 @@ const (
 	ActivityToolUse    = "tool_use"    // the agent ran a tool; Tool names it
 	ActivityToolDenied = "tool_denied" // a tool call was refused; Tool names it
 	ActivityError      = "error"       // the agent hit an error; Message says what
+	ActivityFile       = "file"        // the agent read, edited, wrote or deleted a file; Op and Path say which, Tool how
 )
 
 // Bounds for the activity log.
 const (
-	MaxActivity    = 200 // entries kept per session
-	ActivityReplay = 50  // entries replayed to a new client
+	MaxActivity = 200 // entries kept per session
+	// MaxEventPath bounds a file event's path; FileCoalesce is how close two
+	// reports of the same file and op are to count as one.
+	MaxEventPath   = 1024
+	FileCoalesce   = 3 * time.Second
+	ActivityReplay = 50 // entries replayed to a new client
 )
 
 // Limits for the text of an event, beside MaxAttentionMessage for Message.
@@ -155,8 +164,29 @@ func ExitCode(message string) (code int, ok bool) {
 // and set by trusted code (an Activity* constant or a type checked with
 // ValidEventType, and a subscriber ID), so it holds without bounding them. A
 // By from outside the session goes through CleanID.
+// The ops of a file event.
+const (
+	FileOpRead   = "read"
+	FileOpEdit   = "edit"
+	FileOpWrite  = "write"
+	FileOpDelete = "delete"
+)
+
+// FileOpKnown says whether op is one of the four.
+func FileOpKnown(op string) bool {
+	switch op {
+	case FileOpRead, FileOpEdit, FileOpWrite, FileOpDelete:
+		return true
+	}
+	return false
+}
+
 func CleanEntry(e ActivityEntry) ActivityEntry {
 	e.ByName = oneLine(e.ByName, proto.MaxNameLen)
+	e.Path = cutBytes(strings.TrimSpace(strings.Map(dropControl, e.Path)), MaxEventPath)
+	if !FileOpKnown(e.Op) {
+		e.Op = ""
+	}
 	e.Message = CleanMessage(e.Message)
 	e.To = oneLine(e.To, MaxEventTo)
 	e.Tool = cutBytes(CleanMessage(e.Tool), MaxEventTool)
@@ -227,7 +257,7 @@ func fitsControlFrame(e ActivityEntry) bool {
 // one place that lists an entry's fields. An entry without a time is encoded
 // without one, for the receiver to stamp.
 func EntryToProto(e ActivityEntry) proto.Activity {
-	a := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool}
+	a := proto.Activity{T: proto.CtlActivity, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool, Op: e.Op, Path: e.Path}
 	if !e.At.IsZero() {
 		a.At = e.At.UTC().Format(time.RFC3339Nano)
 	}
@@ -240,7 +270,7 @@ func EntryToProto(e ActivityEntry) proto.Activity {
 // zero.
 func EntryFromProto(a proto.Activity) ActivityEntry {
 	at, _ := time.Parse(time.RFC3339Nano, a.At)
-	return ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+	return ActivityEntry{At: at.UTC(), Type: a.Type, By: a.By, ByName: a.ByName, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool, Op: a.Op, Path: a.Path}
 }
 
 // EventBucket is a token bucket: it holds up to EventBurst tokens, earns
@@ -285,6 +315,36 @@ type activityRing struct {
 }
 
 // Add appends e, stamping At when zero, cleaning its text with CleanEntry and
+// CoalesceFile folds a file event into the newest entry kept when that is
+// a file event of the same path and op within FileCoalesce (an agent saving
+// a file forty times is one line): the newest's time moves to e's and true
+// comes back; false means e is new.
+func (r *activityRing) CoalesceFile(e ActivityEntry) bool {
+	at := e.At
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// The newest file entry within the window, past a tool call's own event
+	// between two reports of its file (the base hook's and a tools launch's).
+	for i := len(r.buf) - 1; i >= 0; i-- {
+		last := &r.buf[i]
+		if at.Sub(last.At) >= FileCoalesce || at.Before(last.At) {
+			return false
+		}
+		if last.Type != ActivityFile {
+			continue
+		}
+		if last.Path != e.Path || last.Op != e.Op {
+			return false
+		}
+		last.At = at
+		return true
+	}
+	return false
+}
+
 // dropping the oldest entry past MaxActivity. It returns the stored entry.
 func (r *activityRing) Add(e ActivityEntry) ActivityEntry {
 	if e.At.IsZero() {

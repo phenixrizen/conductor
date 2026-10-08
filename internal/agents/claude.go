@@ -29,6 +29,20 @@ func claudeHookList(events ...string) string {
 	return `"hooks":{` + hookLists(entry, events...) + `}`
 }
 
+// claudeFileTools are the tools whose calls name a file (design 4e). The
+// base settings hook their PostToolUse alone, reporting the files and not
+// the calls (`--files`), so the Touched section fills with tool events off;
+// the tools settings hook every call, which reports its files too.
+const claudeFileTools = "Read|Edit|MultiEdit|NotebookEdit|Write"
+
+// claudeBaseHookList is the "hooks" member of the base settings: the quiet
+// events and the file tools' hook.
+func claudeBaseHookList() string {
+	entry := `{"hooks":[{"type":"command","command":"{{BIN}} notify --claude-hook"}]}`
+	files := `{"matcher":"` + claudeFileTools + `","hooks":[{"type":"command","command":"{{BIN}} notify --claude-hook --files"}]}`
+	return `"hooks":{` + hookLists(entry, claudeEvents...) + `,"PostToolUse":[` + files + `]}`
+}
+
 // claudeYoloKey skips the warning Claude Code shows before its first launch
 // with --dangerously-skip-permissions (the yolo recipe). Claude Code honours
 // only the last --settings, so it goes in the file that carries the hooks.
@@ -40,12 +54,12 @@ var (
 )
 
 var claudeAssets = map[string]string{
-	"claude.json": claudeHooks(claudeEvents...),
+	"claude.json": jsonAsset(`{` + claudeBaseHookList() + `}`),
 	// Tool events are chatty: a signal asks for them with toolEvents.
 	"claude-tools.json": claudeHooks(claudeToolsEvents...),
 	// The same with the yolo key, for a launch with the yolo recipe, and the
 	// key alone for one whose hooks are not wired.
-	"claude-yolo.json":       jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeEvents...) + `}`),
+	"claude-yolo.json":       jsonAsset(`{` + claudeYoloKey + `,` + claudeBaseHookList() + `}`),
 	"claude-tools-yolo.json": jsonAsset(`{` + claudeYoloKey + `,` + claudeHookList(claudeToolsEvents...) + `}`),
 	"claude-yolo-only.json":  jsonAsset(`{` + claudeYoloKey + `}`),
 	// Conductor's MCP server, for --mcp-config (Claude Code 2.1.288 takes

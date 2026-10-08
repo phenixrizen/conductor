@@ -93,34 +93,38 @@ test that would have caught it when it is fixed.
   unless an agent's mouse mode is found wanting; a check of Codex and Claude
   Code with the mouse is on the by-hand list for the next round. Round 10.
 
-### A Changes tab beside Files
+### The Files tab, what is left of round 12
 
-What the agent changed and touched, on the session page and the join page,
-beside Files (which stays the browser of the working directory; the
-owner asked about `lsof` on 2026-10-06, which shows only the descriptors
-open at that instant, never the source files an agent opens and closes in
-milliseconds).
+Explorer (F1), the Monaco editor beside the terminal (F2), Changes (F3)
+and Touched (F4) landed on 2026-10-08 (`docs/round12-plan.md`, the design
+screens 4a–4g). Still to build, each a pull request from main:
 
-- **The list:** `git status` of the session's working directory, each file
-  with its added and removed line counts, refreshed on a timer and on every
-  tool-use event the agent's hooks report; a session outside a repository
-  says so. For a crew member in a worktree the diff is against the run's
-  base, as the run page's member counts already are (`DiffStat`).
-- **The diff:** a file opens as its diff, highlighted the way the file
-  viewer highlights, with the file viewer one click away; binary and very
-  large diffs are capped and say so.
-- **Touched files:** the hook events already name the tool and the path of
-  every read, edit and write, so files the agent looked at get a mark in the
-  Files tree and a "recently touched" group at the top of Changes, even
-  outside git.
-- **Hosted sessions:** git runs on the host, as file reads do: one new
-  request and reply in `internal/proto`, `protocol.ts` and `docs/protocol.md`,
-  bounded like the file reads, under the same `fileView` setting.
-- Tests at both ends: Go for the status and diff reads (bounds, the
-  worktree base, the deny list of the data directory, the host round trip in
-  loopback); vitest for the list and diff models; Playwright with the stub
-  editing a file in the scratch repository and the tab showing it, then its
-  diff, on the session page and through a share link. Round 10.
+- **Commits (F5, screen 4e):** `git log` since the session started on the
+  working directory's branch, each commit with its message, time and
+  author; a commit opens as its diff against its parent in the diff
+  editor; go-git for the log and the diffs (the linked-worktree check at
+  the first commit), `internal/gitcli` staying for status.
+- **Editing (F6, 4b and 4f):** Save and Ctrl+S for a controller on a
+  session whose `fileEdit` setting allows it, `file_write` chunked under
+  the frame size and bounded in total, the changed-on-disk warning from
+  the read's modification time and hash, the save in Activity, the host
+  side writing on the developer's machine.
+- **Comment on a line (F7, 5a–5c):** select lines, Comment or Ask the
+  agent, the quote card in the chat thread, re-anchoring when the lines
+  move.
+- **Vim keys (F8):** waits on monaco-neovim-wasm's license (none as of
+  2026-10-08); monaco-vim (MIT) is the interim if the owner wants Vim
+  keys before that.
+- **Touched everywhere:** the Yard's focused tile and the guest's join
+  page keep no activity list, so their Files panes offer no Touched
+  section and no dots; the activity replay is 50 entries, so a long
+  session's Touched starts from what the page saw. A `since` on the
+  replay, or a bounded `GET /api/sessions/{id}/activity`, would give both
+  the whole list.
+- **Files from more agents:** Codex names a file only through
+  `apply_patch` (its shell reads and writes name none); the Copilot and
+  Goose mappers yield no files, their PostToolUse payloads unverified
+  against a real run; agy has no tool hook.
 
 ### Chat beside the terminal
 

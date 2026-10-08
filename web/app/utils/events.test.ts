@@ -46,7 +46,7 @@ function entry(type: ActivityEntry['type'], fields: Partial<ActivityEntry> = {})
   return { at: '2026-09-29T12:00:00Z', type, ...fields }
 }
 
-const ALL_TYPES = ['needs_input', 'done', 'working', 'tool_denied', 'progress', 'artifact', 'handoff', 'error', 'exit_nonzero', 'tool_use']
+const ALL_TYPES = ['needs_input', 'done', 'working', 'tool_denied', 'progress', 'artifact', 'handoff', 'error', 'exit_nonzero', 'tool_use', 'file']
 
 describe('DEFAULT_ROUTES', () => {
   it('has a row with all four routes for every event type', () => {
@@ -79,6 +79,7 @@ describe('eventTypeOf', () => {
   it('reads the state from an attention entry recorded without a message', () => {
     // The session records the state itself when the report had no message.
     expect(eventTypeOf(entry('attention', { message: 'working' }))).toBe('working')
+    expect(eventTypeOf(entry('file', { op: 'edit', path: 'internal/api/users.go', tool: 'Edit' }))).toBe('file')
     expect(eventTypeOf(entry('attention', { message: 'done' }), session(''))).toBe('done')
     expect(eventTypeOf(entry('attention', { message: 'needs_input' }), session('working', 'compiling'))).toBe('needs_input')
   })

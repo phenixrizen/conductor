@@ -29,6 +29,9 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repo = process.env.CONDUCTOR_E2E_LIVE_REPO ?? ''
 const live = process.env.CONDUCTOR_E2E_LIVE === '1' && repo !== ''
 const PROMPT = 'Reply with the single word READY and nothing else'
+// A write and a read through the agent's own file tools, so its hooks report both (design 4e); the reply says it is done.
+// The file is the agent's own: the trusted repository promises no file of its own at HEAD.
+const FILES_PROMPT = 'Create a file named touched.txt containing the single word TOUCHED with your file editing tool (not a shell command), then read touched.txt back with your file reading tool, then reply with the single word TOUCHED and nothing else'
 const TRUST_WORDS: Record<string, RegExp> = { claude: /project you created or one you trust/i, codex: /trust this folder/i }
 // What answers the trust question with "yes": Claude Code 2.1.288 highlights "No, exit" first, so its yes is Down then Enter
 // (verified in a PTY on 2026-10-03); Codex 0.159 highlights the trusting answer, so Enter alone.
@@ -46,6 +49,49 @@ function onPath(program: string): boolean {
   } catch {
     return false
   }
+}
+
+/** A file event of the admin stream (`event: activity` with `type: file`): what the agent's hooks reported it touched. */
+interface FileEvent {
+  sessionId: string
+  op: string
+  path: string
+  tool?: string
+}
+
+/** Reads the admin event stream into `into` until closed: every file event of every session, as the Events page gets them. */
+function watchFileEvents(server: Started, into: FileEvent[]): { close: () => void } {
+  const ctl = new AbortController()
+  void (async () => {
+    try {
+      const r = await fetch(`${server.baseURL}/api/events`, { headers: { Authorization: `Bearer ${server.token}` }, signal: ctl.signal })
+      const reader = r.body!.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        let i: number
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, i)
+          buf = buf.slice(i + 2)
+          const event = /^event: (.*)$/m.exec(block)?.[1]
+          const data = block
+            .split('\n')
+            .filter((l) => l.startsWith('data: '))
+            .map((l) => l.slice(6))
+            .join('\n')
+          if (event !== 'activity' || !data) continue
+          const p = JSON.parse(data) as { sessionId: string; type: string; op?: string; path?: string; tool?: string }
+          if (p.type === 'file' && p.op && p.path) into.push({ sessionId: p.sessionId, op: p.op, path: p.path, tool: p.tool })
+        }
+      }
+    } catch {
+      /* closed */
+    }
+  })()
+  return { close: () => ctl.abort() }
 }
 
 /** A fresh git repository neither agent has seen, under the live root beside the trusted one. */
@@ -207,6 +253,30 @@ for (const agent of ['claude', 'codex']) {
         expect(logged(r, "typed solo's prompt")).toBe(true)
         if (agent === 'codex') expect(sawNeedsInput, "Codex's title thread raises no false needs_input").toBe(false)
       } finally {
+        await cleanup(api, run, repo)
+        await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+      }
+    })
+
+    test('reports the files it reads and writes through its hooks', async ({ server }) => {
+      test.setTimeout(240_000)
+      const api = new Api(server)
+      const seen: FileEvent[] = []
+      const stream = watchFileEvents(server, seen) // open before the launch: nothing is replayed
+      const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', crewBody('files', repo, FILES_PROMPT, true, 'worktree'))
+      const run: Run = await api.launchCrew(crew.crew.id)
+      try {
+        await answerOrExit(api, run.id, () => answerOf(api, run.id), 'TOUCHED', 200_000)
+        const sid = member(await api.run(run.id), 'solo').sessionId ?? ''
+        const mine = () => seen.filter((e) => e.sessionId === sid)
+        await expect
+          .poll(() => mine().filter((e) => (e.op === 'write' || e.op === 'edit') && e.path.endsWith('touched.txt')).length, { timeout: 30_000, intervals: [1_000] })
+          .toBeGreaterThan(0)
+        // Claude Code's Read is a tool call its hooks report; Codex reads with the shell, which names no file.
+        if (agent === 'claude') expect(mine().some((e) => e.op === 'read' && e.path.endsWith('touched.txt')), JSON.stringify(mine())).toBe(true)
+        for (const e of mine()) expect(e.tool, JSON.stringify(e)).toBeTruthy()
+      } finally {
+        stream.close()
         await cleanup(api, run, repo)
         await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
       }

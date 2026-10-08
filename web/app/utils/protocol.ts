@@ -147,7 +147,7 @@ export interface ActivityEntry {
   at: string
   type:
     | 'attention' | 'input' | 'join' | 'leave' | 'link' | 'status'
-    | 'progress' | 'artifact' | 'handoff' | 'tool_use' | 'tool_denied' | 'error'
+    | 'progress' | 'artifact' | 'handoff' | 'tool_use' | 'tool_denied' | 'error' | 'file'
   by?: string
   byName?: string
   message?: string
@@ -155,8 +155,11 @@ export interface ActivityEntry {
   url?: string
   /** `handoff`: who the work goes to (≤ 40 characters). */
   to?: string
-  /** `tool_use`, `tool_denied`, `error`: the tool involved (≤ 100 bytes). */
+  /** `tool_use`, `tool_denied`, `error`, `file`: the tool involved (≤ 100 bytes). */
   tool?: string
+  /** `file`: what the agent did to the file, and its path as the agent named it (≤ 1024 bytes). */
+  op?: 'read' | 'edit' | 'write' | 'delete'
+  path?: string
   /** GET /api/events only: for an attention entry, the state it records. Absent from a session's own replay and from an older host's entries. */
   state?: 'needs_input' | 'working' | 'done'
 }
@@ -199,7 +202,7 @@ export type ControlMessage =
   | { t: 'status'; status: string; exitCode?: number }
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
-  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string }
+  | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string; op?: ActivityEntry['op']; path?: string }
   | { t: 'error'; code: string; message: string; requestId?: string }
   | { t: 'pong'; ts: number }
   | ChatMessage

@@ -30,6 +30,9 @@ type eventRequest struct {
 	Tool    string           `json:"tool"`
 	Kind    string           `json:"kind"`
 	Options []session.Option `json:"options"`
+	// A `file` event: what the agent did to the file (read, edit, write, delete) and its path.
+	Op   string `json:"op"`
+	Path string `json:"path"`
 }
 
 // eventActor is the display name on an entry reported through the events
@@ -101,7 +104,7 @@ func attentionState(word string) (state session.AttentionState, ok bool) {
 func eventType(t string) bool {
 	switch t {
 	case session.ActivityProgress, session.ActivityArtifact, session.ActivityHandoff,
-		session.ActivityToolUse, session.ActivityToolDenied, session.ActivityError:
+		session.ActivityToolUse, session.ActivityToolDenied, session.ActivityError, session.ActivityFile:
 		return true
 	}
 	return false
@@ -229,7 +232,7 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		writeError(w, http.StatusBadRequest, "invalid_type", "type must be progress, artifact, handoff, tool_use, tool_denied, error, needs_input, working, done or clear")
+		writeError(w, http.StatusBadRequest, "invalid_type", "type must be progress, artifact, handoff, tool_use, tool_denied, error, file, needs_input, working, done or clear")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
@@ -242,7 +245,11 @@ func reportEvent(w http.ResponseWriter, d session.Driver, req eventRequest) bool
 		writeError(w, http.StatusConflict, "session_ended", "the session has ended")
 		return false
 	}
-	entry := session.CleanEntry(session.ActivityEntry{Type: req.Type, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, ByName: eventActor})
+	entry := session.CleanEntry(session.ActivityEntry{Type: req.Type, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Op: req.Op, Path: req.Path, ByName: eventActor})
+	if req.Type == session.ActivityFile && (entry.Path == "" || entry.Op == "") {
+		writeError(w, http.StatusBadRequest, "invalid_request", "a file event names its op (read, edit, write or delete) and its path")
+		return false
+	}
 	switch drv := d.(type) {
 	case *session.Local:
 		if !drv.Record(entry) {

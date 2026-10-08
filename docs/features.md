@@ -746,6 +746,39 @@ waiting on monaco-neovim-wasm's missing license.
   through a read, none for a deleted one), the header saying what it is
   against, the status and the lines, and Open file. A crew member's
   changes against the run's base wait for the base to reach the page.
+- **F4, Touched (4e).** A seventh event type, `file`: `op` (read, edit,
+  write, delete) and `path` (≤ 1024 bytes) with `tool`, through the same
+  activity ring, replay and frames as the rest (`proto.Activity` carries
+  both), posted like any event (the API refuses one without its op and
+  path). The hook mappers yield the files a tool call touched beside the
+  call's own event (`notify.Request.Files`; Claude Code's input
+  `file_path` or `notebook_path` by tool, Codex's `apply_patch` by the
+  files its patch names, Cursor's `afterFileEdit`), and `Send` posts each
+  as its own event; `conductor notify --event file --op … --path …` and
+  the MCP `report` tool take it for agents without hooks, which the skill
+  says. A repeat of the newest file entry (the same path and op within
+  3 s) moves its time instead of adding a line (`CoalesceFile`), so a file
+  saved forty times is one. The Files pane gains Touched (newest first,
+  the op's icon, the folder and name, "Edit · codex · 08:33:12", a row
+  opening the file) and dots on touched files in the Explorer, fed by the
+  inspector's activity (the Yard's and the guest's panes have no activity
+  yet, so no Touched there); the Activity tab and the Events page word it
+  ("edited internal/api/users.go · Edit"), routed to the feed alone by
+  default. The activity replay stays at 50 entries, so a long session's
+  Touched starts from what the page saw; the hook bucket (20 a second)
+  still bounds a burst. Verified against the real Claude Code (2.1.294)
+  on 2026-10-08: its base settings had no PostToolUse hook at all (tool
+  events are the catalog's opt-in `toolEvents`), so nothing reported a
+  file; the base settings (`claude.json`, `claude-yolo.json`, the
+  installed `~/.claude/settings.json`) now hook PostToolUse for the file
+  tools alone (`matcher` Read|Edit|MultiEdit|NotebookEdit|Write) with
+  `notify --claude-hook --files`, which posts the files and no tool call,
+  and a tools launch keeps its every-call hook (the same Edit reported
+  twice coalesces, the call's own event between them stepped over). The
+  live tier (`live.spec.ts`, "reports the files it reads and writes
+  through its hooks") checks the real agent's read and write land as
+  file events; Codex's passes only where its `features.hooks` is on with
+  Conductor's hooks.json, which this machine does not have.
 
 ## The trust question's answers as choices (2026-10-08)
 

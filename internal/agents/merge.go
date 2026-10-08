@@ -233,6 +233,7 @@ func ourCommand(asset []byte, marker string) (string, error) {
 // ours does. A bare `conductor notify --x-hook` is the user's own, and so is
 // any other program, or anything longer or shaped otherwise.
 func staleCommand(s, marker, ours string) bool {
+	s, _ = strings.CutSuffix(s, filesSuffix)
 	if s == ours {
 		return false
 	}
@@ -274,9 +275,16 @@ func shellUnquote(q string) (string, bool) {
 // commands for marker the command ours.
 func staleRewriter(marker, ours string) func(string) (string, bool) {
 	return func(s string) (string, bool) {
+		if strings.HasSuffix(s, filesSuffix) {
+			return ours + filesSuffix, staleCommand(s, marker, ours)
+		}
 		return ours, staleCommand(s, marker, ours)
 	}
 }
+
+// filesSuffix is what the file tools' hook entry adds after the marker
+// (`notify --claude-hook --files`): a stale copy of it keeps the suffix.
+const filesSuffix = " --files"
 
 // hooksOf returns the "hooks" object of a JSON document, empty when there is
 // none or it is null. ok is false when it is not an object.

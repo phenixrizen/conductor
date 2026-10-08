@@ -338,3 +338,45 @@ func TestExitCode(t *testing.T) {
 		}
 	}
 }
+
+// A file event names its op and path within bounds; a repeat of the newest
+// one (the same path and op within FileCoalesce) is one entry whose time
+// moves; another file, another op or a later repeat is its own line.
+func TestFileEventsAreBoundedAndCoalesced(t *testing.T) {
+	e := CleanEntry(ActivityEntry{Type: ActivityFile, Op: "edit", Path: " /r/" + strings.Repeat("p", 2000) + "\x00x "})
+	if e.Op != "edit" || len(e.Path) != MaxEventPath || strings.Contains(e.Path, "\x00") {
+		t.Fatalf("cleaned %+v", e)
+	}
+	if e := CleanEntry(ActivityEntry{Type: ActivityFile, Op: "burn", Path: "x"}); e.Op != "" {
+		t.Fatalf("an unknown op kept: %q", e.Op)
+	}
+	s, _ := newLocal(t, t.TempDir())
+	at := time.Date(2026, 10, 8, 8, 33, 0, 0, time.UTC)
+	if !s.Record(ActivityEntry{Type: ActivityFile, Op: "edit", Path: "/r/a.go", Tool: "Edit", At: at}) {
+		t.Fatal("the first was dropped")
+	}
+	if !s.Record(ActivityEntry{Type: ActivityFile, Op: "edit", Path: "/r/a.go", Tool: "Edit", At: at.Add(time.Second)}) {
+		t.Fatal("the repeat was dropped")
+	}
+	s.Record(ActivityEntry{Type: ActivityFile, Op: "read", Path: "/r/a.go", Tool: "Read", At: at.Add(2 * time.Second)})
+	s.Record(ActivityEntry{Type: ActivityFile, Op: "edit", Path: "/r/b.go", Tool: "Edit", At: at.Add(3 * time.Second)})
+	s.Record(ActivityEntry{Type: ActivityFile, Op: "edit", Path: "/r/b.go", Tool: "Edit", At: at.Add(10 * time.Second)})
+	// A tools launch reports the call itself between the base hook's file and its own: still one line.
+	s.Record(ActivityEntry{Type: "tool_use", Tool: "Edit", At: at.Add(11 * time.Second)})
+	s.Record(ActivityEntry{Type: ActivityFile, Op: "edit", Path: "/r/b.go", Tool: "Edit", At: at.Add(12 * time.Second)})
+	var files []ActivityEntry
+	for _, e := range s.Activity() {
+		if e.Type == ActivityFile {
+			files = append(files, e)
+		}
+	}
+	if len(files) != 4 {
+		t.Fatalf("%d file entries: %+v", len(files), files)
+	}
+	if files[0].Path != "/r/a.go" || files[0].Op != "edit" || !files[0].At.Equal(at.Add(time.Second)) {
+		t.Fatalf("the coalesced entry: %+v", files[0])
+	}
+	if files[1].Op != "read" || files[2].Path != "/r/b.go" || files[3].Path != "/r/b.go" || !files[3].At.Equal(at.Add(12*time.Second)) {
+		t.Fatalf("the rest: %+v", files[1:])
+	}
+}

@@ -6,7 +6,7 @@ import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { ChangeRow } from '~/utils/changes'
 import { avatarTone } from '~/utils/avatar'
 import { initials, relativeTime } from '~/utils/sessions'
-import { COLOR_TEXT, entryIcon, linkableUrl } from '~/utils/events'
+import { COLOR_TEXT, entryIcon, fileOpWords, linkableUrl } from '~/utils/events'
 
 export type InspectorTab = 'people' | 'files' | 'activity' | 'chat'
 
@@ -104,6 +104,8 @@ function describe(e: ActivityEntry) {
       return `${e.tool || 'a tool'} denied${msg}`
     case 'error':
       return `${e.tool ? `${e.tool}: ` : ''}${e.message || 'error'}`
+    case 'file':
+      return `${fileOpWords(e.op)} ${e.path ?? ''}${e.tool ? ` · ${e.tool}` : ''}`
   }
   return e.message || e.type
 }
@@ -159,7 +161,7 @@ function describe(e: ActivityEntry) {
     </div>
 
     <div v-else-if="tab === 'files'" class="flex-1 min-h-0 flex flex-col">
-      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="emit('openFile', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" />
+      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" :activity="activity" external class="flex-1 min-h-0" @open="emit('openFile', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" />
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-y-auto p-4">
