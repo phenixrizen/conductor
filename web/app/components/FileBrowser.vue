@@ -169,10 +169,11 @@ async function listFolder(node: TreeNode): Promise<boolean> {
   }
 }
 
-/** The working directory's listing, the tree's first rows; a connection not open yet is tried again a few times. */
+/** The working directory's listing, the tree's first rows; a connection not open yet is tried again, once a second, ten times. */
 async function loadRoot() {
   if (!props.cwd) return
-  const r = rootNode(props.cwd)
+  // Reactive from the start: the listing mutates the root, and the retry below compares it with the ref's.
+  const r = reactive(rootNode(props.cwd)) as TreeNode
   root.value = r
   treeError.value = ''
   treeLoading.value = true
@@ -180,7 +181,8 @@ async function loadRoot() {
   treeLoading.value = false
   if (!ok) {
     treeError.value = r.error || 'cannot read'
-    if (/not connected/i.test(treeError.value) && retries < 8) {
+    // The connection is not open yet (the page's terminal mounts and connects after the pane): try again in a moment.
+    if (/not connected|not ready/i.test(treeError.value) && retries < 10) {
       retries += 1
       setTimeout(() => {
         if (root.value === r && !r.loaded) loadRoot()

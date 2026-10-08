@@ -452,6 +452,8 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 			"rows":     info.Rows,
 			"hostName": info.HostName,
 			"hostUser": info.HostUser,
+			// The working directory roots the guest's Files pane (design 4g); reads are still the session's to allow.
+			"cwd": info.Cwd,
 		},
 		"role":       link.Role,
 		"label":      link.Label,

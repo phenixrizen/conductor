@@ -1,8 +1,8 @@
 <script setup lang="ts">
+import { emptyTabs, toggleFold } from '~/utils/editorTabs'
 import type { SessionInfo } from '~/composables/useSessions'
 import type { TransportKind } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
-import type { FileTarget } from '~/components/FileViewer.vue'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { bestGrid } from '~/utils/wall'
@@ -48,18 +48,12 @@ const focused = computed<SessionInfo | undefined>(() => attention.sessions.value
 const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
-const fileOpen = ref(false)
-const fileTarget = ref<FileTarget | null>(null)
-const previewUrl = ref<string | null>(null)
-let fileClosedAt = 0
-watch(fileOpen, (open) => {
-  if (!open) fileClosedAt = Date.now()
-})
+// The editor area (design 4g): files open above the focused tile's terminal, the Files pane beside it.
+const { tabs, editorOpen, openFile, openUrl } = useEditorTabs()
 watch(focusId, () => {
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
-  fileTarget.value = null
-  previewUrl.value = null
+  tabs.value = emptyTabs()
 })
 
 function focusSession(s: SessionInfo) {
@@ -71,8 +65,12 @@ function backToGrid() {
 }
 
 function leaveFocus() {
-  // Esc first closes the file panel (handled by the panel); only a second Esc leaves focus mode.
-  if (!focusId.value || fileOpen.value || Date.now() - fileClosedAt < 400) return
+  // Esc first folds the editor; only a second Esc leaves focus mode.
+  if (!focusId.value) return
+  if (editorOpen.value) {
+    tabs.value = toggleFold(tabs.value)
+    return
+  }
   backToGrid()
 }
 function queueNext() {
@@ -143,23 +141,6 @@ async function stop(s: SessionInfo) {
   }
 }
 
-function openFile(loc: { path: string; line?: number }) {
-  previewUrl.value = null
-  fileTarget.value = { ...loc }
-}
-
-function openUrl(url: string) {
-  toast.add({
-    title: url,
-    icon: 'i-lucide-link',
-    color: 'neutral',
-    actions: [
-      { label: 'Open in new tab', icon: 'i-lucide-external-link', onClick: () => window.open(url, '_blank', 'noopener,noreferrer') },
-      { label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => (previewUrl.value = url) },
-    ],
-  })
-}
-
 function requestFile(path: string, stat?: boolean) {
   if (!focusTerminal.value) return Promise.reject(new Error('terminal not ready'))
   return focusTerminal.value.requestFile(path, stat)
@@ -216,10 +197,9 @@ onMounted(() => {
     <template #body>
       <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
-      <div v-if="focusId" class="flex-1 min-h-0 p-2 sm:p-3 flex flex-col gap-2">
-        <div class="flex-1 min-h-0">
+      <div v-if="focusId" class="flex flex-1 min-h-0 gap-3 p-2 sm:p-3">
+        <EditorColumn v-if="focused" v-model:tabs="tabs" :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :host-away="focused.status === 'host_disconnected' ? focused.hostName || 'The host' : undefined" :bar-text="focused.attention?.message || focused.agentId">
           <TerminalView
-            v-if="focused"
             :key="focused.id"
             ref="focusTerminal"
             :create-transport="transportFor(focused)"
@@ -228,15 +208,20 @@ onMounted(() => {
             @open-file="openFile"
             @open-url="openUrl"
           />
-          <div v-else class="h-full flex flex-col items-center justify-center gap-3 text-muted">
-            <UIcon name="i-lucide-search-x" class="size-8" />
-            <p class="text-sm">That session is gone.</p>
-            <UButton label="Back to the grid" icon="i-lucide-arrow-left" color="neutral" variant="soft" @click="backToGrid" />
-          </div>
+          <template #bar>
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="reply(focused!, $event)" @option="option(focused!, $event)" />
+          </template>
+        </EditorColumn>
+        <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
+          <UIcon name="i-lucide-search-x" class="size-8" />
+          <p class="text-sm">That session is gone.</p>
+          <UButton label="Back to the grid" icon="i-lucide-arrow-left" color="neutral" variant="soft" @click="backToGrid" />
         </div>
-        <QuickReplyBar v-if="focused" :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="reply(focused!, $event)" @option="option(focused!, $event)" />
+        <aside v-if="focused" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-md border border-default bg-default" data-files-aside>
+          <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted"><UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files</div>
+          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="openFile" />
+        </aside>
       </div>
-
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
         <UIcon name="i-lucide-layout-grid" class="size-10" />
         <p class="text-sm">No active sessions. Launch an agent or start one with <code>conductor host</code>.</p>
@@ -255,5 +240,4 @@ onMounted(() => {
     </template>
   </UDashboardPanel>
 
-  <FileViewer v-if="focusId" v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" :cwd="focused?.cwd" :raw-url="rawUrl" />
 </template>

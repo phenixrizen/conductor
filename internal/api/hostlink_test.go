@@ -29,7 +29,7 @@ func TestAHostMintsLinksAtTheServer(t *testing.T) {
 		t.Fatalf("link_created %v", m)
 	}
 	token := strings.TrimPrefix(url, "https://switchyard.example.net/join/")
-	if resp, out := e.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
+	if resp, out := e.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil || out["session"].(map[string]any)["cwd"] == nil {
 		t.Fatalf("join by the minted link: %d %v", resp.StatusCode, out)
 	}
 	// Listed on the session, with its label.

@@ -18,6 +18,8 @@ const props = defineProps<{
   rawUrl?: (path: string) => string | null
   /** The name of a hosted session's machine while it is away: its files cannot be read until it returns. */
   hostAway?: string
+  /** A view-only guest: the editor says Read only where a controller will see Save. */
+  readOnlyBadge?: boolean
 }>()
 const tabs = defineModel<TabsState>('tabs', { required: true })
 
@@ -211,6 +213,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UBadge v-if="view?.header?.kind === 'file' && view.state !== 'text'" :label="view.dims || fmtSize(view.header.size)" color="neutral" variant="subtle" size="sm" />
           <UBadge v-if="view?.header?.truncated" label="truncated" color="warning" variant="subtle" size="sm" />
           <span v-if="view?.state === 'text'" class="flex-none font-mono text-[11px] text-muted" data-editor-pos>Ln {{ pos.line }}, Col {{ pos.col }}</span>
+          <UBadge v-if="readOnlyBadge" label="Read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" data-editor-readonly />
           <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copy path" data-editor-copy @click="copy(active.path, 'Path copied')" />
           <UButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" aria-label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" data-editor-raw />
         </template>
