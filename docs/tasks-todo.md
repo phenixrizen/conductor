@@ -23,6 +23,47 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
+- **The fullscreen button does nothing in the desktop app.** The owner,
+  2026-10-08, on the Windows app (rc.4): the maximize icon in every page
+  header (`FullscreenButton`, the `F` key) has no effect. The button
+  shows because `document.fullscreenEnabled` is true in Electron, but the
+  page's `requestFullscreen` does not take the window fullscreen there;
+  the app's View menu has its own "Toggle Full Screen" (`togglefullscreen`).
+  Fix: in the app, the button and `F` call the window's fullscreen through
+  the bridge (`setFullScreen`, with the change reported back so the icon
+  follows), and the layout's fullscreen state reads the window's; a
+  desktop e2e check in `desktop/e2e/smoke.spec.ts`. Platform: Windows app.
+- **The shortcuts table is too narrow to read.** The owner, 2026-10-08,
+  on the Windows app: the `?` modal's three columns (the action, the keys
+  in a terminal, the keys outside one; `ShortcutsModal`) sit so close that
+  the columns are hard to tell apart. Fix: a wider modal (`sm:max-w-3xl`
+  or the viewport's width below it), a column gap that reads as columns,
+  a rule or tint between them, the headers repeated per group; checked
+  against the design's shortcuts screen at 1440 and 390.
+- **The Launch dialog takes very long to list the agents the first
+  time.** The owner, 2026-10-08, on the Windows app (the server in WSL):
+  opening Launch agent for the first time after the app starts shows an
+  empty list for a long while. Likely cause: `GET /api/catalog` looks up
+  every agent's command and runs the version probes of the ones found
+  (`probeWorkers` at a time, `probeWait` each, "pending" past that), and
+  the dialog shows nothing until that reply lands; inside WSL the first
+  probes of thirteen agents take long. Fix:
+  answer the list at once with what is known, mark availability as it
+  comes (a `checking` state per row, a stream or a second fetch), cache
+  the result across dialogs for the server's lifetime, and never block
+  the list on a probe; a Go test that a slow probe does not delay the
+  catalog, a Playwright check that the dialog lists agents within a
+  second of opening.
+- **The directory picker's lists are cut short.** The owner, 2026-10-08:
+  choosing a starting working directory in the Launch dialog, the
+  folder list stops before the end of a large directory. Cause: `GET
+  /api/paths` returns at most `maxPathEntries` (50) entries of a
+  prefix, in name order, with no word that more exist and no way to page
+  or narrow. Fix: say "N more; type to narrow" when the list is cut, match
+  the typed prefix on the server so the cut applies after the filter, and
+  list directories before files (or directories only, since this picks a
+  working directory); a Go test for the cut's flag and a Playwright check
+  of the note. Platform: Windows app, WSL server.
 - **The Yard's focused header overlaps at phone width.** Seen 2026-10-08 in
   a headless render at 390 wide (round 12, F2b): the status, transport and
   viewers badges run under Open page and Stop, and the title is gone. Cause:
@@ -228,6 +269,26 @@ machine that runs the session; the switchyard introduces, relays only
 when ICE fails, and serves as little as it can, so that its egress,
 compute and cloud bill stay the cheapest possible.
 
+- **A second factor for a control link.** The owner, 2026-10-08: joining
+  a session with control through a share link should take a second
+  secret beside the link, a short PIN or code the owner sets when the
+  link is made (or one the app mints and shows next to the link), typed
+  on the join card before the terminal opens; a view link needs none.
+  The PIN never travels in the URL, is compared like a token
+  (`share.Equal` on a hash), is rate-limited per address, and a wrong PIN
+  three times revokes the link. The switchyard keeps the same check on its
+  join page, since control links through it carry the same risk. Design
+  screen for the join card and the link dialog; Go tests for the hash, the
+  limit and the revoke; Playwright for the card.
+- **A QR code to share a session to a phone.** The owner, 2026-10-08:
+  the share link dialog shows a QR code of the link (view or control,
+  with the PIN shown beside it, never inside the code), so a phone on the
+  same room scans it instead of typing; the switchyard's own share page
+  shows the same. Rendered in the browser from the link (a small QR
+  encoder in `web/app/utils`, no new runtime dependency on the server);
+  a vitest for the encoder's output against a known code and a Playwright
+  check that the dialog carries `[data-share-qr]` with the link's text as
+  its label. By hand: a phone scans it and joins.
 - **Egress off the switchyard: the next pull request, on its own, not in
   the round 11 stack.** Measured 2026-10-07 on a phone-sized headless
   Chromium against a local server: a first join page load is 1.9 MiB on
