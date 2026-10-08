@@ -763,6 +763,15 @@ launch alone, through `-c projects={…}` naming the repository, and nothing is
 written to `~/.codex/config.toml`; Claude Code has no such option, so trust it
 once yourself.
 
+The question's answers are choices wherever the prompt shows: the session
+page's reply bar, the sidebar's row, the Yard's card and the chat, from the
+agent's `trustAnswers` in the catalog (the label and the keys that pick it,
+the trusting answer first). The keys matter: Claude Code highlights "No,
+exit", so a plain Enter there ends the session, and its trusting answer is
+Down then Enter; Codex highlights the trusting answer. Typed text is refused
+while the question shows ("the agent asks whether to trust the folder…"),
+since its Enter would pick whatever the dialog highlights.
+
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch
 answers `not_a_repo`), and `git` must be on the server's `PATH` (otherwise it
@@ -1274,7 +1283,7 @@ saved as `catalog.json` in the data directory (`dataDir`) and layered over the
 configured catalog at startup: an agent with the ID of a built-in or configured
 one replaces it, and deleting that entry brings the original back. Such an
 entry inherits what it leaves out: the original's `adapter`, `signal`, `site`,
-`yolo` recipe, `trustPrompt` and `session` recipe (an explicit `"yolo": {}` or
+`yolo` recipe, `trustPrompt`, `trustAnswers` and `session` recipe (an explicit `"yolo": {}` or
 `"session": {}` says it has none), and every `env` value it holds as `***`,
 which the Agents page stores
 for a value the form did not change (or one equal to the original's), so a

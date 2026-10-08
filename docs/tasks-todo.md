@@ -13,6 +13,19 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
+- **Codex's "update available" dialog is not seen as needing input.** Seen
+  2026-10-08 while probing the trust question with the real Codex 0.159: at
+  launch Codex drew "Update available · 0.159.0 → 0.161.0 / 1. Update now
+  2. Skip 3. Skip until next version / enter continue · esc skip", and the
+  session stayed with no attention (no bell, no hook yet, no pattern match)
+  until a person looked. Cause: the attention sources are the bell, the
+  hooks and the configured prompt pattern; the update dialog matches none.
+  Fix: a second screen pattern per agent, or the trust watcher's pattern
+  extended (Codex: `Update\s*available`), with the dialog's answers as
+  choices like the trust question's ("Skip" = Down, Down, Enter), and a
+  catalog note that `codex --no-update-check` (or the config's
+  `check_for_update_on_startup = false`) avoids it. Tests: the stub drawing
+  the dialog; Playwright seeing needs_input with the choices.
 - **The server log window is an empty dark box.** Seen by the owner,
   2026-10-06, on Windows, from the tray's Server log; it is the same on
   every platform. Cause: `showLog` in `desktop/src/main.ts` makes the window

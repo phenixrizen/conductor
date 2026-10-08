@@ -117,6 +117,8 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
 	case errors.Is(err, session.ErrSessionEnded):
 		local.Send(sub, proto.NewError(proto.ErrCodeSessionEnded, "the session has ended"))
+	case errors.Is(err, session.ErrTrustQuestion):
+		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.TrustQuestionWords))
 	default:
 		local.Send(sub, proto.NewError("input_failed", "input could not be delivered"))
 	}

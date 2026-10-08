@@ -255,6 +255,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		RunChat:         req.runChat,
 		Pattern:         pattern,
 		TrustPattern:    trust,
+		TrustAnswers:    trustAnswers(agent.TrustAnswers),
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},
 	})
@@ -411,4 +412,14 @@ func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 	case changed:
 		s.log.Info("skill installed", "adapter", adapter, "path", path)
 	}
+}
+
+// trustAnswers are the catalog's answers to the agent's trust question as the
+// session's quick-reply choices for it.
+func trustAnswers(in []catalog.Answer) []session.Option {
+	out := make([]session.Option, 0, len(in))
+	for _, a := range in {
+		out = append(out, session.Option{Label: a.Label, Input: a.Input})
+	}
+	return out
 }

@@ -61,7 +61,10 @@ Owner → client:
 Error codes: `read_only`, `slow_consumer`, `bad_frame`, `hello_timeout`,
 `revoked`, `session_ended`, `host_disconnected`, `file_denied`,
 `too_many_requests`, `not_sent` (a run chat's `chat_send` whose member could
-not take the text; the message says why).
+not take the text, the message saying why; or a `submit`, a `chat` to the
+agent or a `chat_send` while the agent's trust question shows, the message
+saying so: its Enter would pick whatever the dialog highlights, and the
+question's own choices answer it).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
 error, `4401` unauthorized, `4403` link revoked, `4404` unknown session, `4409`
@@ -451,6 +454,13 @@ header-authenticated `fetch`: `snapshot` with the full list first, then
 `activity` for every activity entry, see Events, and `run{id}` when a crew run
 changes in a way no session change carries, or `run{id, removed: true}` when
 the server forgets it, see Crew runs).
+
+A trust question (`source` `trust`) carries the agent's answers as its
+`options`, from the catalog's `trustAnswers`: the label a page shows and the
+keys that pick it, the trusting answer first (Claude Code highlights "No,
+exit", so its trusting answer is Down then Enter; Codex highlights the trusting
+answer, so Enter). While it shows, the owner refuses a person's `submit`, a
+`chat` to the agent and a `chat_send` with `not_sent`.
 
 ## Events
 

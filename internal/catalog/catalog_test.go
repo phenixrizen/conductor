@@ -1007,3 +1007,49 @@ func TestOverlayInheritsProbe(t *testing.T) {
 		t.Fatal("clone shares the probe")
 	}
 }
+
+// The trust question's answers: the built-in agents carry theirs (Claude
+// Code's trusting answer is Down then Enter, since it highlights "No, exit";
+// Codex's is Enter), a saved override inherits them, and a bad answer is
+// refused.
+func TestTrustAnswers(t *testing.T) {
+	c := Default()
+	claude, _ := c.Get("claude")
+	if len(claude.TrustAnswers) != 2 || claude.TrustAnswers[0].Input != "\x1b[B\r" || claude.TrustAnswers[1].Label != "No, exit" || claude.TrustAnswers[1].Input != "\r" {
+		t.Fatalf("claude: %+v", claude.TrustAnswers)
+	}
+	codex, _ := c.Get("codex")
+	if len(codex.TrustAnswers) != 2 || codex.TrustAnswers[0].Input != "\r" || codex.TrustAnswers[1].Input != "\x1b[B\r" {
+		t.Fatalf("codex: %+v", codex.TrustAnswers)
+	}
+	for id, a := range map[string]Agent{"claude": claude, "codex": codex} {
+		if a.TrustPrompt == "" {
+			t.Fatalf("%s: answers without a question", id)
+		}
+	}
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "claude", Name: "Claude, mine", Command: []string{"claude"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if mine, _ := c.Get("claude"); len(mine.TrustAnswers) != 2 || mine.TrustAnswers[0].Label != "Yes, I trust this folder" {
+		t.Fatalf("the override lost the answers: %+v", mine.TrustAnswers)
+	}
+	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}, TrustPrompt: `Trust\s*this\s*folder\?`}
+	for _, bad := range [][]Answer{
+		{{Label: "", Input: "\r"}},
+		{{Label: "Yes", Input: ""}},
+		{{Label: strings.Repeat("y", 61), Input: "\r"}},
+		{{Label: "Yes", Input: strings.Repeat("\r", 49)}},
+		{{Label: "1", Input: "\r"}, {Label: "2", Input: "\r"}, {Label: "3", Input: "\r"}, {Label: "4", Input: "\r"}, {Label: "5", Input: "\r"}, {Label: "6", Input: "\r"}, {Label: "7", Input: "\r"}},
+	} {
+		a := ok
+		a.TrustAnswers = bad
+		if err := validate(a); err == nil || !strings.Contains(err.Error(), "trustAnswers") {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+	good := ok
+	good.TrustAnswers = []Answer{{Label: "Yes", Input: "\r"}}
+	if err := validate(good); err != nil {
+		t.Fatal(err)
+	}
+}

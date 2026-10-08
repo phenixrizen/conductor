@@ -652,6 +652,39 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## The trust question's answers as choices (2026-10-08)
+
+The owner, testing rc.2: "the trust question kills the session if I answer
+in the chat". Claude Code's trust dialog highlights "No, exit" (the live
+test knew: its trusting answer is Down then Enter), and every typed path in
+Conductor ends with Enter (the chat's "To agent", the reply boxes), while a
+trust question carried no choices, so typing anything there picked "No,
+exit" and Claude Code left. Now:
+
+- **The catalog's `trustAnswers`** (`catalog.Answer`: a label and the keys
+  that pick it, the trusting answer first, at most 6, inherited by a saved
+  override like `trustPrompt`): Claude Code "Yes, I trust this folder" =
+  Down then Enter and "No, exit" = Enter; Codex "Yes, trust this folder" =
+  Enter and "No, continue without trusting" = Down then Enter. The session
+  takes them as `Options.TrustAnswers`, and `fireTrust` puts them on the
+  attention as its `options` (cleaned and bounded as any prompt's), so the
+  reply bar, the sidebar's row, the Yard's card and the chat's question row
+  show the two buttons and type the right keys, raw.
+- **Typed text is refused while the question shows**: `Submit` by a person
+  returns `ErrTrustQuestion` (`TrustQuestionWords`); the viewer and the host
+  answer `submit`, `chat` to the agent and `chat_send` with `not_sent` and
+  those words, which the chat row and the reply box show. Conductor's own
+  typing (a crew's prompt, a handoff, a broadcast) already waited.
+- Found on the way: Codex 0.159's own "update available" dialog (Enter
+  continues with the update) is not detected as needing input, so a session
+  sits on it silently; in `docs/tasks-todo.md`. `conductor host` watches no
+  trust question yet, so a hosted session's stays the terminal's to answer.
+
+Tests: the catalog's defaults and validation; the session's question
+carrying its answers, Enter-by-text refused and the choice's keys answering;
+the Codex stub's trust dialog in `trust.spec.ts` (the buttons on the page and
+in the chat, "To agent" refused with the words, the chat's "Yes" trusting).
+
 ## After round 11: a newline in the prompt, the page chords, the installer's art and the sponsor badge (2026-10-07)
 
 Four small things the owner asked for after the stack merged, in one pull

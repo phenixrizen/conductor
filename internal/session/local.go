@@ -83,6 +83,12 @@ type Options struct {
 	// until the first submission's Enter: the run engine types no prompt
 	// while it shows, and a person answers the question.
 	TrustPattern *regexp.Regexp
+	// TrustAnswers are the question's answers as its quick-reply choices (the
+	// catalog's trustAnswers): a label and the keys that pick it, cleaned and
+	// bounded as any prompt's choices are (CleanOptions). A person's typed
+	// text (Submit) is refused while the question shows (ErrTrustQuestion),
+	// since its Enter would pick whatever the dialog highlights.
+	TrustAnswers []Option
 	// SubmitPause is the pause between a submission's text and its Enter;
 	// SubmitPause when zero.
 	SubmitPause time.Duration
@@ -407,7 +413,7 @@ func (s *Local) fireTrust(text string) {
 	if words == "" {
 		return
 	}
-	s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, nil, unlessWaiting)
+	s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(s.opts.TrustAnswers), unlessWaiting)
 }
 
 // signalAttention wakes whoever waits for an attention change (Submit). The

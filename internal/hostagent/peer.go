@@ -231,6 +231,8 @@ func (p *peer) handleFrame(f proto.Frame) {
 						code = proto.ErrCodeReadOnly
 					case errors.Is(err, session.ErrSessionEnded):
 						code = proto.ErrCodeSessionEnded
+					case errors.Is(err, session.ErrTrustQuestion):
+						code = proto.ErrCodeNotSent
 					}
 					p.a.local.Send(sub, proto.NewError(code, err.Error()))
 				}

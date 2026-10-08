@@ -40,6 +40,7 @@
         "signal": { "kind": "hook" },
         "yolo": { "args": ["--dangerously-bypass-approvals-and-sandbox"] },
         "trustPrompt": "Trust\\s*this\\s*folder\\?",
+        "trustAnswers": [{ "label": "Yes, trust this folder", "input": "\r" }, { "label": "No, continue without", "input": "\u001b[B\r" }],
         "session": { "idFrom": "hook", "idPolicy": "lowest", "resumeArgs": ["resume", "{id}", "-c", "tui.resume_cwd=\"session\""], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "resumeNeedsCwd": true }
       },
       {
