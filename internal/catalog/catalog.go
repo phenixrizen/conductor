@@ -51,6 +51,15 @@ type Agent struct {
 	// most 200 bytes, never matching an empty text; empty in a saved
 	// override takes the replaced agent's.
 	TrustPrompt string `json:"trustPrompt,omitempty"`
+	// TrustAnswers are the answers to that question as the choices a page
+	// offers for it (the session page's reply bar, the sidebar's row, the
+	// chat): each a label and the keys that pick it, the trusting answer
+	// first. The keys matter: Claude Code highlights "No, exit" first, so a
+	// plain Enter there ends the session. Without answers the question has
+	// no choices and only the terminal answers it. At most 6; a label of at
+	// most 60 characters, keys of 1 to 48 bytes. nil in a saved override
+	// takes the replaced agent's.
+	TrustAnswers []Answer `json:"trustAnswers,omitempty"`
 	// Session is the agent's session recipe: how Conductor names the agent's
 	// own session and resumes it. nil in a saved override takes the replaced
 	// agent's; an empty recipe ({}) has none, so Resume relaunches plainly.
@@ -360,6 +369,9 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: trustPrompt: %w", a.ID, err)
 		}
 	}
+	if err := validateTrustAnswers(a.TrustAnswers); err != nil {
+		return fmt.Errorf("agent %s: trustAnswers: %w", a.ID, err)
+	}
 	if a.Session != nil {
 		if err := validateSession(*a.Session); err != nil {
 			return fmt.Errorf("agent %s: session: %w", a.ID, err)
@@ -608,6 +620,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.TrustPrompt == "" {
 			a.TrustPrompt = prev.TrustPrompt
 		}
+		if a.TrustAnswers == nil {
+			a.TrustAnswers = append([]Answer(nil), prev.TrustAnswers...)
+		}
 		if a.Session == nil {
 			a.Session = prev.Session.clone()
 		}
@@ -710,4 +725,35 @@ func (a Agent) EffectiveSignal() Signal {
 		return Signal{Kind: SignalBell}
 	}
 	return *a.Signal
+}
+
+// Answer is one answer to the agent's trust question (Agent.TrustAnswers): the
+// label a page shows and the keys that pick it in the agent's dialog.
+type Answer struct {
+	Label string `json:"label"`
+	Input string `json:"input"`
+}
+
+// Bounds of Agent.TrustAnswers: as many as a prompt's quick-reply choices,
+// with the same label and key limits (session.MaxAttentionOptions and the rest).
+const (
+	MaxTrustAnswers     = 6
+	MaxTrustAnswerLabel = 60 // runes
+	MaxTrustAnswerInput = 48 // bytes
+)
+
+func validateTrustAnswers(answers []Answer) error {
+	if len(answers) > MaxTrustAnswers {
+		return fmt.Errorf("at most %d answers", MaxTrustAnswers)
+	}
+	for i, a := range answers {
+		label := strings.TrimSpace(a.Label)
+		if label == "" || len([]rune(label)) > MaxTrustAnswerLabel {
+			return fmt.Errorf("answer %d: a label of 1 to %d characters", i+1, MaxTrustAnswerLabel)
+		}
+		if a.Input == "" || len(a.Input) > MaxTrustAnswerInput {
+			return fmt.Errorf("answer %d: keys of 1 to %d bytes", i+1, MaxTrustAnswerInput)
+		}
+	}
+	return nil
 }

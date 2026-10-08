@@ -26,6 +26,8 @@ func defaults() []Agent {
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-skip-permissions"}},
 			TrustPrompt: `Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust\?`,
+			// Claude Code highlights "No, exit" first: the trusting answer is Down, then Enter (verified in a PTY on 2026-10-03, 2.1.288).
+			TrustAnswers: []Answer{{Label: "Yes, I trust this folder", Input: "\x1b[B\r"}, {Label: "No, exit", Input: "\r"}},
 			// Verified live (2.1.287).
 			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
 		},
@@ -41,6 +43,8 @@ func defaults() []Agent {
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
 			TrustPrompt: `Trust\s*this\s*folder\?`,
+			// Codex highlights the trusting answer: Enter alone; "No" is Down, then Enter.
+			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, continue without trusting", Input: "\x1b[B\r"}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},
 		},

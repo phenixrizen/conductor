@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -42,6 +43,16 @@ const (
 // MaxSubmitText bounds the text of a submission, in bytes: with the paste
 // markers around it, it fits one INPUT frame.
 const MaxSubmitText = proto.MaxInput - len(pasteStart) - len(pasteEnd)
+
+// TrustQuestionWords say why a person's typed text is refused while the
+// agent's trust question shows: its Enter would pick whatever the dialog
+// highlights (Claude Code highlights "No, exit"). The question's own choices
+// (Options.TrustAnswers) or the terminal answer it.
+const TrustQuestionWords = "the agent asks whether to trust the folder: answer with the question's choices, or in its terminal"
+
+// ErrTrustQuestion is Submit's refusal of a person's text while the trust
+// question shows.
+var ErrTrustQuestion = errors.New(TrustQuestionWords)
 
 // Submission is a line to submit (Local.Submit).
 type Submission struct {
@@ -125,12 +136,16 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
 	showing := s.info.Attention.State == AttentionNeedsInput
+	trustShowing := showing && s.info.Attention.Source == SourceTrust
 	s.mu.Unlock()
 	if ended {
 		return res, ErrSessionEnded
 	}
 	if sub.UnlessWaiting && showing {
 		return res, nil
+	}
+	if sub.By != nil && trustShowing {
+		return res, ErrTrustQuestion
 	}
 	byName := CleanName(sub.ByName)
 	typedAt := time.Now()

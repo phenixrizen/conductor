@@ -404,3 +404,50 @@ func TestSubmitLeavesTheEnterOutForATrustQuestionDrawnDuringThePause(t *testing.
 		t.Fatalf("attention %+v", att)
 	}
 }
+
+// A trust question carries its answers as the prompt's choices; a person's
+// typed text is refused while it shows, with nothing written (its Enter
+// would pick whatever the dialog highlights); the choice's keys answer it.
+func TestATrustQuestionCarriesItsAnswersAndRefusesTypedText(t *testing.T) {
+	answers := []Option{{Label: "Yes, I trust this folder", Input: "\x1b[B\r"}, {Label: "No, exit", Input: "\r"}}
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), TrustAnswers: answers}))
+	sub, err := s.Attach("", RoleControl, "", 0, 0, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. No, exit"))
+	deadline := time.Now().Add(3 * time.Second)
+	for s.Info().Attention.Source != SourceTrust && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	att := s.Info().Attention
+	if att.Source != SourceTrust || len(att.Options) != 2 || att.Options[0] != answers[0] || att.Options[1] != answers[1] {
+		t.Fatalf("attention %+v", att)
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "yes", By: sub})
+	if !errors.Is(err, ErrTrustQuestion) || res.Typed || res.Entered {
+		t.Fatalf("typed text at the trust question: %+v %v", res, err)
+	}
+	select {
+	case b := <-p.input:
+		t.Fatalf("something was written: %q", b)
+	case <-time.After(300 * time.Millisecond):
+	}
+	// Conductor's own typing (a prompt, a handoff) waits as before, refused by nothing.
+	if res, err := s.Submit(t.Context(), Submission{Text: "handoff", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
+		t.Fatalf("Conductor's own text: %+v %v", res, err)
+	}
+	// The trusting choice's keys, raw, as a page sends them.
+	if err := s.Input(sub, []byte(answers[0].Input)); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "\x1b[B\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := s.Info().Attention.State; st != AttentionNone {
+		t.Fatalf("the choice did not answer: %q", st)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "now fine", By: sub}); err != nil {
+		t.Fatalf("after the answer: %v", err)
+	}
+}

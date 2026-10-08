@@ -415,6 +415,8 @@ func ChatErrorFrame(err error, requestID string) []byte {
 	switch {
 	case errors.As(err, &notSent):
 		code, msg = proto.ErrCodeNotSent, notSent.Reason
+	case errors.Is(err, ErrTrustQuestion):
+		code, msg = proto.ErrCodeNotSent, TrustQuestionWords
 	case errors.Is(err, ErrChatRateLimited):
 		code, msg = proto.ErrCodeTooManyRequests, "too many messages at once"
 	case errors.Is(err, ErrReadOnly):
