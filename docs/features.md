@@ -802,6 +802,70 @@ waiting on monaco-neovim-wasm's missing license.
   cycle cannot be driven from a browser tab (it works in the desktop app
   and in the Playwright spec). The phone layout and the light theme were
   not part of this pass.
+- **By hand, v0.7.0-rc.4 in the installed desktop app on Windows
+  (2026-10-08).** rc.4 was cut from main (F1–F4), its installer put on the
+  Windows host and run through the same desktop-control MCP: the welcome
+  page with the lockup in the header and "Conductor 0.7.0-rc.4", the
+  "Choose Installation Options" page naming the per-machine install it
+  would upgrade, the elevation prompt (the person's click), the finish
+  page with the lockup on forest and the sponsor badge in the sidebar.
+  The app launched, put the rc.4 server in the WSL distribution and ran
+  it; its page was driven through Electron's own debugging port
+  (`--remote-debugging-port`, for one launch) with real keys and mouse
+  for what a person types and hovers, screenshots of the window for what
+  shows. Passed, each with a screenshot: **3b** two loose sessions (one
+  asking), a run of three (one asking, one exited, folded "Exited · 1"
+  with the count), the hosted session from this box with the laptop tag
+  "lan-box", the Yard's count; **3c** hover (Share, Stop, More), the
+  in-row stop confirm ("Stop migrate-db? … Cancel / Stop") and its
+  Cancel, the run header's Share run, Stop run, Open run; **3c keys**
+  `/` to the filter, ↓ to the first row, J and K over rows and the run
+  block, Enter opening the row, X asking and Esc cancelling, S opening
+  "Share lan-shell", R from a member opening its run; **3d** Ctrl+B to
+  the rail with the counts, the run capsule holding its members, the
+  laptop tile, "+2" exited, the tooltip "users api · run started 17:46 ·
+  lead running · core running"; **3f** nothing dropped remains. **The
+  trust question (rc.3)**: Claude Code 2.1.295 in an unseen folder shows
+  the two answers on the reply bar, the row, the Yard count and the
+  chat; "Yes" from the row and "Yes" from the chat each let it continue
+  (no exit); "To agent" while it asks is refused with "the agent asks
+  whether to trust the folder: answer with the question's choices, or in
+  its terminal". **Chat 2a, 2b, 2g, 2h** with a second browser as Jane:
+  names, roles and times; "To agent" typing `echo chat-to-agent-ok` into
+  Claude Code with the marker "Sent to agent by nater"; the closed tab's
+  count rising on her message and clearing on open; the pills on the
+  session row and the run header while on the home page; "This session
+  ended. The chat is read-only…" after a stop. **2e** the run's Chat
+  beside Share, the scope menu "Chat only · everyone here reads it",
+  "Also send to lead · waiting on a prompt: skipped" (disabled), "Also
+  send to core · typed into its terminal", "Also send to review · ended";
+  `echo run-chat-ok` typed into core with "Sent to core by nater"; a
+  member's question in the run chat on its name. **2d** through the real
+  switchyard (switchyard.rslabs.net, still rc.2): the view link's join
+  card ("You'll be view only: you can watch and open files", the sponsor
+  badge), joined as Guest: the terminal over "WebRTC direct", "hosted on
+  naterdev-win", the chat with "You are view only: what you write reaches
+  the people here, not the agent." and no agent actions. **The newline
+  chords** Shift+Enter and Ctrl+Enter each added a line to a Claude Code
+  prompt and Enter submitted the three lines. **G then Y** opened the
+  Yard with the focus outside the terminal. **The Files tab in the app**:
+  an image on the checker with "64 × 48" and Open raw, a binary file
+  ("Binary file; nothing to show · 2.0 KiB. Open raw downloads it."), a
+  link the shell printed clicked in the terminal and previewed in the
+  pane (example.com in the sandboxed frame with New tab, Refresh, Copy),
+  the Yard's focused tile opening go.mod in Monaco from its Files pane.
+  Not verifiable by this harness: the Alt chords (the control server's
+  key events carry no scan code, so `e.code` is empty and both xterm's
+  pass-through and the shortcut matcher, which key on `e.code` under Alt,
+  ignore them; a synthetic Alt+Y navigates, and a real keyboard sets the
+  code) and the uninstaller's sidebar. Seen and not explained: an
+  "error" badge on a shell member (lead at launch, review after a stop
+  with exit 0) with no error line in the Events feed; in the todo. Two
+  harness lessons: Enter or Esc sent to a focused terminal while Claude
+  Code asks the trust question answers it ("No, exit" / cancel) and the
+  session ends, so a keyboard pass must leave such a page first; a
+  session row below the sidebar's fold cannot be hovered until scrolled
+  into view.
 
 ## The trust question's answers as choices (2026-10-08)
 

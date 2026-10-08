@@ -8,6 +8,16 @@ owner drops it.
 
 ## Bugs
 
+- **An "error" badge on a shell crew member with no error event.** Seen
+  twice on 2026-10-08 in the rc.4 app: `lead` (the `shell` agent,
+  `/bin/bash -l`, no prompt) wore the red "error" badge right after the
+  run launched, and `review` wore it after `DELETE /api/sessions/{id}`
+  ended it with exit 0; the Events feed listed no `error` line for either
+  and the badge was gone after the Events page was opened. Find what
+  records the entry (the mark's `title` would have said) and whether a
+  shell's login output or the stop path yields an `error` type. Platform:
+  Windows app, WSL server.
+
 A bug goes here with how to see it (the page, the steps, the platform),
 what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
