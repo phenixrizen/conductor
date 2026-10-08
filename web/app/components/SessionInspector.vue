@@ -23,7 +23,7 @@ const props = defineProps<{
   chatOffline?: boolean
   ended?: boolean
 }>()
-const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number] }>()
+const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number]; openFile: [target: FileTarget] }>()
 
 const tab = defineModel<InspectorTab>('tab', { default: 'people' })
 const target = defineModel<FileTarget | null>('target', { default: null })
@@ -158,7 +158,7 @@ function describe(e: ActivityEntry) {
     </div>
 
     <div v-else-if="tab === 'files'" class="flex-1 min-h-0 flex flex-col">
-      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" class="flex-1 min-h-0" />
+      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="emit('openFile', $event)" />
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-y-auto p-4">

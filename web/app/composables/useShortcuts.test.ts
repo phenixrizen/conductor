@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
+import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
 
 const fRows = (g: ShortcutGroup) => g.rows.filter((r) => r.keys.length === 1 && r.keys[0] === 'F')
 
@@ -46,5 +46,15 @@ describe('the page chords', () => {
   it('hand their Alt twins back from a terminal, and Alt+W no longer', () => {
     for (const code of ['KeyY', 'KeyR', 'KeyC', 'KeyA', 'KeyE']) expect(ALT_PASSTHROUGH_CODES.has(code)).toBe(true)
     expect(ALT_PASSTHROUGH_CODES.has('KeyW')).toBe(false)
+  })
+})
+
+describe("the editor's keys", () => {
+  it('fold with T and its Alt twin, switch with Ctrl+Tab, close with Ctrl+W, find and go to a line', () => {
+    const fold = EDITOR_SHORTCUTS.rows.find((r) => r.keys.join('') === 'T')
+    expect(fold?.terminal).toEqual(['alt', 'T'])
+    expect(ALT_PASSTHROUGH_CODES.has('KeyT')).toBe(true)
+    expect(EDITOR_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['T', 'ctrl+tab', 'ctrl+W', 'ctrl+F', 'ctrl+G'])
+    for (const r of EDITOR_SHORTCUTS.rows) expect(r.label).not.toMatch(/in a terminal/)
   })
 })

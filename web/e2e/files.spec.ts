@@ -4,8 +4,8 @@ import { expect, test, type Session } from './fixtures'
 
 // The Files tab as the Explorer (design 4a): the working directory listed as
 // soon as the tab opens, folders expanding in place, the breadcrumb from the
-// top, the box filtering the tree or opening a typed path:line, the hint
-// that paths in the terminal are clickable; a crumb brings the tree back.
+// top, the box filtering the tree or opening a typed path:line in the
+// editor area, the hint that paths in the terminal are clickable.
 test('the Files tab opens on the working directory as a tree; the box filters it or opens a path at a line', async ({ page, api, state }) => {
   // A working directory of this test's own (the shared scratch repository gains files from other specs).
   const cwd = join(state.root, 'files-explorer')
@@ -41,22 +41,19 @@ test('the Files tab opens on the working directory as a tree; the box filters it
     await expect(tree.locator('[data-file-node]')).toHaveText([/internal/, /api/, /users\.go/])
     await box.press('Escape')
     await expect(tree.locator('[data-file-node]')).toHaveCount(7)
-    // A typed path:line opens the file at that line.
+    // A typed path:line opens the file in the editor area at that line; the pane stays the tree.
     await box.fill('internal/api/users.go:4')
     await box.press('Enter')
-    await expect(pane).toHaveAttribute('data-files-mode', 'file')
-    await expect(pane.locator('.line.target')).toContainText('func ListUsers')
-    await expect(pane.locator('[data-files-crumbs]')).toContainText('users.go')
-    // A crumb brings the tree back, opened down to that folder.
-    await pane.locator(`[data-files-crumb="${cwd}/internal/api"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area).toHaveAttribute('data-editor-area', 'open')
+    await expect(area.locator('[data-editor-crumbs]')).toContainText('users.go')
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 4, Col 1', { timeout: 30_000 })
     await expect(pane).toHaveAttribute('data-files-mode', 'tree')
-    await expect(tree.locator(`[data-file-node="${cwd}/internal/api/router.go"]`)).toBeVisible()
-    await expect(tree.locator(`[data-file-node="${cwd}/internal/api"]`)).toHaveAttribute('data-file-expanded', '')
-    // A file in the tree opens it; Back returns to the tree.
+    // A file in the tree opens as another tab.
     await tree.locator(`[data-file-node="${cwd}/docs"]`).click()
     await tree.locator(`[data-file-node="${cwd}/docs/users.md"]`).click()
-    await expect(pane).toHaveAttribute('data-files-mode', 'file')
-    await pane.locator('[data-files-back]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
+    await expect(area.locator('[data-editor-tab-active]')).toContainText('users.md')
     await expect(pane).toHaveAttribute('data-files-mode', 'tree')
   } finally {
     await api.stopSession(s.id)

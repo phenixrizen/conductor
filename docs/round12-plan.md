@@ -82,6 +82,10 @@ filter, what counts as a path); vitest; Playwright `files.spec.ts`.
 
 ## F2. The editor area (4b, 4c, 4f, 4g)
 
+Landed in two pull requests: F2a the session page (the area, the tabs,
+the split, the fold, the states), F2b the Yard's focused tile, the guest's
+join page and the phone.
+
 A file opens in a Monaco editor above a shrunk terminal, split by a bar you
 can drag (the terminal keeps at least six lines); a tab strip (several
 files, Ctrl+Tab to switch, Ctrl+W and × to close, the strip's × for all;
