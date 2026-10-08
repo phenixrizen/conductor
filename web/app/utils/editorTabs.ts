@@ -6,7 +6,7 @@
  * above the terminal. The split with the terminal is a fraction of the
  * column, kept per browser. Pure: the page keeps the state, this moves it.
  */
-export type TabKind = 'file' | 'url'
+export type TabKind = 'file' | 'url' | 'diff'
 
 export interface EditorTab {
   /** `file:<path>` or `url:<url>`: one tab per thing open. */
@@ -18,6 +18,8 @@ export interface EditorTab {
   title: string
   /** The line to show when the tab was opened at one; cleared once shown. */
   line?: number
+  /** A diff tab: the file's status and lines, and the revision it is against (HEAD when empty) with its words. */
+  meta?: { status?: string; added?: number; removed?: number; base?: string; against?: string }
 }
 
 export interface TabsState {
@@ -53,11 +55,11 @@ export function tabTitle(kind: TabKind, path: string): string {
   return path.split('/').pop() || path
 }
 
-/** Opens a file or URL: a tab already open is brought to the front (at the line asked for); the area unfolds. */
-export function openTab(state: TabsState, kind: TabKind, path: string, line?: number): TabsState {
+/** Opens a file, a URL or a diff: a tab already open is brought to the front (at the line asked for, its meta refreshed); the area unfolds. */
+export function openTab(state: TabsState, kind: TabKind, path: string, line?: number, meta?: EditorTab['meta']): TabsState {
   const id = tabId(kind, path)
   const had = state.tabs.find((t) => t.id === id)
-  const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line } : t)) : [...state.tabs, { id, kind, path, title: tabTitle(kind, path), line }]
+  const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line, meta: meta ?? t.meta } : t)) : [...state.tabs, { id, kind, path, title: tabTitle(kind, path), line, meta }]
   return { tabs, active: id, folded: false }
 }
 

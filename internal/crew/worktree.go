@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/pty"
+	"github.com/phenixrizen/conductor/internal/gitcli"
 )
 
 // With isolation "worktree" every member of a run works in a git worktree of
@@ -310,47 +310,13 @@ func headCommit(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// git runs git -C dir args and returns what it writes to its standard output.
-// Its environment is a session's allowlist from the server's (so no
-// CONDUCTOR_* variable, the workbench token among them, reaches git or the hooks
-// it runs) in the C locale, which --shortstat is read in. A failure carries
-// the line that says why (gitMessage).
+// git runs git for the crews (gitcli.Run: argv, the C locale, the line that says why on failure).
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = pty.BuildEnv(pty.ParentEnv(), nil, map[string]string{"LC_ALL": "C"}, nil)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		if msg := gitMessage(stderr.String()); msg != "" {
-			return "", fmt.Errorf("git %s: %s", args[0], msg)
-		}
-		return "", fmt.Errorf("git %s: %w", args[0], err)
-	}
-	return stdout.String(), nil
+	return gitcli.Run(ctx, dir, args...)
 }
 
-// gitMessage picks the line of git's standard error that says why it
-// failed: the first "fatal:" or "error:" line, else the last line. Newer
-// gits print progress first ("Preparing worktree (new branch …)"), so the
-// first line is not it.
-func gitMessage(stderr string) string {
-	lines := strings.Split(strings.TrimSpace(stderr), "\n")
-	last := ""
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		if strings.HasPrefix(l, "fatal:") || strings.HasPrefix(l, "error:") {
-			return l
-		}
-		last = l
-	}
-	return last
-}
+// gitMessage is the line of git's standard error that says why it failed (gitcli.Message).
+func gitMessage(stderr string) string { return gitcli.Message(stderr) }
 
 // RepoRoots returns the directories a per-launch trust names for dir: the top
 // of its git working tree and, for a linked worktree, the main repository's

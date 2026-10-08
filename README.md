@@ -312,6 +312,16 @@ editor (a view-only guest gets both read-only); on a phone the editor takes
 the screen and the terminal folds to a bar at the foot that says what the
 agent is doing and comes back on a tap.
 
+The Files tab's **Changes** section is the working directory's git status
+with each file's added and removed lines, refreshed every few seconds while
+it shows (and on demand), the totals at the foot; the Explorer marks changed
+files with M, A or D. A change opens as a diff in Monaco's diff editor, side
+by side or inline, the base's version beside the working directory's, with
+the file itself one click away; a working directory with no repository says
+so. The status and the base's version come over the terminal's connection
+like a read, from the machine the session runs on, under the same file
+policy and deny list.
+
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
 File locations such as `internal/api/server.go:42`, `./README.md` or Python

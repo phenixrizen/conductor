@@ -3,6 +3,8 @@ package proto
 import (
 	"bytes"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -127,5 +129,25 @@ func TestChunkRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(assembled, big) {
 		t.Fatal("reassembly mismatch")
+	}
+}
+
+// A status header with the most changes of long paths still fits the FILE
+// frame's header bound, as the session's byte budget keeps it.
+func TestStatusHeaderAtTheBoundEncodes(t *testing.T) {
+	h := FileHeader{ReqID: "r", Path: "/work", Kind: "status", Exists: true, Branch: "main", Base: "abc1234"}
+	used := 0
+	for i := 0; used+200+72 <= MaxFileHeader-4096; i++ {
+		p := strings.Repeat("d/", 95) + "file" + strconv.Itoa(i) + ".go"
+		h.Changes = append(h.Changes, Change{Path: p, Status: "M", Added: 1234567, Removed: 7654321})
+		used += len(p) + 72
+	}
+	frame, err := EncodeFile(h, nil)
+	if err != nil {
+		t.Fatalf("%d changes: %v", len(h.Changes), err)
+	}
+	back, _, err := DecodeFile(frame[1:])
+	if err != nil || len(back.Changes) != len(h.Changes) || back.Changes[0].Status != "M" {
+		t.Fatalf("back: %v %d", err, len(back.Changes))
 	}
 }

@@ -50,7 +50,18 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 	}
 	go func() {
 		defer sub.inflight.Add(-1)
-		h, body := ReadPath(s.info.Cwd, req.Path, req.Stat, s.opts.FileDeny)
+		var h proto.FileHeader
+		var body []byte
+		switch req.Op {
+		case "":
+			h, body = ReadPath(s.info.Cwd, req.Path, req.Stat, s.opts.FileDeny)
+		case proto.FileOpStatus:
+			h = GitStatusPath(s.info.Cwd, req.Base, s.opts.FileDeny)
+		case proto.FileOpShow:
+			h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, s.opts.FileDeny)
+		default:
+			h = proto.FileHeader{Path: req.Path, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "unknown file operation"}}
+		}
 		h.ReqID = req.ReqID
 		frame, err := proto.EncodeFile(h, body)
 		if err != nil {

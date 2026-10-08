@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
@@ -363,9 +363,9 @@ function disconnect(showOverlay = true) {
   if (showOverlay && !overlay.value) overlay.value = { title: 'Disconnected' }
 }
 
-function requestFile(path: string, stat = false): Promise<FileResponse> {
+function requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {
   if (!transport) return Promise.reject(new Error('not connected'))
-  return transport.requestFile(path, stat)
+  return transport.requestFile(path, stat, extra)
 }
 
 /** Sends text to the PTY as if typed; false when the transport is not open. */

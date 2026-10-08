@@ -174,6 +174,27 @@ type FileHeader struct {
 	Exists    bool        `json:"exists"`
 	Entries   []FileEntry `json:"entries,omitempty"`
 	Error     *ErrorInfo  `json:"error,omitempty"`
+	// A `status` reply: the branch checked out, the base's short id (empty
+	// when it does not resolve), the changes (at most gitcli.MaxChanges,
+	// Truncated then) and their totals. A `show` reply: Rev, and Added and
+	// Removed unused. Not a repository is kind `error` with code `not_repo`.
+	Branch  string   `json:"branch,omitempty"`
+	Base    string   `json:"base,omitempty"`
+	Rev     string   `json:"rev,omitempty"`
+	Changes []Change `json:"changes,omitempty"`
+	Added   int      `json:"added,omitempty"`
+	Removed int      `json:"removed,omitempty"`
+}
+
+// Change is one changed file of a status reply: its path relative to the
+// working tree's top, its status letter (M, A, D, R, ? untracked), its
+// added and removed lines against the base, and whether it is binary.
+type Change struct {
+	Path    string `json:"path"`
+	Status  string `json:"status"`
+	Added   int    `json:"added,omitempty"`
+	Removed int    `json:"removed,omitempty"`
+	Binary  bool   `json:"binary,omitempty"`
 }
 
 // FileEntry is one directory listing row.

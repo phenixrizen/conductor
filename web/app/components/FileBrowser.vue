@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { FileEntry, FileHeader, FileResponse } from '~/utils/protocol'
+import type { FileEntry, FileHeader, FileRequester } from '~/utils/protocol'
+import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
 import { crumbsOf, findNode, looksLikePath, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
 
@@ -18,15 +19,70 @@ export interface FileTarget {
  * raw buttons. A URL the agent printed previews in a sandboxed frame.
  */
 const props = defineProps<{
-  request: (path: string, stat?: boolean) => Promise<FileResponse>
+  request: FileRequester
   /** The session's working directory: the tree's root and the breadcrumb's. */
   cwd?: string
   /** Builds a raw download URL for server sessions; null when unavailable. */
   rawUrl?: (path: string) => string | null
   /** Files open elsewhere (the editor area, design 4b): a file chosen is emitted as `open`, and the pane stays the tree. */
   external?: boolean
+  /** What the Changes section counts against (design 4d): HEAD when empty; a crew member's run base. */
+  base?: string
 }>()
-const emit = defineEmits<{ open: [target: FileTarget] }>()
+const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }] }>()
+
+// The Changes section (design 4d): git status against the base, refreshed every few seconds while it shows.
+const section = ref<'explorer' | 'changes'>('explorer')
+const status = ref<FileHeader | null>(null)
+const statusError = ref('')
+const statusLoading = ref(false)
+const statusAt = ref(0)
+const now = ref(Date.now())
+let statusTimer: number | undefined
+let clock: number | undefined
+const notRepo = computed(() => status.value?.kind === 'error' && status.value.error?.code === 'not_repo')
+const changes = computed(() => (status.value?.kind === 'status' ? changeRows(status.value.path, status.value.changes ?? []) : []))
+const marks = computed(() => (status.value?.kind === 'status' ? changeMarks(status.value.path, status.value.changes ?? []) : new Map()))
+
+async function loadStatus() {
+  if (!props.cwd) return
+  statusLoading.value = true
+  try {
+    const res = await props.request(props.cwd, false, { op: 'status', base: props.base })
+    status.value = res.header
+    statusError.value = res.header.kind === 'error' && res.header.error?.code !== 'not_repo' ? res.header.error?.message || 'cannot read the status' : ''
+    statusAt.value = Date.now()
+  } catch (e) {
+    statusError.value = (e as Error).message
+  } finally {
+    statusLoading.value = false
+  }
+}
+function pollStatus() {
+  window.clearInterval(statusTimer)
+  statusTimer = window.setInterval(() => {
+    if (section.value === 'changes' && document.visibilityState !== 'hidden') loadStatus()
+  }, 5000)
+}
+watch(section, (s) => {
+  if (s === 'changes') {
+    loadStatus()
+    pollStatus()
+  } else window.clearInterval(statusTimer)
+})
+onMounted(() => {
+  clock = window.setInterval(() => (now.value = Date.now()), 1000)
+  // The marks beside changed files: one status read when the tree is up, then as the Changes section refreshes.
+  setTimeout(() => loadStatus(), 1500)
+})
+onBeforeUnmount(() => {
+  window.clearInterval(statusTimer)
+  window.clearInterval(clock)
+})
+function openChange(c: ChangeRow) {
+  const h = status.value
+  emit('openDiff', c, { top: h?.path || props.cwd || '/', branch: h?.branch, base: props.base, baseId: h?.base })
+}
 
 const target = defineModel<FileTarget | null>('target', { default: null })
 
@@ -318,6 +374,7 @@ function refresh() {
     url.value = null
     nextTick(() => (url.value = u))
   } else if (target.value) load(target.value.path, target.value.line)
+  else if (section.value === 'changes') loadStatus()
   else loadRoot()
 }
 
@@ -358,10 +415,22 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
 
 <template>
   <div class="flex h-full min-h-0 flex-col" :data-files-mode="mode">
-    <div v-if="mode === 'tree'" class="border-b border-default px-2 py-1.5">
+    <div v-if="mode === 'tree' && cwd" class="flex items-center gap-1 border-b border-default px-2 pt-1.5 text-xs" data-files-sections>
+      <button type="button" class="rounded-t px-2.5 py-1.5 font-medium" :class="section === 'explorer' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="explorer" @click="section = 'explorer'">Explorer</button>
+      <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'changes' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="changes" @click="section = 'changes'">
+        Changes<UBadge v-if="changes.length" :label="String(changes.length)" color="neutral" variant="subtle" size="xs" data-files-changes-count />
+      </button>
+    </div>
+    <div v-if="mode === 'tree' && section === 'explorer'" class="border-b border-default px-2 py-1.5">
       <UInput v-model="query" placeholder="Filter, or go to path:line" size="xs" class="w-full font-mono" icon="i-lucide-search" data-files-box @keydown.enter.prevent="go" @keydown.escape="query = ''" />
     </div>
-    <div class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs">
+    <div v-if="mode === 'tree' && section === 'changes'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-changes-head>
+      <UIcon name="i-lucide-git-branch" class="size-3.5 flex-none text-muted" />
+      <span class="min-w-0 flex-1 truncate font-mono text-muted">{{ notRepo ? 'not a repository' : `${status?.branch || '…'} · ${base && base !== 'HEAD' ? `vs ${base}` : 'working directory'}` }}</span>
+      <span v-if="!notRepo" class="flex-none text-muted">{{ changesTitle(changes.length) }}</span>
+      <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="statusLoading" @click="loadStatus" />
+    </div>
+    <div v-if="mode !== 'tree' || section === 'explorer'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs">
       <template v-if="mode === 'url'">
         <UIcon name="i-lucide-globe" class="size-4 text-muted" />
         <span class="truncate flex-1 font-mono">{{ url }}</span>
@@ -409,6 +478,32 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <pre v-else class="p-3 font-mono"><div v-for="(l, i) in lines" :key="i" class="line" :class="{ target: targetLine === i + 1 }"><span class="line-no">{{ i + 1 }}</span><span class="line-code" v-html="escapeHtml(l) || ' '" /></div></pre>
       </template>
 
+      <template v-else-if="section === 'changes'">
+        <div v-if="notRepo" class="flex flex-col items-center gap-2 p-6 text-center text-sm" data-files-not-repo>
+          <UIcon name="i-lucide-git-branch" class="size-6 text-muted" />
+          <span class="font-medium text-highlighted">Not a git repository</span>
+          <span class="text-muted">{{ cwd }} has no .git. Touched still lists what the agent did.</span>
+        </div>
+        <div v-else-if="statusError" class="flex items-center gap-2 p-4 text-sm text-muted">
+          <UIcon name="i-lucide-triangle-alert" class="size-4 flex-none text-warning" /><span class="min-w-0 flex-1">{{ statusError }}</span>
+          <UButton label="Retry" size="xs" color="neutral" variant="soft" @click="loadStatus" />
+        </div>
+        <p v-else-if="status && !changes.length" class="p-6 text-sm text-muted">Nothing changed since the last commit.</p>
+        <ul v-else class="py-1" data-files-changes>
+          <li v-for="c in changes" :key="c.abs">
+            <button type="button" class="flex w-full items-center gap-2 px-3 py-1 text-left text-sm hover:bg-elevated" :data-change="c.abs" :data-change-status="c.status" @click="openChange(c)">
+              <UBadge :label="statusLetter(c.status)" :color="statusTone(c.status)" variant="subtle" size="xs" class="w-5 flex-none justify-center font-mono" />
+              <span class="min-w-0 flex-1 truncate font-mono"><span class="text-muted">{{ c.dir }}</span>{{ c.name }}</span>
+              <span v-if="c.binary" class="flex-none text-[11px] text-muted">binary</span>
+              <template v-else>
+                <span class="flex-none font-mono text-[11px] text-success">+{{ c.added }}</span>
+                <span class="flex-none font-mono text-[11px] text-error">−{{ c.removed }}</span>
+              </template>
+            </button>
+          </li>
+          <li v-if="status?.truncated" class="px-3 py-1 text-xs text-muted">The list stops at {{ changes.length }} files.</li>
+        </ul>
+      </template>
       <template v-else>
         <p v-if="!cwd" class="p-6 text-sm text-muted">Click a file path or URL in the terminal to open it here.</p>
         <div v-else-if="treeLoading && !root?.loaded" class="p-6 text-sm text-muted flex items-center gap-2"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Listing {{ root?.name }}…</div>
@@ -434,6 +529,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
                 <span v-else class="size-3.5 flex-none" />
                 <UIcon :name="n.dir ? (n.expanded ? 'i-lucide-folder-open' : 'i-lucide-folder') : 'i-lucide-file'" class="size-4 flex-none" :class="n.dir ? 'text-primary' : 'text-muted'" />
                 <span class="font-mono flex-1 truncate">{{ n.name }}</span>
+                <span v-if="!n.dir && marks.get(n.path)" class="flex-none font-mono text-[10px] font-semibold" :class="statusTone(marks.get(n.path)!) === 'success' ? 'text-success' : statusTone(marks.get(n.path)!) === 'error' ? 'text-error' : 'text-warning'" :data-file-mark="statusLetter(marks.get(n.path)!)">{{ statusLetter(marks.get(n.path)!) }}</span>
                 <UIcon v-if="n.loading" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
                 <span v-else-if="!n.dir" class="text-[11px] text-muted">{{ fmtSize(n.size) }}</span>
               </button>
@@ -444,8 +540,12 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         </ul>
       </template>
     </div>
-    <p v-if="mode === 'tree' && cwd" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-hint>
+    <p v-if="mode === 'tree' && cwd && section === 'explorer'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-hint>
       <UIcon name="i-lucide-mouse-pointer-click" class="size-3.5 flex-none" /> Paths the agent prints in the terminal are clickable.
+    </p>
+    <p v-if="mode === 'tree' && cwd && section === 'changes' && status?.kind === 'status'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-changes-foot>
+      <UIcon name="i-lucide-refresh-cw" class="size-3.5 flex-none" /> Refreshed as the agent works · {{ agoWords(now - statusAt) }}
+      <span class="ml-auto font-mono"><span class="text-success">+{{ status.added ?? 0 }}</span> <span class="text-error">−{{ status.removed ?? 0 }}</span></span>
     </p>
   </div>
 </template>

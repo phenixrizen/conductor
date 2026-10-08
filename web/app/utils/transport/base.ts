@@ -86,7 +86,7 @@ export abstract class BaseTransport implements TerminalTransport {
     this.send(encodeControl({ t: 'ping', ts: Date.now() }))
   }
 
-  requestFile(path: string, stat = false): Promise<FileResponse> {
+  requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {
     if (this.state.value !== 'open') return Promise.reject(new Error('not connected'))
     const reqId = `f${(++this.reqCounter).toString(36)}`
     return new Promise((resolve, reject) => {
@@ -95,7 +95,7 @@ export abstract class BaseTransport implements TerminalTransport {
         reject(new Error('file request timed out'))
       }, FILE_TIMEOUT_MS)
       this.pendingFiles.set(reqId, { resolve, reject, timer })
-      this.send(encodeControl({ t: 'file_get', reqId, path, stat }))
+      this.send(encodeControl({ t: 'file_get', reqId, path, stat, ...extra }))
     })
   }
 
