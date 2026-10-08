@@ -699,6 +699,29 @@ waiting on monaco-neovim-wasm's missing license.
   pane" for a URL the agent printed opens a URL tab. The symbol crumb the
   design shows ("ListUsers") waits for a language server Monaco does not
   have for Go; the Yard, the guest page and the phone are F2b.
+- **F2b, the Yard, the guest page and the phone (4g).** The column a
+  terminal shares with the editor is one component (`EditorColumn.vue`:
+  the area, the split, the terminal in its slot, the reply bar in `bar`),
+  and the files a page has open one composable (`useEditorTabs`: the tabs,
+  how a path or a URL opens, the fold with T and Alt+T). The Yard's focused
+  tile and a guest's join page use both, with the Files pane beside the
+  editor in place of the slide-over (`FileViewer.vue` is gone); a
+  view-only guest gets the pane marked read only and the editor read-only;
+  the join reply carries the session's working directory so the guest's
+  tree can root there (reads stay the session's to allow). On a phone the
+  editor takes the column and the terminal folds to a bar at the foot that
+  says what the agent is doing (the attention's words, else the agent) and
+  brings the terminal back on a tap, the editor folding to its strip; the
+  terminal stays mounted, so nothing reconnects. In the Yard, Esc folds the
+  editor first and leaves the focus second. Found on the way: below lg the
+  dashboard panels were at least a screen tall (the theme's `min-h-svh`)
+  and ran under the bottom bar, clipping whatever sat at a panel's foot;
+  the app config caps them there (`dashboardPanel.slots.root:
+  max-lg:min-h-0`), so a phone's terminal bar and reply bar end above the
+  bottom bar. And the Files pane's retry for a connection not open yet
+  compared a raw root with its reactive proxy and never fired; the root is
+  reactive from the start now, and a page whose terminal connects after
+  the pane is retried too.
 
 ## The trust question's answers as choices (2026-10-08)
 

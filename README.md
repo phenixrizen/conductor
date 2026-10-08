@@ -306,7 +306,11 @@ and brings it back. The header shows the breadcrumb, the position, copy
 path and open raw. An image shows on a checker with its size, a binary
 file says so with Open raw, a URL the agent printed previews in a
 sandboxed frame, a refused read says why, and a hosted session whose
-machine is away says files return with it.
+machine is away says files return with it. The Yard's focused tile and a
+guest's join page open files the same way, with the Files pane beside the
+editor (a view-only guest gets both read-only); on a phone the editor takes
+the screen and the terminal folds to a bar at the foot that says what the
+agent is doing and comes back on a tap.
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).

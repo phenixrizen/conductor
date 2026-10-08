@@ -4,8 +4,7 @@ import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSess
 import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
 import { CloseCode } from '~/utils/protocol'
 import type { CloseInfo, TransportState } from '~/utils/transport/types'
-import type { FileTarget } from '~/components/FileViewer.vue'
-import { parseLocation } from '~/utils/links'
+import { emptyTabs } from '~/utils/editorTabs'
 import { joinServer } from '~/utils/invite'
 import { joinedFromInfo } from '~/utils/joined'
 import { scopeItems } from '~/utils/chat'
@@ -48,10 +47,9 @@ function onViewers(info: { count: number; list?: ViewerInfo[] }) {
 }
 const status = ref('')
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
-const fileOpen = ref(false)
-const fileTarget = ref<FileTarget | null>(null)
-const previewUrl = ref<string | null>(null)
-const pathInput = ref('')
+// The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
+const { tabs, openFile, openUrl } = useEditorTabs()
+const filesPanel = ref(true)
 const terminal = ref<{ requestFile: (p: string, s?: boolean) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
@@ -74,7 +72,7 @@ function onClosed(info: CloseInfo) {
 const run = computed(() => info.value?.run)
 const focus = ref<JoinRunMember | null>(null)
 /** The session shown in full: a session link's, or the member opened from a run link's tiles. */
-const current = computed<{ id: string; name: string; agentId: string; kind: SessionKind; hostName?: string; hostUser?: string } | null>(() => {
+const current = computed<{ id: string; name: string; agentId: string; kind: SessionKind; hostName?: string; hostUser?: string; cwd?: string } | null>(() => {
   const s = info.value?.session
   if (s) return s
   const m = focus.value
@@ -253,8 +251,7 @@ function leave() {
   focus.value = null
   tileState.value = {}
   attention.value = { state: '' }
-  fileTarget.value = null
-  previewUrl.value = null
+  tabs.value = emptyTabs()
   chatSheet.value = false
   runChatOpen.value = false
   left.value = true
@@ -275,8 +272,7 @@ function openMember(m: JoinRunMember, heard?: { status?: string; attention?: str
   attention.value = { state: '' }
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
-  fileTarget.value = null
-  previewUrl.value = null
+  tabs.value = emptyTabs()
   focus.value = m
 }
 
@@ -301,29 +297,6 @@ function reply(text: string) {
 function option(index: number) {
   const o = attention.value.options?.[index]
   if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', color: 'warning' })
-}
-
-function openFile(loc: { path: string; line?: number }) {
-  previewUrl.value = null
-  fileTarget.value = { ...loc }
-}
-
-function openUrl(url: string) {
-  toast.add({
-    title: url,
-    icon: 'i-lucide-link',
-    color: 'neutral',
-    actions: [
-      { label: 'Open in new tab', icon: 'i-lucide-external-link', onClick: () => window.open(url, '_blank', 'noopener,noreferrer') },
-      { label: 'Preview in pane', icon: 'i-lucide-panel-right', onClick: () => (previewUrl.value = url) },
-    ],
-  })
-}
-
-function openPath() {
-  const loc = parseLocation(pathInput.value)
-  if (loc.path) openFile(loc)
-  pathInput.value = ''
 }
 
 function requestFile(path: string, stat?: boolean) {
@@ -446,9 +419,7 @@ function requestFile(path: string, stat?: boolean) {
       <div class="flex-1" />
       <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
       <ViewerAvatars :viewers="viewerList" class="hidden lg:flex" />
-      <form class="hidden md:flex items-center gap-1" @submit.prevent="openPath">
-        <UInput v-model="pathInput" placeholder="open path[:line]" size="sm" class="w-56 font-mono" icon="i-lucide-file-search" />
-      </form>
+      <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" size="sm" aria-label="Files" class="hidden md:inline-flex" :class="filesPanel && 'ring-2 ring-primary/40'" data-files-button @click="filesPanel = !filesPanel"><span>Files</span></UButton>
       <!-- The chat (design 2c, 2d): the count while the thread is closed; the panel beside the terminal where there is room, a sheet below. -->
       <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
         <span class="hidden sm:inline">Chat</span>
@@ -463,34 +434,40 @@ function requestFile(path: string, stat?: boolean) {
     </header>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
-      <div class="flex flex-1 min-w-0 flex-col gap-2">
-        <div class="flex-1 min-h-0">
-          <TerminalView
-            :key="current.id"
-            ref="terminal"
-            :create-transport="createTransport"
-            :read-only="info.role !== 'control'"
-            @welcome="onWelcome"
-            @status="onStatus"
-            @attention="onAttention"
-            @viewers="onViewers"
-            @transport="transport = $event"
-            @closed="onClosed"
-            @chat="onChat"
-            @chat-history="onChatHistory"
-            @request-error="onRequestError"
-            @open-file="openFile"
-            @open-url="openUrl"
-          />
+      <EditorColumn v-model:tabs="tabs" :request="requestFile" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'">
+        <TerminalView
+          :key="current.id"
+          ref="terminal"
+          :create-transport="createTransport"
+          :read-only="info.role !== 'control'"
+          @welcome="onWelcome"
+          @status="onStatus"
+          @attention="onAttention"
+          @viewers="onViewers"
+          @transport="transport = $event"
+          @closed="onClosed"
+          @chat="onChat"
+          @chat-history="onChatHistory"
+          @request-error="onRequestError"
+          @open-file="openFile"
+          @open-url="openUrl"
+        />
+        <template #bar>
+          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
+        </template>
+      </EditorColumn>
+      <aside v-if="filesPanel" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>
+        <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted">
+          <UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files
+          <UBadge v-if="info.role !== 'control'" label="read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" class="ml-auto" data-files-readonly />
         </div>
-        <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
-      </div>
+        <FileBrowser :request="requestFile" :cwd="current.cwd" external class="flex-1 min-h-0" @open="openFile" />
+      </aside>
       <aside v-if="chatPanel && chat.thread.value.capable" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
         <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
       </aside>
     </main>
 
-    <FileViewer v-model:open="fileOpen" v-model:target="fileTarget" v-model:url="previewUrl" :request="requestFile" />
     <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
     <ChatSheet
       v-if="run"

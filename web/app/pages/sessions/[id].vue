@@ -5,7 +5,6 @@ import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
 import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
-import { clampSplit, emptyTabs, openTab, readSplit, toggleFold, writeSplit } from '~/utils/editorTabs'
 import { shortCwd } from '~/utils/sessions'
 
 const route = useRoute()
@@ -28,38 +27,9 @@ const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number 
 const share = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
-// The editor area (design 4b): the files open above the terminal, split by a bar you drag; the split kept per browser.
-const tabs = ref(emptyTabs())
-const split = ref(0.6)
-const column = ref<HTMLElement>()
-const editorOpen = computed(() => tabs.value.tabs.length > 0 && !tabs.value.folded)
-function foldEditor() {
-  if (tabs.value.tabs.length) tabs.value = toggleFold(tabs.value)
-}
-let dragging = false
-function splitDown(e: PointerEvent) {
-  dragging = true
-  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-}
-function splitMove(e: PointerEvent) {
-  if (!dragging || !column.value) return
-  const r = column.value.getBoundingClientRect()
-  if (r.height > 0) split.value = clampSplit((e.clientY - r.top) / r.height)
-}
-function splitUp(e: PointerEvent) {
-  if (!dragging) return
-  dragging = false
-  ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
-  writeSplit(typeof localStorage === 'undefined' ? null : localStorage, split.value)
-}
-onMounted(() => {
-  split.value = readSplit(typeof localStorage === 'undefined' ? null : localStorage)
-})
+// The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
+const { tabs, openFile, openUrl } = useEditorTabs()
 useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
-defineShortcuts({
-  t: foldEditor,
-  alt_t: { usingInput: true, handler: foldEditor },
-})
 const tab = ref<InspectorTab>('people')
 const attention = ref<Attention>({ state: '' })
 
@@ -307,28 +277,6 @@ function option(index: number) {
   if (!terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
 }
 
-/** A file (a path the agent printed, one chosen in the Files pane, one typed there) opens in the editor area. */
-function openFile(loc: { path: string; line?: number }) {
-  tabs.value = openTab(tabs.value, 'file', loc.path, loc.line)
-}
-
-function openUrl(url: string) {
-  toast.add({
-    title: url,
-    icon: 'i-lucide-link',
-    color: 'neutral',
-    actions: [
-      { label: 'Open in new tab', icon: 'i-lucide-external-link', onClick: () => window.open(url, '_blank', 'noopener,noreferrer') },
-      {
-        label: 'Preview in pane',
-        icon: 'i-lucide-panel-right',
-        onClick: () => {
-          tabs.value = openTab(tabs.value, 'url', url)
-        },
-      },
-    ],
-  })
-}
 
 function showFiles() {
   if (inspector.value && tab.value === 'files') inspector.value = false
@@ -429,40 +377,28 @@ watch(id, () => {
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
-        <div ref="column" class="flex flex-1 min-w-0 flex-col gap-3 p-3">
-          <EditorArea
-            v-model:tabs="tabs"
-            :request="requestFile"
-            :cwd="current?.cwd"
-            :raw-url="rawUrl"
-            :host-away="hostAway"
-            :class="editorOpen ? 'min-h-32 shrink' : 'flex-none'"
-            :style="editorOpen ? { flexBasis: `${Math.round(split * 100)}%` } : undefined"
+        <EditorColumn v-model:tabs="tabs" :request="requestFile" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3">
+          <TerminalView
+            ref="terminal"
+            :create-transport="createTransport"
+            @welcome="onWelcome"
+            @status="onStatus"
+            @attention="onAttention"
+            @viewers="onViewers"
+            @activity="onActivity"
+            @transport="transport = $event"
+            @closed="chat.offline()"
+            @chat="onChat"
+            @chat-history="onChatHistory"
+            @request-error="onRequestError"
+            @open-file="openFile"
+            @open-url="openUrl"
           />
-          <div v-if="editorOpen" class="-my-2 flex h-2 flex-none cursor-row-resize items-center justify-center touch-none" data-editor-split @pointerdown="splitDown" @pointermove="splitMove" @pointerup="splitUp" @pointercancel="splitUp">
-            <span class="h-0.5 w-10 rounded-full bg-accented" />
-          </div>
-          <div class="relative flex-1 min-h-32">
-            <TerminalView
-              ref="terminal"
-              :create-transport="createTransport"
-              @welcome="onWelcome"
-              @status="onStatus"
-              @attention="onAttention"
-              @viewers="onViewers"
-              @activity="onActivity"
-              @transport="transport = $event"
-              @closed="chat.offline()"
-              @chat="onChat"
-              @chat-history="onChatHistory"
-              @request-error="onRequestError"
-              @open-file="openFile"
-              @open-url="openUrl"
-            />
-            <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
-          </div>
-          <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" />
-        </div>
+          <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
+          <template #bar>
+            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" />
+          </template>
+        </EditorColumn>
         <div v-if="inspector" class="hidden xl:flex w-[332px] flex-none">
           <SessionInspector
             v-model:tab="tab"

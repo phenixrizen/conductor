@@ -71,3 +71,61 @@ test('a file opens in the editor above the terminal; tabs, folding, closing, a l
     await api.stopSession(s.id)
   }
 })
+
+// The Yard's focused tile and a guest's join page open a file the same way
+// (design 4g): the editor above the terminal, the Files pane beside it in
+// place of the old slide-over; a view-only guest gets the pane marked read
+// only and the editor read-only. On a phone the editor takes the column and
+// the terminal folds to a bar that brings it back.
+test("the Yard's focused tile and a guest's page open files the same way; on a phone the terminal folds to a bar", async ({ page, api, state, browser }) => {
+  const cwd = join(state.root, 'files-editor-yard')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.md'), '# notes\n\nline three\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'yard editor', cwd })
+  try {
+    await page.goto(`/yard?focus=${s.id}`)
+    const aside = page.locator('[data-files-aside]')
+    await expect(aside.locator(`[data-file-node="${cwd}/notes.md"]`)).toBeVisible({ timeout: 30_000 })
+    await aside.locator(`[data-file-node="${cwd}/notes.md"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area).toHaveAttribute('data-editor-area', 'open')
+    await expect(area.locator('.monaco-editor .view-lines')).toContainText('line three', { timeout: 30_000 })
+    await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
+    // Esc folds the editor first; a second Esc leaves the focus.
+    await page.locator('body').click({ position: { x: 5, y: 5 } })
+    await page.keyboard.press('Escape')
+    await expect(area).toHaveAttribute('data-editor-area', 'folded')
+    // On a phone the terminal folds to a bar; a tap brings it back (the editor folds).
+    await area.locator('[data-editor-unfold]').click()
+    await page.setViewportSize({ width: 390, height: 844 })
+    const bar = page.locator('[data-terminal-bar]')
+    await expect(bar).toBeVisible()
+    await expect(bar).toContainText('tap to bring it up')
+    // Above the bottom bar, not under it: the panels stop at the layout's padding below lg.
+    const barBox = (await bar.boundingBox())!
+    const bottomBox = (await page.locator('[data-bottom-bar]').boundingBox())!
+    expect(barBox.y + barBox.height).toBeLessThanOrEqual(bottomBox.y)
+    await bar.click()
+    await expect(area).toHaveAttribute('data-editor-area', 'folded')
+    await expect(bar).toHaveCount(0)
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    // A view-only guest: the Files pane marked read only, the file read-only in the editor.
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'view', ttlSeconds: 3600 })
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    await ctx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Jane'))
+    const jane = await ctx.newPage()
+    await jane.goto(`/join/${token}`)
+    await jane.getByRole('button', { name: /^Join/ }).first().click()
+    const guestAside = jane.locator('[data-files-aside]')
+    await expect(guestAside.locator('[data-files-readonly]')).toBeVisible({ timeout: 30_000 })
+    await expect(guestAside.locator(`[data-file-node="${cwd}/notes.md"]`)).toBeVisible({ timeout: 30_000 })
+    await guestAside.locator(`[data-file-node="${cwd}/notes.md"]`).click()
+    const guestArea = jane.locator('[data-editor-area]')
+    await expect(guestArea.locator('.monaco-editor .view-lines')).toContainText('line three', { timeout: 30_000 })
+    await expect(guestArea.locator('[data-editor-readonly]')).toBeVisible()
+    await ctx.close()
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
