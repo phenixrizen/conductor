@@ -116,6 +116,7 @@ reported limitation, not a pass.
 | shiki | 4.4.3 |
 | @vue-flow/core (+ background, controls) | 1.48.2 (1.3.2, 1.1.3) |
 | @iconify-json/lucide (icon client bundle) | 1.2.137 |
+| monaco-editor (the Files editor, loaded with the first file) | 0.57.0 |
 | @playwright/test (e2e; Chromium revision 1117, 125.0.6422.26) | 1.44.1 |
 | electron / electron-builder (desktop) | 44.5.1 / 26.15.3 |
 | @types/node (e2e type check) | 22.20.5 |

@@ -679,6 +679,26 @@ waiting on monaco-neovim-wasm's missing license.
   what it has not seen. The box moved out of the inspector into the pane,
   so the Yard's slide-over has it too. A root listing refused because the
   connection is not open yet is tried again a few times. No server change.
+- **F2a, the editor area on the session page (4b, 4c, 4f).** Monaco
+  0.57.0 (`utils/monaco.ts`: the editor, its workers as Vite worker files,
+  and the two brand themes, in a chunk loaded with the first file;
+  `CodeEditor.vue` one file at a time, read-only until F6, the line asked
+  for shown in the middle and tinted for a moment). `EditorArea.vue` holds
+  the tabs (`utils/editorTabs.ts`: one per file or URL, the next or the
+  previous taking a closed one's place, Ctrl+Tab round the end, the fold,
+  the split kept in `conductor.editor.split`), the header (the breadcrumb
+  from the working directory, Ln/Col, copy path, open raw) and the states
+  4f draws: an image on a checker with its size, a binary file with Open
+  raw, a URL in the sandboxed frame with New tab, Refresh and Copy, a read
+  refused with the words for view-only and for viewing off, a hosted
+  session's machine away. The session page puts the area above the
+  terminal, split by a bar dragged with pointer capture, the terminal
+  keeping its minimum height; T and Alt+T fold it (`EDITOR_SHORTCUTS` in
+  the modal, Alt+T handed back by a terminal); the Files pane opens files
+  into it (`external`, the `open` emit) and stays the tree; "Preview in
+  pane" for a URL the agent printed opens a URL tab. The symbol crumb the
+  design shows ("ListUsers") waits for a language server Monaco does not
+  have for Go; the Yard, the guest page and the phone are F2b.
 
 ## The trust question's answers as choices (2026-10-08)
 

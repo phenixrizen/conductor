@@ -294,6 +294,20 @@ or, given a path (or `path:line`) and Enter, opens that file at that line.
 A crumb brings the tree back, opened down to that folder. Paths the agent
 prints in the terminal are clickable too, as the tab's last line says.
 
+A file chosen in the tree, typed in the box or clicked in the terminal opens
+in an **editor above the terminal**: Monaco, the VS Code editor core, with
+the gutter and folding, the minimap, find and replace (Ctrl+F, Ctrl+H), go
+to line (Ctrl+G); read-only for now. The editor and the terminal share the
+column, split by a bar you drag, the terminal keeping at least six lines.
+Several files are tabs (Ctrl+Tab and Ctrl+Shift+Tab switch, Ctrl+W or ×
+closes, the strip's × closes all; closing the last takes the editor away).
+**T** (Alt+T while typing in the terminal) folds the editor to its tab strip
+and brings it back. The header shows the breadcrumb, the position, copy
+path and open raw. An image shows on a checker with its size, a binary
+file says so with Open raw, a URL the agent printed previews in a
+sandboxed frame, a refused read says why, and a hosted session whose
+machine is away says files return with it.
+
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
 File locations such as `internal/api/server.go:42`, `./README.md` or Python

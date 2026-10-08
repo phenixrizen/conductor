@@ -23,9 +23,18 @@ const props = defineProps<{
   cwd?: string
   /** Builds a raw download URL for server sessions; null when unavailable. */
   rawUrl?: (path: string) => string | null
+  /** Files open elsewhere (the editor area, design 4b): a file chosen is emitted as `open`, and the pane stays the tree. */
+  external?: boolean
 }>()
+const emit = defineEmits<{ open: [target: FileTarget] }>()
 
 const target = defineModel<FileTarget | null>('target', { default: null })
+
+/** A file to show: in the pane, or wherever the page puts it. */
+function openFile(t: FileTarget) {
+  if (props.external) emit('open', t)
+  else target.value = t
+}
 const url = defineModel<string | null>('url', { default: null })
 
 const copy = useCopy()
@@ -182,7 +191,7 @@ async function loadRoot() {
 
 async function toggle(node: TreeNode) {
   if (!node.dir) {
-    target.value = { path: node.path }
+    openFile({ path: node.path })
     return
   }
   if (node.expanded) {
@@ -284,7 +293,7 @@ function go() {
   if (!q) return
   if (looksLikePath(q)) {
     const loc = parseLocation(q)
-    target.value = { path: resolveTyped(props.cwd || '/', loc.path), line: loc.line }
+    openFile({ path: resolveTyped(props.cwd || '/', loc.path), line: loc.line })
     query.value = ''
     return
   }
@@ -292,7 +301,7 @@ function go() {
   if (!first) return
   if (first.dir) toggle(first)
   else {
-    target.value = { path: first.path }
+    openFile({ path: first.path })
     query.value = ''
   }
 }

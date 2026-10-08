@@ -16,7 +16,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -48,6 +48,18 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
     { keys: ['S'], label: 'Share the focused session or run' },
     { keys: ['X'], label: 'Stop it: the row asks; Enter stops, Escape cancels' },
     { keys: ['escape'], label: 'Leave the list' },
+  ],
+}
+
+/** The editor area's keys (design 4b, 4c), on a session page with a file open. */
+export const EDITOR_SHORTCUTS: ShortcutGroup = {
+  title: 'The editor',
+  rows: [
+    { keys: ['T'], label: 'Terminal only: fold the editor to its tab strip, or bring it back', terminal: ['alt', 'T'] },
+    { keys: ['ctrl', 'tab'], label: 'Next file (Ctrl+Shift+Tab the one before)' },
+    { keys: ['ctrl', 'W'], label: 'Close the file' },
+    { keys: ['ctrl', 'F'], label: 'Find in the file (Ctrl+H replace)' },
+    { keys: ['ctrl', 'G'], label: 'Go to a line' },
   ],
 }
 

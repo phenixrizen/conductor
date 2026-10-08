@@ -4,6 +4,8 @@ import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, Chat
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
+import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
+import { clampSplit, emptyTabs, openTab, readSplit, toggleFold, writeSplit } from '~/utils/editorTabs'
 import { shortCwd } from '~/utils/sessions'
 
 const route = useRoute()
@@ -26,6 +28,38 @@ const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number 
 const share = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
+// The editor area (design 4b): the files open above the terminal, split by a bar you drag; the split kept per browser.
+const tabs = ref(emptyTabs())
+const split = ref(0.6)
+const column = ref<HTMLElement>()
+const editorOpen = computed(() => tabs.value.tabs.length > 0 && !tabs.value.folded)
+function foldEditor() {
+  if (tabs.value.tabs.length) tabs.value = toggleFold(tabs.value)
+}
+let dragging = false
+function splitDown(e: PointerEvent) {
+  dragging = true
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+function splitMove(e: PointerEvent) {
+  if (!dragging || !column.value) return
+  const r = column.value.getBoundingClientRect()
+  if (r.height > 0) split.value = clampSplit((e.clientY - r.top) / r.height)
+}
+function splitUp(e: PointerEvent) {
+  if (!dragging) return
+  dragging = false
+  ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  writeSplit(typeof localStorage === 'undefined' ? null : localStorage, split.value)
+}
+onMounted(() => {
+  split.value = readSplit(typeof localStorage === 'undefined' ? null : localStorage)
+})
+useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
+defineShortcuts({
+  t: foldEditor,
+  alt_t: { usingInput: true, handler: foldEditor },
+})
 const tab = ref<InspectorTab>('people')
 const attention = ref<Attention>({ state: '' })
 
@@ -119,6 +153,8 @@ const stored = computed(() => live.sessions.value.find((s) => s.id === id.value)
 /** The session as the live store has it, else as read: its yolo badge and its agent session follow the stream. */
 const current = computed(() => stored.value ?? session.value)
 const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
+/** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
+const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
 const copy = useCopy()
 watch(
   () => stored.value?.attention,
@@ -271,11 +307,9 @@ function option(index: number) {
   if (!terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
 }
 
+/** A file (a path the agent printed, one chosen in the Files pane, one typed there) opens in the editor area. */
 function openFile(loc: { path: string; line?: number }) {
-  previewUrl.value = null
-  fileTarget.value = { ...loc }
-  tab.value = 'files'
-  inspector.value = true
+  tabs.value = openTab(tabs.value, 'file', loc.path, loc.line)
 }
 
 function openUrl(url: string) {
@@ -289,9 +323,7 @@ function openUrl(url: string) {
         label: 'Preview in pane',
         icon: 'i-lucide-panel-right',
         onClick: () => {
-          previewUrl.value = url
-          tab.value = 'files'
-          inspector.value = true
+          tabs.value = openTab(tabs.value, 'url', url)
         },
       },
     ],
@@ -397,8 +429,20 @@ watch(id, () => {
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
-        <div class="flex flex-1 min-w-0 flex-col gap-3 p-3">
-          <div class="relative flex-1 min-h-0">
+        <div ref="column" class="flex flex-1 min-w-0 flex-col gap-3 p-3">
+          <EditorArea
+            v-model:tabs="tabs"
+            :request="requestFile"
+            :cwd="current?.cwd"
+            :raw-url="rawUrl"
+            :host-away="hostAway"
+            :class="editorOpen ? 'min-h-32 shrink' : 'flex-none'"
+            :style="editorOpen ? { flexBasis: `${Math.round(split * 100)}%` } : undefined"
+          />
+          <div v-if="editorOpen" class="-my-2 flex h-2 flex-none cursor-row-resize items-center justify-center touch-none" data-editor-split @pointerdown="splitDown" @pointermove="splitMove" @pointerup="splitUp" @pointercancel="splitUp">
+            <span class="h-0.5 w-10 rounded-full bg-accented" />
+          </div>
+          <div class="relative flex-1 min-h-32">
             <TerminalView
               ref="terminal"
               :create-transport="createTransport"
@@ -441,6 +485,7 @@ watch(id, () => {
             @chat-send-to-agent="chatSendToAgent"
             @chat-retry="chatRetry"
             @chat-answer="chatAnswer"
+            @open-file="openFile"
           />
         </div>
       </div>
