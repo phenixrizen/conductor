@@ -652,6 +652,34 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
+
+From the design screens 4a–4g and 5a–5c in "Conductor UI mockups" (the
+owner designed them on 2026-10-08 from a brief written here). The plan with
+its decisions and layers is `docs/round12-plan.md`: Monaco as the editor,
+editing for controllers under a `fileEdit` setting, go-git for the git
+features with the CLI wrapper kept where go-git is slow, file events from
+the hooks first, layers merged one at a time (never a stack), and Vim keys
+waiting on monaco-neovim-wasm's missing license.
+
+### Decisions
+
+- **F1, the Explorer (4a).** The Files tab opens on the working directory
+  as a tree (`utils/fileTree.ts`: the root, folders listed on their first
+  expansion through the same `file` request a directory took before, files
+  with their size, folders first and names by code point without regard to
+  case so every browser shows one order); the breadcrumb runs from the top
+  of the path; the box above the tree is a filter over what is loaded (a
+  folder that holds a match opens so the match shows) or, for a typed path
+  (a slash in it, a leading dot or tilde, or `:line` at its end) and Enter,
+  opens that file at that line, made absolute against the working
+  directory; the hint that paths in the terminal are clickable is one line
+  at the foot. A file still opens in the pane (the editor area is F2); a
+  crumb or Back returns to the tree, opened down to that folder, fetching
+  what it has not seen. The box moved out of the inspector into the pane,
+  so the Yard's slide-over has it too. A root listing refused because the
+  connection is not open yet is tried again a few times. No server change.
+
 ## The trust question's answers as choices (2026-10-08)
 
 The owner, testing rc.2: "the trust question kills the session if I answer
