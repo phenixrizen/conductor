@@ -779,6 +779,29 @@ waiting on monaco-neovim-wasm's missing license.
   through its hooks") checks the real agent's read and write land as
   file events; Codex's passes only where its `features.hooks` is on with
   Conductor's hooks.json, which this machine does not have.
+- **By hand, F1–F4 on Windows (2026-10-08).** A dev server from main on
+  the WSL box, opened in Chrome on the Windows host and driven through a
+  desktop-control MCP (UI Automation, real mouse and keyboard, window
+  screenshots), with the real Claude Code 2.1.295 in the trusted scratch
+  repository, bypass permissions on. Seen and screenshotted: the Explorer
+  tree with sizes and the breadcrumb; "internal/api/users.go:12" and
+  Enter opening the file in Monaco at Ln 12 with Go highlighting, the
+  breadcrumbs and the minimap; a second file as a second tab; the fold
+  strip "2 files open · users.go README.md" and unfold; the split bar
+  dragged 150 px (the editor from 495 to 644 px, the split kept); the
+  tab's × closing it and the editor folding away. A typed prompt had the
+  agent read and edit README.md: Changes listed it as M +1 −0 within
+  seconds ("Refreshed as the agent works · 4s ago"), the Explorer marked
+  it M with a touched dot, the diff opened side by side against HEAD and
+  inline, Open file raised the file's tab; Touched listed "README.md
+  Edit · agent · 16:29:33" above its Read, newest first; the Activity tab
+  and the Events feed worded both, and the session's sidebar row carried
+  no badge. Two notes: the filter box matches only what the tree has
+  loaded (a "users" typed before `internal` was expanded found nothing;
+  in the todo); Ctrl+Tab is a reserved shortcut in Chrome, so the tab
+  cycle cannot be driven from a browser tab (it works in the desktop app
+  and in the Playwright spec). The phone layout and the light theme were
+  not part of this pass.
 
 ## The trust question's answers as choices (2026-10-08)
 

@@ -121,6 +121,11 @@ screens 4a–4g). Still to build, each a pull request from main:
   session's Touched starts from what the page saw. A `since` on the
   replay, or a bounded `GET /api/sessions/{id}/activity`, would give both
   the whole list.
+- **The Explorer's filter and unloaded folders:** the filter matches
+  only the nodes the tree has fetched, so "users" typed before `internal`
+  is expanded finds nothing (seen by hand on 2026-10-08). Either fetch
+  the folders that are not loaded while a filter is typed (bounded: depth
+  and count), or say "in the folders opened so far" under the box.
 - **Files from more agents:** Codex names a file only through
   `apply_patch` (its shell reads and writes name none); the Copilot and
   Goose mappers yield no files, their PostToolUse payloads unverified
