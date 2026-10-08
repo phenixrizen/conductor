@@ -22,12 +22,15 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	fs.SetOutput(stderr)
 	state := fs.String("state", "needs_input", "needs_input, working, done or clear")
 	message := fs.String("message", "", "short message shown next to the badge")
-	event := fs.String("event", "", "report an event instead of a state: progress, artifact, handoff, tool_use, tool_denied or error")
+	event := fs.String("event", "", "report an event instead of a state: progress, artifact, handoff, tool_use, tool_denied, error or file")
 	link := fs.String("url", "", "with --event artifact: where the result lives")
 	to := fs.String("to", "", "with --event handoff: who the work goes to")
-	tool := fs.String("tool", "", "with --event tool_use, tool_denied or error: the tool involved")
+	tool := fs.String("tool", "", "with --event tool_use, tool_denied, error or file: the tool involved")
+	op := fs.String("op", "", "with --event file: what was done to it, read, edit, write or delete")
+	filePath := fs.String("path", "", "with --event file: the file, as you name it")
 	choices := fs.String("choices", "", "with --state needs_input: answers to offer as buttons, separated by |, at most 6 of 40 bytes; a click types the choice as a line")
 	codex := fs.Bool("codex", false, "read a Codex notify payload from the last argument and map it")
+	files := fs.Bool("files", false, "with --<agent>-hook: report only the files the tool call touched, not the call (Claude Code's file-tool hook)")
 	// Each agent's hooks write their payload to stdin; the flag says whose it is.
 	type hookFlag struct {
 		flag    string
@@ -40,7 +43,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	}
 	quiet := fs.Bool("quiet", true, "exit 0 silently when not running inside a conductor session")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] | --<agent>-hook | --codex <json>")
+		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] [--op O --path P] | --<agent>-hook [--files] | --codex <json>")
 		fs.PrintDefaults()
 	}
 	// Agents' hooks run this command, and a hook runner reads exit 2 as
@@ -68,6 +71,9 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	if len(payload) > 1 {
 		return misuse, fmt.Errorf("%s cannot be combined: a payload is read one way", strings.Join(payload, " and "))
 	}
+	if *files && (len(payload) == 0 || payload[0] == "--codex") {
+		return misuse, errors.New("--files goes with a hook payload: conductor notify --claude-hook --files")
+	}
 	if *event != "" {
 		// --state has a default, so only Visit can tell that it was given.
 		stateGiven := false
@@ -86,7 +92,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		if len(fields) > 1 {
 			verb = "go"
 		}
-		return misuse, fmt.Errorf("%s only %s with --event: conductor notify --event E [--message M] [--url U] [--to T] [--tool N]", joinFlags(fields), verb)
+		return misuse, fmt.Errorf("%s only %s with --event: conductor notify --event E [--message M] [--url U] [--to T] [--tool N] [--op O --path P]", joinFlags(fields), verb)
 	}
 	// Choices go with a needs_input state of the agent's own, and nothing else.
 	var options []notify.Option
@@ -125,7 +131,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		req.Options = options
 	}
 	if *event != "" {
-		req = notify.Request{Event: *event, Message: *message, URL: *link, To: *to, Tool: *tool}
+		req = notify.Request{Event: *event, Message: *message, URL: *link, To: *to, Tool: *tool, Op: *op, Path: *filePath}
 	}
 	for _, h := range hooks {
 		if !*h.set {
@@ -140,6 +146,14 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 			return 0, nil
 		}
 		req = mapped
+		// The file tools' hook reports their files alone (design 4e): a call
+		// that names no file is nothing to send.
+		if *files {
+			if len(req.Files) == 0 {
+				return 0, nil
+			}
+			req = notify.Request{Tool: req.Tool, Files: req.Files}
+		}
 	}
 	if *codex {
 		rest := fs.Args()
@@ -170,7 +184,7 @@ func eventFieldsGiven(fs *flag.FlagSet) []string {
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 	var out []string
-	for _, name := range []string{"url", "to", "tool"} {
+	for _, name := range []string{"url", "to", "tool", "op", "path"} {
 		if given[name] {
 			out = append(out, "--"+name)
 		}

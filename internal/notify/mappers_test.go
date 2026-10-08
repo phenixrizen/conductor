@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -216,5 +217,52 @@ func TestMappersCarryTheAgentSession(t *testing.T) {
 	}
 	if _, ok := MapCodex([]byte(`{"type":"agent-turn-complete","thread-id":"01a0fc76-4817","input-messages":["Generate a concise, single-line task title for this conversation"]}`)); ok {
 		t.Error("the title thread's turn was mapped")
+	}
+}
+
+// A tool call that touched files yields one file event per file beside the
+// call's own event (design 4e): Claude Code's Read, Edit, MultiEdit,
+// NotebookEdit and Write by their input's path, Codex's apply_patch by the
+// files its patch names, Cursor's afterFileEdit by its file; Bash and the
+// rest none.
+func TestHookMappersYieldTheFilesATollCallTouched(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []FileRef
+	}{
+		{"claude edit", `{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/r/internal/api/users.go","old_string":"a"}}`, []FileRef{{Op: "edit", Path: "/r/internal/api/users.go"}}},
+		{"claude read", `{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/r/README.md"}}`, []FileRef{{Op: "read", Path: "/r/README.md"}}},
+		{"claude write", `{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/r/new.go","content":"x"}}`, []FileRef{{Op: "write", Path: "/r/new.go"}}},
+		{"claude notebook", `{"hook_event_name":"PostToolUse","tool_name":"NotebookEdit","tool_input":{"notebook_path":"/r/a.ipynb"}}`, []FileRef{{Op: "edit", Path: "/r/a.ipynb"}}},
+		{"claude bash", `{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"rm x"}}`, nil},
+		{"claude edit without a path", `{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{}}`, nil},
+	}
+	for _, c := range cases {
+		r, ok := MapClaudeHook([]byte(c.raw))
+		if !ok || r.Event != "tool_use" {
+			t.Fatalf("%s: %+v %v", c.name, r, ok)
+		}
+		if len(r.Files) != len(c.want) {
+			t.Fatalf("%s: files %+v want %+v", c.name, r.Files, c.want)
+		}
+		for i := range c.want {
+			if r.Files[i] != c.want[i] {
+				t.Fatalf("%s: file %d %+v want %+v", c.name, i, r.Files[i], c.want[i])
+			}
+		}
+	}
+	patch := "*** Begin Patch\n*** Update File: internal/api/users.go\n@@\n-a\n+b\n*** Add File: internal/api/users_test.go\n+package api\n*** Delete File: internal/api/old.go\n*** End Patch"
+	raw, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "tool_name": "apply_patch", "tool_input": map[string]any{"input": patch}})
+	r, ok := MapCodexHook(raw)
+	if !ok || r.Event != "tool_use" || len(r.Files) != 3 || r.Files[0] != (FileRef{Op: "edit", Path: "internal/api/users.go"}) || r.Files[1] != (FileRef{Op: "write", Path: "internal/api/users_test.go"}) || r.Files[2] != (FileRef{Op: "delete", Path: "internal/api/old.go"}) {
+		t.Fatalf("codex apply_patch: %+v %v", r, ok)
+	}
+	if r, _ := MapCodexHook([]byte(`{"hook_event_name":"PostToolUse","tool_name":"shell","tool_input":{"command":["ls"]}}`)); len(r.Files) != 0 {
+		t.Fatalf("codex shell: %+v", r.Files)
+	}
+	r, ok = MapCursorHook([]byte(`{"hook_event_name":"afterFileEdit","file_path":"/r/src/app.ts"}`))
+	if !ok || len(r.Files) != 1 || r.Files[0] != (FileRef{Op: "edit", Path: "/r/src/app.ts"}) {
+		t.Fatalf("cursor: %+v %v", r, ok)
 	}
 }

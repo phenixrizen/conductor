@@ -322,6 +322,18 @@ so. The status and the base's version come over the terminal's connection
 like a read, from the machine the session runs on, under the same file
 policy and deny list.
 
+The **Touched** section lists the files the agent read, edited, wrote or
+deleted, newest first, each with the tool, the agent and the time, and the
+Explorer marks them with a dot. The events come from the agent's own hooks:
+Claude Code's settings get a hook on its file tools (Read, Edit, MultiEdit,
+NotebookEdit and Write) that reports the files alone, so Touched fills
+whether or not the agent's tool events are on; Codex's apply_patch and
+Cursor's file edits report theirs with their tool calls; a file saved forty
+times is one line. An agent without hooks reports with `conductor notify
+--event file --op edit --path …` or the MCP `report` tool, as the skill
+says. The same events are in the Activity tab and on the Events page, in
+the feed only by default.
+
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
 File locations such as `internal/api/server.go:42`, `./README.md` or Python

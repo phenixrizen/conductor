@@ -191,7 +191,8 @@ func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
 		body              map[string]any
 	}{
 		{"--copilot-hook", `{"sessionId":"s","stopReason":"end_turn"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "kind": "done", "agentSession": "s", "turn": true}},
-		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "edit a.go"}},
+		// A file edit posts its tool call, then the file it touched (the call the server saw last).
+		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "file", "op": "edit", "path": "/x/a.go", "tool": "edit a.go"}},
 		{"--agy-hook", `{"terminationReason":"completed"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "message": "completed", "kind": "done", "turn": true}},
 		{"--goose-hook", `{"event":"PostToolUse","tool_name":"shell"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "shell"}},
 		{"--codex-hook", `{"hook_event_name":"PermissionRequest","tool_name":"shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "needs_input", "message": "Allow shell?", "kind": "permission"}},
@@ -203,8 +204,12 @@ func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
 			if code, stderr, err := runNotifyWith(t, c.stdin, c.flag); code != 0 || err != nil {
 				t.Fatalf("exit %d %v %q", code, err, stderr)
 			}
-			if ns.calls != 1 || ns.path != c.path || !reflect.DeepEqual(ns.body, c.body) {
-				t.Fatalf("server saw %d calls, %q %v; want %q %v", ns.calls, ns.path, ns.body, c.path, c.body)
+			want := 1
+			if c.flag == "--cursor-hook" {
+				want = 2
+			}
+			if ns.calls != want || ns.path != c.path || !reflect.DeepEqual(ns.body, c.body) {
+				t.Fatalf("server saw %d calls, %q %v; want %d, %q %v", ns.calls, ns.path, ns.body, want, c.path, c.body)
 			}
 		})
 	}
@@ -411,5 +416,26 @@ func TestNotifyChoices(t *testing.T) {
 	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "")
 	if code, _, err := runNotifyWith(t, "", "--choices", "a|b"); code != 0 || err != nil {
 		t.Fatalf("outside: exit %d %v", code, err)
+	}
+}
+
+// --files with a hook payload reports only the files the tool call touched
+// (Claude Code's file-tool hook in the base settings): an Edit is one file
+// event and no tool call; a call that names no file sends nothing; the flag
+// needs a payload.
+func TestNotifyFilesReportsOnlyTheFiles(t *testing.T) {
+	ns := startNotifyServer(t)
+	edit := `{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/x/a.go","old_string":"a","new_string":"b"}}`
+	if code, stderr, err := runNotifyWith(t, edit, "--claude-hook", "--files"); code != 0 || err != nil {
+		t.Fatalf("exit %d %v %q", code, err, stderr)
+	}
+	if ns.calls != 1 || ns.path != "/api/sessions/s1/events" || !reflect.DeepEqual(ns.body, map[string]any{"type": "file", "op": "edit", "path": "/x/a.go", "tool": "Edit"}) {
+		t.Fatalf("server saw %d calls, %q %v", ns.calls, ns.path, ns.body)
+	}
+	if code, _, err := runNotifyWith(t, `{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}`, "--claude-hook", "--files"); code != 0 || err != nil || ns.calls != 1 {
+		t.Fatalf("a call without a file: exit %d %v, %d calls", code, err, ns.calls)
+	}
+	if code, _, err := runNotifyWith(t, "", "--files"); code != 2 || err == nil || !strings.Contains(err.Error(), "--files") {
+		t.Fatalf("--files alone: exit %d %v", code, err)
 	}
 }

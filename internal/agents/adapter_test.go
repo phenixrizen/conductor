@@ -355,8 +355,12 @@ func TestInstallClaudeMergesEveryHookList(t *testing.T) {
 	if pre := doc.Hooks["PreToolUse"]; len(pre) != 1 || pre[0].Hooks[0].Command != "guard" {
 		t.Errorf("the user's PreToolUse hook changed: %+v", pre)
 	}
-	// Tool events stay a launch-time choice: settings.json gets the quiet set.
-	for _, event := range []string{"PostToolUse", "PostToolUseFailure", "SubagentStop"} {
+	// Tool events stay a launch-time choice: settings.json gets the quiet set,
+	// plus the file tools' own PostToolUse hook, which reports their files alone.
+	if post := doc.Hooks["PostToolUse"]; len(post) != 1 || post[0].Matcher != claudeFileTools || len(post[0].Hooks) != 1 || post[0].Hooks[0].Command != "/opt/conductor notify --claude-hook --files" {
+		t.Errorf("PostToolUse: %+v", post)
+	}
+	for _, event := range []string{"PostToolUseFailure", "SubagentStop"} {
 		if _, ok := doc.Hooks[event]; ok {
 			t.Errorf("Install added %s", event)
 		}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { FileEntry, FileHeader, FileRequester } from '~/utils/protocol'
+import type { ActivityEntry, FileEntry, FileHeader, FileRequester } from '~/utils/protocol'
 import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
+import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
 import { crumbsOf, findNode, looksLikePath, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
 
@@ -28,11 +29,15 @@ const props = defineProps<{
   external?: boolean
   /** What the Changes section counts against (design 4d): HEAD when empty; a crew member's run base. */
   base?: string
+  /** The session's activity, for the Touched section (design 4e): its `file` entries, newest first. Absent, the section is not offered. */
+  activity?: ActivityEntry[]
 }>()
 const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }] }>()
 
 // The Changes section (design 4d): git status against the base, refreshed every few seconds while it shows.
-const section = ref<'explorer' | 'changes'>('explorer')
+const section = ref<'explorer' | 'changes' | 'touched'>('explorer')
+const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.activity, props.cwd) : []))
+const dots = computed(() => touchedPaths(touched.value))
 const status = ref<FileHeader | null>(null)
 const statusError = ref('')
 const statusLoading = ref(false)
@@ -420,6 +425,13 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'changes' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="changes" @click="section = 'changes'">
         Changes<UBadge v-if="changes.length" :label="String(changes.length)" color="neutral" variant="subtle" size="xs" data-files-changes-count />
       </button>
+      <button v-if="activity" type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'touched' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="touched" @click="section = 'touched'">
+        Touched<UBadge v-if="touched.length" :label="String(touched.length)" color="neutral" variant="subtle" size="xs" data-files-touched-count />
+      </button>
+    </div>
+    <div v-if="mode === 'tree' && section === 'touched'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-touched-head>
+      <UIcon name="i-lucide-history" class="size-3.5 flex-none text-muted" />
+      <span class="min-w-0 flex-1 truncate text-muted">newest first · {{ touched.length }} since the session started</span>
     </div>
     <div v-if="mode === 'tree' && section === 'explorer'" class="border-b border-default px-2 py-1.5">
       <UInput v-model="query" placeholder="Filter, or go to path:line" size="xs" class="w-full font-mono" icon="i-lucide-search" data-files-box @keydown.enter.prevent="go" @keydown.escape="query = ''" />
@@ -478,6 +490,18 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <pre v-else class="p-3 font-mono"><div v-for="(l, i) in lines" :key="i" class="line" :class="{ target: targetLine === i + 1 }"><span class="line-no">{{ i + 1 }}</span><span class="line-code" v-html="escapeHtml(l) || ' '" /></div></pre>
       </template>
 
+      <template v-else-if="section === 'touched'">
+        <p v-if="!touched.length" class="p-6 text-sm text-muted">Nothing yet. The files the agent reads, edits, writes and deletes list here as its hooks report them.</p>
+        <ul v-else class="py-1" data-files-touched>
+          <li v-for="(r, i) in touched" :key="`${r.abs}-${r.at}-${i}`">
+            <button type="button" class="flex w-full items-center gap-2 px-3 py-1 text-left text-sm hover:bg-elevated" :data-touched="r.abs" :data-touched-op="r.op" @click="openFile({ path: r.abs })">
+              <UIcon :name="opIcon(r.op)" class="size-3.5 flex-none text-muted" />
+              <span class="min-w-0 flex-1 truncate font-mono"><span class="text-muted">{{ r.dir }}</span>{{ r.name }}</span>
+              <span class="flex-none text-[11px] text-muted">{{ touchedWords(r) }}</span>
+            </button>
+          </li>
+        </ul>
+      </template>
       <template v-else-if="section === 'changes'">
         <div v-if="notRepo" class="flex flex-col items-center gap-2 p-6 text-center text-sm" data-files-not-repo>
           <UIcon name="i-lucide-git-branch" class="size-6 text-muted" />
@@ -528,7 +552,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
                 <UIcon v-if="n.dir" :name="n.expanded ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="size-3.5 flex-none text-muted" />
                 <span v-else class="size-3.5 flex-none" />
                 <UIcon :name="n.dir ? (n.expanded ? 'i-lucide-folder-open' : 'i-lucide-folder') : 'i-lucide-file'" class="size-4 flex-none" :class="n.dir ? 'text-primary' : 'text-muted'" />
-                <span class="font-mono flex-1 truncate">{{ n.name }}</span>
+                <span class="font-mono flex-1 truncate">{{ n.name }}<span v-if="!n.dir && dots.has(n.path)" class="ml-1.5 inline-block size-1.5 rounded-full bg-muted align-middle" :data-file-touched="n.path" /></span>
                 <span v-if="!n.dir && marks.get(n.path)" class="flex-none font-mono text-[10px] font-semibold" :class="statusTone(marks.get(n.path)!) === 'success' ? 'text-success' : statusTone(marks.get(n.path)!) === 'error' ? 'text-error' : 'text-warning'" :data-file-mark="statusLetter(marks.get(n.path)!)">{{ statusLetter(marks.get(n.path)!) }}</span>
                 <UIcon v-if="n.loading" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
                 <span v-else-if="!n.dir" class="text-[11px] text-muted">{{ fmtSize(n.size) }}</span>
@@ -543,6 +567,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
     <p v-if="mode === 'tree' && cwd && section === 'explorer'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-hint>
       <UIcon name="i-lucide-mouse-pointer-click" class="size-3.5 flex-none" /> Paths the agent prints in the terminal are clickable.
     </p>
+    <p v-if="mode === 'tree' && cwd && section === 'touched'" class="border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-touched-foot>The same events are in Activity and on the Events page, quiet there by default.</p>
     <p v-if="mode === 'tree' && cwd && section === 'changes' && status?.kind === 'status'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-changes-foot>
       <UIcon name="i-lucide-refresh-cw" class="size-3.5 flex-none" /> Refreshed as the agent works · {{ agoWords(now - statusAt) }}
       <span class="ml-auto font-mono"><span class="text-success">+{{ status.added ?? 0 }}</span> <span class="text-error">−{{ status.removed ?? 0 }}</span></span>

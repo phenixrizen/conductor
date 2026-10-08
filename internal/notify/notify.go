@@ -33,6 +33,12 @@ type Option struct {
 // Request is the update to send: an attention state, or an event when Event
 // is set. Kind and Options let the workbench offer one-click answers (see
 // docs/protocol.md, Attention).
+// FileRef is one file a tool call touched, as a hook payload named it.
+type FileRef struct {
+	Op   string
+	Path string
+}
+
 type Request struct {
 	State   string   `json:"state"`
 	Message string   `json:"message,omitempty"`
@@ -46,6 +52,13 @@ type Request struct {
 	URL   string `json:"url,omitempty"`
 	To    string `json:"to,omitempty"`
 	Tool  string `json:"tool,omitempty"`
+	// Op and Path go with the `file` event: what the agent did (read, edit,
+	// write, delete) and to which file. Files are the file events a hook
+	// payload yields beside its own event (a tool call that touched files):
+	// Send reports each after the request itself.
+	Op    string    `json:"op,omitempty"`
+	Path  string    `json:"path,omitempty"`
+	Files []FileRef `json:"-"`
 	// AgentSession is the agent's own session id, as its hook payload names
 	// it (Claude Code's session_id, Codex's thread-id…), and Turn says the
 	// payload reports a turn: a prompt taken or finished. They go with an
@@ -65,6 +78,8 @@ type eventBody struct {
 	Tool    string   `json:"tool,omitempty"`
 	Kind    string   `json:"kind,omitempty"`
 	Options []Option `json:"options,omitempty"`
+	Op      string   `json:"op,omitempty"`
+	Path    string   `json:"path,omitempty"`
 }
 
 // ErrNotInSession is returned when the environment is not set. Callers treat
@@ -117,15 +132,36 @@ func (r Request) attentionWord() bool {
 // answered 429 is tried again after each of retryDelays, while the 5 s budget
 // lasts; anything else is tried once.
 func Send(ctx context.Context, url, token string, req Request) error {
-	var payload any = req
-	if req.Event != "" {
-		url = eventsURL(url)
-		payload = eventBody{Type: req.Event, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Kind: req.Kind, Options: req.Options}
+	events := eventsURL(url)
+	// A request of files alone (a file tool's hook with --files) has no event of its own.
+	if req.Event != "" || req.State != "" || len(req.Files) == 0 {
+		var payload any = req
+		if req.Event != "" {
+			url = events
+			payload = eventBody{Type: req.Event, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Kind: req.Kind, Options: req.Options, Op: req.Op, Path: req.Path}
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if err := send(ctx, url, token, req, body); err != nil {
+			return err
+		}
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
+	// The files a tool call touched (design 4e), each its own event after the call's; a file event's refusal (an older server) ends the rest.
+	for _, f := range req.Files {
+		fb, err := json.Marshal(eventBody{Type: "file", Op: f.Op, Path: f.Path, Tool: req.Tool})
+		if err != nil {
+			return err
+		}
+		if err := send(ctx, events, token, Request{Event: "file"}, fb); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func send(ctx context.Context, url, token string, req Request, body []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {

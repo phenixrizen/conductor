@@ -76,11 +76,13 @@ func mcpTools() []mcpTool {
 	return []mcpTool{
 		{Name: "report", Description: "Report something you did to the people watching this session: progress on a long task (at milestones), an artifact such as a pull request (with its url), a handoff to another crew member (with to), a tool refused or an error. One short line.",
 			InputSchema: obj(map[string]any{
-				"event":   map[string]any{"type": "string", "enum": []string{"progress", "artifact", "handoff", "tool_use", "tool_denied", "error"}},
+				"event":   map[string]any{"type": "string", "enum": []string{"progress", "artifact", "handoff", "tool_use", "tool_denied", "error", "file"}},
 				"message": str("one line, at most 500 characters"),
 				"url":     str("artifact: where it lives"),
 				"to":      str("handoff: the member the work goes to"),
-				"tool":    str("tool_use, tool_denied, error: the tool involved"),
+				"tool":    str("tool_use, tool_denied, error, file: the tool involved"),
+				"op":      map[string]any{"type": "string", "enum": []string{"read", "edit", "write", "delete"}, "description": "file: what you did to it"},
+				"path":    str("file: the file's path"),
 			}, "event")},
 		{Name: "set_state", Description: "Tell the people watching that you are working, done, or clear the state; use ask for a question.",
 			InputSchema: obj(map[string]any{"state": map[string]any{"type": "string", "enum": []string{"working", "done", "clear"}}, "message": str("one line")}, "state")},
@@ -221,7 +223,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		switch name {
 		case "report":
 			var a struct {
-				Event, Message, URL, To, Tool string
+				Event, Message, URL, To, Tool, Op, Path string
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("report: %w", err)
@@ -229,7 +231,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			if a.Event == "" {
 				return "", errors.New("report needs an event")
 			}
-			req = notify.Request{Event: a.Event, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool}
+			req = notify.Request{Event: a.Event, Message: a.Message, URL: a.URL, To: a.To, Tool: a.Tool, Op: a.Op, Path: a.Path}
 		case "set_state":
 			var a struct{ State, Message string }
 			if err := json.Unmarshal(raw, &a); err != nil {

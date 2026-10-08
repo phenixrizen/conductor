@@ -369,6 +369,9 @@ type Activity struct {
 	URL     string `json:"url,omitempty"`
 	To      string `json:"to,omitempty"`
 	Tool    string `json:"tool,omitempty"`
+	// A `file` event: what the agent did (read, edit, write, delete) and to which path.
+	Op   string `json:"op,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 // Simple is a message with only a discriminator (ready).

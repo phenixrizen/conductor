@@ -339,6 +339,13 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 		countDrop(&s.dropped, log, e.Type)
 		return false
 	}
+	// A file event repeating the newest one (the same path and op within
+	// FileCoalesce: an agent saving a file forty times) is one entry: the
+	// newest's time moves, nothing is appended or broadcast again.
+	if e.Type == ActivityFile && s.activity.CoalesceFile(CleanEntry(e)) {
+		s.mu.Unlock()
+		return true
+	}
 	// The ring write and the broadcast share one critical section, so a client
 	// attaching meanwhile finds the entry in its replay or receives the
 	// broadcast, never both.

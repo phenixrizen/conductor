@@ -292,7 +292,7 @@ function handleControl(msg: ControlMessage) {
       emit('viewers', { count: msg.count, list: msg.list })
       break
     case 'activity':
-      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message, url: msg.url, to: msg.to, tool: msg.tool })
+      emit('activity', { at: msg.at, type: msg.type, by: msg.by, byName: msg.byName, message: msg.message, url: msg.url, to: msg.to, tool: msg.tool, op: msg.op, path: msg.path })
       break
     case 'chat':
       emit('chat', msg)

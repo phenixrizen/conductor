@@ -29,8 +29,70 @@ type ClaudeHook struct {
 	Title                string          `json:"title"`
 	LastAssistantMessage string          `json:"last_assistant_message"`
 	ToolName             string          `json:"tool_name"`
+	ToolInput            json.RawMessage `json:"tool_input"`
 	Error                json.RawMessage `json:"error"`
 	SessionID            string          `json:"session_id"`
+}
+
+// claudeFiles are the file events a Claude Code tool call yields (design
+// 4e): Read reads, Edit, MultiEdit and NotebookEdit edit, Write writes, the
+// path from the tool's input (file_path, or notebook_path). Bash and the
+// rest name no file.
+func claudeFiles(tool string, input json.RawMessage) []FileRef {
+	op := ""
+	switch tool {
+	case "Read":
+		op = "read"
+	case "Edit", "MultiEdit", "NotebookEdit":
+		op = "edit"
+	case "Write":
+		op = "write"
+	default:
+		return nil
+	}
+	var in struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+	}
+	if len(input) == 0 || json.Unmarshal(input, &in) != nil {
+		return nil
+	}
+	p := firstOf(in.FilePath, in.NotebookPath)
+	if p == "" {
+		return nil
+	}
+	return []FileRef{{Op: op, Path: p}}
+}
+
+// codexFiles are the file events a Codex apply_patch call yields: the
+// files its patch adds, updates or deletes, from the patch's headers.
+func codexFiles(tool string, input json.RawMessage) []FileRef {
+	if tool != "apply_patch" || len(input) == 0 {
+		return nil
+	}
+	var in struct {
+		Input string `json:"input"`
+		Patch string `json:"patch"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return nil
+	}
+	var out []FileRef
+	for _, line := range strings.Split(firstOf(in.Input, in.Patch), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "*** Add File: "):
+			out = append(out, FileRef{Op: "write", Path: strings.TrimSpace(strings.TrimPrefix(line, "*** Add File: "))})
+		case strings.HasPrefix(line, "*** Update File: "):
+			out = append(out, FileRef{Op: "edit", Path: strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))})
+		case strings.HasPrefix(line, "*** Delete File: "):
+			out = append(out, FileRef{Op: "delete", Path: strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: "))})
+		}
+		if len(out) == 32 {
+			break
+		}
+	}
+	return out
 }
 
 // MapClaudeHook turns a Claude Code hook payload into an attention update, or
@@ -91,7 +153,7 @@ func mapClaudeHook(h ClaudeHook) (req Request, ok bool) {
 	case "PermissionDenied":
 		return Request{Event: "tool_denied", Tool: h.ToolName}, true
 	case "PostToolUse":
-		return Request{Event: "tool_use", Tool: h.ToolName}, true
+		return Request{Event: "tool_use", Tool: h.ToolName, Files: claudeFiles(h.ToolName, h.ToolInput)}, true
 	case "PostToolUseFailure":
 		return Request{Event: "error", Message: truncate(errorText(h.Error), 200), Tool: h.ToolName}, true
 	case "SubagentStop":
@@ -144,10 +206,11 @@ func MapCodex(raw []byte) (req Request, ok bool) {
 // the keys Codex's dialog takes are not verified yet.
 func MapCodexHook(raw []byte) (req Request, ok bool) {
 	var h struct {
-		HookEventName        string `json:"hook_event_name"`
-		ToolName             string `json:"tool_name"`
-		LastAssistantMessage string `json:"last_assistant_message"`
-		SessionID            string `json:"session_id"`
+		HookEventName        string          `json:"hook_event_name"`
+		ToolName             string          `json:"tool_name"`
+		ToolInput            json.RawMessage `json:"tool_input"`
+		LastAssistantMessage string          `json:"last_assistant_message"`
+		SessionID            string          `json:"session_id"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
@@ -156,7 +219,7 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 	case "Stop":
 		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
 	case "PostToolUse":
-		return Request{Event: "tool_use", Tool: h.ToolName}, true
+		return Request{Event: "tool_use", Tool: h.ToolName, Files: codexFiles(h.ToolName, h.ToolInput)}, true
 	case "PermissionRequest":
 		msg := "Codex asks for permission"
 		if h.ToolName != "" {
@@ -249,7 +312,7 @@ func MapCursorHook(raw []byte) (req Request, ok bool) {
 		if h.FilePath == "" {
 			return Request{Event: "tool_use", Tool: "edit"}, true
 		}
-		return Request{Event: "tool_use", Tool: "edit " + path.Base(h.FilePath)}, true
+		return Request{Event: "tool_use", Tool: "edit " + path.Base(h.FilePath), Files: []FileRef{{Op: "edit", Path: h.FilePath}}}, true
 	}
 	return Request{}, false
 }

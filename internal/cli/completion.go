@@ -80,12 +80,15 @@ func completionSpec() []commandSpec {
 	notifyFlags := []flagSpec{
 		{name: "--state", kind: flagEnum, values: []string{"needs_input", "working", "done", "clear"}},
 		{name: "--message", kind: flagValue},
-		{name: "--event", kind: flagEnum, values: []string{"progress", "artifact", "handoff", "tool_use", "tool_denied", "error"}},
+		{name: "--event", kind: flagEnum, values: []string{"progress", "artifact", "handoff", "tool_use", "tool_denied", "error", "file"}},
 		{name: "--url", kind: flagValue},
 		{name: "--to", kind: flagValue},
 		{name: "--tool", kind: flagValue},
+		{name: "--op", kind: flagEnum, values: []string{"read", "edit", "write", "delete"}},
+		{name: "--path", kind: flagFile},
 		{name: "--choices", kind: flagValue},
 		{name: "--codex"},
+		{name: "--files"},
 	}
 	for _, h := range hookPayloads {
 		notifyFlags = append(notifyFlags, flagSpec{name: "--" + h.name})

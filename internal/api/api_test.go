@@ -2939,3 +2939,27 @@ func TestShutdownWaitsForWhatTheServerStarted(t *testing.T) {
 		t.Fatal("Shutdown did not return")
 	}
 }
+
+// A file event names its op and path (design 4e); without them it is
+// refused; it reaches the session's activity with both and the tool.
+func TestFileEventsNameTheirOpAndPath(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "file", "op": "edit", "path": "internal/api/users.go", "tool": "Edit"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("file event: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "file", "op": "burn", "path": "x"}); resp.StatusCode != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "invalid_request" {
+		t.Fatalf("an unknown op: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "file", "op": "edit"}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("no path: %d %v", resp.StatusCode, out)
+	}
+	d, _ := e.srv.registry.Get(id)
+	for _, a := range d.(*session.Local).Activity() {
+		if a.Type == session.ActivityFile && a.Op == "edit" && a.Path == "internal/api/users.go" && a.Tool == "Edit" {
+			return
+		}
+	}
+	t.Fatal("the file event is not in the activity")
+}

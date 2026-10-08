@@ -53,6 +53,12 @@ them; the commands below do the same.
 
       "${CONDUCTOR_BIN:-conductor}" notify --event handoff --to <member> --message "…"
 
+- A file you read, edited, wrote or deleted, when your tools do not report
+  it through hooks (Claude Code's, Codex's and Cursor's do): the Files tab
+  lists what you touched.
+
+      "${CONDUCTOR_BIN:-conductor}" notify --event file --op edit --path internal/api/users.go
+
 - A decision you cannot make yourself, such as a choice between designs, a
   missing credential or an approval: ask, then wait for the answer in the
   terminal. The session shows as needing input until someone replies.

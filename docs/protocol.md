@@ -477,6 +477,7 @@ live and in the replay after `ready`. The six event types:
 | `tool_use` | the agent ran a tool | `tool` names it |
 | `tool_denied` | a tool call was refused | `tool` names it |
 | `error` | the agent hit an error | `message` says what, `tool` names the tool involved |
+| `file` | the agent read, edited, wrote or deleted a file (design 4e) | `op` is `read`, `edit`, `write` or `delete`; `path` the file as the agent named it (≤ 1024 bytes); `tool` the tool. The hook mappers yield one per file a tool call touched (Claude Code's Read, Edit, MultiEdit, NotebookEdit and Write; Codex's apply_patch, each file of the patch; Cursor's afterFileEdit); `conductor notify --event file --op … --path …` and the MCP `report` tool for the rest. A repeat of the newest file entry (the same path and op within 3 s) moves its time instead of adding a line |
 
 The reporter chooses which fields an event carries; none is required.
 
