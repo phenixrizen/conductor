@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatPost, ChatSend, ControlMessage, FileResponse, TransportKind, Welcome } from '../protocol'
+import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, TransportKind, Welcome } from '../protocol'
 
 export type TransportState = 'idle' | 'connecting' | 'signaling' | 'open' | 'closed'
 
@@ -29,7 +29,7 @@ export interface TerminalTransport {
   chatSend(send: ChatSend): void
   resize(cols: number, rows: number): void
   ping(): void
-  requestFile(path: string, stat?: boolean): Promise<FileResponse>
+  requestFile(path: string, stat?: boolean, extra?: FileGetExtra): Promise<FileResponse>
   onOutput(cb: (data: Uint8Array, replay: boolean) => void): void
   onControl(cb: (msg: ControlMessage) => void): void
   onClose(cb: (info: CloseInfo) => void): void

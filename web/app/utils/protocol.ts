@@ -212,10 +212,36 @@ export interface FileEntry {
   size: number
 }
 
+/** One changed file of a `status` reply: the path from the tree's top, M A D R or ? (untracked), its lines against the base. */
+export interface FileChange {
+  path: string
+  status: 'M' | 'A' | 'D' | 'R' | '?'
+  added?: number
+  removed?: number
+  binary?: boolean
+}
+
+/** What a file request may ask for beyond a read: git `status` against `base` (HEAD when empty), or `show` of the path at `rev`. */
+export interface FileGetExtra {
+  op?: 'status' | 'show'
+  base?: string
+  rev?: string
+}
+
+/** How a page reads a file (or asks git) over its terminal's connection. */
+export type FileRequester = (path: string, stat?: boolean, extra?: FileGetExtra) => Promise<FileResponse>
+
 export interface FileHeader {
   reqId: string
   path: string
-  kind: 'file' | 'dir' | 'error'
+  kind: 'file' | 'dir' | 'error' | 'status' | 'show'
+  /** A `status` reply: the branch checked out, the base's short id (empty when it does not resolve), the changes and their totals. */
+  branch?: string
+  base?: string
+  rev?: string
+  changes?: FileChange[]
+  added?: number
+  removed?: number
   size?: number
   truncated?: boolean
   binary?: boolean

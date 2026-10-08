@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { ChatThread } from '~/composables/useChat'
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, ChatMessage, FileResponse, Role, ViewerInfo } from '~/utils/protocol'
+import type { ActivityEntry, ChatMessage, FileRequester, Role, ViewerInfo } from '~/utils/protocol'
 import type { FileTarget } from '~/components/FileBrowser.vue'
+import type { ChangeRow } from '~/utils/changes'
 import { avatarTone } from '~/utils/avatar'
 import { initials, relativeTime } from '~/utils/sessions'
 import { COLOR_TEXT, entryIcon, linkableUrl } from '~/utils/events'
@@ -15,7 +16,7 @@ const props = defineProps<{
   viewers: ViewerInfo[]
   activity: ActivityEntry[]
   links: ShareLink[]
-  request: (path: string, stat?: boolean) => Promise<FileResponse>
+  request: FileRequester
   rawUrl?: (path: string) => string | null
   /** The session's chat (design 2a); the tab shows once the owner said it takes chat. */
   chat?: ChatThread
@@ -23,7 +24,7 @@ const props = defineProps<{
   chatOffline?: boolean
   ended?: boolean
 }>()
-const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number]; openFile: [target: FileTarget] }>()
+const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number]; openFile: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }] }>()
 
 const tab = defineModel<InspectorTab>('tab', { default: 'people' })
 const target = defineModel<FileTarget | null>('target', { default: null })
@@ -158,7 +159,7 @@ function describe(e: ActivityEntry) {
     </div>
 
     <div v-else-if="tab === 'files'" class="flex-1 min-h-0 flex flex-col">
-      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="emit('openFile', $event)" />
+      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="emit('openFile', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" />
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-y-auto p-4">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { FileHeader, FileResponse } from '~/utils/protocol'
-import { activateTab, closeAllTabs, closeTab, cycleTab, takeLine, toggleFold, type EditorTab, type TabsState } from '~/utils/editorTabs'
+import type { FileHeader, FileRequester } from '~/utils/protocol'
+import { statusLetter, statusTone } from '~/utils/changes'
+import { activateTab, closeAllTabs, closeTab, cycleTab, openTab, takeLine, toggleFold, type EditorTab, type TabsState } from '~/utils/editorTabs'
 import { crumbsOf } from '~/utils/fileTree'
 
 /**
@@ -13,7 +14,7 @@ import { crumbsOf } from '~/utils/fileTree'
  * Ctrl+Shift+Tab switch tabs, Ctrl+W closes the active one.
  */
 const props = defineProps<{
-  request: (path: string, stat?: boolean) => Promise<FileResponse>
+  request: FileRequester
   cwd?: string
   rawUrl?: (path: string) => string | null
   /** The name of a hosted session's machine while it is away: its files cannot be read until it returns. */
@@ -24,13 +25,17 @@ const props = defineProps<{
 const tabs = defineModel<TabsState>('tabs', { required: true })
 
 interface Loaded {
-  state: 'loading' | 'text' | 'image' | 'binary' | 'refused' | 'error' | 'url'
+  state: 'loading' | 'text' | 'image' | 'binary' | 'refused' | 'error' | 'url' | 'diff'
   header?: FileHeader
   text?: string
   imageSrc?: string
   dims?: string
   error?: string
+  /** A diff: the base's version and the working directory's. */
+  original?: string
+  modified?: string
 }
+const inlineDiff = ref(false)
 const loaded = reactive(new Map<string, Loaded>())
 const pos = ref({ line: 1, col: 1 })
 const editorRef = ref<{ showLine: (n: number) => void; find: () => void; gotoLine: () => void; focus: () => void } | null>(null)
@@ -46,11 +51,41 @@ function fmtSize(n?: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MiB`
 }
 
+/** A diff tab: the base's version through git show (none for an added file), the working directory's through a read (none for a deleted one). */
+async function loadDiff(tab: EditorTab) {
+  loaded.set(tab.id, { state: 'loading' })
+  const status = tab.meta?.status
+  try {
+    let original = ''
+    let modified = ''
+    if (status !== 'A' && status !== '?') {
+      const res = await props.request(tab.path, false, { op: 'show', rev: tab.meta?.base || 'HEAD' })
+      if (res.header.kind === 'error') {
+        loaded.set(tab.id, { state: res.header.error?.code === 'file_denied' ? 'refused' : 'error', header: res.header, error: res.header.error?.message || 'cannot read' })
+        return
+      }
+      original = new TextDecoder().decode(res.body)
+    }
+    if (status !== 'D') {
+      const res = await props.request(tab.path, false)
+      if (res.header.kind === 'error') {
+        loaded.set(tab.id, { state: res.header.error?.code === 'file_denied' ? 'refused' : 'error', header: res.header, error: res.header.error?.message || 'cannot read' })
+        return
+      }
+      modified = new TextDecoder().decode(res.body)
+    }
+    loaded.set(tab.id, { state: 'diff', original, modified })
+  } catch (e) {
+    loaded.set(tab.id, { state: 'error', error: (e as Error).message })
+  }
+}
+
 async function load(tab: EditorTab) {
   if (tab.kind === 'url') {
     loaded.set(tab.id, { state: 'url' })
     return
   }
+  if (tab.kind === 'diff') return loadDiff(tab)
   loaded.set(tab.id, { state: 'loading' })
   try {
     const res = await props.request(tab.path, false)
@@ -117,7 +152,7 @@ watch(
 
 const crumbs = computed(() => {
   const t = active.value
-  if (!t || t.kind !== 'file') return []
+  if (!t || t.kind === 'url') return []
   const root = (props.cwd || '').replace(/\/+$/, '')
   const rel = root && t.path.startsWith(root + '/') ? t.path.slice(root.length + 1) : null
   if (rel === null) return t.path.split('/').filter(Boolean).map((label) => ({ label }))
@@ -125,6 +160,11 @@ const crumbs = computed(() => {
 })
 
 const rawHref = computed(() => (active.value?.kind === 'file' && props.rawUrl ? props.rawUrl(active.value.path) : null))
+
+/** A diff's file, as its own tab. */
+function openFileOfDiff() {
+  if (active.value?.kind === 'diff') tabs.value = openTab(tabs.value, 'file', active.value.path)
+}
 
 function refused(msg: string): { title: string; words: string; icon: string } {
   if (/disabled|off/i.test(msg)) return { icon: 'i-lucide-eye-off', title: 'File viewing is off for this session', words: 'Nothing is read from its working directory, for anyone. The owner can turn it on in Settings.' }
@@ -179,7 +219,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
             :data-editor-tab-active="t.id === tabs.active ? '' : undefined"
           >
             <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
-              <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : 'i-lucide-file'" class="size-3.5 flex-none" />
+              <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
               <span class="truncate font-mono">{{ t.title }}</span>
             </button>
             <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="tabs = closeTab(tabs, t.id)" />
@@ -210,6 +250,16 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
               <span :class="i === crumbs.length - 1 ? 'text-highlighted' : 'text-muted'">{{ c.label }}</span>
             </template>
           </nav>
+          <template v-if="active.kind === 'diff'">
+            <span class="flex-none text-muted" data-editor-against>{{ active.meta?.against || 'working directory vs HEAD' }}</span>
+            <UBadge v-if="active.meta?.status" :label="statusLetter(active.meta.status as any)" :color="statusTone(active.meta.status as any)" variant="subtle" size="xs" class="font-mono" />
+            <span class="flex-none font-mono text-[11px]"><span class="text-success">+{{ active.meta?.added ?? 0 }}</span> <span class="text-error">−{{ active.meta?.removed ?? 0 }}</span></span>
+            <UFieldGroup size="xs">
+              <UButton label="Side by side" :variant="inlineDiff ? 'ghost' : 'soft'" color="neutral" data-editor-side-by-side @click="inlineDiff = false" />
+              <UButton label="Inline" :variant="inlineDiff ? 'soft' : 'ghost'" color="neutral" data-editor-inline @click="inlineDiff = true" />
+            </UFieldGroup>
+            <UButton label="Open file" icon="i-lucide-file" size="xs" color="neutral" variant="ghost" data-editor-open-file @click="openFileOfDiff" />
+          </template>
           <UBadge v-if="view?.header?.kind === 'file' && view.state !== 'text'" :label="view.dims || fmtSize(view.header.size)" color="neutral" variant="subtle" size="sm" />
           <UBadge v-if="view?.header?.truncated" label="truncated" color="warning" variant="subtle" size="sm" />
           <span v-if="view?.state === 'text'" class="flex-none font-mono text-[11px] text-muted" data-editor-pos>Ln {{ pos.line }}, Col {{ pos.col }}</span>
@@ -228,6 +278,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
         <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="active!.id" :path="active!.path" :text="view.text ?? ''" :line="active!.line" read-only @cursor="pos = $event" @ready="onReady" />
+        <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />
         </div>

@@ -1,3 +1,4 @@
+import { diffAgainst, type ChangeRow } from '~/utils/changes'
 import { emptyTabs, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
 
 /**
@@ -29,6 +30,11 @@ export function useEditorTabs() {
     })
   }
 
+  /** A change from the Changes section opens as a diff against the base (design 4d). */
+  function openDiff(c: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }) {
+    tabs.value = openTab(tabs.value, 'diff', c.abs, undefined, { status: c.status, added: c.added, removed: c.removed, base: against.base, against: diffAgainst({ branch: against.branch, base: against.baseId }, against.base) })
+  }
+
   function fold() {
     if (tabs.value.tabs.length) tabs.value = toggleFold(tabs.value)
   }
@@ -38,5 +44,5 @@ export function useEditorTabs() {
     alt_t: { usingInput: true, handler: fold },
   })
 
-  return { tabs, editorOpen, openFile, openUrl, fold }
+  return { tabs, editorOpen, openFile, openUrl, openDiff, fold }
 }

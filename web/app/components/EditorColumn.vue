@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FileResponse } from '~/utils/protocol'
+import type { FileRequester } from '~/utils/protocol'
 import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~/utils/editorTabs'
 
 /**
@@ -11,7 +11,7 @@ import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~
  * a tap brings the terminal back (the editor folds to its strip).
  */
 const props = defineProps<{
-  request: (path: string, stat?: boolean) => Promise<FileResponse>
+  request: FileRequester
   cwd?: string
   rawUrl?: (path: string) => string | null
   hostAway?: string

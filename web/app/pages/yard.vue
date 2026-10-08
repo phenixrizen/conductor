@@ -45,11 +45,11 @@ watch(waiting, (list) => {
 // Esc, one click or one browser Back away; the URL stays shareable.
 const focusId = computed(() => (typeof route.query.focus === 'string' ? route.query.focus : ''))
 const focused = computed<SessionInfo | undefined>(() => attention.sessions.value.find((s) => s.id === focusId.value))
-const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any> } | null>(null)
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 // The editor area (design 4g): files open above the focused tile's terminal, the Files pane beside it.
-const { tabs, editorOpen, openFile, openUrl } = useEditorTabs()
+const { tabs, editorOpen, openFile, openUrl, openDiff } = useEditorTabs()
 watch(focusId, () => {
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
@@ -141,9 +141,9 @@ async function stop(s: SessionInfo) {
   }
 }
 
-function requestFile(path: string, stat?: boolean) {
+function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
   if (!focusTerminal.value) return Promise.reject(new Error('terminal not ready'))
-  return focusTerminal.value.requestFile(path, stat)
+  return focusTerminal.value.requestFile(path, stat, extra)
 }
 
 function rawUrl(path: string) {
@@ -219,7 +219,7 @@ onMounted(() => {
         </div>
         <aside v-if="focused" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-md border border-default bg-default" data-files-aside>
           <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted"><UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files</div>
-          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="openFile" />
+          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" />
         </aside>
       </div>
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">

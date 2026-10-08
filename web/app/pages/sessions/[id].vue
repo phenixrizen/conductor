@@ -28,7 +28,7 @@ const share = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
-const { tabs, openFile, openUrl } = useEditorTabs()
+const { tabs, openFile, openUrl, openDiff } = useEditorTabs()
 useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
 const tab = ref<InspectorTab>('people')
 const attention = ref<Attention>({ state: '' })
@@ -158,7 +158,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean) => Promise<any> } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any> } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -286,9 +286,9 @@ function showFiles() {
   }
 }
 
-function requestFile(path: string, stat?: boolean) {
+function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
   if (!terminal.value) return Promise.reject(new Error('terminal not ready'))
-  return terminal.value.requestFile(path, stat)
+  return terminal.value.requestFile(path, stat, extra)
 }
 
 function rawUrl(path: string) {
@@ -422,6 +422,7 @@ watch(id, () => {
             @chat-retry="chatRetry"
             @chat-answer="chatAnswer"
             @open-file="openFile"
+            @open-diff="openDiff"
           />
         </div>
       </div>

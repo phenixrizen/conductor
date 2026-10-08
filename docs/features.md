@@ -722,6 +722,30 @@ waiting on monaco-neovim-wasm's missing license.
   compared a raw root with its reactive proxy and never fired; the root is
   reactive from the start now, and a page whose terminal connects after
   the pane is retried too.
+- **F3, Changes (4d).** The git reads ride the file request: `file_get`
+  with `op: status` (against `base`, HEAD when empty) answers a FILE frame
+  of kind `status` (the tree's top as its path, the branch, the base's id,
+  the changes with their status letter and lines, the totals, truncated at
+  500 or at the frame's header bound), `op: show` a FILE frame of kind
+  `show` with the path's content at a revision (1 MiB at most); both under
+  the session's file policy and deny list, so a hosted session's status
+  comes from the developer's machine through the same channel.
+  `internal/gitcli` runs the git binary (argv, the C locale; the crews'
+  helper moved there): status by `git status --porcelain=v1 -z`, the lines
+  by `git diff --numstat --no-renames`, an untracked file's lines counted
+  from the file (a binary one as none), a revision's file by `git show`.
+  go-git is kept for the commits (F5): its status hashes the working tree,
+  which the owner ruled out. The Files pane gains its section switch
+  (Explorer, Changes with its count); the Changes list with M, A, D and
+  the lines; the footer "Refreshed as the agent works · 8s ago" with the
+  totals; a refresh every five seconds while the section shows and once
+  when the pane opens, for the Explorer's marks; "Not a git repository"
+  with the words. A change opens as a `diff` tab (`DiffEditor.vue`,
+  Monaco's diff editor, side by side or inline, read-only; the base's
+  version through `show`, none for an added file, the working directory's
+  through a read, none for a deleted one), the header saying what it is
+  against, the status and the lines, and Open file. A crew member's
+  changes against the run's base wait for the base to reach the page.
 
 ## The trust question's answers as choices (2026-10-08)
 
