@@ -76,6 +76,16 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 		t.Fatalf("view submit: %v", err)
 	}
 	ping := proto.MustControl(proto.Ping{T: proto.CtlPing})
+	// The editor's saves and Neovim are the control role's too (design round 12, F6, F8).
+	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeFileWrite, Payload: []byte("x")}); !errors.Is(err, session.ErrReadOnly) {
+		t.Fatalf("a view viewer's save: %v", err)
+	}
+	for _, ctl := range []any{proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r", Path: "a"}, proto.NvimInput{T: proto.CtlNvimInput, ID: "e", Keys: "x"}, proto.NvimClose{T: proto.CtlNvimClose, ID: "e"}} {
+		frame := proto.MustControl(ctl)
+		if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: frame[1:]}); !errors.Is(err, session.ErrReadOnly) {
+			t.Fatalf("a view viewer's %T: %v", ctl, err)
+		}
+	}
 	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: ping[1:]}); err != nil {
 		t.Fatalf("view ping: %v", err)
 	}

@@ -313,6 +313,17 @@ func (p *peer) handleFrame(f proto.Frame) {
 				}
 			}
 		}
+	case proto.TypeFileWrite:
+		// A save from the editor (design round 12, F6), written on this machine.
+		if sub == nil {
+			return
+		}
+		h, part, err := proto.DecodeFileWrite(f.Payload)
+		if err != nil {
+			p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
+			return
+		}
+		p.a.local.FileWrite(sub, h, part)
 	case proto.TypeInput:
 		if sub == nil {
 			return

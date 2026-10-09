@@ -99,6 +99,14 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 				sink.Close(nil)
 				return
 			}
+		case proto.TypeFileWrite:
+			// A save from the editor (design round 12, F6): its answer is a FILE frame.
+			h, part, err := proto.DecodeFileWrite(f.Payload)
+			if err != nil {
+				local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
+				continue
+			}
+			local.FileWrite(sub, h, part)
 		default:
 			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "unexpected frame type"))
 			c.Close(proto.CloseProtocolError, "unexpected frame type")

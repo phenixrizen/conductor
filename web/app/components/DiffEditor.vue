@@ -24,6 +24,7 @@ async function mount() {
   const lang = languageFor(props.path)
   models = { original: monaco.editor.createModel(props.original, lang), modified: monaco.editor.createModel(props.modified, lang) }
   editor = monaco.editor.createDiffEditor(host.value, {
+    editContext: false,
     theme: theme.value,
     readOnly: true,
     originalEditable: false,

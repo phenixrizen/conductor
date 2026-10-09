@@ -141,6 +141,10 @@ async function stop(s: SessionInfo) {
   }
 }
 
+// The editor on the focused tile (design round 12, F6 and F8): saves and Neovim as on the session page.
+const editor = useEditorBridge(focusTerminal as unknown as Ref<EditorTerminal | null>, () => (focused.value?.kind === 'hosted' ? focused.value.hostName || 'the host' : 'this server'))
+watch(() => focused.value?.id, () => editor.reset())
+
 function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
   if (!focusTerminal.value) return Promise.reject(new Error('terminal not ready'))
   return focusTerminal.value.requestFile(path, stat, extra)
@@ -198,11 +202,13 @@ onMounted(() => {
       <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
       <div v-if="focusId" class="flex flex-1 min-h-0 gap-3 p-2 sm:p-3">
-        <EditorColumn v-if="focused" v-model:tabs="tabs" :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :host-away="focused.status === 'host_disconnected' ? focused.hostName || 'The host' : undefined" :bar-text="focused.attention?.message || focused.agentId">
+        <EditorColumn v-if="focused" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="focused.cwd" :raw-url="rawUrl" :host-away="focused.status === 'host_disconnected' ? focused.hostName || 'The host' : undefined" :bar-text="focused.attention?.message || focused.agentId">
           <TerminalView
             :key="focused.id"
             ref="focusTerminal"
             :create-transport="transportFor(focused)"
+            @welcome="editor.onWelcome"
+            @nvim="editor.onNvim"
             @viewers="viewers = $event.count"
             @transport="transport = $event"
             @open-file="openFile"

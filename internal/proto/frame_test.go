@@ -151,3 +151,33 @@ func TestStatusHeaderAtTheBoundEncodes(t *testing.T) {
 		t.Fatalf("back: %v %d", err, len(back.Changes))
 	}
 }
+
+// A save part round-trips; the part and the header are bounded; the frame
+// type's limit admits the largest part.
+func TestFileWriteFrame(t *testing.T) {
+	part := []byte("package api\n")
+	frame, err := EncodeFileWrite(FileWrite{ReqID: "w1", Path: "internal/api/users.go", Offset: 0, Total: int64(len(part)), BaseSha256: "ab", Force: true}, part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := Decode(frame)
+	if err != nil || f.Type != TypeFileWrite {
+		t.Fatalf("decode: %v %v", f.Type, err)
+	}
+	h, body, err := DecodeFileWrite(f.Payload)
+	if err != nil || h.ReqID != "w1" || h.Path != "internal/api/users.go" || h.Total != int64(len(part)) || !h.Force || h.BaseSha256 != "ab" || string(body) != string(part) {
+		t.Fatalf("round trip: %+v %q %v", h, body, err)
+	}
+	big := make([]byte, MaxWritePart)
+	if frame, err := EncodeFileWrite(FileWrite{ReqID: "w2", Path: "a", Total: 1 << 20}, big); err != nil {
+		t.Fatal(err)
+	} else if _, err := Decode(frame); err != nil {
+		t.Fatalf("the largest part: %v", err)
+	}
+	if _, err := EncodeFileWrite(FileWrite{ReqID: "w3", Path: "a"}, make([]byte, MaxWritePart+1)); err == nil {
+		t.Fatal("an oversized part")
+	}
+	if _, _, err := DecodeFileWrite([]byte{1, 2, 3}); err == nil {
+		t.Fatal("a short payload")
+	}
+}

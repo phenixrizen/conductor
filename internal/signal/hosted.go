@@ -465,7 +465,7 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 	}
 	if v.Role != session.RoleControl {
 		switch inner.Type {
-		case proto.TypeInput:
+		case proto.TypeInput, proto.TypeFileWrite:
 			return session.ErrReadOnly
 		case proto.TypeControl:
 			// A chat post passes for every role (the host refuses one that is

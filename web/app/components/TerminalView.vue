@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
@@ -368,6 +368,10 @@ function disconnect(showOverlay = true) {
   if (showOverlay && !overlay.value) overlay.value = { title: 'Disconnected' }
 }
 
+function writeFile(path: string, data: Uint8Array, opts?: FileWriteOptions): Promise<FileResponse> {
+  if (!transport) return Promise.reject(new Error('not connected'))
+  return transport.writeFile(path, data, opts)
+}
 function nvimOpen(path: string): Promise<NvimEvent> {
   if (!transport) return Promise.reject(new Error('not connected'))
   return transport.nvimOpen(path)
@@ -411,7 +415,7 @@ function chatSend(send: ChatSend): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, nvimOpen, nvimInput, nvimClose, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({

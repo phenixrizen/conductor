@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { FileHeader, FileRequester, NvimBridge } from '~/utils/protocol'
+import type { FileHeader, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
+import { closeWords, conflictWords, forgetModel } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
 import { activateTab, closeAllTabs, closeTab, cycleTab, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { modeWords } from '~/utils/nvimKeys'
@@ -24,6 +25,9 @@ const props = defineProps<{
   hostAway?: string
   /** A view-only guest: the editor says Read only where a controller will see Save. */
   readOnlyBadge?: boolean
+  /** Saves a file (design round 12, F6), and whether this connection may edit: Save, Ctrl+S and an editable editor then. */
+  write?: FileWriter
+  canEdit?: boolean
 }>()
 const tabs = defineModel<TabsState>('tabs', { required: true })
 
@@ -41,7 +45,7 @@ interface Loaded {
 const inlineDiff = ref(false)
 const loaded = reactive(new Map<string, Loaded>())
 const pos = ref({ line: 1, col: 1 })
-const editorRef = ref<{ showLine: (n: number) => void; find: () => void; gotoLine: () => void; focus: () => void } | null>(null)
+const editorRef = ref<{ showLine: (n: number) => void; find: () => void; gotoLine: () => void; focus: () => void; getText: () => string; markClean: () => void; setText: (t: string) => void } | null>(null)
 const copy = useCopy()
 
 const active = computed<EditorTab | null>(() => tabs.value.tabs.find((t) => t.id === tabs.value.active) ?? null)
@@ -202,18 +206,150 @@ const keymapTip = computed(() => {
   return "Monaco's keys · click for Neovim keys (the real Neovim on the session's machine)"
 })
 function closeActive() {
-  if (active.value) tabs.value = closeTab(tabs.value, active.value.id)
+  // Neovim's :q: Neovim kept its own buffer, nothing to ask.
+  if (active.value) closeNow([active.value.id])
+}
+
+// Editing (design round 12, F6): a controller on a session that allows it edits a text file read whole in Monaco (Neovim's keymap
+// edits through Neovim instead); Save and Ctrl+S write it on the session's machine, refused when the file changed on disk since it
+// was read (Compare, Reload, Save anyway); a tab with unsaved changes wears a dot and asks before it closes.
+const dirty = reactive(new Set<string>())
+const saving = ref(false)
+const savedFlash = ref(false)
+const saveError = ref('')
+const conflict = ref<{ tabId: string; header: FileHeader } | null>(null)
+const compare = ref<{ tabId: string; disk: string; mine: string } | null>(null)
+const closing = ref<{ ids: string[] } | null>(null)
+const editable = computed(
+  () => !!props.write && !!props.canEdit && !nvimOn.value && active.value?.kind === 'file' && view.value?.state === 'text' && !view.value.header?.truncated && !!view.value.header?.sha256,
+)
+const activeConflict = computed(() => (conflict.value && conflict.value.tabId === active.value?.id ? conflict.value : null))
+const activeCompare = computed(() => (compare.value && compare.value.tabId === active.value?.id ? compare.value : null))
+function setDirty(id: string, d: boolean) {
+  if (d) dirty.add(id)
+  else dirty.delete(id)
+}
+async function save(force = false) {
+  const t = active.value
+  const v = view.value
+  if (!t || !v || !editable.value || !props.write || saving.value) return
+  // From the compare view the editor is not up: its text is the compare's right side, and its model takes the saved text when it returns.
+  const fromCompare = !!activeCompare.value
+  const text = fromCompare ? activeCompare.value!.mine : (editorRef.value?.getText() ?? v.text ?? '')
+  saving.value = true
+  saveError.value = ''
+  try {
+    const res = await props.write(t.path, new TextEncoder().encode(text), { baseSha256: v.header?.sha256, force })
+    const h = res.header
+    if (h.kind === 'written') {
+      loaded.set(t.id, { ...v, text, header: { ...v.header!, sha256: h.sha256, mtime: h.mtime, size: h.size } })
+      conflict.value = null
+      compare.value = null
+      if (fromCompare || !editorRef.value) forgetModel(t.path)
+      else editorRef.value.markClean()
+      dirty.delete(t.id)
+      savedFlash.value = true
+      setTimeout(() => (savedFlash.value = false), 2000)
+    } else if (h.error?.code === 'changed_on_disk') {
+      conflict.value = { tabId: t.id, header: h }
+    } else {
+      saveError.value = h.error?.message || 'cannot save'
+    }
+  } catch (e) {
+    saveError.value = (e as Error).message
+  } finally {
+    saving.value = false
+  }
+}
+/** The file as it is on disk now, the unsaved edits dropped. */
+async function reloadFromDisk() {
+  const t = active.value
+  if (!t) return
+  const res = await props.request(t.path, false)
+  if (res.header.kind !== 'file') {
+    saveError.value = res.header.error?.message || 'cannot read the file'
+    return
+  }
+  const text = new TextDecoder().decode(res.body)
+  const fromCompare = !!activeCompare.value
+  loaded.set(t.id, { state: 'text', header: res.header, text })
+  conflict.value = null
+  compare.value = null
+  // The unsaved edits go: an editor that is up takes the text; one coming back from the compare view reads it fresh.
+  if (fromCompare || !editorRef.value) forgetModel(t.path)
+  else editorRef.value.setText(text)
+  dirty.delete(t.id)
+}
+/** Disk and the unsaved edits side by side. */
+async function openCompare() {
+  const t = active.value
+  if (!t) return
+  const mine = editorRef.value?.getText() ?? view.value?.text ?? ''
+  const res = await props.request(t.path, false)
+  compare.value = { tabId: t.id, disk: res.header.kind === 'file' ? new TextDecoder().decode(res.body) : '', mine }
+}
+function closeNow(ids: string[]) {
+  let st = tabs.value
+  for (const id of ids) {
+    const t = st.tabs.find((x) => x.id === id)
+    if (t && dirty.has(id)) forgetModel(t.path)
+    dirty.delete(id)
+    if (conflict.value?.tabId === id) conflict.value = null
+    if (compare.value?.tabId === id) compare.value = null
+    st = closeTab(st, id)
+  }
+  tabs.value = st
+}
+/** Closes a tab, asking first when it has unsaved changes (it comes to the front to be saved). */
+function requestClose(id: string) {
+  if (!dirty.has(id)) return closeNow([id])
+  tabs.value = activateTab(tabs.value, id)
+  closing.value = { ids: [id] }
+}
+function requestCloseAll() {
+  const ids = tabs.value.tabs.map((t) => t.id)
+  const unsaved = ids.filter((id) => dirty.has(id))
+  if (!unsaved.length) {
+    tabs.value = closeAllTabs()
+    return
+  }
+  if (unsaved.length === 1) tabs.value = activateTab(tabs.value, unsaved[0]!)
+  closing.value = { ids }
+}
+const closingWords = computed(() => {
+  const ids = closing.value?.ids.filter((id) => dirty.has(id)) ?? []
+  return closeWords(ids.map((id) => tabs.value.tabs.find((t) => t.id === id)?.title ?? id))
+})
+const closingOne = computed(() => (closing.value?.ids.filter((id) => dirty.has(id)).length ?? 0) === 1)
+async function closingSave() {
+  const ids = closing.value?.ids ?? []
+  await save()
+  if (active.value && !dirty.has(active.value.id)) {
+    closing.value = null
+    closeNow(ids)
+  }
+}
+function closingDiscard() {
+  const ids = closing.value?.ids ?? []
+  closing.value = null
+  closeNow(ids)
 }
 
 function onKeydown(e: KeyboardEvent) {
   if (!(e.ctrlKey || e.metaKey)) return
+  if (e.key.toLowerCase() === 's' && !e.altKey && !e.shiftKey) {
+    // Ctrl+S saves (F6); never the page's own Save as.
+    e.preventDefault()
+    if (editable.value) void save()
+    return
+  }
   if (e.key === 'Tab') {
     e.preventDefault()
     tabs.value = cycleTab(tabs.value, e.shiftKey ? -1 : 1)
   } else if (e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
     if (!active.value) return
     e.preventDefault()
-    tabs.value = closeTab(tabs.value, active.value.id)
+    requestClose(active.value.id)
   }
 }
 
@@ -233,7 +369,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UButton icon="i-lucide-panel-top" size="xs" color="neutral" variant="ghost" aria-label="Show the editor" data-editor-unfold @click="tabs = toggleFold(tabs)" />
       </UTooltip>
       <UTooltip text="Close all">
-        <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Close all files" data-editor-close-all @click="tabs = closeAllTabs()" />
+        <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Close all files" data-editor-close-all @click="requestCloseAll()" />
       </UTooltip>
     </div>
     <template v-else>
@@ -251,19 +387,20 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
             <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
               <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
               <span class="truncate font-mono">{{ t.title }}</span>
+              <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
             </button>
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="tabs = closeTab(tabs, t.id)" />
+            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
           </div>
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">
-            <UButton :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
+            <UButton :disabled="!!active && dirty.has(active.id)" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
           </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />
           </UTooltip>
           <UTooltip text="Close all">
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Close all files" data-editor-close-all @click="tabs = closeAllTabs()" />
+            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Close all files" data-editor-close-all @click="requestCloseAll()" />
           </UTooltip>
         </div>
       </div>
@@ -296,7 +433,11 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UBadge v-if="view?.header?.kind === 'file' && view.state !== 'text'" :label="view.dims || fmtSize(view.header.size)" color="neutral" variant="subtle" size="sm" />
           <UBadge v-if="view?.header?.truncated" label="truncated" color="warning" variant="subtle" size="sm" />
           <span v-if="view?.state === 'text'" class="flex-none font-mono text-[11px] text-muted" data-editor-pos>Ln {{ pos.line }}, Col {{ pos.col }}</span>
-          <UBadge v-if="readOnlyBadge" label="Read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" data-editor-readonly />
+          <UBadge v-if="readOnlyBadge || (view?.state === 'text' && active.kind === 'file' && !editable && !nvimOn)" label="Read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" data-editor-readonly />
+          <span v-if="savedFlash" class="flex-none text-[11px] text-success" data-editor-saved>Saved</span>
+          <UTooltip v-if="editable" text="Save (Ctrl+S)">
+            <UButton label="Save" icon="i-lucide-save" size="xs" :color="active && dirty.has(active.id) ? 'primary' : 'neutral'" :variant="active && dirty.has(active.id) ? 'soft' : 'ghost'" :disabled="!active || !dirty.has(active.id)" :loading="saving" data-editor-save @click="save()" />
+          </UTooltip>
           <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copy path" data-editor-copy @click="copy(active.path, 'Path copied')" />
           <UButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" aria-label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" data-editor-raw />
         </template>
@@ -311,6 +452,22 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         </template>
         <span v-else class="flex items-center gap-1.5 text-warning" data-editor-keymap-note><UIcon name="i-lucide-info" class="size-3.5" />{{ nvimWhy }} · Monaco's keys meanwhile</span>
       </div>
+      <!-- The file changed on disk since it was read (F6): what changed it, and the three ways on. -->
+      <div v-if="activeConflict" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-warning/10 px-3 py-1.5 text-xs" data-editor-conflict>
+        <UIcon name="i-lucide-triangle-alert" class="size-3.5 flex-none text-warning" />
+        <span class="min-w-0 flex-1 text-highlighted">{{ conflictWords(activeConflict.header) }}</span>
+        <UButton label="Compare" size="xs" color="neutral" variant="soft" data-editor-compare @click="openCompare" />
+        <UButton label="Reload" size="xs" color="neutral" variant="soft" data-editor-reload @click="reloadFromDisk" />
+        <UButton label="Save anyway" size="xs" color="warning" variant="soft" :loading="saving" data-editor-save-anyway @click="save(true)" />
+      </div>
+      <div v-if="saveError && !activeConflict" class="flex flex-none items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-editor-save-error>
+        <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" /><span class="min-w-0 flex-1">Not saved: {{ saveError }}</span>
+        <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Dismiss" @click="saveError = ''" />
+      </div>
+      <div v-if="activeCompare" class="flex flex-none items-center gap-2 border-b border-default px-3 py-1.5 text-xs" data-editor-comparing>
+        <span class="min-w-0 flex-1 text-muted">On disk, left · yours, right</span>
+        <UButton label="Back to editing" size="xs" color="neutral" variant="ghost" @click="compare = null" />
+      </div>
       <!-- The body. -->
       <div class="relative min-h-0 flex-1" :data-editor-state="hostAway ? 'host-away' : (view?.state ?? 'loading')">
         <div v-if="hostAway" class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm">
@@ -320,7 +477,8 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         </div>
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
-        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" read-only :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" />
+        <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
+        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" />
         <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />
@@ -339,5 +497,14 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UAlert v-else color="error" variant="subtle" icon="i-lucide-triangle-alert" class="m-3" :title="view.error || 'Cannot read this path'" />
       </div>
     </template>
+    <UModal :open="!!closing" :title="closingWords.title" :description="closingWords.words" :dismissible="!saving" data-editor-close-prompt @update:open="(o) => !o && (closing = null)">
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton label="Cancel" color="neutral" variant="ghost" @click="closing = null" />
+          <UButton label="Don't save" color="error" variant="soft" data-editor-discard @click="closingDiscard" />
+          <UButton v-if="closingOne" label="Save" color="primary" :loading="saving" data-editor-close-save @click="closingSave" />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

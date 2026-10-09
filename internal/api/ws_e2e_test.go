@@ -1326,3 +1326,52 @@ func TestNvimOverTheViewerWebSocket(t *testing.T) {
 	}
 	owner.send(proto.MustControl(proto.NvimClose{T: proto.CtlNvimClose, ID: nid}))
 }
+
+// A save over the viewer WebSocket (design round 12, F6): the read carries
+// the file's hash, the save in two parts answers `written`, the file changes
+// on disk; a view link's save is refused read_only.
+func TestFileWriteOverTheViewerWebSocket(t *testing.T) {
+	e := newTestEnv(t, nil)
+	dir := filepath.Join(e.root, "save")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("alpha\n"), 0o644)
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "cwd": dir})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create session: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	owner := dialViewer(t, e, id, adminToken)
+	owner.hello(0, 0)
+	if w := owner.expectControl(proto.CtlWelcome); w["fileEdit"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+	owner.expectControl(proto.CtlReady)
+	owner.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "r1", Path: "notes.txt"}))
+	h, _ := owner.expectFile("r1")
+	if h.Sha256 == "" {
+		t.Fatalf("read %+v", h)
+	}
+	body := []byte("alpha\nbeta\n")
+	for _, part := range [][2]int{{0, 6}, {6, len(body)}} {
+		frame, err := proto.EncodeFileWrite(proto.FileWrite{ReqID: "w1", Path: "notes.txt", Offset: int64(part[0]), Total: int64(len(body)), BaseSha256: h.Sha256}, body[part[0]:part[1]])
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner.send(frame)
+	}
+	if w, _ := owner.expectFile("w1"); w.Kind != "written" || w.Size != int64(len(body)) {
+		t.Fatalf("written %+v", w)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "notes.txt")); string(b) != string(body) {
+		t.Fatalf("on disk %q", b)
+	}
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.hello(0, 0)
+	guest.expectControl(proto.CtlReady)
+	frame, _ := proto.EncodeFileWrite(proto.FileWrite{ReqID: "g1", Path: "notes.txt", Total: 2, Force: true}, []byte("x\n"))
+	guest.send(frame)
+	if g, _ := guest.expectFile("g1"); g.Kind != "error" || g.Error.Code != "read_only" {
+		t.Fatalf("a view link's save %+v", g)
+	}
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FileRequester, NvimBridge } from '~/utils/protocol'
+import type { FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
 import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~/utils/editorTabs'
 
 /**
@@ -14,6 +14,9 @@ const props = defineProps<{
   request: FileRequester
   /** The editor's Neovim, when the page offers it (design round 12, F8). */
   nvim?: NvimBridge
+  /** Saves a file (design round 12, F6), and whether this connection may: Save and Ctrl+S show then. */
+  write?: FileWriter
+  canEdit?: boolean
   cwd?: string
   rawUrl?: (path: string) => string | null
   hostAway?: string
@@ -60,6 +63,8 @@ function bringTerminalUp() {
       v-model:tabs="tabs"
       :request="request"
       :nvim="nvim"
+      :write="write"
+      :can-edit="canEdit"
       :cwd="cwd"
       :raw-url="rawUrl"
       :host-away="hostAway"

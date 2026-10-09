@@ -342,6 +342,16 @@ the commit's parent, in a tab named by the commit's short id. Nothing is
 pushed from Conductor. The history is read with go-git where the session
 runs, a crew's worktree included.
 
+**Editing.** A controller edits a file in the editor and saves it with
+**Save** or Ctrl+S; it is written on the machine that runs the session and
+lands in Activity and Touched as your write. An unsaved tab wears a dot and
+asks before it closes. If the file changed on disk since you opened it (the
+agent edited it, say), the save stops and says who and when, with
+**Compare** (disk and yours side by side), **Reload** (take the disk's) and
+**Save anyway**. A file cut at 1 MiB, or a binary one, stays read-only, and
+so does everything for a view-only guest. The server's or host's `fileEdit`
+setting (`control`, the default, or `off`) turns editing off for everyone.
+
 **Neovim in the editor.** The editor's keys are Monaco's unless you press
 the **Keys** button in the tab strip and choose **Neovim**: then a file you
 open is held by the real Neovim on the machine that runs the session (your

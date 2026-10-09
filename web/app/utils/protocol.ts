@@ -8,6 +8,8 @@ export const FrameType = {
   Signal: 0x05,
   File: 0x06,
   Chunk: 0x07,
+  /** client -> owner: one part of a file save (design round 12, F6). */
+  FileWrite: 0x08,
   Relay: 0x10,
 } as const
 
@@ -258,7 +260,16 @@ export type FileRequester = (path: string, stat?: boolean, extra?: FileGetExtra)
 export interface FileHeader {
   reqId: string
   path: string
-  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit'
+  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written'
+  /**
+   * A `file` reply's sha256 (hex) and mtime: what a save sends back to tell a file changed on disk since (F6); absent when the read was
+   * cut. A `written` reply carries the saved file's; an `error` of code `changed_on_disk` the file's now, with the last file event on it.
+   */
+  sha256?: string
+  mtime?: string
+  by?: string
+  tool?: string
+  at?: string
   /** A `log` reply: the commits newest first, and the time they start from when no base was asked for. A `commit` reply: the commit (its files in `changes`). */
   commits?: CommitInfo[]
   since?: string
@@ -331,6 +342,40 @@ export function parseJSON<T = Record<string, unknown>>(payload: Uint8Array): T |
 
 export function decodeText(payload: Uint8Array): string {
   return decoder.decode(payload)
+}
+
+/** A save from the editor (design round 12, F6): the parts are at most MAX_WRITE_PART bytes, the file at most 1 MiB. */
+export const MAX_WRITE_PART = 32 * 1024
+export const MAX_WRITE_BYTES = 1024 * 1024
+export interface FileWriteOptions {
+  /** The sha256 of the file as it was read: the owner refuses with `changed_on_disk` when the file differs now. */
+  baseSha256?: string
+  /** Save anyway, over a file changed on disk. */
+  force?: boolean
+}
+/** How a page saves a file over its terminal's connection: the reply is the FILE frame, kind `written` or `error`. */
+export type FileWriter = (path: string, data: Uint8Array, opts?: FileWriteOptions) => Promise<FileResponse>
+
+/** The parts of a save: [offset, end) ranges of at most size bytes, one (empty) part for an empty file. */
+export function writeParts(length: number, size = MAX_WRITE_PART): Array<[number, number]> {
+  const out: Array<[number, number]> = []
+  for (let off = 0; off < length || off === 0; off += size) {
+    out.push([off, Math.min(off + size, length)])
+    if (off + size >= length) break
+  }
+  return out
+}
+
+/** One part of a save: [type][8-byte reqId][uint32 headerLen][JSON header][bytes], the FILE frame's layout. */
+export function encodeFileWrite(header: { reqId: string; path: string; offset: number; total: number; baseSha256?: string; force?: boolean }, part: Uint8Array): Uint8Array<ArrayBuffer> {
+  const hb = encoder.encode(JSON.stringify(header))
+  const out = new Uint8Array(1 + 8 + 4 + hb.length + part.length)
+  out[0] = FrameType.FileWrite
+  out.set(encoder.encode(header.reqId).subarray(0, 8), 1)
+  new DataView(out.buffer).setUint32(9, hb.length)
+  out.set(hb, 13)
+  out.set(part, 13 + hb.length)
+  return out
 }
 
 // FILE payload: [8-byte reqId][uint32 headerLen][JSON header][bytes]
