@@ -29,8 +29,8 @@
 # picks it; 2 trusts ("Hooks trusted."), 3 goes on without ("Hooks off."),
 # 1 opens the review ("Reviewing hooks."), which a prompt's Enter would;
 # the choice is written to $HOME/.codex/stub-hooks-answer.
-# A line that is exactly `stub tools codex`, `stub tools copilot` or
-# `stub tools agy` makes the stub write stub-tools.txt and report, through
+# A line that is exactly `stub tools codex`, `stub tools copilot`,
+# `stub tools agy` or `stub tools goose` makes the stub write stub-tools.txt and report, through
 # that agent's hook flag, the payloads a live run of it sends (round 13,
 # G2b): a shell `cat README.md` and the write of stub-tools.txt, in the
 # shapes captured in internal/notify/testdata.
@@ -190,6 +190,10 @@ tool_replay() {
 		read="{\"toolName\":\"bash\",\"toolArgs\":{\"command\":\"cat README.md\",\"description\":\"Show README\"},\"toolResult\":{\"resultType\":\"success\",\"textResultForLlm\":\"\"},\"cwd\":$dir}"
 		write="{\"toolName\":\"create\",\"toolArgs\":{\"path\":$(json_str "$PWD/stub-tools.txt"),\"file_text\":\"from the stub\"},\"toolResult\":{\"resultType\":\"success\",\"textResultForLlm\":\"\"},\"cwd\":$dir}"
 		;;
+	goose)
+		read="{\"event\":\"PostToolUse\",\"tool_name\":\"shell\",\"tool_input\":{\"command\":\"cat README.md\"},\"working_dir\":$dir}"
+		write="{\"event\":\"PostToolUse\",\"tool_name\":\"write\",\"tool_input\":{\"path\":\"stub-tools.txt\",\"content\":\"from the stub\"},\"working_dir\":$dir}"
+		;;
 	agy)
 		read="{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"cat README.md\",\"Cwd\":$dir}},\"error\":\"\"}"
 		write="{\"toolCall\":{\"name\":\"write_to_file\",\"args\":{\"TargetFile\":$(json_str "$PWD/stub-tools.txt"),\"CodeContent\":\"from the stub\"}},\"error\":\"\"}"
@@ -277,7 +281,7 @@ answer() {
 	printf 'got: %s\n' "$line"
 	printf '%s\n' "${line:0:200}" >>"$transcript"
 	report_working
-	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy)$ ]]; then
+	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy|goose)$ ]]; then
 		tool_replay "${BASH_REMATCH[1]}"
 	fi
 	while [[ $rest =~ $target_re ]]; do

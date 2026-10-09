@@ -41,8 +41,8 @@ func agyAdapter() Adapter {
 	return Adapter{
 		ID:   "agy",
 		Name: "Antigravity",
-		// Antigravity prints its version (verify).
-		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)^\s*(?:antigravity|agy)?\s*v?(\d+\.\d+\.\d+)`)},
+		// Antigravity prints its bare version: "1.2.14" (verified on 2026-10-09).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)^\s*(?:antigravity|agy)?\s*v?(\d+\.\d+\.\d+)`), Verified: true},
 		Assets: agyAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, agySteps(hooksDir)...)

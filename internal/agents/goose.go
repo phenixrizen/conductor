@@ -23,10 +23,11 @@ func gooseAdapter() Adapter {
 	return Adapter{
 		ID:   "goose",
 		Name: "Goose",
-		// Block's goose prints "goose <version>" (from its source; verify). The
-		// Go migrations tool of the same name prints "goose version: v3.x", seen
+		// Block's goose 1.54.0 prints its bare version (" 1.54.0", verified
+		// on 2026-10-09); older releases printed "goose <version>". The Go
+		// migrations tool of the same name prints "goose version: v3.x", seen
 		// on a PATH where it stood in for the agent: a known impostor.
-		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*goose\s+v?(\d+\.\d+\.\d+)`), Reject: regexp.MustCompile(`(?m)^\s*goose version:\s*v`)},
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(?:goose\s+)?v?(\d+\.\d+\.\d+)\s*$`), Reject: regexp.MustCompile(`(?m)^\s*goose version:\s*v`), Verified: true},
 		Assets: gooseAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, gooseSteps(hooksDir)...)

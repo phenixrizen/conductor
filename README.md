@@ -337,8 +337,8 @@ Claude Code's settings get a hook on its file tools (Read, Edit, MultiEdit,
 NotebookEdit and Write) that reports the files alone, so Touched fills
 whether or not the agent's tool events are on; Codex's apply_patch,
 Copilot's view, edit and create, Antigravity's view_file, write_to_file and
-replace_file_content, and Cursor's file edits report theirs with their tool
-calls, and a shell command any of them runs names what it plainly reads or
+replace_file_content, Goose's write and edit, and Cursor's file edits report
+theirs with their tool calls, and a shell command any of them runs names what it plainly reads or
 writes (`cat README.md`, `> out.txt`, `tee`, `sed -i`); a file saved forty
 times is one line. An agent without hooks reports with `conductor notify
 --event file --op edit --path …` or the MCP `report` tool, as the skill

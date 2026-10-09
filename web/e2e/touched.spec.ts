@@ -121,11 +121,11 @@ test('a file written with no hook naming it shows in Touched as seen by git', as
   }
 })
 
-// Round 13, G2b: Codex, Copilot and agy name their files in the payloads a
+// Round 13, G2b: Codex, Copilot, agy and Goose name their files in the payloads a
 // live run of each sends (internal/notify/testdata); the stub replays them
 // through `conductor notify`, the path a real hook takes, and Touched lists
 // the shell read and the write.
-for (const agent of ['codex', 'copilot', 'agy'] as const) {
+for (const agent of ['codex', 'copilot', 'agy', 'goose'] as const) {
   test(`${agent}'s hook payloads name the files its tools read and wrote`, async ({ page, api, state }) => {
     const cwd = join(state.root, `files-hooks-${agent}`)
     mkdirSync(cwd, { recursive: true })

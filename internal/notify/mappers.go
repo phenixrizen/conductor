@@ -471,22 +471,56 @@ func MapAgyHook(raw []byte) (req Request, ok bool) {
 }
 
 // MapGooseHook turns a Goose hook payload, which names its event in "event",
-// into an update: the end of a turn, or a tool that ran.
+// into an update: the end of a turn (with its last message), or a tool that
+// ran with the files it touched: write writes and edit edits tool_input's
+// path (relative to working_dir), shell names what its command plainly
+// reads or writes (shellFiles). Verified against Goose 1.54.0
+// (testdata/goose-hooks.json).
 func MapGooseHook(raw []byte) (req Request, ok bool) {
 	var h struct {
-		Event    string `json:"event"`
-		ToolName string `json:"tool_name"`
+		Event                string          `json:"event"`
+		ToolName             string          `json:"tool_name"`
+		ToolInput            json.RawMessage `json:"tool_input"`
+		WorkingDir           string          `json:"working_dir"`
+		LastAssistantMessage string          `json:"last_assistant_message"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
 	}
 	switch h.Event {
 	case "Stop":
-		return Request{State: "done", Kind: "done"}, true
+		return Request{State: "done", Kind: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200)}, true
 	case "PostToolUse":
-		return Request{Event: "tool_use", Tool: h.ToolName}, true
+		return Request{Event: "tool_use", Tool: h.ToolName, Files: gooseFiles(h.ToolName, h.ToolInput, h.WorkingDir)}, true
 	}
 	return Request{}, false
+}
+
+// gooseFiles are the file events a Goose tool call yields (its developer
+// tools, named bare or with their extension's prefix).
+func gooseFiles(tool string, input json.RawMessage, dir string) []FileRef {
+	var in struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+	}
+	if len(input) == 0 || json.Unmarshal(input, &in) != nil {
+		return nil
+	}
+	abs := func(p string) string {
+		if p != "" && dir != "" && !path.IsAbs(p) {
+			return path.Join(dir, p)
+		}
+		return p
+	}
+	switch strings.TrimPrefix(tool, "developer__") {
+	case "write":
+		return fileRef("write", abs(in.Path))
+	case "edit":
+		return fileRef("edit", abs(in.Path))
+	case "shell":
+		return shellFiles(in.Command, dir)
+	}
+	return nil
 }
 
 // present reports whether a JSON field was sent with a value other than null.

@@ -10,13 +10,15 @@ import (
 )
 
 // The payloads of a live run of each agent (Codex 0.161.0, Copilot CLI
-// 1.0.91, Antigravity 1.2.14, captured 2026-10-09 in a scratch repository
+// 1.0.91, Antigravity 1.2.14, Goose 1.54.0 against a scripted model,
+// captured 2026-10-09 in a scratch repository
 // at /r, redacted; round 13, G2b), each tool call mapped to the files it
 // touched. The run: cat README.md, create hello.txt with "hi", append
 // "there" to it, make main.go print hello.
 func TestMappersReadTheCapturedPayloads(t *testing.T) {
 	dir := t.TempDir()
 	for _, f := range []string{"README.md", "hello.txt", "main.go"} {
+		// (Goose names its files relative to working_dir; the others absolute.)
 		os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644)
 	}
 	p := func(f string) string { return filepath.Join(dir, f) }
@@ -35,6 +37,10 @@ func TestMappersReadTheCapturedPayloads(t *testing.T) {
 		}},
 		{"agy-hooks.json", "PostToolUse", MapAgyHook, [][]FileRef{
 			nil, {read("README.md")}, {read("main.go")}, {write("hello.txt")}, {edit("hello.txt")}, {edit("main.go")}, {read("README.md")},
+		}},
+		// Goose 1.54.0, run against a scripted model (its own tools and hooks, round 13 follow-up).
+		{"goose-hooks.json", "PostToolUse", MapGooseHook, [][]FileRef{
+			{read("README.md")}, {write("hello.txt")}, {edit("hello.txt")}, {edit("main.go")},
 		}},
 	}
 	for _, c := range cases {

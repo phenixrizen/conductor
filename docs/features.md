@@ -840,6 +840,25 @@ tool, and Conductor offered it as Goose.
   start fails with "address already in use" (at most five starts).
   `TestPebbleStartsAgainWhenItsPortIsTaken` hands the first start a port
   already in use and passes on the retry.
+- **Goose, installed and captured.** The owner asked for the real Goose:
+  Block's Goose 1.54.0 (the static musl build, its sha256 checked against
+  GitHub's digest) is in `~/.local/bin/goose`, ahead of the migrations tool
+  in `~/go/bin` on PATH, which stays. To capture its hooks with no account
+  spent, Goose ran against a scripted OpenAI-compatible model on localhost:
+  its own developer tools (`shell`, `write`, `edit`) ran and its hooks fired
+  from a plugin laid out as Conductor installs it (`~/.agents/plugins/
+  conductor/hooks/hooks.json`, no `plugin.json`), which works. Its payloads
+  name `event`, `tool_name`, `tool_input` (`command`, or `path` relative to
+  `working_dir`) and `last_assistant_message`; the mapper read the tool's
+  name only. Now write writes and edit edits its path, shell names what its
+  command plainly reads or writes, and Stop carries the last message. Goose
+  1.54 prints its bare version (" 1.54.0"), which the probe did not know:
+  it now does and is verified, as are Copilot's ("GitHub Copilot CLI
+  1.0.94.") and agy's ("1.3.2") seen live the same day. Tests: the Goose
+  payloads in the fixture test, the probe against the real and older version
+  lines, Playwright `touched.spec.ts` replaying Goose's payloads through
+  `conductor notify --goose-hook`; on this machine a server's catalog
+  reports Goose 1.54.0 available and identified.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

@@ -140,13 +140,15 @@ func TestLaunchRefusesAMisidentifiedAgent(t *testing.T) {
 
 func TestLaunchAllowsAPendingOrUnverifiedProbe(t *testing.T) {
 	e, _, goose := identityEnv(t)
-	// Block's goose, by an unverified pattern: identified.
+	// Block's goose: identified. An adapter whose probe is not verified yet
+	// (OpenCode) with a version line it does not know: unidentified, and so
+	// refused nothing.
 	ok := versionScript(t, "goose-ok", "goose 1.0.21")
-	unknown := versionScript(t, "goose-new", "Goose CLI build 2027")
+	unknown := versionScript(t, "opencode-new", "OpenCode build 2027")
 	cat := e.srv.Catalog()
 	for _, a := range []catalog.Agent{
 		{ID: "goose-ok", Name: "Goose", Command: []string{ok}, Adapter: "goose"},
-		{ID: "goose-new", Name: "Goose", Command: []string{unknown}, Adapter: "goose"},
+		{ID: "goose-new", Name: "OpenCode", Command: []string{unknown}, Adapter: "opencode"},
 	} {
 		if err := cat.Upsert(a); err != nil {
 			t.Fatal(err)
