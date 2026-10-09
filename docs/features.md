@@ -828,6 +828,24 @@ tool, and Conductor offered it as Goose.
   typed character and maps `(` to an autopair: "abc" shows within 250 ms,
   marked, settles undoubled, the autopair corrects once, the next
   character is Neovim's, `:w` writes "abc(x)end" (five runs out of five).
+- **The local echo over the switchyard, measured (2026-10-09, rc.5).** A
+  control link minted at switchyard.rslabs.net for a session in the
+  Windows app, opened in a separate Chrome on the same PC, Neovim on,
+  sixteen real keys typed through winctl-mcp, timed in the page (keydown to
+  the letter in Monaco's view, keydown to Neovim's acknowledgement on the
+  wire). Over WebRTC direct (2 ms): the letter 8 ms, the acknowledgement
+  15 ms. Over the switchyard's relay (forced: WebRTC off in that page;
+  35–51 ms): the letter 8.7 ms, the acknowledgement 40.8 ms (medians), so a
+  letter shows as on the machine itself. Found by it: **a space was not
+  guessed.** The space bar goes to Neovim as `<Space>`, which the echo took
+  for a key that is not a plain character, so each space waited the round
+  trip (38–40 ms) and, being a key that ends the guesses, held every
+  letter typed after it until Neovim had it: at typing speed over a slow
+  link, every word boundary stalled the echo. `<Space>` is now guessed as a
+  space, as `<lt>` is `<`. Tests: vitest (`<Space>` guessable, a word after
+  a space shown at once and settled), Playwright `vim.spec.ts` typing "ab c"
+  into the slow Neovim (it showed "abend" without the fix; three runs out of
+  three with it).
   By hand, not yet done: typing over the switchyard from the LAN box and a
   phone.
 - **The Pebble test's port race, fixed.** `make test-pebble` picked ports
