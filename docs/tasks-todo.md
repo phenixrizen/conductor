@@ -118,6 +118,12 @@ test that would have caught it when it is fixed.
   until it takes the size, the hand-over, the owner's default); Playwright
   with two browser contexts, one wide and one narrow, checking the wide one's
   columns stay and the narrow one scales, then the hand-over.
+- **The Pebble test's free port can be taken before it is bound.**
+  `freePort` in `internal/certs/pebble_test.go` listens on port 0, closes,
+  and the test binds the number later; on 2026-10-09 CI's pebble job failed
+  once with "bind: address already in use" (PR #71, passed on a rerun).
+  Fix: keep the listener open and hand it over, or retry the bind on
+  EADDRINUSE with a fresh port.
 
 
 ## Features
@@ -168,10 +174,13 @@ and the Neovim keymap. What is set aside:
 - **Goose's files:** the Goose mapper reads the tool's name only; its
   payload's arguments wait for a run of the real Goose CLI (the `goose` on
   the owner's machine is the Go migrations tool, round 13 G0).
-- **Codex's hooks need trusting:** Codex 0.161 runs hooks only after the
-  person trusts them, and opens on a "Hooks need review" question when they
-  are new or changed; round 13's G2c recognises that question. Where Codex
-  keeps the trust, and whether it lasts past a session, is not known yet.
+- **Codex's hook trust, how long it lasts:** Codex 0.161 runs hooks only
+  once trusted, and Conductor now holds its "Hooks need review" question
+  with its answers as choices (round 13, G2c). Where Codex keeps the trust,
+  and whether one trust lasts past the session, is not known: one trust in
+  a throwaway home did not make `codex exec` run the hooks afterwards. A
+  live check in the person's own Codex settles it; if it never lasts, the
+  question comes at every Codex launch.
 
 ### Chat beside the terminal
 

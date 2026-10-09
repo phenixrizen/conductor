@@ -158,6 +158,8 @@ describe('the yolo recipe', () => {
     allowArgs: true,
     yolo: { args: ['--yolo'], env: { COPILOT_ALLOW_ALL: 'true' } },
     trustPrompt: 'Do you trust',
+    trustAnswers: [{ label: 'Yes', input: '\r' }],
+    questions: [{ prompt: 'Hooks\\s*need\\s*review', answers: [{ label: 'Trust all and continue', input: '2\r' }] }],
     session: { startArgs: ['--session-id', '{id}'], resumeArgs: ['--session-id', '{id}'], idPattern: '^x$' },
   }
 
@@ -165,7 +167,7 @@ describe('the yolo recipe', () => {
     const f = formFromAgent(copilot, counter())
     expect(f.yoloArgs).toEqual(['--yolo'])
     expect(f.yoloEnv.map((r) => [r.key, r.value])).toEqual([['COPILOT_ALLOW_ALL', 'true']])
-    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', session: copilot.session })
+    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', trustAnswers: copilot.trustAnswers, questions: copilot.questions, session: copilot.session })
   })
 
   it('saves {} for no recipe, and nothing for empty fields, which keeps a built-in recipe', () => {

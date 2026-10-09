@@ -319,3 +319,23 @@ func TestProbeNeverRunsForMissingOrRelativePrograms(t *testing.T) {
 		t.Fatalf("the probe ran %d times", runs.Load())
 	}
 }
+
+// An agent's startup questions (round 13, G2c) reach the session it
+// launches: the question on its screen holds it, with the catalog's answers
+// as the choices, as the trust question does.
+func TestLaunchCarriesTheAgentsStartupQuestions(t *testing.T) {
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{{
+		ID: "asks", Name: "Asks", Command: []string{"/bin/sh", "-c", "printf 'Hooks need review\\n> 1. Review hooks\\n'; exec cat"},
+		Questions: []catalog.Question{{Prompt: `(?i)hooks\s*n?eed\s*review`, Answers: []catalog.Answer{{Label: "Trust all and continue", Input: "2\r"}, {Label: "Continue without trusting", Input: "3\r"}}}},
+	}})
+	id := e.createSession("asks")
+	d, _ := e.srv.Registry().Get(id)
+	deadline := time.Now().Add(5 * time.Second)
+	for d.Info().Attention.Source != session.SourceTrust && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	att := d.Info().Attention
+	if att.Source != session.SourceTrust || att.Message != "Hooks need review" || len(att.Options) != 2 || att.Options[0].Input != "2\r" {
+		t.Fatalf("attention %+v", att)
+	}
+}

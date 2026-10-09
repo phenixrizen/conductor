@@ -1053,3 +1053,43 @@ func TestTrustAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The agent's other startup questions (round 13, G2c): Codex's built-in
+// entry has "Hooks need review" with its two answers, a saved override
+// inherits them, and a bad question is refused.
+func TestStartupQuestions(t *testing.T) {
+	c := Default()
+	codex, _ := c.Get("codex")
+	if len(codex.Questions) != 1 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+		t.Fatalf("codex: %+v", codex.Questions)
+	}
+	re, err := CompilePattern(codex.Questions[0].Prompt)
+	if err != nil || !re.MatchString("Hooks need review 7 hooks are new or changed") || !re.MatchString("Hooks  eed review") || re.MatchString("Trust this folder?") {
+		t.Fatalf("codex's pattern %q: %v", codex.Questions[0].Prompt, err)
+	}
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex, mine", Command: []string{"codex"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if mine, _ := c.Get("codex"); len(mine.Questions) != 1 || mine.Questions[0].Prompt != codex.Questions[0].Prompt {
+		t.Fatalf("the override lost the questions: %+v", mine.Questions)
+	}
+	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}}
+	for _, bad := range [][]Question{
+		{{Prompt: "", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
+		{{Prompt: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
+		{{Prompt: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
+		{{Prompt: "Ready\\?", Answers: []Answer{{Label: "", Input: "\r"}}}},
+		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}},
+	} {
+		a := ok
+		a.Questions = bad
+		if err := validate(a); err == nil || !strings.Contains(err.Error(), "questions") {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+	good := ok
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}}
+	if err := validate(good); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -27,6 +27,7 @@
         "signal": { "kind": "hook" },
         "yolo": { "args": ["--dangerously-bypass-approvals-and-sandbox"] },
         "trustPrompt": "Trust\\s*this\\s*folder\\?",
+        "questions": [{ "prompt": "(?i)hooks\\s*n?eed\\s*review", "answers": [{ "label": "Trust all and continue", "input": "2\r" }, { "label": "Continue without trusting", "input": "3\r" }] }],
         "session": { "idFrom": "hook", "idPolicy": "lowest", "resumeArgs": ["resume", "{id}", "-c", "tui.resume_cwd=\"session\""], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "resumeNeedsCwd": true }
       },
       {

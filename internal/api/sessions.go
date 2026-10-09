@@ -193,6 +193,14 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's trust prompt is invalid")
 		}
 	}
+	var questions []session.StartupQuestion
+	for _, q := range agent.Questions {
+		re, err := catalog.CompilePattern(q.Prompt)
+		if err != nil {
+			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
+		}
+		questions = append(questions, session.StartupQuestion{Pattern: re, Answers: trustAnswers(q.Answers)})
+	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
@@ -263,6 +271,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Pattern:         pattern,
 		TrustPattern:    trust,
 		TrustAnswers:    trustAnswers(agent.TrustAnswers),
+		Questions:       questions,
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
 		WatchGit:        true,
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},

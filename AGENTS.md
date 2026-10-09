@@ -91,7 +91,8 @@ python3 scripts/brand_assets.py --check
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
 impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
 `STUB_REPORT`, keeps a transcript per agent session, draws the trust
-question with `STUB_TRUST_DIALOG=1`, and on the line `stub tools codex`
+question with `STUB_TRUST_DIALOG=1` and Codex's "Hooks need review" when
+`$HOME/.codex/stub-hooks-review` exists, and on the line `stub tools codex`
 (or `copilot`, `agy`) replays that agent's captured hook payloads through
 `conductor notify`; `web/e2e/conductor.e2e.json` wires it
 with the real recipes. Run the narrowest package tests while iterating, then

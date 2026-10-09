@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, logged, member, test, type Run } from './fixtures'
 
@@ -169,4 +169,46 @@ test("the trust question's answers are choices on the page and in the chat; type
   r = await api.run(run.id)
   expect(logged(r, 'without its Enter')).toBe(false)
   await api.stopRun(run.id)
+})
+
+// Round 13, G2c: Codex's "Hooks need review" (drawn by the stub when the
+// marker is in its home) is held like the trust question: the member waits,
+// the question's two answers are the choices, and the trusting one picks 2,
+// not the highlighted Review hooks a prompt's Enter would open.
+test('Codex\'s "Hooks need review" holds the member with its answers; Trust all and continue picks 2 and the prompt runs', async ({ page, api, state }) => {
+  const marker = join(state.home, '.codex', 'stub-hooks-review')
+  const answer = join(state.home, '.codex', 'stub-hooks-answer')
+  mkdirSync(join(state.home, '.codex'), { recursive: true })
+  writeFileSync(marker, '')
+  rmSync(answer, { force: true })
+  const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    ...crewBody(false),
+    name: 'e2e hooks review',
+    members: [{ name: 'solo', agentId: 'codex', prompt: 'say hello', start: { when: 'immediately' } }],
+  })
+  try {
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    await expect.poll(async () => member(await api.run(run.id), 'solo').needsInput === true, { timeout: 30_000, message: 'the member is held' }).toBe(true)
+    let r = await api.run(run.id)
+    expect(logged(r, "typed solo's prompt")).toBe(false)
+    const solo = member(r, 'solo').sessionId ?? ''
+    const session = await api.session(solo)
+    expect(session.attention?.source).toBe('trust')
+    expect(session.attention?.message).toBe('Hooks need review')
+    expect(session.attention?.options?.map((o) => o.label)).toEqual(['Trust all and continue', 'Continue without trusting'])
+    await page.goto(`/sessions/${encodeURIComponent(solo)}`)
+    const bar = page.locator('[data-quick-reply]')
+    await expect(bar).toBeVisible({ timeout: 30_000 })
+    await bar.getByRole('button', { name: /Trust all and continue/ }).click()
+    await expect.poll(async () => logged(await api.run(run.id), "typed solo's prompt"), { timeout: 30_000 }).toBe(true)
+    expect(readFileSync(answer, 'utf8').trim(), 'the stub was answered 2, not the highlighted Review hooks').toBe('2')
+    r = await api.run(run.id)
+    expect(logged(r, 'without its Enter')).toBe(false)
+    await api.stopRun(run.id)
+  } finally {
+    rmSync(marker, { force: true })
+    rmSync(answer, { force: true })
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+  }
 })

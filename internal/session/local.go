@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -92,6 +93,11 @@ type Options struct {
 	// text (Submit) is refused while the question shows (ErrTrustQuestion),
 	// since its Enter would pick whatever the dialog highlights.
 	TrustAnswers []Option
+	// Questions are the agent's other startup questions (the catalog's
+	// questions; round 13, G2c), held exactly as the trust question is:
+	// source "trust", their answers the choices, typed text refused while
+	// one shows. Codex's "Hooks need review" is one.
+	Questions []StartupQuestion
 	// SubmitPause is the pause between a submission's text and its Enter;
 	// SubmitPause when zero.
 	SubmitPause time.Duration
@@ -142,8 +148,9 @@ type Local struct {
 	events         EventBucket // guarded by mu
 	dropped        atomic.Uint64
 	scanner        Scanner
-	pattern        *PatternWatcher // nil without Options.Pattern
-	trust          *PatternWatcher // nil without Options.TrustPattern
+	pattern        *PatternWatcher   // nil without Options.Pattern
+	trust          *PatternWatcher   // nil without a startup question
+	questions      []StartupQuestion // Options.TrustPattern's, then Options.Questions
 	lastBell       time.Time
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -208,7 +215,21 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		s.pattern = NewPatternWatcher(opts.Pattern, patternQuiet, s.firePattern)
 	}
 	if opts.TrustPattern != nil {
-		s.trust = NewScreenWatcher(opts.TrustPattern, patternQuiet, s.fireTrust)
+		s.questions = append(s.questions, StartupQuestion{Pattern: opts.TrustPattern, Answers: opts.TrustAnswers})
+	}
+	for _, q := range opts.Questions {
+		if q.Pattern != nil {
+			s.questions = append(s.questions, q)
+		}
+	}
+	if len(s.questions) > 0 {
+		// One watcher for every question: its pattern is theirs together, and
+		// the fire tells which one shows.
+		parts := make([]string, len(s.questions))
+		for i, q := range s.questions {
+			parts[i] = "(?:" + q.Pattern.String() + ")"
+		}
+		s.trust = NewScreenWatcher(regexp.MustCompile(strings.Join(parts, "|")), patternQuiet, s.fireTrust)
 	}
 	if opts.WatchGit && info.Cwd != "" {
 		s.gitSeenStart()
@@ -438,15 +459,25 @@ func (s *Local) firePattern(line string) {
 	s.setAttention(AttentionNeedsInput, promptMessage(line), SourcePattern, KindPrompt, nil, unlessWaiting)
 }
 
-// fireTrust is the trust watcher's fire: the agent's workspace-trust question
-// is on the screen, text its last ScreenTail. The session needs input, with
-// the question's words, unless it waits already.
+// fireTrust is the trust watcher's fire: one of the agent's startup
+// questions (the workspace-trust question first, then Options.Questions) is
+// on the screen, text its last ScreenTail. The session needs input, with
+// the words of the first question found and its answers, unless it waits
+// already.
 func (s *Local) fireTrust(text string) {
-	words := s.opts.TrustPattern.FindString(text)
-	if words == "" {
-		return
+	for _, q := range s.questions {
+		if words := q.Pattern.FindString(text); words != "" {
+			s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting)
+			return
+		}
 	}
-	s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(s.opts.TrustAnswers), unlessWaiting)
+}
+
+// StartupQuestion is one question an agent asks as it starts (Options.Questions):
+// the pattern of its words on the screen and its answers as choices.
+type StartupQuestion struct {
+	Pattern *regexp.Regexp
+	Answers []Option
 }
 
 // signalAttention wakes whoever waits for an attention change (Submit). The
