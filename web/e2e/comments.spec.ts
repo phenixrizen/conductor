@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
 
@@ -56,8 +56,15 @@ test('a comment on lines lands in the chat as a quote card; asked of the agent i
     await page.keyboard.press('Enter')
     await expect(page.locator('[data-chat-thread] [data-chat-quote="users.go:6"]')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('[data-chat-thread] [data-chat-marker]').first()).toBeVisible({ timeout: 15_000 })
-    await expect(page.locator('.terminal-host .xterm-screen').first()).toContainText('users.go:6', { timeout: 15_000 })
-    await expect(page.locator('.terminal-host .xterm-screen').first()).toContainText('explain D')
+    // The stub agent's transcript holds what was typed into it: the location, the quoted line, the words.
+    const info = await api.session(s.id)
+    const transcript = () => {
+      const f = join(state.home, '.stub-sessions', `${info.agentSession?.id ?? ''}.txt`)
+      return existsSync(f) ? readFileSync(f, 'utf8') : ''
+    }
+    await expect.poll(transcript, { timeout: 20_000, message: 'the agent got the quote' }).toContain('users.go:6')
+    expect(transcript()).toContain('> func D() {}')
+    expect(transcript()).toContain('explain D')
     // The agent adds two lines above: the first card's lines moved, and Open goes to where they are now.
     writeFileSync(file, ['package api', '', '// Users.', '// The handlers.', 'func A() {}', 'func B() {}', 'func C() {}', 'func D() {}', ''].join('\n'))
     await page.reload()
