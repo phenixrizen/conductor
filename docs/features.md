@@ -830,6 +830,16 @@ tool, and Conductor offered it as Goose.
   character is Neovim's, `:w` writes "abc(x)end" (five runs out of five).
   By hand, not yet done: typing over the switchyard from the LAN box and a
   phone.
+- **The Pebble test's port race, fixed.** `make test-pebble` picked ports
+  by opening and closing a listener, then bound them later; on PR #71 CI's
+  pebble job lost one ("bind: address already in use"). The two ports
+  Pebble validates challenges against are now the test's own listeners,
+  bound before Pebble starts and held until the test ends, handed to the
+  TLS and HTTP challenge servers; Pebble's own directory and management
+  ports, which only Pebble can bind, are tried again on fresh ones when a
+  start fails with "address already in use" (at most five starts).
+  `TestPebbleStartsAgainWhenItsPortIsTaken` hands the first start a port
+  already in use and passes on the retry.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

@@ -5,8 +5,7 @@ Asked on 2026-10-09; decided the same day.
 **Status (2026-10-09): built.** G0 (#68), G1 (#69), G2a (#70), G2b (#71),
 G2c (#72), G3 (#73), G4 (#74) and G5 merged or in review the same day.
 Left open: Goose's files (its real CLI is not on the owner's machine),
-whether Codex's hook trust lasts past a session, the Pebble test's port
-race, and the by-hand checks (a real input method and dead keys in the
+whether Codex's hook trust lasts past a session, and the by-hand checks (a real input method and dead keys in the
 Windows app, typing over the switchyard from the LAN box and a phone). Round 12 (`docs/round12-plan.md`) closed with five
 items written into `docs/tasks-todo.md` instead of built. This round builds
 them. Each layer is its own PR from main, merged before the next; never a

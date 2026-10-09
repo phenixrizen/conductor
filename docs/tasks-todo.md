@@ -118,13 +118,6 @@ test that would have caught it when it is fixed.
   until it takes the size, the hand-over, the owner's default); Playwright
   with two browser contexts, one wide and one narrow, checking the wide one's
   columns stay and the narrow one scales, then the hand-over.
-- **The Pebble test's free port can be taken before it is bound.**
-  `freePort` in `internal/certs/pebble_test.go` listens on port 0, closes,
-  and the test binds the number later; on 2026-10-09 CI's pebble job failed
-  once with "bind: address already in use" (PR #71, passed on a rerun).
-  Fix: keep the listener open and hand it over, or retry the bind on
-  EADDRINUSE with a fresh port.
-
 
 ## Features
 
