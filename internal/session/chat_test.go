@@ -737,3 +737,98 @@ func TestAQuestionGoesIntoTheChatAndItsAnswerFollows(t *testing.T) {
 		t.Fatalf("%d questions for one prompt", n)
 	}
 }
+
+// A comment on lines of a file (design round 12, F7): the quote is kept
+// cleaned and bounded (twelve lines of 200 bytes, control characters out,
+// a path and a range or nothing), a quote alone is a message, a full text
+// of quotes beside a full quote still fits one frame (its last lines left
+// out, Cut said), and the agent is given the location, the lines and the
+// words.
+func TestChatQuoteIsBoundedAndTypedWithItsLocation(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	var lines []string
+	for i := 0; i < 14; i++ {
+		lines = append(lines, fmt.Sprintf("line %d\x07 %s", i, strings.Repeat("x", 250)))
+	}
+	m, err := s.Chat(sub, proto.ChatPost{Text: "why this?", Quote: &proto.ChatQuote{Path: "internal/api/users.go", From: 14, To: 27, Lines: lines}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := m.Quote
+	if q == nil || q.Path != "internal/api/users.go" || q.From != 14 || q.To != 27 || len(q.Lines) != proto.MaxQuoteLines || !q.Cut {
+		t.Fatalf("quote %+v", q)
+	}
+	for _, l := range q.Lines {
+		if len(l) > proto.MaxQuoteLine || strings.ContainsRune(l, '\x07') {
+			t.Fatalf("a line %q", l)
+		}
+	}
+	if pm := ChatToProto(m); pm.Quote == nil || len(pm.Quote.Lines) != len(q.Lines) {
+		t.Fatalf("on the wire %+v", pm.Quote)
+	}
+	// A quote alone is a message; no text and no quote is not; a quote without a path or range is dropped.
+	if m, err := s.Chat(sub, proto.ChatPost{Quote: &proto.ChatQuote{Path: "a.go", From: 3, To: 3, Lines: []string{"x := 1"}}}); err != nil || m.Quote == nil || m.Text != "" {
+		t.Fatalf("a quote alone: %+v %v", m, err)
+	}
+	if _, err := s.Chat(sub, proto.ChatPost{Quote: &proto.ChatQuote{Path: "", From: 3, To: 3}}); !errors.Is(err, ErrChatEmpty) {
+		t.Fatalf("a quote without a path and no text: %v", err)
+	}
+	if m, _ := s.Chat(sub, proto.ChatPost{Text: "hi", Quote: &proto.ChatQuote{Path: "a.go", From: 5, To: 2}}); m.Quote != nil {
+		t.Fatal("a backwards range kept")
+	}
+	// The worst case for the frame: a full text of quotes and a full quote of backslashes.
+	var heavy []string
+	for i := 0; i < proto.MaxQuoteLines; i++ {
+		heavy = append(heavy, strings.Repeat("\\", proto.MaxQuoteLine))
+	}
+	big, err := s.Chat(sub, proto.ChatPost{Text: strings.Repeat("\"", proto.MaxChatText), Quote: &proto.ChatQuote{Path: strings.Repeat("\"", proto.MaxQuotePath), From: 1, To: 12, Lines: heavy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw := proto.MustControlRaw(ChatToProto(big)); len(raw) > proto.MaxControl || !big.Quote.Cut || len(big.Quote.Lines) == proto.MaxQuoteLines {
+		t.Fatalf("frame %d bytes, quote %d lines, cut %v", len(raw), len(big.Quote.Lines), big.Quote.Cut)
+	}
+	// What the agent is given.
+	one := ChatMessage{Text: "rename it", Quote: &proto.ChatQuote{Path: "a.go", From: 3, To: 3, Lines: []string{"x := 1"}}}
+	if got := AgentText(one); got != "a.go:3\n> x := 1\nrename it" {
+		t.Fatalf("one line: %q", got)
+	}
+	two := ChatMessage{Quote: &proto.ChatQuote{Path: "a.go", From: 3, To: 4, Lines: []string{"a", "b"}}}
+	if got := AgentText(two); got != "a.go:3-4\n> a\n> b" {
+		t.Fatalf("two lines, no words: %q", got)
+	}
+	if got := AgentText(ChatMessage{Text: "plain"}); got != "plain" {
+		t.Fatalf("no quote: %q", got)
+	}
+	if got := AgentText(big); len(got) > proto.MaxSubmit {
+		t.Fatalf("the agent's text is %d bytes", len(got))
+	}
+	// Sent to the agent, the location and the lines are typed before the words.
+	typed := make(chan []byte, 1)
+	go func() {
+		var acc []byte
+		deadline := time.After(3 * time.Second)
+		for {
+			select {
+			case in := <-p.input:
+				acc = append(acc, in...)
+				if bytes.Contains(acc, []byte("why this?")) && bytes.HasSuffix(acc, []byte("\r")) {
+					typed <- acc
+					return
+				}
+			case <-deadline:
+				typed <- acc
+				return
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: m.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if acc := <-typed; !bytes.Contains(acc, []byte("internal/api/users.go:14-27")) || !bytes.Contains(acc, []byte("> line 0")) || !bytes.Contains(acc, []byte("why this?")) {
+		t.Fatalf("typed %q", acc)
+	}
+}

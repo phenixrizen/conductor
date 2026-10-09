@@ -60,6 +60,8 @@ export interface ChatMessage {
   nonce?: string
   /** A question's choices (at most 6), typed as the attention's are. */
   options?: AttentionOption[]
+  /** Lines of a file the message is about (F7). */
+  quote?: ChatQuote
 }
 /** A viewer's post (`chat`, client → owner). */
 export interface ChatPost {
@@ -69,6 +71,8 @@ export interface ChatPost {
   text: string
   on?: string
   to?: string
+  /** Lines of a file the message is about (design round 12, F7). */
+  quote?: ChatQuote
 }
 /** Types a kept message into the agent (`chat_send`, client → owner, controllers only). */
 export interface ChatSend {
@@ -600,3 +604,18 @@ export interface NvimEvent {
   code?: string
   message?: string
 }
+
+/**
+ * Lines of a file a chat message is about (design round 12, F7): the path (relative to the working directory when inside it), the
+ * 1-based range, the lines as the person saw them (at most MAX_QUOTE_LINES of at most MAX_QUOTE_LINE bytes), `cut` when some were left out.
+ */
+export interface ChatQuote {
+  path: string
+  from: number
+  to: number
+  lines: string[]
+  cut?: boolean
+}
+export const MAX_QUOTE_LINES = 12
+export const MAX_QUOTE_LINE = 200
+export const MAX_QUOTE_PATH = 512

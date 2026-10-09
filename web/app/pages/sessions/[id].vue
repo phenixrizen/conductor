@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
-import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge } from '~/utils/protocol'
+import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
@@ -73,6 +73,15 @@ function onChatHistory(h: ChatHistory) {
 }
 function chatSend(text: string, to: string) {
   chat.send(text, to ? { to } : {}, viaChat)
+}
+
+// Comments on lines (design round 12, F7): posted to this session's chat (and, asked of the agent, typed into it); the Chat tab comes
+// forward (the sheet below xl). A quote card opens the file here, at the range.
+provideChatQuotes(quoteActionsFor(requestFile, () => current.value?.cwd, openFile))
+function onComment(c: { quote: ChatQuote; text: string; toAgent: boolean }) {
+  chat.send(c.text, { quote: c.quote, ...(c.toAgent ? { to: 'agent' } : {}) }, viaChat)
+  tab.value = 'chat'
+  if (import.meta.client && !window.matchMedia('(min-width: 1280px)').matches) chatSheet.value = true
 }
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
@@ -381,7 +390,7 @@ watch(id, () => {
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
-        <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3">
+        <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
           <TerminalView
             ref="terminal"
             :create-transport="createTransport"

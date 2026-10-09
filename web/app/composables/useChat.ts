@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatHistory, ChatMessage, ChatPost, ChatScope, ChatSend } from '~/utils/protocol'
+import type { ChatHistory, ChatMessage, ChatPost, ChatScope, ChatSend, ChatQuote } from '~/utils/protocol'
 import { CHAT_TO_AGENT } from '~/utils/protocol'
 import { chatNonce, cleanChatText, mergeMessage } from '~/utils/chat'
 
@@ -11,6 +11,8 @@ export interface PendingChat {
   /** A run's chat: the scope of the post, and the member the sender looked at. */
   scope?: ChatScope
   on?: string
+  /** Lines of a file the message is about (F7). */
+  quote?: ChatQuote
   at: string
   state: 'queued' | 'sending' | 'failed'
   error?: string
@@ -64,15 +66,15 @@ export function useChat(key: Ref<string>) {
   }
 
   /** The post a pending row goes out as: its scope, member and `on` travel with it. */
-  function postOf(p: Pick<PendingChat, 'nonce' | 'text' | 'to' | 'scope' | 'on'>): ChatPost {
-    return { t: 'chat', nonce: p.nonce, text: p.text, ...(p.scope ? { scope: p.scope } : {}), ...(p.to ? { to: p.to } : {}), ...(p.on ? { on: p.on } : {}) }
+  function postOf(p: Pick<PendingChat, 'nonce' | 'text' | 'to' | 'scope' | 'on' | 'quote'>): ChatPost {
+    return { t: 'chat', nonce: p.nonce, text: p.text, ...(p.scope ? { scope: p.scope } : {}), ...(p.to ? { to: p.to } : {}), ...(p.on ? { on: p.on } : {}), ...(p.quote ? { quote: p.quote } : {}) }
   }
 
-  function send(text: string, opts: { to?: string; on?: string; scope?: ChatScope } = {}, via: (post: ChatPost) => boolean): boolean {
+  function send(text: string, opts: { to?: string; on?: string; scope?: ChatScope; quote?: ChatQuote } = {}, via: (post: ChatPost) => boolean): boolean {
     const clean = cleanChatText(text)
-    if (!clean) return false
+    if (!clean && !opts.quote) return false
     const nonce = chatNonce(++counter)
-    const row: PendingChat = { nonce, text: clean, to: opts.to, scope: opts.scope, on: opts.on, at: new Date().toISOString(), state: 'sending' }
+    const row: PendingChat = { nonce, text: clean, to: opts.to, scope: opts.scope, on: opts.on, quote: opts.quote, at: new Date().toISOString(), state: 'sending' }
     const sent = via(postOf(row))
     put({ ...thread.value, pending: [...thread.value.pending, sent ? row : { ...row, state: 'queued' }] })
     return true

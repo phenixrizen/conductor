@@ -12,7 +12,15 @@ import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
  * page (`utils/monaco.ts`, a chunk of its own). Read-only until F6.
  */
 const props = withDefaults(defineProps<{ path: string; text: string; line?: number; readOnly?: boolean; nvim?: NvimBridge }>(), { line: undefined, readOnly: true, nvim: undefined })
-const emit = defineEmits<{ cursor: [pos: { line: number; col: number }]; ready: []; nvim: [state: { mode: string; cmdline: string; message: string; messageKind: string }]; nvimClosed: []; dirty: [dirty: boolean] }>()
+const emit = defineEmits<{
+  cursor: [pos: { line: number; col: number }]
+  ready: []
+  nvim: [state: { mode: string; cmdline: string; message: string; messageKind: string }]
+  nvimClosed: []
+  dirty: [dirty: boolean]
+  /** Lines selected (F7): the range and where below it, in the editor's pixels, a bar can sit; null when nothing is. */
+  selection: [sel: { from: number; to: number; top: number; left: number } | null]
+}>()
 
 const host = ref<HTMLElement>()
 const colorMode = useColorMode()
@@ -65,6 +73,8 @@ async function mount() {
     fixedOverflowWidgets: true,
   })
   editor.onDidChangeCursorPosition((e) => emit('cursor', { line: e.position.lineNumber, col: e.position.column }))
+  editor.onDidChangeCursorSelection(() => tellSelection())
+  editor.onDidScrollChange(() => tellSelection())
   emit('cursor', { line: 1, col: 1 })
   if (props.line) showLine(props.line)
   tellDirty()
@@ -192,6 +202,33 @@ function onNvimEvent(ev: NvimEvent) {
   }
 }
 
+/** The selection, as the bar over it needs it (F7): whole lines, from..to, and the spot below its last line. */
+function tellSelection() {
+  if (!editor || !model || nvimId) return
+  const s = editor.getSelection()
+  if (!s || s.isEmpty()) return emit('selection', null)
+  let to = s.endLineNumber
+  if (s.endColumn === 1 && to > s.startLineNumber) to-- // a selection ending at a line's start ends on the line before
+  const at = editor.getScrolledVisiblePosition({ lineNumber: to, column: 1 })
+  if (!at) return emit('selection', null)
+  emit('selection', { from: s.startLineNumber, to, top: at.top + at.height, left: at.left })
+}
+/** The file's lines as the editor holds them. */
+function getLines(): string[] {
+  return model?.getLinesContent() ?? []
+}
+/** Shows lines from..to: in the middle, the cursor on the first, tinted for a moment (a quote opened, F7). */
+function showRange(from: number, to: number) {
+  if (!editor || !monacoRef) return
+  const count = model?.getLineCount() ?? to
+  const a = Math.max(1, Math.min(from, count))
+  const b = Math.max(a, Math.min(to, count))
+  editor.revealLinesInCenter(a, b)
+  editor.setPosition({ lineNumber: a, column: 1 })
+  marks?.clear()
+  marks = editor.createDecorationsCollection([{ range: new monacoRef.Range(a, 1, b, 1), options: { isWholeLine: true, className: 'conductor-line-target' } }])
+  setTimeout(() => marks?.clear(), 2500)
+}
 /** Goes to a line: shown in the middle, the cursor on it, tinted for a moment. */
 function showLine(line: number) {
   if (!editor || !monacoRef) return
@@ -244,7 +281,7 @@ watch(
   () => props.readOnly,
   (ro) => editor?.updateOptions({ readOnly: ro }),
 )
-defineExpose({ showLine, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText })
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText, getLines })
 </script>
 
 <template>

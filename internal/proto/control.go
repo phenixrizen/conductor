@@ -165,7 +165,28 @@ type ChatPost struct {
 	Text  string `json:"text"`
 	On    string `json:"on,omitempty"`
 	To    string `json:"to,omitempty"`
+	// Quote is lines of a file the message is about (design round 12, F7):
+	// a comment on a line, or a question to the agent about it.
+	Quote *ChatQuote `json:"quote,omitempty"`
 }
+
+// ChatQuote is the lines From..To (1-based) of the file at Path as the
+// person saw them, at most MaxQuoteLines of at most MaxQuoteLine bytes; Cut
+// says lines were left out to keep the message in one frame.
+type ChatQuote struct {
+	Path  string   `json:"path"`
+	From  int      `json:"from"`
+	To    int      `json:"to"`
+	Lines []string `json:"lines"`
+	Cut   bool     `json:"cut,omitempty"`
+}
+
+// The bounds of a quote.
+const (
+	MaxQuoteLines = 12
+	MaxQuoteLine  = 200
+	MaxQuotePath  = 512
+)
 
 // ChatSend asks the owner to type the text of the kept message Ref into the
 // agent (client -> owner, controllers only), or into member To of a run.
@@ -203,6 +224,7 @@ type ChatMessage struct {
 	Event   string            `json:"event,omitempty"`
 	Nonce   string            `json:"nonce,omitempty"`
 	Options []AttentionOption `json:"options,omitempty"`
+	Quote   *ChatQuote        `json:"quote,omitempty"`
 }
 
 // ChatHistory replays the kept messages to a new viewer, oldest first, in

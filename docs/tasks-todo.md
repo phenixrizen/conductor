@@ -150,9 +150,6 @@ Explorer (F1), the Monaco editor beside the terminal (F2), Changes (F3)
 and Touched (F4) landed on 2026-10-08 (`docs/round12-plan.md`, the design
 screens 4a–4g). Still to build, each a pull request from main:
 
-- **Comment on a line (F7, 5a–5c):** select lines, Comment or Ask the
-  agent, the quote card in the chat thread, re-anchoring when the lines
-  move.
 - **Neovim in the editor, what is left after F8:** typing in insert mode round-trips to the machine before it shows
   (a local echo, as vscode-neovim does, is the next step); Neovim's
   columns are bytes, so the cursor sits off by the multibyte characters

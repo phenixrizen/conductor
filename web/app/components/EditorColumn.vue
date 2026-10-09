@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
+import type { ChatQuote, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
 import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~/utils/editorTabs'
 
 /**
@@ -10,6 +10,7 @@ import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~
  * terminal folds to a bar at the foot that says what the agent is doing;
  * a tap brings the terminal back (the editor folds to its strip).
  */
+const emit = defineEmits<{ comment: [c: { quote: ChatQuote; text: string; toAgent: boolean }] }>()
 const props = defineProps<{
   request: FileRequester
   /** The editor's Neovim, when the page offers it (design round 12, F8). */
@@ -17,6 +18,9 @@ const props = defineProps<{
   /** Saves a file (design round 12, F6), and whether this connection may: Save and Ctrl+S show then. */
   write?: FileWriter
   canEdit?: boolean
+  /** Comments on lines (F7): the page posts them to its chat; `canAsk` offers Ask the agent. */
+  commenting?: boolean
+  canAsk?: boolean
   cwd?: string
   rawUrl?: (path: string) => string | null
   hostAway?: string
@@ -65,6 +69,9 @@ function bringTerminalUp() {
       :nvim="nvim"
       :write="write"
       :can-edit="canEdit"
+      :commenting="commenting"
+      :can-ask="canAsk"
+      @comment="emit('comment', $event)"
       :cwd="cwd"
       :raw-url="rawUrl"
       :host-away="hostAway"
