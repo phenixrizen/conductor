@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
@@ -379,6 +379,9 @@ function nvimOpen(path: string): Promise<NvimEvent> {
 function nvimInput(id: string, keys: string): void {
   transport?.nvimInput(id, keys)
 }
+function nvimSwap(id: string, choice: NvimSwapChoice): void {
+  transport?.nvimSwap(id, choice)
+}
 function nvimClose(id: string): void {
   transport?.nvimClose(id)
 }
@@ -415,7 +418,7 @@ function chatSend(send: ChatSend): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({

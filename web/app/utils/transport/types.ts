@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, TransportKind, Welcome } from '../protocol'
+import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, TransportKind, Welcome } from '../protocol'
 
 export type TransportState = 'idle' | 'connecting' | 'signaling' | 'open' | 'closed'
 
@@ -36,6 +36,7 @@ export interface TerminalTransport {
   nvimOpen(path: string): Promise<NvimEvent>
   nvimInput(id: string, keys: string): void
   nvimClose(id: string): void
+  nvimSwap(id: string, choice: NvimSwapChoice): void
   onOutput(cb: (data: Uint8Array, replay: boolean) => void): void
   onControl(cb: (msg: ControlMessage) => void): void
   onClose(cb: (info: CloseInfo) => void): void

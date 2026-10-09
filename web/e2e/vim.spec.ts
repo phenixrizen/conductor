@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
 
@@ -86,6 +86,73 @@ test('the Neovim keymap is off until its button, then keys reach the real Neovim
     await area.locator('[data-editor-keymap]').click()
     await expect(area.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'default')
     await expect(area.locator('[data-nvim-status]')).toHaveCount(0)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// Round 13, G3: a file another Vim left a swap file for opens read-only
+// under the Neovim keymap, with a banner naming the swap file's writer and
+// what applies. A Vim that died with unsaved text left this one: Recover
+// reads that text in, :w keeps it, and Delete the swap file ends the banner.
+test('a swap file left by a Vim that died opens read-only with a banner; Recover, write, Delete the swap file', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-swap')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  // A Vim with the server's home edits the file, writes its swap file, and dies.
+  const swapDir = join(state.home, '.local', 'state', 'nvim', 'swap')
+  const vim = spawn('nvim', ['--headless', '-c', 'normal! Ifrom the swap ', '-c', 'preserve', 'notes.txt'], {
+    cwd,
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: state.home, LANG: 'C.UTF-8' },
+    stdio: 'ignore',
+  })
+  const swapFile = () => (existsSync(swapDir) ? readdirSync(swapDir).find((f) => f.includes('files-swap') && f.endsWith('.swp')) : undefined)
+  await expect.poll(swapFile, { timeout: 15_000, message: 'the dying Vim wrote its swap file' }).toBeTruthy()
+  await page.waitForTimeout(500)
+  vim.kill('SIGKILL')
+  await new Promise((r) => vim.once('exit', r))
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'swap', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const banner = area.locator('[data-editor-swap]')
+    await expect(banner).toBeVisible({ timeout: 30_000 })
+    await expect(banner).toHaveAttribute('data-swap-running', 'false')
+    await expect(banner).toContainText('A swap file from a Vim that ended')
+    await expect(banner).toContainText('with changes not written')
+    await expect(banner.locator('[data-swap-choice]')).toHaveCount(3)
+    const lines = area.locator('.monaco-editor .view-lines')
+    await expect(lines).toContainText('alpha')
+    // Recover reads the dead Vim's text in; the banner says to write, then delete.
+    await banner.locator('[data-swap-choice="recover"]').click()
+    await expect(lines).toContainText('from the swap alpha', { timeout: 15_000 })
+    await expect(banner).toContainText('write the file (:w)')
+    await lines.click()
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('from the swap alpha\n')
+    await banner.locator('[data-swap-choice="delete"]').click()
+    await expect(banner).toHaveCount(0)
+    await expect.poll(swapFile, { timeout: 15_000, message: 'the swap file is gone' }).toBeFalsy()
+    // Neovim's own question shows as buttons: :confirm q over a change not written; Cancel keeps the tab.
+    await lines.click()
+    await page.keyboard.type('Ax')
+    await page.keyboard.press('Escape')
+    await page.keyboard.type(':confirm q')
+    await page.keyboard.press('Enter')
+    const confirm = area.locator('[data-nvim-confirm]')
+    await expect(confirm).toContainText('Save changes', { timeout: 15_000 })
+    await expect(confirm.locator('[data-nvim-confirm-choice]')).toHaveCount(3)
+    await confirm.locator('[data-nvim-confirm-choice="c"]').click()
+    await expect(confirm).toHaveCount(0)
+    await expect(area.locator('[data-nvim-status]')).toBeVisible()
+    await expect(lines).toContainText('from the swap alphax')
   } finally {
     await api.stopSession(s.id)
   }

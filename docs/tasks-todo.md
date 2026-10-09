@@ -169,8 +169,6 @@ and the Neovim keymap. What is set aside:
   Neovim keymap does not take. A keyboard with the character on a key
   works. Fix: take the textarea's composition and input events in that
   keymap and send their text as keys.
-- **Neovim: a swap file or a prompt at `:e` refuses the open** with
-  Neovim's words, instead of showing the prompt to answer.
 - **Goose's files:** the Goose mapper reads the tool's name only; its
   payload's arguments wait for a run of the real Goose CLI (the `goose` on
   the owner's machine is the Go migrations tool, round 13 G0).

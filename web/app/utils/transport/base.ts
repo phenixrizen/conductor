@@ -16,6 +16,7 @@ import {
   type ControlMessage,
   type FileResponse,
   type FileWriteOptions,
+  type NvimSwapChoice,
   type TransportKind,
   type Welcome,
 } from '../protocol'
@@ -109,6 +110,10 @@ export abstract class BaseTransport implements TerminalTransport {
   nvimInput(id: string, keys: string): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'nvim_input', id, keys }))
+  }
+  nvimSwap(id: string, choice: NvimSwapChoice): void {
+    if (this.state.value !== 'open') return
+    this.send(encodeControl({ t: 'nvim_swap', id, choice }))
   }
   nvimClose(id: string): void {
     if (this.state.value !== 'open') return

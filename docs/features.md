@@ -763,6 +763,28 @@ tool, and Conductor offered it as Goose.
   (the stub draws Codex's question behind a marker file; the member is held
   with the two choices; Trust all and continue answers 2 and the prompt
   runs). Open: whether Codex's trust lasts past a session.
+- **G3, Neovim and swap files.** Opening a file another Vim held (or left
+  a swap file for when it died) failed with Neovim's words. Now the bridge
+  answers Neovim's SwapExists itself (open read-only) and reports the swap
+  file with swapinfo's facts: its writer's process, user and host, whether
+  that still runs on the session's machine (a zombie does not count),
+  whether it holds unsaved changes. The editor shows a banner, as the owner
+  chose, with Edit anyway, and once the writer is gone Recover and Delete
+  the swap file; the choices are a fixed set the server maps to fixed
+  commands (`nvim_swap`), and deleting removes only the regular `*.sw?`
+  file Neovim reported. Two things found on the way: `:recover` replaces
+  the buffer's text without a line event, so the bridge sends it whole, and
+  Neovim stops following a buffer it reloads (`:e!`), so the bridge follows
+  it again. Neovim's own questions (`:confirm q` over unsaved changes, a
+  write over a file changed outside) now show their choices as buttons.
+  Tests: against the real Neovim with its state and config in temporary
+  folders (a running writer allows only Edit; one killed leaves a stale
+  swap whose text is recovered, sent, then deleted; `:confirm q` arrives as
+  a confirm message and Cancel keeps the editor), the relay dropping
+  `nvim_swap` for view links, vitest for the banner's words and the confirm
+  choices, Playwright `vim.spec.ts` (a Vim with the server's home writes
+  its swap and is killed; the banner, Recover, `:w`, Delete; then
+  `:confirm q` and Cancel).
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

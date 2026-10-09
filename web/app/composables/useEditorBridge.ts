@@ -1,11 +1,12 @@
 import type { Ref } from 'vue'
-import type { FileResponse, FileWriteOptions, NvimBridge, NvimEvent, Welcome } from '~/utils/protocol'
+import type { FileResponse, FileWriteOptions, NvimBridge, NvimEvent, NvimSwapChoice, Welcome } from '~/utils/protocol'
 
 /** What a page's terminal offers the editor: Neovim (F8) and saves (F6), over its connection. */
 export interface EditorTerminal {
   nvimOpen: (path: string) => Promise<NvimEvent>
   nvimInput: (id: string, keys: string) => void
   nvimClose: (id: string) => void
+  nvimSwap: (id: string, choice: NvimSwapChoice) => void
   writeFile: (path: string, data: Uint8Array, opts?: FileWriteOptions) => Promise<FileResponse>
 }
 
@@ -33,6 +34,7 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
     open: (path: string) => (terminal.value ? terminal.value.nvimOpen(path) : Promise.reject(new Error('terminal not ready'))),
     input: (id: string, keys: string) => terminal.value?.nvimInput(id, keys),
     close: (id: string) => terminal.value?.nvimClose(id),
+    swap: (id: string, choice: NvimSwapChoice) => terminal.value?.nvimSwap(id, choice),
     subscribe: (cb) => {
       listeners.add(cb)
       return () => listeners.delete(cb)

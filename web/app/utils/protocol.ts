@@ -570,6 +570,8 @@ export interface NvimBridge {
   open(path: string): Promise<NvimEvent>
   input(id: string, keys: string): void
   close(id: string): void
+  /** Answers the swap file the editor found (round 13, G3). */
+  swap(id: string, choice: NvimSwapChoice): void
   subscribe(cb: (ev: NvimEvent) => void): () => void
 }
 
@@ -589,7 +591,26 @@ export interface NvimClose {
   t: 'nvim_close'
   id: string
 }
-export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error'
+/** The answers to a swap file (round 13, G3): edit anyway; recover its text; delete it and edit (the last two once its writer is gone). */
+export type NvimSwapChoice = 'edit' | 'recover' | 'delete'
+export interface NvimSwap {
+  t: 'nvim_swap'
+  id: string
+  choice: NvimSwapChoice
+}
+/** Another editor's swap file for the file opened: the file opened read-only. */
+export interface NvimSwapInfo {
+  file: string
+  pid?: number
+  /** The process that wrote it still runs on the session's machine. */
+  running: boolean
+  user?: string
+  host?: string
+  /** It holds changes not written to the file. */
+  modified?: boolean
+  mtime?: string
+}
+export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap'
 /**
  * What the editor reports. `kind` says which fields are set: `opened` (reqId on the first, path), `lines` (the buffer lines [first, last) become
  * `lines`, last -1 to the end, `truncated` when a line was cut), `cursor` (1-based line and col, the mode, the other end of a visual selection),
@@ -610,6 +631,8 @@ export interface NvimEvent {
   mode?: string
   visualLine?: number
   visualCol?: number
+  /** A `swap` event's swap file. */
+  swap?: NvimSwapInfo
   show?: boolean
   content?: string
   pos?: number

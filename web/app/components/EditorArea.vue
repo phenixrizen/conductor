@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
+import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge, NvimSwapChoice } from '~/utils/protocol'
+import { swapChoices, swapWords, type NvimViewState } from '~/utils/nvimSwap'
+import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
@@ -271,7 +273,21 @@ function setKeymap(k: Keymap) {
 }
 const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
-const nvimState = ref<{ mode: string; cmdline: string; message: string; messageKind: string } | null>(null)
+const nvimState = ref<NvimViewState | null>(null)
+/** Neovim's own question and its choices, when one shows (round 13, G3). */
+const nvimConfirm = computed(() => {
+  const st = nvimState.value
+  if (!nvimOn.value || st?.messageKind !== 'confirm') return null
+  const choices = confirmChoices(st.message)
+  return choices.length ? { question: confirmQuestion(st.message), choices } : null
+})
+function answerConfirm(key: string) {
+  ;(editorRef.value as { answerConfirm?: (k: string) => void } | null)?.answerConfirm?.(key)
+}
+/** Answers the swap file the editor's Neovim found (round 13, G3). */
+function answerSwap(choice: NvimSwapChoice) {
+  ;(editorRef.value as { answerSwap?: (c: NvimSwapChoice) => void } | null)?.answerSwap?.(choice)
+}
 const keymapTip = computed(() => {
   if (keymap.value === 'nvim') return nvimWhy.value ? `${nvimWhy.value} · Monaco's keys meanwhile · click for Monaco's keys` : "Neovim keys: the real Neovim on the session's machine holds the file · click for Monaco's keys"
   return "Monaco's keys · click for Neovim keys (the real Neovim on the session's machine)"
@@ -531,6 +547,18 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span v-if="!nvimState?.cmdline && !nvimState?.message && !modeWords(nvimState?.mode ?? '')" class="text-muted">Neovim · :w writes on {{ nvim?.offer.machine || 'the machine' }} · :q closes the tab</span>
         </template>
         <span v-else class="flex items-center gap-1.5 text-warning" data-editor-keymap-note><UIcon name="i-lucide-info" class="size-3.5" />{{ nvimWhy }} · Monaco's keys meanwhile</span>
+      </div>
+      <!-- Another editor's swap file (round 13, G3): the file opened read-only under the Neovim keymap; whose it is, and what applies. -->
+      <div v-if="nvimOn && nvimState?.swap && active?.kind === 'file'" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-warning/10 px-3 py-1.5 text-xs" data-editor-swap :data-swap-running="nvimState.swap.running">
+        <UIcon name="i-lucide-file-lock" class="size-3.5 flex-none text-warning" />
+        <span class="min-w-0 flex-1 text-highlighted" :title="nvimState.swap.file">{{ swapWords(nvimState.swap, nvimState.recovered) }}</span>
+        <UButton v-for="c in swapChoices(nvimState.swap, nvimState.recovered)" :key="c.choice" :label="c.label" size="xs" :color="c.choice === 'delete' ? 'warning' : 'neutral'" variant="soft" :data-swap-choice="c.choice" @click="answerSwap(c.choice)" />
+      </div>
+      <!-- Neovim asks (:confirm q, a write over a file changed outside): the question and its choices as buttons. -->
+      <div v-if="nvimConfirm" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-nvim-confirm>
+        <UIcon name="i-lucide-message-circle-question" class="size-3.5 flex-none text-primary" />
+        <span class="min-w-0 flex-1 text-highlighted">{{ nvimConfirm.question }}</span>
+        <UButton v-for="c in nvimConfirm.choices" :key="c.key" :label="c.label" size="xs" :color="c.default ? 'primary' : 'neutral'" variant="soft" :data-nvim-confirm-choice="c.key" @click="answerConfirm(c.key)" />
       </div>
       <!-- The file changed on disk since it was read (F6): what changed it, and the three ways on. -->
       <div v-if="activeConflict" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-warning/10 px-3 py-1.5 text-xs" data-editor-conflict>
