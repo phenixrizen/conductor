@@ -2,6 +2,7 @@ package nvim
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,9 @@ func (r *recorder) Cmdline(show bool, content string, pos int, prompt string) {
 func (r *recorder) Message(text, kind string) { r.add("message " + kind + ":" + text) }
 func (r *recorder) Written(path string)       { r.add("written " + filepath.Base(path)) }
 func (r *recorder) Buffer(path string)        { r.add("buffer " + filepath.Base(path)) }
+func (r *recorder) Ack(seq uint32, line, col int, mode string, vl, vc int) {
+	r.add(fmt.Sprintf("ack %d %d:%d %s", seq, line, col, mode))
+}
 func (r *recorder) Swap(sw Swap) {
 	r.mu.Lock()
 	r.swaps = append(r.swaps, sw)
@@ -332,4 +336,58 @@ func TestComposedTextIsTypedAsWritten(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// Numbered keys are acknowledged after the buffer changes they made, on the
+// same channel (round 13, G5): a page that showed them at once knows which
+// guesses the buffer holds. While Neovim waits for a command's next key
+// (the first g of gg) nothing is acknowledged; the next keys' ack covers it.
+func TestNumberedKeysAreAcknowledgedAfterTheirChanges(t *testing.T) {
+	if !Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("end\none\n"), 0o644)
+	r := &recorder{done: make(chan struct{})}
+	e, err := Open(context.Background(), dir, "sample.txt", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	e.InputSeq("I", 1)
+	r.wait(t, "ack 1 1:1 i")
+	e.InputSeq("a", 2)
+	e.InputSeq("b", 3)
+	e.InputSeq("c", 4)
+	r.wait(t, "ack 4 1:4 i")
+	// Every change before an ack is in the lines reported before it.
+	r.mu.Lock()
+	var lines []string
+	li := 0
+	for _, ev := range r.events {
+		if ev == "lines" {
+			lines = r.lines[li]
+			li++
+		}
+		if ev == "ack 4 1:4 i" {
+			break
+		}
+	}
+	r.mu.Unlock()
+	if len(lines) != 1 || lines[0] != "abcend" {
+		t.Fatalf("the lines before ack 4: %q", lines)
+	}
+	e.InputSeq("<Esc>", 5)
+	r.wait(t, "ack 5 1:3 n")
+	e.InputSeq("j", 6)
+	r.wait(t, "ack 6 2:")
+	e.InputSeq("g", 7)
+	time.Sleep(300 * time.Millisecond)
+	if r.has("ack 7") {
+		t.Fatal("acknowledged while a command waits for its next key")
+	}
+	e.InputSeq("g", 8)
+	r.wait(t, "ack 8 1:")
 }

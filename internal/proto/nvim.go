@@ -90,11 +90,14 @@ type NvimOpen struct {
 }
 
 // NvimInput sends Keys (Neovim notation, `<Esc>`, `<C-x>`, `<lt>` for `<`)
-// to the editor ID.
+// to the editor ID. Seq, when set, is the page's number for these keys,
+// rising: the `cursor` event that follows once Neovim has handled them
+// carries it as Ack (round 13, G5, the local echo).
 type NvimInput struct {
 	T    string `json:"t"`
 	ID   string `json:"id"`
 	Keys string `json:"keys"`
+	Seq  uint32 `json:"seq,omitempty"`
 }
 
 // NvimClose ends the editor ID.
@@ -140,6 +143,10 @@ type NvimEvent struct {
 	Message     string `json:"message,omitempty"`
 
 	Swap *NvimSwapInfo `json:"swap,omitempty"`
+	// Ack, on a `cursor` event, says Neovim has handled the keys of the
+	// nvim_input with that Seq and every one before, every buffer change
+	// they made sent already (round 13, G5).
+	Ack uint32 `json:"ack,omitempty"`
 }
 
 // NvimLineEvents turns one buffer change (the lines [first, last) become

@@ -4,6 +4,7 @@ import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
 import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
+import { ECHO_HOLD_MS, NvimEcho, type EchoLines } from '~/utils/nvimEcho'
 import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
 
 /**
@@ -109,6 +110,27 @@ function setText(text: string) {
 }
 let nvimId: string | null = null
 let unsubscribe: (() => void) | null = null
+// The local echo (round 13, G5): plain characters typed in insert mode show at once, Neovim's acknowledgement settles them.
+let echo: NvimEcho | null = null
+let holdTimer: ReturnType<typeof setTimeout> | undefined
+let guessMarks: MonacoEditor.IEditorDecorationsCollection | null = null
+function applyLinesEvent(ev: EchoLines) {
+  if (!model || !monacoRef) return
+  const edit = linesEdit(ev, model.getLineCount(), (n) => model!.getLineLength(n))
+  model.applyEdits([{ range: new monacoRef.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
+}
+function markGuesses() {
+  if (!guessMarks || !monacoRef) return
+  const r = echo?.range()
+  guessMarks.set(r ? [{ range: new monacoRef.Range(r.line, r.from, r.line, r.to), options: { inlineClassName: 'nvim-guess' } }] : [])
+}
+function stopEcho() {
+  clearTimeout(holdTimer)
+  holdTimer = undefined
+  echo = null
+  guessMarks?.clear()
+  guessMarks = null
+}
 const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false }
 function tellNvim() {
   emit('nvim', { ...nvimState })
@@ -127,6 +149,15 @@ async function startNvim() {
     return
   }
   if (!nvimId) return
+  const m = model
+  echo = new NvimEcho({
+    line: (n) => (n >= 1 && n <= m.getLineCount() ? m.getLineContent(n) : ''),
+    setLine: (n, text) => {
+      if (n >= 1 && n <= m.getLineCount() && monacoRef) m.applyEdits([{ range: new monacoRef.Range(n, 1, n, m.getLineMaxColumn(n)), text }])
+    },
+    applyLines: applyLinesEvent,
+  })
+  guessMarks = editor.createDecorationsCollection()
   unsubscribe = bridge.subscribe(onNvimEvent)
   editor.updateOptions({ cursorStyle: 'block', cursorBlinking: 'solid' })
   editor.onKeyDown((e) => {
@@ -139,10 +170,22 @@ async function startNvim() {
     if (keys === null) return
     e.preventDefault()
     e.stopPropagation()
-    bridge.input(nvimId, keys)
+    sendKeys(bridge, keys)
   })
   listenForText(bridge)
   tellNvim()
+}
+
+/** Sends keys with their number; a plain character in insert mode shows at once (the local echo). */
+function sendKeys(bridge: NvimBridge, keys: string) {
+  if (!nvimId) return
+  const at = editor?.getPosition()
+  const r = echo ? echo.send(keys, { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }) : { seq: 0 }
+  bridge.input(nvimId, keys, r.seq || undefined)
+  if (r.cursor && editor) {
+    editor.setPosition({ lineNumber: r.cursor.line, column: r.cursor.col })
+    markGuesses()
+  }
 }
 
 // Text with no key press (round 13, G4): an input method's composed word, a dead key's character, dictation. Taken on the way down to
@@ -154,7 +197,7 @@ function listenForText(bridge: NvimBridge) {
   let composing = false
   const send = (text: string) => {
     if (!nvimId) return
-    for (const keys of textToNvim(text)) bridge.input(nvimId, keys)
+    for (const keys of textToNvim(text)) sendKeys(bridge, keys)
   }
   const clear = (t: EventTarget | null) => {
     if (t instanceof HTMLTextAreaElement) t.value = ''
@@ -201,21 +244,40 @@ function onNvimEvent(ev: NvimEvent) {
   const monaco = monacoRef
   switch (ev.kind) {
     case 'lines': {
-      const edit = linesEdit({ first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }, model.getLineCount(), (n) => model!.getLineLength(n))
-      model.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
+      const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
+      if (echo?.lines(lev)) {
+        // Guesses show: the change waits for its acknowledgement, which comes right after it, so the two settle at once.
+        holdTimer ??= setTimeout(() => {
+          holdTimer = undefined
+          echo?.timeout()
+          markGuesses()
+        }, ECHO_HOLD_MS)
+        break
+      }
+      applyLinesEvent(lev)
       break
     }
     case 'cursor': {
-      const line = Math.max(1, Math.min(ev.line ?? 1, model.getLineCount()))
       // Neovim counts a line's bytes, Monaco its UTF-16 units.
-      const col = byteColToUtf16(model.getLineContent(line), Math.max(1, ev.col ?? 1))
-      if (ev.mode && isVisual(ev.mode) && ev.visualLine) {
+      const toUtf16 = (l: number, c: number) => byteColToUtf16(model!.getLineContent(Math.max(1, Math.min(l, model!.getLineCount()))), Math.max(1, c))
+      const shown = echo ? echo.cursor({ line: ev.line ?? 1, col: ev.col ?? 1, mode: ev.mode ?? nvimState.mode, ack: ev.ack }, toUtf16) : null
+      if (echo && !echo.holding && holdTimer) {
+        clearTimeout(holdTimer)
+        holdTimer = undefined
+      }
+      markGuesses()
+      const line = Math.max(1, Math.min(ev.line ?? 1, model.getLineCount()))
+      const col = toUtf16(line, ev.col ?? 1)
+      if (echo && !shown) {
+        // A guess is ahead of Neovim's cursor: the cursor stays after it.
+      } else if (ev.mode && isVisual(ev.mode) && ev.visualLine) {
         const vl = Math.max(1, Math.min(ev.visualLine, model.getLineCount()))
         const vc = byteColToUtf16(model.getLineContent(vl), Math.max(1, ev.visualCol ?? 1))
         const forward = vl < line || (vl === line && vc <= col)
         editor.setSelection(ev.mode === 'V' ? new monaco.Selection(Math.min(vl, line), 1, Math.max(vl, line), model.getLineMaxColumn(Math.max(vl, line))) : forward ? new monaco.Selection(vl, vc, line, col + 1) : new monaco.Selection(vl, vc + 1, line, col))
       } else {
-        editor.setPosition({ lineNumber: line, column: col })
+        const at = shown ?? { line, col }
+        editor.setPosition({ lineNumber: at.line, column: at.col })
       }
       editor.revealPositionInCenterIfOutsideViewport({ lineNumber: line, column: col })
       if (ev.mode && ev.mode !== nvimState.mode) {
@@ -227,6 +289,7 @@ function onNvimEvent(ev: NvimEvent) {
     }
     case 'mode':
       if (ev.mode) {
+        echo?.setMode(ev.mode)
         nvimState.mode = ev.mode
         editor.updateOptions({ cursorStyle: cursorStyleFor(ev.mode) })
         tellNvim()
@@ -256,6 +319,7 @@ function onNvimEvent(ev: NvimEvent) {
       unsubscribe?.()
       unsubscribe = null
       stopText?.()
+      stopEcho()
       emit('nvimClosed')
       break
     case 'error':
@@ -335,6 +399,7 @@ onBeforeUnmount(() => {
   unsubscribe?.()
   unsubscribe = null
   stopText?.()
+  stopEcho()
   contentSub?.dispose()
   contentSub = null
   editor?.dispose()
@@ -372,6 +437,17 @@ defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus()
 </template>
 
 <style>
+/* A local echo's guess (round 13, G5): underlined only once it has waited 100 ms for Neovim, so a fast link shows nothing. */
+.nvim-guess {
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
+  animation: nvim-guess-waits 0s linear 100ms forwards;
+}
+@keyframes nvim-guess-waits {
+  to {
+    text-decoration-color: var(--ui-text-muted);
+  }
+}
 .conductor-line-target {
   background: color-mix(in oklab, var(--ui-primary) 22%, transparent);
 }

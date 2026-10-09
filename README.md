@@ -397,7 +397,11 @@ unsaved text, written with `:w`) and **Delete the swap file**. Neovim's own
 questions, such as `:confirm q` over unsaved changes, show their choices as
 buttons. Text that comes with no key press reaches Neovim too: an input
 method's committed word (not the composition on the way), a dead key's
-character, dictation.
+character, dictation. In insert mode a plain character shows at once,
+before the machine answers, then settles as Neovim has it; one Neovim has
+not handled after a tenth of a second is underlined. When Neovim's text is
+not the guess (an autopair, an abbreviation, a mapping) its text wins once
+and the guessing stops until insert mode is left.
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
