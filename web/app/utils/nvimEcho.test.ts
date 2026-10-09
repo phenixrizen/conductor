@@ -55,6 +55,8 @@ describe('the local echo', () => {
     expect(e.send('a', { line: 1, col: 1 })).toEqual({ seq: 3 }) // Backspace not acknowledged yet: no guess
     expect(d.text).toEqual(['end'])
     expect(guessable('<lt>')).toBe('<')
+    expect(guessable('<Space>')).toBe(' ')
+    expect(guessable('<C-Space>')).toBe(null)
     expect(guessable('<CR>')).toBe(null)
     expect(guessable('é')).toBe('é')
   })
@@ -87,6 +89,20 @@ describe('the local echo', () => {
     expect(d.text).toEqual(['end'])
     expect(e.showing).toBe(false)
     expect(e.send('b', { line: 1, col: 1 }).cursor).toEqual({ line: 1, col: 2 })
+  })
+
+  it('guesses a space like a letter, so the word after it shows at once too', () => {
+    const d = doc('')
+    const e = inInsert(d)
+    e.send('a', { line: 1, col: 1 })
+    expect(e.send('<Space>', { line: 1, col: 2 })).toEqual({ seq: 2, cursor: { line: 1, col: 3 } })
+    expect(e.send('b', { line: 1, col: 3 })).toEqual({ seq: 3, cursor: { line: 1, col: 4 } })
+    expect(d.text).toEqual(['a b'])
+    // Neovim's own text arrives and settles all three.
+    e.lines({ first: 0, last: 1, lines: ['a b'] })
+    expect(e.cursor({ line: 1, col: 4, mode: 'i', ack: 3 }, ascii)).toEqual({ line: 1, col: 4 })
+    expect(d.text).toEqual(['a b'])
+    expect(e.showing).toBe(false)
   })
 
   it('shows a held change as it is when its acknowledgement does not come', () => {

@@ -240,25 +240,26 @@ test('typing in insert mode shows at once and settles as Neovim has it; an autop
     await lines.click()
     await page.keyboard.type('I')
     await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
-    // Three characters: Neovim needs 900 ms for them; the page shows them at once, marked.
-    await page.keyboard.type('abc')
-    await expect(lines).toContainText('abcend', { timeout: 250 })
+    // Four characters, a space among them: Neovim needs 1.2 s for them; the page shows them at once, marked. The space is guessed
+    // like a letter (it comes as <Space>, which held every word after it until Neovim's round trip).
+    await page.keyboard.type('ab c')
+    await expect(lines).toContainText('ab cend', { timeout: 250 })
     await expect(area.locator('.nvim-guess')).not.toHaveCount(0)
     // Settled: the marks go, nothing is doubled.
     await expect(area.locator('.nvim-guess')).toHaveCount(0, { timeout: 10_000 })
-    await expect(lines).toContainText('abcend')
-    await expect(lines).not.toContainText('abcabc')
+    await expect(lines).toContainText('ab cend')
+    await expect(lines).not.toContainText('ab cab c')
     // The autopair: the guess "(" becomes Neovim's "()" once; the next character is Neovim's, between the two.
     await page.keyboard.type('(')
-    await expect(lines).toContainText('abc()end', { timeout: 10_000 })
+    await expect(lines).toContainText('ab c()end', { timeout: 10_000 })
     await page.keyboard.type('x')
-    await expect(lines).toContainText('abc(x)end', { timeout: 10_000 })
+    await expect(lines).toContainText('ab c(x)end', { timeout: 10_000 })
     await expect(area.locator('.nvim-guess')).toHaveCount(0)
     await page.keyboard.press('Escape')
     await expect(status.locator('[data-nvim-mode-words]')).toHaveText('', { timeout: 10_000 })
     await page.keyboard.type(':w')
     await page.keyboard.press('Enter')
-    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('abc(x)end\n')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('ab c(x)end\n')
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)

@@ -51,9 +51,12 @@ interface Guess {
 
 const isInsert = (mode: string) => mode === 'i' || mode === 'insert' || mode === 'ic' || mode === 'ix'
 
-/** The printable character keys stand for, when they are one (`<lt>` is `<`), else null. */
+/** The printable character keys stand for, when they are one (`<lt>` is `<`, `<Space>` a space), else null. */
 export function guessable(keys: string): string | null {
   if (keys === '<lt>') return '<'
+  // The space bar comes as <Space> (keyToNvim): a plain character in insert mode like any other, and between every two words, so a
+  // space not guessed held every word after it until Neovim's round trip (seen over the switchyard: letters 9 ms, spaces 40 ms).
+  if (keys === '<Space>') return ' '
   if ([...keys].length !== 1 || keys < ' ' || keys === '\x7f') return null
   return keys
 }

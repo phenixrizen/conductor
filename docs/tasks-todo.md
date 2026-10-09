@@ -71,19 +71,6 @@ test that would have caught it when it is fixed.
   below `sm` the badges fold into the title row and the buttons into a menu,
   as the session page's navbar does; Playwright at 390 checking nothing
   overlaps (bounding boxes) on `/yard?focus=<id>`.
-- **Codex's "update available" dialog is not seen as needing input.** Seen
-  2026-10-08 while probing the trust question with the real Codex 0.159: at
-  launch Codex drew "Update available · 0.159.0 → 0.161.0 / 1. Update now
-  2. Skip 3. Skip until next version / enter continue · esc skip", and the
-  session stayed with no attention (no bell, no hook yet, no pattern match)
-  until a person looked. Cause: the attention sources are the bell, the
-  hooks and the configured prompt pattern; the update dialog matches none.
-  Fix: a second screen pattern per agent, or the trust watcher's pattern
-  extended (Codex: `Update\s*available`), with the dialog's answers as
-  choices like the trust question's ("Skip" = Down, Down, Enter), and a
-  catalog note that `codex --no-update-check` (or the config's
-  `check_for_update_on_startup = false`) avoids it. Tests: the stub drawing
-  the dialog; Playwright seeing needs_input with the choices.
 - **The server log window is an empty dark box.** Seen by the owner,
   2026-10-06, on Windows, from the tray's Server log; it is the same on
   every platform. Cause: `showLog` in `desktop/src/main.ts` makes the window
@@ -158,59 +145,13 @@ and the Neovim keymap. What is set aside:
   live check in the person's own Codex settles it; if it never lasts, the
   question comes at every Codex launch.
 
-### Chat beside the terminal
-
-One chat per session and one per shared crew run, over the same path the
-terminal takes (the viewer WebSocket for a server session, the WebRTC data
-channel or the relay for a hosted one), so it works wherever a link works
-and needs no other server. Decided 2026-10-06 after a brainstorm; the
-design is being made with Claude Design (`docs/design/briefs/chat.md`).
-
-- **Protocol:** `chat` (viewer → server, `{text}`, at most 2 KiB) and
-  `chat` fan-out (server → every viewer, with the sender's name, role, time
-  and an id), `chat_history` on `welcome` (the last 200 of a session, 500
-  of a run), a rate bound per connection (10 a second, a burst of 20), in
-  `internal/proto/control.go`, `protocol.ts` and `docs/protocol.md`.
-- **The hub is where the terminal's hub is:** `session.Local` keeps the
-  ring and fans out for a server session; `conductor host` (and the
-  server's own uplink) does the same for a hosted one, across its peers and
-  the relay; a crew run's chat rides any member's connection with
-  `scope: run` and the engine fans it out to every member's viewers.
-- **Who:** every viewer, view-only included, under the name they joined
-  with and the role badge the roster shows; the agent itself is not in the
-  chat, but a control viewer's **Send to agent** on a message submits it
-  (the paste-then-Enter path), marked so in the thread.
-- **Where it shows:** a Chat tab beside People, Files and Activity on the
-  session page and the join page; a run-wide drawer on the run page and the
-  crew join page; a sheet on phones; unread counts on the tab, the sidebar
-  row and the rail avatar; chat lines in the session's activity log (type
-  `chat`) and so in the Events feed, routed like "worth knowing".
-- **Kept:** in memory, bounded; a run's chat goes into its record (`runs/`)
-  so the Runs tab timeline shows it; a session's chat ends with the session.
-- Tests at both ends: Go for the bounds, the fan-out, the run scope and the
-  host hub (loopback); vitest for the thread model; Playwright with two
-  contexts talking across a link, and a run chat seen by two members'
-  viewers. Round 11 (C1–C6), with two differences `docs/features.md`
-  records: chat lines are not activity entries, and the agent's own
-  question is in the chat, with its choices.
-
 ### The sidebar
 
-- **Simpler sessions and runs in the sidebar.** The owner, 2026-10-06: "it's
-  still not the simplest UX for this and is still a bit confusing for me who
-  helped to write this." Today the list is three sections by state (Needs
-  you, Running, Exited), each holding loose sessions, crew runs under a run
-  header, and hosted sessions under their machine, with Shared with you on
-  top, a rail of avatars when collapsed, a filter box and the Launch button.
-  The redesign was made with Claude Design and approved on 2026-10-06
-  (the 3-series of "Conductor UI.dc.html": one mental model, actions on a
-  row, the rail, phones, what to drop); the build runs as pull requests
-  S1 (the model and the list), S2 (row actions), S3 (answer in the row),
-  S4 (keyboard), S5 (header and foot), S6 (the rail), S7 (phone), each with
-  Playwright for its screen. Still to do after the build: the five-task
-  feedback script with two coworkers (find the agent asking you something;
-  stop a run; share one member; open yesterday's run; tell a crew from a
-  run), watched, to catch what the design missed. Round 10.
+- **The sidebar, watched in use.** The 3-series sidebar was built in round
+  11 (S1–S7, `docs/features.md`). Still to do: the five-task feedback
+  script with two coworkers (find the agent asking you something; stop a
+  run; share one member; open yesterday's run; tell a crew from a run),
+  watched, to catch what the design missed.
 
 ### Releases
 
