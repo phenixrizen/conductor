@@ -45,6 +45,15 @@ func defaults() []Agent {
 			TrustPrompt: `Trust\s*this\s*folder\?`,
 			// Codex highlights the trusting answer: Enter alone; "No" is Down, then Enter.
 			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, continue without trusting", Input: "\x1b[B\r"}},
+			// Codex 0.161 opens on "Hooks need review" whenever its hooks are
+			// new or changed (1. Review hooks, highlighted; 2. Trust all and
+			// continue; 3. Continue without trusting): a digit moves the
+			// highlight and Enter picks it, so a prompt's Enter would open the
+			// review. Seen live on 2026-10-09 (round 13, G2c).
+			Questions: []Question{{
+				Prompt:  `(?i)hooks\s*n?eed\s*review`,
+				Answers: []Answer{{Label: "Trust all and continue", Input: "2\r"}, {Label: "Continue without trusting", Input: "3\r"}},
+			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},
 		},

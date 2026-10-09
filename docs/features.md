@@ -744,6 +744,25 @@ tool, and Conductor offered it as Goose.
   layout, and Playwright `touched.spec.ts`, where the stub replays each
   agent's payloads through `conductor notify` (a fixed line, `stub tools
   <agent>`) and Touched lists the read and the write.
+- **G2c, Codex's "Hooks need review" held like the trust question.** The
+  G2b capture found that Codex 0.161 runs hooks only once trusted and opens
+  on "Hooks need review" whenever its hooks are new or changed, with Review
+  hooks highlighted: a crew member's prompt typed at launch would have
+  opened the review. A digit moves the highlight and Enter picks it. The
+  catalog now takes an agent's other startup questions (`questions`, each a
+  prompt and its answers, at most 4; a saved agent inherits them), the
+  session watches for all of them with one screen watcher and holds the one
+  showing exactly as the trust question (source `trust`, typed text
+  refused, the member's prompt held), and Codex's built-in entry has the
+  question with Trust all and continue (`2`, Enter) and Continue without
+  trusting (`3`, Enter). The agent form now carries the trust answers and
+  the questions of the agent it edits. Tests: the catalog (Codex's entry,
+  inheritance, refusals), the session (the second question's answers, the
+  refusal, the answer, the trust question after it), a launch handing the
+  questions to its session, vitest for the form, Playwright `trust.spec.ts`
+  (the stub draws Codex's question behind a marker file; the member is held
+  with the two choices; Trust all and continue answers 2 and the prompt
+  runs). Open: whether Codex's trust lasts past a session.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

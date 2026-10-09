@@ -23,6 +23,12 @@
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
+# $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
+# start as Codex 0.161 draws it when its hooks are new or changed (round 13,
+# G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
+# picks it; 2 trusts ("Hooks trusted."), 3 goes on without ("Hooks off."),
+# 1 opens the review ("Reviewing hooks."), which a prompt's Enter would;
+# the choice is written to $HOME/.codex/stub-hooks-answer.
 # A line that is exactly `stub tools codex`, `stub tools copilot` or
 # `stub tools agy` makes the stub write stub-tools.txt and report, through
 # that agent's hook flag, the payloads a live run of it sends (round 13,
@@ -243,6 +249,27 @@ trust_dialog() {
 	fi
 }
 
+# hooks_review draws Codex's "Hooks need review" and waits for Enter; a
+# digit moves the highlight.
+hooks_review() {
+	local sel=1 key
+	printf 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n> 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won'"'"'t run)\n'
+	while IFS= read -rsn1 key; do
+		if [[ -z $key || $key == $'\r' ]]; then
+			break
+		fi
+		case $key in
+		1 | 2 | 3) sel=$key ;;
+		esac
+	done
+	printf '%s\n' "$sel" >"${HOME:-/tmp}/.codex/stub-hooks-answer"
+	case $sel in
+	2) printf 'Hooks trusted.\n' ;;
+	3) printf 'Hooks off.\n' ;;
+	*) printf 'Reviewing hooks.\n' ;;
+	esac
+}
+
 # answer answers one line.
 answer() {
 	local line=$1 rest=$1 kind target_run target branch deadline top to msg
@@ -312,6 +339,9 @@ else
 fi
 if [[ ${STUB_TRUST_DIALOG:-} == 1 && -z $trusted ]]; then
 	trust_dialog
+fi
+if [[ -e ${HOME:-/nonexistent}/.codex/stub-hooks-review ]]; then
+	hooks_review
 fi
 if [[ -n ${STUB_CHOICES:-} ]]; then
 	printf '%s [%s]\n' "${STUB_ASK:-Which one?}" "$STUB_CHOICES"

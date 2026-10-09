@@ -191,6 +191,8 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
     yolo: yoloOut(f),
     // What the form has no control for comes from the agent edited.
     trustPrompt: prev?.trustPrompt,
+    trustAnswers: prev?.trustAnswers,
+    questions: prev?.questions,
     session: prev?.session,
   }
 }

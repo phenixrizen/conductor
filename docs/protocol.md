@@ -465,7 +465,16 @@ A trust question (`source` `trust`) carries the agent's answers as its
 keys that pick it, the trusting answer first (Claude Code highlights "No,
 exit", so its trusting answer is Down then Enter; Codex highlights the trusting
 answer, so Enter). While it shows, the owner refuses a person's `submit`, a
-`chat` to the agent and a `chat_send` with `not_sent`.
+`chat` to the agent and a `chat_send` with `not_sent`. The agent's other
+startup questions, the catalog's `questions` (`[{prompt, answers}]`, at most
+4, each prompt and its answers bounded as `trustPrompt` and `trustAnswers`
+are; a saved agent that leaves them out keeps the replaced agent's), are
+held the same way, with `source` `trust`, the words of the one showing as
+the `message` and its answers as the `options`. Codex's built-in entry has
+"Hooks need review" (round 13), which Codex 0.161 draws when its hooks are
+new or changed: Trust all and continue is `2` then Enter, Continue without
+trusting `3` then Enter; the highlighted Review hooks is what a bare Enter
+would pick.
 
 ## Events
 

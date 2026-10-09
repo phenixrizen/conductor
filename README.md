@@ -877,6 +877,13 @@ Down then Enter; Codex highlights the trusting answer. Typed text is refused
 while the question shows ("the agent asks whether to trust the folder…"),
 since its Enter would pick whatever the dialog highlights.
 
+Codex asks a second startup question when its hooks are new or changed
+(Codex 0.161 runs hooks only once trusted): "Hooks need review", with Review
+hooks highlighted. Conductor holds it the same way: a crew member waits,
+typed text is refused, and the choices are **Trust all and continue** and
+**Continue without trusting**. An agent's further startup questions are its
+`questions` in the catalog, each a `prompt` and its `answers`.
+
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch
 answers `not_a_repo`), and `git` must be on the server's `PATH` (otherwise it

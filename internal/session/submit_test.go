@@ -451,3 +451,56 @@ func TestATrustQuestionCarriesItsAnswersAndRefusesTypedText(t *testing.T) {
 		t.Fatalf("after the answer: %v", err)
 	}
 }
+
+// The agent's other startup questions (round 13, G2c) are held as the trust
+// question is: Codex's "Hooks need review", drawn after the trust question
+// was answered, carries its own answers, refuses typed text, and is
+// answered by its choice's keys; a question is told apart by its words.
+func TestAStartupQuestionIsHeldLikeTheTrustQuestion(t *testing.T) {
+	trust := []Option{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No", Input: "\x1b[B\r"}}
+	hooks := []Option{{Label: "Trust all and continue", Input: "2\r"}, {Label: "Continue without trusting", Input: "3\r"}}
+	s, p := newLocalWith(t, quiet(Options{
+		TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), TrustAnswers: trust,
+		Questions: []StartupQuestion{{Pattern: regexp.MustCompile(`(?i)hooks\s*n?eed\s*review`), Answers: hooks}},
+	}))
+	sub, err := s.Attach("", RoleControl, "", 0, 0, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitSource := func() Attention {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for s.Info().Attention.Source != SourceTrust && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return s.Info().Attention
+	}
+	p.outW.Write([]byte("\x1b[2;1HHooks\x1b[2;7Hneed review\r\n7 hooks are new or changed.\r\n› 1. Review hooks\r\n  2. Trust all and continue\r\n  3. Continue without trusting (hooks won't run)"))
+	att := waitSource()
+	if att.State != AttentionNeedsInput || att.Message != "Hooks need review" || len(att.Options) != 2 || att.Options[0] != hooks[0] || att.Options[1] != hooks[1] {
+		t.Fatalf("attention %+v", att)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: sub}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("typed text at the hooks question: %v", err)
+	}
+	select {
+	case b := <-p.input:
+		t.Fatalf("something was written: %q", b)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := s.Input(sub, []byte(hooks[0].Input)); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "2\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := s.Info().Attention.State; st != AttentionNone {
+		t.Fatalf("the choice did not answer: %q", st)
+	}
+	// The trust question, drawn anew once the answer has landed, carries its own answers.
+	time.Sleep(700 * time.Millisecond)
+	p.outW.Write([]byte("\x1b[2J\x1b[1;1HTrust this folder?\r\n› 1. Yes"))
+	if att := waitSource(); att.Message != "Trust this folder?" || len(att.Options) != 2 || att.Options[0] != trust[0] {
+		t.Fatalf("the trust question after: %+v", att)
+	}
+}

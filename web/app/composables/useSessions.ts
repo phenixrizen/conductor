@@ -106,6 +106,10 @@ export interface AgentInfo {
   yolo?: YoloRecipe
   /** RE2 matched against its screen's text: its workspace-trust question, while which a crew types no prompt. */
   trustPrompt?: string
+  /** That question's answers, as the choices a page offers. */
+  trustAnswers?: AgentAnswer[]
+  /** Its other startup questions (round 13: Codex's "Hooks need review"), held like the trust question. */
+  questions?: AgentQuestion[]
   /** Its session recipe, for Resume. */
   session?: SessionRecipe
   /** `false` turns the server's identity probe off for this agent. */
@@ -155,7 +159,21 @@ export interface AgentInput {
   /** Left out, an agent that replaces a built-in keeps the built-in's; `{}` has none. */
   yolo?: YoloRecipe
   trustPrompt?: string
+  trustAnswers?: AgentAnswer[]
+  questions?: AgentQuestion[]
   session?: SessionRecipe
+}
+
+/** One answer to an agent's startup question: the label a page shows and the keys that pick it. */
+export interface AgentAnswer {
+  label: string
+  input: string
+}
+
+/** One of an agent's startup questions: the RE2 of its words on the screen and its answers. */
+export interface AgentQuestion {
+  prompt: string
+  answers?: AgentAnswer[]
 }
 
 /** Body of POST /api/sessions/{id}/events: something the agent did, or an attention word. */

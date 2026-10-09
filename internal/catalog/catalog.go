@@ -60,6 +60,13 @@ type Agent struct {
 	// most 60 characters, keys of 1 to 48 bytes. nil in a saved override
 	// takes the replaced agent's.
 	TrustAnswers []Answer `json:"trustAnswers,omitempty"`
+	// Questions are the agent's other startup questions, held like the
+	// trust question (round 13, G2c): while one shows, a crew run types no
+	// prompt, typed text is refused and its answers are the choices. Codex
+	// asks "Hooks need review" whenever its hooks are new or changed. Each a
+	// prompt (as TrustPrompt) and its answers (as TrustAnswers); at most 4.
+	// nil in a saved override takes the replaced agent's.
+	Questions []Question `json:"questions,omitempty"`
 	// Session is the agent's session recipe: how Conductor names the agent's
 	// own session and resumes it. nil in a saved override takes the replaced
 	// agent's; an empty recipe ({}) has none, so Resume relaunches plainly.
@@ -372,6 +379,17 @@ func validate(a Agent) error {
 	if err := validateTrustAnswers(a.TrustAnswers); err != nil {
 		return fmt.Errorf("agent %s: trustAnswers: %w", a.ID, err)
 	}
+	if len(a.Questions) > MaxQuestions {
+		return fmt.Errorf("agent %s: questions: at most %d", a.ID, MaxQuestions)
+	}
+	for i, q := range a.Questions {
+		if _, err := CompilePattern(q.Prompt); err != nil {
+			return fmt.Errorf("agent %s: questions[%d].prompt: %w", a.ID, i, err)
+		}
+		if err := validateTrustAnswers(q.Answers); err != nil {
+			return fmt.Errorf("agent %s: questions[%d].answers: %w", a.ID, i, err)
+		}
+	}
 	if a.Session != nil {
 		if err := validateSession(*a.Session); err != nil {
 			return fmt.Errorf("agent %s: session: %w", a.ID, err)
@@ -623,6 +641,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.TrustAnswers == nil {
 			a.TrustAnswers = append([]Answer(nil), prev.TrustAnswers...)
 		}
+		if a.Questions == nil {
+			a.Questions = cloneQuestions(prev.Questions)
+		}
 		if a.Session == nil {
 			a.Session = prev.Session.clone()
 		}
@@ -676,6 +697,7 @@ func (a Agent) clone() Agent {
 	}
 	a.Yolo = a.Yolo.clone()
 	a.Session = a.Session.clone()
+	a.Questions = cloneQuestions(a.Questions)
 	if a.Probe != nil {
 		v := *a.Probe
 		a.Probe = &v
@@ -732,6 +754,27 @@ func (a Agent) EffectiveSignal() Signal {
 type Answer struct {
 	Label string `json:"label"`
 	Input string `json:"input"`
+}
+
+// Question is one of the agent's other startup questions (Agent.Questions):
+// the pattern of its words on the screen and its answers.
+type Question struct {
+	Prompt  string   `json:"prompt"`
+	Answers []Answer `json:"answers,omitempty"`
+}
+
+// MaxQuestions bounds Agent.Questions.
+const MaxQuestions = 4
+
+func cloneQuestions(qs []Question) []Question {
+	if qs == nil {
+		return nil
+	}
+	out := make([]Question, len(qs))
+	for i, q := range qs {
+		out[i] = Question{Prompt: q.Prompt, Answers: append([]Answer(nil), q.Answers...)}
+	}
+	return out
 }
 
 // Bounds of Agent.TrustAnswers: as many as a prompt's quick-reply choices,
