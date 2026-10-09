@@ -2,14 +2,17 @@ module github.com/phenixrizen/conductor
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/go-acme/lego/v5 v5.5.2
+	github.com/neovim/go-client v1.2.1
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/stun/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.21
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/term v0.46.0
 )
 
@@ -18,7 +21,6 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
-	github.com/neovim/go-client v1.2.1 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.9 // indirect
 	github.com/pion/interceptor v0.1.49 // indirect
