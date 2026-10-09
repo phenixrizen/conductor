@@ -327,9 +327,12 @@ reaches folders you have not opened: a search on the session's machine
 lists the matching files below the tree under "In folders not opened yet"
 (`.git` and `node_modules` are left out).
 
-The **Touched** section lists the files the agent read, edited, wrote or
-deleted, newest first, each with the tool, the agent and the time, and the
-Explorer marks them with a dot. The events come from the agent's own hooks:
+The **Touched** section lists every file the agent read, edited, wrote or
+deleted since the session started, one row per file, the most recently
+touched first, each with the latest tool, the agent, the time and how many
+times it was touched; the Explorer marks them with a dot. The session keeps
+that list itself (up to 2,000 files), so a page opened late, a guest or the
+Yard's tile sees the whole session, not only the last events. The events come from the agent's own hooks:
 Claude Code's settings get a hook on its file tools (Read, Edit, MultiEdit,
 NotebookEdit and Write) that reports the files alone, so Touched fills
 whether or not the agent's tool events are on; Codex's apply_patch and

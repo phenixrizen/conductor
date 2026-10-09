@@ -66,6 +66,8 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 			h = GitCommitPath(s.info.Cwd, req.Rev, s.opts.FileDeny)
 		case proto.FileOpFind:
 			h = FindPath(s.info.Cwd, req.Path, s.opts.FileDeny)
+		case proto.FileOpTouched:
+			h = s.TouchedPath(s.opts.FileDeny)
 		default:
 			h = proto.FileHeader{Path: req.Path, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "unknown file operation"}}
 		}

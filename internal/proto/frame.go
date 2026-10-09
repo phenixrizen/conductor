@@ -213,6 +213,26 @@ type FileHeader struct {
 	// A `find` reply: the files under Path whose name holds the query, as
 	// paths from Path (at most 200, Truncated also when the walk stopped).
 	Matches []string `json:"matches,omitempty"`
+	// A `touched` reply: the files the session's agent read, edited, wrote
+	// or deleted since the session started, one per file, the most recently
+	// touched first (Truncated when the header's size cut the list).
+	Touched []TouchedFile `json:"touched,omitempty"`
+}
+
+// TouchedFile is one file of a `touched` reply (design 4e): its absolute
+// path, the latest op (read, edit, write, delete), every op seen in the
+// order first seen, how many times it was touched (reports of the same op
+// within a few seconds are one), the tool and agent of the latest touch, and
+// the first and latest times (RFC 3339).
+type TouchedFile struct {
+	Path  string   `json:"path"`
+	Op    string   `json:"op"`
+	Ops   []string `json:"ops,omitempty"`
+	Count int      `json:"count"`
+	Tool  string   `json:"tool,omitempty"`
+	By    string   `json:"by,omitempty"`
+	First string   `json:"first"`
+	Last  string   `json:"last"`
 }
 
 // Commit is one commit of a `log` or `commit` reply: its id, the subject

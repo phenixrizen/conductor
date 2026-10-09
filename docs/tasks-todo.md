@@ -165,10 +165,6 @@ and the Neovim keymap. What is set aside:
   keymap and send their text as keys.
 - **Neovim: a swap file or a prompt at `:e` refuses the open** with
   Neovim's words, instead of showing the prompt to answer.
-- **Touched starts from what the page saw.** The activity replay is 50
-  entries, so a long session's Touched (on every page now) begins there; a
-  `since` on the replay, or a bounded `GET /api/sessions/{id}/activity`,
-  would give the whole list.
 - **Files from more agents:** Codex names a file only through
   `apply_patch` (its shell reads and writes name none); the Copilot and
   Goose mappers yield no files, their PostToolUse payloads unverified

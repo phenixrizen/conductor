@@ -127,7 +127,9 @@ type Local struct {
 	lastOutput time.Time
 
 	activity activityRing
-	chat     chatRing // guarded by mu
+	// touched is the Touched section's index of the files the agent touched (touched.go), under mu.
+	touched touchedIndex
+	chat    chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
 	question       string
@@ -346,6 +348,7 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 	// FileCoalesce: an agent saving a file forty times) is one entry: the
 	// newest's time moves, nothing is appended or broadcast again.
 	if e.Type == ActivityFile && s.activity.CoalesceFile(CleanEntry(e)) {
+		s.noteTouched(CleanEntry(e), true)
 		s.mu.Unlock()
 		return true
 	}
@@ -353,6 +356,9 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 	// attaching meanwhile finds the entry in its replay or receives the
 	// broadcast, never both.
 	e = s.activity.Add(e)
+	if e.Type == ActivityFile {
+		s.noteTouched(e, false)
+	}
 	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
 	id := s.info.ID
 	s.mu.Unlock()

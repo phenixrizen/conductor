@@ -253,7 +253,7 @@ export interface CommitInfo {
  * commits on HEAD after `base`, or since the session started) or `commit` (commit `rev`'s files against its first parent).
  */
 export interface FileGetExtra {
-  op?: 'status' | 'show' | 'log' | 'commit' | 'find'
+  op?: 'status' | 'show' | 'log' | 'commit' | 'find' | 'touched'
   base?: string
   rev?: string
 }
@@ -264,9 +264,11 @@ export type FileRequester = (path: string, stat?: boolean, extra?: FileGetExtra)
 export interface FileHeader {
   reqId: string
   path: string
-  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written' | 'find'
+  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written' | 'find' | 'touched'
   /** A `find` reply: the files under `path` whose name holds the words, as paths from it (at most 200). */
   matches?: string[]
+  /** A `touched` reply: the files the agent touched since the session started, one per file, the most recently touched first. */
+  touched?: TouchedFile[]
   /**
    * A `file` reply's sha256 (hex) and mtime: what a save sends back to tell a file changed on disk since (F6); absent when the read was
    * cut. A `written` reply carries the saved file's; an `error` of code `changed_on_disk` the file's now, with the last file event on it.
@@ -294,6 +296,18 @@ export interface FileHeader {
   exists: boolean
   entries?: FileEntry[]
   error?: { code: string; message: string }
+}
+
+/** One file of a `touched` reply (round 13, G1): the latest op, every op seen, how many touches, the latest's tool and agent, the first and latest times. */
+export interface TouchedFile {
+  path: string
+  op: 'read' | 'edit' | 'write' | 'delete'
+  ops?: Array<'read' | 'edit' | 'write' | 'delete'>
+  count: number
+  tool?: string
+  by?: string
+  first: string
+  last: string
 }
 
 export interface FileResponse {

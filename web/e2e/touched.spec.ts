@@ -57,3 +57,36 @@ test('Touched lists the files the agent touched, newest first, marks them in the
     await api.stopSession(s.id)
   }
 })
+
+// Round 13, G1: Touched comes from the session's own index, so a page
+// opened after more file events than the activity replay holds (50) lists
+// every file, one row per file with its count.
+test('Touched lists every file of the session, past the activity replay, one row per file with its count', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-touched-many')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'main.go'), 'package main\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'touched many', cwd })
+  try {
+    const post = (body: Record<string, unknown>) => api.ok('POST', `/api/sessions/${s.id}/events`, body)
+    await post({ type: 'file', op: 'read', path: 'main.go', tool: 'Read' })
+    await post({ type: 'file', op: 'edit', path: 'main.go', tool: 'Edit' })
+    // Sixty more files, at the pace a hook reports (the session's event bucket takes 20 a second).
+    for (let i = 0; i < 60; i++) {
+      await post({ type: 'file', op: 'write', path: `gen/f${String(i).padStart(2, '0')}.go`, tool: 'Write' })
+      await page.waitForTimeout(70)
+    }
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-touched-count]')).toHaveText('61', { timeout: 30_000 })
+    await pane.locator('[data-files-section="touched"]').click()
+    const rows = pane.locator('[data-files-touched] [data-touched]')
+    await expect(rows).toHaveCount(61)
+    await expect(rows.first()).toHaveAttribute('data-touched', `${cwd}/gen/f59.go`)
+    const main = pane.locator(`[data-files-touched] [data-touched="${cwd}/main.go"]`)
+    await expect(main).toHaveAttribute('data-touched-op', 'edit')
+    await expect(main).toContainText(/Edit · .*2 times/)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

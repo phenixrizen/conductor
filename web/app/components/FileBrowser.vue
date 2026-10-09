@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ActivityEntry, FileEntry, FileHeader, FileRequester } from '~/utils/protocol'
+import type { ActivityEntry, FileEntry, FileHeader, FileRequester, TouchedFile } from '~/utils/protocol'
 import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
 import { commitAgo, commitChangeRows, commitRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
 import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
@@ -37,7 +37,26 @@ const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: Change
 
 // The Changes section (design 4d): git status against the base, refreshed every few seconds while it shows.
 const section = ref<'explorer' | 'changes' | 'touched' | 'commits'>('explorer')
-const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.activity, props.cwd) : []))
+// Touched (round 13, G1): the session's own index of every file the agent touched, asked for when the pane shows and when the section
+// opens; the activity entries the page sees after it are laid over it. An older session without the index: the entries alone.
+const touchedIndex = ref<TouchedFile[] | null>(null)
+async function loadTouched() {
+  if (!props.activity || !props.cwd) return
+  try {
+    const res = await props.request(props.cwd, false, { op: 'touched' })
+    if (res.header.kind === 'touched') touchedIndex.value = res.header.touched ?? []
+  } catch {
+    // The page's own entries stand in.
+  }
+}
+watch(section, (s) => {
+  if (s === 'touched') void loadTouched()
+})
+watch(
+  () => props.cwd,
+  () => void loadTouched(),
+)
+const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.activity, props.cwd, touchedIndex.value) : []))
 const dots = computed(() => touchedPaths(touched.value))
 const status = ref<FileHeader | null>(null)
 const statusError = ref('')
@@ -129,6 +148,7 @@ onMounted(() => {
   clock = window.setInterval(() => (now.value = Date.now()), 1000)
   // The marks beside changed files: one status read when the tree is up, then as the Changes section refreshes.
   setTimeout(() => loadStatus(), 1500)
+  void loadTouched()
 })
 onBeforeUnmount(() => {
   window.clearInterval(logTimer)
@@ -575,7 +595,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <template v-else-if="section === 'touched'">
         <p v-if="!touched.length" class="p-6 text-sm text-muted">Nothing yet. The files the agent reads, edits, writes and deletes list here as its hooks report them.</p>
         <ul v-else class="py-1" data-files-touched>
-          <li v-for="(r, i) in touched" :key="`${r.abs}-${r.at}-${i}`">
+          <li v-for="r in touched" :key="r.abs">
             <button type="button" class="flex w-full items-center gap-2 px-3 py-1 text-left text-sm hover:bg-elevated" :data-touched="r.abs" :data-touched-op="r.op" @click="openFile({ path: r.abs })">
               <UIcon :name="opIcon(r.op)" class="size-3.5 flex-none text-muted" />
               <span class="min-w-0 flex-1 truncate font-mono"><span class="text-muted">{{ r.dir }}</span>{{ r.name }}</span>

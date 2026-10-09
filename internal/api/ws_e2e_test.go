@@ -210,6 +210,15 @@ func TestViewerFileGet(t *testing.T) {
 	if h, _ := c.expectFile("r4"); h.Kind != "dir" || len(h.Entries) != 0 {
 		t.Fatalf("stat dir %+v", h)
 	}
+	// Touched (round 13, G1): the session's own index of the files its agent
+	// touched, over the same connection.
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "file", "op": "edit", "path": "a.go", "tool": "Edit"}); resp.StatusCode >= 300 {
+		t.Fatalf("event %d %v", resp.StatusCode, out)
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "r5", Op: proto.FileOpTouched}))
+	if h, _ := c.expectFile("r5"); h.Kind != "touched" || len(h.Touched) != 1 || filepath.Base(h.Touched[0].Path) != "a.go" || h.Touched[0].Op != "edit" || h.Touched[0].Count != 1 {
+		t.Fatalf("touched %+v", h)
+	}
 }
 
 func (w *wsClient) expectFile(reqID string) (proto.FileHeader, []byte) {
