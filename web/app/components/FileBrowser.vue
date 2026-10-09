@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ActivityEntry, FileEntry, FileHeader, FileRequester } from '~/utils/protocol'
 import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
+import { commitAgo, commitChangeRows, commitRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
 import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
 import { crumbsOf, findNode, looksLikePath, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
@@ -32,10 +33,10 @@ const props = defineProps<{
   /** The session's activity, for the Touched section (design 4e): its `file` entries, newest first. Absent, the section is not offered. */
   activity?: ActivityEntry[]
 }>()
-const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }] }>()
+const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }]; openCommitDiff: [change: CommitChangeRow, commit: { sha: string; short: string; parent: string }] }>()
 
 // The Changes section (design 4d): git status against the base, refreshed every few seconds while it shows.
-const section = ref<'explorer' | 'changes' | 'touched'>('explorer')
+const section = ref<'explorer' | 'changes' | 'touched' | 'commits'>('explorer')
 const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.activity, props.cwd) : []))
 const dots = computed(() => touchedPaths(touched.value))
 const status = ref<FileHeader | null>(null)
@@ -74,13 +75,63 @@ watch(section, (s) => {
     loadStatus()
     pollStatus()
   } else window.clearInterval(statusTimer)
+  if (s === 'commits') {
+    loadLog()
+    pollLog()
+  } else window.clearInterval(logTimer)
 })
+
+// The Commits section (design 4e): the commits on the branch since the session started (a crew member's: since the run's base),
+// refreshed while it shows; a commit opens to its files, a file to its diff against the commit's parent.
+const log = ref<FileHeader | null>(null)
+const logError = ref('')
+const logLoading = ref(false)
+let logTimer: number | undefined
+const commits = computed<CommitRow[]>(() => commitRows(log.value))
+const logNotRepo = computed(() => log.value?.kind === 'error' && log.value.error?.code === 'not_repo')
+const opened = reactive(new Map<string, { header: FileHeader | null; error: string }>())
+async function loadLog() {
+  if (!props.cwd) return
+  logLoading.value = true
+  try {
+    const res = await props.request(props.cwd, false, { op: 'log', base: props.base })
+    log.value = res.header
+    logError.value = res.header.kind === 'error' && res.header.error?.code !== 'not_repo' ? res.header.error?.message || 'cannot read the commits' : ''
+  } catch (e) {
+    logError.value = (e as Error).message
+  } finally {
+    logLoading.value = false
+  }
+}
+function pollLog() {
+  window.clearInterval(logTimer)
+  logTimer = window.setInterval(() => {
+    if (section.value === 'commits' && document.visibilityState !== 'hidden') loadLog()
+  }, 10000)
+}
+async function toggleCommit(c: CommitRow) {
+  if (opened.has(c.sha)) {
+    opened.delete(c.sha)
+    return
+  }
+  opened.set(c.sha, { header: null, error: '' })
+  try {
+    const res = await props.request(props.cwd || '.', false, { op: 'commit', rev: c.sha })
+    opened.set(c.sha, { header: res.header, error: res.header.kind === 'error' ? res.header.error?.message || 'cannot read the commit' : '' })
+  } catch (e) {
+    opened.set(c.sha, { header: null, error: (e as Error).message })
+  }
+}
+function openCommitChange(c: CommitRow, ch: CommitChangeRow) {
+  emit('openCommitDiff', ch, { sha: c.sha, short: c.short, parent: c.parent })
+}
 onMounted(() => {
   clock = window.setInterval(() => (now.value = Date.now()), 1000)
   // The marks beside changed files: one status read when the tree is up, then as the Changes section refreshes.
   setTimeout(() => loadStatus(), 1500)
 })
 onBeforeUnmount(() => {
+  window.clearInterval(logTimer)
   window.clearInterval(statusTimer)
   window.clearInterval(clock)
 })
@@ -425,9 +476,17 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'changes' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="changes" @click="section = 'changes'">
         Changes<UBadge v-if="changes.length" :label="String(changes.length)" color="neutral" variant="subtle" size="xs" data-files-changes-count />
       </button>
+      <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'commits' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="commits" @click="section = 'commits'">
+        Commits<UBadge v-if="commits.length" :label="String(commits.length)" color="neutral" variant="subtle" size="xs" data-files-commits-count />
+      </button>
       <button v-if="activity" type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'touched' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="touched" @click="section = 'touched'">
         Touched<UBadge v-if="touched.length" :label="String(touched.length)" color="neutral" variant="subtle" size="xs" data-files-touched-count />
       </button>
+    </div>
+    <div v-if="mode === 'tree' && section === 'commits'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-commits-head>
+      <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 flex-none text-muted" />
+      <span class="min-w-0 flex-1 truncate text-muted">{{ logNotRepo ? 'not a repository' : commitsHead(commits.length, log, base) }}</span>
+      <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="logLoading" @click="loadLog" />
     </div>
     <div v-if="mode === 'tree' && section === 'touched'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-touched-head>
       <UIcon name="i-lucide-history" class="size-3.5 flex-none text-muted" />
@@ -502,6 +561,48 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
           </li>
         </ul>
       </template>
+      <template v-else-if="section === 'commits'">
+        <div v-if="logNotRepo" class="flex flex-col items-center gap-2 p-6 text-center text-sm" data-files-not-repo>
+          <UIcon name="i-lucide-git-branch" class="size-6 text-muted" />
+          <span class="font-medium text-highlighted">Not a git repository</span>
+          <span class="text-muted">{{ cwd }} has no .git. Touched still lists what the agent did.</span>
+        </div>
+        <div v-else-if="logError" class="flex items-center gap-2 p-4 text-sm text-muted">
+          <UIcon name="i-lucide-triangle-alert" class="size-4 flex-none text-warning" /><span class="min-w-0 flex-1">{{ logError }}</span>
+          <UButton label="Retry" size="xs" color="neutral" variant="soft" @click="loadLog" />
+        </div>
+        <div v-else-if="!log" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the commits…</div>
+        <p v-else-if="!commits.length" class="p-6 text-sm text-muted">{{ base && base !== 'HEAD' ? `No commits since ${base}.` : 'No commits since the session started.' }}</p>
+        <ul v-else class="py-1" data-files-commits>
+          <li v-for="c in commits" :key="c.sha">
+            <button type="button" class="flex w-full items-start gap-2 px-3 py-1.5 text-left text-sm hover:bg-elevated" :data-commit="c.sha" :aria-expanded="opened.has(c.sha)" @click="toggleCommit(c)">
+              <UIcon :name="opened.has(c.sha) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="mt-0.5 size-3.5 flex-none text-muted" />
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-highlighted" data-commit-subject>{{ c.subject }}</span>
+                <span class="block truncate text-[11px] text-muted"><span class="font-mono">{{ c.short }}</span>{{ c.author ? ` · ${c.author}` : '' }} · {{ commitAgo(c.atMs, now) }}</span>
+              </span>
+            </button>
+            <div v-if="opened.has(c.sha)" class="pb-1 pl-6" :data-commit-files="c.sha">
+              <div v-if="!opened.get(c.sha)!.header && !opened.get(c.sha)!.error" class="flex items-center gap-2 px-3 py-1 text-xs text-muted"><UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" /> Reading…</div>
+              <p v-else-if="opened.get(c.sha)!.error" class="px-3 py-1 text-xs text-warning">{{ opened.get(c.sha)!.error }}</p>
+              <template v-else>
+                <p v-if="opened.get(c.sha)!.header?.commit?.body" class="whitespace-pre-wrap px-3 py-1 text-xs text-muted" data-commit-body>{{ opened.get(c.sha)!.header?.commit?.body }}</p>
+                <button v-for="ch in commitChangeRows(opened.get(c.sha)!.header)" :key="ch.abs" type="button" class="flex w-full items-center gap-2 px-3 py-0.5 text-left text-sm hover:bg-elevated" :data-commit-change="ch.abs" :data-change-status="ch.status" @click="openCommitChange(c, ch)">
+                  <UBadge :label="statusLetter(ch.status)" :color="statusTone(ch.status)" variant="subtle" size="xs" class="w-5 flex-none justify-center font-mono" />
+                  <span class="min-w-0 flex-1 truncate font-mono"><span class="text-muted">{{ ch.dir }}</span>{{ ch.name }}</span>
+                  <span v-if="ch.binary" class="flex-none text-[11px] text-muted">binary</span>
+                  <template v-else>
+                    <span class="flex-none font-mono text-[11px] text-success">+{{ ch.added }}</span>
+                    <span class="flex-none font-mono text-[11px] text-error">−{{ ch.removed }}</span>
+                  </template>
+                </button>
+                <p v-if="opened.get(c.sha)!.header?.truncated" class="px-3 py-0.5 text-xs text-muted">The list stops here.</p>
+              </template>
+            </div>
+          </li>
+          <li v-if="log?.truncated" class="px-3 py-1 text-xs text-muted">The list stops at {{ commits.length }} commits.</li>
+        </ul>
+      </template>
       <template v-else-if="section === 'changes'">
         <div v-if="notRepo" class="flex flex-col items-center gap-2 p-6 text-center text-sm" data-files-not-repo>
           <UIcon name="i-lucide-git-branch" class="size-6 text-muted" />
@@ -567,6 +668,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
     <p v-if="mode === 'tree' && cwd && section === 'explorer'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-hint>
       <UIcon name="i-lucide-mouse-pointer-click" class="size-3.5 flex-none" /> Paths the agent prints in the terminal are clickable.
     </p>
+    <p v-if="mode === 'tree' && cwd && section === 'commits' && log?.kind === 'log'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-commits-foot><UIcon name="i-lucide-info" class="size-3 flex-none" />Commits made here. Nothing is pushed from Conductor.</p>
     <p v-if="mode === 'tree' && cwd && section === 'touched'" class="border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-touched-foot>The same events are in Activity and on the Events page, quiet there by default.</p>
     <p v-if="mode === 'tree' && cwd && section === 'changes' && status?.kind === 'status'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-changes-foot>
       <UIcon name="i-lucide-refresh-cw" class="size-3.5 flex-none" /> Refreshed as the agent works · {{ agoWords(now - statusAt) }}

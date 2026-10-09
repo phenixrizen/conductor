@@ -28,7 +28,7 @@ const share = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
-const { tabs, openFile, openUrl, openDiff } = useEditorTabs()
+const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
 const tab = ref<InspectorTab>('people')
 const attention = ref<Attention>({ state: '' })
@@ -442,6 +442,7 @@ watch(id, () => {
             @chat-answer="chatAnswer"
             @open-file="openFile"
             @open-diff="openDiff"
+            @open-commit-diff="openCommitDiff"
           />
         </div>
       </div>

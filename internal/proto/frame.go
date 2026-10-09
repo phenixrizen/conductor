@@ -184,13 +184,36 @@ type FileHeader struct {
 	Changes []Change `json:"changes,omitempty"`
 	Added   int      `json:"added,omitempty"`
 	Removed int      `json:"removed,omitempty"`
+	// A `log` reply (design 4e): the commits newest first (at most
+	// gitrepo.MaxCommits, Truncated then), Since the time they start from
+	// when no base was asked for. A `commit` reply: Commit, and its files
+	// in Changes with the totals.
+	Commits []Commit `json:"commits,omitempty"`
+	Since   string   `json:"since,omitempty"`
+	Commit  *Commit  `json:"commit,omitempty"`
+}
+
+// Commit is one commit of a `log` or `commit` reply: its id, the subject
+// line, the body (a `commit` reply only, at most 4 KiB), the author, the
+// committer's time (RFC 3339) and the first parent's id.
+type Commit struct {
+	Sha     string `json:"sha"`
+	Short   string `json:"short"`
+	Subject string `json:"subject"`
+	Body    string `json:"body,omitempty"`
+	Author  string `json:"author,omitempty"`
+	At      string `json:"at"`
+	Parent  string `json:"parent,omitempty"`
+	Parents int    `json:"parents,omitempty"`
 }
 
 // Change is one changed file of a status reply: its path relative to the
 // working tree's top, its status letter (M, A, D, R, ? untracked), its
 // added and removed lines against the base, and whether it is binary.
 type Change struct {
-	Path    string `json:"path"`
+	Path string `json:"path"`
+	// From is a rename's old path, in a `commit` reply.
+	From    string `json:"from,omitempty"`
 	Status  string `json:"status"`
 	Added   int    `json:"added,omitempty"`
 	Removed int    `json:"removed,omitempty"`

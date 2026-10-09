@@ -48,7 +48,7 @@ function onViewers(info: { count: number; list?: ViewerInfo[] }) {
 const status = ref('')
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
-const { tabs, openFile, openUrl, openDiff } = useEditorTabs()
+const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
 const terminal = ref<{ requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
@@ -461,7 +461,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           <UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files
           <UBadge v-if="info.role !== 'control'" label="read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" class="ml-auto" data-files-readonly />
         </div>
-        <FileBrowser :request="requestFile" :cwd="current.cwd" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" />
+        <FileBrowser :request="requestFile" :cwd="current.cwd" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
       </aside>
       <aside v-if="chatPanel && chat.thread.value.capable" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
         <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />

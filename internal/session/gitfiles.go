@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/gitcli"
+	"github.com/phenixrizen/conductor/internal/gitrepo"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
@@ -78,6 +79,82 @@ func GitShowPath(root, rev, path string, deny []string) (proto.FileHeader, []byt
 		return gitError(path, err), nil
 	}
 	return proto.FileHeader{Path: target, Kind: "show", Exists: true, Rev: rev, Size: int64(len(body)), Truncated: truncated, Binary: looksBinary(body)}, body
+}
+
+// GitLogPath is the commits on root's branch (design 4e) as a FILE header
+// of kind `log`: after base's merge base with HEAD when base is given (a
+// crew member's run base), else since the session started; Path the
+// working tree's top.
+func GitLogPath(root, base string, since time.Time, deny []string) proto.FileHeader {
+	if _, err := ResolvePath(root, ".", deny); err != nil {
+		return deniedHeader(root, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)
+	defer cancel()
+	log, err := gitrepo.Commits(ctx, root, base, since)
+	if err != nil {
+		return repoError(root, err)
+	}
+	h := proto.FileHeader{Path: log.Top, Kind: "log", Exists: true, Branch: log.Branch, Base: log.Base, Truncated: log.Truncated, Commits: make([]proto.Commit, 0, len(log.Commits))}
+	if base == "" {
+		h.Since = since.UTC().Format(time.RFC3339)
+	}
+	budget := proto.MaxFileHeader - 4096
+	used := 0
+	for _, c := range log.Commits {
+		cost := len(c.Subject) + len(c.Author) + 160
+		if used+cost > budget {
+			h.Truncated = true
+			break
+		}
+		used += cost
+		h.Commits = append(h.Commits, commitOf(c))
+	}
+	return h
+}
+
+// GitCommitPath is commit rev and its files (design 4e) as a FILE header of
+// kind `commit`: Commit, its files in Changes (paths from the top, a
+// rename's old path in From) and the totals.
+func GitCommitPath(root, rev string, deny []string) proto.FileHeader {
+	if _, err := ResolvePath(root, ".", deny); err != nil {
+		return deniedHeader(root, err)
+	}
+	if rev == "" || len(rev) > 256 || strings.HasPrefix(rev, "-") {
+		return proto.FileHeader{Path: root, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a commit needs its revision"}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)
+	defer cancel()
+	d, err := gitrepo.CommitDetail(ctx, root, rev)
+	if err != nil {
+		return repoError(root, err)
+	}
+	c := commitOf(d.Commit)
+	h := proto.FileHeader{Path: d.Top, Kind: "commit", Exists: true, Rev: d.Commit.Sha, Commit: &c, Added: d.Added, Removed: d.Removed, Truncated: d.Truncated, Changes: make([]proto.Change, 0, len(d.Changes))}
+	budget := proto.MaxFileHeader - 8192
+	used := len(c.Body)
+	for _, fc := range d.Changes {
+		cost := len(fc.Path) + len(fc.From) + 80
+		if used+cost > budget {
+			h.Truncated = true
+			break
+		}
+		used += cost
+		h.Changes = append(h.Changes, proto.Change{Path: fc.Path, From: fc.From, Status: fc.Status, Added: fc.Added, Removed: fc.Removed, Binary: fc.Binary})
+	}
+	return h
+}
+
+func commitOf(c gitrepo.Commit) proto.Commit {
+	return proto.Commit{Sha: c.Sha, Short: c.Short, Subject: truncateRunes(c.Subject, 500), Body: c.Body, Author: truncateRunes(c.Author, 200), At: c.At.Format(time.RFC3339), Parent: c.Parent, Parents: c.Parents}
+}
+
+func repoError(path string, err error) proto.FileHeader {
+	code := "git"
+	if errors.Is(err, gitrepo.ErrNotRepo) {
+		code = "not_repo"
+	}
+	return proto.FileHeader{Path: path, Kind: "error", Error: &proto.ErrorInfo{Code: code, Message: err.Error()}}
 }
 
 func deniedHeader(path string, err error) proto.FileHeader {

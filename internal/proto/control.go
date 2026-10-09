@@ -245,11 +245,14 @@ type FileGet struct {
 	ReqID string `json:"reqId"`
 	Path  string `json:"path"`
 	Stat  bool   `json:"stat,omitempty"`
-	// Op asks for git instead of a read (design 4d): `status`, the working
-	// directory's changes against Base (HEAD when empty), answered with a
-	// FILE frame of kind `status`; `show`, Path at revision Rev, answered
-	// with kind `show` and the content as the body. Both go through the
-	// session's file policy and deny list as a read does.
+	// Op asks for git instead of a read (design 4d, 4e): `status`, the
+	// working directory's changes against Base (HEAD when empty), answered
+	// with a FILE frame of kind `status`; `show`, Path at revision Rev,
+	// answered with kind `show` and the content as the body; `log`, the
+	// commits on HEAD after Base (a run's base) or since the session
+	// started, answered with kind `log`; `commit`, commit Rev's files
+	// against its first parent, answered with kind `commit`. All go through
+	// the session's file policy and deny list as a read does.
 	Op   string `json:"op,omitempty"`
 	Base string `json:"base,omitempty"`
 	Rev  string `json:"rev,omitempty"`
@@ -259,6 +262,8 @@ type FileGet struct {
 const (
 	FileOpStatus = "status"
 	FileOpShow   = "show"
+	FileOpLog    = "log"
+	FileOpCommit = "commit"
 )
 
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).
