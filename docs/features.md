@@ -943,7 +943,12 @@ tool, and Conductor offered it as Goose.
     `nvimHold.test.ts`, Playwright `vim.spec.ts` (a change survives another
     tab in front with no banner and the editing goes on; the dot and the
     keymap waiting; Don't save leaves the file and no swap file; Save writes
-    through Neovim; `:q` leaves none).
+    through Neovim; `:q` leaves none). In the Windows app too, with this
+    build as its server and real keys through winctl-mcp: a change typed in
+    a.txt, b.txt opened and a.txt brought back showed the change with no
+    banner and took more typing; the dot showed and the keymap waited; Don't
+    save left the file as it was and no swap file; Save wrote through
+    Neovim; `:q` closed the last tab with no swap file and no Neovim left.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 
