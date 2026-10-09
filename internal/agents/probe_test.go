@@ -119,6 +119,10 @@ func TestEveryAdapterProbeHasArgsAndAPattern(t *testing.T) {
 	if p := ProbeFor("goose"); p == nil || p.Reject == nil || !p.Reject.MatchString("goose version: v3.22.1") || p.Match.MatchString("goose version: v3.22.1") {
 		t.Fatalf("goose: %+v", p)
 	}
+	// The migrations tool as installed by go install prints no space after the colon.
+	if p := ProbeFor("goose"); !p.Reject.MatchString("goose version:v3.5.3") || p.Match.MatchString("goose version:v3.5.3") {
+		t.Fatalf("goose without the space: %+v", p)
+	}
 	if ProbeFor("nope") != nil {
 		t.Fatal("unknown adapter has a probe")
 	}

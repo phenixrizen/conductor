@@ -55,6 +55,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if agent, ok := s.Catalog().Get(req.AgentID); ok {
+		if aerr := s.notTheAgent(agent); aerr != nil {
+			writeAPIError(w, aerr)
+			return
+		}
+	}
 	local, aerr := s.createLocalSession(req, nil)
 	if aerr != nil {
 		writeAPIError(w, aerr)

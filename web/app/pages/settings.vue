@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
-import { identity } from '~/utils/agents'
+import { identity, notInstalledBadge } from '~/utils/agents'
 import type { DesktopIceStatus, DesktopSettings } from '~/utils/desktop'
 
 // The desktop app's settings: what its shell starts the server with. In a
@@ -215,7 +215,7 @@ onMounted(load)
           <ul class="flex flex-col gap-1.5 text-sm">
             <li v-for="a in agents" :key="a.id" class="flex items-center gap-2" :data-agent="a.id">
               <span class="font-medium">{{ a.name }}</span>
-              <UBadge v-if="a.available === false" label="not installed" color="warning" variant="subtle" size="sm" />
+              <UBadge v-if="a.available === false" label="not installed" :title="notInstalledBadge(a, serverHost.host.value).title" color="warning" variant="subtle" size="sm" :data-not-agent="notInstalledBadge(a, serverHost.host.value).notAgent || undefined" />
               <UBadge v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'" :label="identity(a, serverHost.host.value).label" :title="identity(a, serverHost.host.value).title" :color="identity(a, serverHost.host.value).state === 'ok' ? 'success' : identity(a, serverHost.host.value).state === 'impostor' ? 'error' : 'neutral'" variant="subtle" size="sm" />
               <code class="ml-auto text-xs text-muted truncate">{{ a.command.join(' ') }}</code>
             </li>

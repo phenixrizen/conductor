@@ -652,6 +652,34 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 13: what round 12 set aside, built (started 2026-10-09)
+
+The owner asked why five Files items had been moved to the todo instead of
+built, and decided each (`docs/round13-plan.md`): Touched one row per file
+with its count; files seen by git for every agent, labelled `git`; live
+payload captures for the agents whose hooks name no files; a swap file
+opened read-only with a banner; local echo always on in insert mode. While
+planning, a bug: the `goose` on the owner's machine is the Go migrations
+tool, and Conductor offered it as Goose.
+
+- **G0, a program that only shares an agent's name is not the agent.** The
+  identity probe already named the migrations tool an impostor, but the
+  catalog still listed Goose as available, so the Launch dialog offered it
+  and the Agents page showed it installed with a red "Not Goose". Now a
+  known impostor makes the agent `available: false`: it leaves the Launch
+  dialog, the Agents and Settings pages show it greyed as "Not installed",
+  the tooltip naming the program that is there and what it printed, and
+  `POST /api/sessions` refuses it (`not_the_agent`, from the probe's cached
+  answer, so a launch never waits on a probe). `probe: false` on the agent
+  launches it anyway. A verified probe that matches nothing (Claude Code
+  printing its version some new way) is not treated so: the agent stays
+  offered with its warning, since hiding it would make a real agent vanish
+  after an update. Tests: the catalog and the launch refusal against a
+  scripted impostor, a Claude entry printing something new still offered
+  and noted, vitest for the badge's words, Playwright `identity.spec.ts`
+  (the Goose stub greyed with the tooltip, absent from the Launch dialog,
+  its launch refused).
+
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 
 From the design screens 4a–4g and 5a–5c in "Conductor UI mockups" (the

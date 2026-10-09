@@ -48,6 +48,22 @@ export function notInstalledTitle(program: string, onWindows?: string): string {
   return `No program named ${program} is on the server's PATH (any program of that name counts as installed)`
 }
 
+/**
+ * The not-installed badge of an agent the server cannot launch: its words,
+ * its tooltip, and notAgent when a program of the agent's name is there but
+ * is another one (the Go migrations tool called goose is not Goose), which
+ * the server never offers.
+ */
+export function notInstalledBadge(a: Pick<AgentInfo, 'identity' | 'command' | 'onWindows'>, host: string): { label: string; title: string; notAgent: boolean } {
+  const program = a.command[0] ?? ''
+  const id = a.identity
+  if (id?.ran && id.impostor) {
+    const name = id.name ?? 'the agent'
+    return { label: notInstalled(host), title: `${program} on ${where(host)} is another program, not ${name}: it printed ${quote(id.output)}. Install ${name} to launch it.`, notAgent: true }
+  }
+  return { label: notInstalled(host, a.onWindows), title: notInstalledTitle(program, a.onWindows), notAgent: false }
+}
+
 /** The agents the Launch dialog's server tab offers. */
 export function serverAgents<T extends Pick<AgentInfo, 'available'>>(list: readonly T[]): T[] {
   return list.filter(isAvailable)
