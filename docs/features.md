@@ -906,6 +906,16 @@ tool, and Conductor offered it as Goose.
     nothing else holds it (a person who moved to the filter, the chat or a
     field keeps their place), and the test waits for the terminal's focus
     before pressing Alt+S. Five runs out of five locally.
+  - **The desktop window followed no restart.** The shell starts the
+    server on `127.0.0.1:0`, so every start binds a fresh port, and nothing
+    moved the window; after any restart (a
+    crash, the health check, Server › Restart server) the window stayed on
+    the dead port with a frozen page. The shell now moves the window to the
+    new origin on the same page whenever the server is running again
+    (`followOrigin`, leaving the splash and outside sites alone). Tests:
+    vitest for `followOrigin`; the Electron smoke clicks Restart server in the
+    menu and expects the window on a new origin, on the same page, signed in
+    (it fails without the fix, the window left on the old port).
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 
