@@ -35,6 +35,9 @@ type Options struct {
 	MaxViewers      int
 	// FileView decides which roles may read files: "view" (both), "control", "off".
 	FileView string
+	// FileEdit decides whether a controller may edit files through the
+	// editor's Neovim (design round 12, F8): "control" (the default), "off".
+	FileEdit string
 	// FileDeny lists what no file read may reach, even inside the working
 	// directory: a directory with everything in it, or a single file. The
 	// server passes its data directory, whose catalog.json holds agent
@@ -708,6 +711,8 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		ScrollbackBytes: s.ring.Cap(),
 		Transport:       transport,
 		FileView:        s.fileAllowed(role),
+		FileEdit:        s.editAllowed(role),
+		Nvim:            nvimAvailable(),
 		Chat:            true,
 		RunChat:         room != nil,
 	}))
@@ -768,6 +773,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 
 // Detach removes a client. It is safe to call more than once.
 func (s *Local) Detach(sub *Subscription) {
+	s.closeNvims(sub)
 	s.mu.Lock()
 	_, present := s.hub.subs[sub.ID]
 	s.hub.remove(sub.ID)
@@ -942,7 +948,10 @@ func (s *Local) DisconnectLink(linkID string) {
 
 // CloseAll evicts every subscription with the given reason (server shutdown).
 func (s *Local) CloseAll(reason error) {
-	s.hub.Each(func(sub *Subscription) { sub.closeWith(reason) })
+	s.hub.Each(func(sub *Subscription) {
+		s.closeNvims(sub)
+		sub.closeWith(reason)
+	})
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

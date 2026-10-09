@@ -31,11 +31,15 @@ nobody leaves Conductor for an editor, a git client or a file manager.
   fallback for agents without hooks; git status is the truth for creates
   and deletes nothing reported. Not a filesystem watcher (inotify limits
   under WSL on a large repository).
-- **Vim keys**: the owner asked for monaco-neovim-wasm (the real Neovim in
-  WebAssembly driving Monaco). As of 2026-10-08 its packages and repository
-  carry no license, so it cannot ship in Conductor until its author adds
-  one; the keymap setting is designed so it slots in then, and monaco-vim
-  (MIT) is the interim if the owner wants Vim keys before that.
+- **Vim keys are the real Neovim on the machine that runs the session**
+  (the owner, 2026-10-08, after the license question): monaco-neovim-wasm
+  carries no license (public code without one grants only viewing and
+  forking on GitHub, not redistribution), so F8 is a bridge instead, the
+  way vscode-neovim works: `nvim --embed` on the server or the host, the
+  person's own config and plugins, the buffer mirrored into Monaco, the
+  keys sent to Neovim, over the terminal's connection like file reads.
+  Neovim itself is Apache 2.0; the bridge is Conductor's. monaco-vim is
+  not used. Where `nvim` is missing the editor says so and stays Monaco.
 - **Layers land one at a time, each a pull request from main merged before
   the next**, never a stack: GitHub's stack merge rebases the layers above
   and reruns CI for each, which the owner has asked to avoid.
@@ -56,7 +60,7 @@ the hook events carry a tool's name and no path.
 | F5 Commits | `git_log`, `git_show` | the log since the session started; a commit's diff |
 | F6 Editing | `file_write` (chunked, bounded, control only) and its reply; `fileEdit` in the welcome | the write with the changed-on-disk check; the setting; the activity entry; the host side |
 | F7 Comment on a line | `quote{path, from, to, lines}` on a chat message | the quote kept with the message, bounded |
-| F8 Vim keys | nothing | nothing |
+| F8 Neovim | `nvim_open`, `nvim_input`, `nvim_close`, `nvim_event` (bounded); `fileEdit` and `nvim` in the welcome | `nvim --embed` per editor on the server and in `conductor host`; the `fileEdit` setting; the write as a file event |
 
 Every layer: Go tests where the server changes, vitest for the browser's
 logic, Playwright for what a person sees; headless renders checked against
@@ -185,11 +189,84 @@ twelve lines of at most 200 bytes each), kept with the message and in the
 run's record. Go tests for the bound; vitest for the re-anchoring;
 Playwright for the bar, the composer and the card.
 
-## F8. Vim keys
+## F8. Neovim in the editor (the real one, on the session's machine)
 
-A keymap setting (Default, Vim) in the editor's chrome and in Settings,
-kept per browser; loaded only when chosen. The implementation waits on the
-owner's decision about monaco-neovim-wasm's license (see Decisions).
+Proved on 2026-10-08 against Neovim 0.10.4 with the official Go client
+(`github.com/neovim/go-client`, Apache 2.0): a child `nvim --embed` with a
+UI attached (`ext_linegrid`, `ext_cmdline`, `ext_messages`, `ext_popupmenu`)
+reports mode changes, the command line as it is typed, and messages such
+as `"users.go" 20L, 400B written`; `nvim_buf_attach` streams every change
+as `nvim_buf_lines_event` (first, last, lines); an autocmd calling
+`rpcnotify` reports the cursor on `CursorMoved`/`CursorMovedI` and the
+write on `BufWritePost`; `nvim_input` takes keys in Neovim notation
+(`dd`, `jA appended<Esc>`, `:w<CR>`, `<lt>` for a literal `<`).
+
+**What a person sees.** A keymap switch in the editor chrome (Default,
+Neovim; kept per browser in `conductor.editor.keymap`). With Neovim
+chosen, a file opened on a session whose machine has `nvim` is a Neovim
+buffer shown in Monaco: Monaco draws the text, Neovim owns it. Every key
+in the editor goes to Neovim; the mode drives the cursor (block, line,
+underline) and a status line under the tabs shows `-- INSERT --`, the
+command line as it is typed (`:w`), and Neovim's messages; visual mode
+shows as Monaco's selection. `:w` writes the file on that machine (a
+`file` event `write` by the person, so Changes and Touched follow), `:q`
+closes the tab, `:e other` switches the buffer in place. The diff view,
+the images and the URL preview are unchanged. A view-only guest gets no
+Neovim (the editor stays read-only Monaco); a controller gets it when the
+session's `fileEdit` setting allows editing. Where `nvim` is missing the
+switch says "Neovim is not installed on <machine>" and the keymap stays
+Default. The session page first; the Yard's focused tile and the guest
+page later (the todo).
+
+**Wire** (`internal/proto`, `protocol.ts`, `docs/protocol.md`), control
+messages ≤ 8 KiB each: viewer → owner `nvim_open{reqId, path}` (control
+role, `fileEdit` on, `nvim` on the machine; the path through
+`ResolvePath` and the deny list like a read; at most 2 per connection and
+8 per session), `nvim_input{id, keys}` (≤ 256 bytes, a per-connection
+bucket), `nvim_close{id}`; owner → viewer `nvim_event{id, kind, …}` with
+kinds `opened` (the id, `changedtick`), `lines` (`first`, `last`,
+`lines[]`, cut into events that fit the bound, a line longer than 4 KiB
+cut with `truncated`), `cursor` (`line`, `col`, `mode`, the visual
+anchor), `mode`, `cmdline` (`show`, `content`, `pos`, `prompt`),
+`message` (`text`, `kind`), `written` (`path`), `closed` (`reason`),
+`error` (`code`, `message`); a refused open is `error{nvim_unavailable |
+file_denied | too_many_requests}`. The server and `conductor host` dispatch
+the same three messages (`ws_viewer.go`, `hostagent/peer.go`); the
+switchyard relays them opaquely and drops `nvim_*` from view-role
+connections as it drops `submit`.
+
+**Server.** `internal/nvim`: `Available()`, `Open(ctx, dir, path,
+Handler)`, `Input`, `Close`; the child's cwd is the session's working
+directory, its environment the server's (the person's config loads), the
+UI 80×24. `internal/session/nvim.go`: the per-subscription editors, the
+policy, the bounds, the frames; `Detach` and `Stop` close them. `Options.
+FileEdit` (`control`, `off`; config `fileEdit`, `CONDUCTOR_FILE_EDIT`,
+`conductor host --file-edit`), reported in the welcome as `fileEdit` (this
+role may edit) and `nvim` (installed here). The write lands in Activity as
+a `file` event by the person with tool `nvim`.
+
+**Client.** `utils/nvimKeys.ts` (a KeyboardEvent to Neovim notation;
+printable keys as they are, `<` as `<lt>`, `<Esc>`, `<CR>`, `<BS>`,
+`<Tab>`, arrows, `<C-x>`, `<M-x>`, `<S-Tab>`, F keys; nothing for a lone
+modifier), `utils/nvimLines.ts` (a `lines` event to one Monaco edit),
+`utils/editorTabs.ts` (the keymap setting), `composables/useNvim.ts` (one
+editor's state: mode, cursor, visual, cmdline, message, closed; `input`),
+`CodeEditor.vue` (keymap `nvim`: keys intercepted and sent, the model
+updated from events, the cursor and selection set, the cursor style by
+mode), `EditorArea.vue` (the switch, the status line, the notes, `:q`
+closing the tab, Ctrl+W to Neovim in that keymap). Insert-mode typing
+round-trips to the machine (local echo is a later step).
+
+**Tests.** Go: `internal/nvim` against the real `nvim` (skipped with a
+message where it is missing; CI installs 0.10.4 from the pinned release),
+`internal/session` for the policy, the bounds, the chunking and the
+frames, `internal/proto` for the shapes and sizes, `ws_e2e` and the host
+loopback for a key reaching Neovim and a `lines` event coming back.
+vitest for the keys, the edits and the setting. Playwright `vim.spec.ts`
+with the real `nvim` on the e2e server: the switch, `dd` removing a line,
+`i` typing and `<Esc>`, `:w` changing the file on disk with the message,
+`:q` closing the tab, a view link getting no Neovim. By hand: the person's
+own config and plugins, and a hosted session through the switchyard.
 
 ## Verification, end to end
 

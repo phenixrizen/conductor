@@ -163,9 +163,14 @@ screens 4a–4g). Still to build, each a pull request from main:
 - **Comment on a line (F7, 5a–5c):** select lines, Comment or Ask the
   agent, the quote card in the chat thread, re-anchoring when the lines
   move.
-- **Vim keys (F8):** waits on monaco-neovim-wasm's license (none as of
-  2026-10-08); monaco-vim (MIT) is the interim if the owner wants Vim
-  keys before that.
+- **Neovim in the editor, what is left after F8:** the Yard's focused
+  tile and the guest page offer no keymap button yet (the session page
+  does); typing in insert mode round-trips to the machine before it shows
+  (a local echo, as vscode-neovim does, is the next step); Neovim's
+  columns are bytes, so the cursor sits off by the multibyte characters
+  before it on a line; a swap file or a prompt at `:e` refuses the open
+  with Neovim's words; the Settings page has no keymap row (the button in
+  the tab strip is the switch).
 - **Touched everywhere:** the Yard's focused tile and the guest's join
   page keep no activity list, so their Files panes offer no Touched
   section and no dots; the activity replay is 50 entries, so a long

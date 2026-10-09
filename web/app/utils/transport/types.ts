@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, TransportKind, Welcome } from '../protocol'
+import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, NvimEvent, TransportKind, Welcome } from '../protocol'
 
 export type TransportState = 'idle' | 'connecting' | 'signaling' | 'open' | 'closed'
 
@@ -30,6 +30,10 @@ export interface TerminalTransport {
   resize(cols: number, rows: number): void
   ping(): void
   requestFile(path: string, stat?: boolean, extra?: FileGetExtra): Promise<FileResponse>
+  /** The editor's Neovim (F8): open a file on the session's machine (the `opened` event, or the `error` one, settles it), send keys, close. */
+  nvimOpen(path: string): Promise<NvimEvent>
+  nvimInput(id: string, keys: string): void
+  nvimClose(id: string): void
   onOutput(cb: (data: Uint8Array, replay: boolean) => void): void
   onControl(cb: (msg: ControlMessage) => void): void
   onClose(cb: (info: CloseInfo) => void): void

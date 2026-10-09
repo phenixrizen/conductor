@@ -55,7 +55,10 @@ type Options struct {
 	ScrollbackBytes int
 	MaxViewers      int
 	FileView        string
-	Log             *slog.Logger
+	// FileEdit is whether the control role may edit files through the
+	// editor's Neovim on this machine: "control" (the default), "off".
+	FileEdit string
+	Log      *slog.Logger
 	// Pattern, when set, is matched against the last line of the terminal after
 	// 500 ms without output; a match marks the session needs_input. See
 	// session.Options.Pattern.
@@ -169,6 +172,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		ScrollbackBytes: opts.ScrollbackBytes,
 		MaxViewers:      opts.MaxViewers,
 		FileView:        opts.FileView,
+		FileEdit:        opts.FileEdit,
 		Transport:       proto.TransportWebRTC,
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,

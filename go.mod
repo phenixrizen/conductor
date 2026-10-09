@@ -18,6 +18,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
+	github.com/neovim/go-client v1.2.1 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.9 // indirect
 	github.com/pion/interceptor v0.1.49 // indirect

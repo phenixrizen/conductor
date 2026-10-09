@@ -164,6 +164,31 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 				local.Send(sub, frame)
 			}
 		}
+	case proto.CtlNvimOpen:
+		var m proto.NvimOpen
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), nvimOpenTimeout)
+		err := local.NvimOpen(ctx, sub, m)
+		cancel()
+		if err != nil {
+			local.Send(sub, session.NvimRefused(m.ReqID, err))
+		}
+	case proto.CtlNvimInput:
+		var m proto.NvimInput
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		if err := local.NvimInput(sub, m); err != nil {
+			local.Send(sub, session.NvimRefused("", err))
+		}
+	case proto.CtlNvimClose:
+		var m proto.NvimClose
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		local.NvimClose(sub, m)
 	case proto.CtlSubmit:
 		var m proto.Submit
 		if json.Unmarshal(payload, &m) != nil {
@@ -380,3 +405,6 @@ func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *si
 	}
 	return false
 }
+
+// nvimOpenTimeout bounds the start of an editor (Neovim loading a config).
+const nvimOpenTimeout = 15 * time.Second

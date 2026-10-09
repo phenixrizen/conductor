@@ -470,7 +470,7 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 		case proto.TypeControl:
 			// A chat post passes for every role (the host refuses one that is
 			// also for the agent); typing a message into the agent does not.
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlChatSend {
+			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlChatSend || t == proto.CtlNvimOpen || t == proto.CtlNvimInput || t == proto.CtlNvimClose {
 				return session.ErrReadOnly
 			}
 		}

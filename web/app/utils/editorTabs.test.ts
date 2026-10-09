@@ -63,3 +63,23 @@ describe('the editor tabs', () => {
     expect(editorHeight(200, 0.6, 20, 60)).toBe(20)
   })
 })
+
+describe('the keymap setting', () => {
+  it('reads nvim or default and writes what was chosen', async () => {
+    const { readKeymap, writeKeymap, KEYMAP_KEY, nvimUnavailableWords } = await import('./editorTabs')
+    const store = new Map<string, string>()
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) }
+    expect(readKeymap(storage)).toBe('default')
+    writeKeymap(storage, 'nvim')
+    expect(store.get(KEYMAP_KEY)).toBe('nvim')
+    expect(readKeymap(storage)).toBe('nvim')
+    store.set(KEYMAP_KEY, 'vim')
+    expect(readKeymap(storage)).toBe('default')
+    expect(readKeymap(null)).toBe('default')
+    expect(readKeymap({ getItem: () => { throw new Error('no') } })).toBe('default')
+    expect(nvimUnavailableWords({ welcome: true, nvim: true, fileEdit: true })).toBe('')
+    expect(nvimUnavailableWords({ welcome: true, nvim: false, fileEdit: true, machine: 'lan-box' })).toBe('Neovim is not installed on lan-box')
+    expect(nvimUnavailableWords({ welcome: true, nvim: true, fileEdit: false })).toMatch(/View only/)
+    expect(nvimUnavailableWords({ welcome: false, nvim: true, fileEdit: true })).toBe('Not connected')
+  })
+})

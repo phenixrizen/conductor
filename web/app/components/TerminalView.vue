@@ -54,6 +54,8 @@ const emit = defineEmits<{
   chatHistory: [history: ChatHistory]
   chatRoster: [roster: ChatRoster]
   requestError: [err: { code: string; message: string; requestId: string }]
+  /** What the editor's Neovim reports (design round 12, F8). */
+  nvim: [ev: NvimEvent]
 }>()
 
 const host = ref<HTMLDivElement>()
@@ -303,6 +305,9 @@ function handleControl(msg: ControlMessage) {
     case 'chat_roster':
       emit('chatRoster', msg)
       break
+    case 'nvim_event':
+      emit('nvim', msg)
+      break
     case 'error':
       // An error naming a request (a chat post or send) is that request's, not the terminal's.
       if (msg.requestId) {
@@ -363,6 +368,16 @@ function disconnect(showOverlay = true) {
   if (showOverlay && !overlay.value) overlay.value = { title: 'Disconnected' }
 }
 
+function nvimOpen(path: string): Promise<NvimEvent> {
+  if (!transport) return Promise.reject(new Error('not connected'))
+  return transport.nvimOpen(path)
+}
+function nvimInput(id: string, keys: string): void {
+  transport?.nvimInput(id, keys)
+}
+function nvimClose(id: string): void {
+  transport?.nvimClose(id)
+}
 function requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {
   if (!transport) return Promise.reject(new Error('not connected'))
   return transport.requestFile(path, stat, extra)
@@ -396,7 +411,7 @@ function chatSend(send: ChatSend): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+defineExpose({ connect, disconnect, requestFile, nvimOpen, nvimInput, nvimClose, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({

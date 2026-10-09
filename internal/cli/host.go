@@ -37,6 +37,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	icePublicIP := fs.String("ice-public-ip", envOr("CONDUCTOR_ICE_PUBLIC_IP", ""), "the address advertised as this host's own (env CONDUCTOR_ICE_PUBLIC_IP): a forwarder's, such as the desktop app's on Windows in front of WSL")
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
+	fileEdit := fs.String("file-edit", "control", "whether the control role may edit files through the editor's Neovim on this machine: control, off")
 	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
@@ -63,6 +64,9 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	case "view", "control", "off":
 	default:
 		return 2, fmt.Errorf("invalid --file-view %q", *fileView)
+	}
+	if *fileEdit != "control" && *fileEdit != "off" {
+		return 2, fmt.Errorf("invalid --file-edit %q", *fileEdit)
 	}
 	var pattern *regexp.Regexp
 	if *signalPattern != "" {
@@ -106,6 +110,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		ICEServers:      ice,
 		ScrollbackBytes: *scrollback,
 		FileView:        *fileView,
+		FileEdit:        *fileEdit,
 		Pattern:         pattern,
 		Adapter:         *agentID,
 		Log:             log,

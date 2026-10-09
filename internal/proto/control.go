@@ -275,6 +275,11 @@ type Welcome struct {
 	ScrollbackBytes int    `json:"scrollbackBytes"`
 	Transport       string `json:"transport"`
 	FileView        bool   `json:"fileView"`
+	// FileEdit says this connection may edit files (control, on a session
+	// whose fileEdit setting allows it); Nvim that the machine has `nvim`,
+	// so nvim_open may be sent (design round 12, F8).
+	FileEdit bool `json:"fileEdit,omitempty"`
+	Nvim     bool `json:"nvim,omitempty"`
 	// Chat says the owner takes chat and chat_send: a client sends neither
 	// to an owner whose welcome lacks it (an older server closes on them).
 	Chat bool `json:"chat,omitempty"`

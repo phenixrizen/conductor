@@ -802,6 +802,51 @@ waiting on monaco-neovim-wasm's missing license.
   cycle cannot be driven from a browser tab (it works in the desktop app
   and in the Playwright spec). The phone layout and the light theme were
   not part of this pass.
+- **F8, Neovim in the editor (the real one, on the session's machine).**
+  Chosen on 2026-10-08 over monaco-neovim-wasm (no license: public code
+  without one grants viewing and forking on GitHub, not redistribution)
+  and over monaco-vim: the editor's keys stay Monaco's until the **Keys**
+  button in the tab strip is pressed, which is kept per browser
+  (`conductor.editor.keymap`) and is off by default, so nobody who never
+  asked for Vim keys meets one. With Neovim chosen, a file opened on the
+  session page is held by `nvim --embed` on the machine that runs the
+  session (the person's own config and plugins), started by the official
+  Go client (`github.com/neovim/go-client`, Apache 2.0) with a UI attached
+  for the mode, the command line and the messages, the buffer followed
+  through `nvim_buf_attach`, the cursor through an autocmd. The wire is
+  `nvim_open`, `nvim_input` (≤ 256 bytes, a per-connection bucket),
+  `nvim_close` and `nvim_event` (the buffer's `lines` cut to the control
+  bound, a line past 4 KiB cut and marked; `cursor`, `mode`, `cmdline`,
+  `message`, `written`, `closed`, `error`), on the terminal's connection
+  as file reads are, on the server and in `conductor host`; the switchyard
+  drops the three from view-role connections. The policy is the new
+  `fileEdit` setting (`control`, the default; `off`; `CONDUCTOR_FILE_EDIT`,
+  `conductor host --file-edit`) on top of the control role and `fileView`,
+  reported in the welcome as `fileEdit` and `nvim` (installed there), at
+  most 2 editors per connection and 8 per session, closed with the
+  connection. In Monaco the keys are intercepted and sent in Neovim
+  notation (`utils/nvimKeys.ts`), the model follows the `lines` events
+  (`utils/nvimLines.ts`), the cursor style follows the mode, a visual
+  selection shows as Monaco's, a status line under the tabs shows
+  `-- INSERT --`, the command line as typed and the messages; `:w` writes
+  on that machine and lands in Activity as the person's `file` event
+  `write` with tool `nvim`, so Changes and Touched follow; `:q` closes the
+  tab; Ctrl+W goes to Neovim in that keymap. Where `nvim` is missing or
+  the connection may not edit, the button's note says so and the keys
+  stay Monaco's. Verified against Neovim 0.10.4 on this machine: the Go
+  bridge (`internal/nvim`), the policy and bounds through the session
+  (`internal/session/nvim_test.go`), the viewer WebSocket end to end
+  (`TestNvimOverTheViewerWebSocket`: opened, the buffer, `dd` as a
+  deletion, `:w` on disk, a view link refused with `nvim_unavailable`),
+  22 vitest cases for the keys and the edits, and Playwright
+  `vim.spec.ts` (off by default; the button; `dd`; insert mode with its
+  words; `:w` on the command line, written on disk, the message, the
+  Touched row with tool `nvim`; `:q` closing the tab; the choice kept
+  across a reload and turned off again). CI installs Neovim 0.10.4 from
+  the pinned release for the go and e2e jobs; without it the Go tests
+  skip with a message and the spec is skipped. Left for later (the todo):
+  the Yard's focused tile and the guest page, a local echo in insert mode,
+  byte columns with multibyte text, a Settings row.
 - **By hand, v0.7.0-rc.4 in the installed desktop app on Windows
   (2026-10-08).** rc.4 was cut from main (F1–F4), its installer put on the
   Windows host and run through the same desktop-control MCP: the welcome
