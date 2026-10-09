@@ -120,3 +120,35 @@ test('a file written with no hook naming it shows in Touched as seen by git', as
     await api.stopSession(s.id)
   }
 })
+
+// Round 13, G2b: Codex, Copilot and agy name their files in the payloads a
+// live run of each sends (internal/notify/testdata); the stub replays them
+// through `conductor notify`, the path a real hook takes, and Touched lists
+// the shell read and the write.
+for (const agent of ['codex', 'copilot', 'agy'] as const) {
+  test(`${agent}'s hook payloads name the files its tools read and wrote`, async ({ page, api, state }) => {
+    const cwd = join(state.root, `files-hooks-${agent}`)
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, 'README.md'), '# hooks\n')
+    const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: `hooks ${agent}`, cwd })
+    try {
+      await page.goto(`/sessions/${s.id}`)
+      const screen = page.locator('.terminal-host .xterm-screen').first()
+      await expect(screen).toBeVisible({ timeout: 30_000 })
+      await screen.click()
+      await page.keyboard.type(`stub tools ${agent}`)
+      await page.keyboard.press('Enter')
+      await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+      const pane = page.locator('[data-files-mode]')
+      await pane.locator('[data-files-section="touched"]').click()
+      const readme = pane.locator(`[data-files-touched] [data-touched="${cwd}/README.md"]`)
+      await expect(readme).toBeVisible({ timeout: 15_000 })
+      await expect(readme).toHaveAttribute('data-touched-op', 'read')
+      const written = pane.locator(`[data-files-touched] [data-touched="${cwd}/stub-tools.txt"]`)
+      await expect(written).toBeVisible()
+      await expect(written).toHaveAttribute('data-touched-op', 'write')
+    } finally {
+      await api.stopSession(s.id)
+    }
+  })
+}

@@ -23,6 +23,11 @@
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
+# A line that is exactly `stub tools codex`, `stub tools copilot` or
+# `stub tools agy` makes the stub write stub-tools.txt and report, through
+# that agent's hook flag, the payloads a live run of it sends (round 13,
+# G2b): a shell `cat README.md` and the write of stub-tools.txt, in the
+# shapes captured in internal/notify/testdata.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -161,6 +166,33 @@ report_working() {
 	esac
 }
 
+# tool_replay writes stub-tools.txt and reports agent $1's hook payloads
+# for a shell read of README.md and that write, as a live run sends them.
+tool_replay() {
+	local dir write read
+	dir=$(json_str "$PWD")
+	printf 'from the stub\n' >stub-tools.txt
+	case $1 in
+	codex)
+		read="{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat README.md\"},\"cwd\":$dir}"
+		write="{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"apply_patch\",\"tool_input\":{\"command\":$(json_str "*** Begin Patch
+*** Add File: $PWD/stub-tools.txt
++from the stub
+*** End Patch")},\"cwd\":$dir}"
+		;;
+	copilot)
+		read="{\"toolName\":\"bash\",\"toolArgs\":{\"command\":\"cat README.md\",\"description\":\"Show README\"},\"toolResult\":{\"resultType\":\"success\",\"textResultForLlm\":\"\"},\"cwd\":$dir}"
+		write="{\"toolName\":\"create\",\"toolArgs\":{\"path\":$(json_str "$PWD/stub-tools.txt"),\"file_text\":\"from the stub\"},\"toolResult\":{\"resultType\":\"success\",\"textResultForLlm\":\"\"},\"cwd\":$dir}"
+		;;
+	agy)
+		read="{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"cat README.md\",\"Cwd\":$dir}},\"error\":\"\"}"
+		write="{\"toolCall\":{\"name\":\"write_to_file\",\"args\":{\"TargetFile\":$(json_str "$PWD/stub-tools.txt"),\"CodeContent\":\"from the stub\"}},\"error\":\"\"}"
+		;;
+	esac
+	printf '%s' "$read" | "$conductor" notify "--$1-hook" >/dev/null 2>&1 || true
+	printf '%s' "$write" | "$conductor" notify "--$1-hook" >/dev/null 2>&1 || true
+}
+
 # report_done reports the answer $1 to the line $2.
 report_done() {
 	case $report_mode in
@@ -218,6 +250,9 @@ answer() {
 	printf 'got: %s\n' "$line"
 	printf '%s\n' "${line:0:200}" >>"$transcript"
 	report_working
+	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy)$ ]]; then
+		tool_replay "${BASH_REMATCH[1]}"
+	fi
 	while [[ $rest =~ $target_re ]]; do
 		kind=${BASH_REMATCH[1]}
 		target_run=${BASH_REMATCH[2]}

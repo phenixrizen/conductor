@@ -165,10 +165,13 @@ and the Neovim keymap. What is set aside:
   keymap and send their text as keys.
 - **Neovim: a swap file or a prompt at `:e` refuses the open** with
   Neovim's words, instead of showing the prompt to answer.
-- **Files from more agents:** Codex names a file only through
-  `apply_patch` (its shell reads and writes name none); the Copilot and
-  Goose mappers yield no files, their PostToolUse payloads unverified
-  against a real run; agy has no tool hook.
+- **Goose's files:** the Goose mapper reads the tool's name only; its
+  payload's arguments wait for a run of the real Goose CLI (the `goose` on
+  the owner's machine is the Go migrations tool, round 13 G0).
+- **Codex's hooks need trusting:** Codex 0.161 runs hooks only after the
+  person trusts them, and opens on a "Hooks need review" question when they
+  are new or changed; round 13's G2c recognises that question. Where Codex
+  keeps the trust, and whether it lasts past a session, is not known yet.
 
 ### Chat beside the terminal
 

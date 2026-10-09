@@ -1,0 +1,351 @@
+[
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 2,
+   "toolCall": {
+    "args": {
+     "CommandLine": "ls -la",
+     "Cwd": "/r",
+     "WaitMsBeforeAsync": 1000,
+     "toolAction": "Listing files",
+     "toolSummary": "List directory contents"
+    },
+    "name": "run_command"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 2,
+   "toolCall": {
+    "args": {
+     "CommandLine": "ls -la",
+     "Cwd": "/r",
+     "WaitMsBeforeAsync": 1000,
+     "toolAction": "Listing files",
+     "toolSummary": "List directory contents"
+    },
+    "name": "run_command"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 4,
+   "toolCall": {
+    "args": {
+     "AbsolutePath": "/r/README.md",
+     "toolAction": "Viewing README",
+     "toolSummary": "View README.md"
+    },
+    "name": "view_file"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 4,
+   "toolCall": {
+    "args": {
+     "AbsolutePath": "/r/README.md",
+     "toolAction": "Viewing README",
+     "toolSummary": "View README.md"
+    },
+    "name": "view_file"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 5,
+   "toolCall": {
+    "args": {
+     "AbsolutePath": "/r/main.go",
+     "toolAction": "Viewing main.go",
+     "toolSummary": "View main.go"
+    },
+    "name": "view_file"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 5,
+   "toolCall": {
+    "args": {
+     "AbsolutePath": "/r/main.go",
+     "toolAction": "Viewing main.go",
+     "toolSummary": "View main.go"
+    },
+    "name": "view_file"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 7,
+   "toolCall": {
+    "args": {
+     "CodeContent": "hi\n",
+     "Description": "Creating hello.txt with 'hi'",
+     "Overwrite": false,
+     "TargetFile": "/r/hello.txt",
+     "toolAction": "Writing hello.txt",
+     "toolSummary": "Create hello.txt"
+    },
+    "name": "write_to_file"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 7,
+   "toolCall": {
+    "args": {
+     "CodeContent": "hi\n",
+     "Description": "Creating hello.txt with 'hi'",
+     "Overwrite": false,
+     "TargetFile": "/r/hello.txt",
+     "toolAction": "Writing hello.txt",
+     "toolSummary": "Create hello.txt"
+    },
+    "name": "write_to_file"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 8,
+   "toolCall": {
+    "args": {
+     "CommandLine": "echo there >> hello.txt",
+     "Cwd": "/r",
+     "WaitMsBeforeAsync": 1000,
+     "toolAction": "Appending to hello.txt",
+     "toolSummary": "Append there"
+    },
+    "name": "run_command"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 8,
+   "toolCall": {
+    "args": {
+     "CommandLine": "echo there >> hello.txt",
+     "Cwd": "/r",
+     "WaitMsBeforeAsync": 1000,
+     "toolAction": "Appending to hello.txt",
+     "toolSummary": "Append there"
+    },
+    "name": "run_command"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 9,
+   "toolCall": {
+    "args": {
+     "AllowMultiple": false,
+     "Description": "Print hello in main",
+     "EndLine": 4,
+     "Instruction": "Add fmt.Println(\"hello\") to main()",
+     "ReplacementContent": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n",
+     "StartLine": 1,
+     "TargetContent": "package main\n\nfunc main() {}\n",
+     "TargetFile": "/r/main.go",
+     "toolAction": "Replacing main content",
+     "toolSummary": "Edit main.go"
+    },
+    "name": "replace_file_content"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 9,
+   "toolCall": {
+    "args": {
+     "AllowMultiple": false,
+     "Description": "Print hello in main",
+     "EndLine": 4,
+     "Instruction": "Add fmt.Println(\"hello\") to main()",
+     "ReplacementContent": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n",
+     "StartLine": 1,
+     "TargetContent": "package main\n\nfunc main() {}\n",
+     "TargetFile": "/r/main.go",
+     "toolAction": "Replacing main content",
+     "toolSummary": "Edit main.go"
+    },
+    "name": "replace_file_content"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "modelName": "redacted",
+   "stepIdx": 11,
+   "toolCall": {
+    "args": {
+     "CommandLine": "cat README.md",
+     "Cwd": "/r",
+     "WaitMsBeforeAsync": 1000,
+     "toolAction": "Viewing README.md with cat",
+     "toolSummary": "cat README.md"
+    },
+    "name": "run_command"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "modelName": "redacted",
+   "stepIdx": 11,
+   "toolCall": {
+    "args": {
+     "CommandLine": "cat README.md",
+     "Cwd": "/r",
+     "WaitMsBeforeAsync": 1000,
+     "toolAction": "Viewing README.md with cat",
+     "toolSummary": "cat README.md"
+    },
+    "name": "run_command"
+   },
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ },
+ {
+  "event": "Stop",
+  "payload": {
+   "artifactDirectoryPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000",
+   "conversationId": "00000000-0000-0000-0000-000000000000",
+   "error": "",
+   "executionNum": 0,
+   "fullyIdle": true,
+   "modelName": "redacted",
+   "terminationReason": "NO_TOOL_CALL",
+   "transcriptPath": "/home/me/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system_generated/logs/transcript_full.jsonl",
+   "workspacePaths": [
+    "/r"
+   ]
+  }
+ }
+]

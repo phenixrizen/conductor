@@ -5,7 +5,12 @@ import "regexp"
 // Antigravity reads hooks from ~/.gemini/config/hooks.json, grouped under
 // named top-level keys; Conductor's group is "conductor". It has no launch
 // flag for them and no event for waiting on the user (the bell covers that),
-// so Install writes the group and nothing is injected.
+// so Install writes the group and nothing is injected. A tool event's entry
+// is a matcher with its hooks; a Stop entry is the command hook itself
+// (antigravity.google/docs/hooks): a Stop in the matcher form makes agy
+// refuse the whole group ("command hook must specify 'command'" in its
+// log), which Conductor's file did before round 13 (verified against agy
+// 1.2.14 on 2026-10-09).
 
 const (
 	agyHooks = ".gemini/config/hooks.json"
@@ -14,7 +19,8 @@ const (
 
 var agyAssets = map[string]string{
 	"agy-hooks.json": jsonAsset(`{"conductor":{"enabled":true,` +
-		hookLists(`{"matcher":"*","hooks":[{"type":"command","command":"{{BIN}} notify --agy-hook"}]}`, "Stop", "PostToolUse") + `}}`),
+		hookLists(`{"matcher":"*","hooks":[{"type":"command","command":"{{BIN}} notify --agy-hook"}]}`, "PostToolUse") + `,` +
+		hookLists(`{"type":"command","command":"{{BIN}} notify --agy-hook"}`, "Stop") + `}}`),
 }
 
 func agySteps(hooksDir string) []step {

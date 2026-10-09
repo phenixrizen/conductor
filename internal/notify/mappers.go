@@ -32,13 +32,18 @@ type ClaudeHook struct {
 	ToolInput            json.RawMessage `json:"tool_input"`
 	Error                json.RawMessage `json:"error"`
 	SessionID            string          `json:"session_id"`
+	Cwd                  string          `json:"cwd"`
 }
 
 // claudeFiles are the file events a Claude Code tool call yields (design
 // 4e): Read reads, Edit, MultiEdit and NotebookEdit edit, Write writes, the
-// path from the tool's input (file_path, or notebook_path). Bash and the
+// path from the tool's input (file_path, or notebook_path); Bash names the
+// files its command plainly reads or writes (shellFiles, from cwd). The
 // rest name no file.
-func claudeFiles(tool string, input json.RawMessage) []FileRef {
+func claudeFiles(tool string, input json.RawMessage, cwd string) []FileRef {
+	if tool == "Bash" {
+		return shellFiles(commandOf(input), cwd)
+	}
 	op := ""
 	switch tool {
 	case "Read":
@@ -64,21 +69,35 @@ func claudeFiles(tool string, input json.RawMessage) []FileRef {
 	return []FileRef{{Op: op, Path: p}}
 }
 
-// codexFiles are the file events a Codex apply_patch call yields: the
-// files its patch adds, updates or deletes, from the patch's headers.
-func codexFiles(tool string, input json.RawMessage) []FileRef {
-	if tool != "apply_patch" || len(input) == 0 {
+// codexFiles are the file events a Codex tool call yields: the files an
+// apply_patch adds, updates or deletes, from the patch's headers (the patch
+// is tool_input.command, as Codex 0.161 sends it; input and patch are read
+// too), and the files its shell tool (Bash) plainly reads or writes
+// (shellFiles, from cwd). Verified against a live capture
+// (testdata/codex-hooks.json).
+func codexFiles(tool string, input json.RawMessage, cwd string) []FileRef {
+	if len(input) == 0 {
+		return nil
+	}
+	switch tool {
+	case "Bash", "shell", "exec_command", "local_shell":
+		return shellFiles(commandOf(input), cwd)
+	case "apply_patch":
+	default:
 		return nil
 	}
 	var in struct {
-		Input string `json:"input"`
-		Patch string `json:"patch"`
+		Input   string          `json:"input"`
+		Patch   string          `json:"patch"`
+		Command json.RawMessage `json:"command"`
 	}
 	if json.Unmarshal(input, &in) != nil {
 		return nil
 	}
+	var cmd string
+	_ = json.Unmarshal(in.Command, &cmd)
 	var out []FileRef
-	for _, line := range strings.Split(firstOf(in.Input, in.Patch), "\n") {
+	for _, line := range strings.Split(firstOf(in.Input, in.Patch, cmd), "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "*** Add File: "):
@@ -93,6 +112,107 @@ func codexFiles(tool string, input json.RawMessage) []FileRef {
 		}
 	}
 	return out
+}
+
+// commandOf is a shell tool's command from its input's `command`: a string,
+// or an argv (["bash", "-lc", "cat x"] is its last word; another argv its
+// words joined).
+func commandOf(input json.RawMessage) string {
+	var in struct {
+		Command json.RawMessage `json:"command"`
+	}
+	if json.Unmarshal(input, &in) != nil || len(in.Command) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(in.Command, &s) == nil {
+		return s
+	}
+	var argv []string
+	if json.Unmarshal(in.Command, &argv) != nil || len(argv) == 0 {
+		return ""
+	}
+	if len(argv) >= 3 && strings.HasPrefix(argv[len(argv)-2], "-") && strings.Contains(argv[len(argv)-2], "c") {
+		return argv[len(argv)-1]
+	}
+	return strings.Join(argv, " ")
+}
+
+// copilotFiles are the file events a GitHub Copilot CLI tool call yields
+// when it succeeded: view reads, edit edits and create writes the args'
+// path; bash names what its command plainly reads or writes (shellFiles,
+// from cwd). The args come as an object (Copilot 1.0.91), or as a JSON
+// string. Verified against a live capture (testdata/copilot-hooks.json).
+func copilotFiles(tool string, args, result json.RawMessage, cwd string) []FileRef {
+	var r struct {
+		ResultType string `json:"resultType"`
+	}
+	if json.Unmarshal(result, &r) == nil && r.ResultType != "" && r.ResultType != "success" {
+		return nil
+	}
+	var str string
+	if json.Unmarshal(args, &str) == nil {
+		args = json.RawMessage(str)
+	}
+	var in struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(args, &in) != nil {
+		return nil
+	}
+	switch tool {
+	case "view":
+		return fileRef("read", in.Path)
+	case "edit", "str_replace", "insert":
+		return fileRef("edit", in.Path)
+	case "create":
+		return fileRef("write", in.Path)
+	case "bash":
+		return shellFiles(in.Command, cwd)
+	}
+	return nil
+}
+
+// agyFiles are the file events an Antigravity tool call yields: view_file
+// (and its outline) reads AbsolutePath; write_to_file writes TargetFile;
+// replace_file_content, multi_replace_file_content and edit_file edit it;
+// delete_file deletes its path; run_command names what CommandLine plainly
+// reads or writes, from Cwd. Verified against a live capture
+// (testdata/agy-hooks.json), but for delete_file and edit_file, whose
+// argument names are guessed from the others'.
+func agyFiles(tool string, args json.RawMessage) []FileRef {
+	var in struct {
+		AbsolutePath string `json:"AbsolutePath"`
+		TargetFile   string `json:"TargetFile"`
+		Path         string `json:"Path"`
+		CommandLine  string `json:"CommandLine"`
+		Cwd          string `json:"Cwd"`
+	}
+	if len(args) == 0 || json.Unmarshal(args, &in) != nil {
+		return nil
+	}
+	switch tool {
+	case "view_file", "view_file_outline":
+		return fileRef("read", in.AbsolutePath)
+	case "write_to_file":
+		return fileRef("write", in.TargetFile)
+	case "replace_file_content", "multi_replace_file_content", "edit_file":
+		return fileRef("edit", in.TargetFile)
+	case "delete_file":
+		return fileRef("delete", firstOf(in.AbsolutePath, in.TargetFile, in.Path))
+	case "run_command":
+		return shellFiles(in.CommandLine, in.Cwd)
+	}
+	return nil
+}
+
+// fileRef is one file event, none for an empty path.
+func fileRef(op, p string) []FileRef {
+	if p == "" {
+		return nil
+	}
+	return []FileRef{{Op: op, Path: p}}
 }
 
 // MapClaudeHook turns a Claude Code hook payload into an attention update, or
@@ -153,7 +273,7 @@ func mapClaudeHook(h ClaudeHook) (req Request, ok bool) {
 	case "PermissionDenied":
 		return Request{Event: "tool_denied", Tool: h.ToolName}, true
 	case "PostToolUse":
-		return Request{Event: "tool_use", Tool: h.ToolName, Files: claudeFiles(h.ToolName, h.ToolInput)}, true
+		return Request{Event: "tool_use", Tool: h.ToolName, Files: claudeFiles(h.ToolName, h.ToolInput, h.Cwd)}, true
 	case "PostToolUseFailure":
 		return Request{Event: "error", Message: truncate(errorText(h.Error), 200), Tool: h.ToolName}, true
 	case "SubagentStop":
@@ -211,6 +331,7 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 		ToolInput            json.RawMessage `json:"tool_input"`
 		LastAssistantMessage string          `json:"last_assistant_message"`
 		SessionID            string          `json:"session_id"`
+		Cwd                  string          `json:"cwd"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
@@ -219,7 +340,7 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 	case "Stop":
 		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
 	case "PostToolUse":
-		return Request{Event: "tool_use", Tool: h.ToolName, Files: codexFiles(h.ToolName, h.ToolInput)}, true
+		return Request{Event: "tool_use", Tool: h.ToolName, Files: codexFiles(h.ToolName, h.ToolInput, h.Cwd)}, true
 	case "PermissionRequest":
 		msg := "Codex asks for permission"
 		if h.ToolName != "" {
@@ -245,7 +366,9 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 		Message          string          `json:"message"`
 		Title            string          `json:"title"`
 		ToolName         string          `json:"toolName"`
+		ToolArgs         json.RawMessage `json:"toolArgs"`
 		ToolResult       json.RawMessage `json:"toolResult"`
+		Cwd              string          `json:"cwd"`
 		StopReason       *string         `json:"stopReason"`
 		Prompt           *string         `json:"prompt"`
 		Error            json.RawMessage `json:"error"`
@@ -281,7 +404,7 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 	case "erroroccurred":
 		return Request{Event: "error", Message: truncate(errorText(h.Error), 200), Tool: h.ToolName}, true
 	case "posttooluse":
-		return Request{Event: "tool_use", Tool: h.ToolName}, true
+		return Request{Event: "tool_use", Tool: h.ToolName, Files: copilotFiles(h.ToolName, h.ToolArgs, h.ToolResult, h.Cwd)}, true
 	case "agentstop":
 		return Request{State: "done", Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
 	case "userpromptsubmitted":
@@ -324,8 +447,10 @@ func MapCursorHook(raw []byte) (req Request, ok bool) {
 func MapAgyHook(raw []byte) (req Request, ok bool) {
 	var h struct {
 		ToolCall *struct {
-			Name string `json:"name"`
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
+		Error             string  `json:"error"`
 		TerminationReason *string `json:"terminationReason"`
 		ConversationID    string  `json:"conversationId"`
 	}
@@ -334,7 +459,11 @@ func MapAgyHook(raw []byte) (req Request, ok bool) {
 	}
 	switch {
 	case h.ToolCall != nil:
-		return Request{Event: "tool_use", Tool: h.ToolCall.Name}, true
+		var files []FileRef
+		if h.Error == "" {
+			files = agyFiles(h.ToolCall.Name, h.ToolCall.Args)
+		}
+		return Request{Event: "tool_use", Tool: h.ToolCall.Name, Files: files}, true
 	case h.TerminationReason != nil:
 		return Request{State: "done", Message: truncate(strings.TrimSpace(*h.TerminationReason), 200), Kind: "done", AgentSession: truncate(h.ConversationID, 128), Turn: true}, true
 	}
