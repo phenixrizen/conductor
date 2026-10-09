@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
-import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, ChatQuote } from '~/utils/protocol'
+import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, ChatQuote, ActivityEntry } from '~/utils/protocol'
 import { CloseCode } from '~/utils/protocol'
 import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import { emptyTabs } from '~/utils/editorTabs'
@@ -125,7 +125,13 @@ const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
 const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
 // The editor (design round 12, F6 and F8): a guest with control saves and gets Neovim as the owner does; a view link gets neither.
 const editor = useEditorBridge(terminal as unknown as Ref<EditorTerminal | null>, () => current.value?.hostName || 'the host')
+// The session's activity, for the Files pane's Touched section (design 4e).
+const activity = ref<ActivityEntry[]>([])
+function onActivity(e: ActivityEntry) {
+  activity.value = [...activity.value.slice(-199), e]
+}
 function onWelcome(w: Welcome) {
+  activity.value = []
   editor.onWelcome(w)
   unread.registerSelf(w.subscriberId ?? w.viewerId ?? '')
   chat.welcome(!!w.chat, viaChat)
@@ -449,6 +455,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           :create-transport="createTransport"
           :read-only="info.role !== 'control'"
           @welcome="onWelcome"
+          @activity="onActivity"
           @nvim="editor.onNvim"
           @status="onStatus"
           @attention="onAttention"
@@ -470,7 +477,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           <UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files
           <UBadge v-if="info.role !== 'control'" label="read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" class="ml-auto" data-files-readonly />
         </div>
-        <FileBrowser :request="requestFile" :cwd="current.cwd" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
+        <FileBrowser :request="requestFile" :cwd="current.cwd" :activity="activity" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
       </aside>
       <aside v-if="chatPanel && chat.thread.value.capable" class="hidden md:flex w-[332px] flex-none" data-chat-aside>
         <ChatPanel class="w-full overflow-hidden rounded-lg border border-default" :thread="chat.thread.value" :role="info.role" :ended="ended" :offline="chatOffline" :viewers="viewerList" :note="chatNote" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />

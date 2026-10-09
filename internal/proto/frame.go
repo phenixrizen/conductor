@@ -210,6 +210,9 @@ type FileHeader struct {
 	Commits []Commit `json:"commits,omitempty"`
 	Since   string   `json:"since,omitempty"`
 	Commit  *Commit  `json:"commit,omitempty"`
+	// A `find` reply: the files under Path whose name holds the query, as
+	// paths from Path (at most 200, Truncated also when the walk stopped).
+	Matches []string `json:"matches,omitempty"`
 }
 
 // Commit is one commit of a `log` or `commit` reply: its id, the subject

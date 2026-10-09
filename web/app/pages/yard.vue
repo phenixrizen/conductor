@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { emptyTabs, toggleFold } from '~/utils/editorTabs'
 import type { SessionInfo } from '~/composables/useSessions'
-import type { TransportKind } from '~/utils/protocol'
+import type { TransportKind, ActivityEntry, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
@@ -143,7 +143,22 @@ async function stop(s: SessionInfo) {
 
 // The editor on the focused tile (design round 12, F6 and F8): saves and Neovim as on the session page.
 const editor = useEditorBridge(focusTerminal as unknown as Ref<EditorTerminal | null>, () => (focused.value?.kind === 'hosted' ? focused.value.hostName || 'the host' : 'this server'))
-watch(() => focused.value?.id, () => editor.reset())
+// The focused tile's activity, for the Files pane's Touched section (design 4e): what its connection replays and reports.
+const focusActivity = ref<ActivityEntry[]>([])
+function onFocusWelcome(w: Welcome) {
+  editor.onWelcome(w)
+  focusActivity.value = []
+}
+function onFocusActivity(e: ActivityEntry) {
+  focusActivity.value = [...focusActivity.value.slice(-199), e]
+}
+watch(
+  () => focused.value?.id,
+  () => {
+    editor.reset()
+    focusActivity.value = []
+  },
+)
 
 function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
   if (!focusTerminal.value) return Promise.reject(new Error('terminal not ready'))
@@ -207,7 +222,8 @@ onMounted(() => {
             :key="focused.id"
             ref="focusTerminal"
             :create-transport="transportFor(focused)"
-            @welcome="editor.onWelcome"
+            @welcome="onFocusWelcome"
+            @activity="onFocusActivity"
             @nvim="editor.onNvim"
             @viewers="viewers = $event.count"
             @transport="transport = $event"
@@ -225,7 +241,7 @@ onMounted(() => {
         </div>
         <aside v-if="focused" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-md border border-default bg-default" data-files-aside>
           <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted"><UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files</div>
-          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
+          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
         </aside>
       </div>
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">

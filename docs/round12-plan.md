@@ -7,6 +7,13 @@ Asked on 2026-10-08, from the design screens 4a–4g and 5a–5c in
 line"). One place for everything about the files an agent works on, so
 nobody leaves Conductor for an editor, a git client or a file manager.
 
+**Status (2026-10-09): done.** F1–F4 landed on 2026-10-08 (PRs #58–#62),
+F8 Neovim (#63), F5 Commits (#64), F6 Editing (#65), F7 Comment on a line
+(#66) and the remainder (the Explorer's find past unopened folders, Touched
+on the Yard and the guest page, Neovim's byte columns) on 2026-10-09. What
+is set aside is in `docs/tasks-todo.md` under "The Files tab, after round
+12"; each layer's decisions and checks are in `docs/features.md`.
+
 **Decisions (2026-10-08):**
 
 - **The editor is Monaco** (the VS Code editor core), chosen by the owner

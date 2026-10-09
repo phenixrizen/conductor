@@ -889,6 +889,29 @@ waiting on monaco-neovim-wasm's missing license.
   `comments.spec.ts` (select, Comment, the card; Ctrl+Shift+A, the marker,
   the location typed into the agent; the lines moved on disk, the note,
   Open at the new range).
+- **Round 12's remainder (2026-10-09).** The Explorer's filter reaches
+  folders not opened yet: a fifth file operation, `op: find`, walks the
+  working directory on the session's machine (at most 20,000 entries,
+  3 s, 200 matches, `.git` and `node_modules` left out, the deny list
+  checked on every folder and match) for files whose name holds the
+  words, and the pane lists them under the tree, "In folders not opened
+  yet", a row opening the file. Touched shows on the Yard's focused tile
+  and the guest page too (their terminal's activity). Under the Neovim
+  keymap the cursor sits right on lines with multibyte characters
+  (Neovim's byte columns made UTF-16 ones, `byteColToUtf16`), and a
+  bug found on the way: after each key the bridge asked for the cursor
+  with an eval, which cancelled a command waiting for its next key, so
+  `gg`, `f<char>` and the like sent a key at a time (as a browser sends
+  them) did nothing and could hang the bridge; it now asks
+  `nvim_get_mode` first and skips the eval while Neovim waits. Set aside,
+  with their reasons, in the todo: a local echo for insert mode, input
+  methods and dead keys under the Neovim keymap, the swap-file prompt,
+  Touched before the replay's 50 entries, files from more agents. Tests:
+  the find (names below, any case, the skips, the deny list, the bound),
+  `gg` then `ft` a key at a time against the real Neovim, vitest for the
+  found rows and the byte columns, Playwright `files-more.spec.ts` (the
+  find past an unopened folder, node_modules left out, the file opened;
+  Touched on the Yard's tile) and `vim.spec.ts` (the cursor past an é).
 - **F8, Neovim in the editor (the real one, on the session's machine).**
   Chosen on 2026-10-08 over monaco-neovim-wasm (no license: public code
   without one grants viewing and forking on GitHub, not redistribution)

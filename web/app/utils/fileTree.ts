@@ -127,3 +127,19 @@ export function crumbsOf(cwd: string): Array<{ label: string; path: string }> {
   }
   return out.length ? out : [{ label: '/', path: '/' }]
 }
+
+/**
+ * The Explorer's filter beyond what is loaded (design round 12): the files a `find` reply found, absolute, not already drawn in the
+ * tree, with their folder and name for the row.
+ */
+export function foundRows(base: string, matches: readonly string[], drawn: ReadonlySet<string>): Array<{ abs: string; dir: string; name: string }> {
+  const root = base.replace(/\/+$/, '')
+  const out: Array<{ abs: string; dir: string; name: string }> = []
+  for (const m of matches) {
+    const abs = `${root}/${m}`
+    if (drawn.has(abs)) continue
+    const i = m.lastIndexOf('/')
+    out.push({ abs, dir: i >= 0 ? m.slice(0, i + 1) : '', name: i >= 0 ? m.slice(i + 1) : m })
+  }
+  return out
+}

@@ -110,7 +110,26 @@ func TestEditorAgainstTheRealNeovim(t *testing.T) {
 	if string(b) != "hello <worldline two\nline three\n" {
 		t.Fatalf("written file: %q", b)
 	}
-	e.Input(":q<CR>")
+	// Two-key commands sent a key at a time, as a browser sends them: gg, then f and its character.
+	e.Input("ggOone two<Esc>G")
+	for _, k := range []string{"g", "g", "0", "f", "t"} {
+		if err := e.Input(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var col int
+	for i := 0; i < 50; i++ {
+		var pos []int
+		if err := e.v.Eval("[line('.'), col('.')]", &pos); err == nil && len(pos) == 2 && pos[0] == 1 && pos[1] == 5 {
+			col = pos[1]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if col != 5 {
+		t.Fatal("gg then ft, a key at a time, did not land on the t of two")
+	}
+	e.Input(":q!<CR>")
 	select {
 	case <-r.done:
 	case <-time.After(5 * time.Second):

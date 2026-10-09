@@ -322,6 +322,11 @@ so. The status and the base's version come over the terminal's connection
 like a read, from the machine the session runs on, under the same file
 policy and deny list.
 
+The box at the top of the Explorer filters the tree as you type, and
+reaches folders you have not opened: a search on the session's machine
+lists the matching files below the tree under "In folders not opened yet"
+(`.git` and `node_modules` are left out).
+
 The **Touched** section lists the files the agent read, edited, wrote or
 deleted, newest first, each with the tool, the agent and the time, and the
 Explorer marks them with a dot. The events come from the agent's own hooks:

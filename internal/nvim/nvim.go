@@ -256,6 +256,12 @@ func (e *Editor) Input(keys string) error {
 		}
 		return ErrClosed
 	}
+	// A command waiting for its next key (the second g of gg, f's
+	// character) is cancelled by an eval: nvim_get_mode is answered without
+	// touching it and says so; the autocmd reports the cursor once it moves.
+	if m, err := e.v.Mode(); err != nil || m.Blocking {
+		return nil
+	}
 	var pos []interface{}
 	if err := e.v.Eval("[line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2]]", &pos); err == nil && len(pos) == 5 {
 		e.h.Cursor(toInt(pos[0]), toInt(pos[1]), fmt.Sprint(pos[2]), toInt(pos[3]), toInt(pos[4]))

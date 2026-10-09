@@ -40,3 +40,15 @@ describe('linesEdit', () => {
     expect(editText('a\nb', { first: 5, last: 9, lines: ['c'] })).toBe('a\nb\nc')
   })
 })
+
+describe('Neovim\'s byte columns', () => {
+  it('become Monaco\'s columns past multibyte characters', async () => {
+    const { byteColToUtf16 } = await import('./nvimLines')
+    expect(byteColToUtf16('hello', 3)).toBe(3)
+    expect(byteColToUtf16('héllo', 4)).toBe(3) // h, é (2 bytes): the first l is byte 4
+    expect(byteColToUtf16('😀a', 5)).toBe(3) // the emoji is 4 bytes and 2 UTF-16 units
+    expect(byteColToUtf16('日本語', 7)).toBe(3)
+    expect(byteColToUtf16('', 1)).toBe(1)
+    expect(byteColToUtf16('ab', 9)).toBe(3)
+  })
+})

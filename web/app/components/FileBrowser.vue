@@ -3,7 +3,7 @@ import type { ActivityEntry, FileEntry, FileHeader, FileRequester } from '~/util
 import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
 import { commitAgo, commitChangeRows, commitRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
 import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
-import { crumbsOf, findNode, looksLikePath, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
+import { crumbsOf, findNode, foundRows, looksLikePath, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
 
 export interface FileTarget {
@@ -189,6 +189,29 @@ const title = computed(() => {
 })
 
 const rows = computed(() => (root.value ? visibleRows(root.value, query.value) : []))
+// The filter reaches folders not opened yet: a find on the session's machine, a moment after typing stops, lists the files below
+// whose name holds the words and the tree does not draw.
+const found = ref<FileHeader | null>(null)
+let findTimer: number | undefined
+let findSeq = 0
+watch(query, (q) => {
+  window.clearTimeout(findTimer)
+  const words = q.trim()
+  if (!words || looksLikePath(words) || !props.cwd) {
+    found.value = null
+    return
+  }
+  const seq = ++findSeq
+  findTimer = window.setTimeout(async () => {
+    try {
+      const res = await props.request(words, false, { op: 'find' }) // the words ride as the path; the session's working directory is the root
+      if (seq === findSeq) found.value = res.header.kind === 'find' ? res.header : null
+    } catch {
+      if (seq === findSeq) found.value = null
+    }
+  }, 300)
+})
+const foundBelow = computed(() => (found.value && query.value.trim() ? foundRows(found.value.path, found.value.matches ?? [], new Set(rows.value.map((n) => n.path))) : []))
 
 /** The breadcrumb: the working directory from the top; in file mode, on down to the file. */
 const crumbs = computed(() => {
@@ -638,7 +661,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
           <UButton label="Retry" size="xs" color="neutral" variant="soft" @click="loadRoot" />
         </div>
         <ul v-else class="py-1" data-files-tree>
-          <li v-if="root && !rows.length" class="px-4 py-3 text-sm text-muted">{{ query ? 'Nothing matches' : 'Empty directory' }}</li>
+          <li v-if="root && !rows.length && !foundBelow.length" class="px-4 py-3 text-sm text-muted">{{ query ? 'Nothing matches' : 'Empty directory' }}</li>
           <template v-for="n in rows" :key="n.path">
             <li>
               <button
@@ -661,6 +684,17 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
             </li>
             <li v-if="n.dir && n.expanded && n.loaded && !n.children.length && !query" class="py-1 text-xs text-muted" :style="{ paddingLeft: `${12 + (n.depth + 1) * 14 + 20}px` }" :data-file-empty="n.path">Empty directory</li>
             <li v-if="n.dir && n.expanded && n.error" class="py-1 text-xs text-warning" :style="{ paddingLeft: `${12 + (n.depth + 1) * 14 + 20}px` }">{{ n.error }}</li>
+          </template>
+          <template v-if="foundBelow.length">
+            <li class="mt-1 border-t border-default px-3 pb-0.5 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted" data-files-found-head>In folders not opened yet</li>
+            <li v-for="f in foundBelow" :key="f.abs">
+              <button type="button" class="flex w-full items-center gap-1.5 px-3 py-1 text-left text-sm hover:bg-elevated" :data-file-found="f.abs" @click="openFile({ path: f.abs })">
+                <UIcon name="i-lucide-file" class="size-4 flex-none text-muted" />
+                <span class="min-w-0 flex-1 truncate font-mono"><span class="text-muted">{{ f.dir }}</span>{{ f.name }}</span>
+              </button>
+            </li>
+            <li v-if="found?.truncated" class="px-3 py-1 text-[11px] text-muted">The search stopped early; type more to narrow it.</li>
+            <li class="px-3 py-1 text-[11px] text-muted">.git and node_modules are not searched.</li>
           </template>
         </ul>
       </template>
