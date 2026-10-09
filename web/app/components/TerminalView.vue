@@ -376,8 +376,8 @@ function nvimOpen(path: string): Promise<NvimEvent> {
   if (!transport) return Promise.reject(new Error('not connected'))
   return transport.nvimOpen(path)
 }
-function nvimInput(id: string, keys: string): void {
-  transport?.nvimInput(id, keys)
+function nvimInput(id: string, keys: string, seq?: number): void {
+  transport?.nvimInput(id, keys, seq)
 }
 function nvimSwap(id: string, choice: NvimSwapChoice): void {
   transport?.nvimSwap(id, choice)

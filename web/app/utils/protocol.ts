@@ -568,7 +568,8 @@ export interface NvimBridge {
   /** The welcome arrived, the machine has nvim, and this connection may edit. */
   offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; machine?: string }
   open(path: string): Promise<NvimEvent>
-  input(id: string, keys: string): void
+  /** Keys for editor id; seq, when given, comes back as the `ack` of the cursor once Neovim has handled them (round 13, G5). */
+  input(id: string, keys: string, seq?: number): void
   close(id: string): void
   /** Answers the swap file the editor found (round 13, G3). */
   swap(id: string, choice: NvimSwapChoice): void
@@ -586,6 +587,8 @@ export interface NvimInput {
   t: 'nvim_input'
   id: string
   keys: string
+  /** The page's number for these keys, rising (round 13, G5). */
+  seq?: number
 }
 export interface NvimClose {
   t: 'nvim_close'
@@ -633,6 +636,8 @@ export interface NvimEvent {
   visualCol?: number
   /** A `swap` event's swap file. */
   swap?: NvimSwapInfo
+  /** On a `cursor` event: Neovim has handled the keys of this seq and every one before, their line changes sent already (round 13, G5). */
+  ack?: number
   show?: boolean
   content?: string
   pos?: number

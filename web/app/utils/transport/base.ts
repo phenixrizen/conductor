@@ -107,9 +107,9 @@ export abstract class BaseTransport implements TerminalTransport {
       this.send(encodeControl({ t: 'nvim_open', reqId, path }))
     })
   }
-  nvimInput(id: string, keys: string): void {
+  nvimInput(id: string, keys: string, seq?: number): void {
     if (this.state.value !== 'open') return
-    this.send(encodeControl({ t: 'nvim_input', id, keys }))
+    this.send(encodeControl(seq ? { t: 'nvim_input', id, keys, seq } : { t: 'nvim_input', id, keys }))
   }
   nvimSwap(id: string, choice: NvimSwapChoice): void {
     if (this.state.value !== 'open') return

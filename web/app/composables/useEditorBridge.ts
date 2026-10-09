@@ -4,7 +4,7 @@ import type { FileResponse, FileWriteOptions, NvimBridge, NvimEvent, NvimSwapCho
 /** What a page's terminal offers the editor: Neovim (F8) and saves (F6), over its connection. */
 export interface EditorTerminal {
   nvimOpen: (path: string) => Promise<NvimEvent>
-  nvimInput: (id: string, keys: string) => void
+  nvimInput: (id: string, keys: string, seq?: number) => void
   nvimClose: (id: string) => void
   nvimSwap: (id: string, choice: NvimSwapChoice) => void
   writeFile: (path: string, data: Uint8Array, opts?: FileWriteOptions) => Promise<FileResponse>
@@ -32,7 +32,7 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
   const nvim = computed<NvimBridge>(() => ({
     offer: offer.value,
     open: (path: string) => (terminal.value ? terminal.value.nvimOpen(path) : Promise.reject(new Error('terminal not ready'))),
-    input: (id: string, keys: string) => terminal.value?.nvimInput(id, keys),
+    input: (id: string, keys: string, seq?: number) => terminal.value?.nvimInput(id, keys, seq),
     close: (id: string) => terminal.value?.nvimClose(id),
     swap: (id: string, choice: NvimSwapChoice) => terminal.value?.nvimSwap(id, choice),
     subscribe: (cb) => {

@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
 
@@ -200,6 +200,64 @@ test('text with no key press, a dead key\'s character and an input method\'s wor
     await page.keyboard.press('Enter')
     await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('café 日本 end\n')
   } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// Round 13, G5: the local echo. Neovim here is slow on purpose (its config,
+// in the server's home for this test alone, busy-waits 300 ms on each typed
+// character), so what shows at once is the page's guess: plain characters
+// in insert mode, marked while Neovim has not handled them, then settled
+// with nothing doubled. An autopair (the config maps ( to ()<Left>) is not
+// the guess: Neovim's text wins once, and guessing stops in that insert.
+test('typing in insert mode shows at once and settles as Neovim has it; an autopair corrects once', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(
+    join(config, 'init.lua'),
+    // A busy wait, as a slow link is: Neovim answers nothing meanwhile (:sleep would let it answer requests mid-key).
+    "local uv = vim.uv or vim.loop\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() local t = uv.hrtime() while uv.hrtime() - t < 3e8 do end end })\nvim.keymap.set('i', '(', '()<Left>')\n",
+  )
+  const cwd = join(state.root, 'files-echo')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'end\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'echo', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    await lines.click()
+    await page.keyboard.type('I')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // Three characters: Neovim needs 900 ms for them; the page shows them at once, marked.
+    await page.keyboard.type('abc')
+    await expect(lines).toContainText('abcend', { timeout: 250 })
+    await expect(area.locator('.nvim-guess')).not.toHaveCount(0)
+    // Settled: the marks go, nothing is doubled.
+    await expect(area.locator('.nvim-guess')).toHaveCount(0, { timeout: 10_000 })
+    await expect(lines).toContainText('abcend')
+    await expect(lines).not.toContainText('abcabc')
+    // The autopair: the guess "(" becomes Neovim's "()" once; the next character is Neovim's, between the two.
+    await page.keyboard.type('(')
+    await expect(lines).toContainText('abc()end', { timeout: 10_000 })
+    await page.keyboard.type('x')
+    await expect(lines).toContainText('abc(x)end', { timeout: 10_000 })
+    await expect(area.locator('.nvim-guess')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('', { timeout: 10_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('abc(x)end\n')
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)
   }
 })

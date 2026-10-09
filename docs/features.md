@@ -800,6 +800,36 @@ tool, and Conductor offered it as Goose.
   reads "café 日本 end", the composition never typed, no read-only message,
   `:w` writes it). By hand, not yet done: a real input method and a dead-key
   layout in the Windows app.
+- **G5, the local echo in insert mode.** Every key round-tripped to the
+  session's machine before it showed. Now each `nvim_input` carries a
+  number, and once Neovim has handled the keys (and is not waiting for a
+  command's next key) the bridge has Neovim `rpcnotify` an acknowledgement
+  carrying the cursor, on the channel the buffer's changes ride, so it comes
+  after them; the Go client runs notifications in order on one goroutine.
+  In insert mode the page shows a plain character at once, laid over
+  Neovim's line at the cursor, and holds a line change that comes while
+  guesses show until its acknowledgement, so the two settle at once: the
+  guesses the line holds are dropped, the rest laid over the new line.
+  Found by the test: an acknowledgement can run early, because Neovim
+  answers requests in the middle of a key when it waits (`:sleep`,
+  `vim.wait`), and it covers later keys when those were handled too; so a
+  page settles by the longest run of guesses Neovim's line holds, not by the
+  number. A line Neovim made differently (an autopair, an abbreviation, a
+  mapping) wins once and guessing stops until insert mode is left; a key
+  that is not a plain character ends the guesses until it is handled; a
+  held change shows as it is after 250 ms. A guess still pending after
+  100 ms is underlined (a CSS animation delay, no timer), as the owner's
+  choice of "always on" asked for nothing to configure. Tests: Go, the
+  acknowledgement after the lines holding the typed text and none while
+  `g` waits for its second key, against the real Neovim; vitest for the
+  echo (guess, settle, a wrong guess, a key that ends the guesses, a
+  timeout, an early and a late acknowledgement, a move of Neovim's own);
+  Playwright `vim.spec.ts` with a Neovim config that busy-waits 300 ms per
+  typed character and maps `(` to an autopair: "abc" shows within 250 ms,
+  marked, settles undoubled, the autopair corrects once, the next
+  character is Neovim's, `:w` writes "abc(x)end" (five runs out of five).
+  By hand, not yet done: typing over the switchyard from the LAN box and a
+  phone.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

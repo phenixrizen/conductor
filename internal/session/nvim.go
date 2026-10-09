@@ -147,7 +147,7 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if !ok {
 		return ErrTooManyRequests
 	}
-	return e.ed.Input(req.Keys)
+	return e.ed.InputSeq(req.Keys, req.Seq)
 }
 
 // NvimClose ends one of sub's editors.
@@ -233,6 +233,9 @@ func (h *nvimHandler) Written(path string) {
 func (h *nvimHandler) Buffer(path string) {
 	h.e.path = path
 	h.emit(proto.NvimEvent{Kind: proto.NvimOpened, Path: path})
+}
+func (h *nvimHandler) Ack(seq uint32, line, col int, mode string, vl, vc int) {
+	h.emit(proto.NvimEvent{Kind: proto.NvimCursor, Line: line, Col: col, Mode: mode, VisualLine: vl, VisualCol: vc, Ack: seq})
 }
 func (h *nvimHandler) Swap(sw nvim.Swap) {
 	info := &proto.NvimSwapInfo{File: sw.File, Pid: sw.Pid, Running: sw.Running, User: sw.User, Host: sw.Host, Modified: sw.Modified}

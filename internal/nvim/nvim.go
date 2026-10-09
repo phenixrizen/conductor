@@ -43,6 +43,10 @@ type Handler interface {
 	// Swap says the file has another editor's swap file: Neovim opened it
 	// read-only (round 13, G3); SwapChoice answers.
 	Swap(s Swap)
+	// Ack says Neovim has handled the keys of InputSeq's seq and every one
+	// before, with the cursor and the mode after them (round 13, G5). It
+	// comes after every buffer change those keys made.
+	Ack(seq uint32, line, col int, mode string, visualLine, visualCol int)
 }
 
 // Swap is another editor's swap file for the file opened, as swapinfo()
@@ -90,6 +94,8 @@ type Editor struct {
 	cmdContent, cmdPrompt string
 	// swap is the last swap file found, for SwapChoice; guarded by mu.
 	swap *Swap
+	// ch is the client's channel in Neovim, which rpcnotify answers on.
+	ch int
 }
 
 // ErrClosed is returned by Input once the editor is gone.
@@ -117,6 +123,7 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		return nil, err
 	}
 	ch := v.ChannelID()
+	e.ch = ch
 	for _, cmd := range []string{
 		fmt.Sprintf("autocmd CursorMoved,CursorMovedI * call rpcnotify(%d, 'conductor_cursor', line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", ch),
 		fmt.Sprintf("autocmd BufWritePost * call rpcnotify(%d, 'conductor_written', expand('<afile>:p'))", ch),
@@ -228,6 +235,14 @@ func (e *Editor) register() error {
 	}); err != nil {
 		return err
 	}
+	if err := v.RegisterHandler("conductor_ack", func(args ...interface{}) {
+		if len(args) < 6 {
+			return
+		}
+		e.h.Ack(uint32(toInt(args[0])), toInt(args[1]), toInt(args[2]), fmt.Sprint(args[3]), toInt(args[4]), toInt(args[5]))
+	}); err != nil {
+		return err
+	}
 	if err := v.RegisterHandler("conductor_swap", func(args ...interface{}) {
 		if len(args) < 2 {
 			return
@@ -306,7 +321,15 @@ func (e *Editor) Lines() ([]string, error) {
 
 // Input sends keys (Neovim notation) and then reports the cursor and the
 // mode, so a mode entered without moving (`v`, `i`) shows at once.
-func (e *Editor) Input(keys string) error {
+func (e *Editor) Input(keys string) error { return e.InputSeq(keys, 0) }
+
+// InputSeq is Input with the page's number for these keys (round 13, G5):
+// with one, the cursor comes back as Ack once Neovim has handled them, on
+// the channel the buffer's changes ride and so after them, which is how a
+// page that showed the keys at once knows which of its guesses the buffer
+// now holds. While Neovim waits for a command's next key nothing is
+// acknowledged; the next keys' Ack covers these.
+func (e *Editor) InputSeq(keys string, seq uint32) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
@@ -320,6 +343,10 @@ func (e *Editor) Input(keys string) error {
 	// character) is cancelled by an eval: nvim_get_mode is answered without
 	// touching it and says so; the autocmd reports the cursor once it moves.
 	if m, err := e.v.Mode(); err != nil || m.Blocking {
+		return nil
+	}
+	if seq != 0 {
+		_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))
 		return nil
 	}
 	var pos []interface{}

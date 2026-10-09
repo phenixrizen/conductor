@@ -1,6 +1,13 @@
 # Round 13 plan: the five Files items round 12 left undone
 
-Asked on 2026-10-09; decided the same day. Round 12 (`docs/round12-plan.md`) closed with five
+Asked on 2026-10-09; decided the same day.
+
+**Status (2026-10-09): built.** G0 (#68), G1 (#69), G2a (#70), G2b (#71),
+G2c (#72), G3 (#73), G4 (#74) and G5 merged or in review the same day.
+Left open: Goose's files (its real CLI is not on the owner's machine),
+whether Codex's hook trust lasts past a session, the Pebble test's port
+race, and the by-hand checks (a real input method and dead keys in the
+Windows app, typing over the switchyard from the LAN box and a phone). Round 12 (`docs/round12-plan.md`) closed with five
 items written into `docs/tasks-todo.md` instead of built. This round builds
 them. Each layer is its own PR from main, merged before the next; never a
 stack. Each ships with a Go test, a vitest test and a Playwright spec.
@@ -219,8 +226,8 @@ Neovim's side acknowledges in order with its line updates, as mosh does.
   a next key, the bridge asks Neovim to `rpcnotify` an `ack` with that
   number. The ack travels the same channel, after the line updates the keys
   caused, and the bridge forwards both in that order.
-- The browser predicts only in insert and replace mode, only plain
-  printable characters. It keeps Neovim's confirmed text and lays the
+- The browser predicts only in insert mode, only plain printable
+  characters. It keeps Neovim's confirmed text and lays the
   unacknowledged characters over it at the cursor. A line update replaces
   the confirmed text; an ack drops the predictions it covers.
 - When an ack shows a prediction was wrong (an autopair, an abbreviation, a

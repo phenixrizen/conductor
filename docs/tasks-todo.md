@@ -157,12 +157,6 @@ Every layer of round 12 landed on 2026-10-08 and 2026-10-09
 the Monaco editor, Changes, Touched, Commits, editing, comments on lines
 and the Neovim keymap. What is set aside:
 
-- **Neovim: typing in insert mode round-trips to the machine before it
-  shows.** A local echo would show a key at once, but nothing ties
-  Neovim's line updates to the keys that caused them, so over a slow link
-  the echoed text snaps back and forth (an autopair or an abbreviation
-  makes it worse). It needs a reconciliation design (a key counter Neovim
-  acknowledges, say) before it is worth building.
 - **Goose's files:** the Goose mapper reads the tool's name only; its
   payload's arguments wait for a run of the real Goose CLI (the `goose` on
   the owner's machine is the Go migrations tool, round 13 G0).
