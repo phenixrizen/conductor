@@ -179,6 +179,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		OnActivity:      a.onLocalActivity,
 		OnChat:          a.onLocalChat,
 		Pattern:         opts.Pattern,
+		WatchGit:        true,
 	})
 	a.mu.Lock()
 	a.local, a.proc = local, proc

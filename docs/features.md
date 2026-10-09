@@ -702,6 +702,25 @@ tool, and Conductor offered it as Goose.
   grouping and merging; Playwright `touched.spec.ts` (sixty files reported
   before the page opens all listed, past the replay, one with "2 times"),
   and `saving.spec.ts` ten runs out of ten.
+- **G2a, files seen by git, for every agent.** A file an agent changed
+  with no hook naming it (a shell redirect, a generator, an agent whose
+  hooks report no paths) now reaches Touched. A server or `conductor host`
+  session in a git work tree snapshots `git status` when it starts (what is
+  dirty then is not the agent's) and looks again 1.5 s after a tool call or
+  an attention change, a burst being one look; each file whose status, size
+  or time moved, and that no other file entry named meanwhile (a hook's, an
+  editor save), becomes a file entry with the tool `git`, worded "seen by
+  git" in Touched, Activity and the feed: write for a new untracked file,
+  delete for one gone, edit otherwise, nothing for a file only committed;
+  at most 32 a look. A light status call (`gitcli.Porcelain`, no line
+  counts) shares its parser with the Changes section's. Reads cannot be
+  seen this way; the agents' own reads come with G2b. Tests: the comparison
+  table (new, edited, deleted, committed, put back, a hook's file skipped)
+  and a real repository (a generated file and an edited one seen, a hook's
+  file and a file dirty before the session not, a later removal seen, a
+  plain directory not watched) in Go; vitest for the words; Playwright
+  `touched.spec.ts` (a file written with only a tool call reported shows
+  as seen by git, the README dirty before the session does not).
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

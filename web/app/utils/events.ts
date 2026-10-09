@@ -369,6 +369,11 @@ export function fileOpWords(op?: string): string {
   return 'touched'
 }
 
+/** How a file event was learned, for its line: the agent's tool as it names it, or "seen by git" for a file the session found changed in git with no hook naming it (round 13, G2a). */
+export function fileToolWords(tool?: string): string {
+  return tool === 'git' ? 'seen by git' : (tool ?? '')
+}
+
 /** What an entry says beyond its type, for one line of the feed or a tooltip. The URL of an artifact is rendered on its own. */
 export function eventDetail(e: ActivityEntry): string {
   const msg = e.message ?? ''
@@ -382,7 +387,7 @@ export function eventDetail(e: ActivityEntry): string {
     case 'error':
       return [e.tool, msg].filter(Boolean).join(': ')
     case 'file':
-      return `${fileOpWords(e.op)} ${e.path ?? ''}${e.tool ? ` · ${e.tool}` : ''}`.trim()
+      return `${fileOpWords(e.op)} ${e.path ?? ''}${e.tool ? ` · ${fileToolWords(e.tool)}` : ''}`.trim()
   }
   return msg
 }

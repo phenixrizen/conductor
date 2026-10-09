@@ -82,30 +82,80 @@ argument fields were never seen from a real run. Copilot 1.0.91 and agy
   reported in that window is not added twice, and an editor save is not
   counted as the agent's. This covers shell writes by every agent,
   Claude's Bash included. Reads cannot be seen this way.
-- **Codex's shell reads and writes.** Parse the shell command of Codex's
-  PostToolUse conservatively: split on `|`, `&&`, `;`; skip anything with
-  `$(` or backticks; `cat`, `head`, `tail`, `sed -n`, `nl`, `bat`, `less`
-  name reads; `> file`, `>> file` and `tee file` name writes. Keep only
-  paths that exist as regular files under the working directory (notify
-  runs on the session's machine and can check); at most 32 per call.
 
-*G2b, from real payloads:*
-- Run Copilot, agy and Codex once each (Goose once its CLI is here) in the scratch repo
-  `/tmp/conductor-live/c2` with a hook that saves the raw payload, on a
-  prompt that reads a file, writes one and edits it. Each runs from a
-  throwaway config home (copying only the login file), so the person's own
-  agent config is never edited; Codex's `features.hooks` is turned on there.
-  This spends a few cents on the owner's accounts.
-- Map each agent's argument fields to file events. The captured payloads,
-  with anything personal removed, become the mapper tests' fixtures. agy's
-  mapper reads `toolCall.name` today; the capture shows whether its
-  arguments carry a path.
+*G2b, from real payloads (captured 2026-10-09):* Codex 0.161, Copilot
+1.0.91 and agy 1.2.14 each ran once in a scratch repository with a hook
+that saved every payload, from a throwaway config home holding a copy of
+its login (deleted afterwards). The payloads, redacted, are the fixtures in
+`internal/notify/testdata/`. What they showed:
+
+- **Codex's apply_patch files were never reported.** The patch arrives in
+  `tool_input.command`; the mapper read `input` or `patch`. Its shell tool
+  is `Bash` with `tool_input.command` a string (the old test assumed
+  `shell` with an argv).
+- **Codex runs hooks only once they are trusted.** `codex exec` skips
+  untrusted hooks silently, and the interactive Codex opens on a "Hooks
+  need review" question (1. Review hooks, 2. Trust all and continue, 3.
+  Continue without trusting) whenever its hooks are new or changed, which
+  Conductor's install makes them. Enter there picks Review hooks: a crew
+  member's prompt typed at launch would land in the review screen, the
+  same class of bug as the trust question fixed in round 12. A digit only
+  moves the highlight; Enter confirms. Where Codex keeps the trust was not
+  found (not in `config.toml`, not in its databases), and one trust in a
+  throwaway home did not make `codex exec` run the hooks afterwards, so
+  whether the answer lasts past one session is open. This is its own
+  layer, G2c, below.
+- **Copilot's arguments are an object** (`toolArgs`), not a JSON string:
+  `view` and `edit` carry `path`, `create` too, `bash` a `command` string.
+- **agy never ran Conductor's hooks.** agy reads
+  `~/.gemini/config/hooks.json`, but a `Stop` entry must be a plain command
+  hook, not a matcher group; Conductor's file puts Stop in a matcher group,
+  agy rejects the whole "conductor" hook ("command hook must specify
+  'command'", in its log). The tool events keep the matcher form. Payloads:
+  `toolCall.name` and `toolCall.args`: `view_file` (`AbsolutePath`) reads,
+  `write_to_file` (`TargetFile`) writes, `replace_file_content`,
+  `multi_replace_file_content` and `edit_file` (`TargetFile`) edit,
+  `delete_file` deletes, `run_command` (`CommandLine`, `Cwd`) runs a shell
+  command.
+- **Shell commands, for Codex, Copilot and agy alike:** parse the command
+  conservatively: split on `|`, `&&`, `;`; skip anything with `$(` or
+  backticks; `cat`, `head`, `tail`, `sed -n`, `nl`, `bat`, `less` name
+  reads; `> file`, `>> file` and `tee file` name writes. Keep only paths
+  that exist as regular files under the working directory (notify runs on
+  the session's machine and can check); at most 32 per call.
+- Goose waits for its real CLI (G0).
 
 **Tests.** Go: the git snapshot diff (write, edit, delete, a hook's path not
 doubled, a non-repository skipped), the shell parser table, each mapper
 against its fixture. Vitest: the `git` tool's words on a row. Playwright: a
 stub that writes a file through its shell with no file report shows it in
 Touched as seen by git.
+
+## G2c. Codex's "Hooks need review" question
+
+**Found by the G2b capture (2026-10-09).** See above. Codex draws the
+question at startup whenever its hooks are new or changed; Conductor knows
+one startup question per agent (`trustPrompt` with its `trustAnswers`), and
+Codex's is the folder trust question.
+
+**Build.**
+- The catalog takes more than one startup question per agent: a list of
+  `{prompt, answers}`, the existing `trustPrompt`/`trustAnswers` its first
+  entry, so saved agents keep working. Codex's built-in entry gains "Hooks
+  need review" with the answers Trust all and continue (`2` then Enter) and
+  Continue without trusting (`3` then Enter).
+- The session watches the screen for each, as it does the trust question:
+  attention `needs_input` of kind `trust` with that question's answers as
+  choices, typed text and Submit refused while it shows, a crew member's
+  prompt held until it is answered.
+- Verify live, in a throwaway Codex home, whether trusting lasts past one
+  session; the Agents page's Codex status says so either way.
+
+**Tests.** Go: two questions on one agent, each answer, the refusal while
+the second shows, the catalog's old fields still read. Vitest: the choices.
+Playwright: a stub (`STUB_HOOKS_REVIEW=1`) that draws Codex's question;
+the choices show, typing is refused, Trust all and continue lets the
+prompt through.
 
 ## G3. Neovim: a swap file opens read-only with a choice, not a refusal
 
@@ -188,7 +238,7 @@ switchyard from the LAN box and a phone.
 
 ## Order and decisions
 
-Order: G0, G1, G2a, G2b, G3, G4, G5. G0 is a small fix that changes what
+Order: G0, G1, G2a, G2b, G2c, G3, G4, G5. G0 is a small fix that changes what
 G2b can capture. G1 comes before G2 because G2's new file events land in
 it. G5 is last because it is the largest and touches the protocol.
 

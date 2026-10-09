@@ -25,6 +25,8 @@ describe('the Touched section', () => {
     expect(touchedWords(row)).toMatch(/^Edit · codex · \d{2}:\d{2}:\d{2}$/)
     expect(touchedWords({ ...row, tool: '', by: '' })).toMatch(/^edit · \d{2}:\d{2}:\d{2}$/)
     expect(touchedWords({ ...row, count: 4 })).toMatch(/^Edit · codex · \d{2}:\d{2}:\d{2} · 4 times$/)
+    // A file the session found changed in git, with no hook naming it (round 13, G2a).
+    expect(touchedWords({ ...row, tool: 'git', by: 'agent' })).toMatch(/^seen by git · agent · \d{2}:\d{2}:\d{2}$/)
   })
 })
 
