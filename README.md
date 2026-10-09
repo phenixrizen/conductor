@@ -384,7 +384,11 @@ open is held by the real Neovim on the machine that runs the session (your
 own config and plugins), shown in Monaco. Every key goes to Neovim; the
 status line under the tabs shows the mode, the command line as you type it
 and Neovim's messages; `:w` writes the file there (a file event by you, so
-Changes and Touched follow) and `:q` closes the tab. The choice is kept per
+Changes and Touched follow) and `:q` closes the tab. A tab whose changes
+are not written yet wears a dot and keeps its Neovim while another tab is in
+front, so they are there when you come back; closing it asks first (**Save**
+writes through Neovim, **Don't save** drops them), and the keymap button
+waits until nothing is left unsaved. The choice is kept per
 browser and is off until chosen, so nobody who never asked for Vim keys
 meets one. It needs `nvim` on that machine (the button says when it is
 missing), control of the session, and the server's or host's `fileEdit`

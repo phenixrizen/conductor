@@ -47,6 +47,9 @@ type Handler interface {
 	// before, with the cursor and the mode after them (round 13, G5). It
 	// comes after every buffer change those keys made.
 	Ack(seq uint32, line, col int, mode string, visualLine, visualCol int)
+	// Modified says the buffer now holds changes not written (true) or no
+	// longer does (false: written, undone back, or another file shown).
+	Modified(modified bool)
 }
 
 // Swap is another editor's swap file for the file opened, as swapinfo()
@@ -128,6 +131,7 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		fmt.Sprintf("autocmd CursorMoved,CursorMovedI * call rpcnotify(%d, 'conductor_cursor', line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", ch),
 		fmt.Sprintf("autocmd BufWritePost * call rpcnotify(%d, 'conductor_written', expand('<afile>:p'))", ch),
 		fmt.Sprintf("autocmd VimLeavePre * call rpcnotify(%d, 'conductor_leaving')", ch),
+		fmt.Sprintf("autocmd BufModifiedSet * if str2nr(expand('<abuf>')) == bufnr() | call rpcnotify(%d, 'conductor_modified', &modified) | endif", ch),
 		// Another editor's swap file: open read-only instead of asking (the
 		// question would block the open), and say whose it is.
 		fmt.Sprintf("autocmd SwapExists * let v:swapchoice = 'o' | call rpcnotify(%d, 'conductor_swap', v:swapname, swapinfo(v:swapname))", ch),
@@ -217,6 +221,13 @@ func (e *Editor) register() error {
 	}); err != nil {
 		return err
 	}
+	if err := v.RegisterHandler("conductor_modified", func(args ...interface{}) {
+		if len(args) > 0 {
+			e.h.Modified(toInt(args[0]) != 0)
+		}
+	}); err != nil {
+		return err
+	}
 	if err := v.RegisterHandler("conductor_buffer", func(args ...interface{}) {
 		if len(args) == 0 {
 			return
@@ -231,6 +242,10 @@ func (e *Editor) register() error {
 		if changed {
 			e.h.Buffer(path)
 			e.sendWhole()
+			var modified int
+			if e.v.Eval("&modified", &modified) == nil {
+				e.h.Modified(modified != 0)
+			}
 		}
 	}); err != nil {
 		return err
@@ -439,6 +454,17 @@ func (e *Editor) SwapChoice(choice string) error {
 func (e *Editor) Close() {
 	e.closed.Store(true)
 	e.v.Close()
+}
+
+// Discard ends Neovim as `:qa!` does: changes not written are dropped and
+// its swap file goes. Close alone ends it as a lost connection does, which
+// keeps the swap file of a buffer with changes not written, for recovery.
+func (e *Editor) Discard() {
+	if !e.closed.Load() {
+		// Neovim exits inside the request, so the request itself fails.
+		_ = e.v.Command("qall!")
+	}
+	e.Close()
 }
 
 // onRedraw reads the UI events the bridge cares about: the mode, the

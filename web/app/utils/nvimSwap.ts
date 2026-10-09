@@ -8,6 +8,8 @@ export interface NvimViewState {
   messageKind: string
   swap: NvimSwapInfo | null
   recovered: boolean
+  /** The buffer holds changes not written: the tab wears its dot, and closing it asks first. */
+  modified: boolean
 }
 
 /**

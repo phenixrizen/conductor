@@ -37,6 +37,29 @@ func TestNvimMessageShapes(t *testing.T) {
 	if err := json.Unmarshal(ev, &back); err != nil || back.Kind != NvimCursor || back.Line != 3 {
 		t.Fatalf("round trip: %+v %v", back, err)
 	}
+	// The buffer's changes not written: the field only while there are some.
+	if m := mustJSON(t, NvimEvent{T: CtlNvimEvent, ID: "e1", Kind: NvimModified, Modified: true}); string(m) != `{"t":"nvim_event","id":"e1","kind":"modified","modified":true}` {
+		t.Fatalf("modified: %s", m)
+	}
+	if m := mustJSON(t, NvimEvent{T: CtlNvimEvent, ID: "e1", Kind: NvimModified}); string(m) != `{"t":"nvim_event","id":"e1","kind":"modified"}` {
+		t.Fatalf("not modified: %s", m)
+	}
+	// A close keeps the swap file unless it discards; an older owner reads
+	// the discard as a plain close.
+	if c := mustJSON(t, NvimClose{T: CtlNvimClose, ID: "e1"}); string(c) != `{"t":"nvim_close","id":"e1"}` {
+		t.Fatalf("close: %s", c)
+	}
+	c := mustJSON(t, NvimClose{T: CtlNvimClose, ID: "e1", Discard: true})
+	if string(c) != `{"t":"nvim_close","id":"e1","discard":true}` {
+		t.Fatalf("close discarding: %s", c)
+	}
+	var older struct {
+		T  string `json:"t"`
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(c, &older); err != nil || older.ID != "e1" {
+		t.Fatalf("an older owner's read: %+v %v", older, err)
+	}
 }
 
 // A big change is cut into events that each fit MaxControl, the first with

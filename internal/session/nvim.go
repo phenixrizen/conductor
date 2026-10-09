@@ -32,10 +32,28 @@ type nvimEditor struct {
 	gone   atomic.Bool
 	// ready gates the frames: nothing before `opened` is sent.
 	ready atomic.Bool
+	// ending ends Neovim once, however many ways ask (end).
+	ending sync.Once
 }
 
-// nvimOpen counts the editors open on the session.
-var nvimTotal atomic.Int32
+// end ends Neovim and reaps it, once: with discard as `:qa!` does, else as
+// a lost connection does. Neovim that quit on its own (`:q`) is let finish
+// its exit, which removes its swap files last, before it is reaped; the
+// context's cancel comes after, never during, so it is not killed halfway.
+func (e *nvimEditor) end(discard bool) {
+	e.ending.Do(func() {
+		if e.ed != nil {
+			if discard {
+				e.ed.Discard()
+			} else {
+				e.ed.Close()
+			}
+		}
+		if e.cancel != nil {
+			e.cancel()
+		}
+	})
+}
 
 // nvimAvailable is `nvim` on PATH, checked once a minute at most.
 var (
@@ -77,14 +95,14 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	if sub.nvims == nil {
 		sub.nvims = map[string]*nvimEditor{}
 	}
-	if len(sub.nvims) >= proto.MaxNvimPerSub || nvimTotal.Load() >= proto.MaxNvimPerSession {
+	if len(sub.nvims) >= proto.MaxNvimPerSub || s.nvimCount.Load() >= proto.MaxNvimPerSession {
 		sub.nvimMu.Unlock()
 		return ErrTooManyRequests
 	}
 	id := newNvimID()
 	e := &nvimEditor{id: id, path: target}
 	sub.nvims[id] = e
-	nvimTotal.Add(1)
+	s.nvimCount.Add(1)
 	sub.nvimMu.Unlock()
 	ectx, cancel := context.WithCancel(context.Background())
 	e.cancel = cancel
@@ -154,14 +172,16 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	return e.ed.InputSeq(req.Keys, req.Seq)
 }
 
-// NvimClose ends one of sub's editors.
+// NvimClose ends one of sub's editors: with Discard as `:qa!` does (the
+// person chose to drop the changes not written; the swap file goes), else as
+// a lost connection does (the swap file of changes not written stays).
 func (s *Local) NvimClose(sub *Subscription, req proto.NvimClose) {
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
 	sub.nvimMu.Unlock()
 	if e != nil {
 		e.gone.Store(true)
-		e.ed.Close()
+		e.end(req.Discard)
 		s.forgetNvim(sub, e)
 	}
 }
@@ -176,23 +196,20 @@ func (s *Local) closeNvims(sub *Subscription) {
 	sub.nvimMu.Unlock()
 	for _, e := range all {
 		e.gone.Store(true)
-		if e.ed != nil {
-			e.ed.Close()
-		}
+		e.end(false)
 		s.forgetNvim(sub, e)
 	}
 }
 
+// forgetNvim takes e off sub's editors and the session's count; ending it
+// is end's.
 func (s *Local) forgetNvim(sub *Subscription, e *nvimEditor) {
 	sub.nvimMu.Lock()
 	if _, ok := sub.nvims[e.id]; ok {
 		delete(sub.nvims, e.id)
-		nvimTotal.Add(-1)
+		s.nvimCount.Add(-1)
 	}
 	sub.nvimMu.Unlock()
-	if e.cancel != nil {
-		e.cancel()
-	}
 }
 
 // nvimHandler turns the editor's reports into frames for the subscription.
@@ -241,6 +258,9 @@ func (h *nvimHandler) Buffer(path string) {
 func (h *nvimHandler) Ack(seq uint32, line, col int, mode string, vl, vc int) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimCursor, Line: line, Col: col, Mode: mode, VisualLine: vl, VisualCol: vc, Ack: seq})
 }
+func (h *nvimHandler) Modified(modified bool) {
+	h.emit(proto.NvimEvent{Kind: proto.NvimModified, Modified: modified})
+}
 func (h *nvimHandler) Swap(sw nvim.Swap) {
 	info := &proto.NvimSwapInfo{File: sw.File, Pid: sw.Pid, Running: sw.Running, User: sw.User, Host: sw.Host, Modified: sw.Modified}
 	if sw.Mtime > 0 {
@@ -252,6 +272,8 @@ func (h *nvimHandler) Exited(reason string) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
 	h.e.gone.Store(true)
 	h.s.forgetNvim(h.sub, h.e)
+	// Off this goroutine: reaping waits for the client, which runs this.
+	go h.e.end(false)
 }
 
 func newNvimID() string {

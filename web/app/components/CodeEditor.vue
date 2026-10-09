@@ -29,6 +29,8 @@ const colorMode = useColorMode()
 let editor: MonacoEditor.IStandaloneCodeEditor | null = null
 let model: MonacoEditor.ITextModel | null = null
 let monacoRef: typeof import('monaco-editor') | null = null
+// The model was made for this showing (not kept from the tab's last): a held Neovim's text is not in it.
+let freshModel = true
 let marks: MonacoEditor.IEditorDecorationsCollection | null = null
 
 const theme = computed(() => (colorMode.value === 'dark' ? 'conductor-dark' : 'conductor-light'))
@@ -42,10 +44,13 @@ async function mount() {
   // A model lives for its tab: unsaved edits (F6) stay across the tab being switched away from and back.
   const existing = monaco.editor.getModel(uri)
   model = existing ?? monaco.editor.createModel(props.text, languageFor(props.path), uri)
-  if (!existing || !hasModel(props.path)) {
+  // A Neovim held for this tab (its changes not written) is what the model mirrors: the text read from disk is not.
+  const held = !!props.nvim?.holds.peek(props.path)
+  freshModel = !existing || !hasModel(props.path)
+  if (freshModel) {
     if (model.getValue() !== props.text) model.setValue(props.text)
     markSaved(props.path, model.getAlternativeVersionId())
-  } else if (!isDirty(props.path, model.getAlternativeVersionId()) && model.getValue() !== props.text) {
+  } else if (!held && !isDirty(props.path, model.getAlternativeVersionId()) && model.getValue() !== props.text) {
     model.setValue(props.text)
     markSaved(props.path, model.getAlternativeVersionId())
   }
@@ -90,7 +95,9 @@ async function mount() {
 // read-only, so nothing is typed into the text except by Neovim.
 let contentSub: { dispose: () => void } | null = null
 function tellDirty() {
-  if (model) emit('dirty', isDirty(props.path, model.getAlternativeVersionId()))
+  // Under the Neovim keymap Neovim's buffer is the one with changes or none (its `modified` event); the model only mirrors it.
+  if (props.nvim) emit('dirty', nvimState.modified)
+  else if (model) emit('dirty', isDirty(props.path, model.getAlternativeVersionId()))
 }
 /** The text now, for a save. */
 function getText(): string {
@@ -131,22 +138,33 @@ function stopEcho() {
   guessMarks?.clear()
   guessMarks = null
 }
-const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false }
+const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false }
 function tellNvim() {
   emit('nvim', { ...nvimState })
 }
 async function startNvim() {
   const bridge = props.nvim
   if (!bridge || !editor || !model || !monacoRef) return
-  try {
-    const opened = await bridge.open(props.path)
-    if (!editor) return
-    nvimId = opened.id ?? null
-  } catch (err) {
-    nvimState.message = err instanceof Error ? err.message : String(err)
-    nvimState.messageKind = 'emsg'
-    tellNvim()
-    return
+  // This tab's Neovim, held while another tab was in front with its changes not written: taken back as it was.
+  const held = bridge.holds.take(props.path)
+  if (held && !freshModel) {
+    nvimId = held.id
+    Object.assign(nvimState, held.state)
+    editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
+    editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
+  } else {
+    // Its model is gone with the text it mirrored: that Neovim ends as a lost connection ends it, its swap file keeping the changes.
+    if (held) bridge.close(held.id)
+    try {
+      const opened = await bridge.open(props.path)
+      if (!editor) return
+      nvimId = opened.id ?? null
+    } catch (err) {
+      nvimState.message = err instanceof Error ? err.message : String(err)
+      nvimState.messageKind = 'emsg'
+      tellNvim()
+      return
+    }
   }
   if (!nvimId) return
   const m = model
@@ -157,9 +175,10 @@ async function startNvim() {
     },
     applyLines: applyLinesEvent,
   })
+  echo.setMode(nvimState.mode)
   guessMarks = editor.createDecorationsCollection()
   unsubscribe = bridge.subscribe(onNvimEvent)
-  editor.updateOptions({ cursorStyle: 'block', cursorBlinking: 'solid' })
+  editor.updateOptions({ cursorStyle: cursorStyleFor(nvimState.mode), cursorBlinking: 'solid' })
   editor.onKeyDown((e) => {
     if (!nvimId || !bridge) return
     const be = e.browserEvent
@@ -174,6 +193,7 @@ async function startNvim() {
   })
   listenForText(bridge)
   tellNvim()
+  tellDirty()
 }
 
 /** Sends keys with their number; a plain character in insert mode shows at once (the local echo). */
@@ -308,6 +328,11 @@ function onNvimEvent(ev: NvimEvent) {
       nvimState.message = nvimState.message || 'written'
       tellNvim()
       break
+    case 'modified':
+      nvimState.modified = !!ev.modified
+      tellNvim()
+      tellDirty()
+      break
     case 'swap':
       // Another editor's swap file: the file opened read-only (round 13, G3).
       nvimState.swap = ev.swap ?? null
@@ -394,7 +419,13 @@ watch(
 
 onMounted(mount)
 onBeforeUnmount(() => {
-  if (nvimId && props.nvim) props.nvim.close(nvimId)
+  if (nvimId && props.nvim) {
+    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends.
+    if (nvimState.modified) {
+      const at = editor?.getPosition()
+      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
+    } else props.nvim.close(nvimId)
+  }
   nvimId = null
   unsubscribe?.()
   unsubscribe = null
@@ -420,6 +451,31 @@ function answerSwap(choice: NvimSwapChoice) {
   tellNvim()
   editor?.focus()
 }
+/**
+ * Writes the file through Neovim (:w from whatever mode it is in), for the close question's Save: true once Neovim says the buffer
+ * holds no changes not written; false when the write failed (its message shows) or nothing came back in ten seconds.
+ */
+function nvimWrite(): Promise<boolean> {
+  const bridge = props.nvim
+  const id = nvimId
+  if (!bridge || !id) return Promise.resolve(false)
+  if (!nvimState.modified) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let off: () => void = () => {}
+    const done = (ok: boolean) => {
+      clearTimeout(timer)
+      off()
+      resolve(ok)
+    }
+    const timer = setTimeout(() => done(false), 10_000)
+    off = bridge.subscribe((ev) => {
+      if (ev.id !== id) return
+      if (ev.kind === 'modified' && !ev.modified) done(true)
+      else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
+    })
+    bridge.input(id, '<C-\\><C-n>:w<CR>')
+  })
+}
 /** Answers Neovim's confirm question with its choice's key; the question goes. */
 function answerConfirm(key: string) {
   if (!nvimId || !props.nvim || nvimState.messageKind !== 'confirm') return
@@ -429,7 +485,7 @@ function answerConfirm(key: string) {
   tellNvim()
   editor?.focus()
 }
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText, getLines, answerSwap, answerConfirm })
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText, getLines, answerSwap, answerConfirm, nvimWrite })
 </script>
 
 <template>
