@@ -94,11 +94,15 @@ type Driver interface {
 
 // Typed errors surfaced to transports, which map them to close codes.
 var (
-	ErrReadOnly        = errors.New("session: read-only role")
-	ErrSessionEnded    = errors.New("session: ended")
-	ErrSlowConsumer    = errors.New("session: slow consumer")
-	ErrRevoked         = errors.New("session: link revoked")
-	ErrBadDimension    = errors.New("session: invalid terminal dimension")
+	ErrReadOnly     = errors.New("session: read-only role")
+	ErrSessionEnded = errors.New("session: ended")
+	ErrSlowConsumer = errors.New("session: slow consumer")
+	ErrRevoked      = errors.New("session: link revoked")
+	ErrBadDimension = errors.New("session: invalid terminal dimension")
+	// ErrNotSizer refuses a passive resize from a viewer that does not size
+	// the terminal (Local.ResizeWith): it follows the size, and takes it only
+	// by asking.
+	ErrNotSizer        = errors.New("session: another viewer sizes the terminal")
 	ErrTooManyViewers  = errors.New("session: too many viewers")
 	ErrFileDenied      = errors.New("session: file access denied")
 	ErrTooManyRequests = errors.New("session: too many in-flight requests")

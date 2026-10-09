@@ -145,10 +145,10 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		if json.Unmarshal(payload, &m) != nil {
 			return false
 		}
-		if err := local.Resize(sub, m.Cols, m.Rows); err != nil {
+		if err := local.ResizeWith(sub, m.Cols, m.Rows, m.Take); err != nil {
 			switch {
-			case errors.Is(err, session.ErrReadOnly):
-				// view-only clients follow the controller size silently
+			case errors.Is(err, session.ErrReadOnly), errors.Is(err, session.ErrNotSizer):
+				// view-only clients, and every viewer but the sizer, follow the size silently
 			case errors.Is(err, session.ErrBadDimension):
 				local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "invalid terminal size"))
 			}

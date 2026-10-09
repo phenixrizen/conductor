@@ -95,12 +95,18 @@ type Hello struct {
 }
 
 // Resize is sent by controllers to change the PTY size and broadcast by the
-// owner to every attached client.
+// owner to every attached client. One viewer sizes the PTY (round 14, an
+// owner whose welcome says Sizer): a controller's resize sizes it only while
+// that controller is the sizer, except Take (Fit to my window), which makes
+// it the sizer. The broadcast's By names the sizer; absent, nobody holds the
+// size. An owner without the rule (an older host) takes every controller's
+// resize, and By names whoever sent it.
 type Resize struct {
 	T    string `json:"t"`
 	Cols uint16 `json:"cols"`
 	Rows uint16 `json:"rows"`
 	By   string `json:"by,omitempty"`
+	Take bool   `json:"take,omitempty"`
 }
 
 // Submit asks the owner to submit Text as a line, as a reply box does: the
@@ -297,14 +303,18 @@ const (
 
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).
 type Welcome struct {
-	T               string `json:"t"`
-	Proto           int    `json:"proto"`
-	SessionID       string `json:"sessionId"`
-	Role            string `json:"role"`
-	SubscriberID    string `json:"subscriberId,omitempty"`
-	ViewerID        string `json:"viewerId,omitempty"`
-	Cols            uint16 `json:"cols"`
-	Rows            uint16 `json:"rows"`
+	T            string `json:"t"`
+	Proto        int    `json:"proto"`
+	SessionID    string `json:"sessionId"`
+	Role         string `json:"role"`
+	SubscriberID string `json:"subscriberId,omitempty"`
+	ViewerID     string `json:"viewerId,omitempty"`
+	Cols         uint16 `json:"cols"`
+	Rows         uint16 `json:"rows"`
+	// Sizer says the owner sizes the PTY by one viewer (round 14, see
+	// Resize), and SizedBy which viewer that is now ("" none).
+	Sizer           bool   `json:"sizer,omitempty"`
+	SizedBy         string `json:"sizedBy,omitempty"`
 	Status          string `json:"status"`
 	ScrollbackBytes int    `json:"scrollbackBytes"`
 	Transport       string `json:"transport"`

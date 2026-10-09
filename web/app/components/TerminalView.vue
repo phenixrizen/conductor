@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
@@ -67,6 +68,22 @@ const fileView = ref(false)
 const notice = ref('')
 /** The role the server gave this connection: a view-only one never sizes the session, whatever the page asked for. */
 const role = ref<Role | ''>('')
+// Who sizes the session (round 14). An owner whose welcome says `sizer` sizes it by one viewer: this view fills its pane and sizes the
+// session only while it holds the size; otherwise it shows the session's grid scaled to its pane, and a control viewer gets Fit to my
+// window to take the size. An older owner (no `sizer`) takes every controller's size, as before.
+const sizerKnown = ref(false)
+const sizedBy = ref('')
+const subscriberId = ref('')
+const roster = ref<ViewerInfo[]>([])
+const sessionSize = ref({ cols: 0, rows: 0 })
+const welcomed = ref(false)
+function sizerView(): SizerView {
+  return { fit: props.fit, mayFit: mayFit(), welcomed: welcomed.value, sizer: sizerKnown.value, sizedBy: sizedBy.value, me: subscriberId.value, compact: props.compact, ended: ended.value, roster: roster.value, cols: sessionSize.value.cols, rows: sessionSize.value.rows }
+}
+/** The pane shows the session's grid scaled (a scale view, or a full view that does not size the session). */
+const scaledView = ref(props.fit === 'scale')
+/** Who sizes it and Fit to my window: on a full view of a controller that does not hold the size. */
+const sizerChip = computed(() => chipFor(sizerView()))
 /** The size the last hello carried: 0 × 0 when this view did not size the session as it connected. */
 let helloSent: { cols: number; rows: number } = { ...FOLLOW_SIZE }
 /** True once the process is gone: the cursor is hidden and stops blinking. */
@@ -125,17 +142,30 @@ const fileLinkProvider: ILinkProvider = {
 }
 
 /**
- * Whether this view sizes the session: a full view or a tile that takes input, unless the server said this connection may only watch. A
- * scaled or read-only view follows the session's size instead.
+ * Whether this view may size the session: a full view or a tile that takes input, unless the server said this connection may only
+ * watch. A scaled or read-only view follows the session's size instead.
  */
-function sizes(): boolean {
+function mayFit(): boolean {
   return props.fit !== 'scale' && !props.readOnly && role.value !== 'view'
 }
 
-/** Fits the terminal to its pane when this view sizes the session, and returns the size to ask for: 0 × 0 (follow) otherwise, or before the pane is laid out. */
-function measure(): { cols: number; rows: number } {
+/** Whether this view sizes the session now: it may, and it holds the size (round 14). */
+function sizes(): boolean {
+  return sizesSession(sizerView())
+}
+
+/** Whether the pane shows the session's grid scaled: a scale view, or once welcomed a full view that does not size the session. */
+function scaled(): boolean {
+  return showsScaled(sizerView())
+}
+
+/**
+ * Fits the terminal to its pane when this view sizes the session (or, asking, may: the hello says the size its window would give the
+ * session, which the owner decides on), and returns the size to ask for: 0 × 0 (follow) otherwise, or before the pane is laid out.
+ */
+function measure(asking = false): { cols: number; rows: number } {
   const h = host.value
-  if (!sizes() || !term || !fit || !h?.clientWidth || !h.clientHeight) return helloSize(false, 0, 0)
+  if (!(asking ? mayFit() : sizes()) || !term || !fit || !h?.clientWidth || !h.clientHeight) return helloSize(false, 0, 0)
   fit.fit()
   return helloSize(true, term.cols, term.rows)
 }
@@ -215,7 +245,7 @@ let fontAdjustments = 0
 function applyScale() {
   const el = term?.element
   const h = host.value
-  if (!term || !el || !h || props.fit !== 'scale') return
+  if (!term || !el || !h || !scaledView.value) return
   const natW = el.offsetWidth
   const natH = el.offsetHeight
   const hw = h.clientWidth
@@ -233,6 +263,44 @@ function applyScale() {
   const tx = Math.round((hw - natW * s) / 2)
   const ty = Math.round((hh - natH * s) / 2)
   el.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`
+}
+
+/**
+ * Switches the pane between filling it (this view sizes the session) and showing the session's grid scaled (it does not), as the
+ * welcome and every resize say who sizes it.
+ */
+function applyFitMode() {
+  const want = scaled()
+  const el = term?.element
+  if (want === scaledView.value) {
+    if (want) scheduleScale()
+    return
+  }
+  scaledView.value = want
+  if (want) {
+    fontAdjustments = 0
+    if (el) observer?.observe(el)
+    scheduleScale()
+  } else {
+    if (el) {
+      observer?.unobserve(el)
+      el.style.transform = ''
+    }
+    if (term) term.options.fontSize = props.fontSize
+    scheduleResize()
+  }
+}
+
+/** Fit to my window (round 14): this window takes the session's size, at its own size. */
+function takeSize() {
+  if (!term || !fit || !transport || !mayFit()) return
+  const el = term.element
+  if (el) el.style.transform = ''
+  term.options.fontSize = props.fontSize
+  fit.fit()
+  transport.resize(term.cols, term.rows, true)
+  sizedBy.value = subscriberId.value
+  applyFitMode()
 }
 
 function scheduleScale() {
@@ -263,6 +331,11 @@ function handleControl(msg: ControlMessage) {
     case 'welcome':
       role.value = msg.role
       fileView.value = msg.fileView
+      subscriberId.value = msg.subscriberId ?? ''
+      sizerKnown.value = !!msg.sizer
+      sizedBy.value = msg.sizedBy ?? ''
+      sessionSize.value = { cols: msg.cols, rows: msg.rows }
+      welcomed.value = true
       existsCache.clear()
       // Sessions that already ended are marked once the scrollback has replayed.
       endedAtWelcome = isEnded(msg.status)
@@ -270,15 +343,19 @@ function handleControl(msg: ControlMessage) {
       // does one whose pane was not laid out as it connected, until it fits.
       if (msg.cols && msg.rows && (!sizes() || !helloSent.cols)) term?.resize(msg.cols, msg.rows)
       scheduleTileScale()
+      applyFitMode()
       emit('welcome', msg)
       break
     case 'ready':
       if (endedAtWelcome) markEnded()
       break
     case 'resize':
-      // Another viewer's resize is followed, never answered with one of this view's own.
+      // Another viewer's resize is followed, never answered with one of this view's own. It also says who sizes the session now.
+      if (sizerKnown.value) sizedBy.value = msg.by ?? ''
+      if (msg.cols && msg.rows) sessionSize.value = { cols: msg.cols, rows: msg.rows }
       if (msg.cols && msg.rows && (term?.cols !== msg.cols || term?.rows !== msg.rows)) term?.resize(msg.cols, msg.rows)
       scheduleTileScale()
+      applyFitMode()
       break
     case 'status':
       emit('status', msg.status, msg.exitCode)
@@ -291,6 +368,7 @@ function handleControl(msg: ControlMessage) {
       emit('attention', { state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options })
       break
     case 'viewers':
+      roster.value = msg.list ?? []
       emit('viewers', { count: msg.count, list: msg.list })
       break
     case 'activity':
@@ -344,7 +422,18 @@ async function connect() {
   term.reset()
   try {
     role.value = ''
-    helloSent = measure()
+    welcomed.value = false
+    sizerKnown.value = false
+    // The hello says the size this window would give the session, at the font it would use: not the scaled one.
+    if (props.fit === 'fill' && scaledView.value) {
+      scaledView.value = false
+      if (term.element) {
+        observer?.unobserve(term.element)
+        term.element.style.transform = ''
+      }
+      term.options.fontSize = props.fontSize
+    }
+    helloSent = measure(true)
     await t.connect(helloSent)
     t.ping()
     if (sizes()) {
@@ -466,7 +555,7 @@ onMounted(() => {
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
     if (!term) return
-    if (props.fit === 'scale') scheduleScale()
+    if (scaledView.value) scheduleScale()
     else scheduleResize()
   })
   // The renderer in use, for anyone measuring the tiles (data-renderer on
@@ -492,7 +581,7 @@ onMounted(() => {
   })
   if (sizes() && host.value?.clientWidth && host.value.clientHeight) fit.fit()
   observer = new ResizeObserver((entries) => {
-    if (props.fit === 'scale') {
+    if (scaledView.value) {
       if (entries.some((e) => e.target === host.value)) fontAdjustments = 0
       scheduleScale()
     } else {
@@ -500,7 +589,7 @@ onMounted(() => {
     }
   })
   observer.observe(host.value!)
-  if (props.fit === 'scale' && term.element) observer.observe(term.element)
+  if (scaledView.value && term.element) observer.observe(term.element)
   // A tab brought back sizes its session again: the view the person looks at wins.
   document.addEventListener('visibilitychange', onVisibility)
   pingTimer = window.setInterval(() => transport?.ping(), 10000)
@@ -523,7 +612,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
-    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': props.fit === 'scale', 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+
+    <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
+      <UIcon name="i-lucide-scaling" class="size-3.5 text-muted" />
+      <span class="text-muted">Sized by <span class="font-medium text-default" data-sizer-name>{{ sizerChip.who }}</span> · <span class="font-mono">{{ sizerChip.cols }} × {{ sizerChip.rows }}</span></span>
+      <UButton label="Fit to my window" icon="i-lucide-maximize-2" size="xs" color="neutral" variant="soft" data-fit-mine @click="takeSize" />
+    </div>
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />

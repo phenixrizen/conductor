@@ -652,6 +652,49 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
+
+The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
+app on 2026-10-08, one pull request each from main, tests at both ends,
+then checked in the installed app (the owner helps with the install). The
+order: the shared session's size; the Launch dialog's first listing; the
+server log window; the fullscreen button in the app; the directory
+picker's cut lists; the shortcuts table; the Yard's header at phone width;
+the "error" badge on a shell crew member. The local echo's space came
+first, found measuring the echo over the switchyard (round 13, PR #81).
+
+- **One window sizes a session.** Seen by the owner 2026-10-06: a crew
+  shared with a coworker on a laptop shrank to the laptop's columns and
+  rows on the owner's 34-inch screen, since the latest controller that
+  attached or resized set the PTY's size for everyone. Decided then: the
+  size belongs to one viewer, the sizer: one of the owner's own windows (a
+  controller with no link: the workbench, a host's own terminal) takes it
+  as it attaches while nobody holds it; any other controller's hello and
+  resizes are kept as what its window would want and refused without a
+  word (`ErrNotSizer`); `resize` with `take` (Fit to my window) makes a
+  controller the sizer, and every viewer hears who in the `resize`
+  frame's `by`, a hand-over at the same size included; when the sizer
+  leaves, the owner's window that attached last takes it at its own size,
+  else nobody holds it and the size stays. The welcome says `sizer` and
+  `sizedBy`; a page talking to an older host (no `sizer`) keeps the old
+  rule. In the browser a full view that does not hold the size shows the
+  session's grid scaled to its pane (the run tiles' scale), a view-only
+  link included, and a controller's view says "Sized by Jane · 212 × 54"
+  with **Fit to my window** in the terminal's corner; tiles keep their own
+  fit. Tests: Go `session` (the owner's window, a second window and a
+  control link joining without a resize, their passive resizes refused, a
+  take, a take back at the same size, the hand-over to the owner's other
+  window at its size, then to nobody), `api` over the WebSocket (a control
+  link's resize refused, its take heard by the workbench, the workbench's
+  passive resize refused, its take), `hostagent` over the data channel (a
+  link on a hosted session following the host terminal's size until its
+  take), `proto` (the shapes, an older owner's welcome); vitest
+  `terminalSizer.test.ts`; Playwright `sizing.spec.ts` with a 1440-wide
+  workbench, a 900-wide laptop on a control link and a view link (the
+  laptop scaled with the chip naming Nate, neither window's resize moving
+  the size, Fit to my window and back, the view link scaled with no chip;
+  three runs out of three; it fails on main's build at the laptop's chip).
+
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 
 The owner asked why five Files items had been moved to the todo instead of

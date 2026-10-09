@@ -60,6 +60,18 @@ type Subscription struct {
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool
+	// want is the size this controller's window would give the terminal (its
+	// hello's, then its last resize), for a hand-over of the size; under the
+	// session's mu.
+	want [2]uint16
+}
+
+// ownsSize reports whether s is one of the owner's own windows: a
+// controller that came with no link (the workbench, a host's own terminal).
+// Only such a window takes the size without asking, and only while nobody
+// holds it (Local.sizer).
+func (s *Subscription) ownsSize() bool {
+	return s.Role == RoleControl && s.LinkID == "" && !s.quiet
 }
 
 func newSubscription(id string, role Role, linkID string, sink Sink) *Subscription {

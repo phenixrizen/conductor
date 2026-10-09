@@ -179,59 +179,148 @@ func TestReadOnlyInputAndResize(t *testing.T) {
 	}
 }
 
-func TestLatestControllerWinsResize(t *testing.T) {
+// One viewer sizes the terminal (round 14): one of the owner's own windows
+// (a controller with no link) as it attaches; another of the owner's
+// windows and a control link follow, their passive resizes refused; Fit to
+// my window (take) hands the size over, at the same size too; the sizer's
+// leaving hands it to the owner's window that attached last, at that
+// window's size, else to nobody. A coworker's laptop never shrinks the
+// session on the owner's screen.
+func TestOneViewerSizesTheTerminal(t *testing.T) {
 	s, p := newLocal(t, t.TempDir())
-	a, b := newChanSink(false), newChanSink(false)
-	subA, _ := s.Attach("", RoleControl, "", 100, 30, a)
-	<-p.resize // attach resized to 100x30
-	subB, _ := s.Attach("", RoleControl, "", 120, 40, b)
-	if got := <-p.resize; got != [2]uint16{120, 40} {
-		t.Fatalf("resize on attach: %v", got)
+	noResize := func(what string) {
+		t.Helper()
+		select {
+		case got := <-p.resize:
+			t.Fatalf("%s resized the terminal to %v", what, got)
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
+	a, b, c := newChanSink(false), newChanSink(false), newChanSink(false)
+	subA, _ := s.Attach("", RoleControl, "", 100, 30, a)
+	if got := <-p.resize; got != [2]uint16{100, 30} {
+		t.Fatalf("the owner's window: %v", got)
+	}
+	if w := firstControl(t, a, proto.CtlWelcome); w["sizer"] != true || w["sizedBy"] != subA.ID {
+		t.Fatalf("the owner's welcome: %v", w)
+	}
+	subB, _ := s.Attach("", RoleControl, "", 120, 40, b)
+	noResize("the owner's second window")
+	if w := firstControl(t, b, proto.CtlWelcome); w["sizedBy"] != subA.ID || w["cols"] != float64(100) {
+		t.Fatalf("the second window's welcome: %v", w)
+	}
+	subC, _ := s.Attach("", RoleControl, "link1", 80, 24, c)
+	noResize("a control link joining")
+	if err := s.Resize(subB, 130, 40); !errors.Is(err, ErrNotSizer) {
+		t.Fatalf("the second window's resize: %v", err)
+	}
+	if err := s.Resize(subC, 70, 20); !errors.Is(err, ErrNotSizer) {
+		t.Fatalf("the link's resize: %v", err)
+	}
+	noResize("a viewer that does not size it")
+	// The sizer's own window sizes it.
 	if err := s.Resize(subA, 90, 20); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-p.resize; got != [2]uint16{90, 20} {
-		t.Fatalf("resize: %v", got)
+		t.Fatalf("the sizer's resize: %v", got)
 	}
-	if err := s.Resize(subB, 0, 20); !errors.Is(err, ErrBadDimension) {
-		t.Fatalf("bad dimension: %v", err)
+	waitResize(t, c, subA.ID, 90)
+	// Fit to my window: the link takes it.
+	if err := s.ResizeWith(subC, 80, 24, true); err != nil {
+		t.Fatal(err)
 	}
-	info := s.Info()
-	if info.Cols != 90 || info.Rows != 20 {
+	if got := <-p.resize; got != [2]uint16{80, 24} {
+		t.Fatalf("the link's take: %v", got)
+	}
+	waitResize(t, a, subC.ID, 80)
+	if err := s.Resize(subA, 95, 25); !errors.Is(err, ErrNotSizer) {
+		t.Fatalf("the owner's passive resize while the link holds it: %v", err)
+	}
+	// Taken back at the very same size: no resize, but everyone hears who sizes it.
+	if err := s.ResizeWith(subA, 80, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	noResize("a take at the same size")
+	waitResize(t, c, subA.ID, 80)
+	// The sizer leaves: the owner's window that attached last takes it, at its size.
+	s.Detach(subA)
+	if got := <-p.resize; got != [2]uint16{130, 40} {
+		t.Fatalf("handed to the owner's other window: %v", got)
+	}
+	waitResize(t, c, subB.ID, 130)
+	// And when it leaves, nobody holds the size (a link is not the owner): the size stays.
+	s.Detach(subB)
+	noResize("the last of the owner's windows leaving")
+	waitResize(t, c, "", 130)
+	if info := s.Info(); info.Cols != 130 || info.Rows != 40 {
 		t.Fatalf("info size %dx%d", info.Cols, info.Rows)
 	}
-	// b must have observed a resize control frame attributed to subA
-	deadline := time.After(2 * time.Second)
-	for {
-		b.mu.Lock()
-		found := false
-		for _, fr := range b.frames {
-			f, _ := proto.Decode(fr)
-			if f.Type == proto.TypeControl {
-				var m map[string]any
-				json.Unmarshal(f.Payload, &m)
-				if m["t"] == proto.CtlResize && m["by"] == subA.ID && m["cols"] == float64(90) {
-					found = true
-				}
-			}
-		}
-		b.mu.Unlock()
-		if found {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("resize broadcast not observed")
-		case <-time.After(10 * time.Millisecond):
-		}
+	if err := s.Resize(subC, 0, 20); !errors.Is(err, ErrBadDimension) {
+		t.Fatalf("bad dimension: %v", err)
 	}
-	if err := s.Input(subB, []byte("hi")); err != nil {
+	if err := s.Input(subC, []byte("hi")); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-p.input; string(got) != "hi" {
 		t.Fatalf("input %q", got)
 	}
+}
+
+// firstControl is the first control frame of type typ the sink received.
+func firstControl(t *testing.T, sink *chanSink, typ string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sink.mu.Lock()
+		frames := append([][]byte(nil), sink.frames...)
+		sink.mu.Unlock()
+		for _, fr := range frames {
+			f, _ := proto.Decode(fr)
+			if f.Type != proto.TypeControl {
+				continue
+			}
+			var m map[string]any
+			json.Unmarshal(f.Payload, &m)
+			if m["t"] == typ {
+				return m
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no %s frame", typ)
+	return nil
+}
+
+// waitResize waits for the sink's latest resize frame to name by (absent
+// for "") at cols.
+func waitResize(t *testing.T, sink *chanSink, by string, cols float64) {
+	t.Helper()
+	var last map[string]any
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sink.mu.Lock()
+		frames := append([][]byte(nil), sink.frames...)
+		sink.mu.Unlock()
+		last = nil
+		for _, fr := range frames {
+			f, _ := proto.Decode(fr)
+			if f.Type != proto.TypeControl {
+				continue
+			}
+			var m map[string]any
+			json.Unmarshal(f.Payload, &m)
+			if m["t"] == proto.CtlResize {
+				last = m
+			}
+		}
+		got, _ := last["by"].(string)
+		if last != nil && got == by && last["cols"] == cols {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the last resize %v, wanted by %q at %v columns", last, by, cols)
 }
 
 func TestExitBroadcastsStatus(t *testing.T) {

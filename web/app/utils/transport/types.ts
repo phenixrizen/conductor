@@ -27,7 +27,8 @@ export interface TerminalTransport {
   chat(post: ChatPost): void
   /** Types a kept chat message into the agent (controllers only). */
   chatSend(send: ChatSend): void
-  resize(cols: number, rows: number): void
+  /** take: Fit to my window, this window takes the session's size (round 14); without it only the viewer that sizes it resizes it. */
+  resize(cols: number, rows: number, take?: boolean): void
   ping(): void
   requestFile(path: string, stat?: boolean, extra?: FileGetExtra): Promise<FileResponse>
   /** Saves a file in parts (F6); the FILE reply (kind `written` or `error`) settles it. */
