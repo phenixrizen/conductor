@@ -458,6 +458,17 @@ func TestInstallAgyMergesItsOwnKey(t *testing.T) {
 	if c["enabled"] != true || !strings.Contains(string(b), `"command": "/opt/conductor notify --agy-hook"`) || c["Stop"] == nil || c["PostToolUse"] == nil {
 		t.Fatalf("conductor key: %s", b)
 	}
+	// agy's layout (antigravity.google/docs/hooks): a tool event's entry is a
+	// matcher with its hooks, a Stop entry the command hook itself; a Stop in
+	// the matcher form makes agy refuse the whole group.
+	stop := c["Stop"].([]any)[0].(map[string]any)
+	post := c["PostToolUse"].([]any)[0].(map[string]any)
+	if stop["type"] != "command" || stop["command"] != "/opt/conductor notify --agy-hook" || stop["hooks"] != nil {
+		t.Fatalf("Stop entry: %v", stop)
+	}
+	if post["matcher"] != "*" || len(post["hooks"].([]any)) != 1 {
+		t.Fatalf("PostToolUse entry: %v", post)
+	}
 	if strings.Index(string(b), `"mine"`) > strings.Index(string(b), `"conductor"`) {
 		t.Fatalf("keys reordered:\n%s", b)
 	}

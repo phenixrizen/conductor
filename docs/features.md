@@ -721,6 +721,29 @@ tool, and Conductor offered it as Goose.
   plain directory not watched) in Go; vitest for the words; Playwright
   `touched.spec.ts` (a file written with only a tool call reported shows
   as seen by git, the README dirty before the session does not).
+- **G2b, files from the agents' own payloads.** Codex 0.161, Copilot CLI
+  1.0.91 and Antigravity 1.2.14 each ran once in a scratch repository with
+  a hook saving every payload, from a throwaway config home holding a copy
+  of its login (deleted afterwards). The redacted payloads are the
+  fixtures in `internal/notify/testdata`. They showed three bugs: Codex's
+  apply_patch carries its patch in `tool_input.command`, which the mapper
+  never read, so no Codex edit was ever reported; Copilot's arguments are
+  an object the mapper ignored; and agy rejected Conductor's whole hook
+  group, because a Stop entry must be a plain command hook, not a matcher
+  group (its log: "command hook must specify 'command'"), so agy's hooks
+  never ran. Now Codex's patch and its Bash tool, Copilot's view, edit,
+  create and bash, and agy's view_file, write_to_file, the replace tools,
+  delete_file and run_command name their files, and agy's hook file has the
+  right layout. A conservative reading of a shell command (cat, head, tail,
+  nl, bat, less and sed -n read; `>`, tee write; `>>`, tee -a, sed -i edit;
+  nothing with a substitution or a variable; only files that exist) serves
+  every agent's shell tool, Claude Code's Bash included. The capture also
+  found that Codex runs hooks only once trusted, opening on a "Hooks need
+  review" question: that is G2c. Tests: the shell reading's table, every
+  captured payload mapped to the files that run touched, agy's installed
+  layout, and Playwright `touched.spec.ts`, where the stub replays each
+  agent's payloads through `conductor notify` (a fixed line, `stub tools
+  <agent>`) and Touched lists the read and the write.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

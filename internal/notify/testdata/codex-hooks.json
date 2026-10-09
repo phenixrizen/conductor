@@ -1,0 +1,216 @@
+[
+ {
+  "event": "SessionStart",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "SessionStart",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "source": "startup"
+  }
+ },
+ {
+  "event": "UserPromptSubmit",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "UserPromptSubmit",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "prompt": "Do these steps in order, using your tools: 1) Show the contents of README.md with the shell command: cat README.md 2) Create a file hello.txt containing the line hi. 3) Append the line there to hello.txt with the shell command: echo there >> hello.txt 4) Change main.go so that func main prints hello (edit the file). Then reply done."
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PreToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "cat README.md"
+   },
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PostToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "cat README.md"
+   },
+   "tool_response": "# capture\n\nA scratch repository for a hook capture.\n",
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PreToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "printf 'hi\\n' > hello.txt"
+   },
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PostToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "printf 'hi\\n' > hello.txt"
+   },
+   "tool_response": "",
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PreToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo there >> hello.txt"
+   },
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PostToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo there >> hello.txt"
+   },
+   "tool_response": "",
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PreToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "cat main.go"
+   },
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PostToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "cat main.go"
+   },
+   "tool_response": "package main\n\nfunc main() {}\n",
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PreToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "apply_patch",
+   "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: /r/main.go\n@@\n package main\n \n-func main() {}\n+import \"fmt\"\n+\n+func main() {\n+\tfmt.Println(\"hello\")\n+}\n*** End Patch"
+   },
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "PostToolUse",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "apply_patch",
+   "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: /r/main.go\n@@\n package main\n \n-func main() {}\n+import \"fmt\"\n+\n+func main() {\n+\tfmt.Println(\"hello\")\n+}\n*** End Patch"
+   },
+   "tool_response": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nM /r/main.go\n",
+   "tool_use_id": "exec-00000000-0000-0000-0000-000000000000"
+  }
+ },
+ {
+  "event": "Stop",
+  "payload": {
+   "session_id": "00000000-0000-0000-0000-000000000000",
+   "turn_id": "00000000-0000-0000-0000-000000000000",
+   "transcript_path": "/home/me/.codex/sessions/2026/10/09/rollout-2026-10-09T10-33-52-00000000-0000-0000-0000-000000000000.jsonl",
+   "cwd": "/r",
+   "hook_event_name": "Stop",
+   "model": "redacted",
+   "permission_mode": "bypassPermissions",
+   "stop_hook_active": false,
+   "last_assistant_message": "done"
+  }
+ }
+]

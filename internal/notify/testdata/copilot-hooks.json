@@ -1,0 +1,189 @@
+[
+ {
+  "event": "userPromptSubmitted",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "prompt": "Do these steps in order, using your tools: 1) Show the contents of README.md with the shell command: cat README.md 2) Create a file hello.txt containing the line hi. 3) Append the line there to hello.txt with the shell command: echo there >> hello.txt 4) Change main.go so that func main prints hello (edit the file). Then reply done."
+  }
+ },
+ {
+  "event": "sessionStart",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "source": "new",
+   "initialPrompt": "Do these steps in order, using your tools: 1) Show the contents of README.md with the shell command: cat README.md 2) Create a file hello.txt containing the line hi. 3) Append the line there to hello.txt with the shell command: echo there >> hello.txt 4) Change main.go so that func main prints hello (edit the file). Then reply done."
+  }
+ },
+ {
+  "event": "preToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "bash",
+   "toolArgs": {
+    "command": "cat README.md",
+    "description": "Show README contents"
+   }
+  }
+ },
+ {
+  "event": "postToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "bash",
+   "toolArgs": {
+    "command": "cat README.md",
+    "description": "Show README contents"
+   },
+   "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "# capture\n\nA scratch repository for a hook capture.\n<shellId: 0 completed with exit code 0>"
+   }
+  }
+ },
+ {
+  "event": "preToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "bash",
+   "toolArgs": {
+    "command": "printf 'hi\\n' > hello.txt && echo there >> hello.txt && cat hello.txt",
+    "description": "Create and append to hello.txt"
+   }
+  }
+ },
+ {
+  "event": "preToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "glob",
+   "toolArgs": {
+    "pattern": "main.go"
+   }
+  }
+ },
+ {
+  "event": "postToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "glob",
+   "toolArgs": {
+    "pattern": "main.go"
+   },
+   "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "./main.go"
+   }
+  }
+ },
+ {
+  "event": "postToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "bash",
+   "toolArgs": {
+    "command": "printf 'hi\\n' > hello.txt && echo there >> hello.txt && cat hello.txt",
+    "description": "Create and append to hello.txt"
+   },
+   "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "hi\nthere\n<shellId: 1 completed with exit code 0>"
+   }
+  }
+ },
+ {
+  "event": "preToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "view",
+   "toolArgs": {
+    "path": "/r/main.go"
+   }
+  }
+ },
+ {
+  "event": "postToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "view",
+   "toolArgs": {
+    "path": "/r/main.go"
+   },
+   "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "package main\n\nfunc main() {}\n"
+   }
+  }
+ },
+ {
+  "event": "preToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "edit",
+   "toolArgs": {
+    "path": "/r/main.go",
+    "old_str": "package main\n\nfunc main() {}",
+    "new_str": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}"
+   }
+  }
+ },
+ {
+  "event": "postToolUse",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "toolName": "edit",
+   "toolArgs": {
+    "path": "/r/main.go",
+    "old_str": "package main\n\nfunc main() {}",
+    "new_str": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}"
+   },
+   "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "File /r/main.go updated with changes."
+   }
+  }
+ },
+ {
+  "event": "agentStop",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "transcriptPath": "/home/me/.copilot/session-state/00000000-0000-0000-0000-000000000000/events.jsonl",
+   "stopReason": "end_turn",
+   "stop_hook_active": false
+  }
+ },
+ {
+  "event": "sessionEnd",
+  "payload": {
+   "sessionId": "00000000-0000-0000-0000-000000000000",
+   "timestamp": 0,
+   "cwd": "/r",
+   "reason": "complete"
+  }
+ }
+]
