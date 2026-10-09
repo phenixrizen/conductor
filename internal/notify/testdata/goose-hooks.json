@@ -1,0 +1,236 @@
+[
+ {
+  "event": "SessionStart",
+  "payload": {
+   "event": "SessionStart",
+   "session_id": "20261009_1",
+   "matcher_context": null
+  }
+ },
+ {
+  "event": "UserPromptSubmit",
+  "payload": {
+   "event": "UserPromptSubmit",
+   "session_id": "20261009_1",
+   "matcher_context": "do the steps",
+   "message": "do the steps"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "event": "PreToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "shell",
+   "tool_call_id": "call_0",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "cat README.md"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "BeforeShellExecution",
+  "payload": {
+   "event": "BeforeShellExecution",
+   "session_id": "20261009_1",
+   "matcher_context": "cat README.md",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "cat README.md"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "event": "PostToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "shell",
+   "tool_call_id": "call_0",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "cat README.md"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "AfterShellExecution",
+  "payload": {
+   "event": "AfterShellExecution",
+   "session_id": "20261009_1",
+   "matcher_context": "cat README.md",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "cat README.md"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "event": "PreToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "write",
+   "tool_call_id": "call_1",
+   "tool_name": "write",
+   "tool_input": {
+    "path": "hello.txt",
+    "content": "hi\n"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "event": "PostToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "write",
+   "tool_call_id": "call_1",
+   "tool_name": "write",
+   "tool_input": {
+    "path": "hello.txt",
+    "content": "hi\n"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "AfterFileEdit",
+  "payload": {
+   "event": "AfterFileEdit",
+   "session_id": "20261009_1",
+   "matcher_context": "hello.txt",
+   "tool_name": "write",
+   "tool_input": {
+    "path": "hello.txt",
+    "content": "hi\n"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "event": "PreToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "shell",
+   "tool_call_id": "call_2",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "echo there >> hello.txt"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "BeforeShellExecution",
+  "payload": {
+   "event": "BeforeShellExecution",
+   "session_id": "20261009_1",
+   "matcher_context": "echo there >> hello.txt",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "echo there >> hello.txt"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "event": "PostToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "shell",
+   "tool_call_id": "call_2",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "echo there >> hello.txt"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "AfterShellExecution",
+  "payload": {
+   "event": "AfterShellExecution",
+   "session_id": "20261009_1",
+   "matcher_context": "echo there >> hello.txt",
+   "tool_name": "shell",
+   "tool_input": {
+    "command": "echo there >> hello.txt"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PreToolUse",
+  "payload": {
+   "event": "PreToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "edit",
+   "tool_call_id": "call_3",
+   "tool_name": "edit",
+   "tool_input": {
+    "path": "main.go",
+    "before": "func main() {}",
+    "after": "func main() { println(\"hello\") }"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "PostToolUse",
+  "payload": {
+   "event": "PostToolUse",
+   "session_id": "20261009_1",
+   "matcher_context": "edit",
+   "tool_call_id": "call_3",
+   "tool_name": "edit",
+   "tool_input": {
+    "path": "main.go",
+    "before": "func main() {}",
+    "after": "func main() { println(\"hello\") }"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "AfterFileEdit",
+  "payload": {
+   "event": "AfterFileEdit",
+   "session_id": "20261009_1",
+   "matcher_context": "main.go",
+   "tool_name": "edit",
+   "tool_input": {
+    "path": "main.go",
+    "before": "func main() {}",
+    "after": "func main() { println(\"hello\") }"
+   },
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "Stop",
+  "payload": {
+   "event": "Stop",
+   "session_id": "20261009_1",
+   "matcher_context": null,
+   "last_assistant_message": "done",
+   "working_dir": "/r"
+  }
+ },
+ {
+  "event": "SessionEnd",
+  "payload": {
+   "event": "SessionEnd",
+   "session_id": "20261009_1",
+   "matcher_context": null
+  }
+ }
+]

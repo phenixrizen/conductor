@@ -111,7 +111,7 @@ func TestEveryAdapterProbeHasArgsAndAPattern(t *testing.T) {
 			t.Errorf("%s: probe %+v", a.ID, a.Probe)
 		}
 	}
-	for _, id := range []string{"claude", "codex"} {
+	for _, id := range []string{"claude", "codex", "goose", "copilot", "agy"} {
 		if p := ProbeFor(id); p == nil || !p.Verified {
 			t.Errorf("%s: the probe seen live must be verified", id)
 		}
@@ -122,6 +122,18 @@ func TestEveryAdapterProbeHasArgsAndAPattern(t *testing.T) {
 	// The migrations tool as installed by go install prints no space after the colon.
 	if p := ProbeFor("goose"); !p.Reject.MatchString("goose version:v3.5.3") || p.Match.MatchString("goose version:v3.5.3") {
 		t.Fatalf("goose without the space: %+v", p)
+	}
+	// The version lines seen live on 2026-10-09.
+	for id, out := range map[string]string{"copilot": "GitHub Copilot CLI 1.0.91.", "agy": "1.2.14"} {
+		if m := ProbeFor(id).Match.FindStringSubmatch(out); m == nil {
+			t.Fatalf("%s %q", id, out)
+		}
+	}
+	// Block's goose 1.54.0 prints its bare version; older releases "goose 1.0.21". Both are Goose.
+	for _, out := range []string{" 1.54.0", "1.54.0\n", "goose 1.0.21"} {
+		if m := ProbeFor("goose").Match.FindStringSubmatch(out); m == nil || (m[1] != "1.54.0" && m[1] != "1.0.21") {
+			t.Fatalf("goose %q: %v", out, m)
+		}
 	}
 	if ProbeFor("nope") != nil {
 		t.Fatal("unknown adapter has a probe")

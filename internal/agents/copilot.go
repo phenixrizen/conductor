@@ -20,8 +20,9 @@ func copilotAdapter() Adapter {
 	return Adapter{
 		ID:   "copilot",
 		Name: "Copilot CLI",
-		// The Copilot CLI names itself in its version line (verify).
-		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)copilot.*?(\d+\.\d+\.\d+)`)},
+		// The Copilot CLI names itself in its version line: "GitHub Copilot
+		// CLI 1.0.91." (verified on 2026-10-09).
+		Probe:  &Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?mi)copilot.*?(\d+\.\d+\.\d+)`), Verified: true},
 		Assets: copilotAssets,
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, copilotSteps(hooksDir)...)

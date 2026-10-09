@@ -150,9 +150,6 @@ Every layer of round 12 landed on 2026-10-08 and 2026-10-09
 the Monaco editor, Changes, Touched, Commits, editing, comments on lines
 and the Neovim keymap. What is set aside:
 
-- **Goose's files:** the Goose mapper reads the tool's name only; its
-  payload's arguments wait for a run of the real Goose CLI (the `goose` on
-  the owner's machine is the Go migrations tool, round 13 G0).
 - **Codex's hook trust, how long it lasts:** Codex 0.161 runs hooks only
   once trusted, and Conductor now holds its "Hooks need review" question
   with its answers as choices (round 13, G2c). Where Codex keeps the trust,
