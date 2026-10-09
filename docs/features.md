@@ -802,6 +802,34 @@ waiting on monaco-neovim-wasm's missing license.
   cycle cannot be driven from a browser tab (it works in the desktop app
   and in the Playwright spec). The phone layout and the light theme were
   not part of this pass.
+- **F5, Commits (4e).** Two more git reads ride the file request:
+  `file_get` with `op: log` answers kind `log` (the branch, the commits on
+  HEAD newest first with their subject, short id, author, committer time
+  and first parent, at most 200), from the session's start (`since`, the
+  session's `createdAt`, compared at whole seconds since git keeps no
+  more) or, with `base`, after the base's merge base with HEAD (a crew
+  member's run base, whatever the commit times); `op: commit` answers
+  kind `commit` (the commit with its body, at most 4 KiB, and its files
+  against the first parent with their lines, renames found with their old
+  path in `from`, a file over 1 MiB listed without lines, at most 500).
+  Both read with go-git (`internal/gitrepo`, v5.19.3, Apache 2.0; chosen
+  by the owner for the Go git features): 200 commits logged in 37 ms and
+  a 45-file merge's stats in 79 ms on this repository, a crew's linked
+  worktree opened through its common directory; status and show stay with
+  the git binary, which is faster for them. The Files pane gains Commits
+  beside Changes with its count, "2 commits on main since 08:31", a
+  commit opening in place to its body and files, a file opening as a
+  diff tab "a1b2c3d users.go", "a1b2c3d vs its parent 9e8d7c6" (the
+  parent's side read at the parent, a rename's at its old path, nothing
+  for an added file or a root commit), refreshed every 10 s while it
+  shows, and "Commits made here. Nothing is pushed from Conductor." The
+  Yard's focused tile and the guest page open commits the same way. Tests:
+  go-git against scratch repositories (since a time, after a base in a
+  linked worktree with an old-dated commit, a root commit, modified,
+  added, deleted, renamed and binary files, the totals, an unknown
+  revision), the session's reads through the file policy (the deny list,
+  not a repository, a flag as a revision), vitest for the rows, the words
+  and a tab per commit, Playwright `commits.spec.ts`.
 - **F8, Neovim in the editor (the real one, on the session's machine).**
   Chosen on 2026-10-08 over monaco-neovim-wasm (no license: public code
   without one grants viewing and forking on GitHub, not redistribution)

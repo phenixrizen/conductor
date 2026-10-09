@@ -222,15 +222,32 @@ export interface FileEntry {
 /** One changed file of a `status` reply: the path from the tree's top, M A D R or ? (untracked), its lines against the base. */
 export interface FileChange {
   path: string
+  /** A rename's old path, in a `commit` reply. */
+  from?: string
   status: 'M' | 'A' | 'D' | 'R' | '?'
   added?: number
   removed?: number
   binary?: boolean
 }
 
-/** What a file request may ask for beyond a read: git `status` against `base` (HEAD when empty), or `show` of the path at `rev`. */
+/** One commit of a `log` or `commit` reply (design 4e). `at` is the committer's time, RFC 3339; `body` comes with a `commit` reply only. */
+export interface CommitInfo {
+  sha: string
+  short: string
+  subject: string
+  body?: string
+  author?: string
+  at: string
+  parent?: string
+  parents?: number
+}
+
+/**
+ * What a file request may ask for beyond a read: git `status` against `base` (HEAD when empty), `show` of the path at `rev`, `log` (the
+ * commits on HEAD after `base`, or since the session started) or `commit` (commit `rev`'s files against its first parent).
+ */
 export interface FileGetExtra {
-  op?: 'status' | 'show'
+  op?: 'status' | 'show' | 'log' | 'commit'
   base?: string
   rev?: string
 }
@@ -241,7 +258,11 @@ export type FileRequester = (path: string, stat?: boolean, extra?: FileGetExtra)
 export interface FileHeader {
   reqId: string
   path: string
-  kind: 'file' | 'dir' | 'error' | 'status' | 'show'
+  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit'
+  /** A `log` reply: the commits newest first, and the time they start from when no base was asked for. A `commit` reply: the commit (its files in `changes`). */
+  commits?: CommitInfo[]
+  since?: string
+  commit?: CommitInfo
   /** A `status` reply: the branch checked out, the base's short id (empty when it does not resolve), the changes and their totals. */
   branch?: string
   base?: string

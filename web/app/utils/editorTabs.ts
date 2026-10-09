@@ -18,8 +18,11 @@ export interface EditorTab {
   title: string
   /** The line to show when the tab was opened at one; cleared once shown. */
   line?: number
-  /** A diff tab: the file's status and lines, and the revision it is against (HEAD when empty) with its words. */
-  meta?: { status?: string; added?: number; removed?: number; base?: string; against?: string }
+  /**
+   * A diff tab: the file's status and lines, and the revision it is against (HEAD when empty) with its words. A commit's diff (design 4e)
+   * also names the commit (`rev`, the right side, in place of the working directory; `short` for the title) and a rename's old path (`from`).
+   */
+  meta?: { status?: string; added?: number; removed?: number; base?: string; against?: string; rev?: string; short?: string; from?: string }
 }
 
 export interface TabsState {
@@ -40,8 +43,8 @@ export function emptyTabs(): TabsState {
   return { tabs: [], active: null, folded: false }
 }
 
-export function tabId(kind: TabKind, path: string): string {
-  return `${kind}:${path}`
+export function tabId(kind: TabKind, path: string, rev?: string): string {
+  return rev ? `${kind}@${rev}:${path}` : `${kind}:${path}`
 }
 
 export function tabTitle(kind: TabKind, path: string): string {
@@ -57,9 +60,10 @@ export function tabTitle(kind: TabKind, path: string): string {
 
 /** Opens a file, a URL or a diff: a tab already open is brought to the front (at the line asked for, its meta refreshed); the area unfolds. */
 export function openTab(state: TabsState, kind: TabKind, path: string, line?: number, meta?: EditorTab['meta']): TabsState {
-  const id = tabId(kind, path)
+  const id = tabId(kind, path, meta?.rev)
   const had = state.tabs.find((t) => t.id === id)
-  const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line, meta: meta ?? t.meta } : t)) : [...state.tabs, { id, kind, path, title: tabTitle(kind, path), line, meta }]
+  const title = meta?.rev ? `${meta.short || meta.rev.slice(0, 7)} ${tabTitle(kind, path)}` : tabTitle(kind, path)
+  const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line, meta: meta ?? t.meta } : t)) : [...state.tabs, { id, kind, path, title, line, meta }]
   return { tabs, active: id, folded: false }
 }
 

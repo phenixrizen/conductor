@@ -83,3 +83,16 @@ describe('the keymap setting', () => {
     expect(nvimUnavailableWords({ welcome: false, nvim: true, fileEdit: true })).toBe('Not connected')
   })
 })
+
+describe('a commit\'s diff tab', () => {
+  it('is its own tab per commit, named by the short id', () => {
+    let st = openTab(emptyTabs(), 'diff', '/r/users.go', undefined, { status: 'M' })
+    st = openTab(st, 'diff', '/r/users.go', undefined, { status: 'M', rev: 'a'.repeat(40), short: 'aaaaaaa', base: 'b'.repeat(40) })
+    st = openTab(st, 'diff', '/r/users.go', undefined, { status: 'M', rev: 'c'.repeat(40) })
+    expect(st.tabs.map((t) => t.id)).toEqual(['diff:/r/users.go', `diff@${'a'.repeat(40)}:/r/users.go`, `diff@${'c'.repeat(40)}:/r/users.go`])
+    expect(st.tabs.map((t) => t.title)).toEqual(['users.go', 'aaaaaaa users.go', 'ccccccc users.go'])
+    st = openTab(st, 'diff', '/r/users.go', undefined, { status: 'M', rev: 'a'.repeat(40), short: 'aaaaaaa' })
+    expect(st.tabs).toHaveLength(3)
+    expect(st.active).toBe(`diff@${'a'.repeat(40)}:/r/users.go`)
+  })
+})

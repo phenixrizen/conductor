@@ -54,15 +54,20 @@ function fmtSize(n?: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MiB`
 }
 
-/** A diff tab: the base's version through git show (none for an added file), the working directory's through a read (none for a deleted one). */
+/**
+ * A diff tab: the base's version through git show (none for an added file), the working directory's through a read (none for a deleted
+ * one). A commit's diff (design 4e) shows both sides at their revisions: the parent's (a rename's old path; none for a root commit) and
+ * the commit's.
+ */
 async function loadDiff(tab: EditorTab) {
   loaded.set(tab.id, { state: 'loading' })
   const status = tab.meta?.status
+  const rev = tab.meta?.rev
   try {
     let original = ''
     let modified = ''
-    if (status !== 'A' && status !== '?') {
-      const res = await props.request(tab.path, false, { op: 'show', rev: tab.meta?.base || 'HEAD' })
+    if (status !== 'A' && status !== '?' && !(rev && !tab.meta?.base)) {
+      const res = await props.request(rev ? tab.meta?.from || tab.path : tab.path, false, { op: 'show', rev: tab.meta?.base || 'HEAD' })
       if (res.header.kind === 'error') {
         loaded.set(tab.id, { state: res.header.error?.code === 'file_denied' ? 'refused' : 'error', header: res.header, error: res.header.error?.message || 'cannot read' })
         return
@@ -70,7 +75,7 @@ async function loadDiff(tab: EditorTab) {
       original = new TextDecoder().decode(res.body)
     }
     if (status !== 'D') {
-      const res = await props.request(tab.path, false)
+      const res = rev ? await props.request(tab.path, false, { op: 'show', rev }) : await props.request(tab.path, false)
       if (res.header.kind === 'error') {
         loaded.set(tab.id, { state: res.header.error?.code === 'file_denied' ? 'refused' : 'error', header: res.header, error: res.header.error?.message || 'cannot read' })
         return

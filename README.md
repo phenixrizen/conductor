@@ -334,6 +334,14 @@ times is one line. An agent without hooks reports with `conductor notify
 says. The same events are in the Activity tab and on the Events page, in
 the feed only by default.
 
+The **Commits** section lists the commits on the branch since the session
+started, newest first, each with its subject, short id, author and age (a
+crew member's: the commits since the run's base). A commit opens to its
+message and its files with their lines; a file opens as its diff against
+the commit's parent, in a tab named by the commit's short id. Nothing is
+pushed from Conductor. The history is read with go-git where the session
+runs, a crew's worktree included.
+
 **Neovim in the editor.** The editor's keys are Monaco's unless you press
 the **Keys** button in the tab strip and choose **Neovim**: then a file you
 open is held by the real Neovim on the machine that runs the session (your

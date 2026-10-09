@@ -1,4 +1,5 @@
 import { diffAgainst, type ChangeRow } from '~/utils/changes'
+import { commitAgainst, type CommitChangeRow } from '~/utils/commits'
 import { emptyTabs, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
 
 /**
@@ -35,6 +36,11 @@ export function useEditorTabs() {
     tabs.value = openTab(tabs.value, 'diff', c.abs, undefined, { status: c.status, added: c.added, removed: c.removed, base: against.base, against: diffAgainst({ branch: against.branch, base: against.baseId }, against.base) })
   }
 
+  /** A file of a commit, as its diff against the commit's parent (design 4e); the tab is named by the commit's short id. */
+  function openCommitDiff(c: CommitChangeRow, commit: { sha: string; short: string; parent: string }) {
+    tabs.value = openTab(tabs.value, 'diff', c.abs, undefined, { status: c.status, added: c.added, removed: c.removed, base: commit.parent, rev: commit.sha, short: commit.short, from: c.fromAbs, against: commitAgainst(commit.short, commit.parent) })
+  }
+
   function fold() {
     if (tabs.value.tabs.length) tabs.value = toggleFold(tabs.value)
   }
@@ -44,5 +50,5 @@ export function useEditorTabs() {
     alt_t: { usingInput: true, handler: fold },
   })
 
-  return { tabs, editorOpen, openFile, openUrl, openDiff, fold }
+  return { tabs, editorOpen, openFile, openUrl, openDiff, openCommitDiff, fold }
 }

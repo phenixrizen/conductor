@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { CommitChangeRow } from '~/utils/commits'
 import type { ChatThread } from '~/composables/useChat'
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
 import type { ActivityEntry, ChatMessage, FileRequester, Role, ViewerInfo } from '~/utils/protocol'
@@ -24,7 +25,7 @@ const props = defineProps<{
   chatOffline?: boolean
   ended?: boolean
 }>()
-const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number]; openFile: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }] }>()
+const emit = defineEmits<{ newLink: []; revoke: [link: ShareLink]; chatSend: [text: string, to: string]; chatSendToAgent: [ref: string]; chatRetry: [nonce: string]; chatAnswer: [m: ChatMessage, index: number]; openFile: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }]; openCommitDiff: [change: CommitChangeRow, commit: { sha: string; short: string; parent: string }] }>()
 
 const tab = defineModel<InspectorTab>('tab', { default: 'people' })
 const target = defineModel<FileTarget | null>('target', { default: null })
@@ -161,7 +162,7 @@ function describe(e: ActivityEntry) {
     </div>
 
     <div v-else-if="tab === 'files'" class="flex-1 min-h-0 flex flex-col">
-      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" :activity="activity" external class="flex-1 min-h-0" @open="emit('openFile', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" />
+      <FileBrowser v-model:target="target" v-model:url="url" :request="request" :cwd="session.cwd" :raw-url="rawUrl" :activity="activity" external class="flex-1 min-h-0" @open="emit('openFile', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" @open-commit-diff="(c, k) => emit('openCommitDiff', c, k)" />
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-y-auto p-4">

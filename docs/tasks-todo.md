@@ -150,11 +150,6 @@ Explorer (F1), the Monaco editor beside the terminal (F2), Changes (F3)
 and Touched (F4) landed on 2026-10-08 (`docs/round12-plan.md`, the design
 screens 4a–4g). Still to build, each a pull request from main:
 
-- **Commits (F5, screen 4e):** `git log` since the session started on the
-  working directory's branch, each commit with its message, time and
-  author; a commit opens as its diff against its parent in the diff
-  editor; go-git for the log and the diffs (the linked-worktree check at
-  the first commit), `internal/gitcli` staying for status.
 - **Editing (F6, 4b and 4f):** Save and Ctrl+S for a controller on a
   session whose `fileEdit` setting allows it, `file_write` chunked under
   the frame size and bounded in total, the changed-on-disk warning from
