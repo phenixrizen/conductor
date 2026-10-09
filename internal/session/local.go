@@ -873,6 +873,17 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	// may raise the next one meanwhile, and typing must not clear that one.
 	// Each attention change gets a new Since, which tells the prompts apart.
 	promptSince := s.info.Attention.Since
+	// A question's own choice answers it, with an Enter or without: some
+	// dialogs pick on a digit (Codex's background-server question) or skip on
+	// Escape (its update question), and an Enter after those would land on
+	// the next screen.
+	choice := false
+	for _, o := range s.info.Attention.Options {
+		if o.Input != "" && o.Input == string(data) {
+			choice = true
+			break
+		}
+	}
 	s.mu.Unlock()
 	if ended {
 		return ErrSessionEnded
@@ -884,7 +895,7 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		return nil
 	}
 	s.stampTyping(sub)
-	s.answer(promptSince, sub.ID, sub.Name, true, bytes.IndexByte(data, '\r') >= 0)
+	s.answer(promptSince, sub.ID, sub.Name, true, choice || bytes.IndexByte(data, '\r') >= 0)
 	return nil
 }
 

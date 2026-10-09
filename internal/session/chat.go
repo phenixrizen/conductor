@@ -315,21 +315,27 @@ func chatReplayFrames(scope string, msgs []ChatMessage) [][]byte {
 }
 
 // chatBucket bounds one connection's posts: proto.ChatBurst at once, then
-// proto.ChatRatePerSecond. A clock that steps back earns nothing.
+// proto.ChatRatePerSecond, unless rate and burst say otherwise (the Neovim
+// keys' bucket, NvimInput). A clock that steps back earns nothing.
 type chatBucket struct {
-	mu     sync.Mutex
-	tokens float64
-	last   time.Time
+	mu          sync.Mutex
+	tokens      float64
+	last        time.Time
+	rate, burst float64
 }
 
 func (b *chatBucket) take(now time.Time) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	rate, burst := b.rate, b.burst
+	if rate == 0 {
+		rate, burst = proto.ChatRatePerSecond, proto.ChatBurst
+	}
 	switch {
 	case b.last.IsZero():
-		b.tokens, b.last = proto.ChatBurst, now
+		b.tokens, b.last = burst, now
 	case now.After(b.last):
-		b.tokens = min(proto.ChatBurst, b.tokens+now.Sub(b.last).Seconds()*proto.ChatRatePerSecond)
+		b.tokens = min(burst, b.tokens+now.Sub(b.last).Seconds()*rate)
 		b.last = now
 	}
 	if b.tokens < 1 {

@@ -351,7 +351,9 @@ async function connect() {
       const { cols, rows } = measure()
       if (cols) t.resize(cols, rows)
     }
-    if (props.autoFocus && !props.readOnly) term.focus()
+    // The terminal takes the focus only when nothing else has it: a person who moved to the filter, the chat or a field while it
+    // connected keeps their place (the connect used to take it back, and a shortcut pressed meanwhile lost its target).
+    if (props.autoFocus && !props.readOnly && focusIsFree()) term.focus()
   } catch (e) {
     if (!overlay.value) overlay.value = { title: (e as Error).message }
   } finally {
@@ -378,6 +380,12 @@ function nvimOpen(path: string): Promise<NvimEvent> {
 }
 function nvimInput(id: string, keys: string, seq?: number): void {
   transport?.nvimInput(id, keys, seq)
+}
+/** Whether nothing holds the focus (the page itself, or this terminal): a terminal that connects may take it then. */
+function focusIsFree(): boolean {
+  if (typeof document === 'undefined') return true
+  const el = document.activeElement
+  return !el || el === document.body || !!(host.value && host.value.contains(el))
 }
 function nvimSwap(id: string, choice: NvimSwapChoice): void {
   transport?.nvimSwap(id, choice)

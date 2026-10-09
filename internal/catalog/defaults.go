@@ -50,9 +50,25 @@ func defaults() []Agent {
 			// continue; 3. Continue without trusting): a digit moves the
 			// highlight and Enter picks it, so a prompt's Enter would open the
 			// review. Seen live on 2026-10-09 (round 13, G2c).
+			//
+			// Seen live with Codex 0.161 on 2026-10-09 beside a 0.162 background
+			// server (the desktop's): "Background server has incompatible
+			// feature settings" (1. Run without daemon this time, 2. Restart
+			// with these settings, 3. Cancel highlighted), where a digit picks
+			// at once, so an Enter would cancel and Codex exits; then "Update
+			// available" with "1. Update now (runs `npm install -g
+			// @openai/codex`)" highlighted, where an Enter installs: both held
+			// so a prompt's Enter never lands on them. The update question's
+			// answer is its own footer's "esc skip".
 			Questions: []Question{{
 				Prompt:  `(?i)hooks\s*n?eed\s*review`,
 				Answers: []Answer{{Label: "Trust all and continue", Input: "2\r"}, {Label: "Continue without trusting", Input: "3\r"}},
+			}, {
+				Prompt:  `(?i)background\s*server\s*has\s*incompatible\s*feature\s*settings`,
+				Answers: []Answer{{Label: "Run without the daemon this time", Input: "1"}, {Label: "Cancel (Codex exits)", Input: "3"}},
+			}, {
+				Prompt:  `(?i)update\s*now\s*\(\s*runs`,
+				Answers: []Answer{{Label: "Skip this update", Input: "\x1b"}},
 			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},

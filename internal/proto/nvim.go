@@ -22,6 +22,15 @@ const (
 
 	// MaxNvimKeys bounds one nvim_input's keys (Neovim notation).
 	MaxNvimKeys = 256
+	// NvimKeysPerSecond and NvimKeyBurst bound one connection's
+	// nvim_input messages: one per key a person presses, so enough for the
+	// fastest typing and a held key's repeat (30 a second) with room, and a
+	// burst for keys sent at machine speed (a password manager, an input
+	// tool, winctl's SendInput). They borrowed the chat's 10 a second and 20
+	// at once before 2026-10-09, which dropped every key past the 20th of a
+	// quick burst, seen typing into the Windows app.
+	NvimKeysPerSecond = 100
+	NvimKeyBurst      = 400
 	// MaxNvimLine bounds one line in a `lines` event: a longer line is cut
 	// and the event says so (the buffer then differs from the editor's).
 	MaxNvimLine = 4096

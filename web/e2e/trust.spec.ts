@@ -212,3 +212,48 @@ test('Codex\'s "Hooks need review" holds the member with its answers; Trust all 
     await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
   }
 })
+
+// Codex 0.161 beside a newer background server (the desktop's) asks two
+// more questions at start: "Background server has incompatible feature
+// settings", where a digit picks at once and Cancel is highlighted, then
+// "Update available", where Update now is highlighted and an Enter runs npm
+// install. Both hold the member like the trust question; their choices
+// answer without an Enter; Update now is never picked.
+test("Codex's background-server and update questions hold the member; their choices answer without an Enter", async ({ page, api, state }) => {
+  const dir = join(state.home, '.codex')
+  mkdirSync(dir, { recursive: true })
+  const marks = ['stub-background', 'stub-update'].map((m) => join(dir, m))
+  const answers = ['stub-background-answer', 'stub-update-answer'].map((m) => join(dir, m))
+  for (const m of marks) writeFileSync(m, '')
+  for (const a of answers) rmSync(a, { force: true })
+  const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    ...crewBody(false),
+    name: 'e2e codex questions',
+    members: [{ name: 'solo', agentId: 'codex', prompt: 'say hello', start: { when: 'immediately' } }],
+  })
+  try {
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    const held = async (words: string) => {
+      await expect.poll(async () => (await api.session(member(await api.run(run.id), 'solo').sessionId ?? '')).attention?.message ?? '', { timeout: 30_000 }).toMatch(new RegExp(words, 'i'))
+    }
+    await held('Background server has incompatible')
+    const solo = member(await api.run(run.id), 'solo').sessionId ?? ''
+    expect((await api.session(solo)).attention?.options?.map((o) => o.label)).toEqual(['Run without the daemon this time', 'Cancel (Codex exits)'])
+    expect(logged(await api.run(run.id), "typed solo's prompt")).toBe(false)
+    await page.goto(`/sessions/${encodeURIComponent(solo)}`)
+    const bar = page.locator('[data-quick-reply]')
+    await expect(bar).toBeVisible({ timeout: 30_000 })
+    await bar.getByRole('button', { name: /Run without the daemon this time/ }).click()
+    await held('Update now')
+    expect(readFileSync(answers[0]!, 'utf8').trim()).toBe('1')
+    expect(logged(await api.run(run.id), "typed solo's prompt")).toBe(false)
+    await bar.getByRole('button', { name: /Skip this update/ }).click()
+    await expect.poll(async () => logged(await api.run(run.id), "typed solo's prompt"), { timeout: 30_000 }).toBe(true)
+    expect(readFileSync(answers[1]!, 'utf8').trim(), 'Update now must never be picked').toBe('skip')
+    await api.stopRun(run.id)
+  } finally {
+    for (const m of [...marks, ...answers]) rmSync(m, { force: true })
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+  }
+})

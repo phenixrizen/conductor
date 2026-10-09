@@ -283,6 +283,9 @@ test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a d
 
   // Alt+S from the terminal (the page gave it the focus; a plain / would reach the agent), then ↓: the first row has the focus;
   // J and K move it; Escape leaves the list.
+  // The terminal takes the focus once it connects, which can come after the reply bar shows: wait for it, so Alt+S is pressed
+  // from the terminal as meant (it used to race the connect, which then took the focus back from the filter).
+  await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
   await page.keyboard.press('Alt+s')
   await expect(page.getByPlaceholder('Filter sessions, runs, people')).toBeFocused()
   await page.keyboard.press('ArrowDown')

@@ -892,7 +892,11 @@ Codex asks a second startup question when its hooks are new or changed
 (Codex 0.161 runs hooks only once trusted): "Hooks need review", with Review
 hooks highlighted. Conductor holds it the same way: a crew member waits,
 typed text is refused, and the choices are **Trust all and continue** and
-**Continue without trusting**. An agent's further startup questions are its
+**Continue without trusting**. Two more are held too, seen when Codex runs
+beside a newer Codex background server: "Background server has incompatible
+feature settings" (**Run without the daemon this time**, or **Cancel**, which
+ends Codex) and "Update available" (**Skip this update**); an Enter typed
+there would have cancelled Codex or run `npm install -g` to update it. An agent's further startup questions are its
 `questions` in the catalog, each a `prompt` and its `answers`.
 
 **Worktrees.** With isolation set to *Git worktree per agent*, the working

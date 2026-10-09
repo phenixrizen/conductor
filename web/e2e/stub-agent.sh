@@ -29,6 +29,13 @@
 # picks it; 2 trusts ("Hooks trusted."), 3 goes on without ("Hooks off."),
 # 1 opens the review ("Reviewing hooks."), which a prompt's Enter would;
 # the choice is written to $HOME/.codex/stub-hooks-answer.
+# $HOME/.codex/stub-background and $HOME/.codex/stub-update present: Codex
+# 0.161's "Background server has incompatible feature settings" (a digit
+# picks at once: 1 runs without the daemon, 3 cancels and exits) and then
+# its "Update available" (Update now highlighted; Enter would install, Esc
+# skips) are drawn at start, as seen beside a newer background server; the
+# answers are written to $HOME/.codex/stub-background-answer and
+# stub-update-answer.
 # A line that is exactly `stub tools codex`, `stub tools copilot`,
 # `stub tools agy` or `stub tools goose` makes the stub write stub-tools.txt and report, through
 # that agent's hook flag, the payloads a live run of it sends (round 13,
@@ -274,6 +281,39 @@ hooks_review() {
 	esac
 }
 
+# background_question draws Codex's background-server question; a digit picks at once.
+background_question() {
+	local key
+	printf 'Background server has incompatible feature settings\nThis session requires api_key_model_discovery to be enabled\n  1. Run without daemon this time\n  2. Restart with these settings\n> 3. Cancel\n'
+	while IFS= read -rsn1 key; do
+		case $key in
+		1 | 2 | 3) break ;;
+		esac
+	done
+	printf '%s\n' "$key" >"${HOME:-/tmp}/.codex/stub-background-answer"
+	if [[ $key == 3 ]]; then
+		exit 0
+	fi
+}
+
+# update_question draws Codex's update question: Enter installs (what must
+# never happen from a prompt), Esc skips.
+update_question() {
+	local key
+	printf 'Update available · 0.161.0 -> 0.162.0\n> 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\nenter continue · esc skip\n'
+	while IFS= read -rsn1 key; do
+		if [[ -z $key || $key == $'\r' ]]; then
+			printf 'update\n' >"${HOME:-/tmp}/.codex/stub-update-answer"
+			printf 'Updating Codex...\n'
+			return
+		fi
+		if [[ $key == $'\e' ]]; then
+			printf 'skip\n' >"${HOME:-/tmp}/.codex/stub-update-answer"
+			return
+		fi
+	done
+}
+
 # answer answers one line.
 answer() {
 	local line=$1 rest=$1 kind target_run target branch deadline top to msg
@@ -346,6 +386,12 @@ if [[ ${STUB_TRUST_DIALOG:-} == 1 && -z $trusted ]]; then
 fi
 if [[ -e ${HOME:-/nonexistent}/.codex/stub-hooks-review ]]; then
 	hooks_review
+fi
+if [[ -e ${HOME:-/nonexistent}/.codex/stub-background ]]; then
+	background_question
+fi
+if [[ -e ${HOME:-/nonexistent}/.codex/stub-update ]]; then
+	update_question
 fi
 if [[ -n ${STUB_CHOICES:-} ]]; then
 	printf '%s [%s]\n' "${STUB_ASK:-Which one?}" "$STUB_CHOICES"

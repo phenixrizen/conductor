@@ -859,6 +859,53 @@ tool, and Conductor offered it as Goose.
   lines, Playwright `touched.spec.ts` replaying Goose's payloads through
   `conductor notify --goose-hook`; on this machine a server's catalog
   reports Goose 1.54.0 available and identified.
+- **Tested in the Windows app, and what it found (2026-10-09).** The
+  desktop app's own server binary (in WSL, `~/.local/share/conductor/bin`)
+  was swapped for the new build, the app quit from its tray and relaunched
+  with its debugging port, and winctl-mcp drove it: CDP for reading and
+  clicking, SendInput for real keystrokes. Verified in the app: the Launch
+  dialog offers the real Goose; the Explorer's filter finds a file three
+  folders deep, unopened; a shell command typed for real writes a file and
+  rings the bell, and Touched lists it "seen by git"; under the Neovim
+  keymap real keystrokes with é and 日 type into Neovim and `:w` writes
+  them; a stale swap left by a killed Neovim shows the banner (no process,
+  unsaved changes), Recover reads its text in, `:w` keeps it, Delete
+  removes it; `:confirm q` shows Yes, No, Cancel and Cancel keeps the tab;
+  real Codex's "Trust this folder?" is held with its two choices. Found and
+  fixed:
+  - **Neovim keys were dropped past the 20th of a quick burst.** They
+    shared the chat's bucket (10 a second, 20 at once): "typed for real:
+    café" (exactly 20) landed and the rest of the line did not. Neovim's
+    keys now have their own bound, 100 a second and 400 at once; a session
+    test sends 60 keys at machine speed and Playwright types a 44-character
+    sentence in one go.
+  - **Codex's other startup questions were not held.** Beside a newer
+    Codex background server (the desktop's, 0.162), Codex 0.161 first asks
+    "Background server has incompatible feature settings" (a digit picks at
+    once, Cancel highlighted, so an Enter ends Codex: the app's Codex
+    session exited this way) and then "Update available" with Update now
+    highlighted (an Enter runs `npm install -g @openai/codex`). Both are now
+    in Codex's built-in questions, held like the trust question, with
+    choices that carry no Enter ("1" or "3"; Escape to skip the update),
+    and an input that is exactly one of the showing question's choices
+    answers it with or without an Enter. While finding this, a probe of
+    mine sent "1" and Enter to real Codex: the Enter landed on Update now
+    and the interrupted npm install left `codex` missing; reinstalling
+    `@openai/codex@0.161.0` restored it. Tests: the catalog (the three
+    questions, no answer with an Enter, the update banner not mistaken for
+    the question), the session (a choice answering without an Enter, a key
+    that is not a choice leaving the question), Playwright `trust.spec.ts`
+    (the stub draws both questions; the member is held; Run without the
+    daemon answers "1", Skip this update answers Escape, never Update now;
+    the prompt runs).
+  - **A flaky sidebar test, and the focus it raced.** `sidebar.spec.ts`
+    "the list takes the keys" failed once in CI (PR #77): it pressed Alt+S
+    as soon as the reply bar showed, but the terminal takes the focus when
+    its connection completes, which can come after, and took it back from
+    the filter. The terminal now takes the focus on connect only when
+    nothing else holds it (a person who moved to the filter, the chat or a
+    field keeps their place), and the test waits for the terminal's focus
+    before pressing Alt+S. Five runs out of five locally.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 
