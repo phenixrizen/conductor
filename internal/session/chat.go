@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -73,6 +74,8 @@ type ChatMessage struct {
 	Event   string
 	Nonce   string
 	Options []Option
+	// Quote is the lines of a file the message is about (F7), cleaned and bounded.
+	Quote *proto.ChatQuote
 }
 
 // RoleAgent is the By.Role of a question in the chat: the agent, no viewer
@@ -86,7 +89,91 @@ func ChatToProto(m ChatMessage) proto.ChatMessage {
 	for _, o := range m.Options {
 		out.Options = append(out.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
+	if m.Quote != nil {
+		q := *m.Quote
+		q.Lines = append([]string(nil), m.Quote.Lines...)
+		out.Quote = &q
+	}
 	return out
+}
+
+// cleanQuote bounds a quote (F7): a path (at most MaxQuotePath bytes), a
+// range from 1 with To at least From, at most MaxQuoteLines lines of at most
+// MaxQuoteLine bytes each, control characters but tabs dropped. Nil when
+// there is no path or no range.
+func cleanQuote(q *proto.ChatQuote) *proto.ChatQuote {
+	if q == nil {
+		return nil
+	}
+	path := strings.TrimSpace(CleanChatText(q.Path))
+	if path == "" || q.From < 1 || q.To < q.From || q.To-q.From > 1_000_000 {
+		return nil
+	}
+	out := &proto.ChatQuote{Path: truncateRunes(path, proto.MaxQuotePath), From: q.From, To: q.To, Cut: q.Cut}
+	for i, l := range q.Lines {
+		if i == proto.MaxQuoteLines {
+			out.Cut = true
+			break
+		}
+		var b strings.Builder
+		for _, r := range strings.ToValidUTF8(l, "\uFFFD") {
+			if r == '\t' || !unicode.IsControl(r) {
+				b.WriteRune(r)
+			}
+		}
+		line := b.String()
+		if len(line) > proto.MaxQuoteLine {
+			line = truncateRunes(line, proto.MaxQuoteLine)
+		}
+		out.Lines = append(out.Lines, line)
+	}
+	if len(q.Lines) > proto.MaxQuoteLines {
+		out.Cut = true
+	}
+	return out
+}
+
+// fitQuote leaves out a quote's last lines until the message's frame fits
+// MaxControl: the text alone always does (MaxChatText), a full quote beside
+// a full text of quotes and backslashes may not.
+func fitQuote(m *ChatMessage) {
+	for m.Quote != nil && len(m.Quote.Lines) > 0 && len(proto.MustControlRaw(ChatToProto(*m))) > proto.MaxControl {
+		m.Quote.Lines = m.Quote.Lines[:len(m.Quote.Lines)-1]
+		m.Quote.Cut = true
+	}
+}
+
+// AgentText is what the agent is given for a message: the text alone, or,
+// for a message about lines of a file (F7), where they are as the agent
+// reads a location (internal/api/users.go:14-16), the lines quoted, then the
+// words; at most MaxSubmit bytes, quoted lines left out past it.
+func AgentText(m ChatMessage) string {
+	if m.Quote == nil {
+		return m.Text
+	}
+	loc := fmt.Sprintf("%s:%d", m.Quote.Path, m.Quote.From)
+	if m.Quote.To > m.Quote.From {
+		loc = fmt.Sprintf("%s-%d", loc, m.Quote.To)
+	}
+	head := loc
+	var quoted []string
+	for _, l := range m.Quote.Lines {
+		quoted = append(quoted, "> "+l)
+	}
+	for {
+		parts := []string{head}
+		if len(quoted) > 0 {
+			parts = append(parts, strings.Join(quoted, "\n"))
+		}
+		if m.Text != "" {
+			parts = append(parts, m.Text)
+		}
+		out := strings.Join(parts, "\n")
+		if len(out) <= proto.MaxSubmit || len(quoted) == 0 {
+			return truncateRunes(out, proto.MaxSubmit)
+		}
+		quoted = quoted[:len(quoted)-1]
+	}
 }
 
 // askInChat keeps the agent's question in the session's chat, as the session
@@ -286,13 +373,15 @@ func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error
 		return ChatMessage{}, ErrReadOnly
 	}
 	text := CleanChatText(post.Text)
-	if text == "" {
+	quote := cleanQuote(post.Quote)
+	if text == "" && quote == nil {
 		return ChatMessage{}, ErrChatEmpty
 	}
 	if len(text) > proto.MaxChatText {
 		return ChatMessage{}, ErrChatTooLong
 	}
-	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: scope, Kind: proto.ChatKindMessage, By: chatBy(sub), Text: text, Nonce: cleanNonce(post.Nonce)}
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: scope, Kind: proto.ChatKindMessage, By: chatBy(sub), Text: text, Nonce: cleanNonce(post.Nonce), Quote: quote}
+	fitQuote(&m)
 	if room != nil {
 		// The member the sender looks at, as the client says it, kept when it is one.
 		if room.hasMember(post.On) {
@@ -335,7 +424,7 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 		if send.To == "" {
 			return ErrChatBadScope
 		}
-		if err := room.sendTo(ctx, send.To, ref.Text, sub.Name); err != nil {
+		if err := room.sendTo(ctx, send.To, AgentText(ref), sub.Name); err != nil {
 			return err
 		}
 		room.post(ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeRun, Kind: proto.ChatKindSentToAgent, By: chatBy(sub), Ref: ref.ID, To: send.To})
@@ -349,7 +438,7 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 	if !ok || ref.Kind != proto.ChatKindMessage {
 		return ErrChatUnknownRef
 	}
-	if _, err := s.Submit(ctx, Submission{Text: ref.Text, By: sub}); err != nil {
+	if _, err := s.Submit(ctx, Submission{Text: AgentText(ref), By: sub}); err != nil {
 		return err
 	}
 	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSentToAgent, By: chatBy(sub), Ref: ref.ID}

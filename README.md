@@ -352,6 +352,16 @@ agent edited it, say), the save stops and says who and when, with
 so does everything for a view-only guest. The server's or host's `fileEdit`
 setting (`control`, the default, or `off`) turns editing off for everyone.
 
+**Comments on lines.** Select lines in the editor and a bar offers
+**Comment**, **Ask the agent** and **Copy** (Ctrl+Shift+M and Ctrl+Shift+A
+too). The comment goes to the session's chat as a card with the file, the
+lines and your words; asked of the agent, it is also typed into the agent
+as `internal/api/users.go:14-16` with the lines quoted, then your words.
+Anyone on the session can comment; asking the agent needs control. A card's
+**Open** shows the lines in the editor, and when they moved since (the agent
+added lines above them, say) the card says "Lines moved since · now 18–20"
+and Open goes there.
+
 **Neovim in the editor.** The editor's keys are Monaco's unless you press
 the **Keys** button in the tab strip and choose **Neovim**: then a file you
 open is held by the real Neovim on the machine that runs the session (your

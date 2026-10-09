@@ -5,6 +5,7 @@ import type { ChatMessage } from '~/utils/protocol'
 import { avatarTone } from '~/utils/avatar'
 import { answeredQuestions, chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
 import { agentInitials, initials } from '~/utils/sessions'
+import { quoteLocation, relocationWords, type Relocation } from '~/utils/quote'
 
 /**
  * The messages of a chat (design 2a): a person's avatar, name, a `view` tag
@@ -21,6 +22,27 @@ import { agentInitials, initials } from '~/utils/sessions'
 const props = withDefaults(defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[]; canAnswer?: boolean }>(), { sendTargets: undefined, canAnswer: false })
 const emit = defineEmits<{ sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
 const answered = computed(() => answeredQuestions(props.messages))
+// A comment on lines of a file (design round 12, F7): the card shows the lines; where the page has an editor, Open goes there and a
+// note says when the lines moved or changed since.
+const quotes = useChatQuotes()
+const where = reactive(new Map<string, Relocation | null>())
+watch(
+  () => props.messages.filter((m) => m.quote).map((m) => m.id),
+  (ids) => {
+    if (!quotes) return
+    for (const m of props.messages) {
+      if (!m.quote || !ids.includes(m.id) || where.has(m.id)) continue
+      where.set(m.id, null)
+      void quotes.relocate(m.quote).then((r) => where.set(m.id, r))
+    }
+  },
+  { immediate: true },
+)
+function openQuote(m: ChatMessage) {
+  if (!m.quote || !quotes) return
+  const r = where.get(m.id)
+  quotes.open(m.quote, r?.state === 'moved' ? { from: r.from, to: r.to } : undefined)
+}
 
 function targetsFor(m: ChatMessage) {
   // `member`, never `to`: a menu item's `to` is a link.
@@ -82,7 +104,7 @@ onMounted(() => {
             <span v-if="m.by.role === 'view'" class="rounded-sm border border-default px-1 text-[10px] text-muted" data-chat-view-tag>view</span>
             <span class="font-mono text-[11px] text-muted">{{ chatTime(m.at) }}</span>
             <span v-if="m.on" class="truncate rounded-sm bg-elevated px-1 text-[10px] text-muted" :data-chat-on="m.on">on {{ m.on }}</span>
-            <UDropdownMenu v-if="canSendToAgent && sendTargets && m.text" :items="targetsFor(m)" :content="{ align: 'end' }">
+            <UDropdownMenu v-if="canSendToAgent && sendTargets && (m.text || m.quote)" :items="targetsFor(m)" :content="{ align: 'end' }">
               <UButton label="Send to…" icon="i-lucide-corner-down-right" size="xs" color="neutral" variant="ghost" class="ml-auto opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100" data-chat-send-to />
               <template #item-label="{ item }">
                 <span class="flex flex-col" :data-chat-send-to-item="item.member">
@@ -92,7 +114,7 @@ onMounted(() => {
               </template>
             </UDropdownMenu>
             <UButton
-              v-else-if="canSendToAgent && m.text"
+              v-else-if="canSendToAgent && (m.text || m.quote)"
               label="Send to agent"
               icon="i-lucide-corner-down-right"
               size="xs"
@@ -103,7 +125,18 @@ onMounted(() => {
               @click="emit('sendToAgent', m.id)"
             />
           </div>
-          <p class="whitespace-pre-wrap break-words text-sm">
+          <div v-if="m.quote" class="mt-1 overflow-hidden rounded-md border border-default bg-elevated/40 text-xs" :data-chat-quote="quoteLocation(m.quote)">
+            <div class="flex items-center gap-2 border-b border-default px-2 py-1">
+              <UIcon name="i-lucide-file-code" class="size-3.5 flex-none text-muted" />
+              <span class="min-w-0 flex-1 truncate font-mono text-muted">{{ quoteLocation(m.quote) }}</span>
+              <UButton v-if="quotes" label="Open" icon="i-lucide-arrow-up-right" size="xs" color="neutral" variant="ghost" data-chat-quote-open @click="openQuote(m)" />
+            </div>
+            <pre class="overflow-x-auto px-2 py-1 font-mono text-[11px] leading-snug" data-chat-quote-lines><template v-for="(l, i) in m.quote.lines" :key="i"><span class="select-none text-muted">{{ String(m.quote.from + i).padStart(3, ' ') }}  </span>{{ l }}
+</template></pre>
+            <p v-if="m.quote.cut" class="px-2 pb-1 text-[11px] text-muted">More lines than shown.</p>
+            <p v-if="relocationWords(where.get(m.id))" class="border-t border-default px-2 py-1 text-[11px] text-warning" data-chat-quote-moved>{{ relocationWords(where.get(m.id)) }}</p>
+          </div>
+          <p v-if="m.text" class="whitespace-pre-wrap break-words text-sm">
             <template v-for="(seg, i) in linkify(m.text ?? '')" :key="i">
               <a v-if="seg.href" :href="seg.href" target="_blank" rel="noopener noreferrer" class="break-all text-primary underline underline-offset-2">{{ seg.text }}</a>
               <template v-else>{{ seg.text }}</template>
@@ -115,6 +148,7 @@ onMounted(() => {
     <div v-for="p in pending" :key="p.nonce" class="flex gap-2.5 opacity-80" :data-chat-pending="p.nonce" :data-chat-pending-state="p.state">
       <span class="grid size-7 flex-none place-items-center rounded-full bg-elevated text-[11px] font-semibold text-muted">…</span>
       <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+        <p v-if="p.quote" class="truncate font-mono text-[11px] text-muted">{{ quoteLocation(p.quote) }}</p>
         <p class="whitespace-pre-wrap break-words text-sm">{{ p.text }}</p>
         <p v-if="p.state === 'failed'" class="flex items-center gap-2 text-[11px] text-warning">
           Not sent<template v-if="p.error"> · {{ p.error }}</template>

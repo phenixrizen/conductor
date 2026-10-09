@@ -16,8 +16,9 @@ export interface EditorTab {
   path: string
   /** The file's name, or the URL's host. */
   title: string
-  /** The line to show when the tab was opened at one; cleared once shown. */
+  /** The line to show when the tab was opened at one, and the range's last (a quote's, F7); cleared once shown. */
   line?: number
+  lineTo?: number
   /**
    * A diff tab: the file's status and lines, and the revision it is against (HEAD when empty) with its words. A commit's diff (design 4e)
    * also names the commit (`rev`, the right side, in place of the working directory; `short` for the title) and a rename's old path (`from`).
@@ -59,11 +60,11 @@ export function tabTitle(kind: TabKind, path: string): string {
 }
 
 /** Opens a file, a URL or a diff: a tab already open is brought to the front (at the line asked for, its meta refreshed); the area unfolds. */
-export function openTab(state: TabsState, kind: TabKind, path: string, line?: number, meta?: EditorTab['meta']): TabsState {
+export function openTab(state: TabsState, kind: TabKind, path: string, line?: number, meta?: EditorTab['meta'], lineTo?: number): TabsState {
   const id = tabId(kind, path, meta?.rev)
   const had = state.tabs.find((t) => t.id === id)
   const title = meta?.rev ? `${meta.short || meta.rev.slice(0, 7)} ${tabTitle(kind, path)}` : tabTitle(kind, path)
-  const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line, meta: meta ?? t.meta } : t)) : [...state.tabs, { id, kind, path, title, line, meta }]
+  const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line, lineTo, meta: meta ?? t.meta } : t)) : [...state.tabs, { id, kind, path, title, line, lineTo, meta }]
   return { tabs, active: id, folded: false }
 }
 
@@ -101,7 +102,7 @@ export function toggleFold(state: TabsState): TabsState {
 
 /** The line a tab was opened at, taken once. */
 export function takeLine(state: TabsState, id: string): TabsState {
-  return { ...state, tabs: state.tabs.map((t) => (t.id === id && t.line !== undefined ? { ...t, line: undefined } : t)) }
+  return { ...state, tabs: state.tabs.map((t) => (t.id === id && t.line !== undefined ? { ...t, line: undefined, lineTo: undefined } : t)) }
 }
 
 export function readSplit(storage: Pick<Storage, 'getItem'> | null): number {

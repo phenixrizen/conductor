@@ -864,6 +864,31 @@ waiting on monaco-neovim-wasm's missing license.
   Playwright `saving.spec.ts` (type, dot, Ctrl+S, Touched; the agent's
   edit caught, Compare, Reload, Save anyway; the close prompt and Don't
   save; a view guest's Read only).
+- **F7, Comment on a line (5a, 5b, 5c).** A selection in the editor shows
+  a bar under its last line: Comment, Ask the agent (a controller's) and
+  Copy (`path:from-to` and the lines); Ctrl+Shift+M and Ctrl+Shift+A open
+  the composer from the keyboard, on the selection or the cursor's line.
+  The composer, anchored there, shows the quote and takes the words (Enter
+  sends, Esc closes); the post rides the chat with a new optional `quote`
+  `{path, from, to, lines, cut}` (the path from the working directory, at
+  most 12 lines of 200 bytes, control characters out; its last lines left
+  out when a full text of quotes beside it would pass the 8 KiB frame, a
+  worst case tested), kept with the message and in a run's record. Asked
+  of the agent, the message is typed as the location, the lines as `> `
+  lines and the words, at most 4096 bytes (`AgentText`), on a session and
+  into a run's member alike. In the thread a quote card shows the location
+  and the numbered lines; on a page with an editor (provided by the page,
+  so every chat container shows it) Open goes to the range with it tinted
+  for a moment, and the card reads the file (once per 15 s per path) to say
+  "Lines moved since · now 5–6" (the nearest place the lines are now) or
+  "Lines changed since". The session page brings the Chat tab forward on a
+  comment (the sheet below xl); the guest page posts to its chat too (a
+  view guest comments, a controller asks). Tests: the quote's bounds, the
+  frame's worst case, the agent's text and its typing (Go), vitest for the
+  quote, the location words and the relocation, Playwright
+  `comments.spec.ts` (select, Comment, the card; Ctrl+Shift+A, the marker,
+  the location typed into the agent; the lines moved on disk, the note,
+  Open at the new range).
 - **F8, Neovim in the editor (the real one, on the session's machine).**
   Chosen on 2026-10-08 over monaco-neovim-wasm (no license: public code
   without one grants viewing and forking on GitHub, not redistribution)

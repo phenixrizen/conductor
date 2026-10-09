@@ -14,8 +14,8 @@ export function useEditorTabs() {
   const editorOpen = computed(() => tabs.value.tabs.length > 0 && !tabs.value.folded)
 
   /** A file (a path the agent printed, one chosen in the Files pane, one typed there) opens in the editor area. */
-  function openFile(loc: { path: string; line?: number }) {
-    tabs.value = openTab(tabs.value, 'file', loc.path, loc.line)
+  function openFile(loc: { path: string; line?: number; lineTo?: number }) {
+    tabs.value = openTab(tabs.value, 'file', loc.path, loc.line, undefined, loc.lineTo)
   }
 
   /** A URL the agent printed: a new tab, or a preview tab in the area. */

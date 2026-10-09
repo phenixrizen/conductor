@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { FileHeader, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
+import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
+import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
 import { activateTab, closeAllTabs, closeTab, cycleTab, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
@@ -28,7 +29,11 @@ const props = defineProps<{
   /** Saves a file (design round 12, F6), and whether this connection may edit: Save, Ctrl+S and an editable editor then. */
   write?: FileWriter
   canEdit?: boolean
+  /** Comments on lines (design round 12, F7): the page has a chat to post them to; `canAsk`, and the person may ask the agent. */
+  commenting?: boolean
+  canAsk?: boolean
 }>()
+const emit = defineEmits<{ comment: [c: { quote: ChatQuote; text: string; toAgent: boolean }] }>()
 const tabs = defineModel<TabsState>('tabs', { required: true })
 
 interface Loaded {
@@ -45,7 +50,17 @@ interface Loaded {
 const inlineDiff = ref(false)
 const loaded = reactive(new Map<string, Loaded>())
 const pos = ref({ line: 1, col: 1 })
-const editorRef = ref<{ showLine: (n: number) => void; find: () => void; gotoLine: () => void; focus: () => void; getText: () => string; markClean: () => void; setText: (t: string) => void } | null>(null)
+const editorRef = ref<{
+  showLine: (n: number) => void
+  showRange: (from: number, to: number) => void
+  find: () => void
+  gotoLine: () => void
+  focus: () => void
+  getText: () => string
+  markClean: () => void
+  setText: (t: string) => void
+  getLines: () => string[]
+} | null>(null)
 const copy = useCopy()
 
 const active = computed<EditorTab | null>(() => tabs.value.tabs.find((t) => t.id === tabs.value.active) ?? null)
@@ -144,23 +159,79 @@ watch(
   },
 )
 
-/** The line a tab was opened at, once the editor is up. */
+/** The line (or a quote's range) a tab was opened at, once the editor is up. */
 function onReady() {
   const t = active.value
   if (t?.line) {
-    editorRef.value?.showLine(t.line)
+    if (t.lineTo && t.lineTo > t.line) editorRef.value?.showRange(t.line, t.lineTo)
+    else editorRef.value?.showLine(t.line)
     tabs.value = takeLine(tabs.value, t.id)
   }
 }
 watch(
-  () => active.value?.line,
-  (l) => {
-    if (l && active.value && view.value?.state === 'text' && editorRef.value) {
-      editorRef.value.showLine(l)
-      tabs.value = takeLine(tabs.value, active.value.id)
+  () => [active.value?.line, active.value?.lineTo],
+  () => {
+    const t = active.value
+    if (t?.line && view.value?.state === 'text' && editorRef.value) {
+      if (t.lineTo && t.lineTo > t.line) editorRef.value.showRange(t.line, t.lineTo)
+      else editorRef.value.showLine(t.line)
+      tabs.value = takeLine(tabs.value, t.id)
     }
   },
 )
+
+// Comments on lines (design round 12, F7): a selection in a file shows a bar (Comment, Ask the agent, Copy; Ctrl+Shift+M and
+// Ctrl+Shift+A); the composer under it carries the quote and the words to the page's chat, and with Ask the agent into the agent.
+const selection = ref<{ from: number; to: number; top: number; left: number } | null>(null)
+const composer = ref<{ ask: boolean; quote: ChatQuote; text: string; top: number; left: number } | null>(null)
+const commentable = computed(() => !!props.commenting && active.value?.kind === 'file' && view.value?.state === 'text')
+watch(
+  () => active.value?.id,
+  () => {
+    selection.value = null
+    composer.value = null
+  },
+)
+function onSelection(s: { from: number; to: number; top: number; left: number } | null) {
+  selection.value = s
+}
+function quoteNow(): ChatQuote | null {
+  const t = active.value
+  if (!t || !editorRef.value) return null
+  const s = selection.value
+  const from = s?.from ?? pos.value.line
+  const to = s?.to ?? pos.value.line
+  return makeQuote(quotePath(t.path, props.cwd), editorRef.value.getLines(), from, to)
+}
+function openComposer(ask: boolean) {
+  if (!commentable.value || (ask && !props.canAsk)) return
+  const quote = quoteNow()
+  if (!quote) return
+  composer.value = { ask, quote, text: '', top: selection.value?.top ?? 40, left: Math.max(8, selection.value?.left ?? 8) }
+  nextTick(() => (document.querySelector('[data-editor-composer] textarea') as HTMLTextAreaElement | null)?.focus())
+}
+function copyLines() {
+  const q = quoteNow()
+  if (q) copy(copyText(q), 'Lines copied')
+}
+function sendComment(toAgent: boolean) {
+  const c = composer.value
+  if (!c) return
+  emit('comment', { quote: c.quote, text: c.text.trim(), toAgent })
+  composer.value = null
+  selection.value = null
+  editorRef.value?.focus()
+}
+function onComposerKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    composer.value = null
+    editorRef.value?.focus()
+  } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    sendComment(!!composer.value?.ask)
+  }
+}
 
 const crumbs = computed(() => {
   const t = active.value
@@ -337,6 +408,11 @@ function closingDiscard() {
 
 function onKeydown(e: KeyboardEvent) {
   if (!(e.ctrlKey || e.metaKey)) return
+  if (e.shiftKey && !e.altKey && (e.key.toLowerCase() === 'm' || e.key.toLowerCase() === 'a') && commentable.value) {
+    e.preventDefault()
+    openComposer(e.key.toLowerCase() === 'a')
+    return
+  }
   if (e.key.toLowerCase() === 's' && !e.altKey && !e.shiftKey) {
     // Ctrl+S saves (F6); never the page's own Save as.
     e.preventDefault()
@@ -478,7 +554,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
         <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
-        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" />
+        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
         <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />
@@ -495,6 +571,27 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span class="max-w-md text-muted">{{ refused(view.error || '').words }}</span>
         </div>
         <UAlert v-else color="error" variant="subtle" icon="i-lucide-triangle-alert" class="m-3" :title="view.error || 'Cannot read this path'" />
+        <!-- Over a selection (F7): Comment, Ask the agent, Copy; the composer under the lines. -->
+        <div v-if="commentable && selection && !composer && !activeCompare" class="absolute z-10 flex items-center gap-0.5 rounded-md border border-default bg-default p-0.5 shadow-md" :style="{ top: `${selection.top + 4}px`, left: `${Math.max(8, selection.left)}px` }" data-editor-selection-bar>
+          <UButton label="Comment" icon="i-lucide-message-square-plus" size="xs" color="neutral" variant="ghost" data-editor-comment @mousedown.prevent @click="openComposer(false)" />
+          <UButton v-if="canAsk" label="Ask the agent" icon="i-lucide-bot" size="xs" color="neutral" variant="ghost" data-editor-ask @mousedown.prevent @click="openComposer(true)" />
+          <UButton label="Copy" icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" data-editor-copy-lines @mousedown.prevent @click="copyLines" />
+        </div>
+        <div v-if="composer" class="absolute z-10 flex w-96 max-w-[calc(100%-16px)] flex-col gap-2 rounded-lg border border-default bg-default p-3 shadow-lg" :style="{ top: `${composer.top + 4}px`, left: `${Math.min(composer.left, 8)}px` }" data-editor-composer :data-editor-composer-mode="composer.ask ? 'ask' : 'comment'">
+          <div class="flex items-center gap-2 text-xs">
+            <UIcon :name="composer.ask ? 'i-lucide-bot' : 'i-lucide-message-square-plus'" class="size-3.5 flex-none text-muted" />
+            <span class="min-w-0 flex-1 truncate font-medium text-highlighted">{{ composer.ask ? 'Ask the agent about' : 'Comment on' }} {{ rangeWords(composer.quote.from, composer.quote.to) }}</span>
+            <span class="flex-none truncate font-mono text-[11px] text-muted">{{ quoteLocation(composer.quote) }}</span>
+          </div>
+          <pre class="max-h-24 overflow-auto rounded border border-default bg-elevated/40 px-2 py-1 font-mono text-[11px] leading-snug" data-editor-composer-quote><template v-for="(l, i) in composer.quote.lines" :key="i"><span class="select-none text-muted">{{ String(composer.quote.from + i).padStart(3, ' ') }}  </span>{{ l }}
+</template></pre>
+          <UTextarea v-model="composer.text" :rows="2" autoresize :maxrows="6" :placeholder="composer.ask ? 'What should the agent do with these lines?' : 'Say something about these lines'" aria-label="Comment" @keydown="onComposerKey" />
+          <div class="flex items-center justify-end gap-1.5">
+            <span class="mr-auto text-[11px] text-muted">Enter sends · Esc closes</span>
+            <UButton label="Comment" size="xs" :color="composer.ask ? 'neutral' : 'primary'" :variant="composer.ask ? 'ghost' : 'solid'" data-editor-composer-send @click="sendComment(false)" />
+            <UButton v-if="canAsk" label="Ask the agent" icon="i-lucide-bot" size="xs" :color="composer.ask ? 'primary' : 'neutral'" :variant="composer.ask ? 'solid' : 'ghost'" data-editor-composer-ask @click="sendComment(true)" />
+          </div>
+        </div>
       </div>
     </template>
     <UModal :open="!!closing" :title="closingWords.title" :description="closingWords.words" :dismissible="!saving" data-editor-close-prompt @update:open="(o) => !o && (closing = null)">

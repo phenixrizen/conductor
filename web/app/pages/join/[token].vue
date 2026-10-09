@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
-import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome } from '~/utils/protocol'
+import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, ChatQuote } from '~/utils/protocol'
 import { CloseCode } from '~/utils/protocol'
 import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import { emptyTabs } from '~/utils/editorTabs'
@@ -136,6 +136,11 @@ function onChat(m: ChatMessage) {
 }
 function onChatHistory(h: ChatHistory) {
   if (h.scope !== 'run') chat.history(h)
+}
+// Comments on lines (F7): posted to this session's chat; a controller may ask the agent. A quote card opens the file here.
+provideChatQuotes(quoteActionsFor(requestFile, () => current.value?.cwd, openFile))
+function onComment(c: { quote: ChatQuote; text: string; toAgent: boolean }) {
+  chat.send(c.text, { quote: c.quote, ...(c.toAgent ? { to: 'agent' } : {}) }, viaChat)
 }
 function chatSend(text: string, to: string) {
   chat.send(text, to ? { to } : {}, viaChat)
@@ -437,7 +442,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
     </header>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
-      <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'">
+      <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'" commenting :can-ask="info.role === 'control' && !ended" @comment="onComment">
         <TerminalView
           :key="current.id"
           ref="terminal"
