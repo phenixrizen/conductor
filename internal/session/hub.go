@@ -48,6 +48,11 @@ type Subscription struct {
 	inflight atomic.Int32 // file requests in progress
 
 	chat chatBucket // the connection's chat posts, bounded
+	// nvims are this connection's Neovim editors (design round 12, F8), by
+	// id; keys to them are bounded by nvimKeys.
+	nvimMu   sync.Mutex
+	nvims    map[string]*nvimEditor
+	nvimKeys chatBucket
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool

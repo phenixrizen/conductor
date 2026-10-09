@@ -779,6 +779,138 @@ waiting on monaco-neovim-wasm's missing license.
   through its hooks") checks the real agent's read and write land as
   file events; Codex's passes only where its `features.hooks` is on with
   Conductor's hooks.json, which this machine does not have.
+- **By hand, F1–F4 on Windows (2026-10-08).** A dev server from main on
+  the WSL box, opened in Chrome on the Windows host and driven through a
+  desktop-control MCP (UI Automation, real mouse and keyboard, window
+  screenshots), with the real Claude Code 2.1.295 in the trusted scratch
+  repository, bypass permissions on. Seen and screenshotted: the Explorer
+  tree with sizes and the breadcrumb; "internal/api/users.go:12" and
+  Enter opening the file in Monaco at Ln 12 with Go highlighting, the
+  breadcrumbs and the minimap; a second file as a second tab; the fold
+  strip "2 files open · users.go README.md" and unfold; the split bar
+  dragged 150 px (the editor from 495 to 644 px, the split kept); the
+  tab's × closing it and the editor folding away. A typed prompt had the
+  agent read and edit README.md: Changes listed it as M +1 −0 within
+  seconds ("Refreshed as the agent works · 4s ago"), the Explorer marked
+  it M with a touched dot, the diff opened side by side against HEAD and
+  inline, Open file raised the file's tab; Touched listed "README.md
+  Edit · agent · 16:29:33" above its Read, newest first; the Activity tab
+  and the Events feed worded both, and the session's sidebar row carried
+  no badge. Two notes: the filter box matches only what the tree has
+  loaded (a "users" typed before `internal` was expanded found nothing;
+  in the todo); Ctrl+Tab is a reserved shortcut in Chrome, so the tab
+  cycle cannot be driven from a browser tab (it works in the desktop app
+  and in the Playwright spec). The phone layout and the light theme were
+  not part of this pass.
+- **F8, Neovim in the editor (the real one, on the session's machine).**
+  Chosen on 2026-10-08 over monaco-neovim-wasm (no license: public code
+  without one grants viewing and forking on GitHub, not redistribution)
+  and over monaco-vim: the editor's keys stay Monaco's until the **Keys**
+  button in the tab strip is pressed, which is kept per browser
+  (`conductor.editor.keymap`) and is off by default, so nobody who never
+  asked for Vim keys meets one. With Neovim chosen, a file opened on the
+  session page is held by `nvim --embed` on the machine that runs the
+  session (the person's own config and plugins), started by the official
+  Go client (`github.com/neovim/go-client`, Apache 2.0) with a UI attached
+  for the mode, the command line and the messages, the buffer followed
+  through `nvim_buf_attach`, the cursor through an autocmd. The wire is
+  `nvim_open`, `nvim_input` (≤ 256 bytes, a per-connection bucket),
+  `nvim_close` and `nvim_event` (the buffer's `lines` cut to the control
+  bound, a line past 4 KiB cut and marked; `cursor`, `mode`, `cmdline`,
+  `message`, `written`, `closed`, `error`), on the terminal's connection
+  as file reads are, on the server and in `conductor host`; the switchyard
+  drops the three from view-role connections. The policy is the new
+  `fileEdit` setting (`control`, the default; `off`; `CONDUCTOR_FILE_EDIT`,
+  `conductor host --file-edit`) on top of the control role and `fileView`,
+  reported in the welcome as `fileEdit` and `nvim` (installed there), at
+  most 2 editors per connection and 8 per session, closed with the
+  connection. In Monaco the keys are intercepted and sent in Neovim
+  notation (`utils/nvimKeys.ts`), the model follows the `lines` events
+  (`utils/nvimLines.ts`), the cursor style follows the mode, a visual
+  selection shows as Monaco's, a status line under the tabs shows
+  `-- INSERT --`, the command line as typed and the messages; `:w` writes
+  on that machine and lands in Activity as the person's `file` event
+  `write` with tool `nvim`, so Changes and Touched follow; `:q` closes the
+  tab; Ctrl+W goes to Neovim in that keymap. Where `nvim` is missing or
+  the connection may not edit, the button's note says so and the keys
+  stay Monaco's. Verified against Neovim 0.10.4 on this machine: the Go
+  bridge (`internal/nvim`), the policy and bounds through the session
+  (`internal/session/nvim_test.go`), the viewer WebSocket end to end
+  (`TestNvimOverTheViewerWebSocket`: opened, the buffer, `dd` as a
+  deletion, `:w` on disk, a view link refused with `nvim_unavailable`),
+  22 vitest cases for the keys and the edits, and Playwright
+  `vim.spec.ts` (off by default; the button; `dd`; insert mode with its
+  words; `:w` on the command line, written on disk, the message, the
+  Touched row with tool `nvim`; `:q` closing the tab; the choice kept
+  across a reload and turned off again). CI installs Neovim 0.10.4 from
+  the pinned release for the go and e2e jobs; without it the Go tests
+  skip with a message and the spec is skipped. Left for later (the todo):
+  the Yard's focused tile and the guest page, a local echo in insert mode,
+  byte columns with multibyte text, a Settings row.
+- **By hand, v0.7.0-rc.4 in the installed desktop app on Windows
+  (2026-10-08).** rc.4 was cut from main (F1–F4), its installer put on the
+  Windows host and run through the same desktop-control MCP: the welcome
+  page with the lockup in the header and "Conductor 0.7.0-rc.4", the
+  "Choose Installation Options" page naming the per-machine install it
+  would upgrade, the elevation prompt (the person's click), the finish
+  page with the lockup on forest and the sponsor badge in the sidebar.
+  The app launched, put the rc.4 server in the WSL distribution and ran
+  it; its page was driven through Electron's own debugging port
+  (`--remote-debugging-port`, for one launch) with real keys and mouse
+  for what a person types and hovers, screenshots of the window for what
+  shows. Passed, each with a screenshot: **3b** two loose sessions (one
+  asking), a run of three (one asking, one exited, folded "Exited · 1"
+  with the count), the hosted session from this box with the laptop tag
+  "lan-box", the Yard's count; **3c** hover (Share, Stop, More), the
+  in-row stop confirm ("Stop migrate-db? … Cancel / Stop") and its
+  Cancel, the run header's Share run, Stop run, Open run; **3c keys**
+  `/` to the filter, ↓ to the first row, J and K over rows and the run
+  block, Enter opening the row, X asking and Esc cancelling, S opening
+  "Share lan-shell", R from a member opening its run; **3d** Ctrl+B to
+  the rail with the counts, the run capsule holding its members, the
+  laptop tile, "+2" exited, the tooltip "users api · run started 17:46 ·
+  lead running · core running"; **3f** nothing dropped remains. **The
+  trust question (rc.3)**: Claude Code 2.1.295 in an unseen folder shows
+  the two answers on the reply bar, the row, the Yard count and the
+  chat; "Yes" from the row and "Yes" from the chat each let it continue
+  (no exit); "To agent" while it asks is refused with "the agent asks
+  whether to trust the folder: answer with the question's choices, or in
+  its terminal". **Chat 2a, 2b, 2g, 2h** with a second browser as Jane:
+  names, roles and times; "To agent" typing `echo chat-to-agent-ok` into
+  Claude Code with the marker "Sent to agent by nater"; the closed tab's
+  count rising on her message and clearing on open; the pills on the
+  session row and the run header while on the home page; "This session
+  ended. The chat is read-only…" after a stop. **2e** the run's Chat
+  beside Share, the scope menu "Chat only · everyone here reads it",
+  "Also send to lead · waiting on a prompt: skipped" (disabled), "Also
+  send to core · typed into its terminal", "Also send to review · ended";
+  `echo run-chat-ok` typed into core with "Sent to core by nater"; a
+  member's question in the run chat on its name. **2d** through the real
+  switchyard (switchyard.rslabs.net, still rc.2): the view link's join
+  card ("You'll be view only: you can watch and open files", the sponsor
+  badge), joined as Guest: the terminal over "WebRTC direct", "hosted on
+  naterdev-win", the chat with "You are view only: what you write reaches
+  the people here, not the agent." and no agent actions. **The newline
+  chords** Shift+Enter and Ctrl+Enter each added a line to a Claude Code
+  prompt and Enter submitted the three lines. **G then Y** opened the
+  Yard with the focus outside the terminal. **The Files tab in the app**:
+  an image on the checker with "64 × 48" and Open raw, a binary file
+  ("Binary file; nothing to show · 2.0 KiB. Open raw downloads it."), a
+  link the shell printed clicked in the terminal and previewed in the
+  pane (example.com in the sandboxed frame with New tab, Refresh, Copy),
+  the Yard's focused tile opening go.mod in Monaco from its Files pane.
+  Not verifiable by this harness: the Alt chords (the control server's
+  key events carry no scan code, so `e.code` is empty and both xterm's
+  pass-through and the shortcut matcher, which key on `e.code` under Alt,
+  ignore them; a synthetic Alt+Y navigates, and a real keyboard sets the
+  code) and the uninstaller's sidebar. Seen and not explained: an
+  "error" badge on a shell member (lead at launch, review after a stop
+  with exit 0) with no error line in the Events feed; in the todo. Two
+  harness lessons: Enter or Esc sent to a focused terminal while Claude
+  Code asks the trust question answers it ("No, exit" / cancel) and the
+  session ends, so a keyboard pass must leave such a page first; a
+  session row below the sidebar's fold cannot be hovered until scrolled
+  into view.
 
 ## The trust question's answers as choices (2026-10-08)
 

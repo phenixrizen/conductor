@@ -334,6 +334,20 @@ times is one line. An agent without hooks reports with `conductor notify
 says. The same events are in the Activity tab and on the Events page, in
 the feed only by default.
 
+**Neovim in the editor.** The editor's keys are Monaco's unless you press
+the **Keys** button in the tab strip and choose **Neovim**: then a file you
+open is held by the real Neovim on the machine that runs the session (your
+own config and plugins), shown in Monaco. Every key goes to Neovim; the
+status line under the tabs shows the mode, the command line as you type it
+and Neovim's messages; `:w` writes the file there (a file event by you, so
+Changes and Touched follow) and `:q` closes the tab. The choice is kept per
+browser and is off until chosen, so nobody who never asked for Vim keys
+meets one. It needs `nvim` on that machine (the button says when it is
+missing), control of the session, and the server's or host's `fileEdit`
+setting left at `control` (`CONDUCTOR_FILE_EDIT`, `conductor host
+--file-edit`; `off` turns editing off for everyone). A view-only guest keeps
+the read-only editor.
+
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
 File locations such as `internal/api/server.go:42`, `./README.md` or Python

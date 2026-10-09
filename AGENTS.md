@@ -13,6 +13,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `internal/store` | atomic JSON documents in the data directory (`dataDir`) |
 | `internal/agents` | per-agent hook adapters: assets under `dataDir/hooks`, launch injection, on-demand install into the agent's own config, the Conductor skill and where each agent reads it (`SkillPath`, installed at launch), hook payload mappers |
 | `internal/crew` | crews (saved teams of agents) and their runs: model, persistence in `crews/<id>.json`, run engine |
+| `internal/nvim` | the editor's Neovim: one `nvim --embed` per open file on the machine that runs the session, driven over msgpack-rpc (the official Go client); the buffer's changes, the cursor, the mode, the command line and the messages to a handler, keys in; `internal/session/nvim.go` puts it on the terminal's connection under the `fileEdit` policy |
 | `internal/proto` | binary framing and JSON messages |
 | `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention, submissions (a paste, then Enter: the one way Conductor types into a session), the agent's own session |
 | `internal/reach` | how the server is reached from outside: the public address by STUN, the TLS port mapped on the gateway (UPnP IGD, PCP, NAT-PMP), the self-check; mapped is never reported as reachable |
@@ -101,7 +102,7 @@ reported limitation, not a pass.
 
 | Dependency | Version |
 |---|---|
-| Go | `go 1.26` (module); CI takes the latest 1.26 patch (`~1.26.0`, check-latest), which the standard library's vulnerability fixes need |
+| Go | `go 1.26` (module) with `toolchain go1.26.9` pinned in `go.mod`, so every machine and CI run the patch the standard library's vulnerability fixes need (the go command fetches it on its own; CI's `~1.26.0` with check-latest lags a new patch by days) |
 | honnef.co/go/tools (staticcheck, `make lint-static`) | v0.8.1 (2026.2.1) |
 | golang.org/x/vuln (govulncheck, `make vuln`) | v1.8.0 |
 | github.com/pion/webrtc/v4 | v4.2.21 |
@@ -110,6 +111,8 @@ reported limitation, not a pass.
 | github.com/pion/stun/v4 (direct for the reach lookup) | v4.0.1 |
 | github.com/pion/ice/v4 (direct for the UDP mux type) | v4.4.4 |
 | github.com/go-acme/lego/v5 (core, tls-alpn-01, http-01, dns-01 with cloudflare, exec, httpreq) | v5.5.2 |
+| github.com/neovim/go-client (the editor's Neovim bridge: `nvim --embed` over msgpack-rpc) | v1.2.1 |
+| Neovim (`nvim`, found on PATH at runtime; CI installs it for the bridge's tests) | v0.10.4 in CI; 0.10 or later on a machine |
 | github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |

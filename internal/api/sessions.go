@@ -246,6 +246,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
 		MaxViewers:      s.cfg.MaxViewersPerSession,
 		FileView:        string(s.cfg.FileView),
+		FileEdit:        string(s.cfg.FileEdit),
 		FileDeny:        s.fileDeny,
 		Transport:       proto.TransportWS,
 		Log:             s.log,

@@ -14,7 +14,7 @@ permissions:
 
 env:
   GOFLAGS: -mod=readonly
-  GOTOOLCHAIN: local
+  GOTOOLCHAIN: auto # go.mod pins the patch toolchain; the go command fetches it
 
 jobs:
   checks:

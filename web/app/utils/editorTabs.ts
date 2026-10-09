@@ -131,3 +131,31 @@ export function editorHeight(total: number, split: number, lineHeight: number, r
   const most = Math.max(0, total - reserved - minTerminal)
   return Math.max(0, Math.min(most, Math.round(total * clampSplit(split))))
 }
+
+/** The editor's keymap (design round 12, F8): Monaco's own keys, or the real Neovim on the session's machine. Kept per browser. */
+export type Keymap = 'default' | 'nvim'
+export const KEYMAP_KEY = 'conductor.editor.keymap'
+
+export function readKeymap(storage: Pick<Storage, 'getItem'> | null): Keymap {
+  try {
+    return storage?.getItem(KEYMAP_KEY) === 'nvim' ? 'nvim' : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+export function writeKeymap(storage: Pick<Storage, 'setItem'> | null, keymap: Keymap): void {
+  try {
+    storage?.setItem(KEYMAP_KEY, keymap)
+  } catch {
+    // The browser may refuse storage; the choice then lasts the page.
+  }
+}
+
+/** What the keymap switch says when Neovim cannot be offered: why, in a few words, or '' when it can. */
+export function nvimUnavailableWords(opts: { welcome: boolean; nvim: boolean; fileEdit: boolean; machine?: string }): string {
+  if (!opts.welcome) return 'Not connected'
+  if (!opts.nvim) return `Neovim is not installed on ${opts.machine || 'the machine that runs this session'}`
+  if (!opts.fileEdit) return 'View only here: Neovim needs control, on a session that allows editing'
+  return ''
+}

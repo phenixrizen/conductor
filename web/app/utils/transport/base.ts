@@ -19,6 +19,8 @@ import { rttFromPong } from './rtt'
 import type { CloseInfo, TerminalTransport, TransportState } from './types'
 
 const FILE_TIMEOUT_MS = 20000
+/** How long an nvim_open may take: Neovim loading the person's config. */
+const NVIM_OPEN_TIMEOUT_MS = 20_000
 
 /**
  * Shared frame handling for both transports: listener registration, the
@@ -34,6 +36,8 @@ export abstract class BaseTransport implements TerminalTransport {
   protected controlCbs: Array<(msg: ControlMessage) => void> = []
   protected closeCbs: Array<(info: CloseInfo) => void> = []
   protected pendingFiles = new Map<string, { resolve: (r: FileResponse) => void; reject: (e: Error) => void; timer: number }>()
+  /** nvim_open requests waiting for their `opened` or `error` event, by reqId (design round 12, F8). */
+  protected nvimOpens = new Map<string, { resolve: (ev: NvimEvent) => void; reject: (e: Error) => void; timer: number }>()
   protected chunks = new ChunkAssembler()
   protected lastError?: { code: string; message: string }
   protected welcomeResolve?: (w: Welcome) => void
@@ -84,6 +88,27 @@ export abstract class BaseTransport implements TerminalTransport {
   ping(): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'ping', ts: Date.now() }))
+  }
+
+  nvimOpen(path: string): Promise<NvimEvent> {
+    if (this.state.value !== 'open') return Promise.reject(new Error('not connected'))
+    const reqId = `n${(++this.reqCounter).toString(36)}`
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.nvimOpens.delete(reqId)
+        reject(new Error('neovim did not answer'))
+      }, NVIM_OPEN_TIMEOUT_MS)
+      this.nvimOpens.set(reqId, { resolve, reject, timer })
+      this.send(encodeControl({ t: 'nvim_open', reqId, path }))
+    })
+  }
+  nvimInput(id: string, keys: string): void {
+    if (this.state.value !== 'open') return
+    this.send(encodeControl({ t: 'nvim_input', id, keys }))
+  }
+  nvimClose(id: string): void {
+    if (this.state.value !== 'open') return
+    this.send(encodeControl({ t: 'nvim_close', id }))
   }
 
   requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {
@@ -163,6 +188,14 @@ export abstract class BaseTransport implements TerminalTransport {
     } else if (msg.t === 'pong') {
       const r = rttFromPong(msg.ts, Date.now())
       if (r !== null) this.rtt.value = r
+    } else if (msg.t === 'nvim_event' && msg.reqId && (msg.kind === 'opened' || msg.kind === 'error')) {
+      const waiting = this.nvimOpens.get(msg.reqId)
+      if (waiting) {
+        this.nvimOpens.delete(msg.reqId)
+        window.clearTimeout(waiting.timer)
+        if (msg.kind === 'opened') waiting.resolve(msg)
+        else waiting.reject(Object.assign(new Error(msg.message || msg.code || 'refused'), { code: msg.code }))
+      }
     }
     for (const cb of this.controlCbs) cb(msg)
   }

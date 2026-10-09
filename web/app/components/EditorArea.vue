@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { FileHeader, FileRequester } from '~/utils/protocol'
+import type { FileHeader, FileRequester, NvimBridge } from '~/utils/protocol'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, cycleTab, openTab, takeLine, toggleFold, type EditorTab, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeAllTabs, closeTab, cycleTab, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
 
 /**
@@ -15,6 +16,8 @@ import { crumbsOf } from '~/utils/fileTree'
  */
 const props = defineProps<{
   request: FileRequester
+  /** The editor's Neovim, when the page offers it (design round 12, F8): the keymap switch shows then. */
+  nvim?: NvimBridge
   cwd?: string
   rawUrl?: (path: string) => string | null
   /** The name of a hosted session's machine while it is away: its files cannot be read until it returns. */
@@ -175,6 +178,28 @@ function reload() {
   if (active.value) load(active.value)
 }
 
+// The keymap (design round 12, F8): Monaco's keys, or the real Neovim on the
+// session's machine, chosen with the button and kept per browser. Off unless
+// chosen: nobody who never presses it meets a Vim key.
+const keymap = ref<Keymap>('default')
+onMounted(() => {
+  keymap.value = readKeymap(typeof localStorage === 'undefined' ? null : localStorage)
+})
+function setKeymap(k: Keymap) {
+  keymap.value = k
+  writeKeymap(typeof localStorage === 'undefined' ? null : localStorage, k)
+}
+const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) : 'Neovim is not offered on this page'))
+const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
+const nvimState = ref<{ mode: string; cmdline: string; message: string; messageKind: string } | null>(null)
+const keymapTip = computed(() => {
+  if (keymap.value === 'nvim') return nvimWhy.value ? `${nvimWhy.value} · Monaco's keys meanwhile · click for Monaco's keys` : "Neovim keys: the real Neovim on the session's machine holds the file · click for Monaco's keys"
+  return "Monaco's keys · click for Neovim keys (the real Neovim on the session's machine)"
+})
+function closeActive() {
+  if (active.value) tabs.value = closeTab(tabs.value, active.value.id)
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (!(e.ctrlKey || e.metaKey)) return
   if (e.key === 'Tab') {
@@ -226,6 +251,9 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           </div>
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
+          <UTooltip v-if="nvim" :text="keymapTip">
+            <UButton :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
+          </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />
           </UTooltip>
@@ -268,6 +296,16 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" aria-label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" data-editor-raw />
         </template>
       </div>
+      <!-- Neovim's status line (design round 12, F8): the mode, the command line as typed, the last message. -->
+      <div v-if="keymap === 'nvim' && active?.kind === 'file' && view?.state === 'text'" class="flex h-7 flex-none items-center gap-3 overflow-hidden border-b border-default bg-elevated/40 px-3 font-mono text-[11px]" data-nvim-status :data-nvim-mode="nvimOn ? (nvimState?.mode ?? '') : 'off'">
+        <template v-if="nvimOn">
+          <span class="flex-none font-semibold text-highlighted" data-nvim-mode-words>{{ modeWords(nvimState?.mode ?? '') }}</span>
+          <span v-if="nvimState?.cmdline" class="flex-none text-highlighted" data-nvim-cmdline>{{ nvimState.cmdline }}</span>
+          <span v-if="nvimState?.message" class="min-w-0 flex-1 truncate" :class="nvimState.messageKind === 'emsg' ? 'text-error' : 'text-muted'" data-nvim-message>{{ nvimState.message }}</span>
+          <span v-if="!nvimState?.cmdline && !nvimState?.message && !modeWords(nvimState?.mode ?? '')" class="text-muted">Neovim · :w writes on {{ nvim?.offer.machine || 'the machine' }} · :q closes the tab</span>
+        </template>
+        <span v-else class="flex items-center gap-1.5 text-warning" data-editor-keymap-note><UIcon name="i-lucide-info" class="size-3.5" />{{ nvimWhy }} · Monaco's keys meanwhile</span>
+      </div>
       <!-- The body. -->
       <div class="relative min-h-0 flex-1" :data-editor-state="hostAway ? 'host-away' : (view?.state ?? 'loading')">
         <div v-if="hostAway" class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm">
@@ -277,7 +315,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         </div>
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
-        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="active!.id" :path="active!.path" :text="view.text ?? ''" :line="active!.line" read-only @cursor="pos = $event" @ready="onReady" />
+        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" read-only :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" />
         <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />

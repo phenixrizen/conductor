@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FileRequester } from '~/utils/protocol'
+import type { FileRequester, NvimBridge } from '~/utils/protocol'
 import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~/utils/editorTabs'
 
 /**
@@ -12,6 +12,8 @@ import { clampSplit, readSplit, toggleFold, writeSplit, type TabsState } from '~
  */
 const props = defineProps<{
   request: FileRequester
+  /** The editor's Neovim, when the page offers it (design round 12, F8). */
+  nvim?: NvimBridge
   cwd?: string
   rawUrl?: (path: string) => string | null
   hostAway?: string
@@ -57,6 +59,7 @@ function bringTerminalUp() {
     <EditorArea
       v-model:tabs="tabs"
       :request="request"
+      :nvim="nvim"
       :cwd="cwd"
       :raw-url="rawUrl"
       :host-away="hostAway"

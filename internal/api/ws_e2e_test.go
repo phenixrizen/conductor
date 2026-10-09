@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/nvim"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 )
@@ -1250,4 +1251,78 @@ func TestAViewLinkClosesAsSessionEndedWhenTheSessionEnds(t *testing.T) {
 		t.Fatalf("stop: %d", resp.StatusCode)
 	}
 	guest.expectClose(proto.CloseSessionEnded)
+}
+
+// expectNvim waits for the next nvim_event of the kind.
+func (w *wsClient) expectNvim(kind string) map[string]any {
+	w.t.Helper()
+	for {
+		f, err := w.read()
+		if err != nil {
+			w.t.Fatalf("waiting for an nvim_event %s: %v", kind, err)
+		}
+		if f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(f.Payload, &m)
+		if m["t"] == proto.CtlNvimEvent && m["kind"] == kind {
+			return m
+		}
+	}
+}
+
+// The editor's Neovim over the viewer WebSocket (design round 12, F8): the
+// welcome says the owner may edit and nvim is here; nvim_open answers with
+// opened and the buffer; a key's change comes back as lines; :w writes the
+// file; a view link is refused with nvim_unavailable.
+func TestNvimOverTheViewerWebSocket(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	e := newTestEnv(t, nil)
+	dir := filepath.Join(e.root, "notes")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("alpha\nbeta\n"), 0o644)
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "cwd": dir})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create session: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	owner := dialViewer(t, e, id, adminToken)
+	owner.hello(0, 0)
+	if w := owner.expectControl(proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+	owner.expectControl(proto.CtlReady)
+	owner.send(proto.MustControl(proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "notes.txt"}))
+	opened := owner.expectNvim(proto.NvimOpened)
+	if opened["reqId"] != "r1" || opened["id"] == nil {
+		t.Fatalf("opened %v", opened)
+	}
+	nid := opened["id"].(string)
+	if lines := owner.expectNvim(proto.NvimLines); lines["last"] != float64(-1) || len(lines["lines"].([]any)) != 2 {
+		t.Fatalf("the whole buffer %v", lines)
+	}
+	owner.send(proto.MustControl(proto.NvimInput{T: proto.CtlNvimInput, ID: nid, Keys: "dd"}))
+	if lines := owner.expectNvim(proto.NvimLines); lines["first"] != nil || lines["last"] != float64(1) || lines["lines"] != nil { // first 0 is left out
+		t.Fatalf("dd %v", lines)
+	}
+	owner.send(proto.MustControl(proto.NvimInput{T: proto.CtlNvimInput, ID: nid, Keys: ":w<CR>"}))
+	owner.expectNvim(proto.NvimWritten)
+	if b, _ := os.ReadFile(filepath.Join(dir, "notes.txt")); string(b) != "beta\n" {
+		t.Fatalf("after :w: %q", b)
+	}
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.hello(0, 0)
+	if w := guest.expectControl(proto.CtlWelcome); w["fileEdit"] != nil {
+		t.Fatalf("a view link's welcome offers editing: %v", w)
+	}
+	guest.expectControl(proto.CtlReady)
+	guest.send(proto.MustControl(proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "g1", Path: "notes.txt"}))
+	if ev := guest.expectNvim(proto.NvimError); ev["code"] != proto.ErrCodeNvimUnavailable || ev["reqId"] != "g1" {
+		t.Fatalf("a view link: %v", ev)
+	}
+	owner.send(proto.MustControl(proto.NvimClose{T: proto.CtlNvimClose, ID: nid}))
 }

@@ -271,6 +271,32 @@ func (p *peer) handleFrame(f proto.Frame) {
 					p.a.local.Send(sub, session.ChatErrorFrame(err, m.Ref))
 				}
 			}()
+		case proto.CtlNvimOpen:
+			var m proto.NvimOpen
+			if json.Unmarshal(f.Payload, &m) != nil {
+				return
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := p.a.local.NvimOpen(ctx, sub, m); err != nil {
+					p.a.local.Send(sub, session.NvimRefused(m.ReqID, err))
+				}
+			}()
+		case proto.CtlNvimInput:
+			var m proto.NvimInput
+			if json.Unmarshal(f.Payload, &m) != nil {
+				return
+			}
+			if err := p.a.local.NvimInput(sub, m); err != nil {
+				p.a.local.Send(sub, session.NvimRefused("", err))
+			}
+		case proto.CtlNvimClose:
+			var m proto.NvimClose
+			if json.Unmarshal(f.Payload, &m) != nil {
+				return
+			}
+			p.a.local.NvimClose(sub, m)
 		case proto.CtlFileGet:
 			var m proto.FileGet
 			if json.Unmarshal(f.Payload, &m) != nil {

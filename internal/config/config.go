@@ -30,6 +30,16 @@ const (
 	FileViewOff     FileView = "off"     // file reads disabled
 )
 
+// FileEdit controls whether a controller may edit a session's files through
+// the editor's Neovim (design round 12, F8): the control role on the
+// session, or nobody.
+type FileEdit string
+
+const (
+	FileEditControl FileEdit = "control" // the control role may edit
+	FileEditOff     FileEdit = "off"     // nobody edits
+)
+
 // ICEServer mirrors the WebRTC ICE server description sent to browsers and hosts.
 type ICEServer struct {
 	URLs       []string `json:"urls"`
@@ -325,6 +335,9 @@ type Config struct {
 	EnvPassthrough []string `json:"envPassthrough"`
 	// FileView controls which roles may read session files.
 	FileView FileView `json:"fileView"`
+	// FileEdit controls whether the control role may edit files through the
+	// editor's Neovim (CONDUCTOR_FILE_EDIT): control, off.
+	FileEdit FileEdit `json:"fileEdit"`
 	// Catalog holds inline agent definitions.
 	Catalog catalog.File `json:"catalog"`
 	// CatalogPath points at a separate catalog JSON file. Validate makes it
@@ -396,6 +409,7 @@ func Defaults() *Config {
 		ICEServers:           []ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 		RelayTimeoutMs:       8000,
 		FileView:             FileViewView,
+		FileEdit:             FileEditControl,
 		Reach:                Reach{Mode: ReachAuto, PublicPort: 443},
 	}
 }
@@ -503,6 +517,9 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	str("CONDUCTOR_DATA_DIR", &cfg.DataDir)
 	if v := getenv("CONDUCTOR_FILE_VIEW"); v != "" {
 		cfg.FileView = FileView(v)
+	}
+	if v := getenv("CONDUCTOR_FILE_EDIT"); v != "" {
+		cfg.FileEdit = FileEdit(v)
 	}
 	if v := getenv("CONDUCTOR_DEV"); v == "1" || v == "true" {
 		cfg.Dev = true
@@ -746,6 +763,11 @@ func (c *Config) Validate() error {
 	case FileViewView, FileViewControl, FileViewOff:
 	default:
 		errs = append(errs, fmt.Errorf("fileView must be view, control or off, got %q", c.FileView))
+	}
+	switch c.FileEdit {
+	case FileEditControl, FileEditOff, "":
+	default:
+		errs = append(errs, fmt.Errorf("fileEdit must be control or off, got %q", c.FileEdit))
 	}
 	for i, root := range c.AllowedRoots {
 		abs, err := filepath.Abs(root)

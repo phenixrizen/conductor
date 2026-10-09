@@ -186,6 +186,9 @@ export interface Welcome {
   scrollbackBytes: number
   transport: TransportKind
   fileView: boolean
+  /** This connection may edit files (control, on a session whose `fileEdit` allows it), and the machine has `nvim`: `nvim_open` may be sent (design round 12, F8). */
+  fileEdit?: boolean
+  nvim?: boolean
   /** The owner takes `chat` and `chat_send`; absent from an older owner, which must be sent neither. */
   chat?: boolean
   /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
@@ -204,6 +207,7 @@ export type ControlMessage =
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
   | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string; op?: ActivityEntry['op']; path?: string }
   | { t: 'error'; code: string; message: string; requestId?: string }
+  | NvimEvent
   | { t: 'pong'; ts: number }
   | ChatMessage
   | ChatHistory
@@ -469,3 +473,64 @@ export const HOST_MAX_RUN_ID = 64
 export const HOST_MAX_RUN_NAME = 120
 export const HOST_MAX_RUN_MEMBER_NAME = 40
 export const HOST_RUN_LINK_UPDATES_PER_MINUTE = 30
+
+/**
+ * The editor's Neovim as a page offers it to the editor (design round 12, F8):
+ * what the welcome allows here, the calls, and the events by editor id.
+ */
+export interface NvimBridge {
+  /** The welcome arrived, the machine has nvim, and this connection may edit. */
+  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; machine?: string }
+  open(path: string): Promise<NvimEvent>
+  input(id: string, keys: string): void
+  close(id: string): void
+  subscribe(cb: (ev: NvimEvent) => void): () => void
+}
+
+/** The editor's Neovim bridge (design round 12, F8): what a viewer sends. */
+export const MAX_NVIM_KEYS = 256
+export interface NvimOpen {
+  t: 'nvim_open'
+  reqId: string
+  path: string
+}
+export interface NvimInput {
+  t: 'nvim_input'
+  id: string
+  keys: string
+}
+export interface NvimClose {
+  t: 'nvim_close'
+  id: string
+}
+export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error'
+/**
+ * What the editor reports. `kind` says which fields are set: `opened` (reqId on the first, path), `lines` (the buffer lines [first, last) become
+ * `lines`, last -1 to the end, `truncated` when a line was cut), `cursor` (1-based line and col, the mode, the other end of a visual selection),
+ * `mode`, `cmdline` (show, content, pos, prompt), `message` (text, messageKind), `written` (path), `closed` (reason), `error` (reqId, code, message).
+ */
+export interface NvimEvent {
+  t: 'nvim_event'
+  id?: string
+  kind: NvimEventKind
+  reqId?: string
+  path?: string
+  first?: number
+  last?: number
+  lines?: string[]
+  truncated?: boolean
+  line?: number
+  col?: number
+  mode?: string
+  visualLine?: number
+  visualCol?: number
+  show?: boolean
+  content?: string
+  pos?: number
+  prompt?: string
+  text?: string
+  messageKind?: string
+  reason?: string
+  code?: string
+  message?: string
+}
