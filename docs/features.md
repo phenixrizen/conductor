@@ -679,6 +679,29 @@ tool, and Conductor offered it as Goose.
   and noted, vitest for the badge's words, Playwright `identity.spec.ts`
   (the Goose stub greyed with the tooltip, absent from the Launch dialog,
   its launch refused).
+- **G1, Touched keeps the whole session.** Touched was built in the
+  browser from the activity entries the page saw: the replay's last 50, in
+  a ring of 200 shared with every other entry, so a long session's early
+  files vanished. The session now keeps an index beside the activity log,
+  one entry per file (the latest op, every op seen, a count, the latest
+  tool and agent, the first and latest times; up to 2,000 files, the least
+  recently touched dropped first), filled from the `file` entries it
+  records, so the server, `conductor host` and a published session all
+  have it. A sixth file operation, `op: touched`, serves it under the file
+  policy and the deny list, cut to the header's size. The Files pane asks
+  for it when it shows and when Touched opens, and lays the live entries
+  over it (an entry no newer than the index's latest touch of its file is
+  not counted twice); an older session without the op falls back to the
+  entries. Rows are one per file, as the owner chose: "Edit · claude ·
+  08:33:12 · 4 times". On the way, a flaky save check led to a real bug:
+  "Saved" shows for two seconds after a save, but a save within two seconds
+  of another kept the first one's timer, which hid the new "Saved" almost
+  at once; the timer now restarts. Tests: the index (one entry per file, a
+  coalesced repeat not counted, eviction, the deny list, the size cut, the
+  file request) and the op over the viewer WebSocket in Go; vitest for
+  grouping and merging; Playwright `touched.spec.ts` (sixty files reported
+  before the page opens all listed, past the replay, one with "2 times"),
+  and `saving.spec.ts` ten runs out of ten.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

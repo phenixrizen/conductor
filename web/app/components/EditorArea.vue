@@ -287,6 +287,9 @@ function closeActive() {
 const dirty = reactive(new Set<string>())
 const saving = ref(false)
 const savedFlash = ref(false)
+// One timer for the flash: a save within two seconds of another restarts it, so the earlier save's timer cannot hide the new "Saved".
+let savedTimer: ReturnType<typeof setTimeout> | undefined
+onBeforeUnmount(() => clearTimeout(savedTimer))
 const saveError = ref('')
 const conflict = ref<{ tabId: string; header: FileHeader } | null>(null)
 const compare = ref<{ tabId: string; disk: string; mine: string } | null>(null)
@@ -320,7 +323,8 @@ async function save(force = false) {
       else editorRef.value.markClean()
       dirty.delete(t.id)
       savedFlash.value = true
-      setTimeout(() => (savedFlash.value = false), 2000)
+      clearTimeout(savedTimer)
+      savedTimer = setTimeout(() => (savedFlash.value = false), 2000)
     } else if (h.error?.code === 'changed_on_disk') {
       conflict.value = { tabId: t.id, header: h }
     } else {

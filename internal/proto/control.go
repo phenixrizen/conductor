@@ -289,6 +289,10 @@ const (
 	// FileOpFind finds files whose name holds Path (the Explorer's filter)
 	// anywhere under the working directory, answered with kind `find`.
 	FileOpFind = "find"
+	// FileOpTouched lists the files the agent touched since the session
+	// started, from the session's own index (no walk, no git), answered
+	// with kind `touched`.
+	FileOpTouched = "touched"
 )
 
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).
