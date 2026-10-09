@@ -157,22 +157,72 @@ type pebble struct {
 	dir     string
 	httpCli *http.Client
 	root    *x509.CertPool
-	tlsPort int
-	httpPrt int
+	// The ports Pebble validates against are the test's own: bound before
+	// Pebble starts and held, so no other socket can take them meanwhile
+	// (a port picked, closed and bound again later once lost that race in
+	// CI: "bind: address already in use").
+	tlsLn  net.Listener
+	httpLn net.Listener
 }
+
+// listenLocal binds a port of its own on 127.0.0.1 and keeps it until the
+// test ends.
+func listenLocal(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	return ln
+}
+
+func portOf(ln net.Listener) int { return ln.Addr().(*net.TCPAddr).Port }
+
+// pebbleStartTries bounds the starts with fresh ports when Pebble finds one
+// of its own two taken by the time it binds it.
+const pebbleStartTries = 5
+
+// pebblePorts picks Pebble's directory and management ports for one start;
+// a test replaces it to hand Pebble a taken port.
+var pebblePorts = func(t *testing.T) (listen, mgmt int) { return freePort(t), freePort(t) }
 
 func startPebble(t *testing.T) *pebble {
 	t.Helper()
 	bin := pebbleBinary(t)
-	dir := t.TempDir()
 	certPEM, _ := os.ReadFile(filepath.Join("testdata", "pebble", "https-cert.pem"))
 	trust := x509.NewCertPool()
 	trust.AppendCertsFromPEM(certPEM)
-	listen, mgmt, httpPort, tlsPort := freePort(t), freePort(t), freePort(t), freePort(t)
+	cli := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: trust}}}
+	p := &pebble{httpCli: cli, tlsLn: listenLocal(t), httpLn: listenLocal(t)}
+	dns := fakeDNS(t)
+	for try := 1; ; try++ {
+		mgmt, ok, out := p.start(t, bin, dns)
+		if ok {
+			p.fetchRoot(t, mgmt)
+			return p
+		}
+		// Pebble's own two ports are bound by Pebble, which the test cannot
+		// hold for it: a start that lost one to another socket is retried on
+		// fresh ones; anything else fails at once.
+		if try == pebbleStartTries || !strings.Contains(out, "address already in use") {
+			t.Fatalf("pebble did not come up (try %d):\n%s", try, out)
+		}
+		t.Logf("pebble lost a port to another socket, starting again (try %d)", try)
+	}
+}
+
+// start runs Pebble once with fresh ports for its directory and management
+// listeners, the test's held ports for the challenges. ok says its
+// directory answered; out is what it printed.
+func (p *pebble) start(t *testing.T, bin, dns string) (mgmt int, ok bool, out string) {
+	t.Helper()
+	dir := t.TempDir()
+	listen, mgmt := pebblePorts(t)
 	cfg := map[string]any{"pebble": map[string]any{
 		"listenAddress": "127.0.0.1:" + strconv.Itoa(listen), "managementListenAddress": "127.0.0.1:" + strconv.Itoa(mgmt),
 		"certificate": filepath.Join("testdata", "pebble", "https-cert.pem"), "privateKey": filepath.Join("testdata", "pebble", "https-key.pem"),
-		"httpPort": httpPort, "tlsPort": tlsPort, "ocspResponderURL": "", "externalAccountBindingRequired": false,
+		"httpPort": portOf(p.httpLn), "tlsPort": portOf(p.tlsLn), "ocspResponderURL": "", "externalAccountBindingRequired": false,
 		"retryAfter": map[string]int{"authz": 1, "order": 1}, "keyAlgorithm": "ecdsa",
 		"profiles": map[string]any{
 			"default":    map[string]any{"description": "ninety days", "validityPeriod": 7776000},
@@ -184,37 +234,55 @@ func startPebble(t *testing.T) *pebble {
 	if err := os.WriteFile(cfgPath, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "-config", cfgPath, "-dnsserver", fakeDNS(t), "-strict")
+	cmd := exec.Command(bin, "-config", cfgPath, "-dnsserver", dns, "-strict")
 	cmd.Env = append(os.Environ(), "PEBBLE_VA_NOSLEEP=1")
-	out := &lockedBuffer{}
-	cmd.Stdout, cmd.Stderr = out, out
+	buf := &lockedBuffer{}
+	cmd.Stdout, cmd.Stderr = buf, buf
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
+	exited := make(chan struct{})
+	go func() {
 		_ = cmd.Wait()
-		if t.Failed() {
-			t.Logf("pebble output:\n%s", out.String())
-		}
-	})
-	cli := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: trust}}}
-	p := &pebble{dir: "https://127.0.0.1:" + strconv.Itoa(listen) + "/dir", httpCli: cli, tlsPort: tlsPort, httpPrt: httpPort}
+		close(exited)
+	}()
+	stop := func() {
+		_ = cmd.Process.Kill()
+		<-exited
+	}
+	p.dir = "https://127.0.0.1:" + strconv.Itoa(listen) + "/dir"
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		resp, err := cli.Get(p.dir)
+		select {
+		case <-exited:
+			return mgmt, false, buf.String()
+		default:
+		}
+		resp, err := p.httpCli.Get(p.dir)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				break
+				t.Cleanup(func() {
+					stop()
+					if t.Failed() {
+						t.Logf("pebble output:\n%s", buf.String())
+					}
+				})
+				return mgmt, true, ""
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("pebble did not come up:\n%s", out.String())
+			stop()
+			return mgmt, false, buf.String()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	resp, err := cli.Get("https://127.0.0.1:" + strconv.Itoa(mgmt) + "/roots/0")
+}
+
+// fetchRoot reads Pebble's root from its management listener.
+func (p *pebble) fetchRoot(t *testing.T, mgmt int) {
+	t.Helper()
+	resp, err := p.httpCli.Get("https://127.0.0.1:" + strconv.Itoa(mgmt) + "/roots/0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,19 +292,13 @@ func startPebble(t *testing.T) *pebble {
 	if !p.root.AppendCertsFromPEM(rootPEM) {
 		t.Fatalf("no root from pebble: %s", rootPEM)
 	}
-	return p
 }
 
 // serveTLS runs a TLS listener on the port Pebble validates against, with
 // the manager's GetCertificate, until the test ends.
 func (p *pebble) serveTLS(t *testing.T, m *Manager) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p.tlsPort))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	tl := tls.NewListener(ln, &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1", acmeTLSProto}, GetCertificate: m.GetCertificate})
+	tl := tls.NewListener(p.tlsLn, &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1", acmeTLSProto}, GetCertificate: m.GetCertificate})
 	go func() {
 		for {
 			c, err := tl.Accept()
@@ -262,12 +324,8 @@ func (p *pebble) serveHTTP(t *testing.T, m *Manager) {
 		}
 		http.NotFound(w, r)
 	})
-	srv := &http.Server{Addr: "127.0.0.1:" + strconv.Itoa(p.httpPrt), Handler: mux}
-	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = srv.Serve(ln) }()
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(p.httpLn) }()
 	t.Cleanup(func() { _ = srv.Close() })
 }
 
@@ -381,3 +439,24 @@ var _ = fmt.Sprint
 var _ = pem.Decode
 var _ = strings.TrimSpace
 var _ = context.Background
+
+// A port Pebble binds itself can be taken between its pick and Pebble's
+// bind (CI once lost the race); the start is tried again on fresh ports.
+// Here the first start is handed a port already in use.
+func TestPebbleStartsAgainWhenItsPortIsTaken(t *testing.T) {
+	taken := listenLocal(t)
+	first := true
+	orig := pebblePorts
+	pebblePorts = func(t *testing.T) (int, int) {
+		if first {
+			first = false
+			return portOf(taken), freePort(t)
+		}
+		return orig(t)
+	}
+	t.Cleanup(func() { pebblePorts = orig })
+	p := startPebble(t)
+	if first || p.root == nil || strings.Contains(p.dir, ":"+strconv.Itoa(portOf(taken))+"/") {
+		t.Fatalf("not started again on fresh ports: %s", p.dir)
+	}
+}
