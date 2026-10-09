@@ -57,15 +57,6 @@ test that would have caught it when it is fixed.
   below `sm` the badges fold into the title row and the buttons into a menu,
   as the session page's navbar does; Playwright at 390 checking nothing
   overlaps (bounding boxes) on `/yard?focus=<id>`.
-- **The server log window is an empty dark box.** Seen by the owner,
-  2026-10-06, on Windows, from the tray's Server log; it is the same on
-  every platform. Cause: `showLog` in `desktop/src/main.ts` makes the window
-  with no preload, so `window.conductorLog` (from `log-preload.ts`, which
-  is built but never attached) is undefined and no line reaches the page;
-  only the page's dark background shows. Fix: `preload:
-  join(__dirname, 'log-preload.js')` on that window. Tests: a desktop unit
-  test that the log window's options name the preload; the smoke test opens
-  the log window and sees a line of the server's log.
 ## Features
 
 ### The browser terminal

@@ -13,7 +13,7 @@ import { ServerSupervisor } from './server'
 import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, followOrigin, restrictPermissions, sameOrigin } from './window'
+import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin } from './window'
 import { nextZoom, zoomKey, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
@@ -198,7 +198,7 @@ async function run() {
     return main
   }
   const showLog = () => {
-    const w = new BrowserWindow({ width: 900, height: 600, title: 'Conductor server log', webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } })
+    const w = new BrowserWindow(logWindowOptions(__dirname))
     void w.loadFile(join(resources, app.isPackaged ? 'static/log.html' : 'static/log.html'))
     const send = (line: string) => w.webContents.send('log-line', line)
     w.webContents.once('did-finish-load', () => {
