@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { trusted } from '../src/ipc'
 import { join } from 'node:path'
-import { external, followOrigin, logWindowOptions, sameOrigin } from '../src/window'
+import { external, followOrigin, logWindowOptions, permissionAllowed, sameOrigin } from '../src/window'
 
 describe('window guards', () => {
   it('keeps navigation on the server\'s origin and opens only http(s) outside', () => {
@@ -39,5 +39,14 @@ describe('the server log window', () => {
     expect(o.webPreferences?.contextIsolation).toBe(true)
     expect(o.webPreferences?.nodeIntegration).toBe(false)
     expect(o.webPreferences?.sandbox).toBe(true)
+  })
+})
+
+describe('the permissions the app grants its pages', () => {
+  it('grants the clipboard and fullscreen, and nothing else', () => {
+    expect(permissionAllowed('clipboard-read')).toBe(true)
+    expect(permissionAllowed('clipboard-sanitized-write')).toBe(true)
+    expect(permissionAllowed('fullscreen')).toBe(true)
+    for (const p of ['media', 'geolocation', 'notifications', 'openExternal', 'pointerLock', 'midi', 'unknown']) expect(permissionAllowed(p)).toBe(false)
   })
 })
