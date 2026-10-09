@@ -785,6 +785,21 @@ tool, and Conductor offered it as Goose.
   choices, Playwright `vim.spec.ts` (a Vim with the server's home writes
   its swap and is killed; the banner, Recover, `:w`, Delete; then
   `:confirm q` and Cancel).
+- **G4, text with no key press under the Neovim keymap.** Only key presses
+  reached Neovim: an input method's word, a dead key's character and
+  dictation arrive as text input, which Monaco (read-only there) dropped
+  with "Cannot edit in read-only editor". The editor now takes the text
+  area's composition and input events on the way down (the capture phase on
+  its own element, so Monaco never sees them) and sends the committed word
+  or the inserted text as keys (`<` as `<lt>`, a line break as `<CR>`, in
+  pieces under the 256-byte bound); a key an input method or a dead key is
+  composing with is left to them. Tests: vitest for the text's keys and
+  pieces; Go, the bridge typing composed and multibyte text as written;
+  Playwright `vim.spec.ts` (`insertText` of "café ", then Chromium's
+  `Input.imeSetComposition` of に and にほん and the commit of 日本: the line
+  reads "café 日本 end", the composition never typed, no read-only message,
+  `:w` writes it). By hand, not yet done: a real input method and a dead-key
+  layout in the Windows app.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

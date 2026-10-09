@@ -2,7 +2,7 @@
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
 import type { NvimViewState } from '~/utils/nvimSwap'
-import { cursorStyleFor, isVisual, keptByConductor, keyToNvim } from '~/utils/nvimKeys'
+import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
 
@@ -132,6 +132,8 @@ async function startNvim() {
   editor.onKeyDown((e) => {
     if (!nvimId || !bridge) return
     const be = e.browserEvent
+    // A key an input method or a dead key is composing with: theirs, not Neovim's (round 13, G4).
+    if (be.isComposing || be.keyCode === 229) return
     if (keptByConductor(be)) return
     const keys = keyToNvim(be)
     if (keys === null) return
@@ -139,7 +141,60 @@ async function startNvim() {
     e.stopPropagation()
     bridge.input(nvimId, keys)
   })
+  listenForText(bridge)
   tellNvim()
+}
+
+// Text with no key press (round 13, G4): an input method's composed word, a dead key's character, dictation. Taken on the way down to
+// Monaco's text area (the capture phase on the editor's own element), so Monaco, read-only here, never sees it, and sent to Neovim as keys.
+let stopText: (() => void) | null = null
+function listenForText(bridge: NvimBridge) {
+  const dom = editor?.getDomNode()
+  if (!dom) return
+  let composing = false
+  const send = (text: string) => {
+    if (!nvimId) return
+    for (const keys of textToNvim(text)) bridge.input(nvimId, keys)
+  }
+  const clear = (t: EventTarget | null) => {
+    if (t instanceof HTMLTextAreaElement) t.value = ''
+  }
+  const onStart = (e: Event) => {
+    composing = true
+    e.stopPropagation()
+  }
+  const onUpdate = (e: Event) => e.stopPropagation()
+  const onEnd = (e: Event) => {
+    composing = false
+    e.stopPropagation()
+    const data = (e as CompositionEvent).data
+    if (data) send(data)
+    clear(e.target)
+  }
+  const onBeforeInput = (e: Event) => {
+    const ie = e as InputEvent
+    if (composing || ie.isComposing || ie.inputType !== 'insertText' || !ie.data) return
+    ie.preventDefault()
+    ie.stopPropagation()
+    send(ie.data)
+  }
+  const onInput = (e: Event) => {
+    // Monaco is read-only here: what reaches its text area is not its to type (a composition's text waits for its end).
+    e.stopPropagation()
+    if (!composing) clear(e.target)
+  }
+  const pairs: Array<[string, (e: Event) => void]> = [
+    ['compositionstart', onStart],
+    ['compositionupdate', onUpdate],
+    ['compositionend', onEnd],
+    ['beforeinput', onBeforeInput],
+    ['input', onInput],
+  ]
+  for (const [type, fn] of pairs) dom.addEventListener(type, fn, true)
+  stopText = () => {
+    for (const [type, fn] of pairs) dom.removeEventListener(type, fn, true)
+    stopText = null
+  }
 }
 function onNvimEvent(ev: NvimEvent) {
   if (!nvimId || ev.id !== nvimId || !editor || !model || !monacoRef) return
@@ -200,6 +255,7 @@ function onNvimEvent(ev: NvimEvent) {
       nvimId = null
       unsubscribe?.()
       unsubscribe = null
+      stopText?.()
       emit('nvimClosed')
       break
     case 'error':
@@ -278,6 +334,7 @@ onBeforeUnmount(() => {
   nvimId = null
   unsubscribe?.()
   unsubscribe = null
+  stopText?.()
   contentSub?.dispose()
   contentSub = null
   editor?.dispose()

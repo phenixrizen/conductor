@@ -47,6 +47,41 @@ export function keyToNvim(e: KeyLike): string | null {
   return key === '<' ? '<lt>' : key
 }
 
+/** The bytes one nvim_input may carry (proto.MaxNvimKeys). */
+export const MAX_NVIM_INPUT = 256
+
+/**
+ * Text that arrives with no key press (round 13, G4): an input method's
+ * composed word, a dead key's character, dictation. It
+ * becomes Neovim notation (`<` as `<lt>`, a line break as `<CR>`, a tab as
+ * `<Tab>`, other control characters dropped) in pieces of at most
+ * MAX_NVIM_INPUT bytes, never splitting a character or a `<…>` name.
+ */
+export function textToNvim(text: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let bytes = 0
+  const enc = new TextEncoder()
+  for (const ch of text.replace(/\r\n?/g, '\n')) {
+    let piece: string
+    if (ch === '<') piece = '<lt>'
+    else if (ch === '\n') piece = '<CR>'
+    else if (ch === '\t') piece = '<Tab>'
+    else if (ch < ' ' || ch === '\x7f') continue
+    else piece = ch
+    const n = enc.encode(piece).length
+    if (bytes + n > MAX_NVIM_INPUT && cur) {
+      out.push(cur)
+      cur = ''
+      bytes = 0
+    }
+    cur += piece
+    bytes += n
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
 /** Keys the editor area keeps for itself in the Neovim keymap: the tab cycle, the fold. */
 export function keptByConductor(e: KeyLike): boolean {
   return (e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Tab'

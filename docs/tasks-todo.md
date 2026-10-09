@@ -163,12 +163,6 @@ and the Neovim keymap. What is set aside:
   the echoed text snaps back and forth (an autopair or an abbreviation
   makes it worse). It needs a reconciliation design (a key counter Neovim
   acknowledges, say) before it is worth building.
-- **Neovim: characters with no key event do not reach it.** Only key
-  presses are sent; an input method's composed text and a dead key's
-  character arrive as text input, which the read-only editor under the
-  Neovim keymap does not take. A keyboard with the character on a key
-  works. Fix: take the textarea's composition and input events in that
-  keymap and send their text as keys.
 - **Goose's files:** the Goose mapper reads the tool's name only; its
   payload's arguments wait for a run of the real Goose CLI (the `goose` on
   the owner's machine is the Go migrations tool, round 13 G0).

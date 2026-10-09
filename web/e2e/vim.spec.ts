@@ -157,3 +157,49 @@ test('a swap file left by a Vim that died opens read-only with a banner; Recover
     await api.stopSession(s.id)
   }
 })
+
+// Round 13, G4: text that comes with no key press reaches Neovim too. A
+// dead key's character or dictation arrives as inserted text (Playwright's
+// insertText); an input method composes a word and commits it (Chromium's
+// Input.imeSetComposition, then the commit): only the committed word is
+// typed, not the composition on the way.
+test('text with no key press, a dead key\'s character and an input method\'s word, reaches Neovim', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-ime')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'end\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'ime', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    await lines.click()
+    await page.keyboard.type('I')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // A dead key's é, or dictation: text with no key press.
+    await page.keyboard.insertText('café ')
+    await expect(lines).toContainText('café end', { timeout: 15_000 })
+    // An input method: the composition is shown on the way and only the committed word is typed.
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 })
+    await cdp.send('Input.imeSetComposition', { text: 'にほん', selectionStart: 3, selectionEnd: 3 })
+    await cdp.send('Input.insertText', { text: '日本 ' })
+    await expect(lines).toContainText('café 日本 end', { timeout: 15_000 })
+    await expect(lines).not.toContainText('にほん')
+    // No "Cannot edit in read-only editor" from Monaco: Neovim took it all.
+    await expect(page.getByText('Cannot edit in read-only editor')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('café 日本 end\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
