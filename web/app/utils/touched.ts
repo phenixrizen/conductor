@@ -1,4 +1,5 @@
 import type { ActivityEntry, TouchedFile } from '~/utils/protocol'
+import { fileToolWords } from './events'
 
 /**
  * The Touched section (design 4e): the files the agent created, edited,
@@ -101,8 +102,8 @@ export function opIcon(op: TouchedRow['op']): string {
   }
 }
 
-/** "Edit · codex · 08:33:12 · 4 times": the latest touch's tool as the agent calls it, the agent, the time, and the count past one. */
+/** "Edit · codex · 08:33:12 · 4 times": the latest touch's tool as the agent calls it ("seen by git" for a file git saw), the agent, the time, and the count past one. */
 export function touchedWords(r: Pick<TouchedRow, 'tool' | 'op' | 'by' | 'at' | 'count'>): string {
   const time = new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-  return [r.tool || r.op, r.by, time, r.count > 1 ? `${r.count} times` : ''].filter(Boolean).join(' · ')
+  return [fileToolWords(r.tool) || r.op, r.by, time, r.count > 1 ? `${r.count} times` : ''].filter(Boolean).join(' · ')
 }

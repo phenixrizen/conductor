@@ -102,6 +102,10 @@ type Options struct {
 	ConfirmSubmit bool
 	// ConfirmWait is that wait; ConfirmWait when zero.
 	ConfirmWait time.Duration
+	// WatchGit records what the agent changed in a git working directory
+	// without a hook naming the file (files seen by git, gitseen.go): the
+	// server's and the host's agent sessions set it.
+	WatchGit bool
 	// Launched is what the session was launched with, for Resume.
 	Launched Launched
 }
@@ -129,6 +133,8 @@ type Local struct {
 	activity activityRing
 	// touched is the Touched section's index of the files the agent touched (touched.go), under mu.
 	touched touchedIndex
+	// gitSeen watches the working tree for files no hook named (gitseen.go); its own lock.
+	gitSeen gitSeen
 	chat    chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
@@ -203,6 +209,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	}
 	if opts.TrustPattern != nil {
 		s.trust = NewScreenWatcher(opts.TrustPattern, patternQuiet, s.fireTrust)
+	}
+	if opts.WatchGit && info.Cwd != "" {
+		s.gitSeenStart()
 	}
 	go s.pump()
 	return s
@@ -350,6 +359,7 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 	if e.Type == ActivityFile && s.activity.CoalesceFile(CleanEntry(e)) {
 		s.noteTouched(CleanEntry(e), true)
 		s.mu.Unlock()
+		s.gitSeenReported(e)
 		return true
 	}
 	// The ring write and the broadcast share one critical section, so a client
@@ -362,6 +372,13 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
 	id := s.info.ID
 	s.mu.Unlock()
+	switch e.Type {
+	case ActivityFile:
+		s.gitSeenReported(e)
+	case ActivityToolUse, ActivityAttention:
+		// A tool ran, or a turn ended or asked: a look at the tree a moment later.
+		s.gitSeenPoke()
+	}
 	if s.opts.OnActivity != nil {
 		s.opts.OnActivity(id, e, state)
 	}

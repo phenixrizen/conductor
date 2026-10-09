@@ -339,7 +339,12 @@ whether or not the agent's tool events are on; Codex's apply_patch and
 Cursor's file edits report theirs with their tool calls; a file saved forty
 times is one line. An agent without hooks reports with `conductor notify
 --event file --op edit --path …` or the MCP `report` tool, as the skill
-says. The same events are in the Activity tab and on the Events page, in
+says. A file the agent changed with no hook naming it (a shell redirect,
+a generator, an agent whose hooks report no paths) still shows: in a git
+repository the session compares `git status` after each tool call and
+lists what moved as "seen by git" (writes, edits and deletes; reads cannot
+be seen this way, and what was changed before the session started is left
+out). The same events are in the Activity tab and on the Events page, in
 the feed only by default.
 
 The **Commits** section lists the commits on the branch since the session

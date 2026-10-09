@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
+import { scratchRepo } from './server'
 
 // Touched (design 4e): the files the agent read, edited, wrote or deleted,
 // newest first, each with the tool, the agent and the time, from the file
@@ -86,6 +87,35 @@ test('Touched lists every file of the session, past the activity replay, one row
     const main = pane.locator(`[data-files-touched] [data-touched="${cwd}/main.go"]`)
     await expect(main).toHaveAttribute('data-touched-op', 'edit')
     await expect(main).toContainText(/Edit · .*2 times/)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// Round 13, G2a: a file the agent changed with no hook naming it (a shell
+// redirect, a generator) still reaches Touched: after a tool call the
+// session looks at git and records what moved, "seen by git".
+test('a file written with no hook naming it shows in Touched as seen by git', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-git-seen')
+  mkdirSync(cwd, { recursive: true })
+  scratchRepo(cwd)
+  writeFileSync(join(cwd, 'README.md'), '# changed before the session\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'git seen', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    // What the agent's shell did: no file event, only the tool call.
+    writeFileSync(join(cwd, 'generated.txt'), 'from a shell redirect\n')
+    await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'tool_use', tool: 'Bash' })
+    await pane.locator('[data-files-section="touched"]').click()
+    const row = pane.locator(`[data-files-touched] [data-touched="${cwd}/generated.txt"]`)
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await expect(row).toHaveAttribute('data-touched-op', 'write')
+    await expect(row).toContainText('seen by git')
+    // What was dirty before the session is not the agent's.
+    await expect(pane.locator(`[data-files-touched] [data-touched="${cwd}/README.md"]`)).toHaveCount(0)
   } finally {
     await api.stopSession(s.id)
   }

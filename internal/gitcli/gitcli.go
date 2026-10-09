@@ -144,6 +144,26 @@ func GetStatus(ctx context.Context, dir, base string) (Status, error) {
 			}
 		}
 	}
+	changes, truncated := parsePorcelain(raw)
+	st.Truncated = truncated
+	for _, c := range changes {
+		c.Binary = binary[c.Path]
+		if n, ok := counts[c.Path]; ok {
+			c.Added, c.Removed = n[0], n[1]
+		} else if c.Status == "?" || c.Status == "A" {
+			c.Added, c.Binary = countLines(filepath.Join(st.Top, filepath.FromSlash(c.Path)))
+		}
+		st.Changes = append(st.Changes, c)
+		st.Added += c.Added
+		st.Removed += c.Removed
+	}
+	return st, nil
+}
+
+// parsePorcelain reads `git status --porcelain=v1 -z` output: each changed
+// or untracked file with its status letter (M, A, D, R, ?), at most
+// MaxChanges of them, truncated past that.
+func parsePorcelain(raw string) (changes []Change, truncated bool) {
 	tokens := strings.Split(raw, "\x00")
 	for i := 0; i < len(tokens); i++ {
 		rec := tokens[i]
@@ -166,21 +186,30 @@ func GetStatus(ctx context.Context, dir, base string) (Status, error) {
 		case x == 'A' || y == 'A':
 			status = "A"
 		}
-		c := Change{Path: path, Status: status, Binary: binary[path]}
-		if n, ok := counts[path]; ok {
-			c.Added, c.Removed = n[0], n[1]
-		} else if status == "?" || status == "A" {
-			c.Added, c.Binary = countLines(filepath.Join(st.Top, filepath.FromSlash(path)))
+		if len(changes) == MaxChanges {
+			return changes, true
 		}
-		if len(st.Changes) == MaxChanges {
-			st.Truncated = true
-			break
-		}
-		st.Changes = append(st.Changes, c)
-		st.Added += c.Added
-		st.Removed += c.Removed
+		changes = append(changes, Change{Path: path, Status: status})
 	}
-	return st, nil
+	return changes, false
+}
+
+// Porcelain is dir's working tree status without the line counts: the
+// tree's top and its changed and untracked files with their status letters
+// (at most MaxChanges, truncated past that), paths relative to the top.
+// Two git runs; ErrNotRepo outside a repository. Files seen by git (the
+// session's look after an agent's tool call) read it.
+func Porcelain(ctx context.Context, dir string) (top string, changes []Change, truncated bool, err error) {
+	t, err := Run(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", nil, false, err
+	}
+	raw, err := Run(ctx, dir, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return "", nil, false, err
+	}
+	changes, truncated = parsePorcelain(raw)
+	return strings.TrimSpace(t), changes, truncated, nil
 }
 
 // countLines counts a file's lines for an untracked file's added count, up

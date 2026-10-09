@@ -135,3 +135,32 @@ func TestShow(t *testing.T) {
 		t.Fatalf("outside a repository: %v", err)
 	}
 }
+
+// Porcelain is the status without the line counts: the top and each change
+// with its letter, from a directory inside the tree; outside one, an error.
+func TestPorcelain(t *testing.T) {
+	dir := repo(t)
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("changed\n"), 0o644)
+	os.Remove(filepath.Join(dir, "old.txt"))
+	os.WriteFile(filepath.Join(dir, "internal", "api", "new.go"), []byte("package api\n"), 0o644)
+	top, changes, truncated, err := Porcelain(context.Background(), filepath.Join(dir, "internal"))
+	if err != nil || truncated {
+		t.Fatalf("%v %v", err, truncated)
+	}
+	if top != dir && !strings.HasSuffix(top, filepath.Base(dir)) {
+		t.Fatalf("top %q", top)
+	}
+	got := map[string]string{}
+	for _, c := range changes {
+		if c.Added != 0 || c.Removed != 0 {
+			t.Fatalf("no line counts expected: %+v", c)
+		}
+		got[c.Path] = c.Status
+	}
+	if got["README.md"] != "M" || got["old.txt"] != "D" || got["internal/api/new.go"] != "?" || len(got) != 3 {
+		t.Fatalf("%v", got)
+	}
+	if _, _, _, err := Porcelain(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("outside a repository must fail")
+	}
+}

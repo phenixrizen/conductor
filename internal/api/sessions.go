@@ -264,6 +264,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		TrustPattern:    trust,
 		TrustAnswers:    trustAnswers(agent.TrustAnswers),
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
+		WatchGit:        true,
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},
 	})
 	local.SetAgentToken(agentToken)

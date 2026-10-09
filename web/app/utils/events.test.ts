@@ -194,6 +194,9 @@ describe('eventDetail', () => {
     expect(eventDetail(entry('artifact', { url: 'https://x' }))).toBe('')
     expect(eventDetail(entry('attention', { message: 'needs_input' }))).toBe('')
     expect(eventDetail(entry('attention', { message: 'Approve the edit?' }))).toBe('Approve the edit?')
+    expect(eventDetail(entry('file', { op: 'write', path: 'README.md', tool: 'Write' }))).toBe('wrote README.md · Write')
+    // A file the session found changed in git, with no hook naming it (round 13, G2a).
+    expect(eventDetail(entry('file', { op: 'write', path: 'gen.txt', tool: 'git' }))).toBe('wrote gen.txt · seen by git')
   })
 })
 

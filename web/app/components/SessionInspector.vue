@@ -7,7 +7,7 @@ import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { ChangeRow } from '~/utils/changes'
 import { avatarTone } from '~/utils/avatar'
 import { initials, relativeTime } from '~/utils/sessions'
-import { COLOR_TEXT, entryIcon, fileOpWords, linkableUrl } from '~/utils/events'
+import { COLOR_TEXT, entryIcon, fileOpWords, fileToolWords, linkableUrl } from '~/utils/events'
 
 export type InspectorTab = 'people' | 'files' | 'activity' | 'chat'
 
@@ -106,7 +106,7 @@ function describe(e: ActivityEntry) {
     case 'error':
       return `${e.tool ? `${e.tool}: ` : ''}${e.message || 'error'}`
     case 'file':
-      return `${fileOpWords(e.op)} ${e.path ?? ''}${e.tool ? ` · ${e.tool}` : ''}`
+      return `${fileOpWords(e.op)} ${e.path ?? ''}${e.tool ? ` · ${fileToolWords(e.tool)}` : ''}`
   }
   return e.message || e.type
 }
