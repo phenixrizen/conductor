@@ -23,13 +23,6 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
-- **The shortcuts table is too narrow to read.** The owner, 2026-10-08,
-  on the Windows app: the `?` modal's three columns (the action, the keys
-  in a terminal, the keys outside one; `ShortcutsModal`) sit so close that
-  the columns are hard to tell apart. Fix: a wider modal (`sm:max-w-3xl`
-  or the viewport's width below it), a column gap that reads as columns,
-  a rule or tint between them, the headers repeated per group; checked
-  against the design's shortcuts screen at 1440 and 390.
 - **The Yard's focused header overlaps at phone width.** Seen 2026-10-08 in
   a headless render at 390 wide (round 12, F2b): the status, transport and
   viewers badges run under Open page and Stop, and the title is gone. Cause:

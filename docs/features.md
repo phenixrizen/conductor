@@ -764,6 +764,19 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   folders (the field's note says 30 more and 50 are listed; typing
   "project-07" lists the ten, whole, and the note goes; the folder
   picker's note says the same).
+- **The shortcuts table was too narrow to read.** The owner, 2026-10-08,
+  on the Windows app: the `?` modal's three columns sat so close they were
+  hard to tell apart. Each row was a grid of its own whose key columns took
+  their own widths, so nothing lined up down the table, in a 464-pixel
+  modal. Now every row shares one column template (the action, then two
+  key columns of one fixed width, tinted so they read as columns), the
+  modal is wider (`sm:max-w-3xl`), each group past the first names the
+  columns again, and on a phone a row stacks, its two key sets named
+  "Terminal" and "Outside". Tests: Playwright `shortcuts.spec.ts` at 1440
+  (the modal wider than 650 pixels, every row's key columns starting and
+  sized as the first row's, the keys clear of the action, the names
+  repeated) and 390 (nothing runs off the side); it failed on the old
+  table at the modal's width. No logic changed, so no vitest.
 
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 
