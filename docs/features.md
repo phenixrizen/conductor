@@ -916,6 +916,34 @@ tool, and Conductor offered it as Goose.
     vitest for `followOrigin`; the Electron smoke clicks Restart server in the
     menu and expects the window on a new origin, on the same page, signed in
     (it fails without the fix, the window left on the old port).
+  - **A Neovim tab lost its changes not written to a swap file.** Seen
+    closing the app's test editor: its swap file stayed behind. Every tab
+    switch ended the Neovim of the tab leaving, as a lost connection ends it,
+    so a buffer with changes not written was put in a swap file, and the
+    next showing of the tab met the "swap file from a Vim that ended" banner
+    with the text back as on disk; closing such a tab did the same without
+    asking, since a Neovim tab never wore the unsaved dot. And Neovim's own
+    `:q` left a swap file too: the session killed Neovim halfway through
+    its exit (the context cancelled as soon as Neovim said it was leaving),
+    before Neovim removed the file. Now Neovim reports its buffer's changes
+    not written (`nvim_event` kind `modified`); the tab wears the dot and
+    keeps its Neovim while another is in front, taken back as it was;
+    closing it asks, Save writing through Neovim's `:w` and Don't save
+    ending it as `:qa!` does (`nvim_close` `discard`), so its swap file goes;
+    the keymap button waits while anything is unsaved (each keymap keeps its
+    own text; switching dropped the other's unsaved edits, Monaco's too);
+    `:q` is let finish before Neovim is reaped. A connection may keep 4
+    editors (2 before), and the 8 per session are counted per session (one
+    count for the whole server before). The bridge's tests run Neovim with
+    their own state directory (they left swap files in the machine's).
+    Tests: `internal/nvim` (modified through a change, `:w`, undo; Close
+    keeps the swap file, Discard drops it), `internal/session` (the same
+    through the session, `:q` leaving none, the bound per session),
+    `internal/proto` (the shapes, an older owner reading `discard`), vitest
+    `nvimHold.test.ts`, Playwright `vim.spec.ts` (a change survives another
+    tab in front with no banner and the editing goes on; the dot and the
+    keymap waiting; Don't save leaves the file and no swap file; Save writes
+    through Neovim; `:q` leaves none).
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 

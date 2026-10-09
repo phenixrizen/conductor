@@ -115,9 +115,9 @@ export abstract class BaseTransport implements TerminalTransport {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'nvim_swap', id, choice }))
   }
-  nvimClose(id: string): void {
+  nvimClose(id: string, discard?: boolean): void {
     if (this.state.value !== 'open') return
-    this.send(encodeControl({ t: 'nvim_close', id }))
+    this.send(encodeControl(discard ? { t: 'nvim_close', id, discard: true } : { t: 'nvim_close', id }))
   }
 
   writeFile(path: string, data: Uint8Array, opts: FileWriteOptions = {}): Promise<FileResponse> {

@@ -35,8 +35,10 @@ const (
 	// and the event says so (the buffer then differs from the editor's).
 	MaxNvimLine = 4096
 	// MaxNvimPerSub and MaxNvimPerSession bound the editors a connection and
-	// a session keep open at once.
-	MaxNvimPerSub     = 2
+	// a session keep open at once. A connection's are the file in front and
+	// those of its tabs still holding changes not written, which keep their
+	// Neovim while another tab is in front.
+	MaxNvimPerSub     = 4
 	MaxNvimPerSession = 8
 	// nvimLinesBudget is what a `lines` event's lines may take once escaped,
 	// leaving room for the envelope under MaxControl.
@@ -57,6 +59,10 @@ const (
 	// NvimSwapFound says the file has another editor's swap file: the
 	// editor opened it read-only, and Swap says whose (round 13, G3).
 	NvimSwapFound = "swap"
+	// NvimModified says the buffer began or stopped holding changes not
+	// written (Modified): the editor's tab wears its dot by it, and closing
+	// the tab asks first.
+	NvimModified = "modified"
 )
 
 // The choices of an nvim_swap: edit the file anyway (the editor leaves
@@ -109,10 +115,14 @@ type NvimInput struct {
 	Seq  uint32 `json:"seq,omitempty"`
 }
 
-// NvimClose ends the editor ID.
+// NvimClose ends the editor ID. Discard ends it as `:qa!` does: the person
+// chose to drop the changes not written, so its swap file goes too; without
+// it the editor ends as a lost connection ends it, and the swap file of a
+// buffer with changes not written stays for recovery.
 type NvimClose struct {
-	T  string `json:"t"`
-	ID string `json:"id"`
+	T       string `json:"t"`
+	ID      string `json:"id"`
+	Discard bool   `json:"discard,omitempty"`
 }
 
 // NvimEvent is what the editor reports. Kind says which fields are set:
@@ -152,6 +162,9 @@ type NvimEvent struct {
 	Message     string `json:"message,omitempty"`
 
 	Swap *NvimSwapInfo `json:"swap,omitempty"`
+	// Modified, on a `modified` event, says the buffer holds changes not
+	// written.
+	Modified bool `json:"modified,omitempty"`
 	// Ack, on a `cursor` event, says Neovim has handled the keys of the
 	// nvim_input with that Seq and every one before, every buffer change
 	// they made sent already (round 13, G5).

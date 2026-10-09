@@ -141,7 +141,10 @@ type Local struct {
 	touched touchedIndex
 	// gitSeen watches the working tree for files no hook named (gitseen.go); its own lock.
 	gitSeen gitSeen
-	chat    chatRing // guarded by mu
+	// nvimCount is the editors open on the session (nvim.go), every
+	// connection's together.
+	nvimCount atomic.Int32
+	chat      chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
 	question       string

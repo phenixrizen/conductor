@@ -47,6 +47,7 @@ func (r *recorder) Buffer(path string)        { r.add("buffer " + filepath.Base(
 func (r *recorder) Ack(seq uint32, line, col int, mode string, vl, vc int) {
 	r.add(fmt.Sprintf("ack %d %d:%d %s", seq, line, col, mode))
 }
+func (r *recorder) Modified(m bool) { r.add(fmt.Sprintf("modified %v", m)) }
 func (r *recorder) Swap(sw Swap) {
 	r.mu.Lock()
 	r.swaps = append(r.swaps, sw)
@@ -87,6 +88,9 @@ func TestEditorAgainstTheRealNeovim(t *testing.T) {
 	if !Available() {
 		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	dir := t.TempDir()
 	file := filepath.Join(dir, "sample.txt")
 	os.WriteFile(file, []byte("line one\nline two\nline three\n"), 0o644)
@@ -390,4 +394,83 @@ func TestNumberedKeysAreAcknowledgedAfterTheirChanges(t *testing.T) {
 	}
 	e.InputSeq("g", 8)
 	r.wait(t, "ack 8 1:")
+}
+
+// The buffer's changes not written are reported as they begin and end (a
+// change, :w, a change, undo back to what was written); Close keeps the swap
+// file of a buffer that holds some, as a lost connection does, for recovery;
+// Discard drops them and the swap file with them, as :qa! does.
+func TestModifiedIsReportedAndDiscardDropsTheSwapFile(t *testing.T) {
+	if !Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	swaps := func() []string {
+		m, _ := filepath.Glob(filepath.Join(state, "nvim", "swap", "*"))
+		return m
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
+	count := func(r *recorder, ev string) int {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		n := 0
+		for _, e := range r.events {
+			if e == ev {
+				n++
+			}
+		}
+		return n
+	}
+	waitCount := func(r *recorder, ev string, n int) {
+		t.Helper()
+		for i := 0; i < 200 && count(r, ev) < n; i++ {
+			time.Sleep(25 * time.Millisecond)
+		}
+		if count(r, ev) < n {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			t.Fatalf("%d of %q wanted among %q", n, ev, r.events)
+		}
+	}
+	r := &recorder{done: make(chan struct{})}
+	e, err := Open(context.Background(), dir, "a.txt", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Input("ixx<Esc>")
+	waitCount(r, "modified true", 1)
+	e.Input(":w<CR>")
+	waitCount(r, "modified false", 1)
+	e.Input("Ayy<Esc>")
+	waitCount(r, "modified true", 2)
+	e.Input("u")
+	waitCount(r, "modified false", 2)
+	e.Input("Azz<Esc>")
+	waitCount(r, "modified true", 3)
+	e.Close()
+	kept := swaps()
+	if len(kept) != 1 {
+		t.Fatalf("closed with changes not written, the swap files: %q", kept)
+	}
+	os.Remove(kept[0])
+
+	r = &recorder{done: make(chan struct{})}
+	e, err = Open(context.Background(), dir, "a.txt", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Input("Aqq<Esc>")
+	waitCount(r, "modified true", 1)
+	e.Discard()
+	if left := swaps(); len(left) != 0 {
+		t.Fatalf("discarded, the swap files: %q", left)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(b) != "xxone\n" {
+		t.Fatalf("the file: %q", b)
+	}
+	e.Discard() // a second end is harmless
 }

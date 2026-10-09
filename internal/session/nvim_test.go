@@ -54,6 +54,9 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 	if !nvim.Available() {
 		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644)
 	s, _ := newLocal(t, dir)
@@ -81,10 +84,20 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 	if last := evs[len(evs)-1]; last.First != 0 || last.Last != 1 || len(last.Lines) != 0 {
 		t.Fatalf("dd: %+v", last)
 	}
+	// The buffer holds a change not written, and says so.
+	if ev := nvimEvents(t, sink, &from, proto.NvimModified, 10*time.Second); !ev[len(ev)-1].Modified {
+		t.Fatalf("modified after dd: %+v", ev[len(ev)-1])
+	}
 	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: ":w<CR>"}); err != nil {
 		t.Fatal(err)
 	}
-	nvimEvents(t, sink, &from, proto.NvimWritten, 10*time.Second)
+	evs = nvimEvents(t, sink, &from, proto.NvimWritten, 10*time.Second)
+	// Written, it no longer does (the event comes with the write, either side of it).
+	if !anyModified(evs, false) {
+		if ev := nvimEvents(t, sink, &from, proto.NvimModified, 10*time.Second); ev[len(ev)-1].Modified {
+			t.Fatalf("modified after :w: %+v", ev[len(ev)-1])
+		}
+	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(b) != "two\n" {
 		t.Fatalf("file after :w: %q", b)
 	}
@@ -129,11 +142,13 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 		t.Fatalf("a view role: %v", err)
 	}
 	// The bound per connection.
-	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r4", Path: "a.txt"}); err != nil {
-		t.Fatalf("second editor: %v", err)
+	for i := 2; i <= proto.MaxNvimPerSub; i++ {
+		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r4", Path: "a.txt"}); err != nil {
+			t.Fatalf("editor %d: %v", i, err)
+		}
 	}
 	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r5", Path: "a.txt"}); err != ErrTooManyRequests {
-		t.Fatalf("third editor: %v", err)
+		t.Fatalf("editor %d: %v", proto.MaxNvimPerSub+1, err)
 	}
 	// The refusal frame names the code.
 	var ev proto.NvimEvent
@@ -147,8 +162,119 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 	sub.nvimMu.Lock()
 	left := len(sub.nvims)
 	sub.nvimMu.Unlock()
-	if left != 0 || nvimTotal.Load() != 0 {
-		t.Fatalf("editors left: %d (total %d)", left, nvimTotal.Load())
+	if left != 0 || s.nvimCount.Load() != 0 {
+		t.Fatalf("editors left: %d (session %d)", left, s.nvimCount.Load())
+	}
+}
+
+func anyModified(evs []proto.NvimEvent, modified bool) bool {
+	for _, ev := range evs {
+		if ev.Kind == proto.NvimModified && ev.Modified == modified {
+			return true
+		}
+	}
+	return false
+}
+
+// Closing an editor whose buffer holds changes not written: as the
+// connection's end does, its swap file stays for recovery (the next open
+// offers it); with Discard, the person dropped the changes and the swap file
+// goes with them. The bound is the session's own: another session's editors
+// do not count against it.
+func TestNvimCloseKeepsOrDiscardsTheSwapFile(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	swaps := func() []string {
+		m, _ := filepath.Glob(filepath.Join(state, "nvim", "swap", "*"))
+		return m
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
+	s, _ := newLocal(t, dir)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Detach(sub)
+	from := 0
+	edit := func(req string) string {
+		t.Helper()
+		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: req, Path: "a.txt"}); err != nil {
+			t.Fatal(err)
+		}
+		id := nvimEvents(t, sink, &from, proto.NvimOpened, 10*time.Second)
+		if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id[len(id)-1].ID, Keys: "ixx<Esc>"}); err != nil {
+			t.Fatal(err)
+		}
+		nvimEvents(t, sink, &from, proto.NvimModified, 10*time.Second)
+		return id[len(id)-1].ID
+	}
+	gone := func(id string) {
+		t.Helper()
+		for i := 0; i < 100; i++ {
+			sub.nvimMu.Lock()
+			_, open := sub.nvims[id]
+			sub.nvimMu.Unlock()
+			if !open {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("editor %s still open", id)
+	}
+	id := edit("kept")
+	s.NvimClose(sub, proto.NvimClose{T: proto.CtlNvimClose, ID: id})
+	gone(id)
+	kept := swaps()
+	if len(kept) != 1 {
+		t.Fatalf("closed with changes not written, the swap files: %q", kept)
+	}
+	os.Remove(kept[0])
+	id = edit("dropped")
+	s.NvimClose(sub, proto.NvimClose{T: proto.CtlNvimClose, ID: id, Discard: true})
+	gone(id)
+	if left := swaps(); len(left) != 0 {
+		t.Fatalf("discarded, the swap files: %q", left)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(b) != "one\n" {
+		t.Fatalf("the file after discarding: %q", b)
+	}
+	// Neovim's own :q is let finish its exit, so its swap file goes too (it
+	// was killed halfway before, leaving one for the next open to stumble on).
+	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "quit", Path: "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	opened := nvimEvents(t, sink, &from, proto.NvimOpened, 10*time.Second)
+	id = opened[len(opened)-1].ID
+	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: ":q<CR>"}); err != nil {
+		t.Fatal(err)
+	}
+	nvimEvents(t, sink, &from, proto.NvimClosed, 10*time.Second)
+	gone(id)
+	for i := 0; i < 100 && len(swaps()) > 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if left := swaps(); len(left) != 0 {
+		t.Fatalf("after :q, the swap files: %q", left)
+	}
+	// Another session's editors leave this one's bound alone.
+	other, _ := newLocal(t, dir)
+	osub, err := other.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Detach(osub)
+	if err := other.NvimOpen(context.Background(), osub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "o1", Path: "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.nvimCount.Load() != 0 || other.nvimCount.Load() != 1 {
+		t.Fatalf("counts: this %d, other %d", s.nvimCount.Load(), other.nvimCount.Load())
 	}
 }
 

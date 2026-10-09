@@ -390,8 +390,8 @@ function focusIsFree(): boolean {
 function nvimSwap(id: string, choice: NvimSwapChoice): void {
   transport?.nvimSwap(id, choice)
 }
-function nvimClose(id: string): void {
-  transport?.nvimClose(id)
+function nvimClose(id: string, discard?: boolean): void {
+  transport?.nvimClose(id, discard)
 }
 function requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {
   if (!transport) return Promise.reject(new Error('not connected'))

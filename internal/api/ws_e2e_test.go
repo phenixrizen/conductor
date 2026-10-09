@@ -1289,6 +1289,9 @@ func TestNvimOverTheViewerWebSocket(t *testing.T) {
 	if !nvim.Available() {
 		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	e := newTestEnv(t, nil)
 	dir := filepath.Join(e.root, "notes")
 	os.MkdirAll(dir, 0o755)

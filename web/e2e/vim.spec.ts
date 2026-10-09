@@ -264,3 +264,87 @@ test('typing in insert mode shows at once and settles as Neovim has it; an autop
     await api.stopSession(s.id)
   }
 })
+
+// A tab whose Neovim buffer holds changes not written keeps its Neovim while
+// another tab is in front: back in front, the changes are there and the
+// editing goes on (it ended, before, and the next showing met its swap file
+// in a banner). The tab wears the unsaved dot and the keymap waits for a save;
+// closing it asks: Don't save drops the changes and the swap file with them,
+// Save writes through Neovim's :w. Neovim's own :q leaves no swap file.
+test('a Neovim tab keeps its changes not written while another is in front; closing asks; nothing leaves a swap file', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-tabs')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'a.txt'), 'alpha\n')
+  writeFileSync(join(cwd, 'b.txt'), 'beta\n')
+  const swapDir = join(state.home, '.local', 'state', 'nvim', 'swap')
+  const swaps = () => (existsSync(swapDir) ? readdirSync(swapDir).filter((f) => f.includes('files-tabs')) : [])
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'tabs', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    const open = async (name: string, text: string) => {
+      await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
+      await expect(lines).toContainText(text, { timeout: 30_000 })
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    }
+    await pane.locator(`[data-file-node="${cwd}/a.txt"]`).click()
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('Ixx ')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('xx alpha')
+    // Neovim says the buffer holds a change: the dot, and the keymap waits.
+    await expect(tab('a.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    await expect(area.locator('[data-editor-keymap]')).toBeDisabled()
+    // Another tab in front, then back: the change is there, no swap file banner, and the editing goes on.
+    await open('b.txt', 'beta')
+    await expect(tab('a.txt').locator('[data-editor-dirty]')).toBeVisible()
+    await tab('a.txt').click()
+    await expect(lines).toContainText('xx alpha', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-swap]')).toHaveCount(0)
+    await lines.click()
+    await page.keyboard.type('A!')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('xx alpha!', { timeout: 15_000 })
+    // Closing it asks; Don't save drops the changes, the file is as it was, and its swap file goes.
+    const question = page.locator('[role="dialog"]', { hasText: 'Save a.txt?' })
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(question).toBeVisible()
+    await question.locator('[data-editor-discard]').click()
+    await expect(tab('a.txt')).toHaveCount(0)
+    expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alpha\n')
+    await expect.poll(() => swaps().filter((f) => f.includes('a.txt')), { timeout: 15_000, message: "a.txt's swap file goes with its changes" }).toEqual([])
+    await expect(area.locator('[data-editor-keymap]')).toBeEnabled()
+    // Open again: no banner, the file as it is.
+    await open('a.txt', 'alpha')
+    await expect(area.locator('[data-editor-swap]')).toHaveCount(0)
+    // Save from the question writes through Neovim and closes the tab.
+    await lines.click()
+    await page.keyboard.type('Ayy')
+    await page.keyboard.press('Escape')
+    await expect(tab('a.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await question.locator('[data-editor-close-save]').click()
+    await expect(tab('a.txt')).toHaveCount(0, { timeout: 15_000 })
+    expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alphayy\n')
+    // Neovim's own :q on b.txt: the tab closes and no swap file is left.
+    await tab('b.txt').click()
+    await expect(lines).toContainText('beta', { timeout: 15_000 })
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type(':q')
+    await page.keyboard.press('Enter')
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
+    await expect.poll(swaps, { timeout: 15_000, message: 'no swap file left behind' }).toEqual([])
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

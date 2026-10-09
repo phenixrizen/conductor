@@ -1,5 +1,7 @@
 // Mirror of internal/proto (see docs/protocol.md). Keep both in sync.
 
+import type { NvimHolds } from './nvimHold'
+
 export const FrameType = {
   Output: 0x01,
   Input: 0x02,
@@ -570,10 +572,13 @@ export interface NvimBridge {
   open(path: string): Promise<NvimEvent>
   /** Keys for editor id; seq, when given, comes back as the `ack` of the cursor once Neovim has handled them (round 13, G5). */
   input(id: string, keys: string, seq?: number): void
-  close(id: string): void
+  /** Ends editor id; `discard` drops its changes not written and its swap file with them (the person said Don't save). */
+  close(id: string, discard?: boolean): void
   /** Answers the swap file the editor found (round 13, G3). */
   swap(id: string, choice: NvimSwapChoice): void
   subscribe(cb: (ev: NvimEvent) => void): () => void
+  /** The Neovims of tabs not in front that hold changes not written, kept for when their tab is in front again. */
+  holds: NvimHolds
 }
 
 /** The editor's Neovim bridge (design round 12, F8): what a viewer sends. */
@@ -593,6 +598,8 @@ export interface NvimInput {
 export interface NvimClose {
   t: 'nvim_close'
   id: string
+  /** Drop the changes not written, and the swap file with them (else it stays for recovery, as when the connection ends). */
+  discard?: boolean
 }
 /** The answers to a swap file (round 13, G3): edit anyway; recover its text; delete it and edit (the last two once its writer is gone). */
 export type NvimSwapChoice = 'edit' | 'recover' | 'delete'
@@ -613,11 +620,12 @@ export interface NvimSwapInfo {
   modified?: boolean
   mtime?: string
 }
-export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap'
+export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap' | 'modified'
 /**
  * What the editor reports. `kind` says which fields are set: `opened` (reqId on the first, path), `lines` (the buffer lines [first, last) become
  * `lines`, last -1 to the end, `truncated` when a line was cut), `cursor` (1-based line and col, the mode, the other end of a visual selection),
- * `mode`, `cmdline` (show, content, pos, prompt), `message` (text, messageKind), `written` (path), `closed` (reason), `error` (reqId, code, message).
+ * `mode`, `cmdline` (show, content, pos, prompt), `message` (text, messageKind), `written` (path), `closed` (reason), `error` (reqId, code, message),
+ * `modified` (modified: the buffer holds changes not written, or no longer does).
  */
 export interface NvimEvent {
   t: 'nvim_event'
@@ -638,6 +646,8 @@ export interface NvimEvent {
   swap?: NvimSwapInfo
   /** On a `cursor` event: Neovim has handled the keys of this seq and every one before, their line changes sent already (round 13, G5). */
   ack?: number
+  /** On a `modified` event: the buffer holds changes not written. */
+  modified?: boolean
   show?: boolean
   content?: string
   pos?: number

@@ -289,6 +289,8 @@ function answerSwap(choice: NvimSwapChoice) {
   ;(editorRef.value as { answerSwap?: (c: NvimSwapChoice) => void } | null)?.answerSwap?.(choice)
 }
 const keymapTip = computed(() => {
+  // Each keymap keeps its own text (Neovim's buffer, Monaco's model): switching with changes not written would lose them.
+  if (dirty.size) return 'Save or discard the changes first: the other keymap would not have them'
   if (keymap.value === 'nvim') return nvimWhy.value ? `${nvimWhy.value} · Monaco's keys meanwhile · click for Monaco's keys` : "Neovim keys: the real Neovim on the session's machine holds the file · click for Monaco's keys"
   return "Monaco's keys · click for Neovim keys (the real Neovim on the session's machine)"
 })
@@ -296,6 +298,18 @@ function closeActive() {
   // Neovim's :q: Neovim kept its own buffer, nothing to ask.
   if (active.value) closeNow([active.value.id])
 }
+// A tab not in front keeps its Neovim while its buffer holds changes not written (the bridge's holds); once its tab is closed, its
+// changes go with it (the close asked first: Don't save), and its swap file with them. After the render: a tab closing in front hands
+// its Neovim over as its editor leaves.
+watch(
+  () => tabs.value.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
+  (paths) => {
+    const bridge = props.nvim
+    if (!bridge) return
+    for (const o of bridge.holds.orphans(paths)) bridge.close(o.id, true)
+  },
+  { flush: 'post' },
+)
 
 // Editing (design round 12, F6): a controller on a session that allows it edits a text file read whole in Monaco (Neovim's keymap
 // edits through Neovim instead); Save and Ctrl+S write it on the session's machine, refused when the file changed on disk since it
@@ -414,6 +428,17 @@ const closingWords = computed(() => {
 const closingOne = computed(() => (closing.value?.ids.filter((id) => dirty.has(id)).length ?? 0) === 1)
 async function closingSave() {
   const ids = closing.value?.ids ?? []
+  if (nvimOn.value) {
+    // Neovim holds the file: its own :w, then the tab closes once Neovim says nothing is left unwritten.
+    saving.value = true
+    const ok = (await (editorRef.value as { nvimWrite?: () => Promise<boolean> } | null)?.nvimWrite?.()) ?? false
+    saving.value = false
+    if (ok && closing.value) {
+      closing.value = null
+      closeNow(ids)
+    }
+    return
+  }
   await save()
   if (active.value && !dirty.has(active.value.id)) {
     closing.value = null
@@ -490,7 +515,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">
-            <UButton :disabled="!!active && dirty.has(active.id)" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
+            <UButton :disabled="dirty.size > 0" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
           </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />

@@ -35,7 +35,7 @@ export interface TerminalTransport {
   /** The editor's Neovim (F8): open a file on the session's machine (the `opened` event, or the `error` one, settles it), send keys, close. */
   nvimOpen(path: string): Promise<NvimEvent>
   nvimInput(id: string, keys: string, seq?: number): void
-  nvimClose(id: string): void
+  nvimClose(id: string, discard?: boolean): void
   nvimSwap(id: string, choice: NvimSwapChoice): void
   onOutput(cb: (data: Uint8Array, replay: boolean) => void): void
   onControl(cb: (msg: ControlMessage) => void): void
