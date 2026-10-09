@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { editor as MonacoEditor } from 'monaco-editor'
-import type { NvimBridge, NvimEvent } from '~/utils/protocol'
+import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
+import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
@@ -15,7 +16,7 @@ const props = withDefaults(defineProps<{ path: string; text: string; line?: numb
 const emit = defineEmits<{
   cursor: [pos: { line: number; col: number }]
   ready: []
-  nvim: [state: { mode: string; cmdline: string; message: string; messageKind: string }]
+  nvim: [state: NvimViewState]
   nvimClosed: []
   dirty: [dirty: boolean]
   /** Lines selected (F7): the range and where below it, in the editor's pixels, a bar can sit; null when nothing is. */
@@ -108,7 +109,7 @@ function setText(text: string) {
 }
 let nvimId: string | null = null
 let unsubscribe: (() => void) | null = null
-const nvimState = { mode: 'n', cmdline: '', message: '', messageKind: '' }
+const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false }
 function tellNvim() {
   emit('nvim', { ...nvimState })
 }
@@ -187,6 +188,12 @@ function onNvimEvent(ev: NvimEvent) {
       break
     case 'written':
       nvimState.message = nvimState.message || 'written'
+      tellNvim()
+      break
+    case 'swap':
+      // Another editor's swap file: the file opened read-only (round 13, G3).
+      nvimState.swap = ev.swap ?? null
+      nvimState.recovered = false
       tellNvim()
       break
     case 'closed':
@@ -282,7 +289,25 @@ watch(
   () => props.readOnly,
   (ro) => editor?.updateOptions({ readOnly: ro }),
 )
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText, getLines })
+/** Answers the swap file the editor found: recover keeps the banner for deleting it after the write; the others end it. */
+function answerSwap(choice: NvimSwapChoice) {
+  if (!nvimId || !props.nvim || !nvimState.swap) return
+  props.nvim.swap(nvimId, choice)
+  if (choice === 'recover') nvimState.recovered = true
+  else nvimState.swap = null
+  tellNvim()
+  editor?.focus()
+}
+/** Answers Neovim's confirm question with its choice's key; the question goes. */
+function answerConfirm(key: string) {
+  if (!nvimId || !props.nvim || nvimState.messageKind !== 'confirm') return
+  props.nvim.input(nvimId, key)
+  nvimState.message = ''
+  nvimState.messageKind = ''
+  tellNvim()
+  editor?.focus()
+}
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText, getLines, answerSwap, answerConfirm })
 </script>
 
 <template>

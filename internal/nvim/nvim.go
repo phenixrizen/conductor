@@ -40,7 +40,35 @@ type Handler interface {
 	Buffer(path string)
 	// Exited says Neovim left (reason "quit" for its own exit).
 	Exited(reason string)
+	// Swap says the file has another editor's swap file: Neovim opened it
+	// read-only (round 13, G3); SwapChoice answers.
+	Swap(s Swap)
 }
+
+// Swap is another editor's swap file for the file opened, as swapinfo()
+// tells it: the swap file, the process that wrote it and whether that runs
+// on this machine now, its user and host, whether it holds changes not
+// written, and when it was written (Unix seconds).
+type Swap struct {
+	File     string
+	Pid      int
+	Running  bool
+	User     string
+	Host     string
+	Modified bool
+	Mtime    int64
+}
+
+// The answers SwapChoice takes.
+const (
+	SwapEdit    = "edit"
+	SwapRecover = "recover"
+	SwapDelete  = "delete"
+)
+
+// ErrSwap refuses a swap answer that does not apply: no swap file was
+// found, or recover and delete while the process that wrote it runs.
+var ErrSwap = errors.New("nvim: that answer does not apply to the swap file")
 
 // Program is the executable looked up on PATH.
 const Program = "nvim"
@@ -60,6 +88,8 @@ type Editor struct {
 	closed atomic.Bool
 	// cmdline keeps the last shown command line for cmdline_pos events.
 	cmdContent, cmdPrompt string
+	// swap is the last swap file found, for SwapChoice; guarded by mu.
+	swap *Swap
 }
 
 // ErrClosed is returned by Input once the editor is gone.
@@ -91,6 +121,9 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		fmt.Sprintf("autocmd CursorMoved,CursorMovedI * call rpcnotify(%d, 'conductor_cursor', line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", ch),
 		fmt.Sprintf("autocmd BufWritePost * call rpcnotify(%d, 'conductor_written', expand('<afile>:p'))", ch),
 		fmt.Sprintf("autocmd VimLeavePre * call rpcnotify(%d, 'conductor_leaving')", ch),
+		// Another editor's swap file: open read-only instead of asking (the
+		// question would block the open), and say whose it is.
+		fmt.Sprintf("autocmd SwapExists * let v:swapchoice = 'o' | call rpcnotify(%d, 'conductor_swap', v:swapname, swapinfo(v:swapname))", ch),
 	} {
 		if err := v.Command(cmd); err != nil {
 			v.Close()
@@ -144,7 +177,22 @@ func (e *Editor) register() error {
 	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(buf nvim.Buffer, tick int64) {}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufDetach, func(buf nvim.Buffer) {}); err != nil {
+	if err := v.RegisterHandler(nvim.EventBufDetach, func(buf nvim.Buffer) {
+		// Neovim stops following a buffer it reloads (:e!, :recover): the
+		// one on screen is followed again and sent whole.
+		if e.closed.Load() {
+			return
+		}
+		e.mu.Lock()
+		cur := e.buf
+		e.mu.Unlock()
+		if buf != cur {
+			return
+		}
+		if ok, err := e.v.AttachBuffer(buf, false, map[string]interface{}{}); err == nil && ok {
+			e.sendWhole()
+		}
+	}); err != nil {
 		return err
 	}
 	if err := v.RegisterHandler("conductor_cursor", func(args ...interface{}) {
@@ -177,6 +225,18 @@ func (e *Editor) register() error {
 			e.h.Buffer(path)
 			e.sendWhole()
 		}
+	}); err != nil {
+		return err
+	}
+	if err := v.RegisterHandler("conductor_swap", func(args ...interface{}) {
+		if len(args) < 2 {
+			return
+		}
+		sw := swapOf(fmt.Sprint(args[0]), args[1])
+		e.mu.Lock()
+		e.swap = &sw
+		e.mu.Unlock()
+		e.h.Swap(sw)
 	}); err != nil {
 		return err
 	}
@@ -279,6 +339,73 @@ func (e *Editor) Report() {
 		e.h.Mode(fmt.Sprint(pos[2]))
 		e.h.Cursor(toInt(pos[0]), toInt(pos[1]), fmt.Sprint(pos[2]), toInt(pos[3]), toInt(pos[4]))
 	}
+}
+
+// FoundSwap is the swap file found and not yet answered (nil when none):
+// one found while the file opened was reported before anyone listened.
+func (e *Editor) FoundSwap() *Swap {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.swap == nil {
+		return nil
+	}
+	sw := *e.swap
+	return &sw
+}
+
+// SwapChoice answers the swap file found: SwapEdit leaves read-only,
+// SwapRecover reads the swap file's text into the buffer (then leaves
+// read-only; the buffer is modified until written), SwapDelete removes the
+// swap file and leaves read-only. Recover and delete need the process that
+// wrote it gone. The choices map to fixed commands; nothing the browser
+// sends is run.
+func (e *Editor) SwapChoice(choice string) error {
+	if e.closed.Load() {
+		return ErrClosed
+	}
+	e.mu.Lock()
+	sw := e.swap
+	e.mu.Unlock()
+	if sw == nil {
+		return ErrSwap
+	}
+	running := sw.Running && processRuns(sw.Pid)
+	switch choice {
+	case SwapEdit:
+	case SwapRecover:
+		if running {
+			return ErrSwap
+		}
+		var escaped string
+		if err := e.v.Call("fnameescape", &escaped, sw.File); err != nil {
+			return err
+		}
+		if err := e.v.Command("silent recover " + escaped); err != nil {
+			return err
+		}
+	case SwapDelete:
+		if running {
+			return ErrSwap
+		}
+		if err := removeSwap(sw.File); err != nil {
+			return err
+		}
+	default:
+		return ErrSwap
+	}
+	if err := e.v.Command("setlocal noreadonly"); err != nil {
+		return err
+	}
+	if choice == SwapRecover {
+		// :recover replaces the buffer's text without a line event: send it whole.
+		e.sendWhole()
+	}
+	if choice != SwapRecover {
+		e.mu.Lock()
+		e.swap = nil
+		e.mu.Unlock()
+	}
+	return nil
 }
 
 // Close ends Neovim without saving.

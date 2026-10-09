@@ -297,6 +297,14 @@ func (p *peer) handleFrame(f proto.Frame) {
 				return
 			}
 			p.a.local.NvimClose(sub, m)
+		case proto.CtlNvimSwap:
+			var m proto.NvimSwap
+			if json.Unmarshal(f.Payload, &m) != nil {
+				return
+			}
+			if err := p.a.local.NvimSwap(sub, m); err != nil {
+				p.a.local.Send(sub, session.NvimRefused("", err))
+			}
 		case proto.CtlFileGet:
 			var m proto.FileGet
 			if json.Unmarshal(f.Payload, &m) != nil {

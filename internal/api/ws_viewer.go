@@ -197,6 +197,14 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			return false
 		}
 		local.NvimClose(sub, m)
+	case proto.CtlNvimSwap:
+		var m proto.NvimSwap
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		if err := local.NvimSwap(sub, m); err != nil {
+			local.Send(sub, session.NvimRefused("", err))
+		}
 	case proto.CtlSubmit:
 		var m proto.Submit
 		if json.Unmarshal(payload, &m) != nil {

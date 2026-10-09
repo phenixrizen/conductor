@@ -80,7 +80,7 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeFileWrite, Payload: []byte("x")}); !errors.Is(err, session.ErrReadOnly) {
 		t.Fatalf("a view viewer's save: %v", err)
 	}
-	for _, ctl := range []any{proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r", Path: "a"}, proto.NvimInput{T: proto.CtlNvimInput, ID: "e", Keys: "x"}, proto.NvimClose{T: proto.CtlNvimClose, ID: "e"}} {
+	for _, ctl := range []any{proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r", Path: "a"}, proto.NvimInput{T: proto.CtlNvimInput, ID: "e", Keys: "x"}, proto.NvimClose{T: proto.CtlNvimClose, ID: "e"}, proto.NvimSwap{T: proto.CtlNvimSwap, ID: "e", Choice: proto.NvimSwapDelete}} {
 		frame := proto.MustControl(ctl)
 		if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: frame[1:]}); !errors.Is(err, session.ErrReadOnly) {
 			t.Fatalf("a view viewer's %T: %v", ctl, err)

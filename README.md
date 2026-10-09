@@ -390,7 +390,12 @@ meets one. It needs `nvim` on that machine (the button says when it is
 missing), control of the session, and the server's or host's `fileEdit`
 setting left at `control` (`CONDUCTOR_FILE_EDIT`, `conductor host
 --file-edit`; `off` turns editing off for everyone). A view-only guest keeps
-the read-only editor.
+the read-only editor. A file another Vim has open, or left a swap file for
+when it died, opens read-only with a banner naming that Vim and what
+applies: **Edit anyway**, and once that Vim is gone **Recover** (its
+unsaved text, written with `:w`) and **Delete the swap file**. Neovim's own
+questions, such as `:confirm q` over unsaved changes, show their choices as
+buttons.
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).

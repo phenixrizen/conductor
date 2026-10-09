@@ -102,6 +102,33 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 		h.Lines(0, -1, lines)
 	}
 	ed.Report()
+	// A swap file found while the file opened was told to no one yet.
+	if sw := ed.FoundSwap(); sw != nil {
+		h.Swap(*sw)
+	}
+	return nil
+}
+
+// NvimSwap answers the swap file one of sub's editors found (round 13, G3)
+// with one of the fixed choices; an answer that does not apply (no swap
+// file, or recover and delete while its writer runs) comes back as the
+// editor's error message.
+func (s *Local) NvimSwap(sub *Subscription, req proto.NvimSwap) error {
+	switch req.Choice {
+	case proto.NvimSwapEdit, proto.NvimSwapRecover, proto.NvimSwapDelete:
+	default:
+		return errors.New("session: invalid swap choice")
+	}
+	sub.nvimMu.Lock()
+	e := sub.nvims[req.ID]
+	sub.nvimMu.Unlock()
+	if e == nil || e.ed == nil {
+		return ErrFileDenied
+	}
+	if err := e.ed.SwapChoice(req.Choice); err != nil {
+		h := &nvimHandler{s: s, sub: sub, e: e}
+		h.emit(proto.NvimEvent{Kind: proto.NvimMessage, Text: truncateRunes(err.Error(), proto.MaxNvimLine), MessageKind: "emsg"})
+	}
 	return nil
 }
 
@@ -206,6 +233,13 @@ func (h *nvimHandler) Written(path string) {
 func (h *nvimHandler) Buffer(path string) {
 	h.e.path = path
 	h.emit(proto.NvimEvent{Kind: proto.NvimOpened, Path: path})
+}
+func (h *nvimHandler) Swap(sw nvim.Swap) {
+	info := &proto.NvimSwapInfo{File: sw.File, Pid: sw.Pid, Running: sw.Running, User: sw.User, Host: sw.Host, Modified: sw.Modified}
+	if sw.Mtime > 0 {
+		info.Mtime = time.Unix(sw.Mtime, 0).UTC().Format(time.RFC3339)
+	}
+	h.emit(proto.NvimEvent{Kind: proto.NvimSwapFound, Swap: info})
 }
 func (h *nvimHandler) Exited(reason string) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})

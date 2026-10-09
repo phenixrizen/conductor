@@ -12,6 +12,9 @@ const (
 	CtlNvimInput = "nvim_input"
 	CtlNvimClose = "nvim_close"
 	CtlNvimEvent = "nvim_event"
+	// CtlNvimSwap answers a swap file the editor found (round 13, G3): one
+	// of the NvimSwap* choices, never a command.
+	CtlNvimSwap = "nvim_swap"
 
 	// ErrCodeNvimUnavailable says the machine has no `nvim`, or the session
 	// does not offer the editor to this connection.
@@ -42,7 +45,40 @@ const (
 	NvimWritten = "written"
 	NvimClosed  = "closed"
 	NvimError   = "error"
+	// NvimSwapFound says the file has another editor's swap file: the
+	// editor opened it read-only, and Swap says whose (round 13, G3).
+	NvimSwapFound = "swap"
 )
+
+// The choices of an nvim_swap: edit the file anyway (the editor leaves
+// read-only); recover the swap file's text into the buffer (only when the
+// process that wrote it is gone); delete the swap file and edit (the same).
+const (
+	NvimSwapEdit    = "edit"
+	NvimSwapRecover = "recover"
+	NvimSwapDelete  = "delete"
+)
+
+// NvimSwap answers the swap file editor ID found with Choice.
+type NvimSwap struct {
+	T      string `json:"t"`
+	ID     string `json:"id"`
+	Choice string `json:"choice"`
+}
+
+// NvimSwapInfo is another editor's swap file for the file opened: the swap
+// file's path, the process that wrote it, whether that process still runs
+// on this machine, its user and host, whether it holds changes not written
+// to the file, and when it was last written (RFC 3339).
+type NvimSwapInfo struct {
+	File     string `json:"file"`
+	Pid      int    `json:"pid,omitempty"`
+	Running  bool   `json:"running"`
+	User     string `json:"user,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Modified bool   `json:"modified,omitempty"`
+	Mtime    string `json:"mtime,omitempty"`
+}
 
 // NvimOpen asks for a Neovim on Path (relative to the working directory, or
 // absolute inside it). The reply is an nvim_event of kind `opened` carrying
@@ -73,7 +109,7 @@ type NvimClose struct {
 // (Line, Col 1-based, Mode, VisualLine and VisualCol the other end of a
 // visual selection); `mode` (Mode); `cmdline` (Show, Content, Pos, Prompt);
 // `message` (Text, MessageKind); `written` (Path); `closed` (Reason);
-// `error` (ReqID, Code, Message).
+// `error` (ReqID, Code, Message); `swap` (Swap).
 type NvimEvent struct {
 	T     string `json:"t"`
 	ID    string `json:"id,omitempty"`
@@ -102,6 +138,8 @@ type NvimEvent struct {
 	Reason      string `json:"reason,omitempty"`
 	Code        string `json:"code,omitempty"`
 	Message     string `json:"message,omitempty"`
+
+	Swap *NvimSwapInfo `json:"swap,omitempty"`
 }
 
 // NvimLineEvents turns one buffer change (the lines [first, last) become
