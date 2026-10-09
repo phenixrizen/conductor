@@ -22,7 +22,9 @@ const catalogFile = "catalog.json"
 // masked, where the catalog took it from and, for a saved agent that replaces
 // a built-in or configured one, where that one came from (deleting the saved
 // agent brings it back), and whether its program resolves on this server
-// (lookups: cached 30 s; a lookup that does not answer within 2 s counts).
+// (lookups: cached 30 s; a lookup that does not answer within 2 s counts)
+// and is not a known other program of the same name: the Go migrations tool
+// called goose is not Goose, so Goose is not available where only it is.
 // Its site is the agent's own field.
 type catalogEntry struct {
 	catalog.Agent
@@ -50,6 +52,12 @@ func entry(a catalog.Agent, cat, base catalog.Catalog, installed func(program st
 		e.Available = installed(a.Command[0])
 		if identity != nil {
 			e.Identity = identity(a)
+		}
+		// A known impostor is not the agent: never offered to launch. A
+		// verified probe that matched nothing keeps the agent offered, with
+		// its warning: a new release may print its version differently.
+		if e.Identity != nil && e.Identity.Ran && e.Identity.Impostor {
+			e.Available = false
 		}
 	}
 	return e

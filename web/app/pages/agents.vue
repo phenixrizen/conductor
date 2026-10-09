@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { identity, isAvailable, notInstalled, notInstalledTitle } from '~/utils/agents'
+import { identity, isAvailable, notInstalledBadge } from '~/utils/agents'
 
 const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
@@ -152,7 +152,17 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
               <p v-if="a.description" class="text-sm text-muted">{{ a.description }}</p>
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
-                <UBadge v-if="!isAvailable(a)" :label="notInstalled(serverHost.host.value, a.onWindows)" :title="notInstalledTitle(a.command[0] ?? '', a.onWindows)" icon="i-lucide-circle-off" color="warning" variant="subtle" size="sm" data-not-installed />
+                <UBadge
+                  v-if="!isAvailable(a)"
+                  :label="notInstalledBadge(a, serverHost.host.value).label"
+                  :title="notInstalledBadge(a, serverHost.host.value).title"
+                  icon="i-lucide-circle-off"
+                  color="warning"
+                  variant="subtle"
+                  size="sm"
+                  data-not-installed
+                  :data-not-agent="notInstalledBadge(a, serverHost.host.value).notAgent || undefined"
+                />
                 <UBadge
                   v-else-if="identity(a, serverHost.host.value).state !== 'unprobed'"
                   :label="identity(a, serverHost.host.value).label"

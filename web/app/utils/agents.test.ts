@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, identity, isAvailable, misidentified, notInstalled, notInstalledTitle, serverAgents } from './agents'
+import { agentItem, identity, isAvailable, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents } from './agents'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
 
@@ -69,5 +69,21 @@ describe('a program found on Windows from inside WSL', () => {
     expect(notInstalled('box', '/mnt/c/Users/me/AppData/Roaming/npm/codex')).toBe('Found on Windows, not in WSL')
     expect(notInstalledTitle('codex', '/mnt/c/Users/me/AppData/Roaming/npm/codex')).toContain('install codex inside the WSL distribution')
     expect(notInstalled('box')).toBe('Not installed on box')
+  })
+})
+
+describe('a program that only shares the agent\'s name', () => {
+  const impostor = { command: ['goose'], identity: { ran: true, identified: false, impostor: true, verified: false, name: 'Goose', output: 'goose version:v3.5.3' } }
+  it('says which program is there instead, and that the agent is not installed', () => {
+    expect(notInstalledBadge(impostor, 'box')).toEqual({
+      label: 'Not installed on box',
+      title: 'goose on box is another program, not Goose: it printed "goose version:v3.5.3". Install Goose to launch it.',
+      notAgent: true,
+    })
+  })
+  it('is worded as a plain missing program otherwise', () => {
+    expect(notInstalledBadge({ command: ['cursor-agent'] }, '')).toEqual({ label: 'Not installed on the server', title: notInstalledTitle('cursor-agent'), notAgent: false })
+    // A verified probe that matched nothing is not an impostor: the agent stays offered, with its warning.
+    expect(notInstalledBadge({ command: ['claude'], identity: { ran: true, identified: false, verified: true, name: 'Claude Code', output: 'build 3' } }, 'box').notAgent).toBe(false)
   })
 })

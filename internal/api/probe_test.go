@@ -46,10 +46,14 @@ func identityEnv(t *testing.T) (*testEnv, string, string) {
 	t.Helper()
 	claude := versionScript(t, "claude", "2.1.287 (Claude Code)")
 	goose := versionScript(t, "goose", "goose version: v3.22.1")
+	// Claude's verified probe matching nothing: a release that prints its
+	// version some new way, not a known other program.
+	renamed := versionScript(t, "claude-next", "Claude Code build 3000")
 	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{
 		{ID: "claude", Name: "Claude Code", Command: []string{claude}, Adapter: "claude", AllowArgs: true},
 		{ID: "goose", Name: "Goose", Command: []string{goose}, Adapter: "goose"},
 		{ID: "quiet", Name: "Quiet", Command: []string{goose}, Adapter: "goose", Probe: new(bool)},
+		{ID: "renamed", Name: "Claude Code next", Command: []string{renamed}, Adapter: "claude"},
 	})
 	return e, claude, goose
 }
@@ -58,10 +62,20 @@ func TestCatalogListsIdentity(t *testing.T) {
 	e, _, _ := identityEnv(t)
 	_, out := e.do("GET", "/api/catalog", adminToken, nil)
 	ids := map[string]map[string]any{}
+	available := map[string]bool{}
 	for _, a := range out["agents"].([]any) {
 		m := a.(map[string]any)
 		id, _ := m["identity"].(map[string]any)
 		ids[m["id"].(string)] = id
+		available[m["id"].(string)], _ = m["available"].(bool)
+	}
+	// The known impostor is not offered; the same program with its probe
+	// off is, and so is a verified probe that matched nothing (warned).
+	if available["goose"] || !available["quiet"] || !available["claude"] || !available["renamed"] {
+		t.Fatalf("available %v", available)
+	}
+	if r := ids["renamed"]; r == nil || r["identified"] != false || r["impostor"] != nil || r["verified"] != true {
+		t.Fatalf("renamed %v", r)
 	}
 	if c := ids["claude"]; c == nil || c["identified"] != true || c["version"] != "2.1.287" || c["name"] != "Claude Code" || c["verified"] != true {
 		t.Fatalf("claude %v", ids["claude"])
@@ -169,14 +183,31 @@ func TestLaunchAllowsAPendingOrUnverifiedProbe(t *testing.T) {
 	_ = goose
 }
 
+func TestCreateSessionRefusesAKnownImpostor(t *testing.T) {
+	e, _, _ := identityEnv(t)
+	// Nothing cached yet: the launch is not held up by a probe, and goes.
+	e.createSession("goose")
+	e.do("GET", "/api/catalog", adminToken, nil) // warms the probes
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "goose"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	er := out["error"].(map[string]any)
+	if msg, _ := er["message"].(string); er["code"] != "not_the_agent" || !strings.Contains(msg, "is another program, not Goose") || !strings.Contains(msg, "goose version: v3.22.1") {
+		t.Fatalf("%v", er)
+	}
+	// The same program with its probe off launches.
+	e.createSession("quiet")
+}
+
 func TestCreateSessionNotesAMisidentifiedAgent(t *testing.T) {
 	e, _, _ := identityEnv(t)
 	e.do("GET", "/api/catalog", adminToken, nil) // warms the probes
-	id := e.createSession("goose")
+	id := e.createSession("renamed")
 	d, _ := e.srv.Registry().Get(id)
 	var found bool
 	for _, entry := range d.(*session.Local).Activity() {
-		if entry.Type == session.ActivityError && strings.Contains(entry.Message, "is not Goose") && strings.Contains(entry.Message, "goose version: v3.22.1") {
+		if entry.Type == session.ActivityError && strings.Contains(entry.Message, "is not Claude Code") && strings.Contains(entry.Message, "Claude Code build 3000") {
 			found = true
 		}
 	}

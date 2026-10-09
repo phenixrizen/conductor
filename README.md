@@ -1344,10 +1344,14 @@ its command's name is on the server's `PATH`; a name proves little (`goose`
 is also a Go migrations tool). For an agent with a hook adapter the server
 also runs the program with its version flag, argv only in a spartan
 environment, and matches the answer against what the agent prints: the
-**Agents** page then shows "Claude Code 2.1.287" or "Codex CLI 0.159.0",
-names an impostor by what it printed ("Not Goose: `goose version: v3.22.1`"),
-and a crew with one is refused at launch; a plain launch goes ahead with the
-note in the session's activity. Claude Code's and Codex's version lines were
+**Agents** page then shows "Claude Code 2.1.287" or "Codex CLI 0.159.0".
+A known other program of the agent's name (the `goose` migrations tool) is
+not the agent: the catalog lists that agent as not installed, the tooltip
+naming what the program printed, the Launch dialog leaves it out and every
+launch of it is refused. A verified check that matches nothing (a new
+release may print its version differently) keeps the agent offered with a
+"Not Claude Code" warning; a crew with it is refused, and a plain launch
+goes ahead with the note in the session's activity. Claude Code's and Codex's version lines were
 verified live; the other adapters' come from their documentation and refuse
 nothing until the nightly recipes job confirms them. `probe: false` on an
 agent turns the check off; `POST /api/catalog/check` runs it for an adapter.

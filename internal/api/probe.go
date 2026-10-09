@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -172,28 +173,51 @@ func toIdentity(res agents.ProbeResult, name string, p agents.Probe) Identity {
 	return Identity{Ran: res.Ran, Identified: res.Identified, Impostor: res.Impostor, Verified: p.Verified, Name: name, Version: res.Version, Output: res.Output, Error: res.Error}
 }
 
-// noteIdentity records on local what the cache knows of its agent's program
-// when that says it is not the agent: a plain launch goes ahead (the person
-// chose it), with the note in the session's activity. Nothing is run here.
-func (s *Server) noteIdentity(local *session.Local, a catalog.Agent) {
+// cachedIdentity is what the probe cache already knows of agent a's
+// program, without running anything: ok false when it knows nothing (no
+// probe, the probe off, a relative program, a lookup not done, nothing
+// cached).
+func (s *Server) cachedIdentity(a catalog.Agent) (Identity, bool) {
 	if !a.Probed() || len(a.Command) == 0 || relativePath(a.Command[0]) {
-		return
+		return Identity{}, false
 	}
 	p := agents.ProbeFor(a.Adapter)
 	if p == nil {
-		return
+		return Identity{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	path, ok, known := s.lookups.found(ctx, a.Command[0])
 	if !ok || !known {
-		return
+		return Identity{}, false
 	}
 	name := a.Adapter
 	if ad, ok := agents.Get(a.Adapter); ok {
 		name = ad.Name
 	}
-	if id, ok := s.probes.cached(resolvedCommand(a, path), a.Adapter, name, *p, a.Env); ok && id.Misidentified() {
+	return s.probes.cached(resolvedCommand(a, path), a.Adapter, name, *p, a.Env)
+}
+
+// notTheAgent is the refusal of a plain launch whose program the cache knows
+// as another program of the same name (a known impostor): it is never
+// offered, and the API does not launch it either. Turning the agent's probe
+// off ("probe": false) launches it anyway. Nothing is run here; an
+// identity not yet cached does not refuse.
+func (s *Server) notTheAgent(a catalog.Agent) *apiError {
+	id, ok := s.cachedIdentity(a)
+	if !ok || !id.Ran || !id.Impostor {
+		return nil
+	}
+	return newAPIError(http.StatusBadRequest, "not_the_agent", a.Command[0]+" on the server is another program, not "+id.Name+" (--version printed "+strconv.Quote(id.Output)+"); install "+id.Name+", or turn the agent's identity check off to launch it anyway")
+}
+
+// noteIdentity records on local what the cache knows of its agent's program
+// when that says it is not the agent (a verified probe that matched nothing:
+// a new release may print its version differently): a plain launch goes
+// ahead (the person chose it), with the note in the session's activity.
+// Nothing is run here.
+func (s *Server) noteIdentity(local *session.Local, a catalog.Agent) {
+	if id, ok := s.cachedIdentity(a); ok && id.Misidentified() {
 		local.Record(session.ActivityEntry{Type: session.ActivityError, Message: "launched " + a.Command[0] + ", which is not " + id.Name + " (--version printed " + strconv.Quote(id.Output) + ")"})
 	}
 }
