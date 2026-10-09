@@ -298,3 +298,38 @@ func TestAConfirmQuestionIsAConfirmMessage(t *testing.T) {
 		t.Fatal("Cancel ended the editor")
 	}
 }
+
+// Text with no key press reaches the bridge as keys (round 13, G4): a
+// composed word, a dead key's character, `<` as <lt>, typed as written.
+func TestComposedTextIsTypedAsWritten(t *testing.T) {
+	if !Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("end\n"), 0o644)
+	r := &recorder{done: make(chan struct{})}
+	e, err := Open(context.Background(), dir, "sample.txt", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	e.Input("I")
+	r.wait(t, "mode insert")
+	for _, keys := range []string{"café ", "日本 ", "<lt>tag> "} {
+		if err := e.Input(keys); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Input("<Esc>")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if lines, _ := e.Lines(); len(lines) == 1 && lines[0] == "café 日本 <tag> end" {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("lines %q", lines)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

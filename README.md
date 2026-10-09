@@ -395,7 +395,9 @@ when it died, opens read-only with a banner naming that Vim and what
 applies: **Edit anyway**, and once that Vim is gone **Recover** (its
 unsaved text, written with `:w`) and **Delete the swap file**. Neovim's own
 questions, such as `:confirm q` over unsaved changes, show their choices as
-buttons.
+buttons. Text that comes with no key press reaches Neovim too: an input
+method's committed word (not the composition on the way), a dead key's
+character, dictation.
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).

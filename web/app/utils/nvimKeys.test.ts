@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, modeWords } from './nvimKeys'
+import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, MAX_NVIM_INPUT, modeWords, textToNvim } from './nvimKeys'
 
 const k = (key: string, mods: Partial<Pick<KeyboardEvent, 'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey'>> = {}) => ({ key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods })
 
@@ -56,5 +56,24 @@ describe('the mode', () => {
     expect(isVisual('v')).toBe(true)
     expect(isVisual('V')).toBe(true)
     expect(isVisual('n')).toBe(false)
+  })
+})
+
+describe('text with no key press (round 13, G4)', () => {
+  it('is typed as it is, with < named and line breaks and tabs as keys', () => {
+    expect(textToNvim('café')).toEqual(['café'])
+    expect(textToNvim('日本語')).toEqual(['日本語'])
+    expect(textToNvim('a<b\tc\r\nd\x07')).toEqual(['a<lt>b<Tab>c<CR>d'])
+    expect(textToNvim('')).toEqual([])
+  })
+  it('comes in pieces under the bound, never splitting a character or a key name', () => {
+    const pieces = textToNvim('é'.repeat(200) + '<'.repeat(100))
+    const enc = new TextEncoder()
+    expect(pieces.length).toBeGreaterThan(1)
+    for (const p of pieces) {
+      expect(enc.encode(p).length).toBeLessThanOrEqual(MAX_NVIM_INPUT)
+      expect(p).not.toMatch(/<l$|<lt?$/)
+    }
+    expect(pieces.join('')).toBe('é'.repeat(200) + '<lt>'.repeat(100))
   })
 })
