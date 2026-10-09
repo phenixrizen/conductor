@@ -64,3 +64,14 @@ describe('the Explorer tree', () => {
     expect(crumbsOf('/')).toEqual([{ label: '/', path: '/' }])
   })
 })
+
+describe('the filter beyond the loaded tree', () => {
+  it('lists what the find found and the tree does not draw', async () => {
+    const { foundRows } = await import('./fileTree')
+    const rows = foundRows('/r/repo/', ['internal/api/users.go', 'users.md', 'docs/users.md'], new Set(['/r/repo/users.md']))
+    expect(rows).toEqual([
+      { abs: '/r/repo/internal/api/users.go', dir: 'internal/api/', name: 'users.go' },
+      { abs: '/r/repo/docs/users.md', dir: 'docs/', name: 'users.md' },
+    ])
+  })
+})

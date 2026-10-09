@@ -144,29 +144,31 @@ test that would have caught it when it is fixed.
   unless an agent's mouse mode is found wanting; a check of Codex and Claude
   Code with the mouse is on the by-hand list for the next round. Round 10.
 
-### The Files tab, what is left of round 12
+### The Files tab, after round 12
 
-Explorer (F1), the Monaco editor beside the terminal (F2), Changes (F3)
-and Touched (F4) landed on 2026-10-08 (`docs/round12-plan.md`, the design
-screens 4a–4g). Still to build, each a pull request from main:
+Every layer of round 12 landed on 2026-10-08 and 2026-10-09
+(`docs/round12-plan.md`, design screens 4a–4g and 5a–5c): the Explorer,
+the Monaco editor, Changes, Touched, Commits, editing, comments on lines
+and the Neovim keymap. What is set aside:
 
-- **Neovim in the editor, what is left after F8:** typing in insert mode round-trips to the machine before it shows
-  (a local echo, as vscode-neovim does, is the next step); Neovim's
-  columns are bytes, so the cursor sits off by the multibyte characters
-  before it on a line; a swap file or a prompt at `:e` refuses the open
-  with Neovim's words; the Settings page has no keymap row (the button in
-  the tab strip is the switch).
-- **Touched everywhere:** the Yard's focused tile and the guest's join
-  page keep no activity list, so their Files panes offer no Touched
-  section and no dots; the activity replay is 50 entries, so a long
-  session's Touched starts from what the page saw. A `since` on the
-  replay, or a bounded `GET /api/sessions/{id}/activity`, would give both
-  the whole list.
-- **The Explorer's filter and unloaded folders:** the filter matches
-  only the nodes the tree has fetched, so "users" typed before `internal`
-  is expanded finds nothing (seen by hand on 2026-10-08). Either fetch
-  the folders that are not loaded while a filter is typed (bounded: depth
-  and count), or say "in the folders opened so far" under the box.
+- **Neovim: typing in insert mode round-trips to the machine before it
+  shows.** A local echo would show a key at once, but nothing ties
+  Neovim's line updates to the keys that caused them, so over a slow link
+  the echoed text snaps back and forth (an autopair or an abbreviation
+  makes it worse). It needs a reconciliation design (a key counter Neovim
+  acknowledges, say) before it is worth building.
+- **Neovim: characters with no key event do not reach it.** Only key
+  presses are sent; an input method's composed text and a dead key's
+  character arrive as text input, which the read-only editor under the
+  Neovim keymap does not take. A keyboard with the character on a key
+  works. Fix: take the textarea's composition and input events in that
+  keymap and send their text as keys.
+- **Neovim: a swap file or a prompt at `:e` refuses the open** with
+  Neovim's words, instead of showing the prompt to answer.
+- **Touched starts from what the page saw.** The activity replay is 50
+  entries, so a long session's Touched (on every page now) begins there; a
+  `since` on the replay, or a bounded `GET /api/sessions/{id}/activity`,
+  would give the whole list.
 - **Files from more agents:** Codex names a file only through
   `apply_patch` (its shell reads and writes name none); the Copilot and
   Goose mappers yield no files, their PostToolUse payloads unverified

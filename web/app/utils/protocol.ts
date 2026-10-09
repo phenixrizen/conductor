@@ -253,7 +253,7 @@ export interface CommitInfo {
  * commits on HEAD after `base`, or since the session started) or `commit` (commit `rev`'s files against its first parent).
  */
 export interface FileGetExtra {
-  op?: 'status' | 'show' | 'log' | 'commit'
+  op?: 'status' | 'show' | 'log' | 'commit' | 'find'
   base?: string
   rev?: string
 }
@@ -264,7 +264,9 @@ export type FileRequester = (path: string, stat?: boolean, extra?: FileGetExtra)
 export interface FileHeader {
   reqId: string
   path: string
-  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written'
+  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written' | 'find'
+  /** A `find` reply: the files under `path` whose name holds the words, as paths from it (at most 200). */
+  matches?: string[]
   /**
    * A `file` reply's sha256 (hex) and mtime: what a save sends back to tell a file changed on disk since (F6); absent when the read was
    * cut. A `written` reply carries the saved file's; an `error` of code `changed_on_disk` the file's now, with the last file event on it.

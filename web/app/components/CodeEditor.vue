@@ -2,7 +2,7 @@
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { NvimBridge, NvimEvent } from '~/utils/protocol'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim } from '~/utils/nvimKeys'
-import { linesEdit } from '~/utils/nvimLines'
+import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
 
 /**
@@ -151,10 +151,11 @@ function onNvimEvent(ev: NvimEvent) {
     }
     case 'cursor': {
       const line = Math.max(1, Math.min(ev.line ?? 1, model.getLineCount()))
-      const col = Math.max(1, ev.col ?? 1)
+      // Neovim counts a line's bytes, Monaco its UTF-16 units.
+      const col = byteColToUtf16(model.getLineContent(line), Math.max(1, ev.col ?? 1))
       if (ev.mode && isVisual(ev.mode) && ev.visualLine) {
         const vl = Math.max(1, Math.min(ev.visualLine, model.getLineCount()))
-        const vc = Math.max(1, ev.visualCol ?? 1)
+        const vc = byteColToUtf16(model.getLineContent(vl), Math.max(1, ev.visualCol ?? 1))
         const forward = vl < line || (vl === line && vc <= col)
         editor.setSelection(ev.mode === 'V' ? new monaco.Selection(Math.min(vl, line), 1, Math.max(vl, line), model.getLineMaxColumn(Math.max(vl, line))) : forward ? new monaco.Selection(vl, vc, line, col + 1) : new monaco.Selection(vl, vc + 1, line, col))
       } else {

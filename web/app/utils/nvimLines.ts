@@ -50,3 +50,25 @@ export function applyLines(lines: string[], ev: LinesEvent): string[] {
   const last = ev.last < 0 ? lines.length : Math.max(first, Math.min(ev.last, lines.length))
   return [...lines.slice(0, first), ...ev.lines, ...lines.slice(last)]
 }
+
+/** The UTF-8 length of one character. */
+function utf8Len(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0
+  return cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+}
+
+/**
+ * Neovim's column is a byte's (1-based, of the line's UTF-8); Monaco's a UTF-16 unit's. The Monaco column of Neovim's byteCol on a line,
+ * so the cursor sits right after a multibyte character.
+ */
+export function byteColToUtf16(line: string, byteCol: number): number {
+  const target = Math.max(0, byteCol - 1)
+  let bytes = 0
+  let units = 0
+  for (const ch of line) {
+    if (bytes >= target) break
+    bytes += utf8Len(ch)
+    units += ch.length
+  }
+  return units + 1
+}

@@ -286,6 +286,9 @@ const (
 	FileOpShow   = "show"
 	FileOpLog    = "log"
 	FileOpCommit = "commit"
+	// FileOpFind finds files whose name holds Path (the Explorer's filter)
+	// anywhere under the working directory, answered with kind `find`.
+	FileOpFind = "find"
 )
 
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).

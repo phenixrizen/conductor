@@ -72,10 +72,17 @@ test('the Neovim keymap is off until its button, then keys reach the real Neovim
     await page.keyboard.press('Enter')
     await expect(page.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
     // The choice is kept across a reload; the button turns it off again.
+    writeFileSync(join(cwd, 'notes.txt'), 'café ok\n')
     await page.reload()
     await openNotes()
     await expect(area.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'nvim')
     await expect(area.locator('[data-nvim-status]')).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    // Neovim counts a line's bytes, the editor its UTF-16 units: past the é the cursor is where Neovim says (o is byte 7, column 6).
+    await lines.click()
+    await page.keyboard.type('0')
+    await page.keyboard.type('f')
+    await page.keyboard.type('o')
+    await expect(area.locator('[data-editor-pos]')).toHaveText(/^Ln 1, Col 6$/, { timeout: 15_000 })
     await area.locator('[data-editor-keymap]').click()
     await expect(area.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'default')
     await expect(area.locator('[data-nvim-status]')).toHaveCount(0)
