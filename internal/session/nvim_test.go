@@ -97,6 +97,23 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 	if !wrote {
 		t.Fatal("the write is not in Activity as the person's file event")
 	}
+	// Keys at machine speed, one message each and far past the chat's 20 at
+	// once, all land: Neovim's keys have their own bound, sized for typing
+	// (the shared one dropped every key past the 20th, seen in the Windows app).
+	keys := []string{"O"}
+	for i := 0; i < 60; i++ {
+		keys = append(keys, "x")
+	}
+	keys = append(keys, "<Esc>", ":w<CR>")
+	for i, k := range keys {
+		if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: k, Seq: uint32(100 + i)}); err != nil {
+			t.Fatalf("key %d of a quick burst refused: %v", i, err)
+		}
+	}
+	nvimEvents(t, sink, &from, proto.NvimWritten, 10*time.Second)
+	if b, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(b) != strings.Repeat("x", 60)+"\ntwo\n" {
+		t.Fatalf("file after a quick burst: %q", b)
+	}
 	// Refusals.
 	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r2", Path: "../outside.txt"}); err != ErrFileDenied {
 		t.Fatalf("outside the cwd: %v", err)

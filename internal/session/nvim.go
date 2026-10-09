@@ -139,6 +139,10 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
+	if sub.nvimKeys.rate == 0 {
+		// Keys, not posts: sized for typing (proto.NvimKeysPerSecond).
+		sub.nvimKeys.rate, sub.nvimKeys.burst = proto.NvimKeysPerSecond, proto.NvimKeyBurst
+	}
 	ok := sub.nvimKeys.take(time.Now())
 	sub.nvimMu.Unlock()
 	if e == nil {

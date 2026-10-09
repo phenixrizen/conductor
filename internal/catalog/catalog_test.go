@@ -1060,8 +1060,25 @@ func TestTrustAnswers(t *testing.T) {
 func TestStartupQuestions(t *testing.T) {
 	c := Default()
 	codex, _ := c.Get("codex")
-	if len(codex.Questions) != 1 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+	if len(codex.Questions) != 3 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
 		t.Fatalf("codex: %+v", codex.Questions)
+	}
+	// The background-server question picks on a digit, and the update question skips on Escape: no answer
+	// carries an Enter, which would land on the next screen (the update question's Update now).
+	for i, want := range map[int]string{1: "Background server has incompatible feature settings This session requires", 2: "› 1. Update now (runs `npm install -g @openai/codex`) 2. Skip"} {
+		q := codex.Questions[i]
+		re, err := CompilePattern(q.Prompt)
+		if err != nil || !re.MatchString(want) {
+			t.Fatalf("question %d %q does not match %q: %v", i, q.Prompt, want, err)
+		}
+		for _, a := range q.Answers {
+			if strings.ContainsAny(a.Input, "\r\n") {
+				t.Fatalf("question %d answer %+v carries an Enter", i, a)
+			}
+		}
+	}
+	if up, _ := CompilePattern(codex.Questions[2].Prompt); up.MatchString("Update available! 0.161.0 -> 0.162.0 Run npm install -g @openai/codex to update.") {
+		t.Fatal("the update banner (no question) must not hold the session")
 	}
 	re, err := CompilePattern(codex.Questions[0].Prompt)
 	if err != nil || !re.MatchString("Hooks need review 7 hooks are new or changed") || !re.MatchString("Hooks  eed review") || re.MatchString("Trust this folder?") {
@@ -1070,7 +1087,7 @@ func TestStartupQuestions(t *testing.T) {
 	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex, mine", Command: []string{"codex"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if mine, _ := c.Get("codex"); len(mine.Questions) != 1 || mine.Questions[0].Prompt != codex.Questions[0].Prompt {
+	if mine, _ := c.Get("codex"); len(mine.Questions) != len(codex.Questions) || mine.Questions[0].Prompt != codex.Questions[0].Prompt {
 		t.Fatalf("the override lost the questions: %+v", mine.Questions)
 	}
 	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}}

@@ -183,22 +183,25 @@ test('text with no key press, a dead key\'s character and an input method\'s wor
     await lines.click()
     await page.keyboard.type('I')
     await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // Typed as fast as a machine sends keys, far past the 20 a quick burst once lost (the chat's bound, before Neovim's own).
+    await page.keyboard.type('the quick brown fox jumps over the lazy dog ')
+    await expect(lines).toContainText('the quick brown fox jumps over the lazy dog end', { timeout: 15_000 })
     // A dead key's é, or dictation: text with no key press.
     await page.keyboard.insertText('café ')
-    await expect(lines).toContainText('café end', { timeout: 15_000 })
+    await expect(lines).toContainText('dog café end', { timeout: 15_000 })
     // An input method: the composition is shown on the way and only the committed word is typed.
     const cdp = await page.context().newCDPSession(page)
     await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 })
     await cdp.send('Input.imeSetComposition', { text: 'にほん', selectionStart: 3, selectionEnd: 3 })
     await cdp.send('Input.insertText', { text: '日本 ' })
-    await expect(lines).toContainText('café 日本 end', { timeout: 15_000 })
+    await expect(lines).toContainText('dog café 日本 end', { timeout: 15_000 })
     await expect(lines).not.toContainText('にほん')
     // No "Cannot edit in read-only editor" from Monaco: Neovim took it all.
     await expect(page.getByText('Cannot edit in read-only editor')).toHaveCount(0)
     await page.keyboard.press('Escape')
     await page.keyboard.type(':w')
     await page.keyboard.press('Enter')
-    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('café 日本 end\n')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('the quick brown fox jumps over the lazy dog café 日本 end\n')
   } finally {
     await api.stopSession(s.id)
   }

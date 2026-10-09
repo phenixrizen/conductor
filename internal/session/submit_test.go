@@ -504,3 +504,35 @@ func TestAStartupQuestionIsHeldLikeTheTrustQuestion(t *testing.T) {
 		t.Fatalf("the trust question after: %+v", att)
 	}
 }
+
+// A question's own choice answers it without an Enter (Codex's
+// background-server question picks on a digit, its update question skips on
+// Escape); other keys without an Enter still leave it showing.
+func TestAStartupQuestionsChoiceAnswersWithoutEnter(t *testing.T) {
+	choices := []Option{{Label: "Run without the daemon this time", Input: "1"}, {Label: "Cancel (Codex exits)", Input: "3"}}
+	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{Pattern: regexp.MustCompile(`(?i)background\s*server\s*has\s*incompatible`), Answers: choices}}}))
+	sub, err := s.Attach("", RoleControl, "", 0, 0, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("Background server has incompatible feature settings\r\n  1. Run without daemon this time\r\n> 3. Cancel"))
+	deadline := time.Now().Add(3 * time.Second)
+	for s.Info().Attention.Source != SourceTrust && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if att := s.Info().Attention; att.Source != SourceTrust || len(att.Options) != 2 {
+		t.Fatalf("attention %+v", att)
+	}
+	s.Input(sub, []byte("2")) // not a choice, no Enter: still showing
+	nextWrite(t, p)
+	if st := s.Info().Attention.State; st != AttentionNeedsInput {
+		t.Fatalf("a key that is not a choice answered: %q", st)
+	}
+	s.Input(sub, []byte("1"))
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+	if st := s.Info().Attention.State; st != AttentionNone {
+		t.Fatalf("the choice did not answer: %q", st)
+	}
+}
