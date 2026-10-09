@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -99,6 +100,16 @@ type saveAgentRequest struct {
 // handleCatalog lists the launchable agents, env values masked, and the IDs
 // the overlay hides, which POST /api/catalog/{id}/unhide brings back.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	out, hidden := s.catalogEntries(r.Context())
+	// yoloDefault is the server's yolo choice, which a launch or a crew that
+	// says nothing follows.
+	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden, "yoloDefault": s.cfg.Yolo})
+}
+
+// catalogEntries lists the catalog's agents with what this server knows of
+// them, waiting for ctx at most about lookupWait for the programs and
+// probeWait for the probes, and the IDs the overlay hides.
+func (s *Server) catalogEntries(ctx context.Context) ([]catalogEntry, []string) {
 	s.catalogMu.Lock()
 	cat, hidden := s.catalog, uniqueIDs(s.overlay.Hidden)
 	s.catalogMu.Unlock()
@@ -111,13 +122,31 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			programs = append(programs, a.Command[0])
 		}
 	}
-	answers := s.lookups.warmPaths(r.Context(), programs)
+	answers := s.lookups.warmPaths(ctx, programs)
 	installed := func(program string) bool { return answers[program].installed }
-	// The probes of the agents found run together too (probeWorkers at a
-	// time); one that does not answer within probeWait is reported pending.
-	identity := func(a catalog.Agent) *Identity {
-		return s.identityOf(r.Context(), a, answers[a.Command[0]].path, false)
+	// The probes of the agents found are asked for together, and waited for
+	// together: probeWait in all, not each (asked one after another, a cold
+	// catalog waited up to probeWait per agent, seen on the Windows app as
+	// the Launch dialog's long empty list on its first open). They run
+	// probeWorkers at a time; one not answered by then is reported pending.
+	ids := make(map[string]*Identity, len(list))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, a := range list {
+		if len(a.Command) == 0 || answers[a.Command[0]].path == "" {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id := s.identityOf(ctx, a, answers[a.Command[0]].path, false)
+			mu.Lock()
+			ids[a.ID] = id
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
+	identity := func(a catalog.Agent) *Identity { return ids[a.ID] }
 	out := make([]catalogEntry, 0, len(list))
 	for _, a := range list {
 		e := entry(a, cat, s.base, installed, identity)
@@ -126,9 +155,15 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, e)
 	}
-	// yoloDefault is the server's yolo choice, which a launch or a crew that
-	// says nothing follows.
-	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden, "yoloDefault": s.cfg.Yolo})
+	return out, hidden
+}
+
+// WarmCatalog does at the server's start what the first GET /api/catalog
+// would: it looks the agents' programs up and runs their probes, so the
+// Launch dialog first opened after the app starts finds them known (inside
+// WSL the first lookups and probes of a dozen agents take seconds).
+func (s *Server) WarmCatalog(ctx context.Context) {
+	s.catalogEntries(ctx)
 }
 
 // handleSaveAgent adds an agent to the overlay, or replaces the agent with the

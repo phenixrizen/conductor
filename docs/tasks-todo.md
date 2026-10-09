@@ -40,20 +40,6 @@ test that would have caught it when it is fixed.
   or the viewport's width below it), a column gap that reads as columns,
   a rule or tint between them, the headers repeated per group; checked
   against the design's shortcuts screen at 1440 and 390.
-- **The Launch dialog takes very long to list the agents the first
-  time.** The owner, 2026-10-08, on the Windows app (the server in WSL):
-  opening Launch agent for the first time after the app starts shows an
-  empty list for a long while. Likely cause: `GET /api/catalog` looks up
-  every agent's command and runs the version probes of the ones found
-  (`probeWorkers` at a time, `probeWait` each, "pending" past that), and
-  the dialog shows nothing until that reply lands; inside WSL the first
-  probes of thirteen agents take long. Fix:
-  answer the list at once with what is known, mark availability as it
-  comes (a `checking` state per row, a stream or a second fetch), cache
-  the result across dialogs for the server's lifetime, and never block
-  the list on a probe; a Go test that a slow probe does not delay the
-  catalog, a Playwright check that the dialog lists agents within a
-  second of opening.
 - **The directory picker's lists are cut short.** The owner, 2026-10-08:
   choosing a starting working directory in the Launch dialog, the
   folder list stops before the end of a large directory. Cause: `GET

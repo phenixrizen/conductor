@@ -341,3 +341,57 @@ func TestLaunchCarriesTheAgentsStartupQuestions(t *testing.T) {
 		t.Fatalf("attention %+v", att)
 	}
 }
+
+// The catalog asks for its agents' probes together and waits for them
+// together, probeWait in all: a cold catalog of six slow probes answers in
+// about one wait, the late ones pending, not in one wait per agent (seen on
+// the Windows app as the Launch dialog's long empty list on its first
+// open). WarmCatalog, run as the server starts, leaves them known for the
+// first request.
+func TestCatalogWaitsForItsProbesTogether(t *testing.T) {
+	var list []catalog.Agent
+	for i := range 6 {
+		p := versionScript(t, "claude", "2.1.287 (Claude Code)")
+		list = append(list, catalog.Agent{ID: "claude" + string(rune('a'+i)), Name: "Claude Code", Command: []string{p}, Adapter: "claude"})
+	}
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), list)
+	var ran atomic.Int32
+	e.srv.probes.wait = time.Second
+	e.srv.probes.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+		time.Sleep(700 * time.Millisecond)
+		ran.Add(1)
+		return agents.RunProbe(ctx, command, p, env)
+	}
+	pending := func(out map[string]any) int {
+		n := 0
+		for _, a := range out["agents"].([]any) {
+			if id, _ := a.(map[string]any)["identity"].(map[string]any); id != nil && id["pending"] == true {
+				n++
+			}
+		}
+		return n
+	}
+	start := time.Now()
+	_, out := e.do("GET", "/api/catalog", adminToken, nil)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("a cold catalog of six slow probes took %v (one wait per agent?)", took)
+	}
+	if n := pending(out); n == 0 || n == 6 {
+		t.Fatalf("pending after one wait: %d of 6", n)
+	}
+	// Warmed as the server starts: the probes finish meanwhile, and the next
+	// request finds every one known at once.
+	e.srv.probes.entries = map[string]probeEntry{}
+	ran.Store(0)
+	e.srv.WarmCatalog(t.Context())
+	deadline := time.Now().Add(10 * time.Second)
+	for ran.Load() < 6 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	start = time.Now()
+	_, out = e.do("GET", "/api/catalog", adminToken, nil)
+	if took := time.Since(start); took > 300*time.Millisecond || pending(out) != 0 {
+		t.Fatalf("after the warm-up: %v, %d pending", took, pending(out))
+	}
+}

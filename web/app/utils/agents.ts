@@ -69,6 +69,17 @@ export function serverAgents<T extends Pick<AgentInfo, 'available'>>(list: reado
   return list.filter(isAvailable)
 }
 
+/**
+ * What the Launch dialog says where its agents go when it lists none (round 14): `checking` while the first catalog of this page is
+ * under way (a blank grid read as "no agents" for seconds on the Windows app's first open), `none-installed` when the catalog has agents
+ * but none on this server, `none` when it has none; null when it lists some.
+ */
+export function launchListNote(s: { loading: boolean; known: number; offered: number; onServer: boolean }): 'checking' | 'none-installed' | 'none' | null {
+  if (s.offered > 0) return null
+  if (s.loading) return 'checking'
+  return s.onServer && s.known > 0 ? 'none-installed' : 'none'
+}
+
 /** A select item for an agent, marked when it is not installed; never disabled, since a crew may be edited before its agents are installed. */
 export function agentItem(a: AgentInfo, host: string): { label: string; value: string; icon: string } {
   if (!isAvailable(a)) return { label: `${a.name} · not installed on ${where(host)}`, value: a.id, icon: 'i-lucide-circle-off' }
