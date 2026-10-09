@@ -6,12 +6,16 @@ import {
   decodeFile,
   decodeFrame,
   encodeControl,
+  encodeFileWrite,
   encodeInput,
+  MAX_WRITE_BYTES,
   parseJSON,
+  writeParts,
   type ChatPost,
   type ChatSend,
   type ControlMessage,
   type FileResponse,
+  type FileWriteOptions,
   type TransportKind,
   type Welcome,
 } from '../protocol'
@@ -109,6 +113,22 @@ export abstract class BaseTransport implements TerminalTransport {
   nvimClose(id: string): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'nvim_close', id }))
+  }
+
+  writeFile(path: string, data: Uint8Array, opts: FileWriteOptions = {}): Promise<FileResponse> {
+    if (this.state.value !== 'open') return Promise.reject(new Error('not connected'))
+    if (data.length > MAX_WRITE_BYTES) return Promise.reject(new Error('a file saved from the editor is at most 1 MiB'))
+    const reqId = `w${(++this.reqCounter).toString(36)}`
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.pendingFiles.delete(reqId)
+        reject(new Error('the save did not answer'))
+      }, FILE_TIMEOUT_MS)
+      this.pendingFiles.set(reqId, { resolve, reject, timer })
+      for (const [start, end] of writeParts(data.length)) {
+        this.send(encodeFileWrite({ reqId, path, offset: start, total: data.length, baseSha256: opts.baseSha256, force: opts.force }, data.subarray(start, end)))
+      }
+    })
   }
 
   requestFile(path: string, stat = false, extra: FileGetExtra = {}): Promise<FileResponse> {

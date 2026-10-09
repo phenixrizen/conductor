@@ -158,7 +158,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: (id: string, keys: string) => void; nvimClose: (id: string) => void } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: (id: string, keys: string) => void; nvimClose: (id: string) => void; writeFile: EditorTerminal['writeFile'] } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -238,25 +238,11 @@ function onActivity(e: ActivityEntry) {
 }
 
 // Every (re)connection replays the last 50 entries and the kept chat, so start both afresh.
-// The editor's Neovim (design round 12, F8): what the welcome offers, the calls on the terminal's connection, the events to whoever listens.
-const nvimOffer = ref({ welcome: false, nvim: false, fileEdit: false, machine: undefined as string | undefined })
-const nvimListeners = new Set<(ev: NvimEvent) => void>()
-function onNvim(ev: NvimEvent) {
-  for (const cb of nvimListeners) cb(ev)
-}
-const nvimBridge = computed<NvimBridge>(() => ({
-  offer: nvimOffer.value,
-  open: (path: string) => (terminal.value ? terminal.value.nvimOpen(path) : Promise.reject(new Error('terminal not ready'))),
-  input: (id: string, keys: string) => terminal.value?.nvimInput(id, keys),
-  close: (id: string) => terminal.value?.nvimClose(id),
-  subscribe: (cb) => {
-    nvimListeners.add(cb)
-    return () => nvimListeners.delete(cb)
-  },
-}))
+// The editor (design round 12, F6 and F8): what the welcome allows here, Neovim, saves.
+const editor = useEditorBridge(terminal as unknown as Ref<EditorTerminal | null>, () => (current.value?.kind === 'hosted' ? current.value.hostName || 'the host' : 'this server'))
 
 function onWelcome(w: Welcome) {
-  nvimOffer.value = { welcome: true, nvim: !!w.nvim, fileEdit: !!w.fileEdit, machine: current.value?.kind === 'hosted' ? current.value.hostName || 'the host' : 'this server' }
+  editor.onWelcome(w)
   selfId.value = w.subscriberId ?? w.viewerId ?? ''
   activity.value = []
   unread.registerSelf(selfId.value)
@@ -395,11 +381,11 @@ watch(id, () => {
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
-        <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="nvimBridge" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3">
+        <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3">
           <TerminalView
             ref="terminal"
             :create-transport="createTransport"
-            @nvim="onNvim"
+            @nvim="editor.onNvim"
             @welcome="onWelcome"
             @status="onStatus"
             @attention="onAttention"

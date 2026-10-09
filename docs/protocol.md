@@ -18,6 +18,7 @@ relay envelope, so a client handles them identically regardless of transport.
 | `0x05` | SIGNAL | viewer ↔ server | JSON WebRTC signaling | 64 KiB |
 | `0x06` | FILE | owner → client | `[8-byte reqId][uint32 headerLen][JSON header][bytes]` | 1 MiB body |
 | `0x07` | CHUNK | data channel only | `[uint16 msgId][uint32 total][uint32 offset][data]` | 32 KiB |
+| `0x08` | FILE_WRITE | client → owner | `[8-byte reqId][uint32 headerLen][JSON header][part]`: one part of a save (see File saves) | 32 KiB part, 4 KiB header |
 | `0x10` | RELAY | host ↔ server | `[16-byte viewerId][inner frame 0x01–0x04, 0x06]` | |
 
 "Owner" is whichever process holds the PTY: the server for `server` sessions,
@@ -609,14 +610,39 @@ The two files themselves are matched as files, so a link to them is refused as
 well; the copies are matched by name alone. Every one of these rules answers
 `denied`. A hosted session applies only the first two: the host serves
 everything else under its working directory. Responses carry a JSON header
-`{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?}`
-followed by up to 1 MiB of bytes for text files. Files with a NUL byte in the
+`{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?, sha256?, mtime?}`
+followed by up to 1 MiB of bytes for text files; `sha256` (hex) and `mtime` (RFC 3339)
+come with a file read whole, for a save to tell the file changed since. Files with a NUL byte in the
 first 8 KiB are reported `binary` without bytes; images are sent as bytes. Up to
 four requests may be in flight per client. `stat:true` returns only the header.
 
 The `fileView` server setting decides who may read: `view` (both roles, the
 default), `control` (controllers only) or `off`; `conductor host --file-view`
 does the same for a hosted session.
+
+## File saves
+
+The editor saves a file (design round 12, F6) with FILE_WRITE frames, the
+FILE frame's layout in the other direction: the header
+`{reqId, path, offset, total, baseSha256?, force?}` and the bytes
+`[offset, offset+len)` of a file of `total` bytes (at most 1 MiB), in parts of
+at most 32 KiB (under a data channel's message cap), in order, one save at a
+time per connection; a save whose next part has not come for 30 s is dropped.
+When the last part arrives the owner resolves `path` as a read does (the same
+deny list), and refuses with a FILE frame of kind `error` and code
+`changed_on_disk` when the file's sha256 is not `baseSha256` (the read's),
+unless `force`: the header then carries the file's `sha256`, `mtime` and, from
+the newest file event that changed it, `by`, `tool` and `at`; a file deleted
+since is the same code with `exists: false`. Otherwise it writes the file
+atomically (a temporary file beside it, its mode kept, a rename) and answers
+kind `written` with the new `sha256`, `mtime` and `size`; the save is a `file`
+event `write` by the person with tool `editor`. Other refusals: `read_only`
+(not a controller, or the session's `fileEdit` is `off`), `denied`,
+`too_large`, `out_of_order`, `write`. The `fileEdit` setting (`control`, the
+default, or `off`; `CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`) is the
+same that offers Neovim, and the welcome's `fileEdit` says whether this
+connection may save. The switchyard drops FILE_WRITE from view-role
+connections.
 
 ## HTTP API
 

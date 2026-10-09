@@ -23,6 +23,7 @@ const (
 	TypeSignal     byte = 0x05 // viewer <-> server: WebRTC signaling JSON
 	TypeFile       byte = 0x06 // owner -> client: file read response
 	TypeChunk      byte = 0x07 // data channel only: fragment of a large frame
+	TypeFileWrite  byte = 0x08 // client -> owner: one part of a file save
 	TypeRelay      byte = 0x10 // host <-> server: envelope for a relayed viewer
 )
 
@@ -37,6 +38,11 @@ const (
 	MaxFrame      = 1 + MaxFileBytes + MaxFileHeader + 12
 	ViewerIDLen   = 16
 	ProtoVersion  = 1
+	// A save travels in parts (TypeFileWrite) of at most MaxWritePart bytes,
+	// under a data channel's message cap, with a header of at most
+	// MaxWriteHeader; the whole file is at most MaxFileBytes.
+	MaxWritePart   = 32 << 10
+	MaxWriteHeader = 4 << 10
 )
 
 // Errors returned by Decode.
@@ -125,6 +131,8 @@ func limitFor(t byte) (int, bool) {
 		return MaxFileBytes + MaxFileHeader + 12, true
 	case TypeChunk:
 		return ChunkHeaderLen + ChunkSize, true
+	case TypeFileWrite:
+		return 12 + MaxWriteHeader + MaxWritePart, true
 	case TypeRelay:
 		return ViewerIDLen + 1 + MaxFileBytes + MaxFileHeader + 12, true
 	}
@@ -184,6 +192,17 @@ type FileHeader struct {
 	Changes []Change `json:"changes,omitempty"`
 	Added   int      `json:"added,omitempty"`
 	Removed int      `json:"removed,omitempty"`
+	// A `file` reply's Sha256 (hex, of the whole file; absent when the read
+	// was cut) and Mtime (RFC 3339 with nanoseconds) are what a save sends
+	// back to tell a file changed on disk since (design round 12, F6). A
+	// `written` reply carries the saved file's. An `error` reply of code
+	// `changed_on_disk` carries the file's now, and By and Tool name the
+	// last file event on it, when there was one.
+	Sha256 string `json:"sha256,omitempty"`
+	Mtime  string `json:"mtime,omitempty"`
+	By     string `json:"by,omitempty"`
+	Tool   string `json:"tool,omitempty"`
+	At     string `json:"at,omitempty"`
 	// A `log` reply (design 4e): the commits newest first (at most
 	// gitrepo.MaxCommits, Truncated then), Since the time they start from
 	// when no base was asked for. A `commit` reply: Commit, and its files
@@ -261,6 +280,56 @@ func DecodeFile(payload []byte) (FileHeader, []byte, error) {
 	var h FileHeader
 	if err := json.Unmarshal(payload[12:12+hl], &h); err != nil {
 		return FileHeader{}, nil, fmt.Errorf("%w: %v", ErrBadFileFrame, err)
+	}
+	return h, payload[12+hl:], nil
+}
+
+// FileWrite is the header of one part of a save (design round 12, F6): the
+// bytes [Offset, Offset+len(part)) of a file of Total bytes for Path, the
+// parts in order under one ReqID; the last part has Offset+len == Total.
+// BaseSha256 is the sha256 of the file as it was read; the owner refuses
+// the save with `changed_on_disk` when the file on disk differs, unless
+// Force. The reply is a FILE frame with ReqID: kind `written`, or `error`.
+type FileWrite struct {
+	ReqID      string `json:"reqId"`
+	Path       string `json:"path"`
+	Offset     int64  `json:"offset"`
+	Total      int64  `json:"total"`
+	BaseSha256 string `json:"baseSha256,omitempty"`
+	Force      bool   `json:"force,omitempty"`
+}
+
+// EncodeFileWrite builds a TypeFileWrite frame:
+// [8-byte reqId][uint32 headerLen][header][part], the FILE frame's layout.
+func EncodeFileWrite(h FileWrite, part []byte) ([]byte, error) {
+	hb, err := json.Marshal(h)
+	if err != nil {
+		return nil, err
+	}
+	if len(hb) > MaxWriteHeader || len(part) > MaxWritePart {
+		return nil, fmt.Errorf("%w: write part too large", ErrBadFileFrame)
+	}
+	out := make([]byte, 1+8+4+len(hb)+len(part))
+	out[0] = TypeFileWrite
+	copy(out[1:9], padID(h.ReqID))
+	binary.BigEndian.PutUint32(out[9:13], uint32(len(hb)))
+	copy(out[13:], hb)
+	copy(out[13+len(hb):], part)
+	return out, nil
+}
+
+// DecodeFileWrite parses a TypeFileWrite payload (without the type byte).
+func DecodeFileWrite(payload []byte) (FileWrite, []byte, error) {
+	if len(payload) < 12 {
+		return FileWrite{}, nil, ErrBadFileFrame
+	}
+	hl := int(binary.BigEndian.Uint32(payload[8:12]))
+	if hl > MaxWriteHeader || 12+hl > len(payload) || len(payload)-12-hl > MaxWritePart {
+		return FileWrite{}, nil, ErrBadFileFrame
+	}
+	var h FileWrite
+	if err := json.Unmarshal(payload[12:12+hl], &h); err != nil {
+		return FileWrite{}, nil, fmt.Errorf("%w: %v", ErrBadFileFrame, err)
 	}
 	return h, payload[12+hl:], nil
 }

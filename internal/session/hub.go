@@ -53,6 +53,10 @@ type Subscription struct {
 	nvimMu   sync.Mutex
 	nvims    map[string]*nvimEditor
 	nvimKeys chatBucket
+	// write is the save this connection is sending (design round 12, F6):
+	// one at a time, its parts in order.
+	writeMu sync.Mutex
+	write   *pendingWrite
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool

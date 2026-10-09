@@ -830,6 +830,40 @@ waiting on monaco-neovim-wasm's missing license.
   revision), the session's reads through the file policy (the deny list,
   not a repository, a flag as a revision), vitest for the rows, the words
   and a tab per commit, Playwright `commits.spec.ts`.
+- **F6, Editing (4b, 4f).** A controller edits a file in Monaco and saves
+  it with Save or Ctrl+S, on the session page, the Yard's focused tile and
+  the guest page alike (one composable, `useEditorBridge`, now gives all
+  three the save and the Neovim keymap). A save travels as FILE_WRITE
+  frames (`0x08`, new): parts of at most 32 KiB in order under one request,
+  the FILE frame's layout the other way, bounded at 1 MiB, one save at a
+  time per connection, answered with a FILE frame of kind `written` or
+  `error`. The owner checks the file against the read's sha256 (a read
+  whole now carries `sha256` and `mtime`) and refuses with
+  `changed_on_disk`, naming the newest file event that changed it ("Changed
+  on disk since you opened it · 08:34:10 · codex (Edit). Saving would
+  overwrite that."), unless forced; it writes atomically with the file's
+  mode kept and records a `file` event `write` with tool `editor`, so
+  Touched and Changes follow. The client: an unsaved tab's dot, Save
+  (disabled until something changes) and "Saved", Compare (the disk and
+  yours side by side), Reload and Save anyway, a prompt before an unsaved
+  tab closes ("Save notes.txt?", Save, Don't save, Cancel), unsaved edits
+  kept across switching tabs, the keymap switch held while a tab is
+  unsaved. Policy: the control role on a session whose `fileEdit` is
+  `control` (the setting F8 added); a truncated or binary file and a view
+  guest stay read-only; the switchyard drops FILE_WRITE from view-role
+  connections. Found on the way and fixed: Monaco 0.57 types through
+  Chromium's EditContext element, a plain div the page's shortcut guard
+  does not know, so single-key shortcuts fired while the cursor was in the
+  editor (`g` then `a` opened Agents, `n` the Launch dialog), read-only
+  included; both editors use Monaco's textarea now (`editContext: false`).
+  Tests: the frame's round trip and bounds, the session's save (parts,
+  mode, Activity, the conflict with who changed it, forced, deleted since,
+  every refusal, editing off), a save over the viewer WebSocket and a view
+  link refused, the relay dropping saves and Neovim for view viewers,
+  vitest for the parts, the frame, the saved versions and the words,
+  Playwright `saving.spec.ts` (type, dot, Ctrl+S, Touched; the agent's
+  edit caught, Compare, Reload, Save anyway; the close prompt and Don't
+  save; a view guest's Read only).
 - **F8, Neovim in the editor (the real one, on the session's machine).**
   Chosen on 2026-10-08 over monaco-neovim-wasm (no license: public code
   without one grants viewing and forking on GitHub, not redistribution)

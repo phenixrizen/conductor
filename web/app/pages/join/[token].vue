@@ -50,7 +50,7 @@ const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number 
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
 const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
-const terminal = ref<{ requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
+const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
@@ -123,7 +123,10 @@ watch(chatKey, (_, old) => old && unread.closeThread(old))
 onBeforeUnmount(() => unread.closeThread(chatKey.value))
 const viaChat = (post: ChatPost) => terminal.value?.chat(post) ?? false
 const viaChatSend = (send: ChatSend) => terminal.value?.chatSend(send) ?? false
+// The editor (design round 12, F6 and F8): a guest with control saves and gets Neovim as the owner does; a view link gets neither.
+const editor = useEditorBridge(terminal as unknown as Ref<EditorTerminal | null>, () => current.value?.hostName || 'the host')
 function onWelcome(w: Welcome) {
+  editor.onWelcome(w)
   unread.registerSelf(w.subscriberId ?? w.viewerId ?? '')
   chat.welcome(!!w.chat, viaChat)
 }
@@ -434,13 +437,14 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
     </header>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">
-      <EditorColumn v-model:tabs="tabs" :request="requestFile" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'">
+      <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="current.cwd" :host-away="status === 'host_disconnected' ? current.hostName || 'The host' : undefined" :bar-text="attention.message || agentLabel" :read-only-badge="info.role !== 'control'">
         <TerminalView
           :key="current.id"
           ref="terminal"
           :create-transport="createTransport"
           :read-only="info.role !== 'control'"
           @welcome="onWelcome"
+          @nvim="editor.onNvim"
           @status="onStatus"
           @attention="onAttention"
           @viewers="onViewers"

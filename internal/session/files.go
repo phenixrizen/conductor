@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
+	"time"
 )
 
 // Limits for file reads.
@@ -155,6 +156,10 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 	if len(body) > MaxFileRead {
 		body = body[:MaxFileRead]
 		h.Truncated = true
+	} else {
+		// What a save sends back to tell the file changed since (F6).
+		h.Sha256 = sha256Hex(body)
+		h.Mtime = fi.ModTime().UTC().Format(time.RFC3339Nano)
 	}
 	sniff := body[:min(len(body), binarySniffBytes)]
 	if bytes.IndexByte(sniff, 0) >= 0 && !strings.HasPrefix(h.Mime, "image/") {

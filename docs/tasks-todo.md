@@ -150,17 +150,10 @@ Explorer (F1), the Monaco editor beside the terminal (F2), Changes (F3)
 and Touched (F4) landed on 2026-10-08 (`docs/round12-plan.md`, the design
 screens 4a–4g). Still to build, each a pull request from main:
 
-- **Editing (F6, 4b and 4f):** Save and Ctrl+S for a controller on a
-  session whose `fileEdit` setting allows it, `file_write` chunked under
-  the frame size and bounded in total, the changed-on-disk warning from
-  the read's modification time and hash, the save in Activity, the host
-  side writing on the developer's machine.
 - **Comment on a line (F7, 5a–5c):** select lines, Comment or Ask the
   agent, the quote card in the chat thread, re-anchoring when the lines
   move.
-- **Neovim in the editor, what is left after F8:** the Yard's focused
-  tile and the guest page offer no keymap button yet (the session page
-  does); typing in insert mode round-trips to the machine before it shows
+- **Neovim in the editor, what is left after F8:** typing in insert mode round-trips to the machine before it shows
   (a local echo, as vscode-neovim does, is the next step); Neovim's
   columns are bytes, so the cursor sits off by the multibyte characters
   before it on a line; a swap file or a prompt at `:e` refuses the open

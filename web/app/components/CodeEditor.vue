@@ -3,6 +3,7 @@ import type { editor as MonacoEditor } from 'monaco-editor'
 import type { NvimBridge, NvimEvent } from '~/utils/protocol'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim } from '~/utils/nvimKeys'
 import { linesEdit } from '~/utils/nvimLines'
+import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
 
 /**
  * A file in Monaco (design 4b): the gutter with folding, the minimap, find
@@ -11,7 +12,7 @@ import { linesEdit } from '~/utils/nvimLines'
  * page (`utils/monaco.ts`, a chunk of its own). Read-only until F6.
  */
 const props = withDefaults(defineProps<{ path: string; text: string; line?: number; readOnly?: boolean; nvim?: NvimBridge }>(), { line: undefined, readOnly: true, nvim: undefined })
-const emit = defineEmits<{ cursor: [pos: { line: number; col: number }]; ready: []; nvim: [state: { mode: string; cmdline: string; message: string; messageKind: string }]; nvimClosed: [] }>()
+const emit = defineEmits<{ cursor: [pos: { line: number; col: number }]; ready: []; nvim: [state: { mode: string; cmdline: string; message: string; messageKind: string }]; nvimClosed: []; dirty: [dirty: boolean] }>()
 
 const host = ref<HTMLElement>()
 const colorMode = useColorMode()
@@ -28,12 +29,26 @@ async function mount() {
   monacoRef = monaco
   if (!host.value) return
   const uri = monaco.Uri.parse(`conductor://file${props.path}`)
-  model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(props.text, languageFor(props.path), uri)
-  if (model.getValue() !== props.text) model.setValue(props.text)
+  // A model lives for its tab: unsaved edits (F6) stay across the tab being switched away from and back.
+  const existing = monaco.editor.getModel(uri)
+  model = existing ?? monaco.editor.createModel(props.text, languageFor(props.path), uri)
+  if (!existing || !hasModel(props.path)) {
+    if (model.getValue() !== props.text) model.setValue(props.text)
+    markSaved(props.path, model.getAlternativeVersionId())
+  } else if (!isDirty(props.path, model.getAlternativeVersionId()) && model.getValue() !== props.text) {
+    model.setValue(props.text)
+    markSaved(props.path, model.getAlternativeVersionId())
+  }
+  contentSub = model.onDidChangeContent(() => {
+    if (nvimId && model) markSaved(props.path, model.getAlternativeVersionId()) // Neovim's buffer, mirrored: Neovim keeps its own
+    tellDirty()
+  })
   editor = monaco.editor.create(host.value, {
     model,
     theme: theme.value,
     readOnly: props.readOnly,
+    // The textarea, not Chromium's EditContext div: the page's single-key shortcuts know a textarea is for typing and pause.
+    editContext: false,
     automaticLayout: true,
     minimap: { enabled: true, renderCharacters: false },
     folding: true,
@@ -52,6 +67,7 @@ async function mount() {
   editor.onDidChangeCursorPosition((e) => emit('cursor', { line: e.position.lineNumber, col: e.position.column }))
   emit('cursor', { line: 1, col: 1 })
   if (props.line) showLine(props.line)
+  tellDirty()
   emit('ready')
   if (props.nvim) void startNvim()
 }
@@ -60,6 +76,26 @@ async function mount() {
 // machine holds the file; every key goes to it, its changes come back into
 // the model, its cursor, mode, command line and messages show. Monaco stays
 // read-only, so nothing is typed into the text except by Neovim.
+let contentSub: { dispose: () => void } | null = null
+function tellDirty() {
+  if (model) emit('dirty', isDirty(props.path, model.getAlternativeVersionId()))
+}
+/** The text now, for a save. */
+function getText(): string {
+  return model?.getValue() ?? ''
+}
+/** The text was saved: what the model holds now is the saved version. */
+function markClean() {
+  if (model) markSaved(props.path, model.getAlternativeVersionId())
+  tellDirty()
+}
+/** The file as read again (a reload): the model takes it, unsaved edits dropped. */
+function setText(text: string) {
+  if (!model) return
+  if (model.getValue() !== text) model.setValue(text)
+  markSaved(props.path, model.getAlternativeVersionId())
+  tellDirty()
+}
 let nvimId: string | null = null
 let unsubscribe: (() => void) | null = null
 const nvimState = { mode: 'n', cmdline: '', message: '', messageKind: '' }
@@ -182,8 +218,12 @@ watch(() => props.line, (l) => l && showLine(l))
 watch(
   () => props.text,
   (t) => {
-    if (nvimId) return // Neovim owns the text now
-    if (model && model.getValue() !== t) model.setValue(t)
+    if (nvimId || !model) return // Neovim owns the text now
+    if (isDirty(props.path, model.getAlternativeVersionId())) return // the person's unsaved edits stay
+    if (model.getValue() !== t) {
+      model.setValue(t)
+      markSaved(props.path, model.getAlternativeVersionId())
+    }
   },
 )
 
@@ -193,12 +233,18 @@ onBeforeUnmount(() => {
   nvimId = null
   unsubscribe?.()
   unsubscribe = null
+  contentSub?.dispose()
+  contentSub = null
   editor?.dispose()
   editor = null
   // The model stays for the tab's next showing; a closed tab's model is dropped by the area.
 })
 
-defineExpose({ showLine, find, gotoLine, focus: () => editor?.focus() })
+watch(
+  () => props.readOnly,
+  (ro) => editor?.updateOptions({ readOnly: ro }),
+)
+defineExpose({ showLine, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText })
 </script>
 
 <template>
