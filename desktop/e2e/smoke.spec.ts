@@ -51,6 +51,23 @@ test('the app opens the workbench on its own server and stops it on quit', async
   // Signed in through the bridge: the agents page lists the catalog without asking for a token.
   await page.goto(`${url.origin}/agents`)
   await expect(page.locator('[data-agent]').first()).toBeVisible({ timeout: 30_000 })
+  // Restart server (the Server menu) binds a fresh port: the window follows to it, on the same page, still signed in.
+  await app.evaluate(({ Menu }) => {
+    const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+      for (const it of items) {
+        if (it.label === 'Restart server') return it
+        const sub = it.submenu ? find(it.submenu.items) : undefined
+        if (sub) return sub
+      }
+    }
+    const item = find(Menu.getApplicationMenu()?.items ?? [])
+    if (!item) throw new Error('no Restart server in the menu')
+    item.click()
+  })
+  await expect.poll(() => new URL(page.url()).origin, { timeout: 60_000 }).not.toBe(url.origin)
+  expect(new URL(page.url()).pathname).toBe('/agents')
+  await expect(page.locator('[data-agent]').first()).toBeVisible({ timeout: 30_000 })
+  const live = new URL(page.url())
   const token = await page.evaluate(() => (window as unknown as { conductorDesktop: { token(): Promise<string> } }).conductorDesktop.token())
   expect(token.length).toBeGreaterThanOrEqual(32)
   expect(await page.evaluate(() => localStorage.getItem('conductor.workbenchToken'))).toBeNull()
@@ -73,8 +90,8 @@ test('the app opens the workbench on its own server and stops it on quit', async
   await expect.poll(level).toBe(-0.5)
   await press('0')
   await expect.poll(level).toBe(0)
-  const health = await fetch(`${url.origin}/api/health`)
+  const health = await fetch(`${live.origin}/api/health`)
   expect(health.ok).toBe(true)
   await app.close()
-  await expect.poll(() => fetch(`${url.origin}/api/health`).then(() => 'up').catch(() => 'down'), { timeout: 30_000 }).toBe('down')
+  await expect.poll(() => fetch(`${live.origin}/api/health`).then(() => 'up').catch(() => 'down'), { timeout: 30_000 }).toBe('down')
 })

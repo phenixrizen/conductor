@@ -19,6 +19,24 @@ export function sameOrigin(url: string, origin: string): boolean {
   }
 }
 
+/**
+ * followOrigin is where a window showing the app's own server goes once that server listens on a new origin: a restart (a crash, the
+ * health check, Restart server) binds a fresh port, and a window left on the old one shows a dead page. The same path, query and hash
+ * on the new origin; null when the window is there already or is not on a local server page (the splash, an outside site).
+ */
+export function followOrigin(current: string, origin: string): string | null {
+  try {
+    const u = new URL(current)
+    const o = new URL(origin)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) return null
+    if (u.protocol === o.protocol && u.host === o.host) return null
+    return o.origin + u.pathname + u.search + u.hash
+  } catch {
+    return null
+  }
+}
+
 /** external reports whether url may be opened outside: http(s) only, never file:, javascript: or an app's own scheme. */
 export function external(url: string): boolean {
   try {

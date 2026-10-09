@@ -13,7 +13,7 @@ import { ServerSupervisor } from './server'
 import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, restrictPermissions, sameOrigin } from './window'
+import { createWindow, followOrigin, restrictPermissions, sameOrigin } from './window'
 import { nextZoom, zoomKey, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
@@ -269,7 +269,14 @@ async function run() {
     }),
   )
   supervisor.on('state', (st) => {
-    if (main && !main.isDestroyed()) main.webContents.send('conductor:serverState', st)
+    if (!main || main.isDestroyed()) return
+    main.webContents.send('conductor:serverState', st)
+    // A restarted server listens on a fresh port: the window follows it, on the same page.
+    const next = st.state === 'running' ? followOrigin(main.webContents.getURL(), origin()) : null
+    if (next) {
+      log('main', `server origin changed; the window follows to ${new URL(next).origin}`)
+      void main.loadURL(next)
+    }
   })
   supervisor.on('gaveUp', (st) => {
     void dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server keeps failing', detail: `${st.lastError ?? ''}\nSee the server log (Server › Server log), then Restart server.` })
