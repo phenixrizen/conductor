@@ -448,6 +448,9 @@ export interface PathsReply {
   dir: string
   entries: PathEntry[]
   truncated: boolean
+  /** Directories matching what was typed left out past the limit; `moreUnknown`: there may be others besides (round 14). */
+  more?: number
+  moreUnknown?: boolean
 }
 /** What GET /api/git/check says of a working directory, by the launch's rules for worktrees. */
 export interface GitCheck {

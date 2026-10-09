@@ -69,6 +69,13 @@ type pathsReply struct {
 	Dir       string      `json:"dir"`
 	Entries   []pathEntry `json:"entries"`
 	Truncated bool        `json:"truncated"`
+	// More is how many directories matching what was typed were left out
+	// past the limit, and MoreUnknown that there may be others besides (the
+	// directory held more entries than a listing reads, or the listing
+	// stopped early): the picker says "30 more folders here" rather than
+	// leaving a cut list to look whole (round 14).
+	More        int  `json:"more,omitempty"`
+	MoreUnknown bool `json:"moreUnknown,omitempty"`
 }
 
 type gitCheckReply struct {
@@ -242,15 +249,17 @@ func (s *Server) listPaths(ctx context.Context, prefix string, limit int, scope 
 		return out, nil
 	}
 	out.Truncated = capped
+	out.MoreUnknown = capped
 	slices.SortFunc(cands, func(a, b candidate) int { return strings.Compare(a.name, b.name) })
 	var parent *pathGit
 	skipped := 0
-	for _, c := range cands {
+	for i, c := range cands {
 		path := filepath.Join(dir, c.name)
 		own := "" // the directory git is asked about for the entry's own marks
 		if c.link {
 			if ctx.Err() != nil || skipped == maxSkippedLinks {
 				out.Truncated = true
+				out.More, out.MoreUnknown = len(cands)-i, true
 				break
 			}
 			real, err := s.resolveDirIn(path, scope)
@@ -262,6 +271,7 @@ func (s *Server) listPaths(ctx context.Context, prefix string, limit int, scope 
 		}
 		if len(out.Entries) == limit {
 			out.Truncated = true
+			out.More = len(cands) - i
 			break
 		}
 		var mark pathGit

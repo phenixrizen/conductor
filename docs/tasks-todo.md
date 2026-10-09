@@ -30,16 +30,6 @@ test that would have caught it when it is fixed.
   or the viewport's width below it), a column gap that reads as columns,
   a rule or tint between them, the headers repeated per group; checked
   against the design's shortcuts screen at 1440 and 390.
-- **The directory picker's lists are cut short.** The owner, 2026-10-08:
-  choosing a starting working directory in the Launch dialog, the
-  folder list stops before the end of a large directory. Cause: `GET
-  /api/paths` returns at most `maxPathEntries` (50) entries of a
-  prefix, in name order, with no word that more exist and no way to page
-  or narrow. Fix: say "N more; type to narrow" when the list is cut, match
-  the typed prefix on the server so the cut applies after the filter, and
-  list directories before files (or directories only, since this picks a
-  working directory); a Go test for the cut's flag and a Playwright check
-  of the note. Platform: Windows app, WSL server.
 - **The Yard's focused header overlaps at phone width.** Seen 2026-10-08 in
   a headless render at 390 wide (round 12, F2b): the status, transport and
   viewers badges run under Open page and Stop, and the title is gone. Cause:

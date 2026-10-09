@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, movesHighlight } from '~/utils/dirInput'
+import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
 
 /**
  * A working-directory field completed from the server: as the text changes,
@@ -42,6 +42,8 @@ const menu = useTemplateRef<{ inputRef?: HTMLInputElement; viewportRef?: HTMLEle
 const open = ref(false)
 const entries = ref<PathEntry[]>([])
 const truncated = ref(false)
+const more = ref<{ more?: number; moreUnknown?: boolean }>({})
+const note = computed(() => moreNote({ truncated: truncated.value, ...more.value }))
 const loading = ref(false)
 // A listing is due after the pause.
 const pending = ref(false)
@@ -72,6 +74,7 @@ async function fetchNow() {
     if (n !== seq) return
     entries.value = r.entries
     truncated.value = r.truncated
+    more.value = { more: r.more, moreUnknown: r.moreUnknown }
     problem.value = ''
     listedFor = query
     // The listing changed under the highlight: an arrow pressed while it was on its way no longer counts.
@@ -213,7 +216,7 @@ onBeforeUnmount(() => {
       </template>
       <template #content-bottom>
         <div aria-live="polite">
-          <p v-if="truncated" class="px-2 py-1 text-[11px] text-muted">More here than listed or marked: keep typing to narrow it.</p>
+          <p v-if="note" class="flex items-center gap-1.5 border-t border-default px-2 py-1.5 text-xs text-toned" data-dir-more><UIcon name="i-lucide-list-filter" class="size-3.5 flex-none text-muted" />{{ note }}</p>
         </div>
       </template>
     </UInputMenu>

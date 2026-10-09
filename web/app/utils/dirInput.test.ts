@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, matchingEntries, movesHighlight } from './dirInput'
+import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, matchingEntries, moreNote, movesHighlight } from './dirInput'
 
 describe('dirInput', () => {
   it('sends the text trimmed, and empty for the server default', () => {
@@ -90,5 +90,18 @@ describe('enterKeepsText', () => {
   })
   it('leaves a modified Enter and Enter while composing alone, as the list does', () => {
     for (const e of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }]) expect(enterKeepsText(e, open), JSON.stringify(e)).toBe(false)
+  })
+})
+
+describe('moreNote', () => {
+  it('says how many folders were left out and that typing narrows the list', () => {
+    expect(moreNote({ truncated: true, more: 30 })).toBe('30 more folders here: type the start of a name to narrow the list.')
+    expect(moreNote({ truncated: true, more: 1 })).toBe('1 more folder here: type the start of a name to narrow the list.')
+    expect(moreNote({ truncated: true, more: 12, moreUnknown: true })).toBe('12+ more folders here: type the start of a name to narrow the list.')
+  })
+  it('says more were not read, or only that marks were cut, and nothing for a whole listing', () => {
+    expect(moreNote({ truncated: true, moreUnknown: true })).toBe('More folders here than were read: type the start of a name to narrow the list.')
+    expect(moreNote({ truncated: true })).toBe('Some folders are not marked: git did not answer in time.')
+    expect(moreNote({ truncated: false, more: 3 })).toBe(null)
   })
 })
