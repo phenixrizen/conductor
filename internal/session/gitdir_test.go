@@ -2,12 +2,19 @@ package session
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/gitcli"
+	"github.com/phenixrizen/conductor/internal/nvim"
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // A bare repository in the working directory is read only whatever git's
@@ -52,6 +59,61 @@ func TestFileWriteRefusesABareRepositoryWhateverGitDiscovers(t *testing.T) {
 	save(s, sub, "nb", "notbare/HEAD", []byte("just a file\n"), 512, "", true)
 	if f := fileReply(t, sink, "nb"); f.Kind != "written" {
 		t.Fatalf("notbare/HEAD: %+v %+v", f, f.Error)
+	}
+}
+
+// A bare repository whose HEAD is a link to a branch not born yet (git
+// does not follow it) is still a git directory, and a .git file a .git
+// link elsewhere points to is read only wherever it lies: saves are
+// refused, reads say ReadOnly, Neovim does not open them.
+func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
+	root := gitDirTree(t)
+	bare := filepath.Join(root, "unborn")
+	if _, err := gitcli.Run(context.Background(), root, "init", "-q", "--bare", bare); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(bare, "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("refs/heads/main", filepath.Join(bare, "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gitfile2"), []byte("gitdir: "+filepath.Join(root, ".git", "worktrees", "wt")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "elsewhere"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../gitfile2", filepath.Join(root, "elsewhere", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newLocal(t, root)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range []string{"unborn/config", "unborn/hooks/post-checkout", "gitfile2"} {
+		id := fmt.Sprintf("p%d", i)
+		save(s, sub, id, p, []byte("gitdir: /elsewhere\n"), 512, "", true)
+		if f := fileReply(t, sink, id); f.Kind != "error" || f.Error == nil || f.Error.Code != "read_only" {
+			t.Errorf("save %s: %+v %+v", p, f, f.Error)
+		}
+	}
+	for _, p := range []string{"unborn/config", "gitfile2"} {
+		if h, _ := ReadPath(root, p, false, nil); h.Kind != "file" || !h.ReadOnly {
+			t.Errorf("read %s: %+v", p, h)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "gitfile2")); !strings.Contains(string(b), "worktrees") {
+		t.Fatalf("gitfile2 changed: %q", b)
+	}
+	if nvim.Available() {
+		for i, p := range []string{"unborn/config", "gitfile2"} {
+			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: fmt.Sprintf("n%d", i), Path: p}); !errors.Is(err, errGitDir) {
+				t.Errorf("Neovim on %s: %v", p, err)
+			}
+		}
 	}
 }
 

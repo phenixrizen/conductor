@@ -39,9 +39,11 @@ func gitMetadata(raw, real string) bool {
 }
 
 // inGitDir reports whether real, an absolute path with its symbolic links
-// resolved (ResolvePath's), is in a repository's .git. Any one of three
+// resolved (ResolvePath's), is in a repository's .git. Any one of four
 // says so: an element of the path is .git however a file system may spell
-// it (isDotGit); the path or one of its parents is what a .git beside it
+// it (isDotGit); the path is a file that reads as a .git file, which a
+// .git link anywhere may point to (isGitFile); the path or one of its
+// parents is what a .git beside it
 // or beside one of its parents stands for (a .git directory, a .git file
 // itself, the git directory it names), compared as files (os.SameFile) so
 // that neither a link nor another spelling gets around it (gitDirsIn); or
@@ -55,6 +57,9 @@ func inGitDir(real string) bool {
 		if isDotGit(el) {
 			return true
 		}
+	}
+	if isGitFile(real) {
+		return true
 	}
 	var dirs []os.FileInfo
 	for p := real; ; p = filepath.Dir(p) {
@@ -118,14 +123,12 @@ func gitDirsIn(dir string) []os.FileInfo {
 }
 
 // isGitDirectory reports whether dir is a git directory by its files, as
-// git tells one: a HEAD naming a ref or a commit, and either the refs and
-// objects directories or (a linked worktree's) a commondir file.
+// git tells one: a HEAD naming a ref or a commit, or a link whose target
+// starts with refs/ (not followed: its ref may be packed or not born yet),
+// and either the refs and objects directories or (a linked worktree's) a
+// commondir file.
 func isGitDirectory(dir string) bool {
-	head, ok := readSmall(filepath.Join(dir, "HEAD"))
-	if !ok {
-		return false
-	}
-	if h := strings.TrimSpace(string(head)); !strings.HasPrefix(h, "ref:") && !isObjectID(h) {
+	if !validHead(filepath.Join(dir, "HEAD")) {
 		return false
 	}
 	if fi, err := os.Stat(filepath.Join(dir, "commondir")); err == nil && fi.Mode().IsRegular() {
@@ -137,6 +140,33 @@ func isGitDirectory(dir string) bool {
 		}
 	}
 	return true
+}
+
+// validHead reports whether path is a HEAD as git takes one: a link whose
+// target starts with refs/, or a regular file naming a ref or a commit.
+func validHead(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		return err == nil && strings.HasPrefix(target, "refs/")
+	}
+	head, ok := readSmall(path)
+	if !ok {
+		return false
+	}
+	h := strings.TrimSpace(string(head))
+	return strings.HasPrefix(h, "ref:") || isObjectID(h)
+}
+
+// isGitFile reports whether path is a regular file that reads as a .git
+// file ("gitdir: <path>"), wherever it is: a .git link elsewhere may point
+// to it.
+func isGitFile(path string) bool {
+	b, ok := readSmall(path)
+	return ok && strings.HasPrefix(strings.TrimSpace(string(b)), "gitdir:")
 }
 
 // isObjectID reports whether s is a SHA-1 or SHA-256 object id in hex.
