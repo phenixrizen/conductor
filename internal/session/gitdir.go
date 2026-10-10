@@ -89,7 +89,7 @@ func inGitDir(real string) bool {
 		return true
 	}
 	for _, m := range ids.missing {
-		if m == real {
+		if sameMissing(m, real) {
 			return true
 		}
 	}
@@ -218,7 +218,12 @@ const maxEntries = 4096
 func linkedMetadata(gitDir string, ids *gitIDs) {
 	add := func(p string) {
 		fi, err := os.Lstat(p)
-		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		if err != nil {
+			return
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			// The entry itself: a hard link to it elsewhere is the same file.
+			ids.files = append(ids.files, fi)
 			return
 		}
 		if target, err := os.Stat(p); err == nil {
@@ -239,6 +244,32 @@ func linkedMetadata(gitDir string, ids *gitIDs) {
 		}
 	}
 	add(rawJoin(gitDir, "objects/info/alternates"))
+}
+
+// sameMissing reports whether real, a path a save would make, may be the
+// file at missing, a metadata link's destination that does not exist yet:
+// the same directory, compared as a file, and the same name as a file
+// system that folds case or leaves characters out may take it.
+func sameMissing(missing, real string) bool {
+	if !strings.EqualFold(foldName(filepath.Base(missing)), foldName(filepath.Base(real))) {
+		return false
+	}
+	a, err := os.Stat(filepath.Dir(missing))
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(filepath.Dir(real))
+	return err == nil && os.SameFile(a, b)
+}
+
+// foldName leaves out of name the characters HFS+ ignores in names.
+func foldName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if hfsIgnored(r) {
+			return -1
+		}
+		return r
+	}, name)
 }
 
 // maxLinkHops bounds how many links linkDestination follows.

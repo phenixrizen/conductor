@@ -384,6 +384,12 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 		must(os.MkdirAll(filepath.Join(root, "bigcommon", "shared", d), 0o755))
 	}
 	must(os.WriteFile(filepath.Join(root, "bigcommon", "shared", "config"), []byte("[core]\n"), 0o644))
+	// A hard link to .git's HEAD in the working tree is the same file.
+	must(os.Link(filepath.Join(root, ".git", "HEAD"), filepath.Join(root, "head-copy")))
+	// .git/info/sparse-checkout links to Settings5, not made yet: a save of
+	// settings5 is refused too, as a case-folding file system takes it.
+	must(os.MkdirAll(filepath.Join(root, ".git", "info"), 0o755))
+	must(os.Symlink("../../Settings5", filepath.Join(root, ".git", "info", "sparse-checkout")))
 	// A one-line YAML file with a gitdir key: an ordinary file.
 	must(os.WriteFile(filepath.Join(root, "settings.yml"), []byte("gitdir: null\n"), 0o644))
 
@@ -400,7 +406,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Stat(filepath.Join(root, branchRef)); err != nil {
 		t.Fatalf("the branch's loose ref: %v", err)
 	}
-	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new"}
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new", "head-copy", "settings5"}
 	for i, p := range refused {
 		id := fmt.Sprintf("m%d", i)
 		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
@@ -417,7 +423,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Lstat(filepath.Join(root, "settings3")); err == nil {
 		t.Fatal("the file at the end of a dangling chain of links was made")
 	}
-	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config", "spaced/shared /config"} {
+	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config", "spaced/shared /config", "head-copy"} {
 		h, _ := ReadPath(root, p, false, nil)
 		if h.Kind != "file" || !h.ReadOnly {
 			t.Errorf("read %s: %+v", p, h)
