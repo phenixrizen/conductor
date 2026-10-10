@@ -25,19 +25,11 @@ const (
 // errTokenFileHeld says another running server keeps the token file.
 var errTokenFileHeld = errors.New("another server running on this data directory keeps the workbench token file")
 
-// lockTokenFile opens the lock file in dir (made with mode 0600 when create;
+// lockTokenFile opens the lock file in dir (made with mode 0600 when missing,
 // never through a symbolic link) and takes its exclusive lock without
-// waiting. It returns errTokenFileHeld when another server holds the lock,
-// and a nil file and no error when there is no lock file and create is false.
-func lockTokenFile(dir string, create bool) (*os.File, error) {
-	flags := os.O_RDWR | syscall.O_NOFOLLOW
-	if create {
-		flags |= os.O_CREATE
-	}
-	f, err := os.OpenFile(filepath.Join(dir, workbenchTokenLock), flags, 0o600)
-	if !create && errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+// waiting. It returns errTokenFileHeld when another server holds the lock.
+func lockTokenFile(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, workbenchTokenLock), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +49,7 @@ func lockTokenFile(dir string, create bool) (*os.File, error) {
 // stops: the file this run wrote, not one put there since. errTokenFileHeld:
 // another running server keeps the file, which is left as it is.
 func keepWorkbenchToken(st *store.Store, tok string) (forget func(), err error) {
-	lock, err := lockTokenFile(st.Dir(), true)
+	lock, err := lockTokenFile(st.Dir())
 	if err != nil {
 		return nil, err
 	}
@@ -80,18 +72,18 @@ func keepWorkbenchToken(st *store.Store, tok string) (forget func(), err error) 
 }
 
 // dropStaleWorkbenchToken removes the token file an earlier run left, for a
-// server whose token is configured. errTokenFileHeld: another running server
-// keeps the file, and it stays.
+// server whose token is configured, under the lock (made when missing), so a
+// server that generates its token meanwhile is never undone. With no token
+// file there is nothing to remove and no lock is taken. errTokenFileHeld:
+// another running server keeps the file, and it stays.
 func dropStaleWorkbenchToken(st *store.Store) error {
 	if _, err := os.Lstat(filepath.Join(st.Dir(), workbenchTokenFile)); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	lock, err := lockTokenFile(st.Dir(), false)
+	lock, err := lockTokenFile(st.Dir())
 	if err != nil {
 		return err
 	}
-	if lock != nil {
-		defer lock.Close()
-	}
+	defer lock.Close()
 	return st.RemoveFile(workbenchTokenFile)
 }

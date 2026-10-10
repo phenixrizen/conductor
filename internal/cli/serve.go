@@ -126,7 +126,12 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		forget, err := keepWorkbenchToken(st, cfg.WorkbenchToken)
 		switch {
 		case errors.Is(err, errTokenFileHeld):
-			// Said below, with the token's own line.
+			// The token is not in the file: without a terminal or a parent
+			// to hand it to, nobody could sign in to this server.
+			if terminalOf(stderr) == nil && !*printListen {
+				return 1, fmt.Errorf("another server running on the data directory %s keeps the workbench token file, and this one's generated token could be shown nowhere; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config), or give this server a dataDir of its own", st.Dir())
+			}
+			// Otherwise said below, with the token's own line.
 		case err != nil:
 			return 1, fmt.Errorf("write the generated workbench token to %s (%w); set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose one", tokenFile, err)
 		default:

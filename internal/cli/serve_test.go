@@ -811,8 +811,9 @@ func TestServeRemovesAStaleTokenFileWhenATokenIsConfigured(t *testing.T) {
 }
 
 // A server started on a data directory where another running server keeps
-// the token file leaves that file as it is: one that generates its own
-// token, one that cannot listen, and one with a configured token.
+// the token file leaves that file as it is: one that generates its own token
+// (which starts only when it has a terminal to show it on), one that cannot
+// listen, and one with a configured token.
 func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
@@ -828,13 +829,31 @@ func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 	serveWhile(t, "conductor serving", func(firstLogs string) {
 		first := readTokenFile(t, path)
 
+		// One that generates its token, with nowhere to show it, does not start.
+		var errOut syncBuffer
+		if code, err := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg}, strings.NewReader(""), io.Discard, &errOut); code != 1 || err == nil || !strings.Contains(err.Error(), "keeps the workbench token file") {
+			t.Fatalf("a second server with its token shown nowhere: %d %v\n%s", code, err, errOut.String())
+		}
+		if got := readTokenFile(t, path); got != first {
+			t.Fatalf("a second server replaced the token file: %q, was %q", got, first)
+		}
+
+		// With a terminal it starts, shows its token there and says it is
+		// not in the file.
+		var tty syncBuffer
+		old := terminalOf
+		terminalOf = func(io.Writer) io.Writer { return &tty }
 		logs := serveWhile(t, "conductor serving", func(string) {
 			if got := readTokenFile(t, path); got != first {
 				t.Fatalf("a second server replaced the token file: %q, was %q", got, first)
 			}
 		}, "--config", cfg)
+		terminalOf = old
 		if lines := logLines(logs, "level=WARN", "another server running on this data directory keeps the token file", "file="+path); len(lines) != 1 {
 			t.Fatalf("the second server does not say its token is not in the file:\n%s", logs)
+		}
+		if !strings.Contains(tty.String(), "this run generated one") || strings.Contains(tty.String(), strings.TrimSpace(first)) {
+			t.Fatalf("the second server's terminal:\n%s", tty.String())
 		}
 		if got := readTokenFile(t, path); got != first {
 			t.Fatalf("the second server's stop changed the token file: %q, was %q", got, first)
