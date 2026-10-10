@@ -696,6 +696,10 @@ request each from main.
   more, taken: a linked worktree now finds its main checkout's installation
   (git's common directory), the registry follows `CLAUDE_CONFIG_DIR`, and
   `--cwd`/`-C` are refused, the review running where the script is run.
+  The fourth found the plugin also takes `--C` and `-cwd`, and an inherited
+  `GIT_DIR` (a git hook's) pointed every lookup at one repository: flags
+  are now an allowlist (`--base`, `--scope`), git's repository-local
+  variables are dropped, and the `GIT_DIR` test fails without the fix.
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 

@@ -6,8 +6,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
-from codex_review import NotInstalled, install_root, main, registry_path
+from codex_review import NotInstalled, install_root, main, refused_flag, registry_path
 
 HERE = Path("/repo/conductor")
 
@@ -51,6 +52,16 @@ class InstallRoot(unittest.TestCase):
         with self.assertRaises(NotInstalled):
             install_root({"version": 2, "plugins": {}}, HERE, same)
 
+    def test_an_inherited_git_dir_does_not_make_another_project_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mine, other = Path(tmp, "mine"), Path(tmp, "other")
+            for repo in (mine, other):
+                repo.mkdir()
+                subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            reg = registry(entry("/cache/codex/0.9.0", "project", str(other)), entry("/cache/codex/1.0.6"))
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
+                self.assertEqual(install_root(reg, mine), Path("/cache/codex/1.0.6"))
+
     def test_a_linked_worktree_finds_its_main_checkouts_installation(self):
         with tempfile.TemporaryDirectory() as tmp:
             main_checkout, worktree = Path(tmp, "main"), Path(tmp, "wt")
@@ -72,9 +83,19 @@ class Registry(unittest.TestCase):
         self.assertEqual(registry_path({}), Path(os.path.expanduser("~/.claude/plugins/installed_plugins.json")))
 
 
-class Main(unittest.TestCase):
-    def test_directory_flags_are_refused(self):
-        for argv in (["--cwd", "/other", "focus"], ["--cwd=/other", "focus"], ["-C", "../other", "focus"]):
+class Flags(unittest.TestCase):
+    def test_base_and_scope_pass(self):
+        for argv in (["focus"], ["--base", "main", "focus"], ["--base=main", "--scope", "branch", "focus"], ["--scope=auto", "a", "b"]):
+            self.assertEqual(refused_flag(argv), "", argv)
+
+    def test_every_other_flag_is_refused_the_directory_options_first(self):
+        for argv, bad in ((["--cwd", "/other", "focus"], "--cwd"), (["--cwd=/other"], "--cwd=/other"), (["-C", "../other"], "-C"),
+                          (["--C", "/other"], "--C"), (["--C=/other"], "--C=/other"), (["-cwd", "/other"], "-cwd"),
+                          (["--base", "main", "--background", "focus"], "--background")):
+            self.assertEqual(refused_flag(argv), bad, argv)
+
+    def test_main_refuses_before_reading_anything(self):
+        for argv in (["--cwd", "/other", "focus"], ["-cwd", "/other", "focus"], ["--C=/other", "focus"]):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(main(argv), 2, argv)
             self.assertIn("refused", err.getvalue())
