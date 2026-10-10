@@ -211,7 +211,7 @@ registers the `conductor:` scheme: an invite opens its own join page with
 | `internal/cli` | flag parsing, help and completion text (the completion table and scripts, the rc-file line); no business logic |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings), their yolo, trust and session recipes |
-| `internal/store` | atomic JSON documents in the data directory |
+| `internal/store` | atomic JSON documents in the data directory, and plain files such as the generated workbench token |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
@@ -260,7 +260,9 @@ registers the `conductor:` scheme: an invite opens its own join page with
   logged; a request is logged by the route pattern it matched (`/api/join/{token}`),
   or, on a catch-all route, by its path with a link's token replaced
   (`/join/{token}`). A workbench token the server generates is printed to the
-  terminal it was started from, never to the log.
+  terminal it was started from and kept in `workbench-token` in the data
+  directory (mode 0600, written atomically) while the server runs; the log
+  names the file, never the token. A configured token removes the file.
 
 ## Persistence
 

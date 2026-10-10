@@ -38,6 +38,30 @@ import (
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
 
+// workbenchTokenFile is the file in the data directory that holds a
+// generated workbench token while the server that generated it runs.
+const workbenchTokenFile = "workbench-token"
+
+// keepWorkbenchToken writes tok to the workbench token file as the store
+// writes its documents (a temp file of mode 0600, renamed into place) and
+// returns what removes it when the server stops: the file this run wrote, not
+// one another server has put there since.
+func keepWorkbenchToken(st *store.Store, tok string) (forget func(), err error) {
+	if err := st.WriteFile(workbenchTokenFile, []byte(tok+"\n")); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(st.Dir(), workbenchTokenFile)
+	mine, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		if now, err := os.Lstat(path); err == nil && os.SameFile(mine, now) {
+			_ = st.RemoveFile(workbenchTokenFile)
+		}
+	}, nil
+}
+
 // terminalOf is w when it is a terminal, where the person who started the
 // server reads it, and nil otherwise (a file, or a pipe to a parent process,
 // a service manager or a container's log). A test replaces it.
@@ -117,6 +141,19 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return 1, fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", cfg.DataDir, err)
 	}
+	// A generated workbench token is kept in the data directory while this
+	// server runs, for whoever cannot read its terminal (a service, a
+	// container); a configured one leaves no file there.
+	tokenFile := filepath.Join(st.Dir(), workbenchTokenFile)
+	if cfg.GeneratedWorkbenchToken {
+		forget, err := keepWorkbenchToken(st, cfg.WorkbenchToken)
+		if err != nil {
+			return 1, fmt.Errorf("write the generated workbench token to %s (%w); set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose one", tokenFile, err)
+		}
+		defer forget()
+	} else if err := st.RemoveFile(workbenchTokenFile); err != nil {
+		log.Warn("the workbench token file of an earlier run could not be removed", "file", tokenFile, "err", err)
+	}
 	// Launches inject flags that name the hook assets in the data directory,
 	// and the assets run this binary: the server does not start without them.
 	exe, err := agents.BinaryPath()
@@ -181,18 +218,15 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log.Debug("environment", "path", os.Getenv("PATH"))
 	if cfg.GeneratedWorkbenchToken {
-		// Printed once, to the terminal, so the person who started the server
-		// can sign in; never through the logger, whose lines a file, a
-		// service manager or a container keeps. A parent process has it in
-		// the --print-listen line.
-		switch tty := terminalOf(stderr); {
-		case tty != nil:
+		// The value goes once to the terminal, so the person who started the
+		// server can sign in, and never through the logger, whose lines a
+		// file, a service manager or a container keeps: the log names the
+		// file that holds it. A parent process has it in the --print-listen
+		// line.
+		if tty := terminalOf(stderr); tty != nil {
 			fmt.Fprintf(tty, "\nNo workbench token is configured; this run generated one:\n\n    %s\n\nSet CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own.\n\n", cfg.WorkbenchToken)
-		case *printListen:
-			log.Info("no workbench token configured; generated one for this run, passed in the --print-listen line only")
-		default:
-			log.Warn("no workbench token configured; generated one for this run, not printed because the server's output is not a terminal: set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to sign in")
 		}
+		log.Warn("no workbench token configured; generated one for this run, kept in file while the server runs; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own", "file", tokenFile)
 	}
 	if cfg.WorkbenchTokenRenamed {
 		log.Warn("adminToken and CONDUCTOR_ADMIN_TOKEN are the old names of the workbench token; use workbenchToken or CONDUCTOR_WORKBENCH_TOKEN")
