@@ -167,6 +167,65 @@ func TestViewerWebSocketRoundTrip(t *testing.T) {
 	}
 }
 
+// One viewer sizes the session (round 14): the workbench's window, which
+// came with no link, holds the size; a control link opened on a laptop
+// follows it, its window's resize refused without a word, and takes it only
+// with Fit to my window (take), which every viewer then hears.
+func TestAControlLinkTakesTheSizeOnlyByAsking(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	ctl := dialViewer(t, e, id, adminToken)
+	ctl.hello(100, 30)
+	w := ctl.expectControl(proto.CtlWelcome)
+	if w["sizer"] != true || w["sizedBy"] != w["subscriberId"] || w["cols"] != float64(100) {
+		t.Fatalf("the workbench's welcome %v", w)
+	}
+	ctl.expectControl(proto.CtlReady)
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	laptop := dialViewer(t, e, id, lo["token"].(string))
+	laptop.hello(80, 24)
+	lw := laptop.expectControl(proto.CtlWelcome)
+	if lw["role"] != "control" || lw["sizedBy"] != w["subscriberId"] || lw["cols"] != float64(100) {
+		t.Fatalf("the laptop's welcome %v", lw)
+	}
+	laptop.expectControl(proto.CtlReady)
+	size := func() (float64, float64) {
+		t.Helper()
+		_, out := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+		info := out["session"].(map[string]any)
+		return info["cols"].(float64), info["rows"].(float64)
+	}
+	// Its window's resize: no answer, no change.
+	laptop.send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 80, Rows: 24}))
+	laptop.send(proto.MustControl(proto.Ping{T: proto.CtlPing, TS: 1}))
+	laptop.expectControl(proto.CtlPong)
+	if c, r := size(); c != 100 || r != 30 {
+		t.Fatalf("a link's resize moved the size to %vx%v", c, r)
+	}
+	// Fit to my window: the size is the laptop's, and the workbench hears who sizes it.
+	laptop.send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 80, Rows: 24, Take: true}))
+	if m := ctl.expectControl(proto.CtlResize); m["cols"] != float64(80) || m["by"] != lw["subscriberId"] {
+		t.Fatalf("the take's resize %v", m)
+	}
+	if c, r := size(); c != 80 || r != 24 {
+		t.Fatalf("after the take %vx%v", c, r)
+	}
+	// The workbench's window changing size no longer moves it; its own take does.
+	ctl.send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 110, Rows: 30}))
+	ctl.send(proto.MustControl(proto.Ping{T: proto.CtlPing, TS: 2}))
+	ctl.expectControl(proto.CtlPong)
+	if c, _ := size(); c != 80 {
+		t.Fatalf("the workbench's passive resize moved it to %v", c)
+	}
+	ctl.send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 110, Rows: 30, Take: true}))
+	if m := laptop.expectControl(proto.CtlResize); m["by"] != lw["subscriberId"] {
+		t.Fatalf("the laptop's own take, heard first %v", m)
+	}
+	if m := laptop.expectControl(proto.CtlResize); m["cols"] != float64(110) || m["by"] != w["subscriberId"] {
+		t.Fatalf("taken back %v", m)
+	}
+}
+
 func TestViewerWebSocketAuthFailures(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")

@@ -190,6 +190,9 @@ export interface Welcome {
   viewerId?: string
   cols: number
   rows: number
+  /** The owner sizes the session by one viewer (round 14): `sizedBy` is that viewer's subscriber id ("" or absent: nobody holds it). */
+  sizer?: boolean
+  sizedBy?: string
   status: string
   scrollbackBytes: number
   transport: TransportKind
@@ -209,6 +212,7 @@ export interface Welcome {
 export type ControlMessage =
   | Welcome
   | { t: 'ready' }
+  /** `by` names the viewer that sizes the session now (absent: nobody holds the size) when the welcome said `sizer` (round 14). */
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }

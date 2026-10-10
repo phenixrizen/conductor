@@ -364,3 +364,71 @@ func TestPeerCarriesChatOverTheDataChannel(t *testing.T) {
 		t.Fatalf("history %+v", h)
 	}
 }
+
+// A control link on a hosted session follows the size the host's own
+// terminal gives it: its window's resize is refused, and Fit to my window
+// (take) hands it the size (round 14, Local's sizer, over the data channel).
+func TestPeerTakesTheSizeOnlyByAsking(t *testing.T) {
+	dir := t.TempDir()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	// The host's own terminal: a controller with no link, the sizer.
+	own, err := local.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "host terminal", Cols: 120, Rows: 40}, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Detach(own)
+	out := make(chan any, 64)
+	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a.sendHook = func(v any) { out <- v }
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "link1", "laptop")
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	dc, frames := loopbackViewer(t, p, out)
+	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 90, Rows: 30, Name: "Jane"}))
+	control := func(want func(m map[string]any) bool) map[string]any {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case raw := <-frames:
+				f, err := proto.Decode(raw)
+				if err != nil || f.Type != proto.TypeControl {
+					continue
+				}
+				var m map[string]any
+				if json.Unmarshal(f.Payload, &m) == nil && want(m) {
+					return m
+				}
+			case <-deadline:
+				t.Fatal("no such control frame")
+			}
+		}
+	}
+	w := control(func(m map[string]any) bool { return m["t"] == proto.CtlWelcome })
+	if w["sizer"] != true || w["sizedBy"] != own.ID || w["cols"] != float64(120) {
+		t.Fatalf("welcome %v", w)
+	}
+	dc.Send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 90, Rows: 30}))
+	dc.Send(proto.MustControl(proto.Ping{T: proto.CtlPing, TS: 7}))
+	control(func(m map[string]any) bool { return m["t"] == proto.CtlPong })
+	if i := local.Info(); i.Cols != 120 {
+		t.Fatalf("a link's resize moved the size to %dx%d", i.Cols, i.Rows)
+	}
+	dc.Send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 90, Rows: 30, Take: true}))
+	m := control(func(m map[string]any) bool { return m["t"] == proto.CtlResize && m["cols"] == float64(90) })
+	if m["by"] != w["subscriberId"] {
+		t.Fatalf("the take's resize %v (welcome %v)", m, w)
+	}
+}
+
+type nopSink struct{}
+
+func (nopSink) WriteFrame([]byte) error { return nil }
+func (nopSink) Close(error)             {}

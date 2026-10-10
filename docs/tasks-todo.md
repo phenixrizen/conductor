@@ -80,32 +80,6 @@ test that would have caught it when it is fixed.
   join(__dirname, 'log-preload.js')` on that window. Tests: a desktop unit
   test that the log window's options name the preload; the smoke test opens
   the log window and sees a line of the server's log.
-- **A shared session takes the smallest window's size.** Seen by the owner,
-  2026-10-06: a crew (the to-do example) shared with a coworker on a laptop
-  shrinks to the laptop's columns and rows on the owner's 34-inch screen.
-  Cause: the session has one PTY and one size, set by the latest
-  control-role viewer that attached or resized (`Local.Resize`,
-  "latest controller wins"); every viewer's terminal then follows that size
-  (`TerminalView` on the `resize` message), so a control link opened on a
-  small window resizes the session for everyone, and a view link scales
-  instead. The fix, decided 2026-10-06 after weighing the options (largest
-  wins punishes the small screen's typist; per-viewer sizes are impossible
-  with one PTY):
-  - the size belongs to one **driver**: by default the workbench that
-    launched the session (the owner), never a link viewer, whatever its role;
-  - every other viewer gets the `scale` fit the run tiles already use (the
-    session's grid kept, the font scaled to the window), with **Fit to my
-    window** in the terminal header to take the size over, which the header
-    then says ("sized by Jane · 212 × 54") with one click to take it back;
-  - a passive event (a join, a window resize) never moves the size; only
-    that click does, which also ends the "whoever joined last" surprise
-    between two owners' windows;
-  - a crew run's members get the same, driver by member.
-  Tests: Go for the driver rule in `Local` (a control viewer's resize refused
-  until it takes the size, the hand-over, the owner's default); Playwright
-  with two browser contexts, one wide and one narrow, checking the wide one's
-  columns stay and the narrow one scales, then the hand-over.
-
 ## Features
 
 ### The browser terminal

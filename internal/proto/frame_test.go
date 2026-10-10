@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -179,5 +180,39 @@ func TestFileWriteFrame(t *testing.T) {
 	}
 	if _, _, err := DecodeFileWrite([]byte{1, 2, 3}); err == nil {
 		t.Fatal("a short payload")
+	}
+}
+
+// The size's messages (round 14): a resize asks to take the size only with
+// take; the welcome says the owner sizes by one viewer and which one; the
+// fields stay out when unset, so an older owner's frames read as before.
+func TestResizeAndWelcomeSizerShapes(t *testing.T) {
+	enc := func(v any) string {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if got := enc(Resize{T: CtlResize, Cols: 120, Rows: 40}); got != `{"t":"resize","cols":120,"rows":40}` {
+		t.Fatalf("a passive resize: %s", got)
+	}
+	if got := enc(Resize{T: CtlResize, Cols: 120, Rows: 40, Take: true}); got != `{"t":"resize","cols":120,"rows":40,"take":true}` {
+		t.Fatalf("a take: %s", got)
+	}
+	if got := enc(Resize{T: CtlResize, Cols: 120, Rows: 40, By: "s1"}); got != `{"t":"resize","cols":120,"rows":40,"by":"s1"}` {
+		t.Fatalf("a broadcast: %s", got)
+	}
+	w := enc(Welcome{T: CtlWelcome, Cols: 80, Rows: 24, Sizer: true, SizedBy: "s1"})
+	if !strings.Contains(w, `"sizer":true,"sizedBy":"s1"`) {
+		t.Fatalf("welcome: %s", w)
+	}
+	if w := enc(Welcome{T: CtlWelcome, Cols: 80, Rows: 24}); strings.Contains(w, "sizer") || strings.Contains(w, "sizedBy") {
+		t.Fatalf("an older owner's welcome: %s", w)
+	}
+	var back Resize
+	if err := json.Unmarshal([]byte(`{"t":"resize","cols":90,"rows":30,"take":true}`), &back); err != nil || !back.Take || back.Cols != 90 {
+		t.Fatalf("round trip %+v %v", back, err)
 	}
 }

@@ -207,7 +207,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 		case proto.CtlResize:
 			var m proto.Resize
 			if json.Unmarshal(f.Payload, &m) == nil {
-				_ = p.a.local.Resize(sub, m.Cols, m.Rows)
+				_ = p.a.local.ResizeWith(sub, m.Cols, m.Rows, m.Take)
 			}
 		case proto.CtlPing:
 			var m proto.Ping

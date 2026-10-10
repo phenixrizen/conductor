@@ -95,6 +95,14 @@ never exposes terminal content. Revoking a link disconnects everyone using
 it, a link minted at the switchyard too. A session that ends takes its links
 with it: they stop working and leave the dialog.
 
+One window sizes a session: your own window, never a guest's. A guest on a
+laptop sees your session's columns and rows scaled to their window, and the
+terminal's corner says who sizes it ("Sized by Nate · 212 × 54"); with a
+control link **Fit to my window** takes the size, and your window then shows
+the same corner to take it back. Neither window changing size moves it; only
+that button does. When the window that sizes it closes, the size goes to
+your other window of it, if one is open.
+
 The base is the address you opened the workbench at (`http://192.168.1.20:8080`,
 a tunnel's URL, a reverse proxy's host, with the scheme and host the proxy
 forwards in `X-Forwarded-Proto` and `X-Forwarded-Host`), unless `publicUrl`
@@ -426,10 +434,13 @@ could read the catalog's env secrets and the workbench token.
 
 `/yard` (the Wall before it was renamed; `/wall` still lands there) is a grid of live tiles, one per active session, sized so that every
 session fits on screen without scrolling; tiles shrink as sessions are added.
-Each tile is the session's terminal at the tile's size, filling it: the last
-viewer that attaches or resizes sets a session's size, so opening the Yard
-sizes each session to its tile, opening a session's page sizes it to that
-page, and coming back to the grid sizes it to its tile again. Click into a
+Each tile is the session's terminal at the tile's size, filling it. One
+window sizes a session at a time (see Sharing): the first of yours to open
+it, then the next when that one closes. So opening the Yard sizes each
+session to its tile, opening a session's page (the Yard's tiles close) sizes
+it to that page, and coming back to the grid sizes it to its tile again; a
+session open in two windows at once keeps the first one's size, the other
+showing it scaled until **Fit to my window**. Click into a
 tile and type: the keys go to that session, the plain-key shortcuts pause
 while the tile has focus and the **Alt** chords still work. The chips in the
 header filter tiles (**All**, **Needs you**, **Running**). A queue on the left

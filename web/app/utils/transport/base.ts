@@ -85,9 +85,9 @@ export abstract class BaseTransport implements TerminalTransport {
     this.send(encodeControl({ ...send, t: 'chat_send' }))
   }
 
-  resize(cols: number, rows: number): void {
+  resize(cols: number, rows: number, take?: boolean): void {
     if (this.state.value !== 'open') return
-    this.send(encodeControl({ t: 'resize', cols, rows }))
+    this.send(encodeControl(take ? { t: 'resize', cols, rows, take: true } : { t: 'resize', cols, rows }))
   }
 
   ping(): void {

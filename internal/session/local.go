@@ -141,6 +141,11 @@ type Local struct {
 	touched touchedIndex
 	// gitSeen watches the working tree for files no hook named (gitseen.go); its own lock.
 	gitSeen gitSeen
+	// sizer is the viewer whose window sizes the PTY, "" while none holds it
+	// (round 14): one of the owner's own windows takes it as it attaches,
+	// any controller by asking (ResizeWith take, Fit to my window), and
+	// every other viewer follows the size, scaled to its window. Under mu.
+	sizer string
 	// nvimCount is the editors open on the session (nvim.go), every
 	// connection's together.
 	nvimCount atomic.Int32
@@ -737,15 +742,23 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
 	}
-	// The hello's size: a controller's sets the PTY's, (0, 0) follows it
-	// (proto.HelloSize). The role comes from the token, never from the hello.
-	if role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended() {
+	// The hello's size ((0, 0) follows; proto.HelloSize). One viewer sizes
+	// the PTY: one of the owner's own windows (a controller with no link)
+	// takes the size as it attaches while nobody holds it; any other
+	// controller's size is kept as what its window would want, and it takes
+	// the size only by asking (Fit to my window). So a coworker's laptop
+	// joining through a link never shrinks the session on the owner's
+	// screen, and two of the owner's windows never take turns. The role
+	// comes from the token, never from the hello.
+	sized := role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended()
+	if sized && o.LinkID == "" && !o.ChatOnly && s.sizer == "" {
+		s.sizer = id
 		if cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
 				s.info.Cols, s.info.Rows = cols, rows
-				s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: cols, Rows: rows, By: id}))
 			}
 		}
+		s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: s.info.Cols, Rows: s.info.Rows, By: id}))
 	}
 	transport := s.opts.Transport
 	if named, ok := sink.(interface{ Transport() string }); ok {
@@ -755,6 +768,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub.Name = CleanName(o.Name)
 	sub.LinkLabel = o.LinkLabel
 	sub.quiet = o.ChatOnly
+	if sized {
+		sub.want = [2]uint16{cols, rows}
+	}
 	room := s.opts.RunChat
 	sub.send(proto.MustControl(proto.Welcome{
 		T:               proto.CtlWelcome,
@@ -764,6 +780,8 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		SubscriberID:    id,
 		Cols:            s.info.Cols,
 		Rows:            s.info.Rows,
+		Sizer:           true,
+		SizedBy:         s.sizer,
 		Status:          string(s.info.Status),
 		ScrollbackBytes: s.ring.Cap(),
 		Transport:       transport,
@@ -835,6 +853,9 @@ func (s *Local) Detach(sub *Subscription) {
 	_, present := s.hub.subs[sub.ID]
 	s.hub.remove(sub.ID)
 	sub.closeWith(nil)
+	if s.sizer == sub.ID {
+		s.handOverSize()
+	}
 	var left ChatMessage
 	var told bool
 	if present {
@@ -960,6 +981,17 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 
 // Resize applies the latest-controller-wins policy and broadcasts the result.
 func (s *Local) Resize(sub *Subscription, cols, rows uint16) error {
+	return s.ResizeWith(sub, cols, rows, false)
+}
+
+// ResizeWith sizes the PTY for sub's window. Only the sizer's window sizes
+// it (see AttachWith): a passive resize (the window changed, a tab came
+// back) from another viewer is kept as what its window would want and
+// refused with ErrNotSizer, except from one of the owner's own windows
+// while nobody holds the size. With take (Fit to my window) any controller
+// becomes the sizer. Every viewer hears who sizes it in the resize frame's
+// By, a change of sizer at the same size included.
+func (s *Local) ResizeWith(sub *Subscription, cols, rows uint16, take bool) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
@@ -971,15 +1003,46 @@ func (s *Local) Resize(sub *Subscription, cols, rows uint16) error {
 	if s.info.Status.Ended() {
 		return ErrSessionEnded
 	}
-	if cols == s.info.Cols && rows == s.info.Rows {
+	sub.want = [2]uint16{cols, rows}
+	if !take && s.sizer != sub.ID && (s.sizer != "" || !sub.ownsSize()) {
+		return ErrNotSizer
+	}
+	handed := s.sizer != sub.ID
+	s.sizer = sub.ID
+	if cols == s.info.Cols && rows == s.info.Rows && !handed {
 		return nil
 	}
-	if err := s.proc.Resize(cols, rows); err != nil {
-		return err
+	if cols != s.info.Cols || rows != s.info.Rows {
+		if err := s.proc.Resize(cols, rows); err != nil {
+			return err
+		}
+		s.info.Cols, s.info.Rows = cols, rows
 	}
-	s.info.Cols, s.info.Rows = cols, rows
 	s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: cols, Rows: rows, By: sub.ID}))
 	return nil
+}
+
+// handOverSize finds the size a new holder as the sizer leaves: the
+// owner's own window that attached last and said its size, at that size,
+// else nobody (the size stays, and every viewer hears By ""). Callers hold
+// s.mu; the leaving viewer is out of the hub already.
+func (s *Local) handOverSize() {
+	s.sizer = ""
+	var next *Subscription
+	s.hub.Each(func(c *Subscription) {
+		if c.ownsSize() && proto.HelloSize(c.want[0], c.want[1]) && (next == nil || c.Since.After(next.Since)) {
+			next = c
+		}
+	})
+	if next != nil && !s.info.Status.Ended() {
+		s.sizer = next.ID
+		if cols, rows := next.want[0], next.want[1]; cols != s.info.Cols || rows != s.info.Rows {
+			if err := s.proc.Resize(cols, rows); err == nil {
+				s.info.Cols, s.info.Rows = cols, rows
+			}
+		}
+	}
+	s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: s.info.Cols, Rows: s.info.Rows, By: s.sizer}))
 }
 
 // Stop terminates the process.
