@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/gitcli"
+	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
 )
 
 func gitRepo(t *testing.T) string {
@@ -75,6 +76,40 @@ func TestGitStatusAndShowThroughTheFilePolicy(t *testing.T) {
 	}
 	if sh, _ := GitShowPath(dir, "HEAD", "docs/old.md", []string{filepath.Join(dir, "docs")}); sh.Kind != "error" || sh.Error.Code != "denied" {
 		t.Fatalf("a denied folder at a revision: %+v", sh)
+	}
+}
+
+// What the Files tab and the session read of a repository starts no program
+// the repository's own configuration names (gitclitest): the status with
+// its lines, a file at a revision, the log and a commit, the branch the
+// session shows, the look after an agent's tool call. The results are
+// still right.
+func TestGitReadsStartNoProgramTheRepositoryNames(t *testing.T) {
+	for _, hooksPath := range []bool{false, true} {
+		r := gitclitest.New(t, gitclitest.Options{HooksPath: hooksPath})
+		h := GitStatusPath(r.Dir, "", nil)
+		if h.Kind != "status" || h.Branch != "main" || h.Base == "" || len(h.Changes) != 5 || h.Added != 5 || h.Removed != 0 {
+			t.Fatalf("hooksPath %v: status %+v", hooksPath, h)
+		}
+		r.NoneFired(t, "the status")
+		for path, body := range gitclitest.Committed {
+			if sh, b := GitShowPath(r.Dir, "HEAD", path, nil); sh.Kind != "show" || string(b) != body {
+				t.Fatalf("show %s: %+v %q", path, sh, b)
+			}
+		}
+		r.NoneFired(t, "show")
+		if lh := GitLogPath(r.Dir, "", time.Time{}, nil); lh.Kind != "log" || len(lh.Commits) != 1 {
+			t.Fatalf("log: %+v", lh)
+		} else if ch := GitCommitPath(r.Dir, lh.Commits[0].Sha, nil); ch.Kind != "commit" || len(ch.Changes) != len(gitclitest.Committed) {
+			t.Fatalf("commit: %+v", ch)
+		}
+		if b := GitBranch(r.Dir); b != "main" {
+			t.Fatalf("branch %q", b)
+		}
+		if snap, ok := gitSnapshot(context.Background(), r.Dir); !ok || len(snap) != 5 {
+			t.Fatalf("the look after a tool call: %v %v", snap, ok)
+		}
+		r.NoneFired(t, "the log, the branch and the look")
 	}
 }
 

@@ -1,9 +1,11 @@
 // Package gitcli runs the git binary for the server and conductor host: the
 // working directory's status with each file's added and removed lines, a
-// file at a revision, and the helper the crew engine's worktrees use. The
-// commands are argv arrays run in the C locale; nothing is a shell string.
-// go-git (the round 12 decision) is for what it does without hashing the
-// working tree, the log and a commit's diffs; status stays here.
+// file at a revision, and the helper the crew engine's worktrees use. Every
+// git Conductor runs goes through Run (run.go): argv arrays in the C
+// locale, nothing a shell string, and no program the repository's own
+// configuration names. go-git (the round 12 decision) is for what it does
+// without hashing the working tree, the log and a commit's diffs; status
+// stays here.
 package gitcli
 
 import (
@@ -12,12 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/phenixrizen/conductor/internal/pty"
 )
 
 // ErrNotRepo is a directory outside any git working tree.
@@ -53,28 +52,6 @@ type Status struct {
 	Added, Removed int
 	// Truncated says the list stopped at MaxChanges.
 	Truncated bool
-}
-
-// Run runs git with args in dir (git -C dir, so it is the same wherever the
-// process runs) in the C locale. A failure carries the line that says why.
-func Run(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = pty.BuildEnv(pty.ParentEnv(), nil, map[string]string{"LC_ALL": "C"}, nil)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		if msg := Message(stderr.String()); msg != "" {
-			if strings.Contains(msg, "not a git repository") {
-				return "", ErrNotRepo
-			}
-			return "", fmt.Errorf("git %s: %s", args[0], msg)
-		}
-		return "", fmt.Errorf("git %s: %w", args[0], err)
-	}
-	return stdout.String(), nil
 }
 
 // Message picks the line of git's standard error that says why it failed:

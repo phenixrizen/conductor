@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
 )
 
 func repo(t *testing.T) string {
@@ -162,5 +165,140 @@ func TestPorcelain(t *testing.T) {
 	}
 	if _, _, _, err := Porcelain(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("outside a repository must fail")
+	}
+}
+
+// The git Conductor runs starts no program the repository's own
+// configuration names (gitclitest arms one with a marking script at every
+// such place, some through include and includeIf; hooks in .git/hooks and
+// through core.hooksPath), and still reads it right: the status with its
+// lines, the porcelain status, a file at a revision. Nothing fetches from
+// the repository's remote either.
+func TestGitStartsNoProgramTheRepositoryNames(t *testing.T) {
+	for _, hooksPath := range []bool{false, true} {
+		r := gitclitest.New(t, gitclitest.Options{HooksPath: hooksPath})
+		ctx := context.Background()
+		st, err := GetStatus(ctx, r.Dir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]Change{}
+		for _, c := range st.Changes {
+			got[c.Path] = c
+		}
+		want := map[string]Change{
+			"conv.txt":  {Path: "conv.txt", Status: "M", Added: 1},
+			"clean.dat": {Path: "clean.dat", Status: "M", Added: 1},
+			"proc.pdat": {Path: "proc.pdat", Status: "M", Added: 1},
+			"inc.idat":  {Path: "inc.idat", Status: "M", Added: 1},
+			"new.txt":   {Path: "new.txt", Status: "?", Added: 1},
+		}
+		for p, w := range want {
+			if got[p] != w {
+				t.Errorf("hooksPath %v: %s: got %+v want %+v", hooksPath, p, got[p], w)
+			}
+		}
+		if len(st.Changes) != len(want) || st.Branch != "main" || st.Base == "" || st.Added != 5 || st.Removed != 0 {
+			t.Fatalf("hooksPath %v: status %+v", hooksPath, st)
+		}
+		r.NoneFired(t, "the status")
+		if _, changes, _, err := Porcelain(ctx, r.Dir); err != nil || len(changes) != len(want) {
+			t.Fatalf("porcelain: %+v %v", changes, err)
+		}
+		r.NoneFired(t, "the porcelain status")
+		for path, body := range gitclitest.Committed {
+			if b, _, err := Show(ctx, r.Dir, "HEAD", path); err != nil || string(b) != body {
+				t.Fatalf("show %s: %q %v", path, b, err)
+			}
+		}
+		r.NoneFired(t, "show")
+		// The repository allows the file protocol; the environment allows none.
+		if out, err := Run(ctx, r.Dir, "ls-remote", "origin"); err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Fatalf("ls-remote: %q %v", out, err)
+		}
+		if _, err := Run(ctx, r.Dir, "fetch", "origin"); err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Fatalf("fetch: %v", err)
+		}
+		r.NoneFired(t, "a transport")
+	}
+}
+
+// A read runs no filter at all, not even one the person's global
+// configuration defines; worktree add, which checks files out, runs such a
+// filter (as Git LFS's is set up) so that the files come out as a checkout
+// makes them, unless the repository's own configuration redefines it.
+func TestFiltersFromOutsideTheRepositoryRunOnlyForACheckout(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	global := "[filter \"owner\"]\n\tclean = " + r.Script + " owner-clean\n\tsmudge = " + r.Script + " owner-smudge\n"
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(r.Dir, "owner.own"), []byte("o\np\n"), 0o644)
+	st, err := GetStatus(ctx, r.Dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var own Change
+	for _, c := range st.Changes {
+		if c.Path == "owner.own" {
+			own = c
+		}
+	}
+	if own.Status != "M" || own.Added != 1 {
+		t.Fatalf("owner.own: %+v", own)
+	}
+	r.NoneFired(t, "the status")
+	wt := filepath.Join(t.TempDir(), "wt")
+	if _, err := Run(ctx, r.Dir, "worktree", "add", "-q", "-b", "side", wt, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	if fired := r.Fired(t); len(fired) != 1 || fired[0] != "owner-smudge" {
+		t.Fatalf("worktree add ran %q, want the global filter's smudge alone", fired)
+	}
+	if b, err := os.ReadFile(filepath.Join(wt, "owner.own")); err != nil || string(b) != "o\n" {
+		t.Fatalf("owner.own in the worktree: %q %v", b, err)
+	}
+	// The repository redefines the filter: it is the repository's now, and off.
+	os.Remove(filepath.Join(r.Marks, "owner-smudge"))
+	gitclitest.Git(t, r.Dir, "config", "filter.owner.smudge", r.Script+" repo-smudge")
+	if _, err := Run(ctx, r.Dir, "worktree", "add", "-q", "-b", "other", filepath.Join(t.TempDir(), "wt2"), "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	r.NoneFired(t, "worktree add with the filter redefined")
+}
+
+// filterNames reads the names a configuration gives a filter program,
+// whatever their case or dots, each once; the repository's own when asked
+// (the include and includeIf ones count as the repository's).
+func TestFilterNames(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	global := "[filter \"owner\"]\n\tclean = x\n[filter \"Dotted.Name\"]\n\tsmudge = y\n\trequired = true\n[filter \"none\"]\n\trequired = true\n"
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	all, err := filterNames(context.Background(), r.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(all)
+	if want := []string{"Dotted.Name", "inc", "owner", "proc", "single"}; !slices.Equal(all, want) {
+		t.Fatalf("all: %q, want %q", all, want)
+	}
+	repoOnly, err := filterNames(context.Background(), r.Dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(repoOnly)
+	if want := []string{"inc", "proc", "single"}; !slices.Equal(repoOnly, want) {
+		t.Fatalf("the repository's: %q, want %q", repoOnly, want)
+	}
+	if names, err := filterNames(context.Background(), t.TempDir(), true); err != nil || len(names) != 0 {
+		t.Fatalf("outside a repository: %q %v", names, err)
+	}
+	// A name -c cannot carry is refused, not passed over.
+	gitclitest.Git(t, r.Dir, "config", "filter.a=b.clean", "x")
+	if _, err := Run(context.Background(), r.Dir, "status", "--porcelain"); err == nil || !strings.Contains(err.Error(), "cannot be turned off") {
+		t.Fatalf("a filter named with =: %v", err)
 	}
 }

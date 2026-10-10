@@ -155,7 +155,9 @@ func CheckRepo(ctx context.Context, repo string) error {
 
 // AddWorktree adds a worktree of the repository repo is in at path, on a new
 // branch made from HEAD: git -C repo worktree add -b branch path HEAD. git
-// makes the parent directories of path. The error matches ErrNotRepo when
+// makes the parent directories of path. No hook of the repository runs (no
+// post-checkout, no reference-transaction), nor a filter its own
+// configuration defines (gitcli.Run). The error matches ErrNotRepo when
 // repo is in no git working tree, and is ErrNoGit when git is not on PATH.
 func AddWorktree(ctx context.Context, repo, path, branch string) error {
 	if err := inRepo(ctx, repo); err != nil {
@@ -310,7 +312,8 @@ func headCommit(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// git runs git for the crews (gitcli.Run: argv, the C locale, the line that says why on failure).
+// git runs git for the crews (gitcli.Run: argv, the C locale, no program the repository's configuration names, the line that
+// says why on failure).
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitcli.Run(ctx, dir, args...)
 }
