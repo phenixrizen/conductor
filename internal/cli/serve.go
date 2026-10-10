@@ -38,30 +38,6 @@ import (
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
 
-// workbenchTokenFile is the file in the data directory that holds a
-// generated workbench token while the server that generated it runs.
-const workbenchTokenFile = "workbench-token"
-
-// keepWorkbenchToken writes tok to the workbench token file as the store
-// writes its documents (a temp file of mode 0600, renamed into place) and
-// returns what removes it when the server stops: the file this run wrote, not
-// one another server has put there since.
-func keepWorkbenchToken(st *store.Store, tok string) (forget func(), err error) {
-	if err := st.WriteFile(workbenchTokenFile, []byte(tok+"\n")); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(st.Dir(), workbenchTokenFile)
-	mine, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	return func() {
-		if now, err := os.Lstat(path); err == nil && os.SameFile(mine, now) {
-			_ = st.RemoveFile(workbenchTokenFile)
-		}
-	}, nil
-}
-
 // terminalOf is w when it is a terminal, where the person who started the
 // server reads it, and nil otherwise (a file, or a pipe to a parent process,
 // a service manager or a container's log). A test replaces it.
@@ -142,16 +118,24 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return 1, fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", cfg.DataDir, err)
 	}
 	// A generated workbench token is kept in the data directory while this
-	// server runs, for whoever cannot read its terminal (a service, a
-	// container); a configured one leaves no file there.
+	// server runs (tokenfile.go); a configured one leaves no file there, but
+	// one another running server keeps stays.
 	tokenFile := filepath.Join(st.Dir(), workbenchTokenFile)
+	tokenKept := false
 	if cfg.GeneratedWorkbenchToken {
 		forget, err := keepWorkbenchToken(st, cfg.WorkbenchToken)
-		if err != nil {
+		switch {
+		case errors.Is(err, errTokenFileHeld):
+			// Said below, with the token's own line.
+		case err != nil:
 			return 1, fmt.Errorf("write the generated workbench token to %s (%w); set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose one", tokenFile, err)
+		default:
+			tokenKept = true
+			defer forget()
 		}
-		defer forget()
-	} else if err := st.RemoveFile(workbenchTokenFile); err != nil {
+	} else if err := dropStaleWorkbenchToken(st); errors.Is(err, errTokenFileHeld) {
+		log.Info("the workbench token file belongs to another server running on this data directory and stays", "file", tokenFile)
+	} else if err != nil {
 		log.Warn("the workbench token file of an earlier run could not be removed", "file", tokenFile, "err", err)
 	}
 	// Launches inject flags that name the hook assets in the data directory,
@@ -226,7 +210,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		if tty := terminalOf(stderr); tty != nil {
 			fmt.Fprintf(tty, "\nNo workbench token is configured; this run generated one:\n\n    %s\n\nSet CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own.\n\n", cfg.WorkbenchToken)
 		}
-		log.Warn("no workbench token configured; generated one for this run, kept in file while the server runs; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own", "file", tokenFile)
+		if tokenKept {
+			log.Warn("no workbench token configured; generated one for this run, kept in file while the server runs; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own", "file", tokenFile)
+		} else {
+			log.Warn("no workbench token configured; generated one for this run, but another server running on this data directory keeps the token file, so this run's token is not in it; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config), or give this server a dataDir of its own", "file", tokenFile)
+		}
 	}
 	if cfg.WorkbenchTokenRenamed {
 		log.Warn("adminToken and CONDUCTOR_ADMIN_TOKEN are the old names of the workbench token; use workbenchToken or CONDUCTOR_WORKBENCH_TOKEN")

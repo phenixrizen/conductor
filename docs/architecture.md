@@ -262,7 +262,9 @@ registers the `conductor:` scheme: an invite opens its own join page with
   (`/join/{token}`). A workbench token the server generates is printed to the
   terminal it was started from and kept in `workbench-token` in the data
   directory (mode 0600, written atomically) while the server runs; the log
-  names the file, never the token. A configured token removes the file.
+  names the file, never the token. A configured token removes the file. The
+  server that keeps it holds a lock on `workbench-token.lock` beside it, so a
+  second server started on the same data directory leaves it alone.
 
 ## Persistence
 
