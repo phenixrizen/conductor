@@ -82,11 +82,13 @@ func LocalFileDeny(path string) ([]string, error) {
 	return c.FileDeny(append(dirs, desktopDirs()...)...), nil
 }
 
-// desktopAppName is the desktop app's name (productName in
-// desktop/electron-builder.yml): its own directory, Electron's userData, is
+// desktopAppNames name the desktop app's own directory, Electron's userData:
 // the user's config directory (os.UserConfigDir, as Electron's appData) and
-// this name.
-const desktopAppName = "Conductor"
+// the app's name. Electron takes that name from desktop/package.json, which
+// gives only its name, conductor-desktop; Conductor, the name its packages
+// carry (productName in desktop/electron-builder.yml), is the one it would
+// take should package.json ever give a productName. Both are refused.
+var desktopAppNames = []string{"conductor-desktop", "Conductor"}
 
 // maxDesktopSettings bounds what is read of the desktop app's settings.
 const maxDesktopSettings = 1 << 20
@@ -94,11 +96,13 @@ const maxDesktopSettings = 1 << 20
 // desktopDirs are the directories of the server the desktop app runs on this
 // machine, which it starts with CONDUCTOR_DATA_DIR from its own settings
 // rather than with a config file (desktop/src/env.ts): the app's own
-// directory, which holds its settings (desktop/src/main.ts) and, unless they
-// say otherwise, the data directory (conductor in it); the data directory
-// its settings name, when that is an absolute path; and, inside WSL, where
-// the app on Windows runs the server, the default it gives a server there,
-// ~/.local/share/conductor/data (desktop/src/settings.ts, wslDefaults).
+// directory (desktopAppNames), which holds its settings (desktop/src/main.ts)
+// and, unless they say otherwise, the data directory (conductor in it); the
+// data directory its settings name, when that is an absolute path; and,
+// inside WSL, where the app on Windows runs the server, the default it gives
+// a server there, ~/.local/share/conductor/data (desktop/src/settings.ts,
+// wslDefaults). The settings of the app on Windows are not on this side, so
+// a data directory they choose for the server inside WSL is not known here.
 // Only dataDir is read of the settings, which hold many other keys; settings
 // that cannot be read or parsed name nothing, as the app then takes its
 // defaults. Each directory is named whether it exists or not: one that does
@@ -112,19 +116,30 @@ func desktopDirs() []string {
 	if err != nil || !filepath.IsAbs(base) {
 		return dirs
 	}
-	app := filepath.Join(base, desktopAppName)
-	dirs = append(dirs, app)
-	f, err := os.Open(filepath.Join(app, "settings.json"))
+	for _, name := range desktopAppNames {
+		app := filepath.Join(base, name)
+		dirs = append(dirs, app)
+		if d := desktopDataDir(filepath.Join(app, "settings.json")); d != "" {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
+}
+
+// desktopDataDir is the data directory the desktop app's settings file
+// names, or "" when it names none that is an absolute path or cannot be read.
+func desktopDataDir(file string) string {
+	f, err := os.Open(file)
 	if err != nil {
-		return dirs
+		return ""
 	}
 	defer f.Close()
 	var settings struct {
 		DataDir string `json:"dataDir"`
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxDesktopSettings))
-	if err == nil && json.Unmarshal(b, &settings) == nil && filepath.IsAbs(settings.DataDir) {
-		dirs = append(dirs, filepath.Clean(settings.DataDir))
+	if err != nil || json.Unmarshal(b, &settings) != nil || !filepath.IsAbs(settings.DataDir) {
+		return ""
 	}
-	return dirs
+	return filepath.Clean(settings.DataDir)
 }

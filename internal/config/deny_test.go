@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -36,6 +38,40 @@ func TestFileDeny(t *testing.T) {
 	}
 }
 
+// The desktop app's own directory is named after the name Electron gives it,
+// from desktop/package.json (its productName, else its name), and the name
+// its packages carry (electron-builder.yml): desktopAppNames holds both.
+func TestDesktopAppNamesFollowTheApp(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "desktop", "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct {
+		Name        string `json:"name"`
+		ProductName string `json:"productName"`
+	}
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	electron := pkg.ProductName
+	if electron == "" {
+		electron = pkg.Name
+	}
+	yml, err := os.ReadFile(filepath.Join("..", "..", "desktop", "electron-builder.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^productName:\s*(\S+)\s*$`).FindSubmatch(yml)
+	if m == nil {
+		t.Fatal("no productName in electron-builder.yml")
+	}
+	for _, name := range []string{electron, string(m[1])} {
+		if !slices.Contains(desktopAppNames, name) {
+			t.Errorf("the desktop app's directory may be named %q, which desktopAppNames %q lacks", name, desktopAppNames)
+		}
+	}
+}
+
 // LocalFileDeny finds the files of the conductor serve that would start on
 // this machine as serve does: the config file named, if any, the
 // environment over it, the data directory as ResolveDataDir finds it, and
@@ -57,9 +93,10 @@ func TestLocalFileDeny(t *testing.T) {
 		return home, cwd
 	}
 	// local is what is refused on every machine with a home: ~/.conductor,
-	// the desktop app's data directory inside WSL and its own directory.
+	// the desktop app's data directory inside WSL and its own directory,
+	// under either name.
 	local := func(home string) []string {
-		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "Conductor")}
+		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "conductor-desktop"), filepath.Join(home, ".config", "Conductor")}
 	}
 	writeFile := func(t *testing.T, path, body string) string {
 		t.Helper()
@@ -210,16 +247,24 @@ func TestLocalFileDeny(t *testing.T) {
 		home, _ := setup(t)
 		config := t.TempDir()
 		t.Setenv("XDG_CONFIG_HOME", config)
-		app := filepath.Join(config, "Conductor")
-		base := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app}
+		app, renamed := filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")
+		base := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed}
 		if got := deny(t, ""); !slices.Equal(got, base) {
 			t.Errorf("no settings: %q, want %q", got, base)
 		}
 		data := filepath.Join(t.TempDir(), "elsewhere")
 		writeFile(t, filepath.Join(app, "settings.json"), `{"dataDir":"`+data+`/","allowedRoots":["`+home+`"],"switchyardToken":"t","zoomLevel":0}`)
-		if got, want := deny(t, ""), append(slices.Clone(base), data); !slices.Equal(got, want) {
+		want := []string{base[0], base[1], app, data, renamed}
+		if got := deny(t, ""); !slices.Equal(got, want) {
 			t.Errorf("settings naming a data directory: %q, want %q", got, want)
 		}
+		// The settings under the other name count too.
+		other := filepath.Join(t.TempDir(), "other")
+		writeFile(t, filepath.Join(renamed, "settings.json"), `{"dataDir":"`+other+`"}`)
+		if got := deny(t, ""); !slices.Equal(got, append(slices.Clone(want), other)) {
+			t.Errorf("settings under both names: %q", got)
+		}
+		os.Remove(filepath.Join(renamed, "settings.json"))
 		for _, body := range []string{`{oops`, `{"dataDir":"relative/data"}`, `{"dataDir":7}`, `[]`, ``} {
 			writeFile(t, filepath.Join(app, "settings.json"), body)
 			if got := deny(t, ""); !slices.Equal(got, base) {

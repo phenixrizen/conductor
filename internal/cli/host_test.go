@@ -226,7 +226,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	clearConductorEnv(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home := os.Getenv("HOME")
-	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "Conductor")}
+	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "conductor-desktop"), filepath.Join(home, ".config", "Conductor")}
 	var got []hostagent.Options
 	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
 		got = append(got, opts)

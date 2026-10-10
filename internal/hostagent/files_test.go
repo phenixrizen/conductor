@@ -61,16 +61,21 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 		"#conductor.json#":           secret,
 		"agents.json":                `{"agents":[{"id":"y","env":{"KEY":"` + secret + `"}}]}`,
 		"agents.json~":               secret,
-		// The desktop app's: its own directory and, inside WSL, its server's data.
-		".config/Conductor/settings.json":           `{"switchyardToken":"` + secret + `"}`,
-		".config/Conductor/conductor/catalog.json":  secret,
-		".local/share/conductor/data/catalog.json":  secret,
-		".local/share/conductor/data/crews/c2.json": secret,
-		".config/other-app/settings.json":           "ordinary\n",
-		".local/share/other-app/data.json":          "ordinary\n",
-		"notes.txt":                                 "ordinary\n",
-		"package.json":                              `{"name":"ordinary"}`,
-		"project/src/conductor-ui.md":               "ordinary too\n",
+		// The desktop app's: its own directory under either name, the data
+		// directory its settings name and, inside WSL, its server's data.
+		".config/conductor-desktop/settings.json":          `{"switchyardToken":"` + secret + `","dataDir":"` + filepath.Join(home, "code", "conductor-state") + `"}`,
+		".config/conductor-desktop/conductor/catalog.json": secret,
+		"code/conductor-state/catalog.json":                secret,
+		"code/app/main.go":                                 "package main\n",
+		".config/Conductor/settings.json":                  `{"switchyardToken":"` + secret + `"}`,
+		".config/Conductor/conductor/catalog.json":         secret,
+		".local/share/conductor/data/catalog.json":         secret,
+		".local/share/conductor/data/crews/c2.json":        secret,
+		".config/other-app/settings.json":                  "ordinary\n",
+		".local/share/other-app/data.json":                 "ordinary\n",
+		"notes.txt":                                        "ordinary\n",
+		"package.json":                                     `{"name":"ordinary"}`,
+		"project/src/conductor-ui.md":                      "ordinary too\n",
 	}
 	for rel, body := range files {
 		p := filepath.Join(home, rel)
@@ -175,6 +180,8 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 		"~/.conductor/catalog.json", filepath.Join(home, ".conductor", "workbench-token"), "project/../.conductor/catalog.json",
 		"conductor.json", "~/conductor.json", "CONDUCTOR.JSON.bak", "conductor.json.bak", ".conductor.json.swp", "#conductor.json#",
 		"agents.json", "agents.json~",
+		".config/conductor-desktop", ".config/conductor-desktop/settings.json", ".config/conductor-desktop/conductor/catalog.json",
+		"code/conductor-state", "code/conductor-state/catalog.json",
 		".config/Conductor", ".config/Conductor/settings.json", ".config/Conductor/conductor/catalog.json",
 		".local/share/conductor/data/catalog.json", ".local/share/conductor/data/crews/c2.json",
 	}
@@ -193,7 +200,7 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 		}
 		for _, m := range h.Matches {
 			if strings.Contains(m, ".conductor") || strings.Contains(strings.ToLower(filepath.Base(m)), "conductor.json") || strings.HasPrefix(filepath.Base(m), "agents.json") ||
-				strings.HasPrefix(m, ".config/Conductor") || strings.HasPrefix(m, ".local/share/conductor") {
+				strings.HasPrefix(m, ".config/Conductor") || strings.HasPrefix(m, ".config/conductor-desktop") || strings.HasPrefix(m, ".local/share/conductor") || strings.HasPrefix(m, "code/conductor-state") {
 				t.Errorf("find %q found %s", q, m)
 			}
 		}
@@ -211,6 +218,9 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	// The rest of the folder: read, stat, show, and the listing.
 	if h, body := ask(proto.FileGet{Path: "notes.txt"}); h.Kind != "file" || string(body) != "ordinary\n" {
 		t.Errorf("notes.txt: %+v %q", h, body)
+	}
+	if h, body := ask(proto.FileGet{Path: "code/app/main.go"}); h.Kind != "file" || string(body) != "package main\n" {
+		t.Errorf("code/app/main.go: %+v %q", h, body)
 	}
 	if h, _ := ask(proto.FileGet{Path: "package.json", Stat: true}); h.Kind != "file" || !h.Exists {
 		t.Errorf("stat package.json: %+v", h)
