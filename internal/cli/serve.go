@@ -251,8 +251,28 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		go func() { errCh <- httpSrv.Serve(tlsLn) }()
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)
+	shutdown := func() {
+		mcancel()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if mapper != nil {
+			closeCtx, ccancel := context.WithTimeout(context.Background(), 3*time.Second)
+			mapper.Close(closeCtx)
+			ccancel()
+		}
+		srv.Shutdown(shutdownCtx)
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("http shutdown", "err", err)
+		}
+	}
 	if *printListen {
 		if err := printHandshake(stdout, cfg, ln, tlsLn); err != nil {
+			if cfg.GeneratedWorkbenchToken && !tokenKept {
+				// The handshake was the one place of this server's token:
+				// without it, nobody could sign in.
+				shutdown()
+				return 1, fmt.Errorf("print-listen: %w; this server's generated workbench token is nowhere else (another server keeps %s), so it stops", err, tokenFile)
+			}
 			log.Warn("print-listen", "err", err)
 		}
 	}
@@ -281,18 +301,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		}
 		return 0, nil
 	}
-	mcancel()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if mapper != nil {
-		closeCtx, ccancel := context.WithTimeout(context.Background(), 3*time.Second)
-		mapper.Close(closeCtx)
-		ccancel()
-	}
-	srv.Shutdown(shutdownCtx)
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		log.Warn("http shutdown", "err", err)
-	}
+	shutdown()
 	return 0, nil
 }
 

@@ -1,12 +1,17 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/store"
 )
 
@@ -63,6 +68,55 @@ func TestDropStaleWorkbenchTokenTakesTheLock(t *testing.T) {
 	held.Close()
 	if err := dropStaleWorkbenchToken(st); err != nil {
 		t.Fatalf("drop once the holder is gone: %v", err)
+	}
+}
+
+// failingWriter refuses every write, as a full disk or a closed pipe does.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// A server whose generated token could go only into the --print-listen line
+// (another server keeps the token file) stops when that line cannot be
+// written, and leaves the other server's file as it is.
+func TestServeStopsWhenItsTokensOnlyHandshakeFails(t *testing.T) {
+	clearConductorEnv(t)
+	t.Cleanup(agents.ForgetBinary())
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	path := filepath.Join(data, workbenchTokenFile)
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := lockTokenFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := os.WriteFile(path, []byte("live\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	var logs syncBuffer
+	type result struct {
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, err := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), failingWriter{}, &logs)
+		done <- result{code, err}
+	}()
+	select {
+	case r := <-done:
+		if r.code != 1 || r.err == nil || !strings.Contains(r.err.Error(), "print-listen") {
+			t.Fatalf("serve: %d %v\n%s", r.code, r.err, logs.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("serve went on with its token nowhere:\n%s", logs.String())
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "live\n" {
+		t.Fatalf("the other server's file changed: %q %v", b, err)
 	}
 }
 
