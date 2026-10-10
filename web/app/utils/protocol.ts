@@ -452,7 +452,8 @@ export function closeReason(code: number, reason: string): string {
     case CloseCode.Unauthorized:
       return 'Not authorized for this session'
     case CloseCode.Forbidden:
-      return 'This share link was revoked'
+      // A link that reached its expiry is closed with the same code as a revoked one; the reason (and the `expired` error before it) tells them apart.
+      return reason === 'link expired' ? 'This share link expired' : 'This share link was revoked'
     case CloseCode.NotFound:
       return 'Session not found'
     case CloseCode.TooManyViewers:
