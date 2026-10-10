@@ -13,9 +13,13 @@ import (
 	"strings"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
+
+// runHostAgent is hostagent.Run: a test replaces it to see the options.
+var runHostAgent = hostagent.Run
 
 // hostingBanner starts the line the host prints on stderr once it has read the
 // server's registration reply; the session ID and its URL follow.
@@ -38,6 +42,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
 	fileEdit := fs.String("file-edit", "control", "whether the control role may edit files through the editor's Neovim on this machine: control, off")
+	serverConfig := fs.String("server-config", "", "the config file of a conductor serve on this machine: the Files tab refuses it, its dataDir and its catalogPath, as that server's own sessions do (the data directory CONDUCTOR_DATA_DIR names, ~/.conductor and the catalog file CONDUCTOR_CATALOG_PATH names are refused without it)")
 	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
@@ -67,6 +72,13 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	if *fileEdit != "control" && *fileEdit != "off" {
 		return 2, fmt.Errorf("invalid --file-edit %q", *fileEdit)
+	}
+	// The Files tab of a hosted session refuses what a session of the
+	// server on this machine refuses: its data directory, config file and
+	// catalog file, and the copies beside the two files.
+	deny, err := config.LocalFileDeny(*serverConfig)
+	if err != nil {
+		return 2, fmt.Errorf("invalid --server-config: %w", err)
 	}
 	var pattern *regexp.Regexp
 	if *signalPattern != "" {
@@ -111,6 +123,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		ScrollbackBytes: *scrollback,
 		FileView:        *fileView,
 		FileEdit:        *fileEdit,
+		FileDeny:        deny,
 		Pattern:         pattern,
 		Adapter:         *agentID,
 		Log:             log,
@@ -124,7 +137,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if f, ok := stdout.(*os.File); ok {
 		opts.Stdout = f
 	}
-	res, err := hostagent.Run(ctx, opts)
+	res, err := runHostAgent(ctx, opts)
 	if err != nil {
 		return 1, err
 	}

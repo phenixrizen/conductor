@@ -43,7 +43,8 @@ type Options struct {
 	// the working directory: a directory with everything in it, a single
 	// file, or a name entry (see insideAny); DenyList builds one. The server
 	// passes its data directory, whose catalog.json holds agent secrets, its
-	// config file and its catalog file; `conductor host` has none.
+	// config file and its catalog file; `conductor host` the same for the
+	// server on its machine (config.LocalFileDeny).
 	FileDeny []string
 	// Transport is reported in welcome messages ("ws" on the server, "webrtc"/"relay" on hosts).
 	Transport string

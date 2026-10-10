@@ -18,6 +18,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -213,5 +214,50 @@ func TestHostNeedsNoToken(t *testing.T) {
 	code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh")
 	if err == nil || code == 2 || strings.Contains(err.Error()+stderr, "host token is required") {
 		t.Fatalf("code %d, err %v, stderr %q", code, err, stderr)
+	}
+}
+
+// conductor host hands its session the deny list of the server on its
+// machine (config.LocalFileDeny): ~/.conductor, and with --server-config that
+// file, its dataDir and its catalogPath, the copies beside the two files
+// included. A config file it cannot read or parse stops it before it dials.
+func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
+	clearConductorEnv(t)
+	home := os.Getenv("HOME")
+	var got []hostagent.Options
+	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
+		got = append(got, opts)
+		return hostagent.Result{}, nil
+	}
+	t.Cleanup(func() { runHostAgent = hostagent.Run })
+
+	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 0 || err != nil {
+		t.Fatalf("exit %d, %v, %s", code, err, stderr)
+	}
+	if want := []string{filepath.Join(home, ".conductor")}; len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
+		t.Fatalf("without --server-config: %+v, want the deny list %q", got, want)
+	}
+
+	dir := t.TempDir()
+	data, catalogFile := filepath.Join(dir, "state"), filepath.Join(dir, "agents.json")
+	cfg := writeServeConfig(t, dir, `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"`+catalogFile+`"}`)
+	got = nil
+	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", cfg, "--", "sh"); code != 0 || err != nil {
+		t.Fatalf("exit %d, %v, %s", code, err, stderr)
+	}
+	want := []string{data, filepath.Join(home, ".conductor"), cfg, filepath.Join(dir, "*conductor.json*"), catalogFile, filepath.Join(dir, "*agents.json*")}
+	if len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
+		t.Fatalf("with --server-config: %+v\nwant the deny list %q", got, want)
+	}
+
+	got = nil
+	for _, bad := range []string{filepath.Join(dir, "missing.json"), writeServeConfig(t, t.TempDir(), `{"dataDirectory":"x"}`)} {
+		code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", bad, "--", "sh")
+		if code != 2 || err == nil || !strings.Contains(err.Error(), "--server-config") {
+			t.Errorf("%s: exit %d, %v", bad, code, err)
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("hosted with a config file it could not read: %+v", got)
 	}
 }

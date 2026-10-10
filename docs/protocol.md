@@ -650,8 +650,12 @@ case-insensitive file system does (`conductor.json.bak`, `conductor.json~`,
 `.conductor.json.swp`, `#conductor.json#`), even inside the working directory.
 The two files themselves are matched as files, so a link to them is refused as
 well; the copies are matched by name alone. Every one of these rules answers
-`denied`. A hosted session applies only the first two: the host serves
-everything else under its working directory. Responses carry a JSON header
+`denied`. A hosted session applies them all for the server on its own machine:
+the data directory `CONDUCTOR_DATA_DIR` names or the server would choose, and
+`~/.conductor` in any case, the catalog file `CONDUCTOR_CATALOG_PATH` names,
+and the config file `conductor host --server-config` names with its `dataDir`
+and `catalogPath`. Saves and the editor's Neovim go through the same rules.
+Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?, sha256?, mtime?}`
 followed by up to 1 MiB of bytes for text files; `sha256` (hex) and `mtime` (RFC 3339)
 come with a file read whole, for a save to tell the file changed since. Files with a NUL byte in the

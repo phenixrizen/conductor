@@ -12,7 +12,8 @@ import (
 // link, every name that contains its name, ignoring case, such as the
 // conductor.json.bak, conductor.json~, .conductor.json.swp or
 // #conductor.json# an editor leaves. Empty paths and repeats are left out.
-// The server builds its own from its configuration (config.Config.FileDeny).
+// The server builds its own from its configuration, conductor host one for
+// the server on its machine (config.Config.FileDeny, config.LocalFileDeny).
 func DenyList(dirs, files []string) []string {
 	var deny []string
 	add := func(p string) {

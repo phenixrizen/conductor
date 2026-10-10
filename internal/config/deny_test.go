@@ -1,8 +1,10 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -32,4 +34,143 @@ func TestFileDeny(t *testing.T) {
 			}
 		})
 	}
+}
+
+// LocalFileDeny finds the files of the conductor serve that would start on
+// this machine as serve does: the config file named, if any, the
+// environment over it, the data directory as ResolveDataDir finds it, and
+// ~/.conductor whichever that is. It writes nothing, and a config file it
+// cannot read or parse is an error.
+func TestLocalFileDeny(t *testing.T) {
+	// setup gives the test a home and a working directory of its own and
+	// no CONDUCTOR_DATA_DIR or CONDUCTOR_CATALOG_PATH; it returns both.
+	setup := func(t *testing.T) (home, cwd string) {
+		t.Helper()
+		home, cwd = t.TempDir(), t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("CONDUCTOR_DATA_DIR", "")
+		t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+		t.Chdir(cwd)
+		return home, cwd
+	}
+	writeFile := func(t *testing.T, path, body string) string {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	deny := func(t *testing.T, path string) []string {
+		t.Helper()
+		got, err := LocalFileDeny(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	t.Run("no config file: ~/.conductor", func(t *testing.T) {
+		home, _ := setup(t)
+		if got, want := deny(t, ""), []string{filepath.Join(home, ".conductor")}; !slices.Equal(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		if _, err := os.Lstat(filepath.Join(home, ".conductor")); err == nil {
+			t.Error("~/.conductor was made")
+		}
+	})
+
+	t.Run("the config file's dataDir and catalogPath, and the copies beside the two files", func(t *testing.T) {
+		home, cwd := setup(t)
+		etc := t.TempDir()
+		data := filepath.Join(t.TempDir(), "data")
+		cfg := writeFile(t, filepath.Join(etc, "conductor.json"), `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"agents.json"}`)
+		// catalogPath is made absolute as serve makes it: against the working directory.
+		want := []string{data, filepath.Join(home, ".conductor"), cfg, filepath.Join(etc, "*conductor.json*"), filepath.Join(cwd, "agents.json"), filepath.Join(cwd, "*agents.json*")}
+		if got := deny(t, cfg); !slices.Equal(got, want) {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+	})
+
+	t.Run("a relative path to the config file and its dataDir", func(t *testing.T) {
+		home, cwd := setup(t)
+		writeFile(t, filepath.Join(cwd, "conf", "conductor.json"), `{"dataDir":"state"}`)
+		want := []string{filepath.Join(cwd, "state"), filepath.Join(home, ".conductor"), filepath.Join(cwd, "conf", "conductor.json"), filepath.Join(cwd, "conf", "*conductor.json*")}
+		if got := deny(t, filepath.Join("conf", "conductor.json")); !slices.Equal(got, want) {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+	})
+
+	t.Run("CONDUCTOR_DATA_DIR and CONDUCTOR_CATALOG_PATH over the file", func(t *testing.T) {
+		home, _ := setup(t)
+		dir := t.TempDir()
+		cfg := writeFile(t, filepath.Join(dir, "conductor.json"), `{"dataDir":"/file/data","catalogPath":"/file/agents.json"}`)
+		envData, envCat := filepath.Join(dir, "env-data"), filepath.Join(dir, "env-agents.json")
+		t.Setenv("CONDUCTOR_DATA_DIR", envData)
+		t.Setenv("CONDUCTOR_CATALOG_PATH", envCat)
+		want := []string{envData, filepath.Join(home, ".conductor"), cfg, filepath.Join(dir, "*conductor.json*"), envCat, filepath.Join(dir, "*env-agents.json*")}
+		if got := deny(t, cfg); !slices.Equal(got, want) {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+		// Without a config file too.
+		if got := deny(t, ""); !slices.Equal(got, []string{envData, filepath.Join(home, ".conductor"), envCat, filepath.Join(dir, "*env-agents.json*")}) {
+			t.Errorf("without a config file: %q", got)
+		}
+	})
+
+	t.Run("a config file that is a link: the copies beside its target too", func(t *testing.T) {
+		home, _ := setup(t)
+		target := writeFile(t, filepath.Join(t.TempDir(), "prod.json"), `{}`)
+		dir := t.TempDir()
+		link := filepath.Join(dir, "conductor.json")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{filepath.Join(home, ".conductor"), link, filepath.Join(dir, "*conductor.json*"), filepath.Join(filepath.Dir(target), "*prod.json*")}
+		if got := deny(t, link); !slices.Equal(got, want) {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+	})
+
+	t.Run("an older ./conductor.d the server would keep, and ~/.conductor", func(t *testing.T) {
+		home, cwd := setup(t)
+		old := filepath.Join(cwd, "conductor.d")
+		if err := os.Mkdir(old, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := deny(t, ""), []string{old, filepath.Join(home, ".conductor")}; !slices.Equal(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no home directory", func(t *testing.T) {
+		setup(t)
+		t.Setenv("HOME", "")
+		if got := deny(t, ""); len(got) != 0 {
+			t.Errorf("got %q, want nothing", got)
+		}
+		data := t.TempDir()
+		t.Setenv("CONDUCTOR_DATA_DIR", data)
+		if got := deny(t, ""); !slices.Equal(got, []string{data}) {
+			t.Errorf("with CONDUCTOR_DATA_DIR: %q", got)
+		}
+	})
+
+	t.Run("a config file that cannot be read or parsed", func(t *testing.T) {
+		setup(t)
+		dir := t.TempDir()
+		for _, c := range []struct{ name, path, want string }{
+			{"missing", filepath.Join(dir, "missing.json"), "read config"},
+			{"a directory", dir, "read config"},
+			{"not JSON", writeFile(t, filepath.Join(dir, "bad.json"), `{oops`), "parse config"},
+			{"an unknown key", writeFile(t, filepath.Join(dir, "unknown.json"), `{"dataDirectory":"/x"}`), "parse config"},
+			{"trailing data", writeFile(t, filepath.Join(dir, "trailing.json"), `{} {}`), "parse config"},
+		} {
+			if got, err := LocalFileDeny(c.path); err == nil || !strings.Contains(err.Error(), c.want) || got != nil {
+				t.Errorf("%s: %q, %v; want an error about %q", c.name, got, err, c.want)
+			}
+		}
+	})
 }
