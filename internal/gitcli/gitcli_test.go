@@ -293,6 +293,33 @@ func TestAddWorktreeChecksOutInTheNewWorktree(t *testing.T) {
 	}
 }
 
+// A repository whose shared configuration sets core.worktree (with
+// extensions.worktreeConfig, which makes linked worktrees honour it) does
+// not send the new worktree's checkout to that directory: the original
+// checkout's uncommitted work stays, and the new worktree holds the commit.
+func TestAddWorktreeChecksOutWhereItWasMadeWhateverCoreWorktreeSays(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	gitclitest.Git(t, r.Dir, "config", "core.repositoryformatversion", "1")
+	gitclitest.Git(t, r.Dir, "config", "extensions.worktreeConfig", "true")
+	gitclitest.Git(t, r.Dir, "config", "core.worktree", r.Dir)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := AddWorktree(ctx, r.Dir, wt, "side", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range gitclitest.Dirty {
+		if b, err := os.ReadFile(filepath.Join(r.Dir, path)); err != nil || string(b) != body {
+			t.Fatalf("%s in the original checkout: %q %v", path, b, err)
+		}
+	}
+	for path, body := range gitclitest.Committed {
+		if b, err := os.ReadFile(filepath.Join(wt, path)); err != nil || string(b) != body {
+			t.Fatalf("%s in the new worktree: %q %v", path, b, err)
+		}
+	}
+	r.NoneFired(t, "worktree add")
+}
+
 // filterNames reads the names a configuration gives a filter program,
 // wherever it is defined, whatever their case or dots, the empty name too,
 // each once; a configuration's conditional includes count as they apply in
@@ -305,7 +332,7 @@ func TestFilterNames(t *testing.T) {
 	}
 	names := func(dir string) []string {
 		t.Helper()
-		n, err := filterNames(context.Background(), dir)
+		n, err := filterNames(context.Background(), []string{"-C", dir})
 		if err != nil {
 			t.Fatal(err)
 		}

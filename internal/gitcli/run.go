@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -120,18 +121,26 @@ const maxFilters = 200
 // Conductor runs git. A failure carries the line that says why;
 // ErrNotRepo outside a repository.
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	return run(ctx, []string{"-C", dir}, args)
+}
+
+// run runs git with args where loc points it (-C dir, or a git directory
+// and a working tree named outright), for the filter look-up and the
+// command alike.
+func run(ctx context.Context, loc, args []string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("git: no command")
 	}
 	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" && !slices.Contains(args, "--no-checkout") {
 		return "", errors.New("git worktree add: a worktree is checked out by AddWorktree")
 	}
-	filters, err := filterArgs(ctx, dir, args)
+	filters, err := filterArgs(ctx, loc, args)
 	if err != nil {
 		return "", err
 	}
 	argv := append(baseArgs(), filters...)
-	argv = append(argv, "-C", dir, args[0])
+	argv = append(argv, loc...)
+	argv = append(argv, args[0])
 	argv = append(argv, commandOptions(args[0])...)
 	argv = append(argv, args[1:]...)
 	out, stderr, err := execGit(ctx, argv)
@@ -143,20 +152,34 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 
 // AddWorktree adds a worktree of the repository repo is in at path, on a
 // new branch made from rev, and checks it out: git worktree add
-// --no-checkout -b branch path rev, then git reset --hard in the new
-// worktree, whose filter look-up (filterArgs) then sees the configuration
-// its checkout reads, the includes that apply on its branch and in its git
-// directory among it. No hook runs (no post-checkout, no
-// reference-transaction) and no filter; git makes the parent directories
-// of path.
+// --no-checkout -b branch path rev, then git reset --hard with the new
+// worktree's git directory and path named outright (--git-dir,
+// --work-tree), as git's own worktree add does, so that no core.worktree
+// of the repository's sends the checkout elsewhere, and the filter look-up
+// (filterArgs) sees the configuration the checkout reads, the includes
+// that apply on its branch and in its git directory among it. No hook runs
+// (no post-checkout, no reference-transaction) and no filter; git makes
+// the parent directories of path.
 func AddWorktree(ctx context.Context, repo, path, branch, rev string) error {
 	if strings.HasPrefix(branch, "-") || strings.HasPrefix(path, "-") || strings.HasPrefix(rev, "-") {
 		return fmt.Errorf("git worktree add: invalid branch, path or revision")
 	}
-	if _, err := Run(ctx, repo, "worktree", "add", "--no-checkout", "-b", branch, path, rev); err != nil {
+	abs, err := filepath.Abs(path)
+	if err != nil {
 		return err
 	}
-	_, err := Run(ctx, path, "reset", "--hard", "-q", "--no-recurse-submodules", "HEAD")
+	if _, err := Run(ctx, repo, "worktree", "add", "--no-checkout", "-b", branch, abs, rev); err != nil {
+		return err
+	}
+	out, err := Run(ctx, abs, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	gitDir := strings.TrimSpace(out)
+	if !filepath.IsAbs(gitDir) {
+		return fmt.Errorf("git worktree add: the new worktree's git directory is %q", gitDir)
+	}
+	_, err = run(ctx, []string{"-C", abs, "--git-dir=" + gitDir, "--work-tree=" + abs}, []string{"reset", "--hard", "-q", "--no-recurse-submodules", "HEAD"})
 	return err
 }
 
@@ -196,13 +219,13 @@ func gitError(ctx context.Context, sub, stderr string, err error) error {
 }
 
 // filterArgs are the -c options that turn off every clean, smudge and
-// process filter the configuration for dir names (and that none is
-// required), read in dir just before the command.
-func filterArgs(ctx context.Context, dir string, args []string) ([]string, error) {
+// process filter the configuration where loc points names (and that none
+// is required), read there just before the command.
+func filterArgs(ctx context.Context, loc, args []string) ([]string, error) {
 	if noFilters[args[0]] {
 		return nil, nil
 	}
-	names, err := filterNames(ctx, dir)
+	names, err := filterNames(ctx, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -226,11 +249,12 @@ func filterArgs(ctx context.Context, dir string, args []string) ([]string, error
 // filterKeys matches the keys that give a filter a program.
 const filterKeys = `^filter\..*\.(clean|smudge|process)$`
 
-// filterNames lists the names of the filters the configuration for dir
-// gives a program, each once, the empty name too ([filter ""], which the
-// attribute filter= selects).
-func filterNames(ctx context.Context, dir string) ([]string, error) {
-	argv := append(baseArgs(), "-C", dir, "config", "-z", "--name-only", "--get-regexp", filterKeys)
+// filterNames lists the names of the filters the configuration where loc
+// points gives a program, each once, the empty name too ([filter ""],
+// which the attribute filter= selects).
+func filterNames(ctx context.Context, loc []string) ([]string, error) {
+	argv := append(baseArgs(), loc...)
+	argv = append(argv, "config", "-z", "--name-only", "--get-regexp", filterKeys)
 	out, stderr, err := execGit(ctx, argv)
 	var exit *exec.ExitError
 	switch {
