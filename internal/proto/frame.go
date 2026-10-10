@@ -163,7 +163,7 @@ func DecodeRelay(payload []byte) (string, Frame, error) {
 		return "", Frame{}, err
 	}
 	switch inner.Type {
-	case TypeOutput, TypeInput, TypeControl, TypeScrollback, TypeFile:
+	case TypeOutput, TypeInput, TypeControl, TypeScrollback, TypeFile, TypeFileWrite:
 	default:
 		return "", Frame{}, fmt.Errorf("%w: inner type 0x%02x not relayable", ErrBadEnvelope, inner.Type)
 	}

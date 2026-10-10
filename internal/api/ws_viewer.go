@@ -371,7 +371,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 			if !s.handleViewerSignal(sink, pumped, hs, v, f.Payload) {
 				return
 			}
-		case proto.TypeInput, proto.TypeControl:
+		case proto.TypeInput, proto.TypeControl, proto.TypeFileWrite:
 			if !v.Relay() {
 				_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, "terminal frames require relay mode on this connection"))
 				continue

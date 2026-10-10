@@ -19,7 +19,7 @@ relay envelope, so a client handles them identically regardless of transport.
 | `0x06` | FILE | owner → client | `[8-byte reqId][uint32 headerLen][JSON header][bytes]` | 1 MiB body |
 | `0x07` | CHUNK | data channel only | `[uint16 msgId][uint32 total][uint32 offset][data]` | 32 KiB |
 | `0x08` | FILE_WRITE | client → owner | `[8-byte reqId][uint32 headerLen][JSON header][part]`: one part of a save (see File saves) | 32 KiB part, 4 KiB header |
-| `0x10` | RELAY | host ↔ server | `[16-byte viewerId][inner frame 0x01–0x04, 0x06]` | |
+| `0x10` | RELAY | host ↔ server | `[16-byte viewerId][inner frame 0x01–0x04, 0x06, 0x08]` | |
 
 "Owner" is whichever process holds the PTY: the server for `server` sessions,
 `conductor host` for `hosted` sessions.
@@ -172,7 +172,7 @@ that many KiB a second (a burst of twice it): the host is slowed by its own
 connection, and every frame still arrives whole and in order. After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
-View-role INPUT, `resize`, `submit` and `chat_send` are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent.
+View-role INPUT, FILE_WRITE, `resize`, `submit`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).
 
 The host types a viewer's `submit`, `chat` to the agent and `chat_send`
 (over the data channel or the relay alike) one at a time, in the order the

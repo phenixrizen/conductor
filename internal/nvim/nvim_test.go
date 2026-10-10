@@ -489,6 +489,8 @@ func TestChildEnvDropsSecretsKeepsConfig(t *testing.T) {
 		"CONDUCTOR_SESSION_ID=s1",
 		"LD_PRELOAD=/tmp/evil.so",
 		"LD_LIBRARY_PATH=/tmp",
+		"LD_AUDIT=/tmp/evil.so",
+		"LD_PROFILE=x",
 		"DYLD_INSERT_LIBRARIES=/tmp/evil.dylib",
 		"DYLD_LIBRARY_PATH=/tmp",
 		"malformed",
@@ -502,7 +504,7 @@ func TestChildEnvDropsSecretsKeepsConfig(t *testing.T) {
 			t.Errorf("dropped a kept variable: %q", kv)
 		}
 	}
-	for _, kv := range []string{"CONDUCTOR_NOTIFY_TOKEN=secret", "CONDUCTOR_SESSION_ID=s1", "LD_PRELOAD=/tmp/evil.so", "LD_LIBRARY_PATH=/tmp", "DYLD_INSERT_LIBRARIES=/tmp/evil.dylib", "DYLD_LIBRARY_PATH=/tmp", "malformed"} {
+	for _, kv := range []string{"CONDUCTOR_NOTIFY_TOKEN=secret", "CONDUCTOR_SESSION_ID=s1", "LD_PRELOAD=/tmp/evil.so", "LD_LIBRARY_PATH=/tmp", "LD_AUDIT=/tmp/evil.so", "LD_PROFILE=x", "DYLD_INSERT_LIBRARIES=/tmp/evil.dylib", "DYLD_LIBRARY_PATH=/tmp", "malformed"} {
 		if got[kv] {
 			t.Errorf("kept a dropped variable: %q", kv)
 		}
