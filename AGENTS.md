@@ -134,6 +134,11 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
 - The pull request's body lists the findings and what became of each. One
   outside the change's scope goes to `docs/tasks-todo.md`, never dropped
   silently.
+- A security finding (a way to gain access, read what one should not, or
+  deny service) never goes into this public repository, a pull request, a
+  commit message or the todo until its fix has shipped: it goes to the
+  owner's private security-findings document. The fix's pull request
+  describes the change, not the attack.
 - When the review cannot run (no login, no network), the pull request says
   so: a limitation, not a pass.
 

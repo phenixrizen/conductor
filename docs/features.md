@@ -700,6 +700,8 @@ request each from main.
   `GIT_DIR` (a git hook's) pointed every lookup at one repository: flags
   are now an allowlist (`--base`, `--scope`), git's repository-local
   variables are dropped, and the `GIT_DIR` test fails without the fix.
+  Security findings, from a review or otherwise, stay out of this public
+  repository until fixed (the owner's call): AGENTS.md says where they go.
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
