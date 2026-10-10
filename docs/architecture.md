@@ -257,7 +257,9 @@ registers the `conductor:` scheme: an invite opens its own join page with
   the desktop app's directories).
 - Frame sizes, viewer counts, session counts, scrollback and in-flight file
   requests are all bounded. Query strings (which may carry tokens) are never
-  logged.
+  logged; a request is logged by the route pattern it matched (`/api/join/{token}`),
+  or, on a catch-all route, by its path with a link's token replaced
+  (`/join/{token}`).
 
 ## Persistence
 

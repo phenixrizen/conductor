@@ -503,16 +503,70 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		rw := &statusWriter{ResponseWriter: w, status: 200}
 		defer func() {
 			if rec := recover(); rec != nil {
-				s.log.Error("panic in handler", "path", r.URL.Path, "panic", rec)
+				s.log.Error("panic in handler", "path", logPath(r), "panic", rec)
 				if !rw.wrote {
-					writeError(w, http.StatusInternalServerError, "internal", "internal error")
+					// Through rw, so the request line below records the 500.
+					writeError(rw, http.StatusInternalServerError, "internal", "internal error")
 				}
 			}
-			// Log the path only: query strings may carry share tokens.
-			s.log.Debug("request", "method", r.Method, "path", r.URL.Path, "status", rw.status, "ms", time.Since(start).Milliseconds())
+			s.log.Debug("request", "method", r.Method, "path", logPath(r), "status", rw.status, "ms", time.Since(start).Milliseconds())
 		}()
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// logPath is how the request and panic log lines name a request: by the
+// route pattern the mux matched (it sets r.Pattern before the handler runs),
+// without its method, so a token in a path wildcard such as the join route's
+// {token} stays out. A catch-all route (one ending in /) or none names it by
+// its path, with everything from a link's token on replaced: /join/<token>
+// (the join page) and /api/join/<token> (the join route reached with
+// another method), in any case, as the app's router matches it. The query
+// string, where the other tokens travel, is never logged.
+func logPath(r *http.Request) string {
+	p := r.Pattern
+	if i := strings.IndexAny(p, " \t"); i >= 0 {
+		p = strings.TrimLeft(p[i:], " \t")
+	}
+	if p != "" && !strings.HasSuffix(p, "/") {
+		return p
+	}
+	return withoutLinkToken(r.URL.Path)
+}
+
+// joinSegment is the path segment a share link's token follows.
+const joinSegment = "/join/"
+
+// withoutLinkToken is path with what follows its first /join/ (in any
+// case) replaced by {token}.
+func withoutLinkToken(path string) string {
+	for i := 0; i+len(joinSegment) <= len(path); i++ {
+		if asciiEqualFold(path[i:i+len(joinSegment)], joinSegment) {
+			return path[:i+len(joinSegment)] + "{token}"
+		}
+	}
+	return path
+}
+
+// asciiEqualFold reports whether a and b are equal with ASCII letters
+// compared without case.
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // launching wraps an admin route that launches or edits what is launched
