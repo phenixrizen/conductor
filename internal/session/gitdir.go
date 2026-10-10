@@ -1,14 +1,12 @@
 package session
 
 import (
-	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/phenixrizen/conductor/internal/gitcli"
+	"syscall"
 )
 
 // A repository's .git is read only through the Files tab: its directory,
@@ -24,8 +22,8 @@ import (
 // errGitDir refuses a save or an editor on a file in a repository's .git.
 var errGitDir = errors.New("session: a repository's .git is read only here")
 
-// gitDirTimeout bounds the git that inGitDir asks.
-const gitDirTimeout = 5 * time.Second
+// maxGitFile bounds what is read of a .git file, a commondir or a HEAD.
+const maxGitFile = 4096
 
 // gitMetadata reports whether a file request for raw, which ResolvePath
 // resolved to real, is for a repository's .git: an element of raw as asked
@@ -43,14 +41,15 @@ func gitMetadata(raw, real string) bool {
 // inGitDir reports whether real, an absolute path with its symbolic links
 // resolved (ResolvePath's), is in a repository's .git. Any one of three
 // says so: an element of the path is .git however a file system may spell
-// it (isDotGit); the path is, or is inside, what a .git beside it or
-// beside one of its parents stands for (a .git directory, a .git file
+// it (isDotGit); the path or one of its parents is what a .git beside it
+// or beside one of its parents stands for (a .git directory, a .git file
 // itself, the git directory it names), compared as files (os.SameFile) so
-// that neither a link nor another spelling gets around it (gitDirsIn); git
-// itself, asked in the nearest directory that exists, says that directory
-// is inside a git directory, which also finds a git directory a .git
-// elsewhere points to and a bare repository (without git, the first two
-// still hold).
+// that neither a link nor another spelling gets around it (gitDirsIn); or
+// the path or one of its parents is a git directory by its own files
+// (isGitDirectory), which finds a bare repository and a git directory a
+// .git elsewhere points to, whatever git's own settings would discover.
+// Nothing here runs git, and every file it reads is read bounded and
+// without blocking (readSmall).
 func inGitDir(real string) bool {
 	for _, el := range strings.Split(real, string(filepath.Separator)) {
 		if isDotGit(el) {
@@ -64,7 +63,7 @@ func inGitDir(real string) bool {
 			break
 		}
 	}
-	for p := real; len(dirs) > 0; p = filepath.Dir(p) {
+	for p := real; ; p = filepath.Dir(p) {
 		if fi, err := os.Stat(p); err == nil {
 			for _, d := range dirs {
 				if os.SameFile(fi, d) {
@@ -72,11 +71,13 @@ func inGitDir(real string) bool {
 				}
 			}
 		}
+		if isGitDirectory(p) {
+			return true
+		}
 		if filepath.Dir(p) == p {
-			break
+			return false
 		}
 	}
-	return gitSaysGitDir(real)
 }
 
 // gitDirsIn is what dir's .git stands for: itself when it is a directory
@@ -104,7 +105,7 @@ func gitDirsIn(dir string) []os.FileInfo {
 		return out
 	}
 	out = append(out, gfi)
-	if b, err := os.ReadFile(filepath.Join(gd, "commondir")); err == nil && len(b) <= 4096 {
+	if b, ok := readSmall(filepath.Join(gd, "commondir")); ok {
 		common := strings.TrimSpace(string(b))
 		if !filepath.IsAbs(common) {
 			common = filepath.Join(gd, common)
@@ -116,25 +117,62 @@ func gitDirsIn(dir string) []os.FileInfo {
 	return out
 }
 
-// gitSaysGitDir asks git (gitcli.Run, which starts nothing the repository
-// configures) whether the nearest directory of real that exists is inside
-// a git directory. No git, or any failure, is no.
-func gitSaysGitDir(real string) bool {
-	dir := real
-	for {
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+// isGitDirectory reports whether dir is a git directory by its files, as
+// git tells one: a HEAD naming a ref or a commit, and either the refs and
+// objects directories or (a linked worktree's) a commondir file.
+func isGitDirectory(dir string) bool {
+	head, ok := readSmall(filepath.Join(dir, "HEAD"))
+	if !ok {
+		return false
+	}
+	if h := strings.TrimSpace(string(head)); !strings.HasPrefix(h, "ref:") && !isObjectID(h) {
+		return false
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "commondir")); err == nil && fi.Mode().IsRegular() {
+		return true
+	}
+	for _, sub := range []string{"objects", "refs"} {
+		if fi, err := os.Stat(filepath.Join(dir, sub)); err != nil || !fi.IsDir() {
 			return false
 		}
-		dir = parent
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitDirTimeout)
-	defer cancel()
-	out, err := gitcli.Run(ctx, dir, "rev-parse", "--is-inside-git-dir")
-	return err == nil && strings.TrimSpace(out) == "true"
+	return true
+}
+
+// isObjectID reports whether s is a SHA-1 or SHA-256 object id in hex.
+func isObjectID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// readSmall reads path when it is a regular file of at most maxGitFile
+// bytes, and nothing else: a link to a device or a FIFO is neither opened
+// for long nor read, since what is in a working directory is not trusted.
+// The open does not block, and the file is checked again once open.
+func readSmall(path string) ([]byte, bool) {
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxGitFile+1))
+	if err != nil || len(b) > maxGitFile {
+		return nil, false
+	}
+	return b, true
 }
 
 // isDotGit reports whether a file system may take name for .git: in any

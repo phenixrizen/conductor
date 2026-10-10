@@ -343,7 +343,12 @@ by side or inline, the base's version beside the working directory's, with
 the file itself one click away; a working directory with no repository says
 so. The status and the base's version come over the terminal's connection
 like a read, from the machine the session runs on, under the same file
-policy and deny list.
+policy and deny list. Conductor's git starts no program the repository's
+configuration names, no clean filter either: a file a filter transforms
+(Git LFS, git-crypt) that git has to read again is compared as it is on
+disk, so it can show as changed, with its raw lines, when your own `git
+status` would not. A change inside a submodule shows once the submodule's
+commit moves.
 
 The box at the top of the Explorer filters the tree as you type, and
 reaches folders you have not opened: a search on the session's machine
