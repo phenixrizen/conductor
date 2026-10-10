@@ -158,8 +158,9 @@ export function writeKeymap(storage: Pick<Storage, 'setItem'> | null, keymap: Ke
 }
 
 /** What the keymap switch says when Neovim cannot be offered: why, in a few words, or '' when it can. */
-export function nvimUnavailableWords(opts: { welcome: boolean; nvim: boolean; fileEdit: boolean; machine?: string }): string {
+export function nvimUnavailableWords(opts: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string }): string {
   if (!opts.welcome) return 'Not connected'
+  if (opts.ownerOnly) return "Neovim is kept for the session's own window; edit here with these keys"
   if (!opts.nvim) return `Neovim is not installed on ${opts.machine || 'the machine that runs this session'}`
   if (!opts.fileEdit) return 'View only here: Neovim needs control, on a session that allows editing'
   return ''

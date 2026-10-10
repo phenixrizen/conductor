@@ -61,7 +61,7 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644)
 	s, _ := newLocal(t, dir)
 	sink := newChanSink(false)
-	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestNvimCloseKeepsOrDiscardsTheSwapFile(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
 	s, _ := newLocal(t, dir)
 	sink := newChanSink(false)
-	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestNvimCloseKeepsOrDiscardsTheSwapFile(t *testing.T) {
 	}
 	// Another session's editors leave this one's bound alone.
 	other, _ := newLocal(t, dir)
-	osub, err := other.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	osub, err := other.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Owner: true}, newChanSink(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +285,101 @@ func TestNvimRefusedWhenEditingIsOff(t *testing.T) {
 	}
 	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, FileEdit: "off"})
 	os.WriteFile(filepath.Join(s.info.Cwd, "a.txt"), []byte("one\n"), 0o644)
-	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, newChanSink(false))
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, newChanSink(false))
 	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"}); err != ErrNvimUnavailable {
 		t.Fatalf("editing off: %v", err)
+	}
+}
+
+// Neovim is kept for the owner's own connections. A controller through a
+// link, or a guest with no link (a paste invite), may still edit (the
+// welcome's fileEdit, saves through FileWrite) but is offered no Neovim:
+// its welcome says nvimOwnerOnly, opening one is refused, and no key it
+// sends reaches a Neovim, not even the owner's open one by its id. None of
+// the command lines below, sent by such a connection, changes a file.
+func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
+	marker := filepath.Join(t.TempDir(), "marker")
+	s, _ := newLocal(t, dir)
+
+	ownerSink := newChanSink(false)
+	owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, ownerSink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Detach(owner)
+	if w := firstControl(t, ownerSink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != true || w["nvimOwnerOnly"] != nil {
+		t.Fatalf("the owner's welcome: %v", w)
+	}
+	from := 0
+	if err := s.NvimOpen(context.Background(), owner, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "o1", Path: "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	opened := nvimEvents(t, ownerSink, &from, proto.NvimOpened, 10*time.Second)
+	ownerEditor := opened[len(opened)-1].ID
+
+	guests := []AttachOptions{
+		{Role: RoleControl, Name: "link", LinkID: "l1", LinkLabel: "laptop"},
+		// A caller that says owner for a link is overruled by the link.
+		{Role: RoleControl, Name: "link2", LinkID: "l2", Owner: true},
+		{Role: RoleControl, Name: "pasted", LinkLabel: "paste"},
+	}
+	keys := []string{
+		":!touch " + marker + "<CR>",
+		":call system('touch " + marker + "')<CR>",
+		":lua os.execute('touch " + marker + "')<CR>",
+		":lua vim.fn.system('touch " + marker + "')<CR>",
+		":terminal touch " + marker + "<CR>",
+		":r !touch " + marker + "<CR>",
+		":w !touch " + marker + "<CR>",
+		":set makeprg=touch\\ " + marker + "<CR>:make<CR>",
+		":set grepprg=touch\\ " + marker + "<CR>:grep x<CR>",
+		":e /etc/hostname<CR>",
+		":w " + marker + "<CR>",
+	}
+	for _, o := range guests {
+		sink := newChanSink(false)
+		sub, err := s.AttachWith(o, sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w := firstControl(t, sink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != nil || w["nvimOwnerOnly"] != true {
+			t.Fatalf("%s: the welcome: %v", o.Name, w)
+		}
+		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "g1", Path: "a.txt"}); err != ErrNvimUnavailable {
+			t.Fatalf("%s: open: %v", o.Name, err)
+		}
+		for _, id := range []string{ownerEditor, "nope"} {
+			for _, k := range keys {
+				if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: k}); err != ErrNvimUnavailable {
+					t.Fatalf("%s: keys %q: %v", o.Name, k, err)
+				}
+			}
+			if err := s.NvimSwap(sub, proto.NvimSwap{T: proto.CtlNvimSwap, ID: id, Choice: proto.NvimSwapEdit}); err != ErrNvimUnavailable {
+				t.Fatalf("%s: swap answer: %v", o.Name, err)
+			}
+		}
+		s.Detach(sub)
+	}
+	// The owner's editor took none of those keys: still open, its file as it was.
+	if err := s.NvimInput(owner, proto.NvimInput{T: proto.CtlNvimInput, ID: ownerEditor, Keys: "j"}); err != nil {
+		t.Fatalf("the owner's editor: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the marker exists: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(b) != "one\n" {
+		t.Fatalf("the file: %q", b)
+	}
+	if n := s.nvimCount.Load(); n != 1 {
+		t.Fatalf("editors on the session: %d", n)
 	}
 }

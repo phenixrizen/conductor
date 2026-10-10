@@ -727,6 +727,11 @@ type AttachOptions struct {
 	// closes the client with ErrExpired then. Authorize must not call the
 	// session.
 	Authorize func() (Grant, error)
+	// Owner marks one of the owner's own connections: the workbench's on a
+	// server, a host's viewer the switchyard sent with no link. Only such a
+	// connection is offered the editor's Neovim (see nvimAllowed); a link's
+	// never is, nor a paste invite's, whatever the caller says.
+	Owner bool
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -806,6 +811,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub.Name = CleanName(o.Name)
 	sub.LinkLabel = o.LinkLabel
 	sub.quiet = o.ChatOnly
+	sub.owner = o.Owner && o.LinkID == ""
 	if sized {
 		sub.want = [2]uint16{cols, rows}
 	}
@@ -825,7 +831,8 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		Transport:       transport,
 		FileView:        s.fileAllowed(role),
 		FileEdit:        s.editAllowed(role),
-		Nvim:            nvimAvailable(),
+		Nvim:            nvimAvailable() && !s.nvimOwnerOnly(sub),
+		NvimOwnerOnly:   s.nvimOwnerOnly(sub),
 		Chat:            true,
 		RunChat:         room != nil,
 	}))

@@ -92,7 +92,7 @@ func TestPeerDataChannelLoopback(t *testing.T) {
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 	a, out := activityTestAgent(t, 0)
 	a.flushed = make(chan struct{}) // no watchStatus here to report the status message
 	close(a.flushed)
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	a.peers[p.id] = p
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestAPeersHelloOfZeroFollowsTheSize(t *testing.T) {
 		{session.RoleControl, 0, 24, [2]uint16{0, 0}},
 		{session.RoleControl, 100, 30, [2]uint16{100, 30}},
 	} {
-		p := newPeer(a, fmt.Sprintf("%016x", i), tc.role, "", "")
+		p := newPeer(a, fmt.Sprintf("%016x", i), tc.role, "", "", true)
 		p.startRelay()
 		p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: tc.cols, Rows: tc.rows})})
 		if c, r := proc.Size(); [2]uint16{c, r} != tc.want {
@@ -326,7 +326,7 @@ func TestPeerCarriesChatOverTheDataChannel(t *testing.T) {
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestPeerTakesTheSizeOnlyByAsking(t *testing.T) {
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "link1", "laptop")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "link1", "laptop", false)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}

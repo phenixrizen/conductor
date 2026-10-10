@@ -405,17 +405,22 @@ writes through Neovim, **Don't save** drops them), and the keymap button
 waits until nothing is left unsaved. The choice is kept per
 browser and is off until chosen, so nobody who never asked for Vim keys
 meets one. It needs `nvim` on that machine (the button says when it is
-missing), control of the session, and the server's or host's `fileEdit`
-setting left at `control` (`CONDUCTOR_FILE_EDIT`, `conductor host
---file-edit`; `off` turns editing off for everyone). A view-only guest keeps
-the read-only editor. A file another Vim has open, or left a swap file for
+missing), one of your own windows (not a share link or an invite), and the
+server's or host's `fileEdit` setting left at `control`
+(`CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`; `off` turns editing
+off for everyone). A control-link guest still edits and saves, with the
+editor's own keys. A view-only guest keeps the read-only editor. A file another Vim has open, or left a swap file for
 when it died, opens read-only with a banner naming that Vim and what
 applies: **Edit anyway**, and once that Vim is gone **Recover** (its
 unsaved text, written with `:w`) and **Delete the swap file**. Neovim's own
 questions, such as `:confirm q` over unsaved changes, show their choices as
 buttons. Text that comes with no key press reaches Neovim too: an input
 method's committed word (not the composition on the way), a dead key's
-character, dictation. In insert mode a plain character shows at once,
+character, dictation. The real Neovim runs with your own config and
+plugins, so it is kept for your own windows: a guest through a share link or
+an invite edits with the editor's own keys and **Save**, and its keymap
+button says Neovim is kept for the session's own window. The Neovim child
+never carries Conductor's own variables. In insert mode a plain character shows at once,
 before the machine answers, then settles as Neovim has it; one Neovim has
 not handled after a tenth of a second is underlined. When Neovim's text is
 not the guess (an autopair, an abbreviation, a mapping) its text wins once

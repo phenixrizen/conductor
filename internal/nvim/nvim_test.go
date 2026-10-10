@@ -474,3 +474,68 @@ func TestModifiedIsReportedAndDiscardDropsTheSwapFile(t *testing.T) {
 	}
 	e.Discard() // a second end is harmless
 }
+
+// childEnv drops Conductor's own variables and the dynamic linker's
+// injection variables, and keeps the rest the person's config and plugins
+// need (HOME, the XDG directories, PATH).
+func TestChildEnvDropsSecretsKeepsConfig(t *testing.T) {
+	in := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/nate",
+		"XDG_CONFIG_HOME=/home/nate/.config",
+		"XDG_STATE_HOME=/home/nate/.local/state",
+		"TERM=xterm",
+		"CONDUCTOR_NOTIFY_TOKEN=secret",
+		"CONDUCTOR_SESSION_ID=s1",
+		"LD_PRELOAD=/tmp/evil.so",
+		"LD_LIBRARY_PATH=/tmp",
+		"DYLD_INSERT_LIBRARIES=/tmp/evil.dylib",
+		"DYLD_LIBRARY_PATH=/tmp",
+		"malformed",
+	}
+	got := map[string]bool{}
+	for _, kv := range childEnv(in) {
+		got[kv] = true
+	}
+	for _, kv := range []string{"PATH=/usr/bin", "HOME=/home/nate", "XDG_CONFIG_HOME=/home/nate/.config", "XDG_STATE_HOME=/home/nate/.local/state", "TERM=xterm"} {
+		if !got[kv] {
+			t.Errorf("dropped a kept variable: %q", kv)
+		}
+	}
+	for _, kv := range []string{"CONDUCTOR_NOTIFY_TOKEN=secret", "CONDUCTOR_SESSION_ID=s1", "LD_PRELOAD=/tmp/evil.so", "LD_LIBRARY_PATH=/tmp", "DYLD_INSERT_LIBRARIES=/tmp/evil.dylib", "DYLD_LIBRARY_PATH=/tmp", "malformed"} {
+		if got[kv] {
+			t.Errorf("kept a dropped variable: %q", kv)
+		}
+	}
+}
+
+// The Neovim child does not inherit Conductor's secrets: a CONDUCTOR_
+// variable set for the server is not in the editor's environment.
+func TestNeovimChildHasNoConductorSecret(t *testing.T) {
+	if !Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "super-secret")
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("one\n"), 0o644)
+	r := &recorder{done: make(chan struct{})}
+	e, err := Open(context.Background(), dir, "sample.txt", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	var tok string
+	if err := e.v.Eval("$CONDUCTOR_NOTIFY_TOKEN", &tok); err != nil {
+		t.Fatal(err)
+	}
+	if tok != "" {
+		t.Fatalf("the editor sees the token: %q", tok)
+	}
+	var path string
+	if err := e.v.Eval("$PATH", &path); err != nil || path == "" {
+		t.Fatalf("the editor lost PATH: %q %v", path, err)
+	}
+}

@@ -22,6 +22,10 @@ type peer struct {
 	role      session.Role
 	linkID    string
 	linkLabel string
+	// owner is a viewer the switchyard sent with no link: one of the
+	// owner's own windows, offered the editor's Neovim. A paste invite's
+	// viewer has no link either and is not.
+	owner bool
 
 	mu        sync.Mutex
 	pc        *webrtc.PeerConnection
@@ -40,8 +44,8 @@ type peer struct {
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
 
-func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string) *peer {
-	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel}
+func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string, owner bool) *peer {
+	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == ""}
 }
 
 // startWebRTC prepares a peer connection that answers the viewer's offer.
@@ -420,6 +424,7 @@ func (p *peer) attach(hello proto.Hello) {
 	}
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
+		Owner: p.owner,
 	}, sink)
 	if err != nil {
 		p.a.sendViewerError(p.id, "attach_failed", err.Error())

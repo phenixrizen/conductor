@@ -14,13 +14,21 @@ import (
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
-// The editor's Neovim bridge (design round 12, F8): a controller on a
-// session whose FileEdit allows it opens the real `nvim` on this machine
-// for a file; keys go in, the buffer's changes and the editor's state come
-// back as nvim_event control frames on the same connection.
+// The editor's Neovim bridge (design round 12, F8): one of the owner's own
+// connections, on a session whose FileEdit allows editing, opens the real
+// `nvim` on this machine for a file; keys go in, the buffer's changes and
+// the editor's state come back as nvim_event control frames on the same
+// connection.
+//
+// Neovim runs as the person who runs the session, with their config, and
+// takes any command it is typed; nothing inside it can be relied on to keep
+// what is typed to the session's folder (Neovim has no restricted mode). So
+// it is the owner's alone: a controller through a link or a paste invite
+// edits with the page's own keys and saves through FileWrite, which resolves
+// every path as a read does.
 
 // ErrNvimUnavailable says `nvim` is missing here, or the session offers no
-// editing to this connection.
+// Neovim to this connection.
 var ErrNvimUnavailable = errors.New("session: neovim is not available")
 
 // nvimEditor is one open editor of one subscription.
@@ -76,6 +84,18 @@ func (s *Local) editAllowed(role Role) bool {
 	return role == RoleControl && s.opts.FileEdit != "off" && s.fileAllowed(role)
 }
 
+// nvimAllowed reports whether sub may use the editor's Neovim: it may edit
+// and it is one of the owner's own connections.
+func (s *Local) nvimAllowed(sub *Subscription) bool {
+	return sub.owner && s.editAllowed(sub.Role)
+}
+
+// nvimOwnerOnly reports whether sub may edit but not through Neovim, which
+// is kept for the owner's own connections (the welcome's nvimOwnerOnly).
+func (s *Local) nvimOwnerOnly(sub *Subscription) bool {
+	return !sub.owner && s.editAllowed(sub.Role)
+}
+
 // NvimOpen starts an editor for sub on req.Path and answers with an
 // nvim_event of kind opened (then the whole buffer as lines), or returns
 // why not: ErrNvimUnavailable, ErrFileDenied (the path or the policy),
@@ -84,7 +104,7 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	if req.ReqID == "" || len(req.ReqID) > 64 || len(req.Path) > 4096 {
 		return errors.New("session: invalid nvim request")
 	}
-	if !s.editAllowed(sub.Role) || !nvimAvailable() {
+	if !s.nvimAllowed(sub) || !nvimAvailable() {
 		return ErrNvimUnavailable
 	}
 	target, err := ResolvePath(s.info.Cwd, req.Path, s.fileDeny())
@@ -137,6 +157,9 @@ func (s *Local) NvimSwap(sub *Subscription, req proto.NvimSwap) error {
 	default:
 		return errors.New("session: invalid swap choice")
 	}
+	if !s.nvimAllowed(sub) {
+		return ErrNvimUnavailable
+	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
 	sub.nvimMu.Unlock()
@@ -154,6 +177,9 @@ func (s *Local) NvimSwap(sub *Subscription, req proto.NvimSwap) error {
 func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if len(req.Keys) == 0 || len(req.Keys) > proto.MaxNvimKeys {
 		return errors.New("session: invalid nvim input")
+	}
+	if !s.nvimAllowed(sub) {
+		return ErrNvimUnavailable
 	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]

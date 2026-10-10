@@ -74,7 +74,8 @@ func AnswerPaste(ctx context.Context, local *session.Local, offerSDP string, o P
 	// What the peer would send a server (its answer, its candidates) goes
 	// nowhere: the answer is read from the peer connection once gathered.
 	a.sendHook = func(any) {}
-	p := newPeer(a, newPasteViewerID(), o.Role, "", "paste")
+	// The person who pastes the invite back is a guest, not the owner.
+	p := newPeer(a, newPasteViewerID(), o.Role, "", "paste", false)
 	if err := p.startWebRTC(o.ICEServers); err != nil {
 		return nil, "", err
 	}

@@ -924,7 +924,7 @@ func (a *agent) sendViewerError(viewerID, code, msg string) {
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
-	p := newPeer(a, id, role, linkID, linkLabel)
+	p := newPeer(a, id, role, linkID, linkLabel, linkID == "")
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice

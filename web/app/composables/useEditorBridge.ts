@@ -19,7 +19,7 @@ export interface EditorTerminal {
  * changes (the Yard's focus moving).
  */
 export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: () => string | undefined) {
-  const offer = ref({ welcome: false, nvim: false, fileEdit: false, machine: undefined as string | undefined })
+  const offer = ref({ welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined as string | undefined })
   const listeners = new Set<(ev: NvimEvent) => void>()
   // The Neovims of tabs not in front holding changes not written; they live on this connection, so they go with it (reset).
   const holds = new NvimHolds()
@@ -28,10 +28,10 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
     for (const cb of listeners) cb(ev)
   }
   function onWelcome(w: Welcome) {
-    offer.value = { welcome: true, nvim: !!w.nvim, fileEdit: !!w.fileEdit, machine: machine() }
+    offer.value = { welcome: true, nvim: !!w.nvim, fileEdit: !!w.fileEdit, ownerOnly: !!w.nvimOwnerOnly, machine: machine() }
   }
   function reset() {
-    offer.value = { welcome: false, nvim: false, fileEdit: false, machine: undefined }
+    offer.value = { welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined }
     holds.clear()
   }
   const nvim = computed<NvimBridge>(() => ({

@@ -58,7 +58,7 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	check := s.attachCheck(p, id)
 	switch drv := d.(type) {
 	case *session.Local:
-		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID(), check)
+		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID(), p.admin, check)
 	case *signal.HostedSession:
 		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check)
 	default:
@@ -66,7 +66,9 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local *session.Local, role session.Role, linkID string, check func() (session.Grant, error)) {
+// owner is the workbench's own connection (the admin token), the only one
+// offered the editor's Neovim.
+func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local *session.Local, role session.Role, linkID string, owner bool, check func() (session.Grant, error)) {
 	hello, err := s.readHello(ctx, c)
 	if err != nil {
 		return
@@ -75,6 +77,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 		Authorize: check,
+		Owner:     owner,
 	}, sink)
 	if err != nil {
 		switch {
