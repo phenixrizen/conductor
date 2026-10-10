@@ -351,6 +351,35 @@ func TestAKeptLinkSweptAwayClosesItsViewers(t *testing.T) {
 	v.expectClose(proto.CloseForbidden)
 }
 
+// The sweep closes a kept run link's viewers on every session the link
+// names as it drops it, one a run update added after the link was made
+// included.
+func TestAKeptRunLinkSweptAwayClosesItsViewersOnEveryMember(t *testing.T) {
+	e := keptSwitchyard(t, t.TempDir(), nil)
+	hi, hsA := instanceHost(e, "instance-secret-0123456789", "a")
+	_, hsB := instanceHost(e, "instance-secret-0123456789", "b")
+	a, _ := dialFakeHostWith(t, e, hi, hsA, "")
+	b, _ := dialFakeHostWith(t, e, hi, hsB, "")
+	group := func(ids ...string) proto.RunGroup {
+		g := proto.RunGroup{ID: "pair-0123abcd", Name: "pair"}
+		for i, id := range ids {
+			g.Members = append(g.Members, proto.RunMember{Name: fmt.Sprintf("m%d", i), SessionID: id, AgentID: "cat", Status: "running"})
+		}
+		return g
+	}
+	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r1", Role: "view", Run: group(a.sessionID)})
+	u := a.expect(proto.HostLinkCreated)["url"].(string)
+	token := u[strings.LastIndex(u, "/")+1:]
+	a.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u1", Run: group(a.sessionID, b.sessionID)})
+	a.expect(proto.HostRunLinkUpdated)
+	onA, onB := dialViewer(t, e, a.sessionID, token), dialViewer(t, e, b.sessionID, token)
+	onA.expectControl(proto.CtlWelcome)
+	onB.expectControl(proto.CtlWelcome)
+	e.srv.sweepLinks(time.Now().Add(linkOrphanAfter + time.Hour))
+	onA.expectClose(proto.CloseForbidden)
+	onB.expectClose(proto.CloseForbidden)
+}
+
 // A session a host's run no longer names is no longer opened by the run's
 // link: the viewer attached to it through the link is closed, the one on a
 // session still named stays, and a new connection to the one that left is

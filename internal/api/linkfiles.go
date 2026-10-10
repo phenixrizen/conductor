@@ -208,10 +208,13 @@ func (s *Server) sweepLinks(now time.Time) {
 		k.mu.Unlock()
 		if orphan || (l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)) {
 			s.dropLinkFile(l.ID)
-			s.links.Drop(l.ID)
 			// Dropped, the link opens nothing (Live): whoever is still
-			// attached through it goes too, as on a revoke.
-			s.closeLinkViewers(l)
+			// attached through it goes too, as on a revoke, on the sessions
+			// it named as it went (a run update may have changed them since
+			// the list above).
+			if gone, ok := s.links.Drop(l.ID); ok {
+				s.closeLinkViewers(gone)
+			}
 		}
 	}
 }

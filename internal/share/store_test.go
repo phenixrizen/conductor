@@ -311,6 +311,26 @@ func TestLive(t *testing.T) {
 	}
 }
 
+// Drop returns the link as it stood when it went, its group's sessions
+// then, and nothing for a link it does not hold.
+func TestDropReturnsTheLinkAsItWent(t *testing.T) {
+	s := NewStore()
+	g := Group{Name: "api", Members: []GroupMember{{Name: "lead", SessionID: "s1"}}}
+	l, _, _ := s.CreateGroupLink("api-1", "owner", g, session.RoleView, "", 0)
+	g.Members = append(g.Members, GroupMember{Name: "core", SessionID: "s2"})
+	s.SetGroup("owner", "api-1", g)
+	gone, ok := s.Drop(l.ID)
+	if !ok || gone.ID != l.ID || !gone.Group.Names("s1") || !gone.Group.Names("s2") {
+		t.Fatalf("dropped %+v %v", gone, ok)
+	}
+	if _, err := s.Live(l.ID); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("after the drop: %v", err)
+	}
+	if _, ok := s.Drop(l.ID); ok {
+		t.Fatal("dropped twice")
+	}
+}
+
 // ExpireDue tells the revoke hooks of each link that expired, once, and
 // leaves alone the links not expired yet, those without an expiry and those
 // revoked before.

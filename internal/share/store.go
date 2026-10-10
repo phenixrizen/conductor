@@ -339,13 +339,15 @@ func (s *Store) SetOwner(linkID, owner, addr string) {
 	}
 }
 
-// Drop forgets one link outright (its file swept), whatever its state.
-func (s *Store) Drop(linkID string) {
+// Drop forgets one link outright (its file swept), whatever its state, and
+// returns it as it stood when it went (its group's sessions then, which
+// are those its viewers can be on), or false when there was none.
+func (s *Store) Drop(linkID string) (*Link, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l, ok := s.byID[linkID]
 	if !ok {
-		return
+		return nil, false
 	}
 	delete(s.byHash, l.hash)
 	delete(s.byID, linkID)
@@ -359,6 +361,7 @@ func (s *Store) Drop(linkID string) {
 			}
 		}
 	}
+	return copyLink(l), true
 }
 
 // Durable lists the durable links, for the sweep.
