@@ -259,7 +259,6 @@ func TestAViewerLeavingDropsWhatWaitsAndFinishesWhatIsTyped(t *testing.T) {
 	waited := make(chan struct{})
 	go func() {
 		v.p.typing.wait()
-		v.p.editor.wait()
 		close(waited)
 	}()
 	select {
@@ -267,7 +266,7 @@ func TestAViewerLeavingDropsWhatWaitsAndFinishesWhatIsTyped(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the viewer's queue still runs after it left")
 	}
-	if v.p.typing.add(func() {}) {
+	if v.p.typing.add(nil, func() {}) {
 		t.Fatal("the queue of a viewer that left took a request")
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -280,7 +279,7 @@ func TestAViewerLeavingDropsWhatWaitsAndFinishesWhatIsTyped(t *testing.T) {
 }
 
 // An nvim_open is not held up behind a submission that waits for the
-// process: the editor's requests have a queue of their own.
+// process: the editor's opens run apart.
 func TestAViewersEditorOpenDoesNotWaitForItsSubmissions(t *testing.T) {
 	v := newSubmitViewer(t, 10*time.Millisecond)
 	v.hold()
@@ -293,22 +292,75 @@ func TestAViewersEditorOpenDoesNotWaitForItsSubmissions(t *testing.T) {
 	v.release()
 }
 
-// An nvim_open past the editor's queue is refused at once with
-// too_many_requests, naming its request.
-func TestAViewersEditorOpensPastTheQueueAreRefused(t *testing.T) {
+// A viewer starts at most as many editors at once as it may hold: an
+// nvim_open past them is refused at once with too_many_requests, naming its
+// request, and one is taken again once they are done.
+func TestAViewersEditorOpensPastTheBoundAreRefused(t *testing.T) {
 	v := newSubmitViewer(t, 10*time.Millisecond)
-	block := make(chan struct{})
-	defer close(block)
-	for range maxQueued + 1 {
-		if !v.p.editor.add(func() { <-block }) {
-			t.Fatal("the editor's queue refused before it was full")
-		}
-	}
+	v.p.nvimOpening.Store(proto.MaxNvimPerSub) // as many opens as that are starting
 	v.send(proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "e1", Path: "notes.txt"})
 	got := v.until(func(m map[string]any) bool { return m["t"] == proto.CtlNvimEvent && m["reqId"] == "e1" })
 	if m := got[len(got)-1]; m["kind"] != proto.NvimError || m["code"] != proto.ErrCodeTooManyRequests {
 		t.Fatalf("nvim_open answered %v", m)
 	}
+	if n := v.p.nvimOpening.Load(); n != proto.MaxNvimPerSub {
+		t.Fatalf("%d opens counted after a refusal", n)
+	}
+	v.p.nvimOpening.Store(0)
+	v.send(proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "e2", Path: "notes.txt"})
+	got = v.until(func(m map[string]any) bool { return m["t"] == proto.CtlNvimEvent && m["reqId"] == "e2" })
+	if m := got[len(got)-1]; m["code"] != proto.ErrCodeNvimUnavailable {
+		t.Fatalf("nvim_open answered %v", m)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for v.p.nvimOpening.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("an open that ended is still counted")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A viewer whose data channel closes is gone, though its peer may stay (a
+// paste invite's stays until it is revoked): what waits in its queue is
+// dropped, and the submission being typed is finished.
+func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
+	v := newSubmitViewer(t, 10*time.Millisecond)
+	v.hold()
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
+	for i := range maxQueued {
+		v.send(proto.Submit{T: proto.CtlSubmit, Text: fmt.Sprintf("waits %d", i)})
+	}
+	v.sync()
+	v.p.mu.Lock()
+	sub := v.p.sub
+	v.p.mu.Unlock()
+	v.dc.Close()
+	select {
+	case <-sub.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the closed channel's subscription did not end")
+	}
+	if typed := v.typed(v.release(), 2); fmt.Sprint(typed) != fmt.Sprint([]string{"first", "\r"}) {
+		t.Fatalf("typed %q", typed)
+	}
+	v.quiet(300 * time.Millisecond)
+	v.p.typing.wait()
+}
+
+// A viewer that moves to the relay attaches again: what it sent over the
+// data channel and waits is dropped with the subscription it came on.
+func TestAViewerMovingToTheRelayDropsWhatWaits(t *testing.T) {
+	v := newSubmitViewer(t, 10*time.Millisecond)
+	v.hold()
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits"})
+	v.sync()
+	v.p.startRelay()
+	if typed := v.typed(v.release(), 2); fmt.Sprint(typed) != fmt.Sprint([]string{"first", "\r"}) {
+		t.Fatalf("typed %q", typed)
+	}
+	v.quiet(300 * time.Millisecond)
 }
 
 // relayHost starts a relay-only host of /bin/cat on a test server and

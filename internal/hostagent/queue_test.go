@@ -34,7 +34,7 @@ func TestRequestQueueRunsInOrderAndRefusesPastItsBound(t *testing.T) {
 	before := runtime.NumGoroutine()
 	var refused []int
 	for i := range maxQueued + 10 {
-		if !q.add(job(i)) {
+		if !q.add(nil, job(i)) {
 			refused = append(refused, i)
 		}
 	}
@@ -63,7 +63,7 @@ func TestRequestQueueEndsItsGoroutineWhenIdle(t *testing.T) {
 	var q requestQueue
 	for range 3 {
 		done := make(chan struct{})
-		if !q.add(func() { close(done) }) {
+		if !q.add(nil, func() { close(done) }) {
 			t.Fatal("refused on an idle queue")
 		}
 		<-done
@@ -77,21 +77,51 @@ func TestRequestQueueEndsItsGoroutineWhenIdle(t *testing.T) {
 	}
 }
 
+// A waiting request whose viewer is gone when its turn comes is dropped;
+// the others run, in order.
+func TestRequestQueueDropsWhatWaitsForAViewerGone(t *testing.T) {
+	var q requestQueue
+	release := make(chan struct{})
+	gone, here := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	var ran []string
+	note := func(s string) func() {
+		return func() {
+			mu.Lock()
+			ran = append(ran, s)
+			mu.Unlock()
+		}
+	}
+	q.add(gone, func() { <-release })
+	q.add(gone, note("gone 1"))
+	q.add(here, note("here 1"))
+	q.add(gone, note("gone 2"))
+	q.add(here, note("here 2"))
+	close(gone)
+	close(release)
+	q.wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 2 || ran[0] != "here 1" || ran[1] != "here 2" {
+		t.Fatalf("ran %v", ran)
+	}
+}
+
 // close drops what waits and refuses what comes after it; the request
 // running finishes, and then nothing of the queue runs.
 func TestRequestQueueCloseDropsWhatWaits(t *testing.T) {
 	var q requestQueue
 	release := make(chan struct{})
 	finished := make(chan struct{})
-	q.add(func() {
+	q.add(nil, func() {
 		<-release
 		close(finished)
 	})
 	for range maxQueued {
-		q.add(func() { t.Error("a waiting request ran after close") })
+		q.add(nil, func() { t.Error("a waiting request ran after close") })
 	}
 	q.close()
-	if q.add(func() { t.Error("a request added after close ran") }) {
+	if q.add(nil, func() { t.Error("a request added after close ran") }) {
 		t.Fatal("a closed queue took a request")
 	}
 	close(release)

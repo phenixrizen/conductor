@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pion/webrtc/v4"
 
@@ -31,10 +32,10 @@ type peer struct {
 	remoteSet bool
 	closed    bool
 
-	// typing runs the viewer's submits, chats to the agent and chat_sends,
-	// editor its nvim_opens (queue.go).
-	typing requestQueue
-	editor requestQueue
+	// typing runs the viewer's submits, chats to the agent and chat_sends;
+	// nvimOpening counts its nvim_opens running (queue.go).
+	typing      requestQueue
+	nvimOpening atomic.Int32
 }
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
@@ -225,7 +226,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 			}
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
-			if !p.typing.add(func() { p.submit(sub, m.Text) }) {
+			if !p.typing.add(sub.Done(), func() { p.submit(sub, m.Text) }) {
 				p.a.local.Send(sub, queueFull(""))
 			}
 		case proto.CtlChat:
@@ -242,7 +243,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 			if m.To != "" {
 				// Typed as a submit is, in its turn among them.
 				send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
-				if !p.typing.add(func() { p.chatSend(sub, send) }) {
+				if !p.typing.add(sub.Done(), func() { p.chatSend(sub, send) }) {
 					p.a.local.Send(sub, queueFull(msg.ID))
 				}
 			}
@@ -252,7 +253,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
 				return
 			}
-			if !p.typing.add(func() { p.chatSend(sub, m) }) {
+			if !p.typing.add(sub.Done(), func() { p.chatSend(sub, m) }) {
 				p.a.local.Send(sub, queueFull(m.Ref))
 			}
 		case proto.CtlNvimOpen:
@@ -260,9 +261,17 @@ func (p *peer) handleFrame(f proto.Frame) {
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
-			if !p.editor.add(func() { p.nvimOpen(sub, m) }) {
+			// Side by side, as many at once as the editors a connection
+			// may hold: Neovim may take seconds to load the person's config.
+			if p.nvimOpening.Add(1) > proto.MaxNvimPerSub {
+				p.nvimOpening.Add(-1)
 				p.a.local.Send(sub, session.NvimRefused(m.ReqID, session.ErrTooManyRequests))
+				return
 			}
+			go func() {
+				defer p.nvimOpening.Add(-1)
+				p.nvimOpen(sub, m)
+			}()
 		case proto.CtlNvimInput:
 			var m proto.NvimInput
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -355,7 +364,7 @@ func (p *peer) chatSend(sub *session.Subscription, send proto.ChatSend) {
 	}
 }
 
-// nvimOpen starts the viewer's Neovim on a file; its editor queue runs it.
+// nvimOpen starts the viewer's Neovim on a file.
 func (p *peer) nvimOpen(sub *session.Subscription, req proto.NvimOpen) {
 	ctx, cancel := context.WithTimeout(context.Background(), nvimOpenTimeout)
 	defer cancel()
@@ -413,7 +422,6 @@ func (p *peer) close() {
 	p.pc, p.sub = nil, nil
 	p.mu.Unlock()
 	p.typing.close()
-	p.editor.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
 	}

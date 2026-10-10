@@ -11,19 +11,20 @@ import (
 // chat_send wait for the session's one submission at a time and pause
 // before their Enter; an nvim_open waits for Neovim to start. None of them
 // may run on the frame loop, which for the relay carries every relayed
-// viewer's frames, so each peer runs them on queues of its own
-// (requestQueue): the three that type into the agent on one, so that they
-// are typed in the order sent, as the server's read loop types them; the
-// editor's opens on another, so that a slow Neovim never holds a reply back.
+// viewer's frames. The three that type into the agent run on the peer's
+// typing queue (requestQueue), one at a time in the order sent, as the
+// server's read loop types them; the editor's opens run side by side, at
+// most proto.MaxNvimPerSub at once per viewer (the editors a connection may
+// hold), so that a slow Neovim never holds a reply or another open back.
 const (
 	// maxQueued bounds the requests that wait behind the one running, per
-	// queue and viewer; one past it is refused (too_many_requests) and the
-	// connection stays.
+	// viewer; one past it is refused (too_many_requests) and the connection
+	// stays.
 	maxQueued = 8
 	// submitTimeout bounds a submission from its turn: the wait for the
 	// session's turn, the pause and its Enter (the server's submitTimeout).
 	submitTimeout = 10 * time.Second
-	// nvimOpenTimeout bounds an nvim_open from its turn (the server's).
+	// nvimOpenTimeout bounds an nvim_open (the server's).
 	nvimOpenTimeout = 15 * time.Second
 )
 
@@ -42,17 +43,25 @@ func queueFull(requestID string) []byte {
 // one running. Its zero value is ready.
 type requestQueue struct {
 	mu      sync.Mutex
-	waiting []func()
+	waiting []queued
 	running bool
 	closed  bool
 	// done is closed when the goroutine running the requests ends.
 	done chan struct{}
 }
 
+type queued struct {
+	run func()
+	// gone is closed once the request's viewer is gone (its subscription
+	// ended): a request still waiting then is dropped.
+	gone <-chan struct{}
+}
+
 // add runs fn after the requests added before it, or reports false, running
-// nothing, when maxQueued wait already or the queue is closed. It never
-// blocks.
-func (q *requestQueue) add(fn func()) bool {
+// nothing, when maxQueued wait already or the queue is closed. fn is dropped
+// if gone is closed before its turn; the request added to an idle queue has
+// its turn at once. add never blocks.
+func (q *requestQueue) add(gone <-chan struct{}, fn func()) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	switch {
@@ -60,33 +69,46 @@ func (q *requestQueue) add(fn func()) bool {
 		return false
 	case !q.running:
 		// The first runs at once: it is the one running from now on, which
-		// close lets finish.
+		// the viewer going lets finish.
 		q.running = true
 		q.done = make(chan struct{})
 		go q.run(fn, q.done)
 	case len(q.waiting) >= maxQueued:
 		return false
 	default:
-		q.waiting = append(q.waiting, fn)
+		q.waiting = append(q.waiting, queued{run: fn, gone: gone})
 	}
 	return true
 }
 
 func (q *requestQueue) run(fn func(), done chan struct{}) {
 	defer close(done)
-	for {
+	for fn != nil {
 		fn()
 		q.mu.Lock()
-		if len(q.waiting) == 0 {
+		fn = q.next()
+		if fn == nil {
 			q.running = false
-			q.mu.Unlock()
-			return
 		}
-		fn = q.waiting[0]
-		q.waiting[0] = nil
-		q.waiting = q.waiting[1:]
 		q.mu.Unlock()
 	}
+}
+
+// next takes the first waiting request whose viewer is still there, dropping
+// those before it whose viewer is gone; nil when none is left. The caller
+// holds mu.
+func (q *requestQueue) next() func() {
+	for len(q.waiting) > 0 {
+		r := q.waiting[0]
+		q.waiting[0] = queued{}
+		q.waiting = q.waiting[1:]
+		select {
+		case <-r.gone:
+		default:
+			return r.run
+		}
+	}
+	return nil
 }
 
 // close drops the requests that wait and refuses those added after it. The

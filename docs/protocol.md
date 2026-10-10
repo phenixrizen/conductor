@@ -170,9 +170,11 @@ The host types a viewer's `submit`, `chat` to the agent and `chat_send`
 viewer sent them, as the server does, with at most 8 waiting behind the one
 being typed: one more is refused with `error{too_many_requests}` (`requestId`
 the chat message's id or the send's ref, none for a `submit`) and the
-connection stays. The viewer's `nvim_open`s wait apart, at most 8 behind the
-one starting, past which the `nvim_event` error is `too_many_requests`. When
-the viewer goes, what waits is dropped; the one being typed is finished.
+connection stays. When the viewer goes (its connection or data channel
+closes, or it moves to the relay and attaches again), what waits is dropped;
+the one being typed is finished. The viewer's `nvim_open`s start apart, at
+most 4 at once (the editors a connection may hold), past which the
+`nvim_event` error is `too_many_requests`.
 
 ## Host control connection
 
