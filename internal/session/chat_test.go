@@ -436,6 +436,14 @@ func TestRunChatReachesEveryMembersViewers(t *testing.T) {
 	// A late viewer of tests: the session's history, then the run's.
 	late := newChanSink(false)
 	b.AttachWith(AttachOptions{Role: RoleControl, Name: "Jane", Cols: 80, Rows: 24}, late)
+	// Frames reach a sink on the subscription's own goroutine, in the order
+	// they were queued: once the run's last history frame is in, the
+	// session's is too.
+	if waitControl(late, func(m map[string]any) bool {
+		return m["t"] == proto.CtlChatHistory && m["scope"] == "run" && m["more"] != true
+	}) == nil {
+		t.Fatal("the late viewer got no run history")
+	}
 	var scopes []string
 	for i := 0; i < late.count(); i++ {
 		f, err := proto.Decode(late.frame(i))
