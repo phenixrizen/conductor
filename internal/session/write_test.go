@@ -207,8 +207,9 @@ func TestFileWriteAndEditorRefuseTheDenyList(t *testing.T) {
 // gitDirTree makes a repository to save into: one commit, a linked
 // worktree wt (its .git a file), the links meta to .git and cfg to
 // .git/config, a bare repository store and a folder linked whose .git is a
-// link to it, and an empty folder sub. It returns the root, its links
-// resolved.
+// link to it, a folder pointed whose .git is a link to the file gitfile
+// beside it (naming wt's git directory), and an empty folder sub. It
+// returns the root, its links resolved.
 func gitDirTree(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(gitRepo(t))
@@ -223,12 +224,15 @@ func gitDirTree(t *testing.T) string {
 			t.Fatalf("%v: %v", args, err)
 		}
 	}
-	for _, d := range []string{"linked", "sub"} {
+	for _, d := range []string{"linked", "sub", "pointed"} {
 		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for link, to := range map[string]string{"linked/.git": "../store", "meta": ".git", "cfg": ".git/config"} {
+	if err := os.WriteFile(filepath.Join(root, "pointed", "gitfile"), []byte("gitdir: "+filepath.Join(root, ".git", "worktrees", "wt")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for link, to := range map[string]string{"linked/.git": "../store", "meta": ".git", "cfg": ".git/config", "pointed/.git": "gitfile"} {
 		if err := os.Symlink(to, filepath.Join(root, link)); err != nil {
 			t.Fatal(err)
 		}
@@ -251,7 +255,7 @@ func TestFileWriteRefusesARepositorysGitDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := map[string][]byte{}
-	for _, p := range []string{".git/config", ".git/HEAD", "wt/.git", ".git/worktrees/wt/HEAD", "store/config"} {
+	for _, p := range []string{".git/config", ".git/HEAD", "wt/.git", ".git/worktrees/wt/HEAD", "store/config", "pointed/gitfile"} {
 		b, err := os.ReadFile(filepath.Join(root, p))
 		if err != nil {
 			t.Fatal(err)
@@ -262,7 +266,7 @@ func TestFileWriteRefusesARepositorysGitDir(t *testing.T) {
 	refused := []string{
 		".git/config", ".git/HEAD", ".git/hooks/post-checkout", "meta/config", "meta/hooks/pre-commit", "cfg",
 		"wt/.git", ".git/worktrees/wt/HEAD", "sub/.git", ".GIT/config", ".git./config", ".Git",
-		"linked/.git/config", "store/config", "store/hooks/post-checkout", filepath.Join(root, ".git", "config"),
+		"linked/.git/config", "store/config", "store/hooks/post-checkout", filepath.Join(root, ".git", "config"), "pointed/gitfile", "pointed/.git",
 	}
 	for i, p := range refused {
 		id := fmt.Sprintf("g%d", i)
@@ -281,7 +285,7 @@ func TestFileWriteRefusesARepositorysGitDir(t *testing.T) {
 			t.Errorf("%s was made", p)
 		}
 	}
-	for _, p := range []string{".git/config", "cfg", "meta/HEAD", "wt/.git", "store/config", "linked/.git/HEAD"} {
+	for _, p := range []string{".git/config", "cfg", "meta/HEAD", "wt/.git", "store/config", "linked/.git/HEAD", "pointed/gitfile", "pointed/.git"} {
 		if h, _ := ReadPath(root, p, false, nil); h.Kind != "file" || !h.ReadOnly {
 			t.Errorf("read %s: %+v", p, h)
 		}
@@ -313,8 +317,9 @@ func TestIsDotGit(t *testing.T) {
 	}
 }
 
-// Neovim opens no file in a repository's .git (it would write it); a
-// working tree's file opens.
+// Neovim opens no file in a repository's .git (it would write it), however
+// the path reaches it; nothing starts. (A working tree's file opens as the
+// bridge's own tests show.)
 func TestNvimRefusedInARepositorysGitDir(t *testing.T) {
 	if !nvim.Available() {
 		t.Skip("nvim is not on PATH")
@@ -328,7 +333,7 @@ func TestNvimRefusedInARepositorysGitDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, p := range []string{".git/config", "meta/HEAD", "cfg", "wt/.git", "linked/.git/config", "store/config"} {
+	for i, p := range []string{".git/config", "meta/HEAD", "cfg", "wt/.git", "linked/.git/config", "store/config", "pointed/gitfile"} {
 		err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: fmt.Sprintf("n%d", i), Path: p})
 		if !errors.Is(err, errGitDir) {
 			t.Errorf("%s: %v", p, err)
@@ -337,8 +342,4 @@ func TestNvimRefusedInARepositorysGitDir(t *testing.T) {
 	if n := s.nvimCount.Load(); n != 0 {
 		t.Fatalf("%d editors open", n)
 	}
-	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "ok", Path: "README.md"}); err != nil {
-		t.Fatal(err)
-	}
-	s.closeNvims(sub)
 }

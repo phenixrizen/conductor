@@ -27,12 +27,26 @@ var errGitDir = errors.New("session: a repository's .git is read only here")
 // gitDirTimeout bounds the git that inGitDir asks.
 const gitDirTimeout = 5 * time.Second
 
+// gitMetadata reports whether a file request for raw, which ResolvePath
+// resolved to real, is for a repository's .git: an element of raw as asked
+// (before its links are resolved) is .git however spelled, or inGitDir
+// says so of real.
+func gitMetadata(raw, real string) bool {
+	for _, el := range strings.Split(filepath.ToSlash(raw), "/") {
+		if isDotGit(el) {
+			return true
+		}
+	}
+	return inGitDir(real)
+}
+
 // inGitDir reports whether real, an absolute path with its symbolic links
 // resolved (ResolvePath's), is in a repository's .git. Any one of three
 // says so: an element of the path is .git however a file system may spell
-// it (isDotGit); the path is, or is inside, the git directory a .git
-// beside it or beside one of its parents stands for, compared as files
-// (os.SameFile) so that no other spelling gets around it (gitDirsIn); git
+// it (isDotGit); the path is, or is inside, what a .git beside it or
+// beside one of its parents stands for (a .git directory, a .git file
+// itself, the git directory it names), compared as files (os.SameFile) so
+// that neither a link nor another spelling gets around it (gitDirsIn); git
 // itself, asked in the nearest directory that exists, says that directory
 // is inside a git directory, which also finds a git directory a .git
 // elsewhere points to and a bare repository (without git, the first two
@@ -65,10 +79,10 @@ func inGitDir(real string) bool {
 	return gitSaysGitDir(real)
 }
 
-// gitDirsIn is the git directories dir's .git stands for: itself when it
-// is a directory (or a link to one); the directory a .git file's "gitdir:"
-// line names, and the one that directory's commondir names, when it is a
-// file.
+// gitDirsIn is what dir's .git stands for: itself when it is a directory
+// (or a link to one); when it is a file (or a link to one), the file
+// itself, the directory its "gitdir:" line names and the one that
+// directory's commondir names.
 func gitDirsIn(dir string) []os.FileInfo {
 	dotgit := filepath.Join(dir, ".git")
 	fi, err := os.Stat(dotgit)
@@ -80,15 +94,16 @@ func gitDirsIn(dir string) []os.FileInfo {
 	case !fi.Mode().IsRegular():
 		return nil
 	}
+	out := []os.FileInfo{fi}
 	gd := gitDirFromFile(dotgit, dir)
 	if gd == "" {
-		return nil
+		return out
 	}
 	gfi, err := os.Stat(gd)
 	if err != nil || !gfi.IsDir() {
-		return nil
+		return out
 	}
-	out := []os.FileInfo{gfi}
+	out = append(out, gfi)
 	if b, err := os.ReadFile(filepath.Join(gd, "commondir")); err == nil && len(b) <= 4096 {
 		common := strings.TrimSpace(string(b))
 		if !filepath.IsAbs(common) {

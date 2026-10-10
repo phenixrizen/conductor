@@ -90,7 +90,7 @@ func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 
 // saveFile writes body over the file h names, after the checks: the path
 // through ResolvePath and the deny list, not in a repository's .git
-// (inGitDir), an existing regular file, and its content unchanged since the
+// (gitMetadata), an existing regular file, and its content unchanged since the
 // read (BaseSha256) unless Force.
 func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) proto.FileHeader {
 	errh := func(code, msg string) proto.FileHeader {
@@ -100,7 +100,7 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	if err != nil {
 		return errh("denied", err.Error())
 	}
-	if inGitDir(target) {
+	if gitMetadata(h.Path, target) {
 		return errh("read_only", "a repository's .git is read only here")
 	}
 	fi, err := os.Stat(target)

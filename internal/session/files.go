@@ -152,7 +152,7 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 	h.Kind = "file"
 	h.Mime = mime.TypeByExtension(filepath.Ext(target))
 	// A save of it would be refused (saveFile): the editor shows Read only.
-	h.ReadOnly = inGitDir(target)
+	h.ReadOnly = gitMetadata(raw, target)
 	if statOnly {
 		return h, nil
 	}

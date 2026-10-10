@@ -112,7 +112,7 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	if err != nil {
 		return ErrFileDenied
 	}
-	if inGitDir(target) {
+	if gitMetadata(req.Path, target) {
 		// Neovim would write it.
 		return errGitDir
 	}
