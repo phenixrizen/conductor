@@ -433,24 +433,22 @@ machine. Limit reads with the `fileView` setting (`view`, `control` or `off`;
 data directory, config file or catalog file (`catalogPath`), even inside a
 working directory. A hosted session refuses the same files of the server on
 its own machine: the data directory `CONDUCTOR_DATA_DIR` names, else the one
-the server would choose (`~/.conductor`, which is refused in any case), the
-catalog file `CONDUCTOR_CATALOG_PATH` names, and, when `conductor host
---server-config <file>` names the server's config file, that file with its
-`dataDir` and `catalogPath`; and the desktop app's server's: the app's own
-directory (its settings, and its data directory unless they move it), its
-settings file wherever a link takes it, the data directory its settings
-name, and inside WSL
-`~/.local/share/conductor/data` (the Windows app's settings are not visible
-inside WSL: when they move that data directory, set `CONDUCTOR_DATA_DIR` to it
-in the shell that runs `conductor host`). The host looks these up again at
-each request and keeps refusing what it refused before, so a data directory
-moved while the session runs is refused at both places. The server resolves a relative path against the
-directory it runs in, which the host cannot know, so the host does not start
-when any of these is given as a relative path, and refuses every file while
-the config file names one or cannot be read; the same holds for desktop app
-settings that are there but cannot be read. The host knows of no other
-config file, so do not run `conductor host` from a directory that holds a
-server's config file without naming it.
+the server would choose (`~/.conductor`, which is refused in any case); the
+catalog file `CONDUCTOR_CATALOG_PATH` names; with `conductor host
+--server-config <file>`, that config file and its `dataDir` and
+`catalogPath`; and for the desktop app's server, the app's own directory, its
+settings file (wherever a link takes it), the data directory its settings
+name and, inside WSL, `~/.local/share/conductor/data`. The Windows app's
+settings are not visible inside WSL: when they move that data directory, set
+`CONDUCTOR_DATA_DIR` to it in the shell that runs `conductor host`. The host
+looks these up again at each request and keeps refusing what it refused
+before, so a data directory moved while the session runs is refused at both
+places. The server resolves a relative path against the directory it runs
+in, which the host cannot know, so the host does not start when one of these
+paths is relative or the config file or the desktop app's settings cannot be
+read, and refuses every file while that is so later. The host knows of no
+other config file, so do not run `conductor host` from a directory that
+holds a server's config file without naming it.
 
 ## The Yard
 
