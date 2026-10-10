@@ -79,7 +79,7 @@ describe('the terminal right-click', () => {
     expect(menuPress({ button: 0, ctrlKey: false }, true)).toBe(false)
     expect(menuPress({ button: 1, ctrlKey: false }, false)).toBe(false)
   })
-  it('opens the menu with the forcing key whatever else holds (Option on a Mac, at a prompt or on a view link)', () => {
+  it('opens the menu with the forcing key whatever else holds (at a prompt or on a view link)', () => {
     expect(rightClick({ ...base, force: true })).toBe('menu')
     expect(rightClick({ ...base, force: true, hasSelection: true })).toBe('menu')
     expect(rightClick({ ...base, force: true, canPaste: false, hasSelection: true })).toBe('menu')
@@ -87,10 +87,10 @@ describe('the terminal right-click', () => {
     // A Mac's Shift at a prompt still opens the menu.
     expect(rightClick({ ...base, shift: true, force: false })).toBe('menu')
   })
-  it('forces with Shift, and with Option on a Mac', () => {
+  it('forces with Shift, and with nothing on a Mac', () => {
     expect(forcesSelection({ shiftKey: true, altKey: false }, false)).toBe(true)
     expect(forcesSelection({ shiftKey: false, altKey: true }, false)).toBe(false)
-    expect(forcesSelection({ shiftKey: false, altKey: true }, true)).toBe(true)
+    expect(forcesSelection({ shiftKey: false, altKey: true }, true)).toBe(false)
     expect(forcesSelection({ shiftKey: true, altKey: false }, true)).toBe(false)
   })
   it('keeps the setting per browser, on by default', () => {

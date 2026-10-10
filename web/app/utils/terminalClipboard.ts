@@ -12,8 +12,9 @@
  * Right-click: with a selection it copies and clears it, without one it pastes; Shift+right-click opens the terminal's menu (Copy, Paste,
  * Select all, "Right-click pastes"), and with that setting off right-click always opens it. While the program running asks for the
  * mouse (Codex's TUI, vim with mouse=a), a right-click is the program's, as in Windows Terminal: xterm reports it and nothing is copied,
- * pasted or opened. The key xterm takes back the mouse with, Shift (Option on a Mac), still opens the menu with a right-click and
- * selects with a drag; xterm reports neither.
+ * pasted or opened. Shift, with which xterm takes the mouse back, still opens the menu with a right-click and selects with a drag; xterm
+ * reports neither. On a Mac nothing takes it back (xterm's Option forcing is left off: its Option-click would move the program's
+ * cursor), so those are the program's too; ⌘C and ⌘V still copy and paste.
  */
 export interface ClipboardKeyEvent {
   type: string
@@ -45,8 +46,8 @@ export type RightClick = 'copy' | 'paste' | 'menu' | 'app'
 /**
  * appMouse: the program running asked for mouse reports when the button went down. It gets the click only on a connection that may type
  * (canPaste), since a view link's reports reach nothing; there the right-click copies or opens the menu as ever. force: the key xterm
- * takes the mouse back with (Shift, Option on a Mac): with it the menu always opens, and xterm reports nothing. Shift opens the menu
- * too, except on a Mac over a program that holds the mouse, where xterm reports a Shift+right-click and so it is the program's.
+ * takes the mouse back with (Shift; none on a Mac): with it the menu always opens, and xterm reports nothing. Shift opens the menu too,
+ * except on a Mac over a program that holds the mouse, where xterm reports a Shift+right-click and so it is the program's.
  */
 export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; pastes: boolean; shift: boolean; appMouse?: boolean; force?: boolean }): RightClick {
   if (ctx.force) return 'menu'
@@ -85,8 +86,8 @@ export class RightPress {
 }
 
 /**
- * A menu event from the keyboard (the menu key, Shift+F10), with no press behind it: Chromium sends it with no button (-1), the Pointer
- * Events spec with no pointer type. It opens the menu, never pastes and is never the program's.
+ * A menu event from the keyboard (the menu key; xterm sends Shift+F10 to the program), with no press behind it: Chromium sends it with
+ * no button (-1), the Pointer Events spec with no pointer type. It opens the menu, never pastes and is never the program's.
  */
 export function menuFromKeyboard(e: { button: number; pointerType?: string }): boolean {
   return e.button < 0 || e.pointerType === ''
@@ -97,9 +98,12 @@ export function menuPress(e: { button: number; ctrlKey: boolean }, mac: boolean)
   return e.button === 2 || (mac && e.button === 0 && e.ctrlKey)
 }
 
-/** The key xterm forces a selection with while the program holds the mouse, and that takes a right-click back from it. */
+/**
+ * The key xterm forces a selection with while the program holds the mouse, and that takes a right-click back from it: Shift, and none on
+ * a Mac, where xterm would want Option with macOptionClickForcesSelection, left off since its Option-click moves the program's cursor.
+ */
 export function forcesSelection(e: { shiftKey: boolean; altKey: boolean }, mac: boolean): boolean {
-  return mac ? e.altKey : e.shiftKey
+  return !mac && e.shiftKey
 }
 
 /** Where the right-click setting is kept, per browser. */

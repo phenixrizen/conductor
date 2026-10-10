@@ -557,8 +557,8 @@ Paste, Select all, and **Right-click pastes**, which turns that off so a
 right-click opens the menu, kept per browser). While the program asks for
 the mouse (Codex's TUI does), a click, a drag, the wheel and a right-click are
 the program's, as in Windows Terminal; **Shift+drag** still selects and
-**Shift+right-click** still opens the menu (**Option** in place of Shift on a
-Mac). A view link copies and never
+**Shift+right-click** still opens the menu (on a Mac those are the program's
+too, and **⌘C** and **⌘V** still copy and paste). A view link copies and never
 pastes. On macOS **⌘C** and **⌘V** stay as they are; on Linux a middle-click
 pastes the selection as the browser does.
 

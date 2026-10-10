@@ -619,8 +619,6 @@ onMounted(() => {
     convertEol: false,
     // Right-click is copy or paste (round 15), never a word selection first.
     rightClickSelectsWord: false,
-    // Option takes the mouse back from a program that holds it on a Mac (Shift elsewhere): a drag selects, a right-click opens the menu.
-    macOptionClickForcesSelection: true,
   })
   rightClickPastes.value = readRightClickPastes(typeof localStorage === 'undefined' ? null : localStorage)
   term.onSelectionChange(() => (hasSelection.value = !!term?.hasSelection()))

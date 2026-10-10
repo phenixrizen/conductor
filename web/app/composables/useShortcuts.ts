@@ -59,7 +59,7 @@ export const TERMINAL_SHORTCUTS: ShortcutGroup = {
     { keys: [], label: 'Copy the selection (Ctrl+Insert too)', terminal: ['ctrl', 'shift', 'C'] },
     { keys: [], label: 'On a selection: copy it and clear it; with none, the interrupt', terminal: ['ctrl', 'C'] },
     { keys: [], label: 'Paste (Shift+Insert and Ctrl+V too)', terminal: ['ctrl', 'shift', 'V'] },
-    { keys: [], label: 'Right-click: copy a selection, else paste (the program\'s, when it uses the mouse); Shift+right-click (Option on a Mac): the menu' },
+    { keys: [], label: 'Right-click: copy a selection, else paste (the program\'s, when it uses the mouse); Shift+right-click: the menu' },
   ],
 }
 
