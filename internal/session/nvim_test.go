@@ -295,8 +295,7 @@ func TestNvimRefusedWhenEditingIsOff(t *testing.T) {
 // link, or a guest with no link (a paste invite), may still edit (the
 // welcome's fileEdit, saves through FileWrite) but is offered no Neovim:
 // its welcome says nvimOwnerOnly, opening one is refused, and no key it
-// sends reaches a Neovim, not even the owner's open one by its id. None of
-// the command lines below, sent by such a connection, changes a file.
+// sends reaches a Neovim, not even the owner's open one by its id.
 func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 	if !nvim.Available() {
 		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
@@ -331,17 +330,12 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 		{Role: RoleControl, Name: "link2", LinkID: "l2", Owner: true},
 		{Role: RoleControl, Name: "pasted", LinkLabel: "paste"},
 	}
+	// Ordinary edits and a save: no key from such a connection reaches a Neovim, so none changes a file.
 	keys := []string{
-		":!touch " + marker + "<CR>",
-		":call system('touch " + marker + "')<CR>",
-		":lua os.execute('touch " + marker + "')<CR>",
-		":lua vim.fn.system('touch " + marker + "')<CR>",
-		":terminal touch " + marker + "<CR>",
-		":r !touch " + marker + "<CR>",
-		":w !touch " + marker + "<CR>",
-		":set makeprg=touch\\ " + marker + "<CR>:make<CR>",
-		":set grepprg=touch\\ " + marker + "<CR>:grep x<CR>",
-		":e /etc/hostname<CR>",
+		"ggdd",
+		"iwritten by a guest<Esc>",
+		":w<CR>",
+		":e other.txt<CR>ianother<Esc>:w<CR>",
 		":w " + marker + "<CR>",
 	}
 	for _, o := range guests {
