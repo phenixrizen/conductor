@@ -11,6 +11,9 @@ describe('packaging', () => {
       expect(yml).toContain(`  - from: ../${f}\n    to: ${f}\n`)
       expect(existsSync(join(desktop, '..', f))).toBe(true)
     }
+    // Chromium's notices, which electron-builder leaves out of a macOS app on its own.
+    expect(yml).toContain('  - from: node_modules/electron/dist/LICENSES.chromium.html\n    to: LICENSES.chromium.html\n')
+    expect(existsSync(join(desktop, 'node_modules/electron/dist/LICENSES.chromium.html'))).toBe(true)
     // The notices name the app's own runtime, as scripts/notices.py writes them.
     const notices = readFileSync(join(desktop, '..', 'THIRD_PARTY_NOTICES'), 'utf8')
     expect(notices).toContain('The desktop app: Electron and its packages')

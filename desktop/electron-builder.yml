@@ -16,13 +16,17 @@ extraResources:
     to: icon.png
   - from: static
     to: static
-  # The licence and the notices of what the app ships (scripts/notices.py), beside Electron's LICENSES.chromium.html.
+  # The licence and the notices of what the app ships (scripts/notices.py).
   - from: ../LICENSE
     to: LICENSE
   - from: ../NOTICE
     to: NOTICE
   - from: ../THIRD_PARTY_NOTICES
     to: THIRD_PARTY_NOTICES
+  # Chromium's and Node.js's notices: electron-builder deletes them from a macOS app (app-builder-lib's electronMac.js), so they
+  # ship here on every platform.
+  - from: node_modules/electron/dist/LICENSES.chromium.html
+    to: LICENSES.chromium.html
 asar: true
 compression: normal
 publish:

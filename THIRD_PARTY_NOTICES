@@ -153,7 +153,7 @@ The desktop app: Electron and its packages
   builder-util-runtime 9.7.0                               MIT
   debug 4.4.3                                              MIT
   electron 44.5.1                                          MIT
-    (Chromium's and Node.js's own notices ship beside the app as LICENSES.chromium.html)
+    (Chromium's and Node.js's own notices ship in the app's resources as LICENSES.chromium.html)
   electron-updater 6.8.9                                   MIT
   fs-extra 10.1.0                                          MIT
   graceful-fs 4.2.11                                       ISC
@@ -201,6 +201,33 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--- runtime/memmove_amd64.s (the file's own notice)
+
+Derived from Inferno's libkern/memmove-386.s (adapted for amd64)
+https://bitbucket.org/inferno-os/inferno-os/src/master/libkern/memmove-386.s
+
+        Copyright © 1994-1999 Lucent Technologies Inc. All rights reserved.
+        Revisions Copyright © 2000-2007 Vita Nuova Holdings Limited (www.vitanuova.com).  All rights reserved.
+        Portions Copyright 2009 The Go Authors. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 ==============================================================================
 dario.cat/mergo v1.0.0
@@ -270,6 +297,79 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--- eax/eax.go (the file's own notice)
+
+Copyright (C) 2019 ProtonTech AG
+
+Package eax provides an implementation of the EAX
+(encrypt-authenticate-translate) mode of operation, as described in
+Bellare, Rogaway, and Wagner "THE EAX MODE OF OPERATION: A TWO-PASS
+AUTHENTICATED-ENCRYPTION SCHEME OPTIMIZED FOR SIMPLICITY AND EFFICIENCY."
+In FSE'04, volume 3017 of LNCS, 2004
+
+--- internal/byteutil/byteutil.go (the file's own notice)
+
+Copyright (C) 2019 ProtonTech AG
+This file contains necessary tools for the aex and ocb packages.
+
+These functions SHOULD NOT be used elsewhere, since they are optimized for
+specific input nature in the EAX and OCB modes of operation.
+
+--- ocb/ocb.go (the file's own notice)
+
+Copyright (C) 2019 ProtonTech AG
+
+Package ocb provides an implementation of the OCB (offset codebook) mode of
+operation, as described in RFC-7253 of the IRTF and in Rogaway, Bellare,
+Black and Krovetz - OCB: A BLOCK-CIPHER MODE OF OPERATION FOR EFFICIENT
+AUTHENTICATED ENCRYPTION (2003).
+Security considerations (from RFC-7253): A private key MUST NOT be used to
+encrypt more than 2^48 blocks. Tag length should be at least 12 bytes (a
+brute-force forging adversary succeeds after 2^{tag length} attempts). A
+single key SHOULD NOT be used to decrypt ciphertext with different tag
+lengths. Nonces need not be secret, but MUST NOT be reused.
+This package only supports underlying block ciphers with 128-bit blocks,
+such as AES-{128, 192, 256}, but may be extended to other sizes.
+
+--- openpgp/aes/keywrap/keywrap.go (the file's own notice)
+
+Copyright 2014 Matthew Endsley
+All rights reserved
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted providing that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+Package keywrap is an implementation of the RFC 3394 AES key wrapping
+algorithm. This is used in OpenPGP with elliptic curve keys.
+
+--- openpgp/internal/algorithm/aead.go and 3 more (the file's own notice)
+
+Copyright (C) 2019 ProtonTech AG
+
+--- openpgp/packet/symmetrically_encrypted_aead.go (the file's own notice)
+
+Copyright 2023 Proton AG. All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
 
 ==============================================================================
 github.com/cenkalti/backoff/v5 v5.0.3
@@ -1801,6 +1901,78 @@ github.com/go-git/go-git/v5 v5.19.3
    See the License for the specific language governing permissions and
    limitations under the License.
 
+--- plumbing/format/gitignore/doc.go (the file's own notice)
+
+Package gitignore implements matching file system paths to gitignore patterns that
+can be automatically read from a git repository tree in the order of definition
+priorities. It support all pattern formats as specified in the original gitignore
+documentation, copied below:
+
+  Pattern format
+  ==============
+
+	- A blank line matches no files, so it can serve as a separator for readability.
+
+	- A line starting with # serves as a comment. Put a backslash ("\") in front of
+	  the first hash for patterns that begin with a hash.
+
+	- Trailing spaces are ignored unless they are quoted with backslash ("\").
+
+	- An optional prefix "!" which negates the pattern; any matching file excluded
+	  by a previous pattern will become included again. It is not possible to
+	  re-include a file if a parent directory of that file is excluded.
+	  Git doesn’t list excluded directories for performance reasons, so
+	  any patterns on contained files have no effect, no matter where they are
+	  defined. Put a backslash ("\") in front of the first "!" for patterns
+	  that begin with a literal "!", for example, "\!important!.txt".
+
+	- If the pattern ends with a slash, it is removed for the purpose of the
+	  following description, but it would only find a match with a directory.
+	  In other words, foo/ will match a directory foo and paths underneath it,
+	  but will not match a regular file or a symbolic link foo (this is consistent
+	  with the way how pathspec works in general in Git).
+
+	- If the pattern does not contain a slash /, Git treats it as a shell glob
+	  pattern and checks for a match against the pathname relative to the location
+	  of the .gitignore file (relative to the toplevel of the work tree if not
+	  from a .gitignore file).
+
+	- Otherwise, Git treats the pattern as a shell glob suitable for consumption
+	  by fnmatch(3) with the FNM_PATHNAME flag: wildcards in the pattern will
+	  not match a / in the pathname. For example, "Documentation/*.html" matches
+	  "Documentation/git.html" but not "Documentation/ppc/ppc.html" or
+	  "tools/perf/Documentation/perf.html".
+
+	- A leading slash matches the beginning of the pathname. For example,
+	  "/*.c" matches "cat-file.c" but not "mozilla-sha1/sha1.c".
+
+	Two consecutive asterisks ("**") in patterns matched against full pathname
+	may have special meaning:
+
+	- A leading "**" followed by a slash means match in all directories.
+	  For example, "**/foo" matches file or directory "foo" anywhere, the same as
+	  pattern "foo". "**/foo/bar" matches file or directory "bar"
+	  anywhere that is directly under directory "foo".
+
+	- A trailing "/**" matches everything inside. For example, "abc/**" matches
+	  all files inside directory "abc", relative to the location of the
+	  .gitignore file, with infinite depth.
+
+	- A slash followed by two consecutive asterisks then a slash matches
+	  zero or more directories. For example, "a/**/b" matches "a/b", "a/x/b",
+	  "a/x/y/b" and so on.
+
+	- Other consecutive asterisks are considered invalid.
+
+  Copyright and license
+  =====================
+
+	Copyright (c) Oleg Sklyar, Silvertern and source{d}
+
+	The package code was donated to source{d} to include, modify and develop
+	further as a part of the `go-git` project, release it on the license of
+	the whole project or delete it from the project.
+
 ==============================================================================
 github.com/go-jose/go-jose/v4 v4.1.5
 ==============================================================================
@@ -2008,6 +2180,74 @@ github.com/go-jose/go-jose/v4 v4.1.5
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+--- asymmetric.go and 13 more (the file's own notice)
+
+-
+Copyright 2014 Square Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+--- json/decode.go (the file's own notice)
+
+Copyright 2010 The Go Authors. All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+
+Represents JSON data structure using native Go types: booleans, floats,
+strings, arrays, and maps.
+
+--- json/encode.go (the file's own notice)
+
+Copyright 2010 The Go Authors.  All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+
+Package json implements encoding and decoding of JSON objects as defined in
+RFC 4627. The mapping between JSON objects and Go values is described
+in the documentation for the Marshal and Unmarshal functions.
+
+See "JSON and Go" for an introduction to this package:
+https://golang.org/doc/articles/json_and_go.html
+
+--- json/indent.go and 2 more (the file's own notice)
+
+Copyright 2010 The Go Authors.  All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+
+--- json/tags.go (the file's own notice)
+
+Copyright 2011 The Go Authors. All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+
+--- opaque.go (the file's own notice)
+
+-
+Copyright 2018 Square Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 
 ==============================================================================
 github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8
@@ -2453,6 +2693,23 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+--- cache.go and 5 more (the file's own notice)
+
+SPDX-FileCopyrightText: The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+--- client.go and 2 more (the file's own notice)
+
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+--- mdns.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+Package mdns implements mDNS (multicast DNS)
+
 ==============================================================================
 github.com/pion/randutil v0.1.0
 ==============================================================================
@@ -2505,6 +2762,38 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+--- abscapturetimeextension.go and 29 more (the file's own notice)
+
+The same text as github.com/pion/mdns/v2 v2.2.1's above.
+
+--- codecs/av1/obu/leb128.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+Package obu implements tools for working with the Open Bitstream Unit.
+
+--- codecs/codecs.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+Package codecs implements codec specific RTP payloader/depayloaders
+
+--- codecs/vp9/header.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+Package vp9 contains a VP9 header parser.
+
+--- rtp.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+Package rtp provides RTP packetizer and depacketizer
+
 ==============================================================================
 github.com/pion/sctp v1.11.3
 ==============================================================================
@@ -2537,6 +2826,11 @@ github.com/pion/stun/v4 v4.0.1
 
 The same text as github.com/pion/datachannel v1.6.3's above.
 
+--- internal/hmac/hmac.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2009 The Go Authors. All rights reserved.
+SPDX-License-Identifier: BSD-3-Clause
+
 ==============================================================================
 github.com/pion/transport/v5 v5.1.1
 ==============================================================================
@@ -2544,6 +2838,16 @@ github.com/pion/transport/v5 v5.1.1
 --- LICENSE
 
 The same text as github.com/pion/datachannel v1.6.3's above.
+
+--- utils/xor/xor_generic.go (the file's own notice)
+
+SPDX-FileCopyrightText: 2013 The Go Authors. All rights reserved.
+SPDX-License-Identifier: BSD-3-Clause
+SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+SPDX-License-Identifier: MIT
+
+
+Package xor provides the XorBytes function.
 
 ==============================================================================
 github.com/pion/turn/v5 v5.1.2
@@ -2769,6 +3073,26 @@ github.com/pjbgf/sha1cd v0.7.0
    See the License for the specific language governing permissions and
    limitations under the License.
 
+--- sha1cd.go (the file's own notice)
+
+Copyright 2009 The Go Authors. All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+
+Package sha1cd implements collision detection based on the whitepaper
+Counter-cryptanalysis from Marc Stevens. The original ubc implementation
+was done by Marc Stevens and Dan Shumow, and can be found at:
+https://github.com/cr-marcstevens/sha1collisiondetection
+
+--- sha1cdblock_generic.go (the file's own notice)
+
+Copyright 2009 The Go Authors. All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+
+Originally from: https://github.com/go/blob/master/src/crypto/sha1/sha1block.go
+It has been modified to support collision detection.
+
 ==============================================================================
 github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3
 ==============================================================================
@@ -2794,6 +3118,28 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+--- diffmatchpatch/diff.go and 4 more (the file's own notice)
+
+Copyright (c) 2012-2016 The go-diff authors. All rights reserved.
+https://github.com/sergi/go-diff
+See the included LICENSE file for license details.
+
+go-diff is a Go implementation of Google's Diff, Match, and Patch library
+Original library is Copyright (c) 2006 Google Inc.
+http://code.google.com/p/google-diff-match-patch
+
+--- diffmatchpatch/diffmatchpatch.go (the file's own notice)
+
+Copyright (c) 2012-2016 The go-diff authors. All rights reserved.
+https://github.com/sergi/go-diff
+See the included LICENSE file for license details.
+
+go-diff is a Go implementation of Google's Diff, Match, and Patch library
+Original library is Copyright (c) 2006 Google Inc.
+http://code.google.com/p/google-diff-match-patch
+
+Package diffmatchpatch offers robust algorithms to perform the operations required for synchronizing plain text.
 
 ==============================================================================
 github.com/skeema/knownhosts v1.3.1
@@ -3061,6 +3407,22 @@ github.com/xanzy/ssh-agent v0.3.3
 --- LICENSE
 
 The same text as github.com/skeema/knownhosts v1.3.1's above.
+
+--- sshagent.go (the file's own notice)
+
+Copyright 2015, Sander van Harmelen
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 
 ==============================================================================
 golang.org/x/crypto v0.57.0
@@ -3569,6 +3931,35 @@ The same text as @shikijs/core 4.4.3's above.
 --- LICENSE
 
 The same text as @shikijs/core 4.4.3's above.
+
+--- Oniguruma's COPYING (compiled into its onig.wasm)
+
+Oniguruma LICENSE
+-----------------
+
+Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
 
 ==============================================================================
 @shikijs/langs 4.4.3

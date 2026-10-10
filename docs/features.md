@@ -743,8 +743,15 @@ request each from main.
   production packages and Electron, the Inter font and the Lucide icons.
   Five packages ship without their licence text; the upstream texts are
   kept in `scripts/notices/` (lazy-val's is the standard MIT text with its
-  declared author, since no copy exists upstream). Identical texts print
-  once. The file is embedded (`notices.go`) and served at
+  declared author, since no copy exists upstream). Notices no package
+  licence carries are added: a compiled Go file's own comment when its
+  copyright holder is not the one its module's licence names (the runtime's
+  memmove from Inferno, keywrap's author; 29 in all), and what a package
+  builds from another project (Oniguruma's COPYING for the wasm Shiki's
+  engine inlines). Chromium's notices ship in the desktop app's resources,
+  since electron-builder deletes them from a macOS app. Identical texts
+  print once. Codex's review found those three gaps; each was confirmed in
+  the files and is pinned by a Go test. The file is embedded (`notices.go`) and served at
   `/third-party-notices.txt` by every server and switchyard, linked from
   the switchyard pages' footer and Settings → the app's License row; it
   ships in the desktop packages (`extraResources`) and the Docker image

@@ -39,3 +39,18 @@ func TestNoticesNameTheDirectModulesAtTheirVersions(t *testing.T) {
 		}
 	}
 }
+
+// Notices no package-level licence carries: a file's own (the runtime's memmove from Inferno, keywrap's author) and what a
+// package builds from another project (Shiki's Oniguruma, compiled into the wasm the web bundle inlines).
+func TestNoticesCarryWhatThePackageLicencesDoNot(t *testing.T) {
+	for _, want := range []string{
+		"runtime/memmove_amd64.s (the file's own notice)", "Vita Nuova Holdings Limited",
+		"openpgp/aes/keywrap/keywrap.go (the file's own notice)", "Matthew Endsley",
+		"Oniguruma's COPYING (compiled into its onig.wasm)", "K.Kosako",
+		"in the app's resources as LICENSES.chromium.html",
+	} {
+		if !strings.Contains(ThirdPartyNotices, want) {
+			t.Errorf("THIRD_PARTY_NOTICES lacks %q: run make notices", want)
+		}
+	}
+}

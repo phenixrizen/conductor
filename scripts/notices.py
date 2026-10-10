@@ -53,6 +53,12 @@ TEXT_KEPT = {
     "lazy-val": "lazy-val.LICENSE",
     "@iconify-json/lucide": "lucide.LICENSE",
 }
+# Notices a package needs beside its own licence: what it carries built from other projects.
+SUPPLEMENTS = {
+    "@shikijs/engine-oniguruma": [("Oniguruma's COPYING (compiled into its onig.wasm)", "oniguruma.COPYING")],
+}
+# A file's own copyright line: "Copyright (c) 2014 Name", "SPDX-FileCopyrightText: 2026 Name <url>".
+COPYRIGHT = re.compile(r"(?:spdx-file)?copyright(?:text:)?\s*(?:\(c\)|©)?\s*(?:[0-9]{4}(?:\s*[-–,]\s*[0-9]{4})*,?\s*)*(?:by\s+)?(.+)", re.I)
 
 
 class Entry:
@@ -97,15 +103,59 @@ def classify(text: str) -> str:
     return ""
 
 
+def leading_comment(path: Path) -> str:
+    """The comment block a source file opens with, its markers and build directives taken out."""
+    lines = []
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            s = raw.strip()
+            if not (s == "" or s.startswith(("//", "/*", "*"))):
+                break
+            if s.startswith(("//go:", "// +build", "//+build")):
+                continue
+            lines.append(re.sub(r"^(//\s?|/\*+\s?|\*+/|\*\s?)", "", s).rstrip("*/ ").rstrip())
+            if len(lines) > 80:
+                break
+    return "\n".join(lines).strip("\n")
+
+
+def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple[str, str]]:
+    """The notices of the files whose copyright holder their module's licence does not name (code taken from elsewhere, an
+    author's own line): each distinct comment once, as (where it is, the comment)."""
+    known = " ".join(licence_text.split()).lower()
+    found: dict[str, list[str]] = {}
+    for path in files:
+        head = leading_comment(path)
+        for m in COPYRIGHT.finditer(head):
+            holder = re.sub(r"<[^>]*>|\(?https?://\S+\)?|all rights reserved\.?", "", m.group(1), flags=re.I)
+            holder = " ".join(holder.split()).strip(" ,.")
+            if holder and holder.lower()[:40] not in known:
+                found.setdefault(head, []).append(path.relative_to(base).as_posix())
+                break
+    out = []
+    for head, paths in sorted(found.items(), key=lambda kv: sorted(kv[1])[0]):
+        paths.sort()
+        where = paths[0] if len(paths) == 1 else f"{paths[0]} and {len(paths) - 1} more"
+        out.append((f"{where} (the file's own notice)", head))
+    return out
+
+
 def go_entries() -> list[Entry]:
     mods: dict[tuple[str, str], Path] = {}
-    fmt = "{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{with .Replace}}{{.Dir}}{{else}}{{.Dir}}{{end}}{{end}}{{end}}"
+    sources: dict[str, set[Path]] = {}  # module path ("std" for Go's own) -> the source files compiled
+    fmt = ("{{.Dir}}\t{{with .Module}}{{if .Main}}main\t\t{{else}}{{.Path}}\t{{.Version}}\t{{with .Replace}}{{.Dir}}{{else}}{{.Dir}}"
+           "{{end}}{{end}}{{else}}std\t\t{{end}}\t{{join .GoFiles \" \"}} {{join .SFiles \" \"}}")
     for goos, goarch in PLATFORMS:
         env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0", "GOFLAGS": "-mod=readonly"}
         for line in run(["go", "list", "-deps", "-f", fmt, "./cmd/conductor"], env=env).splitlines():
-            if line.strip():
-                path, version, directory = line.split("\t")
+            if not line.strip():
+                continue
+            pkgdir, path, version, directory, names = line.split("\t")
+            if path == "main":
+                continue
+            if path != "std":
                 mods[(path, version)] = Path(directory)
+            sources.setdefault(path, set()).update(Path(pkgdir) / n for n in names.split())
     entries = []
     for (path, version), directory in sorted(mods.items()):
         texts = licence_files(directory)
@@ -114,11 +164,14 @@ def go_entries() -> list[Entry]:
             raise SystemExit(f"notices: no licence this script knows for the Go module {path} {version} in {directory}")
         # More than one licence text: each applies to the files it names (a project's COPYING says which); MPL-2.0 files' source is named.
         note = f"the source of its MPL-2.0 files: https://{path} at {version}" if "MPL-2.0" in kinds else ""
+        texts += file_notices(sorted(sources.get(path, ())), directory, " ".join(t for _, t in texts))
         entries.append(Entry(path, version, ", ".join(kinds), texts, note))
     toolchain = re.search(r"^toolchain (go\S+)", (ROOT / "go.mod").read_text(), re.M)
     goroot = Path(run(["go", "env", "GOROOT"]).strip())
+    licence = (goroot / "LICENSE").read_text()
+    std = file_notices(sorted(sources.get("std", ())), goroot / "src", licence)
     entries.insert(0, Entry("Go (the standard library and runtime)", toolchain.group(1) if toolchain else "", "BSD-3-Clause",
-                            [("LICENSE", (goroot / "LICENSE").read_text())]))
+                            [("LICENSE", licence)] + std))
     return entries
 
 
@@ -132,7 +185,9 @@ def npm_entry(directory: Path, note: str = "") -> Entry:
         texts = [("LICENSE", (EXTRA / TEXT_KEPT[pkg["name"]]).read_text())]
     if not texts:
         raise SystemExit(f"notices: the npm package {pkg['name']} {pkg.get('version', '')} carries no licence file; keep one in scripts/notices")
-    return Entry(pkg["name"], pkg.get("version", ""), licence or classify(texts[0][1]), texts, note)
+    kind = licence or classify(texts[0][1])
+    texts += [(name, (EXTRA / f).read_text()) for name, f in SUPPLEMENTS.get(pkg["name"], [])]
+    return Entry(pkg["name"], pkg.get("version", ""), kind, texts, note)
 
 
 def unique(entries: list[Entry]) -> list[Entry]:
@@ -158,7 +213,7 @@ def desktop_entries() -> list[Entry]:
         raise SystemExit("notices: no desktop/node_modules: run npm ci in desktop/ first")
     lines = run(["npm", "ls", "--omit=dev", "--all", "--parseable"], cwd=DESKTOP).splitlines()
     entries = [npm_entry(Path(line)) for line in lines if line.strip() and Path(line) != DESKTOP]
-    entries.append(npm_entry(DESKTOP / "node_modules/electron", note="Chromium's and Node.js's own notices ship beside the app as LICENSES.chromium.html"))
+    entries.append(npm_entry(DESKTOP / "node_modules/electron", note="Chromium's and Node.js's own notices ship in the app's resources as LICENSES.chromium.html"))
     return unique(entries)
 
 
