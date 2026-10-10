@@ -51,32 +51,13 @@ async function cell(page: Page, api: Api, id: string, col: number, row: number) 
 }
 
 /**
- * Waits for the program's request for reports to reach xterm. Left clicks probe it one at a time, each waited for in full (its press and
- * release, or a second of nothing: a click before the request is never reported), and the log is then let go quiet, so nothing a probe
- * sent arrives after a test takes its baseline.
+ * Waits until xterm has taken the program's request for mouse reports (on) or its letting go (off): xterm marks its element
+ * enable-mouse-events while reports are on. The program writing its request is not enough; it reaches the page a moment later.
  */
-async function untilReporting(page: Page, at: { x: number; y: number }, got: () => string) {
-  await expect
-    .poll(async () => {
-      const before = got().length
-      await page.mouse.click(at.x, at.y)
-      const deadline = Date.now() + 1_000
-      while (Date.now() < deadline) {
-        if (/\x1b\[<0;\d+;\d+M\x1b\[<0;\d+;\d+m/.test(got().slice(before))) return true
-        await page.waitForTimeout(50)
-      }
-      return false
-    }, { timeout: 20_000 })
-    .toBe(true)
-  let last = -1
-  await expect
-    .poll(() => {
-      const n = got().length
-      const quiet = n === last
-      last = n
-      return quiet
-    }, { intervals: [300], timeout: 10_000 })
-    .toBe(true)
+async function reporting(page: Page, on: boolean) {
+  const el = page.locator('.terminal-host .xterm').first()
+  if (on) await expect(el).toHaveClass(/enable-mouse-events/, { timeout: 15_000 })
+  else await expect(el).not.toHaveClass(/enable-mouse-events/, { timeout: 15_000 })
 }
 
 test('while the program holds the mouse, clicks are its own and Shift reaches the terminal', async ({ page, api, state }) => {
@@ -94,7 +75,7 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await page.keyboard.type('python3 app.py\n')
     await expect.poll(() => existsSync(join(cwd, 'ready.txt')), { timeout: 15_000 }).toBe(true)
     const mid = await cell(page, api, s.id, 40, 10)
-    await untilReporting(page, mid, got)
+    await reporting(page, true)
 
     // A right-click is the program's: a press and a release of the right button, nothing pasted, no menu.
     await setClip(page, 'PASTED-TEXT')
@@ -142,6 +123,7 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await page.keyboard.press('q')
     await expect.poll(() => existsSync(join(cwd, 'done.txt')), { timeout: 15_000 }).toBe(true)
     rmSync(join(cwd, 'done.txt'))
+    await reporting(page, false)
     await setClip(page, 'echo pasted-again > again.txt')
     await screen.click()
     await page.mouse.click(mid.x, mid.y, { button: 'right' })
@@ -157,10 +139,12 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await screen.click()
     await page.keyboard.type('python3 app.py letgo\n')
     await expect.poll(() => existsSync(join(cwd, 'ready.txt')), { timeout: 15_000 }).toBe(true)
-    await untilReporting(page, mid, got)
+    await reporting(page, true)
     const at = { clientX: Math.round(mid.x), clientY: Math.round(mid.y), button: 2, buttons: 2, bubbles: true, cancelable: true, composed: true }
     await page.locator('.terminal-host .xterm-screen').first().dispatchEvent('mousedown', at)
     await expect.poll(() => existsSync(join(cwd, 'done.txt')), { timeout: 15_000 }).toBe(true)
+    // The page has seen the program let go, so the menu event meets a terminal with no reports on: only the press's hold keeps it.
+    await reporting(page, false)
     await page.locator('.terminal-host .xterm-screen').first().dispatchEvent('mouseup', { ...at, buttons: 0 })
     await page.locator('.terminal-host .xterm-screen').first().dispatchEvent('contextmenu', { ...at, buttons: 0 })
     await page.waitForTimeout(500)

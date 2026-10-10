@@ -66,6 +66,14 @@ describe('the terminal right-click', () => {
     expect(r.take(true)).toBe(false)
     expect(r.take(true)).toBe(true)
   })
+  it('opens the menu with the forcing key whatever else holds (Option on a Mac, at a prompt or on a view link)', () => {
+    expect(rightClick({ ...base, force: true })).toBe('menu')
+    expect(rightClick({ ...base, force: true, hasSelection: true })).toBe('menu')
+    expect(rightClick({ ...base, force: true, canPaste: false, hasSelection: true })).toBe('menu')
+    expect(rightClick({ ...base, force: true, appMouse: true, canPaste: false })).toBe('menu')
+    // A Mac's Shift at a prompt still opens the menu.
+    expect(rightClick({ ...base, shift: true, force: false })).toBe('menu')
+  })
   it('forces with Shift, and with Option on a Mac', () => {
     expect(forcesSelection({ shiftKey: true, altKey: false }, false)).toBe(true)
     expect(forcesSelection({ shiftKey: false, altKey: true }, false)).toBe(false)

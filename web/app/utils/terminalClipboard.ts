@@ -45,10 +45,12 @@ export type RightClick = 'copy' | 'paste' | 'menu' | 'app'
 /**
  * appMouse: the program running asked for mouse reports when the button went down. It gets the click only on a connection that may type
  * (canPaste), since a view link's reports reach nothing; there the right-click copies or opens the menu as ever. force: the key xterm
- * takes the mouse back with (Shift, Option on a Mac), with which xterm reports nothing and the menu opens.
+ * takes the mouse back with (Shift, Option on a Mac): with it the menu always opens, and xterm reports nothing. Shift opens the menu
+ * too, except on a Mac over a program that holds the mouse, where xterm reports a Shift+right-click and so it is the program's.
  */
 export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; pastes: boolean; shift: boolean; appMouse?: boolean; force?: boolean }): RightClick {
-  if (ctx.appMouse && ctx.canPaste) return ctx.force ? 'menu' : 'app'
+  if (ctx.force) return 'menu'
+  if (ctx.appMouse && ctx.canPaste) return 'app'
   if (ctx.shift || !ctx.pastes) return 'menu'
   if (ctx.hasSelection) return 'copy'
   return ctx.canPaste ? 'paste' : 'menu'
