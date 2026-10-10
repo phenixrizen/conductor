@@ -54,6 +54,20 @@ class FileNotices(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertIn("Fabrice Bellard", got[0][1])
 
+    def test_a_license_banner_with_no_copyright_word(self):
+        p = self.write("dompurify.js", "/*! @license DOMPurify 3.4.15 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.4.15/LICENSE */\n\nfunction f() {}\n")
+        got = file_notices([p], Path(self.dir.name), "Copyright (c) 2016 - present Microsoft Corporation\nPermission is hereby granted")
+        self.assertEqual(len(got), 1)
+        self.assertIn("Cure53", got[0][1])
+
+    def test_code_in_prose_is_no_notice_and_a_named_banner_holder_matches_its_licence(self):
+        p = self.write("scan.go", "// Token returns the run of code points c satisfying f(c).\n// Precondition: ishex(c) is true; (C) is not a holder.\npackage fmt\n")
+        self.assertEqual(notice_comments(p), [])
+        a = self.write("arena.go", "// Copyright 2022 The Go Authors. All rights reserved.\n\npackage runtime\n\n// Chunks:\n//    (a) Reuse one.\n//    (b) Take a fresh one.\n//    (c) Failing all the above, map a new chunk.\nvar x int\n")
+        self.assertEqual(file_notices([a], Path(self.dir.name), GO_LICENCE), [])
+        v = self.write("shared.js", "/**\n* @vue/shared v3.5.43\n* (c) 2018-present Yuxi (Evan) You and Vue contributors\n* @license MIT\n**/\nexport {}\n")
+        self.assertEqual(file_notices([v], Path(self.dir.name), "The MIT License (MIT)\n\nCopyright (c) 2018-present, Yuxi (Evan) You and Vue contributors"), [])
+
     def test_no_notice(self):
         self.assertEqual(notice_comments(self.write("plain.go", "package x\n\nfunc f() {}\n")), [])
 

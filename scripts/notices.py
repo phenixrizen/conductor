@@ -62,9 +62,23 @@ SUPPLEMENTS: dict[str, list[dict[str, str]]] = {
     # ships, as a chunk of its own.
     "@shikijs/themes": [{"name": "tm-themes 1.12.3's NOTICE (the themes it carries)", "file": "tm-themes-1.12.3.NOTICE", "for": "4.4.3"}],
     "@shikijs/langs": [{"name": "tm-grammars 1.32.3's NOTICE (the grammars it carries)", "file": "tm-grammars-1.32.3.NOTICE", "for": "4.4.3"}],
+    # Monaco 0.57.0 vendors DOMPurify 3.4.15 (esm/vs/base/browser/dompurify), which its ThirdPartyNotices.txt leaves out.
+    "monaco-editor": [{"name": "DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)", "file": "dompurify-3.4.15.LICENSE", "for": "0.57.0"}],
 }
-# A file's own copyright line: "Copyright (c) 2014 Name", "SPDX-FileCopyrightText: 2026 Name <url>".
-COPYRIGHT = re.compile(r"(?:spdx-file)?copyright(?:text:)?\s*(?:\(c\)|©)?\s*(?:[0-9]{4}(?:\s*[-–,]\s*[0-9]{4})*,?\s*)*(?:by\s+)?(.+)", re.I)
+# A file's own copyright line: "Copyright (c) 2014 Name", "SPDX-FileCopyrightText: 2026 Name <url>", "@license X | (c) Name | …".
+# A bare "(c)" or "©" counts only standing alone before a year or a name, so code in prose (f(c), lower(c)) does not.
+MARK = r"(?<![\w(])(?:\([cC]\)|©)(?=\s+[0-9A-Z])"
+COPYRIGHT = re.compile(r"(?:(?i:(?:spdx-file)?copyright(?:text:)?)\s*(?:\([cC]\)|©)?|" + MARK + r")\s*(?:[0-9]{4}(?:\s*[-–,]\s*(?:[0-9]{4}|present))*,?\s*)*(?:by\s+)?(.+)")
+# A comment that is a notice: one with a copyright line, or a license banner.
+NOTICE = re.compile(r"(?i:copyright|@license)|" + MARK)
+# "(b)" beside a "(c)" makes it a list's third item, not a copyright mark.
+LISTED = re.compile(r"(?<![\w(])\([bB]\)")
+
+
+def is_notice(block: str) -> bool:
+    if re.search(r"copyright|@license", block, re.I):
+        return True
+    return bool(re.search(MARK, block)) and not LISTED.search(block)
 
 
 class Entry:
@@ -149,7 +163,7 @@ def comment_blocks(path: Path, limit: int = 200) -> list[str]:
 
 def notice_comments(path: Path) -> list[str]:
     """The comments near a file's top that have a copyright line in them (a file can carry its own and the code's origin's)."""
-    return [b for b in comment_blocks(path) if re.search(r"copyright", b, re.I)]
+    return [b for b in comment_blocks(path) if is_notice(b)]
 
 
 def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple[str, str]]:
@@ -160,9 +174,12 @@ def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple
     for path in files:
         for head in notice_comments(path):
             for m in COPYRIGHT.finditer(head):
-                holder = re.sub(r"<[^>]*>|\(?https?://\S+\)?|all rights reserved\.?", "", m.group(1), flags=re.I)
+                if not m.group(0).lower().startswith(("copyright", "spdx")) and LISTED.search(head):
+                    continue
+                holder = re.sub(r"<[^>]*>|\(?https?://\S+\)?|all rights reserved\.?|@license.*$", "", m.group(1).split(" | ")[0], flags=re.I)
                 holder = " ".join(holder.split()).strip(" ,.")
-                if holder and holder.lower()[:40] not in known:
+                # Named by the licence: the holder as written, or its first words ("Yuxi (Evan) You" of "… and Vue contributors").
+                if holder and holder.lower()[:40] not in known and " ".join(holder.lower().split()[:3]) not in known:
                     found.setdefault(head, []).append(path.relative_to(base).as_posix())
                     break
     out = []

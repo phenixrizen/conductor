@@ -20671,6 +20671,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 =========================================
 END OF vscode-swift NOTICES AND INFORMATION
 
+--- DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)
+
+The same text as github.com/go-jose/go-jose/v4 v4.1.5's above.
+
 --- esm/external/vscode-json-languageservice/lib/esm/utils/glob.js (the file's own notice)
 
 ---------------------------------------------------------------------------------------------
@@ -20678,6 +20682,10 @@ END OF vscode-swift NOTICES AND INFORMATION
  Copyright (c) 2013, Nick Fitzgerald
  Licensed under the MIT License. See LICENCE.md in the project root for license information.
 --------------------------------------------------------------------------------------------
+
+--- esm/vs/base/browser/dompurify/dompurify.js (the file's own notice)
+
+! @license DOMPurify 3.4.15 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.4.15/LICENSE
 
 --- esm/vs/base/common/marked/marked.js (the file's own notice)
 
