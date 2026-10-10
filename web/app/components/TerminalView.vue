@@ -2,7 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
-import { clipboardKey, readRightClickPastes, rightClick, writeRightClickPastes } from '~/utils/terminalClipboard'
+import { clipboardKey, forcesSelection, menuPress, readRightClickPastes, rightClick, RightPress, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
@@ -131,11 +131,30 @@ async function pasteClipboard(): Promise<void> {
     notice.value = 'This page cannot read the clipboard: paste with Ctrl+Shift+V'
   }
 }
+/** Whether the program running asked for mouse reports. */
+function appHoldsMouse(): boolean {
+  return !!term && term.modes.mouseTrackingMode !== 'none'
+}
+/** A right-click is decided by what its press held, not by the moment the menu event comes (RightPress). */
+const rightPress = new RightPress()
+/** Every press on the page, so one outside the terminal forgets a right press here that brought no menu. */
+function onAnyMouseDown(e: MouseEvent) {
+  if (host.value?.contains(e.target as Node) && menuPress(e, isMac)) rightPress.press({ appMouse: appHoldsMouse(), force: forcesSelection(e, isMac) })
+  else rightPress.clear()
+}
+/** The keyboard's menu key, noted as it goes down: its menu event is the keyboard's whatever the browser marks on it. */
+function onAnyKeyDown(e: KeyboardEvent) {
+  if (e.key === 'ContextMenu') rightPress.menuKey()
+}
 function onContextMenu(e: MouseEvent) {
-  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey })
+  const held = rightPress.take(e as PointerEvent)
+  if (held.keyboard) return // the terminal's menu opens
+  const force = held.force || forcesSelection(e, isMac)
+  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey, appMouse: held.appMouse, force })
   if (act === 'menu') return // the terminal's menu opens
   e.preventDefault()
   e.stopImmediatePropagation()
+  if (act === 'app') return // xterm has reported the click to the program
   if (act === 'copy') copySelection(true)
   else void pasteClipboard()
 }
@@ -642,6 +661,8 @@ onMounted(() => {
   })
   term.open(host.value!)
   // Capture, so a right-click that copies or pastes never reaches the menu's trigger.
+  window.addEventListener('mousedown', onAnyMouseDown, true)
+  window.addEventListener('keydown', onAnyKeyDown, true)
   host.value!.addEventListener('contextmenu', onContextMenu, true)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
@@ -688,6 +709,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('mousedown', onAnyMouseDown, true)
+  window.removeEventListener('keydown', onAnyKeyDown, true)
   host.value?.removeEventListener('contextmenu', onContextMenu, true)
   observer?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)

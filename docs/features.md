@@ -775,6 +775,39 @@ request each from main.
   everywhere), vitest (`bundledPackages`, the About link), the desktop
   packaging test, Playwright (the link opens the text).
 
+- **A right-click is the program's while it holds the mouse.** A probe
+  with a program that asks for SGR mouse reports (as Codex's TUI does)
+  showed clicks, drags and the wheel reported to it, as they should be,
+  but a right-click reported and then pasted the clipboard into it as
+  well: the terminal's own right-click (round 15's copy and paste) did
+  not look at the mouse mode. Now, as in Windows Terminal, a right-click
+  over a program that holds the mouse is the program's alone; Shift (with
+  which xterm takes the mouse back) still opens the terminal's menu and
+  Shift+drag still selects; a view link, whose reports reach nothing,
+  copies and opens the menu as before; when the program lets go, a
+  right-click pastes again. What a right-click does is decided by its
+  press (`RightPress`): on Windows the menu event comes after the release,
+  and a program that let go in between, or a Shift let up in between, no
+  longer turns the click into a paste or swallows the menu. The
+  keyboard's menu key always opens the menu (noted as it goes down, since
+  Firefox on Windows sends its menu event like a click's). On a Mac
+  nothing takes the mouse back (xterm's Option forcing also turns
+  Option-click into cursor keys for the program), so a program that holds
+  the mouse gets Shift+clicks too; ⌘C and ⌘V still copy and paste.
+  Codex reviewed it seven times (the press deciding the click, the
+  forcing key at the press, Mac Control-click, the keyboard's menu in
+  Chromium and Firefox, an abandoned press, a racing spec), the seventh
+  approving. Tests: vitest (`rightClick`, `RightPress`, `menuPress`,
+  `menuFromKeyboard`, `forcesSelection`), Playwright `mouse.spec.ts` (a
+  program logging what it reads: the right-click reported and nothing
+  pasted, the wheel and a drag reported, Shift+right-click opening the
+  menu and Shift+drag copying with the program hearing neither, the menu
+  key after an abandoned press, a press and menu event sent apart with
+  the program letting go between them, right-click pasting once it lets
+  go; it fails on main's build at the paste, and each later step fails
+  without its fix). The check with the real Codex and Claude Code in the
+  installed app comes with the next release candidate.
+
 - **Codex's hook trust lasts.** Checked live on 2026-10-10 with the real
   Codex 0.161 in a throwaway home (its own `CODEX_HOME`, a copy of the
   login, deleted afterwards; no Enter typed into a startup screen).

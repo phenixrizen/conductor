@@ -67,12 +67,15 @@ each reproduced with a Go test (round 15); none is fixed yet.
 
 ### The browser terminal
 
-- **Mouse.** xterm.js forwards mouse clicks, drags and the wheel to the
-  agent whenever the agent asks for mouse reporting (vim, htop, Codex's
-  TUI do; Claude Code mostly does not), and selects text by drag otherwise,
-  with Shift+drag selecting while an app holds the mouse. Nothing to build
-  unless an agent's mouse mode is found wanting; a check of Codex and Claude
-  Code with the mouse is on the by-hand list for the next round. Round 10.
+- **Mouse, checked by hand with the real agents.** xterm.js forwards mouse
+  clicks, drags and the wheel to the agent whenever the agent asks for
+  mouse reporting (vim, htop, Codex's TUI do; Claude Code mostly does not),
+  and selects text by drag otherwise, with Shift+drag selecting while an
+  app holds the mouse (not on a Mac, where nothing takes the mouse back); a
+  right-click is the program's then too (round 15, with a probe program in
+  Playwright). Still to do: clicks, drags, the
+  wheel, Shift+drag and right-click with the real Codex and Claude Code in
+  the installed app, with the next release candidate. Round 10.
 
 ### The sidebar
 
