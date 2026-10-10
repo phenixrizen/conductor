@@ -787,7 +787,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		}
 		role, until = g.Role, g.Until
 	}
-	if s.hub.Count() >= s.opts.MaxViewers {
+	// Every client whose transport is still open counts, an ended one whose
+	// transport still closes included: at most MaxViewers connections at once.
+	if s.hub.Len()+len(s.closing) >= s.opts.MaxViewers {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
 	}

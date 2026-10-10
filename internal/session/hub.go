@@ -285,6 +285,14 @@ func (h *Hub) Count() int {
 	return n
 }
 
+// Len returns the number of subscriptions the hub holds, those that have
+// ended and not yet left included.
+func (h *Hub) Len() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.subs)
+}
+
 // LoudCount returns the number of live subscriptions that are not quiet: the
 // session's viewers.
 func (h *Hub) LoudCount() int {

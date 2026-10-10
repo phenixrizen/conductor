@@ -83,7 +83,9 @@ A client that a session's owner (the server for its own sessions, a host
 for its session) closes, revoked, expired, a slow consumer or at the
 session's end, is sent nothing more that was queued for it: the frame being
 written as it is closed is the last, then its `error` frame and the close.
-What it sends from then on is not acted on. Each client's connection is written and closed apart from the session and
+What it sends from then on is not acted on, and until its connection has
+closed it still counts toward the session's viewer limit (`4409`). Each
+client's connection is written and closed apart from the session and
 the other clients, so one that stops reading holds up nobody else. On a
 server session a revoke answers once the connections of the link's viewers
 have closed.

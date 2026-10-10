@@ -300,6 +300,48 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 	}
 }
 
+// A client the session dropped counts toward MaxViewers until its transport
+// has closed: dropping and attaching again holds at most MaxViewers
+// connections open at once.
+func TestAClientStillClosingCountsTowardTheViewerCap(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 2})
+	held := newHeldSink()
+	sub, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "dropped"}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
+		for range 2 * HighWaterMark / len(chunk) {
+			if _, err := p.outW.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	if !waitFor(5*time.Second, func() bool { return errors.Is(sub.Reason(), ErrSlowConsumer) }) {
+		t.Fatal("the viewer was never dropped")
+	}
+	if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
+		t.Fatal("the dropped viewer stayed on the roster")
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "second"}, newChanSink(false)); err != nil {
+		t.Fatalf("the second viewer: %v", err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "third"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("a third viewer while the dropped one's transport is open: %v", err)
+	}
+	close(held.writes)
+	<-held.entered
+	close(held.closes)
+	<-sub.Closed()
+	if !waitFor(time.Second, func() bool {
+		_, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "third"}, newChanSink(false))
+		return err == nil
+	}) {
+		t.Fatal("the slot of the closed transport never came back")
+	}
+}
+
 // A second revoke of a link whose viewer's transport is still closing waits
 // for it as the first does.
 func TestARepeatedRevokeWaitsForTheTransportToo(t *testing.T) {
