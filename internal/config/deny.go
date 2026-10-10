@@ -169,7 +169,9 @@ func LocalFileDenyFunc(path string) (func() []string, error) {
 
 // withTargets returns list with each entry of next it lacks, and after each
 // entry the path it names with the symbolic links on its way resolved, when
-// that differs: for a name entry ("*name*"), its directory resolved. list is
+// that differs: for a name entry ("*name*"), its directory resolved; for a
+// file, also the name entry beside the file it leads to (session.NameEntry),
+// so the copies beside whatever a kept link leads to are refused. list is
 // returned as it is when nothing is added, and never changed: a new slice
 // holds what is added.
 func withTargets(list, next []string) []string {
@@ -188,6 +190,9 @@ func withTargets(list, next []string) []string {
 			}
 		} else if real, err := filepath.EvalSymlinks(e); err == nil {
 			add(real)
+			if fi, err := os.Stat(real); err == nil && !fi.IsDir() {
+				add(session.NameEntry(real))
+			}
 		}
 	}
 	if len(added) == 0 {

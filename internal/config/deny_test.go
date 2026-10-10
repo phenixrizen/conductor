@@ -543,6 +543,31 @@ func TestLocalFileDenyFunc(t *testing.T) {
 			t.Errorf("after the kept link moved twice, %s resolved to %s, want it refused", p, r)
 		}
 	}
+	// A catalog file given as a link, then another catalog file named: the
+	// link, kept and pointed at a third file, leaves that file and the
+	// copies beside it refused.
+	catalogs := filepath.Join(home, "catalogs")
+	for _, name := range []string{"one.json", "two.json", "two.json.bak", "other.json"} {
+		write(filepath.Join(catalogs, name), "{}")
+	}
+	catLink := filepath.Join(t.TempDir(), "agents.json")
+	if err := os.Symlink(filepath.Join(catalogs, "one.json"), catLink); err != nil {
+		t.Fatal(err)
+	}
+	write(cfg, `{"dataDir":"`+third+`","catalogPath":"`+catLink+`"}`)
+	deny()
+	write(cfg, `{"dataDir":"`+third+`","catalogPath":"`+filepath.Join(catalogs, "other.json")+`"}`)
+	deny()
+	os.Remove(catLink)
+	if err := os.Symlink(filepath.Join(catalogs, "two.json"), catLink); err != nil {
+		t.Fatal(err)
+	}
+	after = deny()
+	for _, p := range []string{"catalogs/one.json", "catalogs/two.json", "catalogs/two.json.bak", "catalogs/.two.json.swp"} {
+		if r, err := session.ResolvePath(home, p, after); err == nil {
+			t.Errorf("after the kept catalog link moved, %s resolved to %s, want it refused", p, r)
+		}
+	}
 	// Many requests at once.
 	var wg sync.WaitGroup
 	for range 8 {
