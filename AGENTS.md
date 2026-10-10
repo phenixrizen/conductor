@@ -102,6 +102,36 @@ a server publishes its sessions to the public switchyard by default, and a
 test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
 
+## Reviews
+
+Every pull request gets a Codex adversarial review before it is opened: a
+second model questioning the design, not only the lines. It comes from the
+Codex plugin for Claude Code (`openai/codex-plugin-cc`; `/plugin marketplace
+add openai/codex-plugin-cc`, `/plugin install codex@openai-codex`,
+`/codex:setup`, a Codex login). A person types
+`/codex:adversarial-review --base origin/main <focus>`; an agent cannot
+invoke that command and runs the same review through the plugin's script:
+
+```bash
+node "$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | tail -1)scripts/codex-companion.mjs" \
+  adversarial-review --wait --base origin/main "<focus: the risks this change touches>"
+```
+
+- The focus names the risks the change touches: races and ownership,
+  link scopes and revocation, credentials in logs, what the switchyard can
+  see, recovery after a restart, per-connection bounds.
+- Its findings are claims, not facts. Each is reproduced (a test, or a run
+  with `CONDUCTOR_RENDEZVOUS=0` and an isolated home) or traced in the code
+  before it is fixed; one the code refutes is answered with the lines that
+  refute it.
+- The pull request's body lists the findings and what became of each. One
+  outside the change's scope goes to `docs/tasks-todo.md`, never dropped
+  silently.
+- A change Codex wrote is reviewed the other way round, by Claude Code's
+  `/code-review`.
+- When the review cannot run (no login, no network), the pull request says
+  so: a limitation, not a pass.
+
 ## Pinned versions
 
 | Dependency | Version |

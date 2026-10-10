@@ -676,6 +676,16 @@ request each from main.
   the menu and its toggle; a view link copying, its Paste disabled and its
   paste reaching nothing; three runs out of three). No server change.
 
+- **Codex adversarial reviews, a rule.** The owner reviews with OpenAI's
+  Codex plugin for Claude Code at work, and its review of this repository
+  raised eight findings (their investigation is its own report). AGENTS.md
+  gains "Reviews": every pull request gets `codex-companion.mjs
+  adversarial-review` against `origin/main` with a focus on the risks it
+  touches; each finding is reproduced or traced before it is fixed or
+  refuted, and the pull request lists them; a change Codex wrote gets Claude
+  Code's `/code-review`. The plugin (1.0.6) was installed on this machine and
+  its first review was of this change.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
