@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clipboardKey, forcesSelection, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, writeRightClickPastes, type ClipboardKeyEvent } from './terminalClipboard'
+import { clipboardKey, forcesSelection, menuFromKeyboard, menuPress, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, writeRightClickPastes, type ClipboardKeyEvent } from './terminalClipboard'
 
 const key = (code: string, mods: Partial<ClipboardKeyEvent> = {}): ClipboardKeyEvent => ({ type: 'keydown', code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
 const ctx = (o: Partial<{ hasSelection: boolean; canPaste: boolean; mac: boolean }> = {}) => ({ hasSelection: false, canPaste: true, mac: false, ...o })
@@ -66,8 +66,18 @@ describe('the terminal right-click', () => {
     r.clear()
     expect(r.take()).toEqual({ appMouse: false, force: false })
   })
-  it('opens the menu for the keyboard\'s menu key over a program that holds the mouse, with right-click pasting off', () => {
-    expect(rightClick({ ...base, pastes: false, appMouse: false })).toBe('menu')
+  it('tells a menu from the keyboard (no button, or no pointer type) from a pointer\'s', () => {
+    expect(menuFromKeyboard({ button: -1, pointerType: 'mouse' })).toBe(true)
+    expect(menuFromKeyboard({ button: 0, pointerType: '' })).toBe(true)
+    expect(menuFromKeyboard({ button: 2, pointerType: 'mouse' })).toBe(false)
+    expect(menuFromKeyboard({ button: 0 })).toBe(false)
+  })
+  it('knows the presses that bring a menu: the right button, and Control-click on a Mac', () => {
+    expect(menuPress({ button: 2, ctrlKey: false }, false)).toBe(true)
+    expect(menuPress({ button: 0, ctrlKey: true }, true)).toBe(true)
+    expect(menuPress({ button: 0, ctrlKey: true }, false)).toBe(false)
+    expect(menuPress({ button: 0, ctrlKey: false }, true)).toBe(false)
+    expect(menuPress({ button: 1, ctrlKey: false }, false)).toBe(false)
   })
   it('opens the menu with the forcing key whatever else holds (Option on a Mac, at a prompt or on a view link)', () => {
     expect(rightClick({ ...base, force: true })).toBe('menu')

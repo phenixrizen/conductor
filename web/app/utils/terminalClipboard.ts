@@ -65,14 +65,14 @@ export interface PressHeld {
 /**
  * What the right button's press held, kept for the menu event that follows: on Windows that event comes after the release, and by then
  * the program may have let go of the mouse (it had the press reported) or the forcing key may be up (xterm reported nothing). A menu
- * event with no press before it (the keyboard's menu key) held nothing: the program has no click, so it never takes that one.
+ * event with no press before it held nothing. A press anywhere else, or one that brings no menu, forgets it (clear).
  */
 export class RightPress {
   private held: PressHeld | null = null
   press(held: PressHeld) {
     this.held = held
   }
-  /** Another button went down: a right press with no menu event after it is not kept for a later one. */
+  /** A press that brings no menu here: a right press with no menu event after it is not kept for a later one. */
   clear() {
     this.held = null
   }
@@ -82,6 +82,19 @@ export class RightPress {
     this.held = null
     return held
   }
+}
+
+/**
+ * A menu event from the keyboard (the menu key, Shift+F10), with no press behind it: Chromium sends it with no button (-1), the Pointer
+ * Events spec with no pointer type. It opens the menu, never pastes and is never the program's.
+ */
+export function menuFromKeyboard(e: { button: number; pointerType?: string }): boolean {
+  return e.button < 0 || e.pointerType === ''
+}
+
+/** A press that brings a menu event after it: the right button, or Control with the main button on a Mac. */
+export function menuPress(e: { button: number; ctrlKey: boolean }, mac: boolean): boolean {
+  return e.button === 2 || (mac && e.button === 0 && e.ctrlKey)
 }
 
 /** The key xterm forces a selection with while the program holds the mouse, and that takes a right-click back from it. */
