@@ -7,7 +7,7 @@ import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import { emptyTabs } from '~/utils/editorTabs'
 import { joinServer } from '~/utils/invite'
 import { joinedFromInfo } from '~/utils/joined'
-import { scopeItems } from '~/utils/chat'
+import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
@@ -97,7 +97,7 @@ function hearFocused(patch: { status?: string; attention?: string }) {
 // The chat for whoever holds the link (design 2d): the session's own thread, over this page's connection, so it works through a
 // switchyard too. A panel beside the terminal where there is room, a sheet over it on a phone (2c). A view-only guest can talk
 // and never reaches the agent; the owner's welcome says whether chat exists at all.
-const chatKey = computed(() => `session:${current.value?.id ?? ''}`)
+const chatKey = computed(() => chatThreadKey('session', current.value?.id ?? '', server.value))
 const chat = useChat(chatKey)
 const unread = useChatUnread()
 const chatUnread = computed(() => unread.count(chatKey.value))

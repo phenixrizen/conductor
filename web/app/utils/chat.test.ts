@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from './protocol'
 import type { MemberStatus } from './crews'
-import { SHEET_SNAPS, answeredQuestions, canSendToAgent, chatBytes, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
+import { SHEET_SNAPS, answeredQuestions, canSendToAgent, chatBytes, chatThreadKey, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
 
 const msg = (over: Partial<ChatMessage>): ChatMessage => ({ t: 'chat', id: 'a', at: '2026-10-06T08:32:40Z', scope: 'session', kind: 'message', by: { id: 'x', name: 'Nate', role: 'control' }, text: 'hi', ...over })
 
@@ -110,5 +110,19 @@ describe('chat lines', () => {
       'new: Also send to new · not started (off)',
     ])
     expect(markerLine({ by: { id: 'x', name: 'Nate', role: 'control' }, to: 'core', at: '2026-10-06T08:35:10Z' })).toMatch(/^Sent to core by Nate · \d\d:35:10$/)
+  })
+})
+
+describe('chatThreadKey', () => {
+  it('names a thread on this server by its id alone, as the workbench and the events stream do', () => {
+    expect(chatThreadKey('session', 'f2bf49558001ddec')).toBe('session:f2bf49558001ddec')
+    expect(chatThreadKey('run', 'r1')).toBe('run:r1')
+  })
+
+  it('keeps the same id on two other servers, or on another server and this one, apart', () => {
+    const a = chatThreadKey('session', 'f2bf49558001ddec', 'https://a.example')
+    const b = chatThreadKey('session', 'f2bf49558001ddec', 'https://b.example')
+    expect(new Set([a, b, chatThreadKey('session', 'f2bf49558001ddec')]).size).toBe(3)
+    expect(chatThreadKey('run', 'r1', 'https://a.example')).not.toBe(chatThreadKey('run', 'r1', 'https://b.example'))
   })
 })
