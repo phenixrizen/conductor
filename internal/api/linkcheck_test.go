@@ -199,6 +199,37 @@ func TestAForgottenRunsLinkAttachesNothing(t *testing.T) {
 	wantRefused(t, "hello after the run was forgotten", watch(guest, 3*time.Second, nil), proto.ErrCodeRevoked)
 }
 
+// A member's session that ended keeps its run link's viewers (the run link
+// still opens the run) until it leaves the server: then they are closed as
+// at the session's end, and a connection that authenticated before is
+// refused, so none stays where the run link's revoke no longer looks.
+func TestASessionLeavingTheServerClosesItsViewers(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"))
+	coreID := e.waitRunning(t, runID, "core")
+	_, out := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "control"})
+	token := out["token"].(string)
+	v := dialViewer(t, e, coreID, token)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlReady)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+coreID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	e.waitEnded(coreID)
+	v.expectControl(proto.CtlStatus)
+	pending := dialViewer(t, e, coreID, token)
+
+	if resp, _ := e.do("DELETE", "/api/sessions/"+coreID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove: %d", resp.StatusCode)
+	}
+	v.expectClose(proto.CloseSessionEnded)
+	pending.hello(80, 24)
+	if o := watch(pending, 3*time.Second, nil); !o.closed || o.closeCode != proto.CloseSessionEnded || o.welcomeRole != "" {
+		t.Fatalf("hello after the session left: %+v", o)
+	}
+}
+
 // A hosted session registers a viewer as it connects; a revoke racing that
 // registration leaves no viewer attached once it has returned: each
 // connection is refused at authentication, refused as it registers, or

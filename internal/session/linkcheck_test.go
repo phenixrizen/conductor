@@ -141,6 +141,34 @@ func TestRevokeAndAttachRace(t *testing.T) {
 	t.Logf("%d rounds: refused at attach %d, closed by the revoke %d", rounds, refused, closed)
 }
 
+// A session that leaves the registry closes every client as at its end and
+// takes none after.
+func TestRetireClosesEveryClientAndRefusesMore(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	a, b := newChanSink(false), newChanSink(false)
+	if _, err := s.Attach("", RoleControl, "", 80, 24, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "run-link", Authorize: func() (Grant, error) { return Grant{Role: RoleView}, nil }}, b); err != nil {
+		t.Fatal(err)
+	}
+	p.exit()
+	s.Retire()
+	for _, sink := range []*chanSink{a, b} {
+		select {
+		case r := <-sink.closed:
+			if !errors.Is(r, ErrSessionEnded) {
+				t.Fatalf("closed for %v", r)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("a client of the retired session stays")
+		}
+	}
+	if _, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false)); !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("attach after retiring: %v", err)
+	}
+}
+
 // A grant that lapses closes the client as it lapses, with ErrExpired, a
 // kind of revoke; one that lapsed already closes it at once.
 func TestGrantUntilClosesTheClient(t *testing.T) {

@@ -78,8 +78,9 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 	}, sink)
 	if err != nil {
 		switch {
-		case errors.Is(err, session.ErrRevoked):
-			// Said as a revoke after the attach says it: an error frame, then 4403.
+		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):
+			// Said as a revoke (or the session's end) after the attach says
+			// it: an error frame, then 4403 (or 4410).
 			sink.Close(err)
 		case errors.Is(err, session.ErrTooManyViewers):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
@@ -314,7 +315,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check})
 	if err != nil {
 		switch {
-		case errors.Is(err, session.ErrRevoked):
+		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):
 			newWSSink(c).Close(err)
 		case errors.Is(err, signal.ErrTooManyViewer):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")

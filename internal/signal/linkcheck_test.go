@@ -119,6 +119,26 @@ func TestHostedRevokeAndAddViewerRace(t *testing.T) {
 	t.Logf("%d rounds: refused %d, closed by the revoke %d", rounds, refused, closed)
 }
 
+// A hosted session that leaves the registry closes every viewer as at its
+// end and takes none after.
+func TestHostedRetireClosesEveryViewerAndRefusesMore(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	drainHost(t, conn)
+	v, err := hs.AddViewer("0123456789abcdef", session.RoleView, "l1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs.Retire()
+	if !errors.Is(v.Reason(), session.ErrSessionEnded) {
+		t.Fatalf("reason %v", v.Reason())
+	}
+	if _, err := hs.AddViewer("fedcba9876543210", session.RoleView, "l1", ""); !errors.Is(err, session.ErrSessionEnded) {
+		t.Fatalf("add after retiring: %v", err)
+	}
+	hs.RemoveViewer(v)
+}
+
 // A grant that lapses closes the viewer as it lapses, with ErrExpired, and
 // the frames still queued for it are dropped as on a revoke.
 func TestHostedViewerGrantUntil(t *testing.T) {

@@ -133,6 +133,9 @@ type Local struct {
 	info Info
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
+	// retired says the session left the server's registry (Retire): no
+	// client attaches any more.
+	retired bool
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
@@ -749,6 +752,10 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		id = NewID()
 	}
 	s.mu.Lock()
+	if s.retired {
+		s.mu.Unlock()
+		return nil, ErrSessionEnded
+	}
 	// The credential is checked under the lock that registers the client
 	// (see AttachOptions.Authorize).
 	var until time.Time
@@ -1122,6 +1129,26 @@ func (s *Local) DisconnectLink(linkID string) {
 	// Closed outside the lock: a sink's Close may wait on its connection.
 	for _, sub := range hit {
 		sub.closeWith(reason)
+	}
+}
+
+// Retire is the session leaving the server's registry, which only an ended
+// session does: every client is closed as at the session's end, and none
+// attaches after (ErrSessionEnded). Whoever closes a link's clients finds
+// them through the registry, so none may stay where it no longer looks.
+// The closes run on goroutines of their own, one per client (at most the
+// session's MaxViewers): a client that does not read holds up only its own.
+func (s *Local) Retire() {
+	var all []*Subscription
+	s.mu.Lock()
+	s.retired = true
+	s.hub.Each(func(sub *Subscription) { all = append(all, sub) })
+	s.mu.Unlock()
+	for _, sub := range all {
+		go func() {
+			s.closeNvims(sub)
+			sub.closeWith(ErrSessionEnded)
+		}()
 	}
 }
 

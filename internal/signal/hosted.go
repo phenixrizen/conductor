@@ -236,6 +236,9 @@ type HostedSession struct {
 	viewers        map[string]*Viewer
 	disconnectedAt time.Time
 	maxViewers     int
+	// retired says the session left the server's registry (Retire): no
+	// viewer is added any more.
+	retired bool
 	// events limits what the server forwards to the host on an agent's behalf
 	// (ForwardActivity, and SetAttentionFull with forward): the host's
 	// connection also carries its viewers' input, and closes when its queue is
@@ -430,6 +433,10 @@ type ViewerOptions struct {
 func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	role := o.Role
 	h.mu.Lock()
+	if h.retired {
+		h.mu.Unlock()
+		return nil, session.ErrSessionEnded
+	}
 	// The credential first: a link revoked meanwhile says so, whatever the
 	// host's state.
 	var until time.Time
@@ -779,6 +786,23 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 	}
 	conn.Close()
 	h.notifyChange()
+}
+
+// Retire is the session leaving the server's registry: every viewer is
+// closed as at the session's end, and none is added after
+// (session.ErrSessionEnded). Whoever closes a link's viewers finds them
+// through the registry, so none may stay where it no longer looks.
+func (h *HostedSession) Retire() {
+	h.mu.Lock()
+	h.retired = true
+	viewers := make([]*Viewer, 0, len(h.viewers))
+	for _, v := range h.viewers {
+		viewers = append(viewers, v)
+	}
+	h.mu.Unlock()
+	for _, v := range viewers {
+		v.close(session.ErrSessionEnded)
+	}
 }
 
 // CloseViewers disconnects every viewer with reason (server shutdown).
