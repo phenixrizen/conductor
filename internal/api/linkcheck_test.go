@@ -230,6 +230,86 @@ func TestASessionLeavingTheServerClosesItsViewers(t *testing.T) {
 	}
 }
 
+// noSessionEventAfterRemoved reads the event stream ch until d has passed
+// since the removed event of id, and fails on a session event of id after
+// it: a session the lists dropped must not come back as its viewers leave.
+func noSessionEventAfterRemoved(t *testing.T, ch chan []byte, id string, d time.Duration) {
+	t.Helper()
+	var removedAt time.Time
+	timeout := time.After(10 * time.Second)
+	for {
+		var wait <-chan time.Time
+		if !removedAt.IsZero() {
+			wait = time.After(time.Until(removedAt.Add(d)))
+		}
+		select {
+		case msg := <-ch:
+			s := string(msg)
+			if !strings.Contains(s, `"`+id+`"`) {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(s, "event: removed"):
+				removedAt = time.Now()
+			case strings.HasPrefix(s, "event: session") && !removedAt.IsZero():
+				t.Fatalf("a session event after the removal: %s", s)
+			}
+		case <-wait:
+			return
+		case <-timeout:
+			t.Fatal("no removed event")
+		}
+	}
+}
+
+// A session leaving the server closes its viewers without bringing itself
+// back to the lists: no session event follows the removed one.
+func TestARemovedSessionsViewersLeaveQuietly(t *testing.T) {
+	t.Run("server", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		id := e.createSession("cat")
+		a, b := dialViewer(t, e, id, adminToken), dialViewer(t, e, id, adminToken)
+		a.hello(80, 24)
+		b.hello(80, 24)
+		a.expectControl(proto.CtlReady)
+		b.expectControl(proto.CtlReady)
+		if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("stop: %d", resp.StatusCode)
+		}
+		e.waitEnded(id)
+		ch := e.srv.events.subscribe()
+		defer e.srv.events.unsubscribe(ch)
+		if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("remove: %d", resp.StatusCode)
+		}
+		a.expectClose(proto.CloseSessionEnded)
+		b.expectClose(proto.CloseSessionEnded)
+		noSessionEventAfterRemoved(t, ch, id, time.Second)
+	})
+	t.Run("hosted", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		host := dialFakeHost(t, e, "")
+		v := dialViewer(t, e, host.sessionID, adminToken)
+		v.expectControl(proto.CtlWelcome)
+		host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if d, ok := e.srv.registry.Get(host.sessionID); ok && d.Info().Status.Ended() {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the session never ended")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		ch := e.srv.events.subscribe()
+		defer e.srv.events.unsubscribe(ch)
+		e.srv.registry.Remove(host.sessionID)
+		v.expectClose(proto.CloseSessionEnded)
+		noSessionEventAfterRemoved(t, ch, host.sessionID, time.Second)
+	})
+}
+
 // A hosted session registers a viewer as it connects; a revoke racing that
 // registration leaves no viewer attached once it has returned: each
 // connection is refused at authentication, refused as it registers, or

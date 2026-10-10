@@ -373,8 +373,14 @@ func OptionsFromProto(in []proto.AttentionOption) []session.Option {
 	return out
 }
 
+// notifyChange hands a fresh Info to the hub's OnChange, unless the session
+// left the registry (Retire): the lists it left would take it back as its
+// last viewers leave.
 func (h *HostedSession) notifyChange() {
-	if h.hub != nil && h.hub.OnChange != nil {
+	h.mu.Lock()
+	retired := h.retired
+	h.mu.Unlock()
+	if h.hub != nil && h.hub.OnChange != nil && !retired {
 		h.hub.OnChange(h.Info())
 	}
 }
@@ -628,9 +634,9 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 		}
 	}
 	h.mu.Lock()
-	id := h.info.ID
+	id, retired := h.info.ID, h.retired
 	h.mu.Unlock()
-	if h.hub != nil && h.hub.OnActivity != nil {
+	if h.hub != nil && h.hub.OnActivity != nil && !retired {
 		h.hub.OnActivity(id, e, recorded)
 	}
 }
@@ -679,9 +685,9 @@ func (h *HostedSession) HostChat(m proto.ChatMessage) {
 		out.Event = m.Event
 	}
 	h.mu.Lock()
-	sid := h.info.ID
+	sid, retired := h.info.ID, h.retired
 	h.mu.Unlock()
-	if h.hub != nil && h.hub.OnChat != nil {
+	if h.hub != nil && h.hub.OnChat != nil && !retired {
 		h.hub.OnChat(sid, out)
 	}
 }
