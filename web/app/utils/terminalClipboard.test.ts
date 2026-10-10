@@ -57,14 +57,29 @@ describe('the terminal right-click', () => {
     expect(rightClick({ ...base, appMouse: true, canPaste: false })).toBe('menu')
     expect(rightClick({ ...base, appMouse: true, canPaste: false, hasSelection: true })).toBe('copy')
   })
-  it('keeps what the press held for one menu event; a menu with no press (the keyboard\'s key) held nothing', () => {
+  it('keeps what the press held for one menu event; a menu with no press held nothing', () => {
     const r = new RightPress()
+    const click = { button: 2, pointerType: 'mouse' }
     r.press({ appMouse: true, force: true })
-    expect(r.take()).toEqual({ appMouse: true, force: true })
-    expect(r.take()).toEqual({ appMouse: false, force: false })
+    expect(r.take(click)).toEqual({ appMouse: true, force: true, keyboard: false })
+    expect(r.take(click)).toEqual({ appMouse: false, force: false, keyboard: false })
     r.press({ appMouse: true, force: false })
     r.clear()
-    expect(r.take()).toEqual({ appMouse: false, force: false })
+    expect(r.take(click)).toEqual({ appMouse: false, force: false, keyboard: false })
+  })
+  it('takes the menu key for the keyboard\'s even when its event looks like a click (Firefox on Windows), after an abandoned press', () => {
+    const r = new RightPress()
+    const firefox = { button: 0, pointerType: 'mouse' }
+    r.press({ appMouse: true, force: false })
+    r.menuKey()
+    expect(r.take(firefox)).toEqual({ appMouse: false, force: false, keyboard: true })
+    r.menuKey()
+    r.press({ appMouse: true, force: false })
+    expect(r.take({ button: 2, pointerType: 'mouse' })).toEqual({ appMouse: true, force: false, keyboard: false })
+    r.menuKey()
+    r.clear()
+    expect(r.take(firefox).keyboard).toBe(false)
+    expect(r.take({ button: -1, pointerType: 'mouse' }).keyboard).toBe(true)
   })
   it('tells a menu from the keyboard (no button, or no pointer type) from a pointer\'s', () => {
     expect(menuFromKeyboard({ button: -1, pointerType: 'mouse' })).toBe(true)

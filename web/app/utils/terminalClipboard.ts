@@ -64,24 +64,35 @@ export interface PressHeld {
 }
 
 /**
- * What the right button's press held, kept for the menu event that follows: on Windows that event comes after the release, and by then
- * the program may have let go of the mouse (it had the press reported) or the forcing key may be up (xterm reported nothing). A menu
- * event with no press before it held nothing. A press anywhere else, or one that brings no menu, forgets it (clear).
+ * What brought the next menu event, kept until it comes: a press that brings one (the right button, Control-click on a Mac) with what it
+ * held, or the keyboard's menu key. On Windows the menu event comes after the release, and by then the program may have let go of the
+ * mouse (it had the press reported) or the forcing key may be up (xterm reported nothing). The menu key is noted when it goes down, since
+ * not every browser marks its menu event (Firefox on Windows sends one like a click's). A press anywhere else, or one that brings no
+ * menu, forgets what was kept (clear).
  */
 export class RightPress {
   private held: PressHeld | null = null
+  private key = false
   press(held: PressHeld) {
     this.held = held
+    this.key = false
   }
-  /** A press that brings no menu here: a right press with no menu event after it is not kept for a later one. */
+  /** The keyboard's menu key went down. */
+  menuKey() {
+    this.held = null
+    this.key = true
+  }
   clear() {
     this.held = null
+    this.key = false
   }
-  /** Read once. */
-  take(): PressHeld {
-    const held = this.held ?? { appMouse: false, force: false }
+  /** What brought this menu event, read once: the keyboard (the menu key, or an event marked as the keyboard's), a press, or nothing. */
+  take(e: { button: number; pointerType?: string }): PressHeld & { keyboard: boolean } {
+    const keyboard = this.key || menuFromKeyboard(e)
+    const held = keyboard || !this.held ? { appMouse: false, force: false } : this.held
     this.held = null
-    return held
+    this.key = false
+    return { ...held, keyboard }
   }
 }
 

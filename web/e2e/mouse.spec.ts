@@ -136,6 +136,21 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     expect(got()).not.toContain('PASTED-TEXT')
     expect(got().length).toBe(before)
 
+    // So is a menu event that looks like a click (Firefox on Windows sends the menu key's so), once the menu key went down before it.
+    await screenEl.dispatchEvent('mousedown', { ...press, buttons: 2 })
+    await page.locator('body').dispatchEvent('mouseup', { ...press, buttons: 0 })
+    await expect.poll(() => got().length).toBeGreaterThan(before)
+    await page.waitForTimeout(300)
+    before = got().length
+    await page.locator('.terminal-host textarea').first().dispatchEvent('keydown', { key: 'ContextMenu', code: 'ContextMenu', bubbles: true, cancelable: true })
+    await screenEl.dispatchEvent('contextmenu', { ...press, button: 0, buttons: 0 })
+    await expect(page.getByRole('menuitem', { name: 'Select all' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await page.waitForTimeout(300)
+    expect(got()).not.toContain('PASTED-TEXT')
+    expect(got().length).toBe(before)
+
     // The forcing key is judged at the press: Shift held at the press and let go before the menu event (on Windows it comes after the
     // release) still opens the menu, and xterm reported nothing.
     await screenEl.dispatchEvent('mousedown', { ...press, buttons: 2, shiftKey: true })
