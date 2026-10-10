@@ -126,8 +126,9 @@ func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
 // What the .git check and the session's branch read of a .git file, a
 // commondir or a HEAD is read only when it is a regular file, and bounded
 // (a .git file up to 1 MiB, as git takes one): one that is a FIFO, a link
-// to /dev/zero or too long neither blocks nor fills memory, and counts for
-// nothing.
+// to /dev/zero or too long neither blocks nor fills memory; it counts for
+// nothing, but a commondir that cannot be read leaves its repository read
+// only.
 func TestGitDirReadsAreBounded(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -182,8 +183,10 @@ func TestGitDirReadsAreBounded(t *testing.T) {
 	}()
 	select {
 	case marked := <-done:
-		if len(marked) != 0 {
-			t.Fatalf("marked as a git directory: %q", marked)
+		// wt's git directory has a commondir that cannot be read (a link to
+		// /dev/zero): what it stands for is not known, so wt is read only.
+		if len(marked) != 1 || marked[0] != "wt" {
+			t.Fatalf("marked as a git directory: %q, want wt alone", marked)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("reading a FIFO or /dev/zero blocked")
@@ -366,6 +369,21 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 		must(os.MkdirAll(filepath.Join(root, "spaced", "shared ", d), 0o755))
 	}
 	must(os.WriteFile(filepath.Join(root, "spaced", "shared ", "config"), []byte("[core]\n"), 0o644))
+	// .git/shallow links to alias, which links to a file not made yet.
+	must(os.Symlink("../alias", filepath.Join(root, ".git", "shallow")))
+	must(os.Symlink("settings3", filepath.Join(root, "alias")))
+	// .git/reftable links out to reftable-store.
+	must(os.MkdirAll(filepath.Join(root, "reftable-store"), 0o755))
+	must(os.WriteFile(filepath.Join(root, "reftable-store", "tables.list"), []byte("x\n"), 0o644))
+	must(os.Symlink("../reftable-store", filepath.Join(root, ".git", "reftable")))
+	// A commondir padded past what is read: its repository is read only.
+	must(os.MkdirAll(filepath.Join(root, "bigcommon", ".git"), 0o755))
+	must(os.WriteFile(filepath.Join(root, "bigcommon", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	must(os.WriteFile(filepath.Join(root, "bigcommon", ".git", "commondir"), []byte("../shared"+strings.Repeat("\n", maxGitFile)), 0o644))
+	for _, d := range []string{"refs", "objects"} {
+		must(os.MkdirAll(filepath.Join(root, "bigcommon", "shared", d), 0o755))
+	}
+	must(os.WriteFile(filepath.Join(root, "bigcommon", "shared", "config"), []byte("[core]\n"), 0o644))
 	// A one-line YAML file with a gitdir key: an ordinary file.
 	must(os.WriteFile(filepath.Join(root, "settings.yml"), []byte("gitdir: null\n"), 0o644))
 
@@ -382,7 +400,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Stat(filepath.Join(root, branchRef)); err != nil {
 		t.Fatalf("the branch's loose ref: %v", err)
 	}
-	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config"}
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new"}
 	for i, p := range refused {
 		id := fmt.Sprintf("m%d", i)
 		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
@@ -395,6 +413,9 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	}
 	if _, err := os.Lstat(filepath.Join(root, "worktree-settings")); err == nil {
 		t.Fatal("the file a dangling config.worktree link names was made")
+	}
+	if _, err := os.Lstat(filepath.Join(root, "settings3")); err == nil {
+		t.Fatal("the file at the end of a dangling chain of links was made")
 	}
 	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config", "spaced/shared /config"} {
 		h, _ := ReadPath(root, p, false, nil)

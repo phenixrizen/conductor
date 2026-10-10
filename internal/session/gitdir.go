@@ -82,6 +82,12 @@ func inGitDir(real string) bool {
 			break
 		}
 	}
+	if ids.incomplete {
+		// What a repository on the way stands for could not be told in full
+		// (an oversized commondir, more entries than are looked at): read
+		// only rather than guess.
+		return true
+	}
 	for _, m := range ids.missing {
 		if m == real {
 			return true
@@ -105,11 +111,13 @@ func inGitDir(real string) bool {
 }
 
 // gitIDs is what a repository's metadata is, to compare a path with:
-// files and directories by identity, and the paths metadata links point
-// to that do not exist yet (a save there would make the file).
+// files and directories by identity, the paths metadata links point to
+// that do not exist yet (a save there would make the file), and whether
+// any of it could not be told in full.
 type gitIDs struct {
-	files   []os.FileInfo
-	missing []string
+	files      []os.FileInfo
+	missing    []string
+	incomplete bool
 }
 
 // rawJoin joins name to dir as the kernel walks them, without cleaning
@@ -154,10 +162,15 @@ func gitDirsIn(dir string, ids *gitIDs) {
 // gitDirFiles adds to ids, for the git directory gitDir, the common
 // directory its commondir names (git reads the configuration, refs and
 // objects there, with or without a HEAD of its own) and, for both, the
-// targets of their metadata that are links (linkedMetadata).
+// targets of their entries that are links (linkedMetadata).
 func gitDirFiles(gitDir string, ids *gitIDs) {
 	linkedMetadata(gitDir, ids)
-	if common, ok := readCommonDir(gitDir); ok {
+	common, ok, known := readCommonDir(gitDir)
+	if !known {
+		ids.incomplete = true
+		return
+	}
+	if ok {
 		if cfi, err := os.Stat(common); err == nil && cfi.IsDir() {
 			ids.files = append(ids.files, cfi)
 			linkedMetadata(common, ids)
@@ -167,40 +180,41 @@ func gitDirFiles(gitDir string, ids *gitIDs) {
 
 // readCommonDir reads gitDir's commondir as git does: its trailing line
 // breaks dropped, the path up to the first NUL (spaces are part of it),
-// relative to gitDir.
-func readCommonDir(gitDir string) (string, bool) {
-	b, whole, ok := readPrefix(rawJoin(gitDir, "commondir"), maxGitFile)
-	if !ok || !whole {
-		return "", false
+// relative to gitDir. known is false when there is one that cannot be read
+// in full here (over maxGitFile, not a regular file): git may still use it.
+func readCommonDir(gitDir string) (common string, ok, known bool) {
+	path := rawJoin(gitDir, "commondir")
+	if _, err := os.Lstat(path); err != nil {
+		return "", false, true
+	}
+	b, whole, readable := readPrefix(path, maxGitFile)
+	if !readable || !whole {
+		return "", false, false
 	}
 	b = bytes.TrimRight(b, "\r\n")
 	if i := bytes.IndexByte(b, 0); i >= 0 {
 		b = b[:i]
 	}
 	if len(b) == 0 {
-		return "", false
+		return "", false, true
 	}
-	return rawJoin(gitDir, string(b)), true
+	return rawJoin(gitDir, string(b)), true, true
 }
 
-// metadataEntries are the entries of a git directory git reads as its own
-// that may be links out of it; the hooks in hooks are looked at one by one
-// too (at most maxHooks of them). Links deeper inside (a loose ref, an
-// object) are not followed: only someone who can already write inside .git
-// makes one, and none of them is a program git runs.
-var metadataEntries = []string{
-	"config", "config.worktree", "HEAD", "commondir", "gitdir", "index", "packed-refs", "shallow",
-	"info", "info/attributes", "info/exclude", "hooks", "refs", "logs", "objects", "objects/info/alternates",
-	"worktrees", "modules",
-}
+// The entries of a git directory are looked at whole: every entry at its
+// top (config, HEAD, refs, reftable, objects, hooks, ... whatever git
+// keeps there), and those of info and hooks, and objects/info/alternates.
+// Links deeper inside (a loose ref, an object) are not followed: only
+// someone who can already write inside .git makes one, and none of them is
+// a program git runs. More entries than maxEntries in one of these
+// folders leaves the repository not told in full.
+const maxEntries = 4096
 
-const maxHooks = 256
-
-// linkedMetadata adds to ids what the metadata entries of gitDir that are
-// links point to: a working-tree file a .git/config link names is the
-// repository's configuration all the same, a folder .git/refs links to
-// holds its refs, and a link to nothing yet names the file a save would
-// make (linkDestination).
+// linkedMetadata adds to ids what the entries of gitDir that are links
+// point to: a working-tree file a .git/config link names is the
+// repository's configuration all the same, a folder .git/refs or
+// .git/reftable links to holds its refs, and a link to nothing yet names
+// the file a save would make (linkDestination).
 func linkedMetadata(gitDir string, ids *gitIDs) {
 	add := func(p string) {
 		fi, err := os.Lstat(p)
@@ -211,50 +225,88 @@ func linkedMetadata(gitDir string, ids *gitIDs) {
 			ids.files = append(ids.files, target)
 		} else if dest, ok := linkDestination(p); ok {
 			ids.missing = append(ids.missing, dest)
+		} else {
+			ids.incomplete = true
 		}
 	}
-	for _, e := range metadataEntries {
-		add(rawJoin(gitDir, e))
+	for _, dir := range []string{gitDir, rawJoin(gitDir, "info"), rawJoin(gitDir, "hooks")} {
+		names, complete := dirNames(dir, maxEntries)
+		if !complete {
+			ids.incomplete = true
+		}
+		for _, n := range names {
+			add(rawJoin(dir, n))
+		}
 	}
-	hooks := rawJoin(gitDir, "hooks")
-	for _, n := range dirNames(hooks, maxHooks) {
-		add(rawJoin(hooks, n))
-	}
+	add(rawJoin(gitDir, "objects/info/alternates"))
 }
 
-// linkDestination is where the link at p points when nothing is there,
-// spelt as ResolvePath spells a path whose last element does not exist:
-// its parent's links resolved, the last element as written.
+// maxLinkHops bounds how many links linkDestination follows.
+const maxLinkHops = 40
+
+// linkDestination is the file a save would make where the link at p
+// leads, when nothing is at its end: the links of the chain followed one by
+// one, each target from its link's own directory, as the kernel walks
+// them, and the last spelt as ResolvePath spells a path whose last element
+// does not exist (its parent's links resolved, the element as written).
 func linkDestination(p string) (string, bool) {
-	t, err := os.Readlink(p)
-	if err != nil {
-		return "", false
+	for range maxLinkHops {
+		t, err := os.Readlink(p)
+		if err != nil {
+			return "", false
+		}
+		dest := rawJoin(rawDir(p), t)
+		parent, err := filepath.EvalSymlinks(rawDir(dest))
+		if err != nil {
+			return "", false
+		}
+		last := dest[strings.LastIndexByte(dest, filepath.Separator)+1:]
+		if last == "" || last == "." || last == ".." {
+			return "", false
+		}
+		next := filepath.Join(parent, last)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return next, true
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return "", false
+		}
+		p = next
 	}
-	dest := rawJoin(filepath.Dir(p), t)
-	parent, err := filepath.EvalSymlinks(filepath.Dir(dest))
-	if err != nil {
-		return "", false
-	}
-	return filepath.Join(parent, filepath.Base(dest)), true
+	return "", false
 }
 
-// dirNames lists at most n names in path when it is a directory, and
-// nothing otherwise: the open does not block (a FIFO there is not waited
-// on), and what was opened is checked to be a directory.
-func dirNames(path string, n int) []string {
+// rawDir is the directory part of p, not cleaned: rawJoin's counterpart.
+func rawDir(p string) string {
+	i := strings.LastIndexByte(p, filepath.Separator)
+	if i <= 0 {
+		return string(filepath.Separator)
+	}
+	return p[:i]
+}
+
+// dirNames lists the names in path when it is a directory (none when it is
+// not), at most n of them; complete is false when there were more. The
+// open does not block (a FIFO there is not waited on), and what was opened
+// is checked to be a directory.
+func dirNames(path string, n int) (names []string, complete bool) {
 	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
-		return nil
+		return nil, true
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer f.Close()
 	if fi, err := f.Stat(); err != nil || !fi.IsDir() {
-		return nil
+		return nil, true
 	}
-	names, _ := f.Readdirnames(n)
-	return names
+	names, _ = f.Readdirnames(n + 1)
+	if len(names) > n {
+		return names[:n], false
+	}
+	return names, true
 }
 
 // isGitDirectory reports whether dir is a git directory by its files, as
