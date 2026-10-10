@@ -744,9 +744,14 @@ request each from main.
   Five packages ship without their licence text; the upstream texts are
   kept in `scripts/notices/` (lazy-val's is the standard MIT text with its
   declared author, since no copy exists upstream). Notices no package
-  licence carries are added: a compiled Go file's own comment when its
-  copyright holder is not the one its module's licence names (the runtime's
-  memmove from Inferno, keywrap's author; 29 in all), and what a package
+  licence carries are added: a source file's own comment when its copyright
+  holder is not one its package's licence names, for every Go file compiled
+  for the four platforms (the runtime's memmove from Inferno, the math
+  package's Sun Microsystems notices, keywrap's author) and every package
+  file the web bundle's code was built from (xterm.js crediting Fabrice
+  Bellard, the marked copy inside Monaco); 55 in all. Go runs at exactly
+  the toolchain go.mod pins (`GOTOOLCHAIN`), checked, so a newer go on the
+  PATH cannot scan its own sources under that name. And what a package
   builds from other projects (Oniguruma's COPYING for the wasm Shiki's
   engine inlines; tm-themes' and tm-grammars' NOTICE files for the themes
   and grammars Shiki ships, every one a chunk of its own, taken at the
@@ -754,7 +759,7 @@ request each from main.
   the script until they are taken again). Chromium's notices ship in the
   desktop app's resources, since electron-builder deletes them from a macOS
   app. Identical texts print once; the file is about 1.1 MB, most of it the
-  grammars' notices. Codex's reviews found these gaps in two passes; each
+  grammars' notices. Codex's reviews found these gaps in three passes; each
   was confirmed in the files and is pinned by a Go test, the comment scan
   by Python fixtures (`scripts/notices_test.py`). The file is embedded (`notices.go`) and served at
   `/third-party-notices.txt` by every server and switchyard, linked from

@@ -147,9 +147,9 @@ def comment_blocks(path: Path, limit: int = 200) -> list[str]:
     return [b for b in blocks if b]
 
 
-def notice_comment(path: Path) -> str:
-    """The first comment near a file's top that has a copyright line in it, or ''."""
-    return next((b for b in comment_blocks(path) if re.search(r"copyright", b, re.I)), "")
+def notice_comments(path: Path) -> list[str]:
+    """The comments near a file's top that have a copyright line in them (a file can carry its own and the code's origin's)."""
+    return [b for b in comment_blocks(path) if re.search(r"copyright", b, re.I)]
 
 
 def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple[str, str]]:
@@ -158,13 +158,13 @@ def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple
     known = " ".join(licence_text.split()).lower()
     found: dict[str, list[str]] = {}
     for path in files:
-        head = notice_comment(path)
-        for m in COPYRIGHT.finditer(head):
-            holder = re.sub(r"<[^>]*>|\(?https?://\S+\)?|all rights reserved\.?", "", m.group(1), flags=re.I)
-            holder = " ".join(holder.split()).strip(" ,.")
-            if holder and holder.lower()[:40] not in known:
-                found.setdefault(head, []).append(path.relative_to(base).as_posix())
-                break
+        for head in notice_comments(path):
+            for m in COPYRIGHT.finditer(head):
+                holder = re.sub(r"<[^>]*>|\(?https?://\S+\)?|all rights reserved\.?", "", m.group(1), flags=re.I)
+                holder = " ".join(holder.split()).strip(" ,.")
+                if holder and holder.lower()[:40] not in known:
+                    found.setdefault(head, []).append(path.relative_to(base).as_posix())
+                    break
     out = []
     for head, paths in sorted(found.items(), key=lambda kv: sorted(kv[1])[0]):
         paths.sort()
@@ -173,13 +173,27 @@ def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple
     return out
 
 
+def go_env() -> dict[str, str]:
+    """The environment that runs the toolchain go.mod pins, exactly: the notices name it, so a newer go on the PATH must not
+    scan its own sources under that name."""
+    toolchain = re.search(r"^toolchain (go\S+)", (ROOT / "go.mod").read_text(), re.M)
+    if not toolchain:
+        raise SystemExit("notices: go.mod pins no toolchain")
+    env = {**os.environ, "GOTOOLCHAIN": toolchain.group(1)}
+    have = run(["go", "env", "GOVERSION"], env=env).strip()
+    if have != toolchain.group(1):
+        raise SystemExit(f"notices: go runs {have}, not the {toolchain.group(1)} go.mod pins")
+    return env
+
+
 def go_entries() -> list[Entry]:
+    base_env = go_env()
     mods: dict[tuple[str, str], Path] = {}
     sources: dict[str, set[Path]] = {}  # module path ("std" for Go's own) -> the source files compiled
     fmt = ("{{.Dir}}\t{{with .Module}}{{if .Main}}main\t\t{{else}}{{.Path}}\t{{.Version}}\t{{with .Replace}}{{.Dir}}{{else}}{{.Dir}}"
            "{{end}}{{end}}{{else}}std\t\t{{end}}\t{{join .GoFiles \" \"}} {{join .SFiles \" \"}}")
     for goos, goarch in PLATFORMS:
-        env = {**os.environ, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0", "GOFLAGS": "-mod=readonly"}
+        env = {**base_env, "GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0", "GOFLAGS": "-mod=readonly"}
         for line in run(["go", "list", "-deps", "-f", fmt, "./cmd/conductor"], env=env).splitlines():
             if not line.strip():
                 continue
@@ -199,16 +213,19 @@ def go_entries() -> list[Entry]:
         note = f"the source of its MPL-2.0 files: https://{path} at {version}" if "MPL-2.0" in kinds else ""
         texts += file_notices(sorted(sources.get(path, ())), directory, " ".join(t for _, t in texts))
         entries.append(Entry(path, version, ", ".join(kinds), texts, note))
-    toolchain = re.search(r"^toolchain (go\S+)", (ROOT / "go.mod").read_text(), re.M)
-    goroot = Path(run(["go", "env", "GOROOT"]).strip())
+    goroot = Path(run(["go", "env", "GOROOT"], env=base_env).strip())
     licence = (goroot / "LICENSE").read_text()
     std = file_notices(sorted(sources.get("std", ())), goroot / "src", licence)
-    entries.insert(0, Entry("Go (the standard library and runtime)", toolchain.group(1) if toolchain else "", "BSD-3-Clause",
+    entries.insert(0, Entry("Go (the standard library and runtime)", base_env["GOTOOLCHAIN"], "BSD-3-Clause",
                             [("LICENSE", licence)] + std))
     return entries
 
 
-def npm_entry(directory: Path, note: str = "") -> Entry:
+# Source files whose comments the file-notice scan reads (a JSON grammar or theme has none; its package's notice covers it).
+SCANNED = re.compile(r"\.(m?js|cjs|ts|css)$")
+
+
+def npm_entry(directory: Path, note: str = "", files: list[Path] | None = None) -> Entry:
     pkg = json.loads((directory / "package.json").read_text())
     licence = pkg.get("license") or ""
     if isinstance(licence, dict):
@@ -223,6 +240,8 @@ def npm_entry(directory: Path, note: str = "") -> Entry:
         if s.get("for") and s["for"] != pkg.get("version"):
             raise SystemExit(f"notices: {s['file']} was taken for {pkg['name']} {s['for']}, not {pkg.get('version')}: take it again for this version")
         texts.append((s["name"], (EXTRA / s["file"]).read_text()))
+    scanned = [f for f in (files or []) if SCANNED.search(f.name) and f.is_file()]
+    texts += file_notices(scanned, directory, " ".join(t for _, t in texts))
     return Entry(pkg["name"], pkg.get("version", ""), kind, texts, note)
 
 
@@ -236,8 +255,12 @@ def unique(entries: list[Entry]) -> list[Entry]:
 def web_entries() -> list[Entry]:
     if not BUNDLED.exists():
         raise SystemExit(f"notices: no {BUNDLED.relative_to(ROOT)}: run make web-build first")
-    dirs = json.loads(BUNDLED.read_text())
-    entries = [npm_entry(WEB / d) for d in dirs]
+    bundled = json.loads(BUNDLED.read_text())
+    dirs, modules = bundled["packages"], bundled["modules"]
+    def files_of(d: str) -> list[Path]:
+        # A package's own files: not those of a package nested inside it, which is its own entry.
+        return [WEB / m for m in modules if m.startswith(d + "/") and "/node_modules/" not in m[len(d):]]
+    entries = [npm_entry(WEB / d, files=files_of(d)) for d in dirs]
     entries.append(npm_entry(WEB / "node_modules/@iconify-json/lucide", note="the icons, inlined by Nuxt Icon"))
     entries = unique(entries)
     entries.append(Entry("Inter (font)", "", "OFL-1.1", [("LICENSE", (EXTRA / "inter.LICENSE").read_text())], note="fetched from Google Fonts by @nuxt/fonts at build time"))

@@ -50,6 +50,8 @@ func TestNoticesCarryWhatThePackageLicencesDoNot(t *testing.T) {
 		"Oniguruma's COPYING (compiled into its onig.wasm)", "K.Kosako",
 		"bitcurves/bitcurve.go (the file's own notice)", "ThePiachu",
 		"osfs/os_bound.go (the file's own notice)", "The Flux authors",
+		"math/log.go (the file's own notice)", "Sun Microsystems",
+		"lib/xterm.mjs (the file's own notice)", "Fabrice Bellard",
 		"tm-themes 1.12.3's NOTICE (the themes it carries)", "tm-grammars 1.32.3's NOTICE (the grammars it carries)",
 		"in the app's resources as LICENSES.chromium.html",
 	} {

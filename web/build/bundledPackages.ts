@@ -16,17 +16,39 @@ export function packageDir(id: string): string | null {
   return clean.slice(0, at) + '/node_modules/' + rest.slice(0, n).join('/')
 }
 
+/** moduleFile is the file a module of the bundle was read from inside an npm package, or null (virtual, or the app's own). */
+export function moduleFile(id: string): string | null {
+  if (id.startsWith('\0')) return null
+  const clean = id.replace(/[?#].*$/, '').split('\\').join('/')
+  return packageDir(clean) ? clean : null
+}
+
+export interface BundledPackages {
+  /** The package directories, relative to root, sorted. */
+  packages: string[]
+  /** The package files the client bundle's code was built from, relative to root, sorted: their own notices are read too. */
+  modules: string[]
+}
+
 /**
- * bundledPackages writes the npm packages whose code or assets the client bundle carries, as package directories relative to root,
- * sorted, to out: scripts/notices.py reads it for THIRD_PARTY_NOTICES, so the notices list what ships and not what builds it.
+ * bundledPackages writes the npm packages whose code or assets the client bundle carries, and the package files its code came from,
+ * to out (BundledPackages): scripts/notices.py reads it for THIRD_PARTY_NOTICES, so the notices list what ships and not what
+ * builds it.
  */
 export function bundledPackages(root: string, out: string): Plugin {
   const dirs = new Set<string>()
+  const modules = new Set<string>()
   // Module ids are absolute; an asset's original names are relative to Vite's root (the app's source directory).
   let viteRoot = root
+  const rel = (p: string) => relative(root, p).split(sep).join('/')
   const add = (id: string) => {
     const d = packageDir(id.startsWith('\0') ? id : resolve(viteRoot, id))
-    if (d) dirs.add(relative(root, d).split(sep).join('/'))
+    if (d) dirs.add(rel(d))
+  }
+  const addModule = (id: string) => {
+    add(id)
+    const f = moduleFile(id)
+    if (f) modules.add(rel(f))
   }
   return {
     name: 'conductor:bundled-packages',
@@ -37,13 +59,14 @@ export function bundledPackages(root: string, out: string): Plugin {
     },
     generateBundle(_, bundle) {
       for (const file of Object.values(bundle)) {
-        if (file.type === 'chunk') Object.keys(file.modules).forEach(add)
+        if (file.type === 'chunk') Object.keys(file.modules).forEach(addModule)
         else file.originalFileNames.forEach(add)
       }
     },
     writeBundle() {
       mkdirSync(dirname(out), { recursive: true })
-      writeFileSync(out, JSON.stringify([...dirs].sort(), null, 2) + '\n')
+      const list: BundledPackages = { packages: [...dirs].sort(), modules: [...modules].sort() }
+      writeFileSync(out, JSON.stringify(list, null, 2) + '\n')
     },
   }
 }

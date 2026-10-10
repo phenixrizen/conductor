@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { packageDir } from './bundledPackages'
+import { moduleFile, packageDir } from './bundledPackages'
 
 describe('packageDir', () => {
   it('is the innermost package a module or asset comes from', () => {
@@ -15,5 +15,18 @@ describe('packageDir', () => {
     expect(packageDir('\0virtual:nuxt:/src/web/.nuxt/nuxt-icon-client-bundle')).toBeNull()
     expect(packageDir('/src/web/node_modules/.vite/deps/chunk.js')).toBeNull()
     expect(packageDir('/src/web/node_modules/@scope')).toBeNull()
+  })
+})
+
+describe('moduleFile', () => {
+  it('is the package file a module was read from, its query dropped', () => {
+    expect(moduleFile('/src/web/node_modules/@xterm/xterm/lib/xterm.mjs')).toBe('/src/web/node_modules/@xterm/xterm/lib/xterm.mjs')
+    expect(moduleFile('/src/web/node_modules/vue/dist/vue.js?v=3')).toBe('/src/web/node_modules/vue/dist/vue.js')
+    expect(moduleFile('C:\\src\\web\\node_modules\\shiki\\dist\\index.mjs')).toBe('C:/src/web/node_modules/shiki/dist/index.mjs')
+  })
+
+  it('is nothing for a virtual module or a file of the app itself', () => {
+    expect(moduleFile('\0/src/web/node_modules/nuxt/dist/app/entry.js')).toBeNull()
+    expect(moduleFile('/src/web/app/components/TerminalView.vue')).toBeNull()
   })
 })
