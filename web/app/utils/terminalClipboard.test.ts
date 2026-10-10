@@ -47,6 +47,14 @@ describe('the terminal right-click', () => {
     expect(rightClick({ ...base, canPaste: false })).toBe('menu')
     expect(rightClick({ ...base, canPaste: false, hasSelection: true })).toBe('copy')
   })
+  it('leaves the click to a program that asked for the mouse, unless Shift is held or the connection may not type', () => {
+    expect(rightClick({ ...base, appMouse: true })).toBe('app')
+    expect(rightClick({ ...base, appMouse: true, hasSelection: true })).toBe('app')
+    expect(rightClick({ ...base, appMouse: true, pastes: false })).toBe('app')
+    expect(rightClick({ ...base, appMouse: true, shift: true })).toBe('menu')
+    expect(rightClick({ ...base, appMouse: true, canPaste: false })).toBe('menu')
+    expect(rightClick({ ...base, appMouse: true, canPaste: false, hasSelection: true })).toBe('copy')
+  })
   it('keeps the setting per browser, on by default', () => {
     const m = new Map<string, string>()
     const store = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }

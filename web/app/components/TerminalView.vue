@@ -132,10 +132,12 @@ async function pasteClipboard(): Promise<void> {
   }
 }
 function onContextMenu(e: MouseEvent) {
-  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey })
+  const appMouse = !!term && term.modes.mouseTrackingMode !== 'none'
+  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey, appMouse })
   if (act === 'menu') return // the terminal's menu opens
   e.preventDefault()
   e.stopImmediatePropagation()
+  if (act === 'app') return // xterm has reported the click to the program
   if (act === 'copy') copySelection(true)
   else void pasteClipboard()
 }

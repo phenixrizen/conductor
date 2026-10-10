@@ -10,7 +10,9 @@
  * - A connection that may not type (view only, or a read-only view) pastes nothing.
  *
  * Right-click: with a selection it copies and clears it, without one it pastes; Shift+right-click opens the terminal's menu (Copy, Paste,
- * Select all, "Right-click pastes"), and with that setting off right-click always opens it.
+ * Select all, "Right-click pastes"), and with that setting off right-click always opens it. While the program running asks for the
+ * mouse (Codex's TUI, vim with mouse=a), a right-click is the program's, as in Windows Terminal: xterm reports it and nothing is copied,
+ * pasted or opened; Shift+right-click still opens the menu, and Shift+drag still selects.
  */
 export interface ClipboardKeyEvent {
   type: string
@@ -36,11 +38,17 @@ export function clipboardKey(e: ClipboardKeyEvent, ctx: { hasSelection: boolean;
   return null
 }
 
-/** What a right-click does. */
-export type RightClick = 'copy' | 'paste' | 'menu'
+/** What a right-click does: copy, paste, the terminal's menu, or nothing of ours ('app': the program asked for the mouse and has it). */
+export type RightClick = 'copy' | 'paste' | 'menu' | 'app'
 
-export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; pastes: boolean; shift: boolean }): RightClick {
-  if (ctx.shift || !ctx.pastes) return 'menu'
+/**
+ * appMouse: the program running asked for mouse reports. It gets the click only on a connection that may type (canPaste), since a view
+ * link's reports reach nothing; there the right-click copies or opens the menu as ever.
+ */
+export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; pastes: boolean; shift: boolean; appMouse?: boolean }): RightClick {
+  if (ctx.shift) return 'menu'
+  if (ctx.appMouse && ctx.canPaste) return 'app'
+  if (!ctx.pastes) return 'menu'
   if (ctx.hasSelection) return 'copy'
   return ctx.canPaste ? 'paste' : 'menu'
 }
