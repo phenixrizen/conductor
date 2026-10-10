@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -524,5 +526,69 @@ func TestASwitchyardGuestHasChatOverTheRelay(t *testing.T) {
 	pc.settled(t, y)
 	if got := y.received(proto.HostChat); len(got) != 0 {
 		t.Fatalf("the switchyard was sent chat apart from the relay: %v", got[0].raw)
+	}
+}
+
+// A switchyard is told the session's name, its agent, the machine's name and
+// the last element of its folder: no command line (its flags, the agent's
+// own session id), no OS user, no branch. A guest has the folder in full
+// from the session's welcome, which the publishing machine sends.
+func TestASwitchyardIsToldLessOfTheSession(t *testing.T) {
+	y := newStubYard(t)
+	dir := filepath.Join(t.TempDir(), "acme-billing")
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/fix-acme-invoices\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc := publishCat(t, y, dir, []string{"/usr/local/bin/claude", "--dangerously-skip-permissions", "--session-id", "0b8c5c1e-0000-4000-8000-000000000001"})
+	reg := pc.reg
+	if reg.Host.User != "" || reg.Session.Branch != "" {
+		t.Fatalf("the switchyard was told the user %q and the branch %q", reg.Host.User, reg.Session.Branch)
+	}
+	if len(reg.Session.Command) != 1 || reg.Session.Command[0] != "claude" {
+		t.Fatalf("the switchyard was told the command %q", reg.Session.Command)
+	}
+	if reg.Session.Cwd != "acme-billing" {
+		t.Fatalf("the switchyard was told the folder %q", reg.Session.Cwd)
+	}
+	if reg.Session.Name != "billing-refactor" || reg.Session.AgentID != "claude" || reg.Host.Name != "office" {
+		t.Fatalf("what the switchyard lists the session by: %+v %+v", reg.Session, reg.Host)
+	}
+
+	const guest = "guestrelay000002"
+	y.send(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: guest, Role: string(session.RoleView), LinkID: "link-1"})
+	y.send(proto.ViewerRef{T: proto.HostRelayStart, ViewerID: guest})
+	y.relay(guest, proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: proto.ProtoVersion, Cols: 80, Rows: 24, Name: "Priya"}))
+	w := y.wait("the guest's welcome", func(m yardMsg) bool {
+		var c map[string]any
+		return m.viewer == guest && m.inner.Type == proto.TypeControl && json.Unmarshal(m.inner.Payload, &c) == nil && c["t"] == proto.CtlWelcome
+	})
+	var welcome map[string]any
+	_ = json.Unmarshal(w.inner.Payload, &welcome)
+	if welcome["cwd"] != dir {
+		t.Fatalf("the guest's welcome names the folder %v", welcome["cwd"])
+	}
+}
+
+// What a registration says, to the owner's own server and to a switchyard:
+// the program's name stands in for a session without an agent id, and the
+// owner's server is told it all.
+func TestTheRegistrationToEachKindOfServer(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "proj")
+	a := &agent{opts: Options{Name: "n", HostName: "h", Argv: []string{"/opt/bin/aider", "--yes"}}, dir: dir, instance: "i", localID: "1"}
+	full := a.registration(80, 24)
+	if full.Session.Cwd != dir || len(full.Session.Command) != 2 || full.Host.User != currentUser() {
+		t.Fatalf("to the owner's server %+v %+v", full.Session, full.Host)
+	}
+	a.opts.Switchyard = true
+	less := a.registration(80, 24)
+	if less.Session.Cwd != "proj" || len(less.Session.Command) != 1 || less.Session.Command[0] != "aider" || less.Host.User != "" {
+		t.Fatalf("to a switchyard %+v %+v", less.Session, less.Host)
+	}
+	a.opts.AgentID = "aider-dev"
+	if c := a.registration(80, 24).Session.Command; len(c) != 1 || c[0] != "aider-dev" {
+		t.Fatalf("with an agent id: %q", c)
 	}
 }

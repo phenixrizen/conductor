@@ -103,10 +103,12 @@ type Options struct {
 	// to list the session and introduce its viewers, and no more. No chat
 	// message and no activity entry goes to it, and an attention change goes
 	// with its state, kind and source but without its words or its choices.
-	// Its viewers get all of it from the session itself, over their own
-	// connection. The Uplink sets it; `conductor host` publishes to the
-	// owner's own server, which shows the session in its workbench, and
-	// leaves it off.
+	// Its registration names the session, its agent, the last element of
+	// its folder and the machine, and leaves out the command line, the OS
+	// user and the git branch (registration). Its viewers get all of it
+	// from the session itself, over their own connection. The Uplink sets
+	// it; `conductor host` publishes to the owner's own server, which shows
+	// the session in its workbench, and leaves it off.
 	Switchyard bool
 }
 
@@ -437,15 +439,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		info := a.local.Info()
 		cols, rows = info.Cols, info.Rows
 	}
-	reg := proto.Register{
-		T:     proto.HostRegister,
-		Proto: proto.ProtoVersion,
-		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser(), Instance: a.instance},
-		Session: proto.HostSession{
-			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
-			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir), LocalID: a.localID,
-		},
-	}
+	reg := a.registration(cols, rows)
 	if a.sessID != "" {
 		reg.Resume = &proto.HostResume{SessionID: a.sessID, Secret: a.secret}
 	}
@@ -499,6 +493,48 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
 	}
 	return c, registered, nil
+}
+
+// registration is the register message: the session as the owner's own
+// server lists it, or, to a switchyard (Options.Switchyard), as little as
+// lists it there and introduces its viewers. A switchyard gets the
+// session's name and agent, the machine's name and the last element of the
+// folder; for a command line, the one word older switchyards require (the
+// agent's id, else the program's name, never an argument); no OS user and
+// no branch. Its viewers have the folder in full from the session's welcome.
+func (a *agent) registration(cols, rows uint16) proto.Register {
+	reg := proto.Register{
+		T:     proto.HostRegister,
+		Proto: proto.ProtoVersion,
+		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser(), Instance: a.instance},
+		Session: proto.HostSession{
+			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
+			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, LocalID: a.localID,
+		},
+	}
+	if !a.opts.Switchyard {
+		reg.Session.Branch = session.GitBranch(a.dir)
+		return reg
+	}
+	reg.Host.User = ""
+	program := a.opts.AgentID
+	if program == "" && len(a.opts.Argv) > 0 {
+		program = filepath.Base(a.opts.Argv[0])
+	}
+	if program == "" || program == "." || program == string(filepath.Separator) {
+		program = "agent"
+	}
+	reg.Session.Command = []string{program}
+	reg.Session.Cwd = lastElement(a.dir)
+	return reg
+}
+
+// lastElement is the last element of a folder's path, "" for none.
+func lastElement(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Base(dir)
 }
 
 // onLocalChange forwards attention changes of the local session to the

@@ -200,7 +200,10 @@ when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
 
 Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
-(`user` ≤ 64 bytes is the OS user for "hosted by"; `branch` ≤ 200 bytes is read from `.git/HEAD`),
+(`user` ≤ 64 bytes is the OS user for "hosted by"; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
+a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
+agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`
+and no `branch`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
 `viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`,
