@@ -85,7 +85,9 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 	defer conn.CloseNow()
 
 	dir := t.TempDir()
-	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/sh", "-c", "exec yes"}, Dir: dir, Env: hostEnv(nil)})
+	// About 6 MB/s: far more than the stalled connection takes, and far
+	// less than a viewer that reads at once falls behind on.
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/sh", "-c", "while :; do head -c 65536 /dev/zero; sleep 0.01; done"}, Dir: dir, Env: hostEnv(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,5 +130,8 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 			t.Fatal("the other viewer stopped receiving the output")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if r := hsub.Reason(); r != nil {
+		t.Fatalf("the other viewer was closed: %v", r)
 	}
 }
