@@ -299,3 +299,76 @@ func TestGitFilesAndHeadsAsGitReadsThem(t *testing.T) {
 		t.Fatalf("store/config with an upper-case HEAD: %+v %+v", f, f.Error)
 	}
 }
+
+// Metadata a repository's .git links out to the working tree (its config,
+// its hooks folder) is read only there too; so is a pointer whose absolute
+// path takes a link and then .., as the kernel and git walk it, and one
+// whose path is empty after a NUL (git takes the directory of the .git
+// that names it). A working tree's file next to them still saves.
+func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T) {
+	root, err := filepath.EvalSymlinks(gitRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// .git/config and .git/hooks are links into the working tree.
+	must(os.Rename(filepath.Join(root, ".git", "config"), filepath.Join(root, "settings")))
+	must(os.Symlink("../settings", filepath.Join(root, ".git", "config")))
+	must(os.MkdirAll(filepath.Join(root, "tools", "hooks"), 0o755))
+	must(os.WriteFile(filepath.Join(root, "tools", "hooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755))
+	must(os.RemoveAll(filepath.Join(root, ".git", "hooks")))
+	must(os.Symlink("../tools/hooks", filepath.Join(root, ".git", "hooks")))
+	must(os.Symlink(".git", filepath.Join(root, "meta")))
+	// A pointer to actual/repo through jump/.. (jump links to actual/child).
+	must(os.MkdirAll(filepath.Join(root, "actual", "child"), 0o755))
+	if _, err := gitcli.Run(context.Background(), root, "init", "-q", "--bare", filepath.Join(root, "actual", "repo")); err != nil {
+		t.Fatal(err)
+	}
+	must(os.Symlink("actual/child", filepath.Join(root, "jump")))
+	must(os.WriteFile(filepath.Join(root, "ptr4"), []byte("gitdir: "+filepath.Join(root, "jump")+"/../repo\n"), 0o644))
+	must(os.Mkdir(filepath.Join(root, "sib"), 0o755))
+	must(os.Symlink("../ptr4", filepath.Join(root, "sib", ".git")))
+	// A pointer whose path is empty after a NUL.
+	must(os.WriteFile(filepath.Join(root, "ptr5"), []byte("gitdir: \x00x\n"), 0o644))
+	must(os.Mkdir(filepath.Join(root, "sib5"), 0o755))
+	must(os.Symlink("../ptr5", filepath.Join(root, "sib5", ".git")))
+
+	s, _ := newLocal(t, root)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := os.ReadFile(filepath.Join(root, "settings"))
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", "ptr5"}
+	for i, p := range refused {
+		id := fmt.Sprintf("m%d", i)
+		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
+		if f := fileReply(t, sink, id); f.Kind != "error" || f.Error == nil || f.Error.Code != "read_only" {
+			t.Errorf("save %s: %+v %+v", p, f, f.Error)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "settings")); !bytes.Equal(b, settings) {
+		t.Fatal("the linked config changed")
+	}
+	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", "ptr5"} {
+		if h, _ := ReadPath(root, p, false, nil); h.Kind != "file" || !h.ReadOnly {
+			t.Errorf("read %s: %+v", p, h)
+		}
+		if nvim.Available() {
+			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
+				t.Errorf("Neovim on %s: %v", p, err)
+			}
+		}
+	}
+	h, _ := ReadPath(root, "README.md", false, nil)
+	save(s, sub, "ok", "README.md", []byte("still saves\n"), 512, h.Sha256, false)
+	if f := fileReply(t, sink, "ok"); f.Kind != "written" {
+		t.Fatalf("README.md: %+v %+v", f, f.Error)
+	}
+}

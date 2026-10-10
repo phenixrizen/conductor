@@ -394,7 +394,10 @@ agent edited it, say), the save stops and says who and when, with
 **Compare** (disk and yours side by side), **Reload** (take the disk's) and
 **Save anyway**. A file cut at 1 MiB, or a binary one, stays read-only, as
 does a file in a repository's `.git` (its folder, a worktree's `.git` file,
-wherever a link or another spelling leads; Neovim does not open one either),
+wherever a link or another spelling leads; Neovim does not open one either;
+a file the repository's configuration names outside it, such as an
+`include.path` file or a `core.hooksPath` folder like `.husky`, stays an
+ordinary file),
 and so does everything for a view-only guest. The server's or host's `fileEdit`
 setting (`control`, the default, or `off`) turns editing off for everyone.
 

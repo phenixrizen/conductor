@@ -50,13 +50,19 @@ func gitMetadata(raw, real string) bool {
 // it (isDotGit); the path is a file git would take as a .git file, which a
 // .git link anywhere may point to (isGitFile); the path or one of its
 // parents is what a .git beside it or beside one of its parents stands for
-// (a .git directory, a .git file itself, the git directory it names),
-// compared as files (os.SameFile) so that neither a link nor another
-// spelling gets around it (gitDirsIn); or the path or one of its parents is
-// a git directory by its own files (isGitDirectory), which finds a bare
-// repository and a git directory a .git elsewhere points to, whatever
-// git's own settings would discover. Nothing here runs git, and every file
-// it reads is read bounded and without blocking (readPrefix).
+// (a .git directory, a .git file itself, the git directory it names, the
+// targets of the metadata in it that are links), compared as files
+// (os.SameFile) so that neither a link nor another spelling gets around it
+// (gitDirsIn); or the path or one of its parents is a git directory by its
+// own files (isGitDirectory), which finds a bare repository and a git
+// directory a .git elsewhere points to, whatever git's own settings would
+// discover. Nothing here runs git, and every file it reads is read bounded
+// and without blocking (readPrefix).
+//
+// What a repository's configuration names outside it (an include.path
+// file, a core.hooksPath folder such as .husky) is a working-tree file like
+// any other here: no rule on paths tells it apart. Conductor's own git does
+// not run it (gitcli.Run).
 func inGitDir(real string) bool {
 	for _, el := range strings.Split(real, string(filepath.Separator)) {
 		if isDotGit(el) {
@@ -66,16 +72,16 @@ func inGitDir(real string) bool {
 	if isGitFile(real) {
 		return true
 	}
-	var dirs []os.FileInfo
+	var ids []os.FileInfo
 	for p := real; ; p = filepath.Dir(p) {
-		dirs = append(dirs, gitDirsIn(p)...)
+		ids = append(ids, gitDirsIn(p)...)
 		if filepath.Dir(p) == p {
 			break
 		}
 	}
 	for p := real; ; p = filepath.Dir(p) {
 		if fi, err := os.Stat(p); err == nil {
-			for _, d := range dirs {
+			for _, d := range ids {
 				if os.SameFile(fi, d) {
 					return true
 				}
@@ -90,10 +96,21 @@ func inGitDir(real string) bool {
 	}
 }
 
-// gitDirsIn is what dir's .git stands for: itself when it is a directory
-// (or a link to one); when it is a file (or a link to one), the file
-// itself, the directory its "gitdir: " line names and the one that
-// directory's commondir names.
+// rawJoin joins name to dir as the kernel walks them, without cleaning
+// the result: a link in dir followed by .. in name goes where git goes. An
+// absolute name stands alone.
+func rawJoin(dir, name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
+	return strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator) + name
+}
+
+// gitDirsIn is what dir's .git stands for, as files to compare: itself
+// when it is a directory (or a link to one); when it is a file (or a link
+// to one), the file itself, the git directory its "gitdir: " line names
+// and the one that directory's commondir names; and for each of those git
+// directories the targets of its metadata that are links (linkedMetadata).
 func gitDirsIn(dir string) []os.FileInfo {
 	dotgit := filepath.Join(dir, ".git")
 	fi, err := os.Stat(dotgit)
@@ -101,7 +118,7 @@ func gitDirsIn(dir string) []os.FileInfo {
 	case err != nil:
 		return nil
 	case fi.IsDir():
-		return []os.FileInfo{fi}
+		return append([]os.FileInfo{fi}, linkedMetadata(dotgit)...)
 	case !fi.Mode().IsRegular():
 		return nil
 	}
@@ -115,13 +132,44 @@ func gitDirsIn(dir string) []os.FileInfo {
 		return out
 	}
 	out = append(out, gfi)
-	if b, whole, ok := readPrefix(filepath.Join(gd, "commondir"), maxGitFile); ok && whole {
-		common := strings.TrimSpace(string(b))
-		if !filepath.IsAbs(common) {
-			common = filepath.Join(gd, common)
-		}
+	out = append(out, linkedMetadata(gd)...)
+	if b, whole, ok := readPrefix(rawJoin(gd, "commondir"), maxGitFile); ok && whole {
+		common := rawJoin(gd, strings.TrimSpace(string(b)))
 		if cfi, err := os.Stat(common); err == nil && cfi.IsDir() {
 			out = append(out, cfi)
+			out = append(out, linkedMetadata(common)...)
+		}
+	}
+	return out
+}
+
+// metadataEntries are the entries of a git directory git reads as its own
+// that may be links out of it; the hooks in hooks are looked at one by one
+// too (at most maxHooks of them).
+var metadataEntries = []string{"config", "config.worktree", "HEAD", "commondir", "gitdir", "packed-refs", "info", "info/attributes", "info/exclude", "hooks", "objects/info/alternates"}
+
+const maxHooks = 256
+
+// linkedMetadata is what the metadata entries of gitDir that are links
+// point to: a working-tree file a .git/config link names is the
+// repository's configuration all the same.
+func linkedMetadata(gitDir string) []os.FileInfo {
+	var out []os.FileInfo
+	add := func(p string) {
+		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if target, err := os.Stat(p); err == nil {
+				out = append(out, target)
+			}
+		}
+	}
+	for _, e := range metadataEntries {
+		add(rawJoin(gitDir, e))
+	}
+	if f, err := os.Open(rawJoin(gitDir, "hooks")); err == nil {
+		names, _ := f.Readdirnames(maxHooks)
+		f.Close()
+		for _, n := range names {
+			add(rawJoin(rawJoin(gitDir, "hooks"), n))
 		}
 	}
 	return out
@@ -131,14 +179,14 @@ func gitDirsIn(dir string) []os.FileInfo {
 // git tells one: a valid HEAD (validHead), and either the refs and objects
 // directories or (a linked worktree's) a commondir file.
 func isGitDirectory(dir string) bool {
-	if !validHead(filepath.Join(dir, "HEAD")) {
+	if !validHead(rawJoin(dir, "HEAD")) {
 		return false
 	}
-	if fi, err := os.Stat(filepath.Join(dir, "commondir")); err == nil && fi.Mode().IsRegular() {
+	if fi, err := os.Stat(rawJoin(dir, "commondir")); err == nil && fi.Mode().IsRegular() {
 		return true
 	}
 	for _, sub := range []string{"objects", "refs"} {
-		if fi, err := os.Stat(filepath.Join(dir, sub)); err != nil || !fi.IsDir() {
+		if fi, err := os.Stat(rawJoin(dir, sub)); err != nil || !fi.IsDir() {
 			return false
 		}
 	}
@@ -184,27 +232,26 @@ func isGitFile(path string) bool {
 	if filepath.IsAbs(target) {
 		return isGitDirectory(target)
 	}
-	return isGitDirectory(filepath.Join(filepath.Dir(path), target)) || !strings.ContainsAny(target, "\r\n")
+	return isGitDirectory(rawJoin(filepath.Dir(path), target)) || !strings.ContainsAny(target, "\r\n")
 }
 
 // readGitFile reads path as git reads a .git file: a regular file of at
 // most maxGitFile bytes that starts with "gitdir: "; its trailing line
-// breaks dropped, the rest up to the first NUL is the path, returned as
-// written (line breaks inside it are git's to refuse or not).
+// breaks dropped, something after it (git counts before it cuts), and the
+// path is what comes before the first NUL, returned as written: empty
+// stands for the directory of the .git that names the file, line breaks
+// inside are git's to refuse or not.
 func readGitFile(path string) (string, bool) {
 	b, whole, ok := readPrefix(path, maxGitFile)
 	if !ok || !whole {
 		return "", false
 	}
 	rest, ok := bytes.CutPrefix(bytes.TrimRight(b, "\r\n"), []byte("gitdir: "))
-	if !ok {
+	if !ok || len(rest) == 0 {
 		return "", false
 	}
 	if i := bytes.IndexByte(rest, 0); i >= 0 {
 		rest = rest[:i]
-	}
-	if len(rest) == 0 {
-		return "", false
 	}
 	return string(rest), true
 }
