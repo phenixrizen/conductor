@@ -300,6 +300,12 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil {
 			return false
 		}
+		// A switchyard keeps no activity of the sessions published there:
+		// nobody on it has a role on them, and their viewers have the log
+		// from the session itself. (A Conductor publishing to it sends none.)
+		if s.cfg.Switchyard.Enabled {
+			break
+		}
 		// The session is the connection's, whatever m.SessionID says; the
 		// entry and its state are checked and cleaned by HostActivity, and an
 		// entry of a type this server does not know (a newer host's) is
@@ -309,6 +315,10 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		var m proto.HostChatMsg
 		if json.Unmarshal(data, &m) != nil {
 			return false
+		}
+		// Nor any chat, for the same reasons.
+		if s.cfg.Switchyard.Enabled {
+			break
 		}
 		// The session is the connection's, whatever m.SessionID says; the
 		// message is checked and cleaned by HostChat, and one of a kind this

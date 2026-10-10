@@ -61,6 +61,13 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
+	// A session published to a switchyard is shared by the machine that
+	// publishes it, over its own connection (link); the switchyard's
+	// workbench token mints nothing for it.
+	if s.cfg.Switchyard.Enabled {
+		writeError(w, http.StatusForbidden, "switchyard", "on a switchyard, links to a session are minted by the machine that publishes it")
+		return
+	}
 	req, ok := readLinkRequest(w, r)
 	if !ok {
 		return

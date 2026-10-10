@@ -89,8 +89,7 @@ func TestSwitchyardStatusCountsHostsAndViewers(t *testing.T) {
 	if h := list[0].(map[string]any); h["name"] != "laptop" || h["sessions"] != 1.0 || h["since"] == nil {
 		t.Fatalf("host row %v", h)
 	}
-	_, link := e.do("POST", "/api/sessions/"+host.sessionID+"/links", adminToken, map[string]any{"role": "view", "label": "a friend"})
-	v := dialViewer(t, e, host.sessionID, link["token"].(string))
+	v := dialViewer(t, e, host.sessionID, host.link("view", "a friend"))
 	v.hello(80, 24)
 	v.expectControl(proto.CtlWelcome)
 	host.expect(proto.HostViewerJoin)
@@ -116,8 +115,7 @@ func TestSwitchyardStatusCountsHostsAndViewers(t *testing.T) {
 func TestJoinSaysWhenTheServerIsASwitchyard(t *testing.T) {
 	e := switchyardEnv(t, true)
 	host := dialFakeHost(t, e, "hosted-agent-token")
-	_, link := e.do("POST", "/api/sessions/"+host.sessionID+"/links", adminToken, map[string]any{"role": "view"})
-	if _, out := e.do("GET", "/api/join/"+link["token"].(string), "", nil); out["switchyard"] != true {
+	if _, out := e.do("GET", "/api/join/"+host.link("view", ""), "", nil); out["switchyard"] != true {
 		t.Fatalf("join %v", out)
 	}
 }

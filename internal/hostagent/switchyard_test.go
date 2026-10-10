@@ -3,6 +3,7 @@ package hostagent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,9 @@ import (
 	"github.com/coder/websocket"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/phenixrizen/conductor/internal/api"
+	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -591,4 +595,159 @@ func TestTheRegistrationToEachKindOfServer(t *testing.T) {
 	if c := a.registration(80, 24).Session.Command; len(c) != 1 || c[0] != "aider-dev" {
 		t.Fatalf("with an agent id: %q", c)
 	}
+}
+
+// startSwitchyard is `conductor switchyard` with open hosts, the shape of the
+// public one, on a test server.
+func startSwitchyard(t *testing.T) *httptest.Server {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.WorkbenchToken = adminToken
+	cfg.Switchyard.Enabled = true
+	cfg.Switchyard.OpenHosts = true
+	cfg.AllowedRoots = []string{t.TempDir()}
+	cfg.Dev = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := api.New(cfg, catalog.Default(), discardLog, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+	return hs
+}
+
+// A stock switchyard's operator, holding its workbench token, lists a
+// session a Conductor publishes there by its name, its agent and its
+// folder's last element, and does no more: the token attaches to nothing,
+// mints no link, and its stream never carries what is said at home. A link
+// the publishing machine minted through its own connection lets a guest in
+// with that link's role, and the guest has the chat through the relay.
+func TestASwitchyardOperatorListsAPublishedSessionAndNoMore(t *testing.T) {
+	yard := startSwitchyard(t)
+	feed := adminFeed(t, yard.URL)
+	dir := filepath.Join(t.TempDir(), "acme-billing")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm"}, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var pub *Published
+	published := func() *Published {
+		mu.Lock()
+		defer mu.Unlock()
+		return pub
+	}
+	local := session.NewLocal(session.Info{ID: "local-2", Name: "billing-refactor", Kind: session.KindServer, AgentID: "claude", Command: []string{"claude", "--dangerously-skip-permissions"}, Cwd: dir, Status: session.StatusRunning, Cols: 80, Rows: 24, CreatedAt: time.Now().UTC()}, proc, session.Options{
+		Transport: proto.TransportWS,
+		Log:       discardLog,
+		OnChange: func(i session.Info) {
+			if p := published(); p != nil {
+				p.OnChange(i)
+			}
+		},
+		OnChat: func(id string, m session.ChatMessage) {
+			if p := published(); p != nil {
+				p.OnChat(id, m)
+			}
+		},
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = local.Stop(ctx)
+	})
+	u := &Uplink{ServerURL: yard.URL, HostName: "office", RelayOnly: true, Log: discardLog}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p, err := u.Publish(ctx, local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	pub = p
+	mu.Unlock()
+	t.Cleanup(p.Stop)
+
+	req, _ := http.NewRequest("GET", yard.URL+"/api/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if len(body.Sessions) != 1 {
+		t.Fatalf("listed %v", body.Sessions)
+	}
+	listed := body.Sessions[0]
+	if listed["name"] != "billing-refactor" || listed["agentId"] != "claude" || listed["hostName"] != "office" || listed["cwd"] != "acme-billing" || listed["hostUser"] != nil || fmt.Sprint(listed["command"]) != "[claude]" {
+		t.Fatalf("the operator lists %v", listed)
+	}
+
+	// The operator's token attaches to nothing and mints nothing.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	c, _, err := websocket.Dial(ctx2, strings.Replace(yard.URL, "http://", "ws://", 1)+"/ws/sessions/"+p.SessionID+"?token="+adminToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Read(ctx2); websocket.CloseStatus(err) != websocket.StatusCode(proto.CloseUnauthorized) {
+		t.Fatalf("the operator's token attached: %v", err)
+	}
+	mint, _ := http.NewRequest("POST", yard.URL+"/api/sessions/"+p.SessionID+"/links", strings.NewReader(`{"role":"control"}`))
+	mint.Header.Set("Authorization", "Bearer "+adminToken)
+	mint.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(mint); err != nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("the operator minted a link: %v %v", err, resp)
+	}
+
+	// The publishing machine's own link.
+	lctx, lcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer lcancel()
+	link, err := p.Link(lctx, "view", 2*time.Hour, "for Priya")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, _ := strings.Cut(link.URL, "/join/")
+	guest := dialViewer(t, yard.URL, p.SessionID, token)
+	guest.expectJSON(proto.TypeControl, proto.CtlWelcome)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
+	guest.send(relay)
+	guest.expectJSON(proto.TypeSignal, proto.SigRelayOK)
+	guest.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: proto.ProtoVersion, Cols: 80, Rows: 24, Name: "Priya"}))
+	if w := guest.expectJSON(proto.TypeControl, proto.CtlWelcome); w["role"] != "view" || w["cwd"] != dir {
+		t.Fatalf("the guest's welcome %v", w)
+	}
+	guest.expectJSON(proto.TypeControl, proto.CtlReady)
+
+	owner, err := local.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Owner"}, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := local.Chat(owner, proto.ChatPost{T: proto.CtlChat, Text: "between us: the customer is Acme"}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		m := guest.expectJSON(proto.TypeControl, proto.CtlChat)
+		if m["text"] == "between us: the customer is Acme" {
+			break
+		}
+	}
+	waitIdle(t, p.a.activity)
+	local.SetAttention(session.AttentionNeedsInput, "pick one", session.SourceAPI)
+	waitFeed(t, feed, "the attention state on the operator's stream", func(ev string) bool {
+		if strings.HasPrefix(ev, "chat ") || strings.HasPrefix(ev, "activity ") || strings.Contains(ev, "Acme") || strings.Contains(ev, "pick one") {
+			t.Fatalf("the operator's stream carried %s", ev)
+		}
+		return strings.HasPrefix(ev, "session ") && strings.Contains(ev, `"needs_input"`)
+	})
 }
