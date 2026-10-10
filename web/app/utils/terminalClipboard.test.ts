@@ -57,14 +57,17 @@ describe('the terminal right-click', () => {
     expect(rightClick({ ...base, appMouse: true, canPaste: false })).toBe('menu')
     expect(rightClick({ ...base, appMouse: true, canPaste: false, hasSelection: true })).toBe('copy')
   })
-  it('decides by the hold at the press, read once; with no press (a menu from the keyboard), by the hold now', () => {
+  it('keeps what the press held for one menu event; a menu with no press (the keyboard\'s key) held nothing', () => {
     const r = new RightPress()
-    r.press(true)
-    expect(r.take(false)).toBe(true)
-    expect(r.take(false)).toBe(false)
-    r.press(false)
-    expect(r.take(true)).toBe(false)
-    expect(r.take(true)).toBe(true)
+    r.press({ appMouse: true, force: true })
+    expect(r.take()).toEqual({ appMouse: true, force: true })
+    expect(r.take()).toEqual({ appMouse: false, force: false })
+    r.press({ appMouse: true, force: false })
+    r.clear()
+    expect(r.take()).toEqual({ appMouse: false, force: false })
+  })
+  it('opens the menu for the keyboard\'s menu key over a program that holds the mouse, with right-click pasting off', () => {
+    expect(rightClick({ ...base, pastes: false, appMouse: false })).toBe('menu')
   })
   it('opens the menu with the forcing key whatever else holds (Option on a Mac, at a prompt or on a view link)', () => {
     expect(rightClick({ ...base, force: true })).toBe('menu')

@@ -56,18 +56,29 @@ export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; past
   return ctx.canPaste ? 'paste' : 'menu'
 }
 
+/** What a right-button press held: the program's hold on the mouse, and the key that takes the mouse back from it. */
+export interface PressHeld {
+  appMouse: boolean
+  force: boolean
+}
+
 /**
- * The program's hold on the mouse when the right button went down, kept for the menu event that follows: on Windows it comes after the
- * release, and a program that let go of the mouse in between has had the press reported to it already.
+ * What the right button's press held, kept for the menu event that follows: on Windows that event comes after the release, and by then
+ * the program may have let go of the mouse (it had the press reported) or the forcing key may be up (xterm reported nothing). A menu
+ * event with no press before it (the keyboard's menu key) held nothing: the program has no click, so it never takes that one.
  */
 export class RightPress {
-  private held: boolean | null = null
-  press(appMouse: boolean) {
-    this.held = appMouse
+  private held: PressHeld | null = null
+  press(held: PressHeld) {
+    this.held = held
   }
-  /** The hold to decide by: the one at the press, else the hold now (a menu from the keyboard). Read once. */
-  take(now: boolean): boolean {
-    const held = this.held ?? now
+  /** Another button went down: a right press with no menu event after it is not kept for a later one. */
+  clear() {
+    this.held = null
+  }
+  /** Read once. */
+  take(): PressHeld {
+    const held = this.held ?? { appMouse: false, force: false }
     this.held = null
     return held
   }

@@ -135,14 +135,16 @@ async function pasteClipboard(): Promise<void> {
 function appHoldsMouse(): boolean {
   return !!term && term.modes.mouseTrackingMode !== 'none'
 }
-/** A right-click is decided by the program's hold on the mouse at the press, not when the menu event comes (RightPress). */
+/** A right-click is decided by what its press held, not by the moment the menu event comes (RightPress). */
 const rightPress = new RightPress()
 function onMouseDown(e: MouseEvent) {
-  if (e.button === 2) rightPress.press(appHoldsMouse())
+  if (e.button === 2) rightPress.press({ appMouse: appHoldsMouse(), force: forcesSelection(e, isMac) })
+  else rightPress.clear()
 }
 function onContextMenu(e: MouseEvent) {
-  const appMouse = rightPress.take(appHoldsMouse())
-  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey, appMouse, force: forcesSelection(e, isMac) })
+  const held = rightPress.take()
+  const force = held.force || forcesSelection(e, isMac)
+  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey, appMouse: held.appMouse, force })
   if (act === 'menu') return // the terminal's menu opens
   e.preventDefault()
   e.stopImmediatePropagation()

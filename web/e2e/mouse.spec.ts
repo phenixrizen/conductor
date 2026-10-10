@@ -119,6 +119,36 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await expect.poll(() => clip(page)).toBe('select-me-42')
     expect(got().length).toBe(before)
 
+    // The keyboard's menu key (a menu event with no press before it) is never the program's: with right-click pasting turned off
+    // from the menu, it opens the menu.
+    const screenEl = page.locator('.terminal-host .xterm-screen').first()
+    const toggle = page.getByRole('menuitemcheckbox', { name: 'Right-click pastes' })
+    const press = { clientX: Math.round(mid.x), clientY: Math.round(mid.y), button: 2, bubbles: true, cancelable: true, composed: true }
+    before = got().length
+    await screen.click({ button: 'right', modifiers: ['Shift'] })
+    await expect(toggle).toHaveAttribute('aria-checked', 'true')
+    await toggle.click()
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await screenEl.dispatchEvent('contextmenu', { ...press, button: 0, buttons: 0 })
+    await expect(page.getByRole('menuitem', { name: 'Select all' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+
+    // The forcing key is judged at the press: Shift held at the press and let go before the menu event (on Windows it comes after the
+    // release) still opens the menu, and xterm reported nothing.
+    await screenEl.dispatchEvent('mousedown', { ...press, buttons: 2, shiftKey: true })
+    await screenEl.dispatchEvent('mouseup', { ...press, buttons: 0, shiftKey: true })
+    await screenEl.dispatchEvent('contextmenu', { ...press, buttons: 0, shiftKey: false })
+    await expect(page.getByRole('menuitem', { name: 'Select all' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    expect(got().length).toBe(before)
+    await screen.click({ button: 'right', modifiers: ['Shift'] })
+    await expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await toggle.click()
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    expect(got().length).toBe(before)
+
     // Once the program lets go of the mouse, a right-click pastes again.
     await page.keyboard.press('q')
     await expect.poll(() => existsSync(join(cwd, 'done.txt')), { timeout: 15_000 }).toBe(true)
