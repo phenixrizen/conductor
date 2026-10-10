@@ -536,3 +536,56 @@ func TestAStartupQuestionsChoiceAnswersWithoutEnter(t *testing.T) {
 		t.Fatalf("the choice did not answer: %q", st)
 	}
 }
+
+// A program that draws its next startup question the moment the first is
+// answered (Codex: the background-server question, then "Update available")
+// has that question held too. The screen the first question showed on is
+// cleared before the answer is written, never after: cleared after, it took
+// the next question with it whenever the program drew it before the answer
+// returned, and that question went unseen (the trust spec's flake on main,
+// 2026-10-10).
+func TestTheNextStartupQuestionDrawnAsTheFirstIsAnsweredIsHeld(t *testing.T) {
+	bg := []Option{{Label: "Run without the daemon this time", Input: "1"}, {Label: "Cancel (Codex exits)", Input: "3"}}
+	upd := []Option{{Label: "Skip this update", Input: "\x1b"}}
+	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{
+		{Pattern: regexp.MustCompile(`(?i)background\s*server\s*has\s*incompatible`), Answers: bg},
+		{Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`), Answers: upd},
+	}}))
+	sub, err := s.Attach("", RoleControl, "", 0, 0, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("Background server has incompatible feature settings\r\n  1. Run without daemon this time\r\n> 3. Cancel"))
+	waitFor := func(what string, ok func(Attention) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !ok(s.Info().Attention) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: attention %+v", what, s.Info().Attention)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitFor("the first question", func(a Attention) bool {
+		return a.Source == SourceTrust && strings.Contains(a.Message, "Background server")
+	})
+	// The program draws the next question while the answer is being written,
+	// and the session reads it before the write returns.
+	p.onWrite = func() {
+		p.outW.Write([]byte("\x1b[2J\x1b[HUpdate available! 0.161.0 -> 0.162.0\r\n> 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip"))
+		time.Sleep(150 * time.Millisecond)
+	}
+	if err := s.Input(sub, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	p.onWrite = nil
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+	waitFor("the next question", func(a Attention) bool {
+		return a.State == AttentionNeedsInput && a.Source == SourceTrust && strings.Contains(a.Message, "Update now")
+	})
+	if opts := s.Info().Attention.Options; len(opts) != 1 || opts[0].Input != "\x1b" {
+		t.Fatalf("its choices %+v", opts)
+	}
+}

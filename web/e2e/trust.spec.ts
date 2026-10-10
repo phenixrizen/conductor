@@ -37,13 +37,13 @@ test('a member asked to trust the folder is held with the question, on the API a
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   let r: Run = run
+  // The held state and the run log's line come as two updates: wait for both (under load a read fell between them).
   await expect
     .poll(async () => {
       r = await api.run(run.id)
-      return member(r, 'solo').needsInput === true && r.state === 'needs_input'
-    }, { timeout: 30_000, message: 'the member is held' })
+      return member(r, 'solo').needsInput === true && r.state === 'needs_input' && logged(r, 'solo asks "Trust this folder?')
+    }, { timeout: 30_000, message: 'the member is held, and the run says why' })
     .toBe(true)
-  expect(logged(r, 'solo asks "Trust this folder?')).toBe(true)
   expect(logged(r, "typed solo's prompt")).toBe(false)
   const session = await api.session(member(r, 'solo').sessionId ?? '')
   expect(session.attention?.state).toBe('needs_input')

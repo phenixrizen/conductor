@@ -64,6 +64,12 @@ func clearConductorEnv(t *testing.T) {
 	// publishing to the public switchyard: a test's sessions stay here.
 	t.Setenv("CONDUCTOR_REACH", "off")
 	t.Setenv("CONDUCTOR_RENDEZVOUS", "0")
+	// The system's programs only, as CI has: a server warms its catalog as
+	// it starts, running each agent found on PATH with --version, and a real
+	// agent of this machine's (Copilot unpacks itself into HOME) went on
+	// writing into the test's HOME after the test ended, so its cleanup
+	// failed (round 14).
+	t.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 }
 
 // writeServeConfig writes body as conductor.json in dir and returns its path.
