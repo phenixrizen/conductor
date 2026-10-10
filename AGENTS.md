@@ -86,6 +86,7 @@ make vuln                      # govulncheck (network); the standard library's f
 make test-network              # the built-in agents' sites on the network (nightly)
 make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (codex_review.py)
 ```
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
@@ -101,6 +102,45 @@ the full set before finishing. Every harness that launches sessions sets
 a server publishes its sessions to the public switchyard by default, and a
 test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
+
+## Reviews
+
+Every pull request gets a Codex adversarial review before it is opened: a
+second model questioning the design, not only the lines. It comes from the
+Codex plugin for Claude Code (`openai/codex-plugin-cc`; `/plugin marketplace
+add openai/codex-plugin-cc`, `/plugin install codex@openai-codex`,
+`/codex:setup`, a Codex login). A person types
+`/codex:adversarial-review --base origin/main <focus>`; an agent cannot
+invoke that command and runs the same review through the plugin's script,
+which `scripts/codex_review.py` finds (the installation Claude Code's
+registry names for this repository, else the user's; never the newest
+cached copy, and an ambiguous registry is refused):
+
+```bash
+python3 scripts/codex_review.py "<focus: the risks this change touches>"
+```
+
+- `--base` reviews the commits `origin/main...HEAD`, not the working tree:
+  commit everything first. The pull request's body names the commit
+  reviewed; commits after it (the review's own fixes included) get another
+  review before the merge.
+- The focus names the risks the change touches: races and ownership,
+  link scopes and revocation, credentials in logs, what the switchyard can
+  see, recovery after a restart, per-connection bounds.
+- Its findings are claims, not facts. Each is reproduced (a test, or a run
+  with `CONDUCTOR_RENDEZVOUS=0` and an isolated home) or traced in the code
+  before it is fixed; one the code refutes is answered with the lines that
+  refute it.
+- The pull request's body lists the findings and what became of each. One
+  outside the change's scope goes to `docs/tasks-todo.md`, never dropped
+  silently.
+- A security finding (a way to gain access, read what one should not, or
+  deny service) never goes into this public repository, a pull request, a
+  commit message or the todo until its fix has shipped: it goes to the
+  owner's private security-findings document. The fix's pull request
+  describes the change, not the attack.
+- When the review cannot run (no login, no network), the pull request says
+  so: a limitation, not a pass.
 
 ## Pinned versions
 

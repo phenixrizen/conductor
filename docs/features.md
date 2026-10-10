@@ -676,6 +676,33 @@ request each from main.
   the menu and its toggle; a view link copying, its Paste disabled and its
   paste reaching nothing; three runs out of three). No server change.
 
+- **Codex adversarial reviews, a rule.** The owner reviews with OpenAI's
+  Codex plugin for Claude Code at work, and its review of this repository
+  raised eight findings (their investigation is its own report). AGENTS.md
+  gains "Reviews": every pull request gets `codex-companion.mjs
+  adversarial-review` against `origin/main` with a focus on the risks it
+  touches, after everything is committed (`--base` reads commits only), and
+  again for commits made after it; each finding is reproduced or traced
+  before it is fixed or refuted, and the pull request lists them. The plugin
+  (1.0.6) was installed on this machine and its first review was of this
+  change: three findings, all three confirmed in the plugin's code and taken
+  (commit before reviewing, the plugin's root from the registry rather than
+  the newest cached copy, and no reverse `/code-review` clause, which needs
+  an open pull request and skips drafts and simple ones). Its second pass
+  found the registry can list the plugin per project as well as for the
+  user, so the lookup became `scripts/codex_review.py`: this repository's
+  installation, else the user's, an ambiguous registry refused (unit tests
+  with another project's entry listed first). The third pass found three
+  more, taken: a linked worktree now finds its main checkout's installation
+  (git's common directory), the registry follows `CLAUDE_CONFIG_DIR`, and
+  `--cwd`/`-C` are refused, the review running where the script is run.
+  The fourth found the plugin also takes `--C` and `-cwd`, and an inherited
+  `GIT_DIR` (a git hook's) pointed every lookup at one repository: flags
+  are now an allowlist (`--base`, `--scope`), git's repository-local
+  variables are dropped, and the `GIT_DIR` test fails without the fix.
+  Security findings, from a review or otherwise, stay out of this public
+  repository until fixed (the owner's call): AGENTS.md says where they go.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
