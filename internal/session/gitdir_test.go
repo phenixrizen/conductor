@@ -390,6 +390,10 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	// settings5 is refused too, as a case-folding file system takes it.
 	must(os.MkdirAll(filepath.Join(root, ".git", "info"), 0o755))
 	must(os.Symlink("../../Settings5", filepath.Join(root, ".git", "info", "sparse-checkout")))
+	// project's .git links to git-pointer, not made yet: a save there would
+	// make the folder's .git file.
+	must(os.Mkdir(filepath.Join(root, "project"), 0o755))
+	must(os.Symlink("git-pointer", filepath.Join(root, "project", ".git")))
 	// A one-line YAML file with a gitdir key: an ordinary file.
 	must(os.WriteFile(filepath.Join(root, "settings.yml"), []byte("gitdir: null\n"), 0o644))
 
@@ -406,7 +410,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Stat(filepath.Join(root, branchRef)); err != nil {
 		t.Fatalf("the branch's loose ref: %v", err)
 	}
-	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new", "head-copy", "settings5"}
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new", "head-copy", "settings5", "project/git-pointer"}
 	for i, p := range refused {
 		id := fmt.Sprintf("m%d", i)
 		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
@@ -422,6 +426,14 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	}
 	if _, err := os.Lstat(filepath.Join(root, "settings3")); err == nil {
 		t.Fatal("the file at the end of a dangling chain of links was made")
+	}
+	if _, err := os.Lstat(filepath.Join(root, "project", "git-pointer")); err == nil {
+		t.Fatal("the file a dangling .git link names was made")
+	}
+	if nvim.Available() {
+		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-pointer", Path: "project/git-pointer"}); !errors.Is(err, errGitDir) {
+			t.Errorf("Neovim on project/git-pointer: %v", err)
+		}
 	}
 	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config", "spaced/shared /config", "head-copy"} {
 		h, _ := ReadPath(root, p, false, nil)
@@ -480,7 +492,7 @@ func TestGitDirScanIsBounded(t *testing.T) {
 	}
 	file := filepath.Join(dir, "notes.txt")
 	os.WriteFile(file, []byte("x\n"), 0o644)
-	ids := gitIDs{budget: maxScan}
+	ids := gitIDs{budget: maxScan, bytes: maxScanBytes}
 	for p := file; p != root; p = filepath.Dir(p) {
 		gitDirsIn(p, &ids)
 	}
@@ -506,6 +518,25 @@ func TestGitDirScanIsBounded(t *testing.T) {
 	os.WriteFile(plain, nil, 0o644)
 	if inGitDir(plain) {
 		t.Fatal("a file with no repository on its way read as .git")
+	}
+	maxScan = saved
+	// The shared git directory's commondir, padded, is read once however
+	// many .git name the directory; .git files padded past the byte budget
+	// in all leave the file read only.
+	os.WriteFile(filepath.Join(shared, "commondir"), []byte("."+strings.Repeat("\n", 900_000)), 0o644)
+	ids = gitIDs{budget: maxScan, bytes: maxScanBytes}
+	for p := file; p != root; p = filepath.Dir(p) {
+		gitDirsIn(p, &ids)
+	}
+	if ids.incomplete || len(ids.scanned) != 1 {
+		t.Fatalf("with a padded commondir: incomplete %v, scanned %d", ids.incomplete, len(ids.scanned))
+	}
+	padded := "gitdir: " + shared + strings.Repeat("\n", 64<<10)
+	for d := filepath.Dir(file); d != root; d = filepath.Dir(d) {
+		os.WriteFile(filepath.Join(d, ".git"), []byte(padded), 0o644)
+	}
+	if !inGitDir(file) {
+		t.Fatal("200 padded .git files past the byte budget let the file be edited")
 	}
 }
 

@@ -75,7 +75,7 @@ func inGitDir(real string) bool {
 	if isGitFile(real) {
 		return true
 	}
-	ids := gitIDs{budget: maxScan}
+	ids := gitIDs{budget: maxScan, bytes: maxScanBytes}
 	for p := real; ; p = filepath.Dir(p) {
 		gitDirsIn(p, &ids)
 		if ids.incomplete || filepath.Dir(p) == p {
@@ -120,14 +120,20 @@ type gitIDs struct {
 	incomplete bool
 	// scanned holds the git directories looked at already, each looked at
 	// once however many .git name it; budget is how many more entries may
-	// be looked at for this check (maxScan at first).
+	// be looked at for this check (maxScan at first), bytes how many more
+	// bytes of .git files and commondirs may be read (maxScanBytes).
 	scanned []os.FileInfo
 	budget  int
+	bytes   int
 }
 
-// maxScan bounds the entries one check looks at, all git directories
-// together; past it, the path is read only (incomplete).
-var maxScan = 16384
+// maxScan bounds the entries one check looks at, and maxScanBytes the
+// bytes of .git files and commondirs it reads, all git directories
+// together; past either, the path is read only (incomplete).
+var (
+	maxScan      = 16384
+	maxScanBytes = 4 << 20
+)
 
 // rawJoin joins name to dir as the kernel walks them, without cleaning
 // the result: a link in dir followed by .. in name goes where git goes. An
@@ -146,9 +152,22 @@ func rawJoin(dir, name string) string {
 // metadata that are links (gitDirFiles).
 func gitDirsIn(dir string, ids *gitIDs) {
 	dotgit := filepath.Join(dir, ".git")
+	lfi, err := os.Lstat(dotgit)
+	if err != nil {
+		return
+	}
 	fi, err := os.Stat(dotgit)
 	switch {
 	case err != nil:
+		// A .git link to nothing yet: the file a save would make at its
+		// end would be the folder's .git.
+		if lfi.Mode()&os.ModeSymlink != 0 {
+			if dest, ok := linkDestination(dotgit); ok {
+				ids.missing = append(ids.missing, dest)
+			} else {
+				ids.incomplete = true
+			}
+		}
 		return
 	case fi.IsDir():
 		ids.files = append(ids.files, fi)
@@ -158,6 +177,9 @@ func gitDirsIn(dir string, ids *gitIDs) {
 		return
 	}
 	ids.files = append(ids.files, fi)
+	if !ids.charge(dotgit) {
+		return
+	}
 	gd := gitDirFromFile(dotgit, dir)
 	if gd == "" {
 		return
@@ -168,12 +190,50 @@ func gitDirsIn(dir string, ids *gitIDs) {
 	}
 }
 
+// seen reports whether the directory dir was looked at already in this
+// check, and marks it looked at.
+func (ids *gitIDs) seen(dir string) bool {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	for _, s := range ids.scanned {
+		if os.SameFile(fi, s) {
+			return true
+		}
+	}
+	ids.scanned = append(ids.scanned, fi)
+	return false
+}
+
+// charge takes what reading path costs (its size, at most maxGitFile)
+// from the check's byte budget; past it the check is incomplete, and
+// charge says not to read.
+func (ids *gitIDs) charge(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return true
+	}
+	ids.bytes -= int(min(fi.Size(), maxGitFile))
+	if ids.bytes < 0 {
+		ids.incomplete = true
+		return false
+	}
+	return true
+}
+
 // gitDirFiles adds to ids, for the git directory gitDir, the common
 // directory its commondir names (git reads the configuration, refs and
 // objects there, with or without a HEAD of its own) and, for both, the
 // targets of their entries that are links (linkedMetadata).
 func gitDirFiles(gitDir string, ids *gitIDs) {
+	if ids.incomplete || ids.seen(gitDir) {
+		return
+	}
 	linkedMetadata(gitDir, ids)
+	if !ids.charge(rawJoin(gitDir, "commondir")) {
+		return
+	}
 	common, ok, known := readCommonDir(gitDir)
 	if !known {
 		ids.incomplete = true
@@ -182,7 +242,9 @@ func gitDirFiles(gitDir string, ids *gitIDs) {
 	if ok {
 		if cfi, err := os.Stat(common); err == nil && cfi.IsDir() {
 			ids.files = append(ids.files, cfi)
-			linkedMetadata(common, ids)
+			if !ids.seen(common) {
+				linkedMetadata(common, ids)
+			}
 		}
 	}
 }
@@ -227,14 +289,6 @@ const maxEntries = 4096
 func linkedMetadata(gitDir string, ids *gitIDs) {
 	if ids.incomplete {
 		return
-	}
-	if fi, err := os.Stat(gitDir); err == nil {
-		for _, s := range ids.scanned {
-			if os.SameFile(fi, s) {
-				return
-			}
-		}
-		ids.scanned = append(ids.scanned, fi)
 	}
 	add := func(p string) {
 		fi, err := os.Lstat(p)
