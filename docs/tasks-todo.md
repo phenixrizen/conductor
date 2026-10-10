@@ -13,6 +13,56 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
+These five came from a Codex review of the repository on 2026-10-10,
+each reproduced with a Go test (round 15); none is fixed yet.
+
+- **A stopped run can be resumed twice.** A run's page header offers
+  "Resume as new run" for any stopped run (`CrewRunHeader.vue`), also once
+  it has been resumed (the Runs tab hides it then). Pressed again while the
+  first continuation runs, it launches a second one on the same agent
+  conversations and worktrees: two agents on one branch, each appending
+  its own history to one transcript, and the original run's `resumedBy`
+  now names the second, so the link to the first is lost. Cause:
+  `ResumeRun` (`internal/crew/run.go`) checks only that the run stopped,
+  and sets `resumedBy` after letting go of the lock. Two more ways to the
+  same place: a standalone session resume checks `liveAgentSession`
+  (`internal/api/resume.go`) and then launches with nothing reserved, so
+  concurrent requests each launch (8 of 8); and `ResumeMember` marks a
+  member `starting` while keeping its ended session's id, so a second call
+  at the same time passes too, and the run's Stop then misses one process.
+  Expected: one live session per agent conversation; a second request
+  answered `409` naming the continuation, which the page opens. The fix
+  proposed: a lease per agent conversation taken before the process
+  starts and released when the launch fails or the session ends, a
+  run-level "resuming" reservation, `ResumeMember` refusing a member
+  already `starting`, and the header's button hidden once a run was
+  resumed.
+- **A run's record offers Resume and Open, and both answer 404.** Crews →
+  a crew → Runs lists the runs that ended before the server restarted
+  from their records, with the same buttons as a live run's; every run
+  route looks in memory only, and `CrewRunsPanel.vue` does not tell a
+  record from a live run. Expected: a record opens read-only, its Resume
+  hidden until "Resuming a run from its record" (below, Crews and runs)
+  exists.
+- **A slow shutdown loses run records.** With many runs live, stopping
+  the server lost 17 to 20 of 20 records in the test. Cause: the 10 s
+  shutdown budget (`internal/cli/serve.go`), runs stopped one at a time
+  with up to 5 s each, and `Records.Close` dropping saves still pending.
+  Expected: every run's record written before the server exits.
+- **An agent's question is cleared by the end of its turn.** The Conductor
+  skill tells an agent to ask with `needs_input` and says the session shows
+  as needing input until someone replies (`internal/agents/skill.go`), but
+  the turn's Stop hook then sets `done` (`internal/session/attention.go`):
+  the amber state goes, and in a crew the next member starts with the
+  question unanswered. Expected: an agent's `needs_input` holds until input
+  arrives.
+- **Opening a file of 1 MiB or more disconnects the viewer.** The Files
+  tab cuts a file's body at exactly 1 MiB (`internal/session/files.go`);
+  with its header the frame is over the viewer's 1 MiB queue mark, so the
+  viewer is dropped as one that stopped reading, and the "truncated" badge
+  never shows. Expected: the first part of the file, marked truncated. The
+  fix proposed: cut the body at 1 MiB less the header's bound.
+
 ## Features
 
 ### The browser terminal
@@ -24,28 +74,14 @@ test that would have caught it when it is fixed.
   unless an agent's mouse mode is found wanting; a check of Codex and Claude
   Code with the mouse is on the by-hand list for the next round. Round 10.
 
-### The Files tab, after round 12
-
-Every layer of round 12 landed on 2026-10-08 and 2026-10-09
-(`docs/round12-plan.md`, design screens 4a–4g and 5a–5c): the Explorer,
-the Monaco editor, Changes, Touched, Commits, editing, comments on lines
-and the Neovim keymap. What is set aside:
-
-- **Codex's hook trust, how long it lasts:** Codex 0.161 runs hooks only
-  once trusted, and Conductor now holds its "Hooks need review" question
-  with its answers as choices (round 13, G2c). Where Codex keeps the trust,
-  and whether one trust lasts past the session, is not known: one trust in
-  a throwaway home did not make `codex exec` run the hooks afterwards. A
-  live check in the person's own Codex settles it; if it never lasts, the
-  question comes at every Codex launch.
-
 ### The sidebar
 
 - **The sidebar, watched in use.** The 3-series sidebar was built in round
-  11 (S1–S7, `docs/features.md`). Still to do: the five-task feedback
-  script with two coworkers (find the agent asking you something; stop a
-  run; share one member; open yesterday's run; tell a crew from a run),
-  watched, to catch what the design missed.
+  11 (S1–S7, `docs/features.md`). The five tasks (find the agent asking
+  you something; share one member; stop a run; open yesterday's run; tell
+  a crew from a run) are written out in `docs/sidebar-tasks.md`. Still to
+  do: the owner runs them with two coworkers, watched, to catch what the
+  design missed.
 
 ### The desktop app
 
@@ -163,7 +199,19 @@ compute and cloud bill stay the cheapest possible.
 - **Hosted crews** ("Runs on: my machine"), and with them the field in the
   crew editor. Round 8.
 - **Resuming a run from its record after a server restart**; the record
-  holds the agent session ids and worktrees it needs. Round 5.
+  holds the agent session ids and worktrees it needs. Round 5. The review
+  of 2026-10-10 proposed how: a journal in `runs/<id>.json` from launch on
+  (each member's prompt, arguments, base commit, worktree, agent
+  conversation and state); at start, runs still marked running become
+  `interrupted`, never relaunched on their own; resume reads the record.
+  Terminal output stays unsaved.
+- **An outcome, not only "done", for unattended runs.** A member's turn
+  ending is `done` (an agent at rest), the documented contract that
+  supervised crews start the next member on. A run nobody watches needs to
+  know whether the work succeeded: `conductor notify --event outcome
+  --status completed|blocked|failed` and an MCP tool, and per member an
+  opt-in start condition (`start.on: done | outcome | check`). A product
+  decision for the owner, when unattended runs are wanted. Round 15.
 - **A readiness wait for a resumed member**: it is `running` the moment its
   session exists, while its agent takes seconds to show its prompt, so a
   handoff typed meanwhile can be lost; the start path's `awaitReady` could

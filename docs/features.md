@@ -775,6 +775,24 @@ request each from main.
   everywhere), vitest (`bundledPackages`, the About link), the desktop
   packaging test, Playwright (the link opens the text).
 
+- **Codex's hook trust lasts.** Checked live on 2026-10-10 with the real
+  Codex 0.161 in a throwaway home (its own `CODEX_HOME`, a copy of the
+  login, deleted afterwards; no Enter typed into a startup screen).
+  Answering "Hooks need review" with trust writes one table per hook to
+  Codex's `config.toml`, keyed by the hooks file, the event and the hook's
+  place in it (`[hooks.state."<…>/.codex/hooks.json:stop:0:0"]`), holding a
+  `trusted_hash` of that hook's definition. A second launch, and every one
+  after, ran the hooks without asking. Changing a hook's definition (the
+  test moved the `conductor` binary the command names) made Codex ask
+  again, for that hook only. So the question comes once per machine, and
+  again only when Conductor's hook command changes: a `conductor` binary at
+  a new path (a build run from another checkout), or a release that changes
+  the hooks Conductor writes. The desktop app runs its binary from one
+  place across updates, so an update alone does not ask again. Nothing to
+  build; the todo's entry is closed. Round 13's note that `codex exec` did
+  not run the hooks after a trust was not looked at again: Conductor
+  launches Codex interactively, and those launches keep the trust.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
