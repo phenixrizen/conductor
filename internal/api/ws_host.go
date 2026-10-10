@@ -126,6 +126,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			case o := <-conn.Send:
+				conn.Took(o)
 				var err error
 				if o.Text != nil {
 					err = writeText(ctx, c, o.Text)
