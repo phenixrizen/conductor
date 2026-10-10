@@ -370,11 +370,13 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		return
 	}
 	// Writer: drain frames queued by the host side. pumped closes when Pump
-	// has closed the sink.
+	// has closed the sink, or given up on a connection that failed; the read
+	// loop's waits (the budget, readFrame) end with it.
 	pumped := make(chan struct{})
 	go func() {
 		defer close(pumped)
 		v.Pump(sink)
+		sink.cancel()
 	}()
 	go keepalive(sink.ctx, c)
 	for {

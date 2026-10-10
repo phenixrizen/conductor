@@ -154,6 +154,79 @@ func TestServerMessagesKeepTheirRoomInTheHostQueue(t *testing.T) {
 	}
 }
 
+// Viewers waiting for room in the host's queue get it in their order: a large
+// frame is not held back for ever by small ones that another viewer keeps
+// sending while the host drains slowly.
+func TestViewersGetRoomInTheHostQueueInTheirOrder(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	small := relayedViewer(t, hs, conn, "0123456789abcdef")
+	large := relayedViewer(t, hs, conn, "fedcba9876543210")
+	piece := bytes.Repeat([]byte("s"), 4<<10)
+	go func() {
+		for hs.RelayToHost(small, proto.Frame{Type: proto.TypeInput, Payload: piece}) == nil {
+		}
+	}()
+	defer hs.RemoveViewer(small)
+	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+len(piece)))
+	// The host takes a message a millisecond.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+			select {
+			case o := <-conn.Send:
+				conn.Took(o)
+			default:
+			}
+		}
+	}()
+	sent := make(chan error, 1)
+	go func() {
+		sent <- hs.RelayToHost(large, proto.Frame{Type: proto.TypeInput, Payload: bytes.Repeat([]byte("L"), proto.MaxInput)})
+	}()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a 32 KiB frame waited 3 s for room while 4 KiB frames kept taking it")
+	}
+}
+
+// A viewer whose connection fails, as a write to it does, is closed: a frame
+// of its that waits for room in the host's queue stops waiting, and the
+// viewer counts no more.
+func TestAViewerWhoseWriteFailsStopsWaitingForTheHost(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	v := relayedViewer(t, hs, conn, "0123456789abcdef")
+	sent := fillFromViewer(hs, v, 2*hostQueueBytes)
+	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+proto.MaxInput))
+	hs.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeOutput, Payload: []byte("o")})
+	pumped := make(chan struct{})
+	go func() { v.Pump(failSink{}); close(pumped) }()
+	select {
+	case <-sent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a viewer whose connection failed kept waiting for room")
+	}
+	<-pumped
+	if v.Reason() == nil {
+		t.Fatal("a viewer whose write failed is not closed")
+	}
+}
+
+// failSink fails every write.
+type failSink struct{}
+
+func (failSink) WriteFrame([]byte) error { return errors.New("connection reset") }
+func (failSink) Close(error)             {}
+
 // relayedViewerNoDrain is relayedViewer for a host queue that is full: the
 // join and relay_start are queued among the rest.
 func relayedViewerNoDrain(t *testing.T, hs *HostedSession, id string) *Viewer {

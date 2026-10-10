@@ -193,7 +193,8 @@ it), shared by every hosted viewer of the address and kept after the last
 one leaves until it has refilled: a viewer past it is slowed the same way,
 and each frame is charged whole, in the order the frames come. What waits for a host's connection is bounded in bytes
 as well as in messages (8 MiB): the viewers' frames fill at most 7 MiB of it
-and then wait in their own read loops for the host to take some, which
+and then wait in their own read loops, in the order they came, for the host
+to take some (a viewer whose connection fails meanwhile is let go), which
 neither holds up the host's messages nor closes its connection; a server
 message that finds the whole queue full closes the connection, as a host
 too slow to keep. What waits for a viewer is bounded at 16 MiB beside its

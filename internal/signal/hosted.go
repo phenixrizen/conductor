@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -74,12 +75,19 @@ type HostConn struct {
 	once sync.Once
 
 	// mu is held by every send into Send, with bytes, the bytes of what Send
-	// holds, and room, which a viewer's message waiting for room waits on
-	// (sendFrom): Took closes it, and the next waiter makes another.
-	mu    sync.Mutex
-	bytes int
-	room  chan struct{}
+	// holds; waiting, the viewers' messages waiting for room, in their order
+	// (sendFrom); and room, which they wait on: Took closes it, as does a
+	// waiter that leaves the head of the line, and the next to wait makes
+	// another.
+	mu      sync.Mutex
+	bytes   int
+	waiting []*roomWaiter
+	room    chan struct{}
 }
+
+// roomWaiter is a viewer's message in the line for room in a host's queue:
+// its place, and its size.
+type roomWaiter struct{ n int }
 
 // NewHostConn creates a host connection with an outbound queue.
 func NewHostConn() *HostConn {
@@ -97,11 +105,17 @@ func (c *HostConn) Close() { c.once.Do(func() { close(c.done) }) }
 func (c *HostConn) Took(o Outbound) {
 	c.mu.Lock()
 	c.bytes = max(0, c.bytes-o.size())
+	c.wake()
+	c.mu.Unlock()
+}
+
+// wake has the viewers' messages waiting for room look again. Called with mu
+// held.
+func (c *HostConn) wake() {
 	if c.room != nil {
 		close(c.room)
 		c.room = nil
 	}
-	c.mu.Unlock()
 }
 
 // queued reports the bytes Send holds.
@@ -142,42 +156,72 @@ func (c *HostConn) send(o Outbound) bool {
 // sendFrom queues a message a viewer sent (a frame it relays, its offer, a
 // candidate) within the viewers' share of the queue, hostViewerBytes and
 // hostViewerSlots: past it, sendFrom waits until the writer takes enough
-// (Took). A viewer that sends more than the host reads is so held in its own
-// read loop; the host's loop and the server's messages never wait for it,
-// and it never closes the host's connection. It returns ErrSlowHost when the
-// connection closes meanwhile and ErrViewerGone when stop is closed first.
+// (Took). The viewers' messages that wait get room in their order, whatever
+// their sizes: one that comes while others wait waits behind them. A viewer
+// that sends more than the host reads is so held in its own read loop; the
+// host's loop and the server's messages never wait for it, and it never
+// closes the host's connection. It returns ErrSlowHost when the connection
+// closes meanwhile and ErrViewerGone when stop is closed first.
 func (c *HostConn) sendFrom(o Outbound, stop <-chan struct{}) error {
+	select {
+	case <-c.done:
+		return ErrSlowHost
+	case <-stop:
+		return ErrViewerGone
+	default:
+	}
 	n := o.size()
+	c.mu.Lock()
+	if len(c.waiting) == 0 && c.admit(o, n) {
+		c.mu.Unlock()
+		return nil
+	}
+	me := &roomWaiter{n: n}
+	c.waiting = append(c.waiting, me)
 	for {
-		select {
-		case <-c.done:
-			return ErrSlowHost
-		case <-stop:
-			return ErrViewerGone
-		default:
-		}
-		c.mu.Lock()
-		if (c.bytes == 0 || c.bytes+n <= hostViewerBytes) && len(c.Send) < hostViewerSlots {
-			select {
-			case c.Send <- o:
-				c.bytes += n
-				c.mu.Unlock()
-				return nil
-			default:
-			}
+		if c.waiting[0] == me && c.admit(o, n) {
+			c.waiting = c.waiting[1:]
+			c.wake() // the next in line may fit as well
+			c.mu.Unlock()
+			return nil
 		}
 		if c.room == nil {
 			c.room = make(chan struct{})
 		}
 		room := c.room
 		c.mu.Unlock()
+		var err error
 		select {
 		case <-room:
 		case <-c.done:
-			return ErrSlowHost
+			err = ErrSlowHost
 		case <-stop:
-			return ErrViewerGone
+			err = ErrViewerGone
 		}
+		c.mu.Lock()
+		if err != nil {
+			if c.waiting[0] == me {
+				c.wake()
+			}
+			c.waiting = slices.DeleteFunc(c.waiting, func(w *roomWaiter) bool { return w == me })
+			c.mu.Unlock()
+			return err
+		}
+	}
+}
+
+// admit queues o, of n bytes, when the viewers' share has room for it (any
+// message when the queue is empty). Called with mu held.
+func (c *HostConn) admit(o Outbound, n int) bool {
+	if (c.bytes != 0 && c.bytes+n > hostViewerBytes) || len(c.Send) >= hostViewerSlots {
+		return false
+	}
+	select {
+	case c.Send <- o:
+		c.bytes += n
+		return true
+	default:
+		return false
 	}
 }
 
@@ -248,7 +292,9 @@ func (v *Viewer) close(reason error) {
 
 // Pump writes the frames queued for the viewer to sink, in order, until the
 // viewer is closed, and then closes sink with the reason it was closed for.
-// The API layer runs it on its own goroutine for the viewer's connection.
+// The API layer runs it on its own goroutine for the viewer's connection. A
+// frame that cannot be written ends it at once, the viewer closed with the
+// write's error and sink left as it is.
 //
 // What becomes of the frames still queued when the viewer is closed depends on
 // the reason. They are dropped when the link was revoked, when the viewer's own
@@ -281,6 +327,9 @@ func (v *Viewer) Pump(sink session.Sink) {
 		case frame := <-v.Out:
 			v.queued.Add(-int64(len(frame)))
 			if err := sink.WriteFrame(frame); err != nil {
+				// The connection failed: the viewer is closed, so that what
+				// waits on its behalf (a frame for the host's queue) stops.
+				v.close(err)
 				return
 			}
 		}

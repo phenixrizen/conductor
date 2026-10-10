@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -205,6 +207,82 @@ func TestViewersOfOneAddressShareOneBudget(t *testing.T) {
 	}
 	if took := time.Since(start); took < 1500*time.Millisecond {
 		t.Fatalf("two viewers of one address sent 1 MiB in %v under a budget of 256 KiB/s", took)
+	}
+}
+
+// A viewer that disconnects while its frames wait for room in the queue of a
+// host that reads nothing is let go as soon as a write to it fails: the
+// session counts it no more, and the host stays connected.
+func TestAViewerThatLeavesWhileWaitingForTheHostIsLetGo(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
+	// A host that registers and then reads nothing more.
+	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
+	hc, _, err := websocket.Dial(t.Context(), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hc.CloseNow() })
+	hc.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
+	reg, _ := json.Marshal(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
+		Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}})
+	if err := hc.Write(t.Context(), websocket.MessageText, reg); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := hc.Read(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered proto.Registered
+	if err := json.Unmarshal(data, &registered); err != nil || registered.SessionID == "" {
+		t.Fatalf("registered %s: %v", data, err)
+	}
+	hs, _ := e.srv.hosts.Get(registered.SessionID)
+
+	v := dialViewer(t, e, registered.SessionID, adminToken)
+	v.hello(80, 24)
+	viewerID, _ := v.expectControl(proto.CtlWelcome)["viewerId"].(string)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
+	v.send(relay)
+	for {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("waiting for relay_ok: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+			break
+		}
+	}
+	// The viewer sends until the host's queue holds all it may and the
+	// server stops reading it.
+	var sent atomic.Int64
+	go func() {
+		frame := proto.Encode(proto.TypeInput, bytes.Repeat([]byte("f"), proto.MaxInput))
+		for v.c.Write(t.Context(), websocket.MessageBinary, frame) == nil {
+			sent.Add(int64(len(frame)))
+		}
+	}()
+	for last := int64(-1); last != sent.Load(); {
+		last = sent.Load()
+		time.Sleep(300 * time.Millisecond)
+	}
+	if sent.Load() < 7<<20 {
+		t.Fatalf("the server stopped reading after %d bytes", sent.Load())
+	}
+	v.c.CloseNow()
+	// The host writes to the viewer, which finds it gone.
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
+		if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !waitFor(5*time.Second, func() bool { return hs.Info().Viewers == 0 }) {
+		t.Fatalf("a viewer gone for %v is still counted", time.Since(start))
+	}
+	if !hs.Connected() {
+		t.Fatal("the host was disconnected")
 	}
 }
 
