@@ -52,6 +52,7 @@ func TestNoticesCarryWhatThePackageLicencesDoNot(t *testing.T) {
 		"osfs/os_bound.go (the file's own notice)", "The Flux authors",
 		"math/log.go (the file's own notice)", "Sun Microsystems",
 		"lib/xterm.mjs (the file's own notice)", "Fabrice Bellard",
+		"utils/glob.js (the file's own notice)", "Nick Fitzgerald",
 		"tm-themes 1.12.3's NOTICE (the themes it carries)", "tm-grammars 1.32.3's NOTICE (the grammars it carries)",
 		"in the app's resources as LICENSES.chromium.html",
 	} {

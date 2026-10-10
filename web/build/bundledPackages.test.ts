@@ -1,5 +1,8 @@
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { moduleFile, packageDir } from './bundledPackages'
+import { bundledPackages, moduleFile, packageDir } from './bundledPackages'
 
 describe('packageDir', () => {
   it('is the innermost package a module or asset comes from', () => {
@@ -28,5 +31,26 @@ describe('moduleFile', () => {
   it('is nothing for a virtual module or a file of the app itself', () => {
     expect(moduleFile('\0/src/web/node_modules/nuxt/dist/app/entry.js')).toBeNull()
     expect(moduleFile('/src/web/app/components/TerminalView.vue')).toBeNull()
+  })
+})
+
+describe('bundledPackages', () => {
+  it("writes what a worker's build carried with the client's", () => {
+    const root = mkdtempSync(join(tmpdir(), 'bundled-'))
+    const out = join(root, '.nuxt/bundled-packages.json')
+    const { client, worker } = bundledPackages(root, out)
+    const call = (hook: unknown, ...args: unknown[]) => (hook as (...a: unknown[]) => void).call({}, ...args)
+    call(client.configResolved, { root: join(root, 'app') })
+    // A Monaco worker is bundled by a build of its own, before the client's bundle is written.
+    call(worker.generateBundle, {}, { 'json.worker.js': { type: 'chunk', modules: { [join(root, 'node_modules/monaco-editor/esm/external/glob.js')]: {} } } })
+    call(client.generateBundle, {}, {
+      'entry.js': { type: 'chunk', modules: { [join(root, 'node_modules/@xterm/xterm/lib/xterm.mjs')]: {}, '\0virtual:x': {} } },
+      'font.woff2': { type: 'asset', originalFileNames: ['../node_modules/@fontsource/inter/inter.woff2'] },
+    })
+    call(client.writeBundle)
+    expect(JSON.parse(readFileSync(out, 'utf8'))).toEqual({
+      packages: ['node_modules/@fontsource/inter', 'node_modules/@xterm/xterm', 'node_modules/monaco-editor'],
+      modules: ['node_modules/@xterm/xterm/lib/xterm.mjs', 'node_modules/monaco-editor/esm/external/glob.js'],
+    })
   })
 })

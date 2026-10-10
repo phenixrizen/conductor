@@ -33,9 +33,10 @@ export interface BundledPackages {
 /**
  * bundledPackages writes the npm packages whose code or assets the client bundle carries, and the package files its code came from,
  * to out (BundledPackages): scripts/notices.py reads it for THIRD_PARTY_NOTICES, so the notices list what ships and not what
- * builds it.
+ * builds it. client goes in Vite's plugins; worker in its worker plugins, since a worker (Monaco's language services) is bundled
+ * by a build of its own, before the client's bundle is written.
  */
-export function bundledPackages(root: string, out: string): Plugin {
+export function bundledPackages(root: string, out: string): { client: Plugin; worker: Plugin } {
   const dirs = new Set<string>()
   const modules = new Set<string>()
   // Module ids are absolute; an asset's original names are relative to Vite's root (the app's source directory).
@@ -50,23 +51,27 @@ export function bundledPackages(root: string, out: string): Plugin {
     const f = moduleFile(id)
     if (f) modules.add(rel(f))
   }
+  const collect: Plugin['generateBundle'] = (_, bundle) => {
+    for (const file of Object.values(bundle)) {
+      if (file.type === 'chunk') Object.keys(file.modules).forEach(addModule)
+      else file.originalFileNames.forEach(add)
+    }
+  }
   return {
-    name: 'conductor:bundled-packages',
-    apply: 'build',
-    applyToEnvironment: (env) => env.name === 'client',
-    configResolved(config) {
-      viteRoot = config.root
+    client: {
+      name: 'conductor:bundled-packages',
+      apply: 'build',
+      applyToEnvironment: (env) => env.name === 'client',
+      configResolved(config) {
+        viteRoot = config.root
+      },
+      generateBundle: collect,
+      writeBundle() {
+        mkdirSync(dirname(out), { recursive: true })
+        const list: BundledPackages = { packages: [...dirs].sort(), modules: [...modules].sort() }
+        writeFileSync(out, JSON.stringify(list, null, 2) + '\n')
+      },
     },
-    generateBundle(_, bundle) {
-      for (const file of Object.values(bundle)) {
-        if (file.type === 'chunk') Object.keys(file.modules).forEach(addModule)
-        else file.originalFileNames.forEach(add)
-      }
-    },
-    writeBundle() {
-      mkdirSync(dirname(out), { recursive: true })
-      const list: BundledPackages = { packages: [...dirs].sort(), modules: [...modules].sort() }
-      writeFileSync(out, JSON.stringify(list, null, 2) + '\n')
-    },
+    worker: { name: 'conductor:bundled-packages-worker', apply: 'build', generateBundle: collect },
   }
 }

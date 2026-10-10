@@ -6,6 +6,8 @@ const webRoot = fileURLToPath(new URL('.', import.meta.url))
 
 // Nuxt configuration for the Conductor workbench. The app is a client-only
 // SPA generated into internal/web/dist and embedded in the Go binary.
+const bundled = bundledPackages(webRoot, `${webRoot}.nuxt/bundled-packages.json`)
+
 export default defineNuxtConfig({
   compatibilityDate: '2026-09-01',
   ssr: false,
@@ -57,8 +59,9 @@ export default defineNuxtConfig({
     },
   },
   vite: {
-    // The npm packages the client bundle carries, for THIRD_PARTY_NOTICES (scripts/notices.py).
-    plugins: [bundledPackages(webRoot, `${webRoot}.nuxt/bundled-packages.json`)],
+    // The npm packages the client bundle and its workers carry, for THIRD_PARTY_NOTICES (scripts/notices.py).
+    plugins: [bundled.client],
+    worker: { plugins: () => [bundled.worker] },
     optimizeDeps: { include: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl', '@xterm/addon-web-links'] },
   },
   typescript: { strict: true, typeCheck: false },
