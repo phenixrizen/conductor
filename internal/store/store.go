@@ -1,6 +1,6 @@
 // Package store persists small JSON documents in the server data directory:
-// a directory of JSON documents, which may hold directories of its own (Sub).
-// Every write goes to a temp file first and is renamed into place so readers
+// a directory of JSON documents, which may hold directories of its own (Sub),
+// and a few plain files (WriteFile). Every write goes to a temp file first and is renamed into place so readers
 // never see a torn file; a mutex serialises writers in this process.
 package store
 
@@ -241,6 +241,53 @@ func (s *Store) Save(name string, v any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.write(name, b)
+}
+
+// filePattern limits the name of a plain file, one that is no JSON document
+// (WriteFile), to a flat, lower-case name with no extension.
+var filePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// WriteFile writes b to the plain file called name as Save writes a document:
+// to a temp file of mode 0600, synced, renamed over name.
+func (s *Store) WriteFile(name string, b []byte) error {
+	if !filePattern.MatchString(name) {
+		return fmt.Errorf("store: bad name %q", name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.write(name, b)
+}
+
+// RemoveFile removes the plain file called name. One that is not there is no
+// error; a directory there (a Sub store) is refused.
+func (s *Store) RemoveFile(name string) error {
+	if !filePattern.MatchString(name) {
+		return fmt.Errorf("store: bad name %q", name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.dir, name)
+	fi, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("store: %s is a directory", path)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// write puts b in place of name through a temp file of mode 0600 in the
+// store's directory, synced before the rename, so a crash leaves the old
+// contents or the new, never a part. The caller holds s.mu.
+func (s *Store) write(name string, b []byte) error {
 	final := filepath.Join(s.dir, name)
 	tmp, err := os.CreateTemp(s.dir, name+".*.tmp")
 	if err != nil {
