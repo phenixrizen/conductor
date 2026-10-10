@@ -705,20 +705,33 @@ request each from main.
 - **An invite goes to the open window, not a reload.** Before, a
   `conductor://` invite the app received while its window was open loaded
   the join page in full, dropping whatever the window held. Now the main
-  process sends it over the bridge (`conductor:invite`) once the page has
-  said it listens (`conductor:inviteReady`, from the preload's `onInvite`,
-  checked against the main window's own contents); the workbench routes to
-  `/join/<token>?server=…` in place (`plugins/desktop-invite.client.ts`, the
-  invite checked again by `inviteRoute`). A page that has not said it
-  listens yet (loading, or navigating: `did-start-navigation` resets it)
-  gets the latest invite when it does; one never acknowledged within 10 s
-  falls back to the full load. Tests: vitest (`InviteDelivery`: sent at
-  once, held until ready, the latest held invite wins, the 10 s fallback;
-  `inviteRoute` accepting a valid invite and refusing a bad token or server),
-  Playwright `invite.spec.ts` (a fake bridge's invite routes in place, the
-  page not reloaded, history one longer; bad invites ignored), and the
-  desktop smoke test (an `open-url` invite into the running app keeps the
-  window's state and lands on the join page).
+  process sends it over the bridge (`conductor:invite`, with an id) once the
+  page has said it listens (`conductor:inviteReady`, from the preload's
+  `onInvite`, the sender checked against the main window), and the workbench
+  routes to `/join/<token>?server=…` in place (`plugins/desktop-invite.client.ts`,
+  the server as `joinServer` reads it: lower-case host, no default port).
+  The page reports the invite taken (`conductor:inviteTaken`) only once the
+  router has arrived; until then it stays pending, the latest winning, with
+  a 10 s fallback that loads the join page in full (for a page from before
+  the bridge, a refused invite, a failed navigation). While the main frame
+  loads a document neither word counts, since it may come from the page
+  being replaced; when loading stops the page is asked again
+  (`conductor:inviteAsk`). The join page is keyed by token and server, and a
+  chat thread from another server by its server too (`chatThreadKey`), so an
+  in-place invite never shows or sends one server's state on another's
+  page. Codex reviewed it four times: a late "ready" from the outgoing page
+  and a host written in capitals or with `:443` could each lose an invite;
+  the page said "taken" before its navigation landed; the same token on
+  another server reused the old join page; and chat threads could cross
+  servers. All fixed, the fourth pass approving. Tests: vitest
+  (`InviteDelivery`: sent at once, held until ready, the latest wins, a late
+  ready or take during a load ignored and asked again, a refused invite
+  falling back, a stale id; parser-to-route round trips; `chatThreadKey`),
+  Playwright `invite.spec.ts` (the invite routes in place and is taken,
+  refused ones answer false, the same token for another server asks that
+  server anew; the specs that use the join page pass), and the desktop
+  smoke test (an `open-url` invite into the running app keeps the window's
+  state).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
