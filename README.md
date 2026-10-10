@@ -546,6 +546,17 @@ outside it; hold **Alt** with the same key (**Alt+N**, **Alt+Y**, **Alt+←**)
 to use a shortcut without leaving the terminal. Your display name defaults to
 the server's user and can be changed from the person button in the sidebar.
 
+**Copy and paste in a terminal** work as in Windows Terminal: **Ctrl+Shift+C**
+(or **Ctrl+Insert**) copies the selection, **Ctrl+C** on a selection copies it
+and clears it (with nothing selected it is still the interrupt), and
+**Ctrl+Shift+V**, **Shift+Insert** or **Ctrl+V** paste, as one bracketed paste
+when the program asked for that. A right-click copies a selection and
+otherwise pastes; **Shift+right-click** opens the terminal's menu (Copy,
+Paste, Select all, and **Right-click pastes**, which turns that off so a
+right-click opens the menu, kept per browser). A view link copies and never
+pastes. On macOS **⌘C** and **⌘V** stay as they are; on Linux a middle-click
+pastes the selection as the browser does.
+
 ## Events and hooks
 
 Every session's process gets `CONDUCTOR_NOTIFY_URL` and `CONDUCTOR_NOTIFY_TOKEN`

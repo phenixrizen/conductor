@@ -2,6 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
+import { clipboardKey, readRightClickPastes, rightClick, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
@@ -80,6 +81,77 @@ const welcomed = ref(false)
 function sizerView(): SizerView {
   return { fit: props.fit, mayFit: mayFit(), welcomed: welcomed.value, sizer: sizerKnown.value, sizedBy: sizedBy.value, me: subscriberId.value, compact: props.compact, ended: ended.value, roster: roster.value, cols: sessionSize.value.cols, rows: sessionSize.value.rows }
 }
+// Copy and paste (round 15, utils/terminalClipboard.ts): the keys, right-click and the terminal's menu.
+const isMac = import.meta.client && /Mac|iPhone|iPad/.test(navigator.platform)
+const hasSelection = ref(false)
+const rightClickPastes = ref(true)
+/** Whether this connection may type, and so paste. */
+function canPaste(): boolean {
+  return !props.readOnly && role.value !== 'view'
+}
+/** Puts text on the clipboard: the async API where the page may use it, else a hidden text area within the gesture (a plain-HTTP origin). */
+async function writeClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      /* the fallback below */
+    }
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  try {
+    document.execCommand('copy')
+  } finally {
+    ta.remove()
+    term?.focus()
+  }
+}
+/** Copies the selection, and with clear clears it. */
+function copySelection(clear: boolean): void {
+  const text = term?.getSelection() ?? ''
+  if (!text) return
+  void writeClipboard(text)
+  if (clear) term?.clearSelection()
+}
+/** Pastes the clipboard as typed text (bracketed when the program asked), where the page may read it; else says how. */
+async function pasteClipboard(): Promise<void> {
+  if (!canPaste() || !term) return
+  try {
+    const text = await navigator.clipboard.readText()
+    if (text) term.paste(text)
+    term.focus()
+  } catch {
+    notice.value = 'This page cannot read the clipboard: paste with Ctrl+Shift+V'
+  }
+}
+function onContextMenu(e: MouseEvent) {
+  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey })
+  if (act === 'menu') return // the terminal's menu opens
+  e.preventDefault()
+  e.stopImmediatePropagation()
+  if (act === 'copy') copySelection(true)
+  else void pasteClipboard()
+}
+function setRightClickPastes(on: boolean) {
+  rightClickPastes.value = on
+  writeRightClickPastes(typeof localStorage === 'undefined' ? null : localStorage, on)
+}
+const terminalMenu = computed(() => [
+  [
+    { label: 'Copy', icon: 'i-lucide-copy', kbds: isMac ? ['meta', 'c'] : ['ctrl', 'shift', 'c'], disabled: !hasSelection.value, onSelect: () => copySelection(true) },
+    { label: 'Paste', icon: 'i-lucide-clipboard-paste', kbds: isMac ? ['meta', 'v'] : ['ctrl', 'shift', 'v'], disabled: !canPaste(), onSelect: () => void pasteClipboard() },
+    { label: 'Select all', icon: 'i-lucide-text-select', onSelect: () => term?.selectAll() },
+  ],
+  [{ label: 'Right-click pastes', type: 'checkbox' as const, checked: rightClickPastes.value, onUpdateChecked: (on: boolean) => setRightClickPastes(on) }],
+])
+
 /** The pane shows the session's grid scaled (a scale view, or a full view that does not size the session). */
 const scaledView = ref(props.fit === 'scale')
 /** Who sizes it and Fit to my window: on a full view of a controller that does not hold the size. */
@@ -527,7 +599,11 @@ onMounted(() => {
     fontFamily: '"JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
     theme: theme.value,
     convertEol: false,
+    // Right-click is copy or paste (round 15), never a word selection first.
+    rightClickSelectsWord: false,
   })
+  rightClickPastes.value = readRightClickPastes(typeof localStorage === 'undefined' ? null : localStorage)
+  term.onSelectionChange(() => (hasSelection.value = !!term?.hasSelection()))
   stopTheme = watch(theme, (t) => {
     if (term) term.options.theme = t
   })
@@ -545,6 +621,19 @@ onMounted(() => {
   // shortcut> is for the page, not the agent: xterm skips it and the keydown
   // bubbles to the shortcut handlers. Everything else reaches the PTY.
   term.attachCustomKeyEventHandler((e) => {
+    // Copy and paste (round 15): the page copies; a paste is the browser's own, which reaches xterm's text area.
+    const clip = clipboardKey(e, { hasSelection: !!term?.hasSelection(), canPaste: canPaste(), mac: isMac })
+    if (clip) {
+      if (e.type === 'keydown') {
+        if (clip === 'copy' || clip === 'copy-and-clear') {
+          e.preventDefault()
+          copySelection(clip === 'copy-and-clear')
+        } else if (clip === 'swallow') {
+          e.preventDefault()
+        }
+      }
+      return false
+    }
     if (newlineChord(e)) {
       if (e.type === 'keydown') sendInput(NEWLINE_IN_PROMPT)
       return false
@@ -552,6 +641,8 @@ onMounted(() => {
     return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code))
   })
   term.open(host.value!)
+  // Capture, so a right-click that copies or pastes never reaches the menu's trigger.
+  host.value!.addEventListener('contextmenu', onContextMenu, true)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
     if (!term) return
@@ -597,6 +688,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  host.value?.removeEventListener('contextmenu', onContextMenu, true)
   observer?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)
   stopTheme?.()
@@ -612,7 +704,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
-    <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    <UContextMenu :items="terminalMenu" :disabled="compact">
+      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+    </UContextMenu>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
       <UIcon name="i-lucide-scaling" class="size-3.5 text-muted" />

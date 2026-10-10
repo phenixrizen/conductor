@@ -44,6 +44,7 @@ const COLUMNS = 'grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_10.5rem_10.5rem] s
               <span class="flex items-center gap-1 sm:-my-1.5 sm:h-full sm:justify-center sm:bg-elevated/30 sm:px-3 sm:py-1.5">
                 <span class="me-1 w-16 text-[11px] text-muted sm:hidden">Outside</span>
                 <span class="flex items-center gap-1" data-shortcut-outside>
+                  <span v-if="!row.keys.length" class="text-xs text-muted" aria-label="none">·</span>
                   <template v-for="(key, i) in row.keys" :key="i">
                     <span v-if="i > 0 && row.keys[0] === 'G' && group.title === 'Everywhere'" class="text-xs text-muted">then</span>
                     <UKbd :value="key" size="md" />

@@ -52,6 +52,17 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
 }
 
 /** The editor area's keys (design 4b, 4c), on a session page with a file open. */
+/** Copy and paste in a terminal, as Windows Terminal has them (round 15; macOS keeps ⌘C and ⌘V). Shown on every page. */
+export const TERMINAL_SHORTCUTS: ShortcutGroup = {
+  title: 'The terminal',
+  rows: [
+    { keys: [], label: 'Copy the selection (Ctrl+Insert too)', terminal: ['ctrl', 'shift', 'C'] },
+    { keys: [], label: 'On a selection: copy it and clear it; with none, the interrupt', terminal: ['ctrl', 'C'] },
+    { keys: [], label: 'Paste (Shift+Insert and Ctrl+V too)', terminal: ['ctrl', 'shift', 'V'] },
+    { keys: [], label: 'Right-click: copy a selection, else paste; Shift+right-click: the menu' },
+  ],
+}
+
 export const EDITOR_SHORTCUTS: ShortcutGroup = {
   title: 'The editor',
   rows: [
@@ -102,7 +113,7 @@ export function useShortcutsModal() {
     })
   }
 
-  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS]))
+  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, SIDEBAR_SHORTCUTS]))
 
   return { open, groups, registerPage, show: () => (open.value = true) }
 }

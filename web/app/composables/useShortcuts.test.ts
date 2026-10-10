@@ -58,3 +58,11 @@ describe("the editor's keys", () => {
     for (const r of EDITOR_SHORTCUTS.rows) expect(r.label).not.toMatch(/in a terminal/)
   })
 })
+
+describe('the terminal group', () => {
+  it('lists copy and paste with their keys in a terminal, none outside one', async () => {
+    const { TERMINAL_SHORTCUTS } = await import('./useShortcuts')
+    expect(TERMINAL_SHORTCUTS.rows.map((r) => r.terminal?.join('+') ?? '')).toEqual(['ctrl+shift+C', 'ctrl+C', 'ctrl+shift+V', ''])
+    expect(TERMINAL_SHORTCUTS.rows.every((r) => r.keys.length === 0)).toBe(true)
+  })
+})
