@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -405,13 +406,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	}
 	dial := &websocket.DialOptions{HTTPHeader: header}
 	if a.opts.ServerIsOwners {
-		// Its no-link viewers are the owner's windows only while the server is this machine's: a redirect elsewhere is refused.
-		dial.HTTPClient = &http.Client{CheckRedirect: func(req *http.Request, _ []*http.Request) error {
-			if !loopbackHost(req.URL.Hostname()) {
-				return fmt.Errorf("host: refusing a redirect off this machine to %s", req.URL.Host)
-			}
-			return nil
-		}}
+		dial.HTTPClient = ownersServerClient()
 	}
 	c, resp, err := websocket.Dial(dialCtx, a.wsURL, dial)
 	cancel()
@@ -1074,6 +1069,33 @@ func refusal(resp *http.Response) *RefusedError {
 		e.RetryAfter = time.Duration(min(s, 3600)) * time.Second
 	}
 	return e
+}
+
+// ownersServerClient is the HTTP client for a server taken for the owner's
+// (Options.ServerIsOwners): its no-link viewers are the owner's windows only
+// while it is this machine's, so the connection never leaves it. No proxy,
+// a dial only to a loopback address (checked on the address resolved, so no
+// spelling of a name gets past it), and a redirect elsewhere refused.
+func ownersServerClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	dialer := &net.Dialer{Timeout: 15 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("host: %s is not this machine", address)
+		}
+		return nil
+	}}
+	t.DialContext = dialer.DialContext
+	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if !loopbackHost(req.URL.Hostname()) {
+			return fmt.Errorf("host: refusing a redirect off this machine to %s", req.URL.Host)
+		}
+		return nil
+	}}
 }
 
 // LoopbackServer reports whether a server URL names this machine (localhost
