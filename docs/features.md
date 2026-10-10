@@ -820,6 +820,30 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   Still the operator's to weigh: the public switchyard's four sessions per
   address, or a host token for the owner's own machines.
 
+- **Checked in the installed rc.6 app (2026-10-09).** v0.7.0-rc.6 (8ad9ab1)
+  installed on the Windows box (the owner answered the elevation prompt and
+  finished the wizard) and driven through winctl-mcp with real keys and
+  the app's debugging port. The first Launch agent after the app started
+  listed six agents in 112 ms, the checking note showing first; a folder of
+  80 listed 50 with "30 more folders here", "project-07" narrowing it to the
+  ten; a real `?` opened the shortcuts table 704 pixels wide, its columns
+  lined up; a real `F` took the window fullscreen and back; Server log
+  showed the server's lines; the Yard's focused header at a 420-pixel page
+  kept its title, the status, the menu and fullscreen, nothing overlapping;
+  a second window of the owner's (a separate Chrome on the app's server)
+  joined at 114 × 46 without moving it, showed "Sized by nater · 114 × 46",
+  took the size with Fit to my window (132 × 26, the app then saying "Sized
+  by Second window") and gave it back; in the Neovim editor real spaces
+  echoed in 8–9 ms ahead of their acknowledgement, as letters do; and five
+  shell sessions against the public switchyard's four per address left the
+  fifth refused (`429 open_host_limit`) with no badge and its Activity
+  saying why, refused again at 15 s and 30 s, and shared at the try a
+  minute later once a session was stopped ("shared through the switchyard
+  after 4 tries"). Seen meanwhile: the updater logs a long error while the
+  newest release is a draft (its `latest.yml` is not public), and a shell
+  session's first lines show `setopt`/`bindkey` from the owner's own
+  `.bashrc`, neither Conductor's.
+
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 
 The owner asked why five Files items had been moved to the todo instead of
