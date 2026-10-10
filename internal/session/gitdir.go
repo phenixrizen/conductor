@@ -61,8 +61,11 @@ func gitMetadata(raw, real string) bool {
 //
 // What a repository's configuration names outside it (an include.path
 // file, a core.hooksPath folder such as .husky) is a working-tree file like
-// any other here: no rule on paths tells it apart. Conductor's own git does
-// not run it (gitcli.Run).
+// any other here: no rule on paths tells it apart. Nor is a link out of a
+// .git that is not beside the path or one of its parents (a repository
+// nested elsewhere in the folder) followed: the Files tab makes no links,
+// and finding them would mean walking the folder for every check.
+// Conductor's own git runs none of it (gitcli.Run).
 func inGitDir(real string) bool {
 	for _, el := range strings.Split(real, string(filepath.Separator)) {
 		if isDotGit(el) {
@@ -72,16 +75,21 @@ func inGitDir(real string) bool {
 	if isGitFile(real) {
 		return true
 	}
-	var ids []os.FileInfo
+	var ids gitIDs
 	for p := real; ; p = filepath.Dir(p) {
-		ids = append(ids, gitDirsIn(p)...)
+		gitDirsIn(p, &ids)
 		if filepath.Dir(p) == p {
 			break
 		}
 	}
+	for _, m := range ids.missing {
+		if m == real {
+			return true
+		}
+	}
 	for p := real; ; p = filepath.Dir(p) {
 		if fi, err := os.Stat(p); err == nil {
-			for _, d := range ids {
+			for _, d := range ids.files {
 				if os.SameFile(fi, d) {
 					return true
 				}
@@ -96,6 +104,14 @@ func inGitDir(real string) bool {
 	}
 }
 
+// gitIDs is what a repository's metadata is, to compare a path with:
+// files and directories by identity, and the paths metadata links point
+// to that do not exist yet (a save there would make the file).
+type gitIDs struct {
+	files   []os.FileInfo
+	missing []string
+}
+
 // rawJoin joins name to dir as the kernel walks them, without cleaning
 // the result: a link in dir followed by .. in name goes where git goes. An
 // absolute name stands alone.
@@ -106,48 +122,65 @@ func rawJoin(dir, name string) string {
 	return strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator) + name
 }
 
-// gitDirsIn is what dir's .git stands for, as files to compare: itself
-// when it is a directory (or a link to one); when it is a file (or a link
-// to one), the file itself and the git directory its "gitdir: " line
-// names; and for each git directory, the one its commondir names and the
-// targets of its metadata that are links (gitDirFiles).
-func gitDirsIn(dir string) []os.FileInfo {
+// gitDirsIn adds to ids what dir's .git stands for: itself when it is a
+// directory (or a link to one); when it is a file (or a link to one), the
+// file itself and the git directory its "gitdir: " line names; and for each
+// git directory, the one its commondir names and the targets of its
+// metadata that are links (gitDirFiles).
+func gitDirsIn(dir string, ids *gitIDs) {
 	dotgit := filepath.Join(dir, ".git")
 	fi, err := os.Stat(dotgit)
 	switch {
 	case err != nil:
-		return nil
+		return
 	case fi.IsDir():
-		return append([]os.FileInfo{fi}, gitDirFiles(dotgit)...)
+		ids.files = append(ids.files, fi)
+		gitDirFiles(dotgit, ids)
+		return
 	case !fi.Mode().IsRegular():
-		return nil
+		return
 	}
-	out := []os.FileInfo{fi}
+	ids.files = append(ids.files, fi)
 	gd := gitDirFromFile(dotgit, dir)
 	if gd == "" {
-		return out
+		return
 	}
-	gfi, err := os.Stat(gd)
-	if err != nil || !gfi.IsDir() {
-		return out
+	if gfi, err := os.Stat(gd); err == nil && gfi.IsDir() {
+		ids.files = append(ids.files, gfi)
+		gitDirFiles(gd, ids)
 	}
-	return append(append(out, gfi), gitDirFiles(gd)...)
 }
 
-// gitDirFiles is, for the git directory gitDir, the common directory its
-// commondir names (git reads the configuration, refs and objects there,
-// with or without a HEAD of its own) and, for both, the targets of their
-// metadata that are links (linkedMetadata).
-func gitDirFiles(gitDir string) []os.FileInfo {
-	out := linkedMetadata(gitDir)
-	if b, whole, ok := readPrefix(rawJoin(gitDir, "commondir"), maxGitFile); ok && whole {
-		common := rawJoin(gitDir, strings.TrimSpace(string(b)))
+// gitDirFiles adds to ids, for the git directory gitDir, the common
+// directory its commondir names (git reads the configuration, refs and
+// objects there, with or without a HEAD of its own) and, for both, the
+// targets of their metadata that are links (linkedMetadata).
+func gitDirFiles(gitDir string, ids *gitIDs) {
+	linkedMetadata(gitDir, ids)
+	if common, ok := readCommonDir(gitDir); ok {
 		if cfi, err := os.Stat(common); err == nil && cfi.IsDir() {
-			out = append(out, cfi)
-			out = append(out, linkedMetadata(common)...)
+			ids.files = append(ids.files, cfi)
+			linkedMetadata(common, ids)
 		}
 	}
-	return out
+}
+
+// readCommonDir reads gitDir's commondir as git does: its trailing line
+// breaks dropped, the path up to the first NUL (spaces are part of it),
+// relative to gitDir.
+func readCommonDir(gitDir string) (string, bool) {
+	b, whole, ok := readPrefix(rawJoin(gitDir, "commondir"), maxGitFile)
+	if !ok || !whole {
+		return "", false
+	}
+	b = bytes.TrimRight(b, "\r\n")
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		b = b[:i]
+	}
+	if len(b) == 0 {
+		return "", false
+	}
+	return rawJoin(gitDir, string(b)), true
 }
 
 // metadataEntries are the entries of a git directory git reads as its own
@@ -163,17 +196,21 @@ var metadataEntries = []string{
 
 const maxHooks = 256
 
-// linkedMetadata is what the metadata entries of gitDir that are links
-// point to: a working-tree file a .git/config link names is the
-// repository's configuration all the same, and a folder .git/refs links to
-// holds its refs.
-func linkedMetadata(gitDir string) []os.FileInfo {
-	var out []os.FileInfo
+// linkedMetadata adds to ids what the metadata entries of gitDir that are
+// links point to: a working-tree file a .git/config link names is the
+// repository's configuration all the same, a folder .git/refs links to
+// holds its refs, and a link to nothing yet names the file a save would
+// make (linkDestination).
+func linkedMetadata(gitDir string, ids *gitIDs) {
 	add := func(p string) {
-		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			if target, err := os.Stat(p); err == nil {
-				out = append(out, target)
-			}
+		fi, err := os.Lstat(p)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return
+		}
+		if target, err := os.Stat(p); err == nil {
+			ids.files = append(ids.files, target)
+		} else if dest, ok := linkDestination(p); ok {
+			ids.missing = append(ids.missing, dest)
 		}
 	}
 	for _, e := range metadataEntries {
@@ -183,7 +220,22 @@ func linkedMetadata(gitDir string) []os.FileInfo {
 	for _, n := range dirNames(hooks, maxHooks) {
 		add(rawJoin(hooks, n))
 	}
-	return out
+}
+
+// linkDestination is where the link at p points when nothing is there,
+// spelt as ResolvePath spells a path whose last element does not exist:
+// its parent's links resolved, the last element as written.
+func linkDestination(p string) (string, bool) {
+	t, err := os.Readlink(p)
+	if err != nil {
+		return "", false
+	}
+	dest := rawJoin(filepath.Dir(p), t)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(dest))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(parent, filepath.Base(dest)), true
 }
 
 // dirNames lists at most n names in path when it is a directory, and

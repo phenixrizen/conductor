@@ -356,6 +356,16 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 		must(os.MkdirAll(filepath.Join(root, "split", "shared", d), 0o755))
 	}
 	must(os.WriteFile(filepath.Join(root, "split", "shared", "config"), []byte("[core]\n"), 0o644))
+	// .git/config.worktree links to a file not made yet.
+	must(os.Symlink("../worktree-settings", filepath.Join(root, ".git", "config.worktree")))
+	// A commondir whose path ends in a space, which git keeps.
+	must(os.MkdirAll(filepath.Join(root, "spaced", ".git"), 0o755))
+	must(os.WriteFile(filepath.Join(root, "spaced", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	must(os.WriteFile(filepath.Join(root, "spaced", ".git", "commondir"), []byte("../shared \n"), 0o644))
+	for _, d := range []string{"refs", "objects"} {
+		must(os.MkdirAll(filepath.Join(root, "spaced", "shared ", d), 0o755))
+	}
+	must(os.WriteFile(filepath.Join(root, "spaced", "shared ", "config"), []byte("[core]\n"), 0o644))
 	// A one-line YAML file with a gitdir key: an ordinary file.
 	must(os.WriteFile(filepath.Join(root, "settings.yml"), []byte("gitdir: null\n"), 0o644))
 
@@ -372,7 +382,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Stat(filepath.Join(root, branchRef)); err != nil {
 		t.Fatalf("the branch's loose ref: %v", err)
 	}
-	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config"}
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config"}
 	for i, p := range refused {
 		id := fmt.Sprintf("m%d", i)
 		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
@@ -383,7 +393,10 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if b, _ := os.ReadFile(filepath.Join(root, "settings")); !bytes.Equal(b, settings) {
 		t.Fatal("the linked config changed")
 	}
-	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config"} {
+	if _, err := os.Lstat(filepath.Join(root, "worktree-settings")); err == nil {
+		t.Fatal("the file a dangling config.worktree link names was made")
+	}
+	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config", "spaced/shared /config"} {
 		h, _ := ReadPath(root, p, false, nil)
 		if h.Kind != "file" || !h.ReadOnly {
 			t.Errorf("read %s: %+v", p, h)
