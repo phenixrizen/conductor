@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,8 +27,8 @@ func (p uplinkPublisher) Server() string { return p.u.ServerURL }
 
 // A server with a rendezvous publishes every session it starts there: the
 // rendezvous lists it as hosted by this server, a viewer there types into
-// it through the relay, its activity shows there, and ending the session
-// here ends it there.
+// it through the relay, its attention state shows there but not its
+// activity, and ending the session here ends it there.
 func TestAPublishedServerSessionIsViewableAtTheRendezvous(t *testing.T) {
 	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
 	local := newTestEnv(t, nil)
@@ -92,27 +93,44 @@ func TestAPublishedServerSessionIsViewableAtTheRendezvous(t *testing.T) {
 	lv.expectControl(proto.CtlWelcome)
 	lv.expectOutput("hello from afar")
 
-	// An event reported to the local server shows at the rendezvous: it
-	// reaches the rendezvous's event hub (its admin stream and webhooks).
-	seen := make(chan struct{}, 1)
+	// An event reported to the local server stays here: the rendezvous's
+	// event hub (its admin stream and webhooks) never has it. An attention
+	// change reported after it reaches the rendezvous, with its state and
+	// without its words, so by then the event would have too.
+	var mu sync.Mutex
+	var there []session.ActivityEntry
 	rendezvous.srv.events.addSink(func(sid string, e session.ActivityEntry, _ session.AttentionState) {
-		if sid == hosted.ID && e.Type == session.ActivityProgress && e.Message == "step 1" {
-			select {
-			case seen <- struct{}{}:
-			default:
-			}
-		}
+		mu.Lock()
+		there = append(there, e)
+		mu.Unlock()
 	})
 	resp, _ := local.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "progress", "message": "step 1"})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("event: %d", resp.StatusCode)
 	}
-	select {
-	case <-seen:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the event did not reach the rendezvous")
+	if resp, _ := local.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "pick one"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("attention: %d", resp.StatusCode)
 	}
 	rd, _ := rendezvous.srv.Registry().Get(hosted.ID)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && rd.Info().Attention.State != session.AttentionNeedsInput {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if att := rd.Info().Attention; att.State != session.AttentionNeedsInput || att.Message != "" {
+		t.Fatalf("attention at the rendezvous %+v", att)
+	}
+	mu.Lock()
+	if len(there) != 0 {
+		t.Fatalf("the rendezvous was told the session's activity: %+v", there)
+	}
+	mu.Unlock()
+	found := false
+	for _, e := range d.(*session.Local).Activity() {
+		found = found || (e.Type == session.ActivityProgress && e.Message == "step 1")
+	}
+	if !found {
+		t.Fatal("the event is not in the session's activity here")
+	}
 
 	// Ending the session here ends it there.
 	if resp, _ := local.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK {

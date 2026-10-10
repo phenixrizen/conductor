@@ -18,8 +18,8 @@ import (
 
 // A session that already runs (a server's local session) is published to a
 // rendezvous through the host protocol: listed there as hosted, typed into
-// through its relay, its attention and activity forwarded, and gone from
-// there when the publication stops.
+// through its relay, its attention state forwarded, and gone from there
+// when the publication stops.
 func TestPublishServesALocalSessionOverTheRelay(t *testing.T) {
 	srv, hs := startServer(t)
 	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm"}, Cols: 80, Rows: 24})
@@ -73,14 +73,15 @@ func TestPublishServesALocalSessionOverTheRelay(t *testing.T) {
 	v.send(proto.Encode(proto.TypeInput, []byte("through the rendezvous\n")))
 	v.expectOutput("through the rendezvous")
 
-	// Attention set on the local session reaches the rendezvous.
+	// Attention set on the local session reaches the rendezvous: its state,
+	// not its words.
 	local.SetAttention(session.AttentionNeedsInput, "pick one", session.SourceAPI)
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && d.Info().Attention.Message != "pick one" {
+	for time.Now().Before(deadline) && d.Info().Attention.State != session.AttentionNeedsInput {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if d.Info().Attention.Message != "pick one" {
-		t.Fatalf("attention at the rendezvous %+v", d.Info().Attention)
+	if att := d.Info().Attention; att.State != session.AttentionNeedsInput || att.Message != "" {
+		t.Fatalf("attention at the rendezvous %+v", att)
 	}
 
 	// Stopping the publication takes the session off the rendezvous while

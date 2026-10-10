@@ -98,6 +98,16 @@ type Options struct {
 	// banner), and again when the server lost the session (a restarted
 	// switchyard) and the host registered afresh under a new id.
 	Registered func(sessionID, shareBaseURL string)
+	// Switchyard says the server is a switchyard, which someone else may
+	// run, rather than the owner's own Conductor: it is told what it needs
+	// to list the session and introduce its viewers, and no more. No chat
+	// message and no activity entry goes to it, and an attention change goes
+	// with its state, kind and source but without its words or its choices.
+	// Its viewers get all of it from the session itself, over their own
+	// connection. The Uplink sets it; `conductor host` publishes to the
+	// owner's own server, which shows the session in its workbench, and
+	// leaves it off.
+	Switchyard bool
 }
 
 // Result reports how the hosted process ended.
@@ -494,13 +504,25 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 // onLocalChange forwards attention changes of the local session to the
 // server so listings stay current for hosted sessions.
 func (a *agent) onLocalChange(info session.Info) {
+	att := a.toServer(info.Attention)
 	a.mu.Lock()
-	changed := info.Attention.State != a.lastAttention.State || info.Attention.Message != a.lastAttention.Message || info.Attention.Kind != a.lastAttention.Kind || len(info.Attention.Options) != len(a.lastAttention.Options)
-	a.lastAttention = info.Attention
+	changed := att.State != a.lastAttention.State || att.Message != a.lastAttention.Message || att.Kind != a.lastAttention.Kind || len(att.Options) != len(a.lastAttention.Options)
+	a.lastAttention = att
 	a.mu.Unlock()
 	if changed {
-		a.send(hostAttentionMsg(info.ID, info.Attention))
+		a.send(hostAttentionMsg(info.ID, att))
 	}
+}
+
+// toServer is an attention change as the server is told it: in full to the
+// owner's own server, and to a switchyard (Options.Switchyard) its state,
+// kind and source alone, never its words (a prompt's text, the start of the
+// agent's reply a "done" carries) or its choices.
+func (a *agent) toServer(att session.Attention) session.Attention {
+	if a.opts.Switchyard {
+		att.Message, att.Options = "", nil
+	}
+	return att
 }
 
 // hostAttentionMsg encodes an attention change for the control connection.
@@ -518,8 +540,12 @@ func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttenti
 // goroutine that recorded the entry, so it never waits for the connection.
 // Entries recorded while the connection is down are lost to the stream; the
 // session log has them.
+// A switchyard (Options.Switchyard) is sent no entry: the session's own
+// viewers have its log over their connection.
 func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
-	a.activity.push(e, state)
+	if !a.opts.Switchyard {
+		a.activity.push(e, state)
+	}
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)
 	}
@@ -529,8 +555,13 @@ func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session
 // the server, whose admin stream shows it to the browsers' unread counts.
 // The session calls it on the goroutine that kept the message, so it never
 // waits for the connection; a message kept while the connection is down is
-// lost to the stream, and the session's chat keeps it.
+// lost to the stream, and the session's chat keeps it. A switchyard
+// (Options.Switchyard) is sent none: the people on the session have the chat
+// over their own connection.
 func (a *agent) onLocalChat(_ string, m session.ChatMessage) {
+	if a.opts.Switchyard {
+		return
+	}
 	a.activity.pushChat(m)
 }
 
@@ -621,7 +652,7 @@ func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivi
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	// Re-send the current attention after a reconnect.
-	if att := a.local.Info().Attention; att.State != session.AttentionNone {
+	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
 		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
 	defer func() {

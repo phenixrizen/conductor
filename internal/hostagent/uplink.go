@@ -17,8 +17,10 @@ import (
 // a rendezvous Conductor through the host protocol: one control connection
 // per session, as `conductor host` makes for the process it runs. The
 // rendezvous lists the session as hosted, serves its viewers over WebRTC or
-// its relay, and mints the share links; attention and activity travel both
-// ways through the hooks the caller chains (Published.OnChange, OnActivity).
+// its relay, and mints the share links. It is a switchyard, which someone
+// else may run (Options.Switchyard): the caller chains the hooks
+// (Published.OnChange, OnActivity, OnChat), and the rendezvous is told the
+// session's status and attention state, never its chat or its activity.
 type Uplink struct {
 	ServerURL string
 	Token     string
@@ -111,6 +113,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	opts := Options{
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
 		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
+		Switchyard: true,
 	}
 	if opts.HostName == "" {
 		opts.HostName, _ = os.Hostname()
@@ -161,11 +164,13 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 // rendezvous; the caller chains it from the session's OnChange hook.
 func (p *Published) OnChange(info session.Info) { p.a.onLocalChange(info) }
 
-// OnActivity forwards an activity entry of the local session; the caller
-// chains it from the session's OnActivity hook. It never waits.
-// OnChat is the local session's OnChat hook: the message goes to the rendezvous, whose stream shows it as a hosted session's.
+// OnChat is the local session's OnChat hook. The rendezvous is sent no
+// chat: the people on the session have it over their own connection.
 func (p *Published) OnChat(id string, m session.ChatMessage) { p.a.onLocalChat(id, m) }
 
+// OnActivity is the local session's OnActivity hook; the caller chains it.
+// It never waits, and the rendezvous is sent no entry: the publication only
+// notes when the session's final status entry is recorded.
 func (p *Published) OnActivity(id string, e session.ActivityEntry, state session.AttentionState) {
 	p.a.onLocalActivity(id, e, state)
 }
