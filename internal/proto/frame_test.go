@@ -90,8 +90,18 @@ func TestFileFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.ReqID != "req-1234567" || h.Path != "/x" || !bytes.Equal(b, body) {
+	if h.ReqID != "req-1234567" || h.Path != "/x" || h.ReadOnly || !bytes.Equal(b, body) {
 		t.Fatalf("bad file decode: %+v %d", h, len(b))
+	}
+	// readOnly travels when set and is left out otherwise.
+	ro, _ := EncodeFile(FileHeader{ReqID: "r", Path: "/x/.git/config", Kind: "file", Exists: true, ReadOnly: true}, nil)
+	if f, _ := Decode(ro); !bytes.Contains(f.Payload, []byte(`"readOnly":true`)) {
+		t.Fatalf("readOnly not sent: %q", f.Payload)
+	} else if h, _, err := DecodeFile(f.Payload); err != nil || !h.ReadOnly {
+		t.Fatalf("readOnly decode: %+v %v", h, err)
+	}
+	if bytes.Contains(fr, []byte("readOnly")) {
+		t.Fatal("readOnly sent when false")
 	}
 	if _, err := EncodeFile(FileHeader{}, make([]byte, MaxFileBytes+1)); err == nil {
 		t.Fatal("expected body too large")

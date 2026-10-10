@@ -1,6 +1,10 @@
 package session
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -8,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/gitcli"
 	"github.com/phenixrizen/conductor/internal/nvim"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -197,4 +202,143 @@ func TestFileWriteAndEditorRefuseTheDenyList(t *testing.T) {
 			t.Errorf("the editor on %s: %v, want ErrFileDenied", rel, err)
 		}
 	}
+}
+
+// gitDirTree makes a repository to save into: one commit, a linked
+// worktree wt (its .git a file), the links meta to .git and cfg to
+// .git/config, a bare repository store and a folder linked whose .git is a
+// link to it, and an empty folder sub. It returns the root, its links
+// resolved.
+func gitDirTree(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(gitRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"worktree", "add", "-q", "-b", "side", filepath.Join(root, "wt"), "HEAD"},
+		{"init", "-q", "--bare", filepath.Join(root, "store")},
+	} {
+		if _, err := gitcli.Run(context.Background(), root, args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, d := range []string{"linked", "sub"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, to := range map[string]string{"linked/.git": "../store", "meta": ".git", "cfg": ".git/config"} {
+		if err := os.Symlink(to, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// Nothing in a repository's .git is saved through the Files tab, however
+// the path reaches it: the .git directory, a linked worktree's .git file
+// and its git directory, a new .git file, a link to .git or into it,
+// another spelling of .git, a bare repository and a .git link to one. The
+// files stay as they were and none is made. A read of such a file says
+// ReadOnly; a working tree's file reads and saves as before.
+func TestFileWriteRefusesARepositorysGitDir(t *testing.T) {
+	root := gitDirTree(t)
+	s, _ := newLocal(t, root)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string][]byte{}
+	for _, p := range []string{".git/config", ".git/HEAD", "wt/.git", ".git/worktrees/wt/HEAD", "store/config"} {
+		b, err := os.ReadFile(filepath.Join(root, p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept[p] = b
+	}
+	body := []byte("[core]\n\tfsmonitor = /bin/true\n")
+	refused := []string{
+		".git/config", ".git/HEAD", ".git/hooks/post-checkout", "meta/config", "meta/hooks/pre-commit", "cfg",
+		"wt/.git", ".git/worktrees/wt/HEAD", "sub/.git", ".GIT/config", ".git./config", ".Git",
+		"linked/.git/config", "store/config", "store/hooks/post-checkout", filepath.Join(root, ".git", "config"),
+	}
+	for i, p := range refused {
+		id := fmt.Sprintf("g%d", i)
+		save(s, sub, id, p, body, 512, "", true)
+		if f := fileReply(t, sink, id); f.Kind != "error" || f.Error == nil || f.Error.Code != "read_only" {
+			t.Errorf("%s: %+v %+v", p, f, f.Error)
+		}
+	}
+	for p, b := range kept {
+		if now, err := os.ReadFile(filepath.Join(root, p)); err != nil || !bytes.Equal(now, b) {
+			t.Errorf("%s changed: %q %v", p, now, err)
+		}
+	}
+	for _, p := range []string{".git/hooks/post-checkout", "store/hooks/post-checkout", "sub/.git", ".Git"} {
+		if _, err := os.Lstat(filepath.Join(root, p)); err == nil {
+			t.Errorf("%s was made", p)
+		}
+	}
+	for _, p := range []string{".git/config", "cfg", "meta/HEAD", "wt/.git", "store/config", "linked/.git/HEAD"} {
+		if h, _ := ReadPath(root, p, false, nil); h.Kind != "file" || !h.ReadOnly {
+			t.Errorf("read %s: %+v", p, h)
+		}
+	}
+	for _, p := range []string{"README.md", "wt/README.md", "docs/old.md"} {
+		h, _ := ReadPath(root, p, false, nil)
+		if h.Kind != "file" || h.ReadOnly {
+			t.Errorf("read %s: %+v", p, h)
+		}
+		save(s, sub, "w-"+p, p, []byte("saved\n"), 512, h.Sha256, false)
+		if f := fileReply(t, sink, "w-"+p); f.Kind != "written" {
+			t.Errorf("save %s: %+v %+v", p, f, f.Error)
+		}
+	}
+}
+
+// isDotGit takes every spelling a file system may take for .git, and only
+// those.
+func TestIsDotGit(t *testing.T) {
+	for _, n := range []string{".git", ".GIT", ".Git", ".git.", ".git ", ".git. .", "GIT~1", "git~1", ".g\u200cit", "\ufeff.git"} {
+		if !isDotGit(n) {
+			t.Errorf("%q is .git", n)
+		}
+	}
+	for _, n := range []string{"git", ".gitignore", ".github", "x.git", ".git2", "", ".", ".gi", "GIT~2"} {
+		if isDotGit(n) {
+			t.Errorf("%q is not .git", n)
+		}
+	}
+}
+
+// Neovim opens no file in a repository's .git (it would write it); a
+// working tree's file opens.
+func TestNvimRefusedInARepositorysGitDir(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := gitDirTree(t)
+	s, _ := newLocal(t, root)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range []string{".git/config", "meta/HEAD", "cfg", "wt/.git", "linked/.git/config", "store/config"} {
+		err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: fmt.Sprintf("n%d", i), Path: p})
+		if !errors.Is(err, errGitDir) {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors open", n)
+	}
+	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "ok", Path: "README.md"}); err != nil {
+		t.Fatal(err)
+	}
+	s.closeNvims(sub)
 }

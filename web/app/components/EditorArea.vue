@@ -5,7 +5,7 @@ import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, cycleTab, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
 
@@ -271,7 +271,9 @@ function setKeymap(k: Keymap) {
   keymap.value = k
   writeKeymap(typeof localStorage === 'undefined' ? null : localStorage, k)
 }
-const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) : 'Neovim is not offered on this page'))
+/** The file in front is one the owner takes no save of (in a repository's .git): read only, in Monaco, whatever the keymap. */
+const fileReadOnly = computed(() => (active.value?.kind === 'file' ? fileReadOnlyWords(view.value?.header) : ''))
+const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) || fileReadOnly.value : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
 const nvimState = ref<NvimViewState | null>(null)
 // Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
@@ -331,7 +333,7 @@ const conflict = ref<{ tabId: string; header: FileHeader } | null>(null)
 const compare = ref<{ tabId: string; disk: string; mine: string } | null>(null)
 const closing = ref<{ ids: string[] } | null>(null)
 const editable = computed(
-  () => !!props.write && !!props.canEdit && !nvimOn.value && active.value?.kind === 'file' && view.value?.state === 'text' && !view.value.header?.truncated && !!view.value.header?.sha256,
+  () => !!props.write && !!props.canEdit && !nvimOn.value && !fileReadOnly.value && active.value?.kind === 'file' && view.value?.state === 'text' && !view.value.header?.truncated && !!view.value.header?.sha256,
 )
 const activeConflict = computed(() => (conflict.value && conflict.value.tabId === active.value?.id ? conflict.value : null))
 const activeCompare = computed(() => (compare.value && compare.value.tabId === active.value?.id ? compare.value : null))
@@ -560,7 +562,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UBadge v-if="view?.header?.kind === 'file' && view.state !== 'text'" :label="view.dims || fmtSize(view.header.size)" color="neutral" variant="subtle" size="sm" />
           <UBadge v-if="view?.header?.truncated" label="truncated" color="warning" variant="subtle" size="sm" />
           <span v-if="view?.state === 'text'" class="flex-none font-mono text-[11px] text-muted" data-editor-pos>Ln {{ pos.line }}, Col {{ pos.col }}</span>
-          <UBadge v-if="readOnlyBadge || (view?.state === 'text' && active.kind === 'file' && !editable && !nvimOn)" label="Read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" data-editor-readonly />
+          <UBadge v-if="readOnlyBadge || (view?.state === 'text' && active.kind === 'file' && !editable && !nvimOn)" label="Read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" :title="fileReadOnly || undefined" data-editor-readonly />
           <span v-if="savedFlash" class="flex-none text-[11px] text-success" data-editor-saved>Saved</span>
           <UTooltip v-if="editable" text="Save (Ctrl+S)">
             <UButton label="Save" icon="i-lucide-save" size="xs" :color="active && dirty.has(active.id) ? 'primary' : 'neutral'" :variant="active && dirty.has(active.id) ? 'soft' : 'ghost'" :disabled="!active || !dirty.has(active.id)" :loading="saving" data-editor-save @click="save()" />

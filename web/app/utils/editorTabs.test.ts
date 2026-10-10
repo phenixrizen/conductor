@@ -84,6 +84,15 @@ describe('the keymap setting', () => {
     // A link's controller may edit but gets no Neovim; the words say so, not "not installed".
     expect(nvimUnavailableWords({ welcome: true, nvim: false, fileEdit: true, ownerOnly: true, machine: 'lan-box' })).toMatch(/kept for the session's own window/)
   })
+
+  it('says why a file the owner marked read only is not edited, and nothing for any other', async () => {
+    const { fileReadOnlyWords } = await import('./editorTabs')
+    expect(fileReadOnlyWords({ readOnly: true })).toMatch(/^Read only here: a repository's \.git/)
+    expect(fileReadOnlyWords({ readOnly: false })).toBe('')
+    expect(fileReadOnlyWords({})).toBe('')
+    expect(fileReadOnlyWords(undefined)).toBe('')
+    expect(fileReadOnlyWords(null)).toBe('')
+  })
 })
 
 describe('a commit\'s diff tab', () => {

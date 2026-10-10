@@ -387,8 +387,10 @@ lands in Activity and Touched as your write. An unsaved tab wears a dot and
 asks before it closes. If the file changed on disk since you opened it (the
 agent edited it, say), the save stops and says who and when, with
 **Compare** (disk and yours side by side), **Reload** (take the disk's) and
-**Save anyway**. A file cut at 1 MiB, or a binary one, stays read-only, and
-so does everything for a view-only guest. The server's or host's `fileEdit`
+**Save anyway**. A file cut at 1 MiB, or a binary one, stays read-only, as
+does a file in a repository's `.git` (its folder, a worktree's `.git` file,
+wherever a link or another spelling leads; Neovim does not open one either),
+and so does everything for a view-only guest. The server's or host's `fileEdit`
 setting (`control`, the default, or `off`) turns editing off for everyone.
 
 **Comments on lines.** Select lines in the editor and a bar offers

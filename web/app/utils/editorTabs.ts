@@ -165,3 +165,11 @@ export function nvimUnavailableWords(opts: { welcome: boolean; nvim: boolean; fi
   if (!opts.fileEdit) return 'View only here: Neovim needs control, on a session that allows editing'
   return ''
 }
+
+/**
+ * Why a file read whole is not edited here, in a few words, or '' when it may be: the owner takes no save of a file its read marked
+ * `readOnly` (one in a repository's .git), so neither Monaco nor Neovim edits it.
+ */
+export function fileReadOnlyWords(header?: { readOnly?: boolean } | null): string {
+  return header?.readOnly ? "Read only here: a repository's .git is not edited from Conductor" : ''
+}
