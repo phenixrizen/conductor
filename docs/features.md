@@ -747,11 +747,16 @@ request each from main.
   licence carries are added: a compiled Go file's own comment when its
   copyright holder is not the one its module's licence names (the runtime's
   memmove from Inferno, keywrap's author; 29 in all), and what a package
-  builds from another project (Oniguruma's COPYING for the wasm Shiki's
-  engine inlines). Chromium's notices ship in the desktop app's resources,
-  since electron-builder deletes them from a macOS app. Identical texts
-  print once. Codex's review found those three gaps; each was confirmed in
-  the files and is pinned by a Go test. The file is embedded (`notices.go`) and served at
+  builds from other projects (Oniguruma's COPYING for the wasm Shiki's
+  engine inlines; tm-themes' and tm-grammars' NOTICE files for the themes
+  and grammars Shiki ships, every one a chunk of its own, taken at the
+  versions Shiki 4.4.3 was built from and pinned to it, so an upgrade stops
+  the script until they are taken again). Chromium's notices ship in the
+  desktop app's resources, since electron-builder deletes them from a macOS
+  app. Identical texts print once; the file is about 1.1 MB, most of it the
+  grammars' notices. Codex's reviews found these gaps in two passes; each
+  was confirmed in the files and is pinned by a Go test, the comment scan
+  by Python fixtures (`scripts/notices_test.py`). The file is embedded (`notices.go`) and served at
   `/third-party-notices.txt` by every server and switchyard, linked from
   the switchyard pages' footer and Settings → the app's License row; it
   ships in the desktop packages (`extraResources`) and the Docker image

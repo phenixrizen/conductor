@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import re
+import textwrap
 import subprocess
 import sys
 
@@ -53,9 +54,14 @@ TEXT_KEPT = {
     "lazy-val": "lazy-val.LICENSE",
     "@iconify-json/lucide": "lucide.LICENSE",
 }
-# Notices a package needs beside its own licence: what it carries built from other projects.
-SUPPLEMENTS = {
-    "@shikijs/engine-oniguruma": [("Oniguruma's COPYING (compiled into its onig.wasm)", "oniguruma.COPYING")],
+# Notices a package needs beside its own licence: what it carries built from other projects. A notice taken for one version of
+# the package names it ("for"): another version stops the script until the notice is taken again for it.
+SUPPLEMENTS: dict[str, list[dict[str, str]]] = {
+    "@shikijs/engine-oniguruma": [{"name": "Oniguruma's COPYING (compiled into its onig.wasm)", "file": "oniguruma.COPYING"}],
+    # Shiki 4.4.3 was built from tm-themes 1.12.3 and tm-grammars 1.32.3 (its pnpm-lock.yaml at v4.4.3); every theme and grammar
+    # ships, as a chunk of its own.
+    "@shikijs/themes": [{"name": "tm-themes 1.12.3's NOTICE (the themes it carries)", "file": "tm-themes-1.12.3.NOTICE", "for": "4.4.3"}],
+    "@shikijs/langs": [{"name": "tm-grammars 1.32.3's NOTICE (the grammars it carries)", "file": "tm-grammars-1.32.3.NOTICE", "for": "4.4.3"}],
 }
 # A file's own copyright line: "Copyright (c) 2014 Name", "SPDX-FileCopyrightText: 2026 Name <url>".
 COPYRIGHT = re.compile(r"(?:spdx-file)?copyright(?:text:)?\s*(?:\(c\)|©)?\s*(?:[0-9]{4}(?:\s*[-–,]\s*[0-9]{4})*,?\s*)*(?:by\s+)?(.+)", re.I)
@@ -103,20 +109,47 @@ def classify(text: str) -> str:
     return ""
 
 
-def leading_comment(path: Path) -> str:
-    """The comment block a source file opens with, its markers and build directives taken out."""
-    lines = []
+def comment_blocks(path: Path, limit: int = 200) -> list[str]:
+    """The comments in a source file's first lines, each run of // lines or /* */ block as one text, markers, a block's common
+    indent and build directives taken out (a notice can follow the package clause, a block need not star its lines)."""
+    blocks: list[str] = []
+    run: list[str] = []
+    block: list[str] | None = None
     with path.open(encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            s = raw.strip()
-            if not (s == "" or s.startswith(("//", "/*", "*"))):
+        for i, raw in enumerate(f):
+            if i >= limit:
                 break
-            if s.startswith(("//go:", "// +build", "//+build")):
+            line = raw.rstrip("\n")
+            if block is not None:
+                end = line.find("*/")
+                block.append(line if end < 0 else line[:end])
+                if end >= 0:
+                    blocks.append(textwrap.dedent("\n".join(re.sub(r"^\s*\*(?!/) ?", "", l) if l.lstrip().startswith("*") else l for l in block)).strip("\n"))
+                    block = None
                 continue
-            lines.append(re.sub(r"^(//\s?|/\*+\s?|\*+/|\*\s?)", "", s).rstrip("*/ ").rstrip())
-            if len(lines) > 80:
-                break
-    return "\n".join(lines).strip("\n")
+            s = line.strip()
+            if s.startswith("//"):
+                if not s.startswith(("//go:", "// +build", "//+build")):
+                    run.append(re.sub(r"^//\s?", "", s))
+                continue
+            if run:
+                blocks.append("\n".join(run).strip("\n"))
+                run = []
+            if s.startswith("/*"):
+                rest = s[2:]
+                end = rest.find("*/")
+                if end >= 0:
+                    blocks.append(rest[:end].strip())
+                else:
+                    block = [rest]
+    if run:
+        blocks.append("\n".join(run).strip("\n"))
+    return [b for b in blocks if b]
+
+
+def notice_comment(path: Path) -> str:
+    """The first comment near a file's top that has a copyright line in it, or ''."""
+    return next((b for b in comment_blocks(path) if re.search(r"copyright", b, re.I)), "")
 
 
 def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple[str, str]]:
@@ -125,7 +158,7 @@ def file_notices(files: list[Path], base: Path, licence_text: str) -> list[tuple
     known = " ".join(licence_text.split()).lower()
     found: dict[str, list[str]] = {}
     for path in files:
-        head = leading_comment(path)
+        head = notice_comment(path)
         for m in COPYRIGHT.finditer(head):
             holder = re.sub(r"<[^>]*>|\(?https?://\S+\)?|all rights reserved\.?", "", m.group(1), flags=re.I)
             holder = " ".join(holder.split()).strip(" ,.")
@@ -186,7 +219,10 @@ def npm_entry(directory: Path, note: str = "") -> Entry:
     if not texts:
         raise SystemExit(f"notices: the npm package {pkg['name']} {pkg.get('version', '')} carries no licence file; keep one in scripts/notices")
     kind = licence or classify(texts[0][1])
-    texts += [(name, (EXTRA / f).read_text()) for name, f in SUPPLEMENTS.get(pkg["name"], [])]
+    for s in SUPPLEMENTS.get(pkg["name"], []):
+        if s.get("for") and s["for"] != pkg.get("version"):
+            raise SystemExit(f"notices: {s['file']} was taken for {pkg['name']} {s['for']}, not {pkg.get('version')}: take it again for this version")
+        texts.append((s["name"], (EXTRA / s["file"]).read_text()))
     return Entry(pkg["name"], pkg.get("version", ""), kind, texts, note)
 
 

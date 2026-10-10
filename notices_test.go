@@ -40,13 +40,17 @@ func TestNoticesNameTheDirectModulesAtTheirVersions(t *testing.T) {
 	}
 }
 
-// Notices no package-level licence carries: a file's own (the runtime's memmove from Inferno, keywrap's author) and what a
-// package builds from another project (Shiki's Oniguruma, compiled into the wasm the web bundle inlines).
+// Notices no package-level licence carries: a file's own (the runtime's memmove from Inferno, keywrap's author, one after the
+// package clause, one in an unstarred block) and what a package carries from other projects (Shiki's Oniguruma, compiled into
+// the wasm the web bundle inlines; its themes and grammars).
 func TestNoticesCarryWhatThePackageLicencesDoNot(t *testing.T) {
 	for _, want := range []string{
 		"runtime/memmove_amd64.s (the file's own notice)", "Vita Nuova Holdings Limited",
 		"openpgp/aes/keywrap/keywrap.go (the file's own notice)", "Matthew Endsley",
 		"Oniguruma's COPYING (compiled into its onig.wasm)", "K.Kosako",
+		"bitcurves/bitcurve.go (the file's own notice)", "ThePiachu",
+		"osfs/os_bound.go (the file's own notice)", "The Flux authors",
+		"tm-themes 1.12.3's NOTICE (the themes it carries)", "tm-grammars 1.32.3's NOTICE (the grammars it carries)",
 		"in the app's resources as LICENSES.chromium.html",
 	} {
 		if !strings.Contains(ThirdPartyNotices, want) {
