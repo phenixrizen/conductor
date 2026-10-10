@@ -201,13 +201,17 @@ func TestGitDirReadsAreBounded(t *testing.T) {
 	}
 }
 
-// A .git file is taken as git takes one, and nothing else is: "gitdir: "
-// then a path on one line, trailing line breaks dropped, up to 1 MiB, so a
-// padded pointer counts; a file that only starts like one (YAML with a
-// gitdir key and more) does not, nor does one naming an absolute directory
-// that is no git directory. A HEAD counts by its first bytes, a link by its
-// refs/ target, an object id in either case.
+// A .git file is parsed as git parses one ("gitdir: ", trailing line
+// breaks dropped, the path up to the first NUL, up to 1 MiB) and counts
+// when its path, absolute or from its own directory, is a git directory: a
+// padded, CRLF or NUL-ended pointer counts; a YAML file with a gitdir key,
+// on one line or more, does not, nor does a pointer to nowhere. A HEAD
+// counts by its first bytes, a link by its refs/ target, an object id in
+// either case.
 func TestGitFilesAndHeadsAsGitReadsThem(t *testing.T) {
+	if target, ok := readGitFile(writeTemp(t, "gitdir: \x00x\n")); !ok || target != "" {
+		t.Fatalf("an empty path after a NUL: %q %v", target, ok)
+	}
 	root := gitDirTree(t)
 	wtGitDir := filepath.Join(root, ".git", "worktrees", "wt")
 	write := func(name, body string) string {
@@ -225,7 +229,10 @@ func TestGitFilesAndHeadsAsGitReadsThem(t *testing.T) {
 		"pointer":      {"gitdir: " + wtGitDir + "\n", true},
 		"padded":       {"gitdir: " + wtGitDir + strings.Repeat("\n", 8192), true},
 		"crlf":         {"gitdir: " + wtGitDir + "\r\n", true},
-		"relative":     {"gitdir: ../somewhere/.git/worktrees/x\n", true},
+		"relative":     {"gitdir: .git/worktrees/wt\n", true},
+		"nowhere":      {"gitdir: ../somewhere/.git/worktrees/x\n", false},
+		"yaml1":        {"gitdir: null\n", false},
+		"emptypath":    {"gitdir: \x00x\n", false},
 		"nul":          {"gitdir: " + wtGitDir + "\x00\nignored\n", true},
 		"relnul":       {"gitdir: .git/worktrees/wt\x00 trailing\n", true},
 		"relmultiline": {"gitdir: notes\nmore: lines\n", false},
@@ -301,11 +308,15 @@ func TestGitFilesAndHeadsAsGitReadsThem(t *testing.T) {
 }
 
 // Metadata a repository's .git links out to the working tree (its config,
-// its hooks folder) is read only there too; so is a pointer whose absolute
-// path takes a link and then .., as the kernel and git walk it, and one
-// whose path is empty after a NUL (git takes the directory of the .git
-// that names it). A working tree's file next to them still saves.
+// its hooks folder, its refs folder) is read only there too, as is the
+// common directory a directory-form .git's commondir names (with no HEAD of
+// its own), and a pointer whose absolute path takes a link and then .., as
+// the kernel and git walk it. A working tree's file next to them, and a
+// one-line YAML file with a gitdir key, still save.
 func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root, err := filepath.EvalSymlinks(gitRepo(t))
 	if err != nil {
 		t.Fatal(err)
@@ -333,10 +344,20 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	must(os.WriteFile(filepath.Join(root, "ptr4"), []byte("gitdir: "+filepath.Join(root, "jump")+"/../repo\n"), 0o644))
 	must(os.Mkdir(filepath.Join(root, "sib"), 0o755))
 	must(os.Symlink("../ptr4", filepath.Join(root, "sib", ".git")))
-	// A pointer whose path is empty after a NUL.
-	must(os.WriteFile(filepath.Join(root, "ptr5"), []byte("gitdir: \x00x\n"), 0o644))
-	must(os.Mkdir(filepath.Join(root, "sib5"), 0o755))
-	must(os.Symlink("../ptr5", filepath.Join(root, "sib5", ".git")))
+	// .git/refs links out to ref-store.
+	must(os.Rename(filepath.Join(root, ".git", "refs"), filepath.Join(root, "ref-store")))
+	must(os.Symlink("../ref-store", filepath.Join(root, ".git", "refs")))
+	// A folder whose .git is a directory with a commondir naming shared,
+	// which holds the configuration, refs and objects but no HEAD.
+	must(os.MkdirAll(filepath.Join(root, "split", ".git"), 0o755))
+	must(os.WriteFile(filepath.Join(root, "split", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	must(os.WriteFile(filepath.Join(root, "split", ".git", "commondir"), []byte("../shared\n"), 0o644))
+	for _, d := range []string{"refs", "objects"} {
+		must(os.MkdirAll(filepath.Join(root, "split", "shared", d), 0o755))
+	}
+	must(os.WriteFile(filepath.Join(root, "split", "shared", "config"), []byte("[core]\n"), 0o644))
+	// A one-line YAML file with a gitdir key: an ordinary file.
+	must(os.WriteFile(filepath.Join(root, "settings.yml"), []byte("gitdir: null\n"), 0o644))
 
 	s, _ := newLocal(t, root)
 	sink := newChanSink(false)
@@ -344,8 +365,14 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.closeNvims(sub) })
 	settings, _ := os.ReadFile(filepath.Join(root, "settings"))
-	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", "ptr5"}
+	head, _ := os.ReadFile(filepath.Join(root, ".git", "HEAD"))
+	branchRef := filepath.Join("ref-store", strings.TrimPrefix(strings.TrimSpace(string(head)), "ref: refs/"))
+	if _, err := os.Stat(filepath.Join(root, branchRef)); err != nil {
+		t.Fatalf("the branch's loose ref: %v", err)
+	}
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config"}
 	for i, p := range refused {
 		id := fmt.Sprintf("m%d", i)
 		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
@@ -356,9 +383,11 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if b, _ := os.ReadFile(filepath.Join(root, "settings")); !bytes.Equal(b, settings) {
 		t.Fatal("the linked config changed")
 	}
-	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", "ptr5"} {
-		if h, _ := ReadPath(root, p, false, nil); h.Kind != "file" || !h.ReadOnly {
+	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config"} {
+		h, _ := ReadPath(root, p, false, nil)
+		if h.Kind != "file" || !h.ReadOnly {
 			t.Errorf("read %s: %+v", p, h)
+			continue
 		}
 		if nvim.Available() {
 			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
@@ -366,9 +395,50 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 			}
 		}
 	}
-	h, _ := ReadPath(root, "README.md", false, nil)
-	save(s, sub, "ok", "README.md", []byte("still saves\n"), 512, h.Sha256, false)
-	if f := fileReply(t, sink, "ok"); f.Kind != "written" {
-		t.Fatalf("README.md: %+v %+v", f, f.Error)
+	// Ordinary files still save, a one-line YAML file with a gitdir key too.
+	for _, p := range []string{"README.md", "settings.yml"} {
+		h, _ := ReadPath(root, p, false, nil)
+		if h.ReadOnly {
+			t.Errorf("%s reads as ReadOnly", p)
+		}
+		save(s, sub, "ok-"+p, p, []byte("gitdir: changed\n"), 512, h.Sha256, false)
+		if f := fileReply(t, sink, "ok-"+p); f.Kind != "written" {
+			t.Errorf("%s: %+v %+v", p, f, f.Error)
+		}
+	}
+}
+
+// writeTemp writes body to a new file in a temporary directory.
+func writeTemp(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A FIFO where a git directory's hooks folder should be is not waited on:
+// the check of an ordinary file beside it answers at once.
+func TestGitDirHooksFIFODoesNotBlock(t *testing.T) {
+	root, err := filepath.EvalSymlinks(gitRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".git", "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(root, ".git", "hooks"), 0o644); err != nil {
+		t.Skipf("no FIFO here: %v", err)
+	}
+	done := make(chan bool)
+	go func() { done <- gitMetadata("README.md", filepath.Join(root, "README.md")) }()
+	select {
+	case got := <-done:
+		if got {
+			t.Fatal("README.md taken for .git")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the check blocked on a FIFO at .git/hooks")
 	}
 }

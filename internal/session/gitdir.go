@@ -47,8 +47,8 @@ func gitMetadata(raw, real string) bool {
 // inGitDir reports whether real, an absolute path with its symbolic links
 // resolved (ResolvePath's), is in a repository's .git. Any one of four
 // says so: an element of the path is .git however a file system may spell
-// it (isDotGit); the path is a file git would take as a .git file, which a
-// .git link anywhere may point to (isGitFile); the path or one of its
+// it (isDotGit); the path is a file git would take as a .git file naming a
+// git directory, which a .git link may point to (isGitFile); the path or one of its
 // parents is what a .git beside it or beside one of its parents stands for
 // (a .git directory, a .git file itself, the git directory it names, the
 // targets of the metadata in it that are links), compared as files
@@ -108,9 +108,9 @@ func rawJoin(dir, name string) string {
 
 // gitDirsIn is what dir's .git stands for, as files to compare: itself
 // when it is a directory (or a link to one); when it is a file (or a link
-// to one), the file itself, the git directory its "gitdir: " line names
-// and the one that directory's commondir names; and for each of those git
-// directories the targets of its metadata that are links (linkedMetadata).
+// to one), the file itself and the git directory its "gitdir: " line
+// names; and for each git directory, the one its commondir names and the
+// targets of its metadata that are links (gitDirFiles).
 func gitDirsIn(dir string) []os.FileInfo {
 	dotgit := filepath.Join(dir, ".git")
 	fi, err := os.Stat(dotgit)
@@ -118,7 +118,7 @@ func gitDirsIn(dir string) []os.FileInfo {
 	case err != nil:
 		return nil
 	case fi.IsDir():
-		return append([]os.FileInfo{fi}, linkedMetadata(dotgit)...)
+		return append([]os.FileInfo{fi}, gitDirFiles(dotgit)...)
 	case !fi.Mode().IsRegular():
 		return nil
 	}
@@ -131,10 +131,17 @@ func gitDirsIn(dir string) []os.FileInfo {
 	if err != nil || !gfi.IsDir() {
 		return out
 	}
-	out = append(out, gfi)
-	out = append(out, linkedMetadata(gd)...)
-	if b, whole, ok := readPrefix(rawJoin(gd, "commondir"), maxGitFile); ok && whole {
-		common := rawJoin(gd, strings.TrimSpace(string(b)))
+	return append(append(out, gfi), gitDirFiles(gd)...)
+}
+
+// gitDirFiles is, for the git directory gitDir, the common directory its
+// commondir names (git reads the configuration, refs and objects there,
+// with or without a HEAD of its own) and, for both, the targets of their
+// metadata that are links (linkedMetadata).
+func gitDirFiles(gitDir string) []os.FileInfo {
+	out := linkedMetadata(gitDir)
+	if b, whole, ok := readPrefix(rawJoin(gitDir, "commondir"), maxGitFile); ok && whole {
+		common := rawJoin(gitDir, strings.TrimSpace(string(b)))
 		if cfi, err := os.Stat(common); err == nil && cfi.IsDir() {
 			out = append(out, cfi)
 			out = append(out, linkedMetadata(common)...)
@@ -145,14 +152,21 @@ func gitDirsIn(dir string) []os.FileInfo {
 
 // metadataEntries are the entries of a git directory git reads as its own
 // that may be links out of it; the hooks in hooks are looked at one by one
-// too (at most maxHooks of them).
-var metadataEntries = []string{"config", "config.worktree", "HEAD", "commondir", "gitdir", "packed-refs", "info", "info/attributes", "info/exclude", "hooks", "objects/info/alternates"}
+// too (at most maxHooks of them). Links deeper inside (a loose ref, an
+// object) are not followed: only someone who can already write inside .git
+// makes one, and none of them is a program git runs.
+var metadataEntries = []string{
+	"config", "config.worktree", "HEAD", "commondir", "gitdir", "index", "packed-refs", "shallow",
+	"info", "info/attributes", "info/exclude", "hooks", "refs", "logs", "objects", "objects/info/alternates",
+	"worktrees", "modules",
+}
 
 const maxHooks = 256
 
 // linkedMetadata is what the metadata entries of gitDir that are links
 // point to: a working-tree file a .git/config link names is the
-// repository's configuration all the same.
+// repository's configuration all the same, and a folder .git/refs links to
+// holds its refs.
 func linkedMetadata(gitDir string) []os.FileInfo {
 	var out []os.FileInfo
 	add := func(p string) {
@@ -165,14 +179,30 @@ func linkedMetadata(gitDir string) []os.FileInfo {
 	for _, e := range metadataEntries {
 		add(rawJoin(gitDir, e))
 	}
-	if f, err := os.Open(rawJoin(gitDir, "hooks")); err == nil {
-		names, _ := f.Readdirnames(maxHooks)
-		f.Close()
-		for _, n := range names {
-			add(rawJoin(rawJoin(gitDir, "hooks"), n))
-		}
+	hooks := rawJoin(gitDir, "hooks")
+	for _, n := range dirNames(hooks, maxHooks) {
+		add(rawJoin(hooks, n))
 	}
 	return out
+}
+
+// dirNames lists at most n names in path when it is a directory, and
+// nothing otherwise: the open does not block (a FIFO there is not waited
+// on), and what was opened is checked to be a directory.
+func dirNames(path string, n int) []string {
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.IsDir() {
+		return nil
+	}
+	names, _ := f.Readdirnames(n)
+	return names
 }
 
 // isGitDirectory reports whether dir is a git directory by its files, as
@@ -217,22 +247,19 @@ func validHead(path string) bool {
 }
 
 // isGitFile reports whether path is a file git would take as a .git file
-// (readGitFile), wherever it is, since a .git link anywhere may point to
-// it. One naming an absolute path counts when that is a git directory. A
-// relative path is relative to the linking .git's directory, unknown here:
-// it counts when it names a git directory from the file's own directory,
-// or when it is a single line, as a pointer is; a file whose "path" runs
-// over more lines and leads nowhere (a YAML file with a gitdir key and
-// more) does not.
+// (readGitFile) naming a git directory: an absolute path, or a relative one
+// from the file's own directory, which is where git starts from when the
+// file is a directory's .git. A file whose "path" leads to no git directory
+// (a YAML file with a gitdir key) is an ordinary file. A pointer that a
+// .git link in some other directory names, with a path relative to that
+// directory, is not told apart: the Files tab makes no links, and such a
+// layout is the person's own.
 func isGitFile(path string) bool {
 	target, ok := readGitFile(path)
 	if !ok {
 		return false
 	}
-	if filepath.IsAbs(target) {
-		return isGitDirectory(target)
-	}
-	return isGitDirectory(rawJoin(filepath.Dir(path), target)) || !strings.ContainsAny(target, "\r\n")
+	return isGitDirectory(rawJoin(filepath.Dir(path), target))
 }
 
 // readGitFile reads path as git reads a .git file: a regular file of at
