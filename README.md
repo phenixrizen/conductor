@@ -437,8 +437,9 @@ the server would choose (`~/.conductor`, which is refused in any case), the
 catalog file `CONDUCTOR_CATALOG_PATH` names, and, when `conductor host
 --server-config <file>` names the server's config file, that file with its
 `dataDir` and `catalogPath`; and the desktop app's server's: the app's own
-directory (its settings, and its data directory unless they move it), the
-data directory its settings name, and inside WSL
+directory (its settings, and its data directory unless they move it), its
+settings file wherever a link takes it, the data directory its settings
+name, and inside WSL
 `~/.local/share/conductor/data` (the Windows app's settings are not visible
 inside WSL: when they move that data directory, set `CONDUCTOR_DATA_DIR` to it
 in the shell that runs `conductor host`). The server resolves a relative path against the

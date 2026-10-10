@@ -655,8 +655,10 @@ the data directory `CONDUCTOR_DATA_DIR` names or the server would choose, and
 `~/.conductor` in any case, the catalog file `CONDUCTOR_CATALOG_PATH` names,
 and the config file `conductor host --server-config` names with its `dataDir`
 and `catalogPath` (the host does not start when one of these paths is
-relative); and for the desktop app's server, the app's own directory, the data
-directory its settings name and, inside WSL, `~/.local/share/conductor/data`.
+relative); and for the desktop app's server, the app's own directory, its
+settings file as the config file is (its link target and the copies there
+included), the data directory its settings name and, inside WSL,
+`~/.local/share/conductor/data`.
 Saves and the editor's Neovim go through the same rules.
 Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?, sha256?, mtime?}`

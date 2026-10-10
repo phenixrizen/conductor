@@ -67,15 +67,18 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 		".config/conductor-desktop/conductor/catalog.json": secret,
 		"code/conductor-state/catalog.json":                secret,
 		"code/app/main.go":                                 "package main\n",
-		".config/Conductor/settings.json":                  `{"switchyardToken":"` + secret + `"}`,
 		".config/Conductor/conductor/catalog.json":         secret,
-		".local/share/conductor/data/catalog.json":         secret,
-		".local/share/conductor/data/crews/c2.json":        secret,
-		".config/other-app/settings.json":                  "ordinary\n",
-		".local/share/other-app/data.json":                 "ordinary\n",
-		"notes.txt":                                        "ordinary\n",
-		"package.json":                                     `{"name":"ordinary"}`,
-		"project/src/conductor-ui.md":                      "ordinary too\n",
+		// Its settings under the other name are a link to dotfiles.
+		"dotfiles/desktop.json":                     `{"switchyardToken":"` + secret + `"}`,
+		"dotfiles/desktop.json.bak":                 secret,
+		"dotfiles/zshrc":                            "ordinary\n",
+		".local/share/conductor/data/catalog.json":  secret,
+		".local/share/conductor/data/crews/c2.json": secret,
+		".config/other-app/settings.json":           "ordinary\n",
+		".local/share/other-app/data.json":          "ordinary\n",
+		"notes.txt":                                 "ordinary\n",
+		"package.json":                              `{"name":"ordinary"}`,
+		"project/src/conductor-ui.md":               "ordinary too\n",
 	}
 	for rel, body := range files {
 		p := filepath.Join(home, rel)
@@ -85,6 +88,9 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "desktop.json"), filepath.Join(home, ".config", "Conductor", "settings.json")); err != nil {
+		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "t"}, {"config", "user.email", "t@t"}, {"config", "commit.gpgsign", "false"}, {"add", "-A"}, {"commit", "-q", "-m", "home"}} {
 		if _, err := gitcli.Run(context.Background(), home, args...); err != nil {
@@ -183,6 +189,7 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 		".config/conductor-desktop", ".config/conductor-desktop/settings.json", ".config/conductor-desktop/conductor/catalog.json",
 		"code/conductor-state", "code/conductor-state/catalog.json",
 		".config/Conductor", ".config/Conductor/settings.json", ".config/Conductor/conductor/catalog.json",
+		"dotfiles/desktop.json", "dotfiles/desktop.json.bak", "dotfiles/.desktop.json.swp",
 		".local/share/conductor/data/catalog.json", ".local/share/conductor/data/crews/c2.json",
 	}
 	for _, p := range refused {
@@ -193,14 +200,14 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 			}
 		}
 	}
-	for _, q := range []string{"catalog", "token", "conductor", "json", "agents", "crews", "c1", "c2", "settings"} {
+	for _, q := range []string{"catalog", "token", "conductor", "json", "agents", "crews", "c1", "c2", "settings", "desktop"} {
 		h, _ := ask(proto.FileGet{Op: proto.FileOpFind, Path: q})
 		if h.Kind != "find" {
 			t.Fatalf("find %q: %+v", q, h)
 		}
 		for _, m := range h.Matches {
 			if strings.Contains(m, ".conductor") || strings.Contains(strings.ToLower(filepath.Base(m)), "conductor.json") || strings.HasPrefix(filepath.Base(m), "agents.json") ||
-				strings.HasPrefix(m, ".config/Conductor") || strings.HasPrefix(m, ".config/conductor-desktop") || strings.HasPrefix(m, ".local/share/conductor") || strings.HasPrefix(m, "code/conductor-state") {
+				strings.HasPrefix(m, ".config/Conductor") || strings.HasPrefix(m, ".config/conductor-desktop") || strings.HasPrefix(m, ".local/share/conductor") || strings.HasPrefix(m, "code/conductor-state") || strings.HasPrefix(m, "dotfiles/desktop.json") {
 				t.Errorf("find %q found %s", q, m)
 			}
 		}
@@ -219,8 +226,10 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	if h, body := ask(proto.FileGet{Path: "notes.txt"}); h.Kind != "file" || string(body) != "ordinary\n" {
 		t.Errorf("notes.txt: %+v %q", h, body)
 	}
-	if h, body := ask(proto.FileGet{Path: "code/app/main.go"}); h.Kind != "file" || string(body) != "package main\n" {
-		t.Errorf("code/app/main.go: %+v %q", h, body)
+	for p, want := range map[string]string{"code/app/main.go": "package main\n", "dotfiles/zshrc": "ordinary\n"} {
+		if h, body := ask(proto.FileGet{Path: p}); h.Kind != "file" || string(body) != want {
+			t.Errorf("%s: %+v %q", p, h, body)
+		}
 	}
 	if h, _ := ask(proto.FileGet{Path: "package.json", Stat: true}); h.Kind != "file" || !h.Exists {
 		t.Errorf("stat package.json: %+v", h)

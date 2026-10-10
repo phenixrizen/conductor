@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/session"
 )
 
 // FileDeny names the data directory and the directories given, then the
@@ -98,6 +100,20 @@ func TestLocalFileDeny(t *testing.T) {
 	local := func(home string) []string {
 		return []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "conductor-desktop"), filepath.Join(home, ".config", "Conductor")}
 	}
+	// settings are the desktop app's settings files in config, each with
+	// the name entry beside it.
+	settings := func(config string) []string {
+		var out []string
+		for _, name := range []string{"conductor-desktop", "Conductor"} {
+			out = append(out, filepath.Join(config, name, "settings.json"), filepath.Join(config, name, "*settings.json*"))
+		}
+		return out
+	}
+	// expect is the list for the server's data directories dirs and its
+	// files' entries, with what every machine refuses.
+	expect := func(home string, dirs []string, files ...string) []string {
+		return slices.Concat(dirs, local(home), files, settings(filepath.Join(home, ".config")))
+	}
 	writeFile := func(t *testing.T, path, body string) string {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -119,7 +135,7 @@ func TestLocalFileDeny(t *testing.T) {
 
 	t.Run("no config file: ~/.conductor", func(t *testing.T) {
 		home, _ := setup(t)
-		if got, want := deny(t, ""), local(home); !slices.Equal(got, want) {
+		if got, want := deny(t, ""), expect(home, nil); !slices.Equal(got, want) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 		for _, d := range local(home) {
@@ -135,7 +151,7 @@ func TestLocalFileDeny(t *testing.T) {
 		data := filepath.Join(t.TempDir(), "data")
 		catalogFile := filepath.Join(etc, "agents", "..", "agents.json")
 		cfg := writeFile(t, filepath.Join(etc, "conductor.json"), `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"`+catalogFile+`"}`)
-		want := slices.Concat([]string{data}, local(home), []string{cfg, filepath.Join(etc, "*conductor.json*"), filepath.Join(etc, "agents.json"), filepath.Join(etc, "*agents.json*")})
+		want := expect(home, []string{data}, cfg, filepath.Join(etc, "*conductor.json*"), filepath.Join(etc, "agents.json"), filepath.Join(etc, "*agents.json*"))
 		if got := deny(t, cfg); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
@@ -144,7 +160,7 @@ func TestLocalFileDeny(t *testing.T) {
 	t.Run("a relative path to the config file", func(t *testing.T) {
 		home, cwd := setup(t)
 		writeFile(t, filepath.Join(cwd, "conf", "conductor.json"), `{}`)
-		want := slices.Concat(local(home), []string{filepath.Join(cwd, "conf", "conductor.json"), filepath.Join(cwd, "conf", "*conductor.json*")})
+		want := expect(home, nil, filepath.Join(cwd, "conf", "conductor.json"), filepath.Join(cwd, "conf", "*conductor.json*"))
 		if got := deny(t, filepath.Join("conf", "conductor.json")); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
@@ -191,7 +207,7 @@ func TestLocalFileDeny(t *testing.T) {
 		if err := os.Mkdir(old, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		want := slices.Concat([]string{old}, local(home), []string{cfg, filepath.Join(service, "*conductor.json*")})
+		want := expect(home, []string{old}, cfg, filepath.Join(service, "*conductor.json*"))
 		if got := deny(t, cfg); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
@@ -204,12 +220,12 @@ func TestLocalFileDeny(t *testing.T) {
 		envData, envCat := filepath.Join(dir, "env-data"), filepath.Join(dir, "env-agents.json")
 		t.Setenv("CONDUCTOR_DATA_DIR", envData)
 		t.Setenv("CONDUCTOR_CATALOG_PATH", envCat)
-		want := slices.Concat([]string{envData}, local(home), []string{cfg, filepath.Join(dir, "*conductor.json*"), envCat, filepath.Join(dir, "*env-agents.json*")})
+		want := expect(home, []string{envData}, cfg, filepath.Join(dir, "*conductor.json*"), envCat, filepath.Join(dir, "*env-agents.json*"))
 		if got := deny(t, cfg); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
 		// Without a config file too.
-		want = slices.Concat([]string{envData}, local(home), []string{envCat, filepath.Join(dir, "*env-agents.json*")})
+		want = expect(home, []string{envData}, envCat, filepath.Join(dir, "*env-agents.json*"))
 		if got := deny(t, ""); !slices.Equal(got, want) {
 			t.Errorf("without a config file: %q", got)
 		}
@@ -223,7 +239,7 @@ func TestLocalFileDeny(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		want := slices.Concat(local(home), []string{link, filepath.Join(dir, "*conductor.json*"), filepath.Join(filepath.Dir(target), "*prod.json*")})
+		want := expect(home, nil, link, filepath.Join(dir, "*conductor.json*"), filepath.Join(filepath.Dir(target), "*prod.json*"))
 		if got := deny(t, link); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
@@ -235,7 +251,7 @@ func TestLocalFileDeny(t *testing.T) {
 		if err := os.Mkdir(old, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := deny(t, ""), slices.Concat([]string{old}, local(home)); !slices.Equal(got, want) {
+		if got, want := deny(t, ""), expect(home, []string{old}); !slices.Equal(got, want) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
@@ -248,20 +264,21 @@ func TestLocalFileDeny(t *testing.T) {
 		config := t.TempDir()
 		t.Setenv("XDG_CONFIG_HOME", config)
 		app, renamed := filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")
-		base := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed}
+		dirs := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), app, renamed}
+		base := slices.Concat(dirs, settings(config))
 		if got := deny(t, ""); !slices.Equal(got, base) {
 			t.Errorf("no settings: %q, want %q", got, base)
 		}
 		data := filepath.Join(t.TempDir(), "elsewhere")
 		writeFile(t, filepath.Join(app, "settings.json"), `{"dataDir":"`+data+`/","allowedRoots":["`+home+`"],"switchyardToken":"t","zoomLevel":0}`)
-		want := []string{base[0], base[1], app, data, renamed}
+		want := slices.Concat([]string{dirs[0], dirs[1], app, data, renamed}, settings(config))
 		if got := deny(t, ""); !slices.Equal(got, want) {
 			t.Errorf("settings naming a data directory: %q, want %q", got, want)
 		}
 		// The settings under the other name count too.
 		other := filepath.Join(t.TempDir(), "other")
 		writeFile(t, filepath.Join(renamed, "settings.json"), `{"dataDir":"`+other+`"}`)
-		if got := deny(t, ""); !slices.Equal(got, append(slices.Clone(want), other)) {
+		if got, want := deny(t, ""), slices.Concat([]string{dirs[0], dirs[1], app, data, renamed, other}, settings(config)); !slices.Equal(got, want) {
 			t.Errorf("settings under both names: %q", got)
 		}
 		os.Remove(filepath.Join(renamed, "settings.json"))
@@ -270,6 +287,28 @@ func TestLocalFileDeny(t *testing.T) {
 			if got := deny(t, ""); !slices.Equal(got, base) {
 				t.Errorf("settings %q: %q, want %q", body, got, base)
 			}
+		}
+		// Settings that are a link to a file elsewhere: that file and the
+		// copies beside it are refused, as a config file's are.
+		dotfiles := filepath.Join(home, "dotfiles")
+		target := writeFile(t, filepath.Join(dotfiles, "desktop.json"), `{"switchyardToken":"t"}`)
+		writeFile(t, filepath.Join(dotfiles, "desktop.json.bak"), `{"switchyardToken":"t"}`)
+		writeFile(t, filepath.Join(dotfiles, "notes.md"), "ordinary\n")
+		os.Remove(filepath.Join(app, "settings.json"))
+		if err := os.Symlink(target, filepath.Join(app, "settings.json")); err != nil {
+			t.Fatal(err)
+		}
+		got := deny(t, "")
+		if !slices.Contains(got, filepath.Join(dotfiles, "*desktop.json*")) {
+			t.Errorf("linked settings: %q, want the copies beside the target among them", got)
+		}
+		for _, p := range []string{"dotfiles/desktop.json", "dotfiles/desktop.json.bak", "dotfiles/.desktop.json.swp"} {
+			if r, err := session.ResolvePath(home, p, got); err == nil {
+				t.Errorf("%s: resolved to %s, want it refused", p, r)
+			}
+		}
+		if _, err := session.ResolvePath(home, "dotfiles/notes.md", got); err != nil {
+			t.Errorf("dotfiles/notes.md: %v", err)
 		}
 	})
 

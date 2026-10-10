@@ -21,7 +21,12 @@ import (
 // copy beside it is refused too. A directory is denied with everything in
 // it, a file on its own.
 func (c *Config) FileDeny(dirs ...string) []string {
-	return session.DenyList(append([]string{c.DataDir}, dirs...), []string{c.Path, c.CatalogPath})
+	return c.fileDeny(dirs, nil)
+}
+
+// fileDeny is FileDeny with more files, each denied as the two are.
+func (c *Config) fileDeny(dirs, files []string) []string {
+	return session.DenyList(append([]string{c.DataDir}, dirs...), append([]string{c.Path, c.CatalogPath}, files...))
 }
 
 // LocalFileDeny is the deny list of a session that runs on this machine but
@@ -32,7 +37,7 @@ func (c *Config) FileDeny(dirs ...string) []string {
 // finds its data directory as ResolveDataDir does. The default data
 // directory, ~/.conductor, is refused whichever directory that is, as are
 // the copies beside the config file and the catalog file, and the
-// directories of the desktop app's server (desktopDirs). A config file that
+// directories and settings of the desktop app's server (desktopFiles). A config file that
 // cannot be read or parsed is an error, and so is a data directory or a
 // catalog file given as a relative path: conductor serve resolves it against
 // the directory it runs in, which a session elsewhere cannot know, and what
@@ -79,7 +84,8 @@ func LocalFileDeny(path string) ([]string, error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
-	return c.FileDeny(append(dirs, desktopDirs()...)...), nil
+	desktopDirs, desktopSettings := desktopFiles()
+	return c.fileDeny(append(dirs, desktopDirs...), desktopSettings), nil
 }
 
 // desktopAppNames name the desktop app's own directory, Electron's userData:
@@ -93,37 +99,40 @@ var desktopAppNames = []string{"conductor-desktop", "Conductor"}
 // maxDesktopSettings bounds what is read of the desktop app's settings.
 const maxDesktopSettings = 1 << 20
 
-// desktopDirs are the directories of the server the desktop app runs on this
-// machine, which it starts with CONDUCTOR_DATA_DIR from its own settings
-// rather than with a config file (desktop/src/env.ts): the app's own
-// directory (desktopAppNames), which holds its settings (desktop/src/main.ts)
-// and, unless they say otherwise, the data directory (conductor in it); the
-// data directory its settings name, when that is an absolute path; and,
-// inside WSL, where the app on Windows runs the server, the default it gives
-// a server there, ~/.local/share/conductor/data (desktop/src/settings.ts,
-// wslDefaults). The settings of the app on Windows are not on this side, so
-// a data directory they choose for the server inside WSL is not known here.
-// Only dataDir is read of the settings, which hold many other keys; settings
-// that cannot be read or parsed name nothing, as the app then takes its
-// defaults. Each directory is named whether it exists or not: one that does
-// not denies nothing until it does (session.ResolvePath).
-func desktopDirs() []string {
-	var dirs []string
+// desktopFiles are the directories and files of the server the desktop app
+// runs on this machine, which it starts with CONDUCTOR_DATA_DIR from its own
+// settings rather than with a config file (desktop/src/env.ts). The
+// directories: the app's own (desktopAppNames), which holds its settings
+// (desktop/src/main.ts) and, unless they say otherwise, the data directory
+// (conductor in it); the data directory its settings name, when that is an
+// absolute path; and, inside WSL, where the app on Windows runs the server,
+// the default it gives a server there, ~/.local/share/conductor/data
+// (desktop/src/settings.ts, wslDefaults). The files: each settings.json, so
+// that one which is a symbolic link is refused at its target too, with the
+// copies beside it, as a config file is. The settings of the app on Windows
+// are not on this side, so a data directory they choose for the server
+// inside WSL is not known here. Only dataDir is read of the settings, which
+// hold many other keys; settings that cannot be read or parsed name nothing,
+// as the app then takes its defaults. Each path is named whether it exists or
+// not: one that does not denies nothing until it does (session.ResolvePath).
+func desktopFiles() (dirs, files []string) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".local", "share", "conductor", "data"))
 	}
 	base, err := os.UserConfigDir()
 	if err != nil || !filepath.IsAbs(base) {
-		return dirs
+		return dirs, nil
 	}
 	for _, name := range desktopAppNames {
 		app := filepath.Join(base, name)
+		settings := filepath.Join(app, "settings.json")
 		dirs = append(dirs, app)
-		if d := desktopDataDir(filepath.Join(app, "settings.json")); d != "" {
+		files = append(files, settings)
+		if d := desktopDataDir(settings); d != "" {
 			dirs = append(dirs, d)
 		}
 	}
-	return dirs
+	return dirs, files
 }
 
 // desktopDataDir is the data directory the desktop app's settings file
