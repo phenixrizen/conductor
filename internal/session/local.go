@@ -133,6 +133,9 @@ type Local struct {
 	info Info
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
+	// retired says the session left the server's registry (Retire): no
+	// client attaches any more.
+	retired bool
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
@@ -707,6 +710,17 @@ type AttachOptions struct {
 	// ChatOnly makes the connection quiet (hello.chatOnly): for a run's
 	// chat alone, with no scrollback or output, uncounted among the viewers.
 	ChatOnly bool
+	// Authorize, when set, says what the client's credential gives it now.
+	// AttachWith calls it under the session's lock, in the critical section
+	// that registers the client, and attaches with the role it returns in
+	// place of Role; an error refuses the attach and AttachWith returns it
+	// (ErrRevoked, or ErrExpired, for a link that no longer opens the
+	// session). Whoever revokes a link marks it first and then closes its
+	// clients (DisconnectLink, which takes the same lock), so either this
+	// check sees the mark or that close sees the client. A Grant with Until
+	// closes the client with ErrExpired then. Authorize must not call the
+	// session.
+	Authorize func() (Grant, error)
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -731,13 +745,31 @@ func (s *Local) viewersFrame() []byte {
 // stream; the roster is then broadcast to everyone.
 func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	role, id, cols, rows := o.Role, o.ID, o.Cols, o.Rows
-	if !role.Valid() {
+	if o.Authorize == nil && !role.Valid() {
 		return nil, errors.New("session: invalid role")
 	}
 	if id == "" {
 		id = NewID()
 	}
 	s.mu.Lock()
+	if s.retired {
+		s.mu.Unlock()
+		return nil, ErrSessionEnded
+	}
+	// The credential is checked under the lock that registers the client
+	// (see AttachOptions.Authorize).
+	var until time.Time
+	if o.Authorize != nil {
+		g, err := o.Authorize()
+		if err == nil && !g.Role.Valid() {
+			err = errors.New("session: invalid role")
+		}
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		role, until = g.Role, g.Until
+	}
 	if s.hub.Count() >= s.opts.MaxViewers {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
@@ -817,6 +849,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		}
 	}
 	s.hub.add(sub)
+	// A credential that lapses closes the client as it lapses, one that
+	// attached a moment before included (at once when that moment has passed).
+	var lapse *time.Timer
+	if !until.IsZero() {
+		lapse = time.AfterFunc(time.Until(until), func() { sub.closeWith(ErrExpired) })
+	}
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
 		sub.send(proto.MustControl(attentionMessage(s.info.Attention)))
@@ -837,6 +875,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	go func() {
 		<-sub.done
+		if lapse != nil {
+			lapse.Stop()
+		}
 		s.Detach(sub)
 	}()
 	if !sub.quiet {
@@ -1069,19 +1110,46 @@ func (s *Local) Stop(ctx context.Context) error {
 // DisconnectLink evicts every subscription created through linkID: as
 // revoked, or, once the session has ended (its links go with it), as the
 // session's end, so that a viewer whose status frame the close overtakes
-// still learns which.
+// still learns which. It finds them under the lock AttachWith registers
+// them under, so a caller that marked the link first (a revoke) misses
+// none: one that attaches after this finds the mark (AttachOptions.Authorize).
 func (s *Local) DisconnectLink(linkID string) {
 	reason := ErrRevoked
+	var hit []*Subscription
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		reason = ErrSessionEnded
 	}
-	s.mu.Unlock()
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
-			sub.closeWith(reason)
+			hit = append(hit, sub)
 		}
 	})
+	s.mu.Unlock()
+	// Closed outside the lock: a sink's Close may wait on its connection.
+	for _, sub := range hit {
+		sub.closeWith(reason)
+	}
+}
+
+// Retire is the session leaving the server's registry, which only an ended
+// session does: every client is closed as at the session's end, and none
+// attaches after (ErrSessionEnded). Whoever closes a link's clients finds
+// them through the registry, so none may stay where it no longer looks.
+// The closes run on goroutines of their own, one per client (at most the
+// session's MaxViewers): a client that does not read holds up only its own.
+func (s *Local) Retire() {
+	var all []*Subscription
+	s.mu.Lock()
+	s.retired = true
+	s.hub.Each(func(sub *Subscription) { all = append(all, sub) })
+	s.mu.Unlock()
+	for _, sub := range all {
+		go func() {
+			s.closeNvims(sub)
+			sub.closeWith(ErrSessionEnded)
+		}()
+	}
 }
 
 // CloseAll evicts every subscription with the given reason (server shutdown).

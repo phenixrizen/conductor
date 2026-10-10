@@ -287,7 +287,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
 	}
-	s.events.publish(local.Info())
+	// Published while listed, as every change is (localChange): a session
+	// that ended and was removed at once is not brought back by its launch.
+	s.events.publishIf(local.Info(), s.listed)
 	s.publish(local)
 	return local, nil
 }
@@ -311,8 +313,20 @@ func (s *Server) localChat(id string, m session.ChatMessage) {
 	}
 }
 
+// listed says whether the registry holds a session with id. The event hub
+// asks it under its own lock (publishIf); the registry never calls the hub
+// under its lock.
+func (s *Server) listed(id string) bool {
+	_, ok := s.registry.Get(id)
+	return ok
+}
+
+// localChange is the OnChange hook of a server session. Every change reaches
+// the runs, the session's links and its publication; the browsers hear only
+// of a session the server still lists, so a viewer leaving one that was
+// removed does not bring it back.
 func (s *Server) localChange(info session.Info) {
-	s.events.publish(info)
+	s.events.publishIf(info, s.listed)
 	s.runs.OnChange(info)
 	if info.Status.Ended() {
 		s.endLinks(info.ID)

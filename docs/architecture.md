@@ -233,7 +233,10 @@ registers the `conductor:` scheme: an invite opens its own join page with
 - Share links carry their own 256-bit token; only its SHA-256 is stored. A link
   grants `view` or `control` on exactly one session, or, for a run link, on
   every member session of its run, and can be revoked, which
-  disconnects its viewers immediately.
+  disconnects its viewers immediately; one that expires disconnects them as
+  it expires. A viewer's link is checked again as the viewer attaches, under
+  the session's lock, which a revoke takes after marking the link to close
+  its viewers: a viewer attaching meanwhile is either refused or closed.
 - Host tokens allow registering hosted sessions. A host never receives admin or
   share tokens.
 - Commands are argv arrays from the catalog; user-supplied extra arguments are

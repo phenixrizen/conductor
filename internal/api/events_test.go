@@ -60,7 +60,7 @@ func TestEventHubActivityNeverBlocksOrEvictsAClientThatStoppedReading(t *testing
 	if n := len(stalled); n != activityQueueLimit {
 		t.Fatalf("queue holds %d entries, want it held at %d", n, activityQueueLimit)
 	}
-	h.publish(session.Info{ID: "s", Name: "n"})
+	h.publishIf(session.Info{ID: "s", Name: "n"}, nil)
 	h.removed("s")
 	if n := len(stalled); n != activityQueueLimit+2 {
 		t.Fatalf("session changes were not queued behind the entries: %d", n)
@@ -171,7 +171,7 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 			for i := 0; i < 300; i++ {
 				h.activity("s", session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"}, "")
 				if i%50 == 0 {
-					h.publish(session.Info{ID: "s"})
+					h.publishIf(session.Info{ID: "s"}, nil)
 					h.removed("s")
 				}
 			}
@@ -277,5 +277,52 @@ func TestEventHubChatFormat(t *testing.T) {
 	}
 	if sunk.Load() != 0 {
 		t.Fatal("a chat message reached a sink")
+	}
+}
+
+// publishIf asks whether the session is listed under the hub's lock, which
+// removed takes too: a removal that lands while a change is being published
+// comes after it, and a change asked about after the removal is dropped. So
+// no session event follows a session's removed event.
+func TestEventHubPublishIfOrdersAgainstRemoved(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	var listed atomic.Bool
+	listed.Store(true)
+	entered, release, published := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(published)
+		h.publishIf(session.Info{ID: "s"}, func(string) bool {
+			v := listed.Load() // listed as it is asked
+			close(entered)
+			<-release
+			return v
+		})
+	}()
+	<-entered
+	// The session leaves the registry, then its removed event goes: it
+	// waits for the publication under way, and comes after it.
+	listed.Store(false)
+	removed := make(chan struct{})
+	go func() {
+		defer close(removed)
+		h.removed("s")
+	}()
+	select {
+	case <-removed:
+		t.Fatal("the removed event overtook a publication under way")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-published
+	<-removed
+	// A change asked about after the removal is dropped.
+	h.publishIf(session.Info{ID: "s"}, func(string) bool { return listed.Load() })
+	var got []string
+	for len(ch) > 0 {
+		got = append(got, strings.SplitN(string(<-ch), "\n", 2)[0])
+	}
+	if strings.Join(got, ",") != "event: session,event: removed" {
+		t.Fatalf("events %v, want the session's change, then its removal, then nothing", got)
 	}
 }

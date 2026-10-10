@@ -57,6 +57,40 @@ func (p principal) linkID() string {
 	return ""
 }
 
+// attachCheck is the check a viewer's attach to sessionID makes again, under
+// the session's lock, in the critical section that registers the viewer
+// (session.AttachOptions.Authorize, signal.ViewerOptions.Authorize): the
+// principal's link as it stands then, and the role it gives on the session
+// then (its run's members, a switchyard group's sessions). A link revoked,
+// expired or forgotten since the token was presented refuses the attach.
+// Nil for a principal without a link: the workbench token is not revoked.
+// It reads the share store and the run index only, neither of which calls a
+// session, so it is safe under a session's lock.
+func (s *Server) attachCheck(p principal, sessionID string) func() (session.Grant, error) {
+	if p.link == nil {
+		return nil
+	}
+	linkID := p.link.ID
+	return func() (session.Grant, error) {
+		l, err := s.links.Live(linkID)
+		if err != nil {
+			if errors.Is(err, share.ErrExpired) {
+				return session.Grant{}, session.ErrExpired
+			}
+			return session.Grant{}, session.ErrRevoked
+		}
+		role := principal{link: l, runOf: s.runOf}.role(sessionID)
+		if role == "" {
+			return session.Grant{}, session.ErrRevoked
+		}
+		g := session.Grant{Role: role}
+		if l.ExpiresAt != nil {
+			g.Until = *l.ExpiresAt
+		}
+		return g, nil
+	}
+}
+
 // presentedToken extracts the credential from the Authorization header or,
 // for WebSocket and join routes that browsers cannot add headers to, from the
 // token query parameter.

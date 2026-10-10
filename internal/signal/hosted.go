@@ -100,6 +100,10 @@ type Viewer struct {
 	done   chan struct{}
 	once   sync.Once
 	reason error
+	// lapse closes the viewer when its link expires (ViewerOptions'
+	// Authorize gave a Grant with Until); set by AddViewerWith, stopped by
+	// RemoveViewer, both under the session's mu.
+	lapse *time.Timer
 }
 
 func newViewer(id string, role session.Role, linkID, linkLabel string) *Viewer {
@@ -232,6 +236,9 @@ type HostedSession struct {
 	viewers        map[string]*Viewer
 	disconnectedAt time.Time
 	maxViewers     int
+	// retired says the session left the server's registry (Retire): no
+	// viewer is added any more.
+	retired bool
 	// events limits what the server forwards to the host on an agent's behalf
 	// (ForwardActivity, and SetAttentionFull with forward): the host's
 	// connection also carries its viewers' input, and closes when its queue is
@@ -267,7 +274,10 @@ func (h *HostedSession) Stop(ctx context.Context) error {
 	return nil
 }
 
-// DisconnectLink closes viewers attached through linkID.
+// DisconnectLink closes viewers attached through linkID. It finds them
+// under the lock AddViewerWith registers them under, so a caller that
+// marked the link first (a revoke) misses none: a viewer added after this
+// finds the mark (ViewerOptions.Authorize).
 func (h *HostedSession) DisconnectLink(linkID string) {
 	h.mu.Lock()
 	var hit []*Viewer
@@ -400,9 +410,47 @@ func (h *HostedSession) Connected() bool {
 }
 
 // AddViewer registers a browser and notifies the host. linkLabel travels to
-// the host for its roster; the link token never does.
+// the host for its roster; the link token never does. See AddViewerWith.
 func (h *HostedSession) AddViewer(id string, role session.Role, linkID, linkLabel string) (*Viewer, error) {
+	return h.AddViewerWith(ViewerOptions{ID: id, Role: role, LinkID: linkID, LinkLabel: linkLabel})
+}
+
+// ViewerOptions describe a browser joining a hosted session.
+type ViewerOptions struct {
+	ID        string
+	Role      session.Role
+	LinkID    string
+	LinkLabel string
+	// Authorize, when set, is session.AttachOptions.Authorize for a hosted
+	// session: called under the session's lock, in the critical section
+	// that registers the viewer, its role replaces Role and its error
+	// refuses the viewer; a Grant with Until closes the viewer with
+	// session.ErrExpired then. It must not call the session.
+	Authorize func() (session.Grant, error)
+}
+
+// AddViewerWith registers a browser and notifies the host.
+func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
+	role := o.Role
 	h.mu.Lock()
+	if h.retired {
+		h.mu.Unlock()
+		return nil, session.ErrSessionEnded
+	}
+	// The credential first: a link revoked meanwhile says so, whatever the
+	// host's state.
+	var until time.Time
+	if o.Authorize != nil {
+		g, err := o.Authorize()
+		if err == nil && !g.Role.Valid() {
+			err = errors.New("signal: invalid role")
+		}
+		if err != nil {
+			h.mu.Unlock()
+			return nil, err
+		}
+		role, until = g.Role, g.Until
+	}
 	if h.conn == nil {
 		h.mu.Unlock()
 		return nil, ErrHostGone
@@ -411,11 +459,14 @@ func (h *HostedSession) AddViewer(id string, role session.Role, linkID, linkLabe
 		h.mu.Unlock()
 		return nil, ErrTooManyViewer
 	}
-	v := newViewer(id, role, linkID, linkLabel)
-	h.viewers[id] = v
+	v := newViewer(o.ID, role, o.LinkID, o.LinkLabel)
+	h.viewers[o.ID] = v
+	if !until.IsZero() {
+		v.lapse = time.AfterFunc(time.Until(until), func() { v.close(session.ErrExpired) })
+	}
 	conn := h.conn
 	h.mu.Unlock()
-	conn.sendJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: id, Role: string(role), LinkID: linkID, LinkLabel: linkLabel})
+	conn.sendJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel})
 	h.notifyChange()
 	return v, nil
 }
@@ -426,6 +477,9 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	_, present := h.viewers[v.ID]
 	delete(h.viewers, v.ID)
 	conn := h.conn
+	if v.lapse != nil {
+		v.lapse.Stop()
+	}
 	h.mu.Unlock()
 	v.close(nil)
 	if present && conn != nil {
@@ -732,6 +786,23 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 	}
 	conn.Close()
 	h.notifyChange()
+}
+
+// Retire is the session leaving the server's registry: every viewer is
+// closed as at the session's end, and none is added after
+// (session.ErrSessionEnded). Whoever closes a link's viewers finds them
+// through the registry, so none may stay where it no longer looks.
+func (h *HostedSession) Retire() {
+	h.mu.Lock()
+	h.retired = true
+	viewers := make([]*Viewer, 0, len(h.viewers))
+	for _, v := range h.viewers {
+		viewers = append(viewers, v)
+	}
+	h.mu.Unlock()
+	for _, v := range viewers {
+		v.close(session.ErrSessionEnded)
+	}
 }
 
 // CloseViewers disconnects every viewer with reason (server shutdown).

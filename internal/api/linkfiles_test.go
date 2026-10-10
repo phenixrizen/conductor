@@ -143,6 +143,48 @@ func TestKeptLinksAreBoundedPerOpenHostAddress(t *testing.T) {
 	}
 }
 
+// A kept link leaves its address's count once, however often it is revoked
+// and whether its expiry is told before the sweep drops it: the bound holds.
+func TestAKeptLinkLeavesItsAddressCountOnce(t *testing.T) {
+	open := func(t *testing.T) (*testEnv, *fakeHost, func(id string)) {
+		e := keptSwitchyard(t, filepath.Join(t.TempDir(), "data"), func(c *config.Config) { c.Switchyard.OpenHostLinks = 2 })
+		hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+		host, _ := dialFakeHostWith(t, e, hi, hs, "")
+		refused := func(id string) {
+			t.Helper()
+			host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: id, Role: "view"})
+			if m := host.expect(proto.HostError); m["code"] != "link_refused" {
+				t.Fatalf("%s past the bound: %v", id, m)
+			}
+		}
+		return e, host, refused
+	}
+	t.Run("revoked again", func(t *testing.T) {
+		_, host, refused := open(t)
+		a, _ := mintHostLink(t, host, "r1")
+		mintHostLink(t, host, "r2")
+		for i := range 3 {
+			host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: fmt.Sprintf("rv%d", i), LinkID: a})
+			host.expect(proto.HostLinkRevoked)
+		}
+		mintHostLink(t, host, "r3")
+		refused("r4")
+	})
+	t.Run("expired, then swept", func(t *testing.T) {
+		e, host, refused := open(t)
+		host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "e1", Role: "view", TTLSeconds: 60})
+		host.expect(proto.HostLinkCreated)
+		mintHostLink(t, host, "e2")
+		later := time.Now().Add(2 * time.Minute)
+		if n := e.srv.links.ExpireDue(later); n != 1 {
+			t.Fatalf("expired %d", n)
+		}
+		e.srv.sweepLinks(later)
+		mintHostLink(t, host, "e3")
+		refused("e4")
+	})
+}
+
 // An unreadable file is left out at startup, never fatal; an expired one is deleted.
 func TestABadOrExpiredKeptLinkIsLeftOutAtStartup(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")

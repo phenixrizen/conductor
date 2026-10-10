@@ -92,7 +92,8 @@ role, a label and an expiry of your own. Opening Share again shows the link alre
 `<base>/join/<token>`; the token is shown once. Guests type a display name
 before joining; nothing connects until they press **Join**, so a fetched link
 never exposes terminal content. Revoking a link disconnects everyone using
-it, a link minted at the switchyard too. A session that ends takes its links
+it, a link minted at the switchyard too, and a link that expires disconnects
+them as it expires. A session that ends takes its links
 with it: they stop working and leave the dialog.
 
 One window sizes a session: your own window, never a guest's. A guest on a

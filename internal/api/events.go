@@ -55,8 +55,13 @@ func (h *eventHub) unsubscribe(ch chan []byte) {
 	h.mu.Unlock()
 }
 
-// publish queues a session event; a client that cannot keep up is dropped.
-func (h *eventHub) publish(info session.Info) {
+// publishIf queues a session event, for a session that listed still says
+// the server lists (nil: always), asked under the hub's lock, which removed
+// takes too; a client that cannot keep up is dropped.
+// A session leaves the registry before its removed event, so a change
+// computed before it left (a viewer leaving it) cannot land after that
+// event and bring it back to the browsers' lists.
+func (h *eventHub) publishIf(info session.Info, listed func(id string) bool) {
 	b, err := json.Marshal(info)
 	if err != nil {
 		return
@@ -64,6 +69,9 @@ func (h *eventHub) publish(info session.Info) {
 	msg := []byte("event: session\ndata: " + string(b) + "\n\n")
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if listed != nil && !listed(info.ID) {
+		return
+	}
 	for ch := range h.clients {
 		select {
 		case ch <- msg:

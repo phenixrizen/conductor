@@ -267,7 +267,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
 	s.hosts.OnChange = func(info session.Info) {
-		s.events.publish(info)
+		s.events.publishIf(info, s.listed)
 		// A hosted session that ended takes its links with it, as a server session does.
 		if info.Status.Ended() {
 			for _, l := range s.links.ListBySession(info.ID) {
@@ -290,8 +290,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.removed(id)
 		s.unpublish(id)
 		s.pastes.closeAll(id)
-		if l, ok := d.(*session.Local); ok {
-			l.LeaveRunChat()
+		// Its viewers go with it, and none attaches after: a run link's
+		// revoke, or its run forgotten, looks for them in the registry.
+		// What they change as they leave reaches no browser's list
+		// (publishIf: the session is no longer listed).
+		switch drv := d.(type) {
+		case *session.Local:
+			drv.LeaveRunChat()
+			drv.Retire()
+		case *signal.HostedSession:
+			drv.Retire()
 		}
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
@@ -305,9 +313,41 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.links.OnRevokeRun = func(runID, linkID string) {
 		s.dropLinkFile(linkID)
+		// A switchyard's group link holds viewers on its group's sessions
+		// alone (a session that leaves the group takes them along,
+		// hostRunLinkUpdate): those are asked, not every session, whoever
+		// sends the revoke and however often.
+		if l, ok := s.links.Get(linkID); ok && l.Group != nil {
+			s.closeLinkViewers(l)
+			return
+		}
 		s.disconnectLinks([]string{linkID})
 	}
 	return s, nil
+}
+
+// closeLinkViewers closes the viewers attached through l, which its store
+// no longer opens anything with (revoked, expired or dropped): on its
+// session, on the sessions its switchyard group names, or, for a run link
+// here, on every session (disconnectLinks).
+func (s *Server) closeLinkViewers(l *share.Link) {
+	switch {
+	case l.RunID == "":
+		if d, ok := s.registry.Get(l.SessionID); ok {
+			d.DisconnectLink(l.ID)
+		}
+	case l.Group != nil:
+		for _, m := range l.Group.Members {
+			if m.SessionID == "" {
+				continue
+			}
+			if d, ok := s.registry.Get(m.SessionID); ok {
+				d.DisconnectLink(l.ID)
+			}
+		}
+	default:
+		s.disconnectLinks([]string{l.ID})
+	}
 }
 
 // disconnectLinks closes the viewers attached through any of linkIDs, run
@@ -625,6 +665,11 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 				s.log.Info("session garbage collected", "session", id)
 			}
 			s.hosts.Expire(now)
+			// The links that expired go as revoked ones do, their viewers
+			// closed (each viewer was also given its own deadline at the
+			// link's expiry as it attached), before the sweep drops the
+			// kept ones.
+			s.links.ExpireDue(now)
 			s.sweepLinks(now)
 		}
 	}
