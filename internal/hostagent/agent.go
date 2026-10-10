@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -402,7 +403,17 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.Token != "" {
 		header["Authorization"] = []string{"Bearer " + a.opts.Token}
 	}
-	c, resp, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header})
+	dial := &websocket.DialOptions{HTTPHeader: header}
+	if a.opts.ServerIsOwners {
+		// Its no-link viewers are the owner's windows only while the server is this machine's: a redirect elsewhere is refused.
+		dial.HTTPClient = &http.Client{CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if !loopbackHost(req.URL.Hostname()) {
+				return fmt.Errorf("host: refusing a redirect off this machine to %s", req.URL.Host)
+			}
+			return nil
+		}}
+	}
+	c, resp, err := websocket.Dial(dialCtx, a.wsURL, dial)
 	cancel()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
@@ -1063,4 +1074,20 @@ func refusal(resp *http.Response) *RefusedError {
 		e.RetryAfter = time.Duration(min(s, 3600)) * time.Second
 	}
 	return e
+}
+
+// LoopbackServer reports whether a server URL names this machine (localhost
+// or a loopback address): its workbench is the owner's, so a viewer it sends
+// with no link is one of the owner's own windows (Options.ServerIsOwners).
+func LoopbackServer(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && loopbackHost(u.Hostname())
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -121,7 +119,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		Argv:            argv,
 		Dir:             *cwd,
 		RelayOnly:       *relayOnly,
-		ServerIsOwners:  loopbackServer(*server),
+		ServerIsOwners:  hostagent.LoopbackServer(*server),
 		LocalAttach:     !*noLocal,
 		ICEServers:      ice,
 		ScrollbackBytes: *scrollback,
@@ -162,20 +160,4 @@ func envInt(key string) int {
 		return 0
 	}
 	return n
-}
-
-// loopbackServer reports whether the server URL names this machine
-// (localhost or a loopback address): its workbench is the owner's, so a
-// viewer it sends with no link is one of the owner's own windows.
-func loopbackServer(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
