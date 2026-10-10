@@ -98,6 +98,14 @@ type Options struct {
 	// banner), and again when the server lost the session (a restarted
 	// switchyard) and the host registered afresh under a new id.
 	Registered func(sessionID, shareBaseURL string)
+	// Link, view or control, has the server mint a share link to the
+	// session once it is registered, over the host's own connection (`link`),
+	// good for LinkTTL: how the owner shares a session hosted on a
+	// switchyard, whose workbench token mints none. LinkMinted is told the
+	// link, or why there is none.
+	Link       string
+	LinkTTL    time.Duration
+	LinkMinted func(proto.LinkCreated, error)
 	// Switchyard says the server is a switchyard, which someone else may
 	// run, rather than the owner's own Conductor: it is told what it needs
 	// to list the session and introduce its viewers, and no more. No chat
@@ -231,6 +239,16 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	go a.controlLoop(runCtx, firstConn)
+	if opts.Link != "" {
+		go func() {
+			lctx, lcancel := context.WithTimeout(runCtx, 15*time.Second)
+			defer lcancel()
+			res, err := a.requestLink(lctx, opts.Link, opts.LinkTTL, "conductor host")
+			if opts.LinkMinted != nil {
+				opts.LinkMinted(res, err)
+			}
+		}()
+	}
 
 	select {
 	case <-local.Ended():

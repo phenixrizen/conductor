@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
@@ -24,6 +25,10 @@ var runHostAgent = hostagent.Run
 // hostingBanner starts the line the host prints on stderr once it has read the
 // server's registration reply; the session ID and its URL follow.
 const hostingBanner = "conductor: hosting session "
+
+// linkBanner starts the line that gives the link --link asked for: its role
+// and URL, or why there is none.
+const linkBanner = "conductor: share link "
 
 func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
@@ -45,6 +50,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fileEdit := fs.String("file-edit", "control", "whether the control role may edit files through the editor's Neovim on this machine: control, off")
 	serverConfig := fs.String("server-config", "", "the config file of a conductor serve on this machine: the Files tab refuses it, its dataDir and its catalogPath (absolute paths), as that server's own sessions do (the data directory CONDUCTOR_DATA_DIR names, ~/.conductor, the desktop app's directories and the catalog file CONDUCTOR_CATALOG_PATH names are refused without it)")
 	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
+	link := fs.String("link", "", "once registered, have the server mint a share link to the session, good for two hours, and print it: view or control (the way to share a session hosted on a switchyard)")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: conductor host [flags] -- <command...>")
@@ -73,6 +79,9 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	if *fileEdit != "control" && *fileEdit != "off" {
 		return 2, fmt.Errorf("invalid --file-edit %q", *fileEdit)
+	}
+	if *link != "" && *link != "view" && *link != "control" {
+		return 2, fmt.Errorf("invalid --link %q: view or control", *link)
 	}
 	// The Files tab of a hosted session refuses what a session of the
 	// server on this machine refuses: its data directory, config file and
@@ -135,6 +144,16 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		Log:             log,
 		Registered: func(sessionID, base string) {
 			fmt.Fprintf(stderr, "%s%s at %s/sessions/%s\r\n", hostingBanner, sessionID, base, sessionID)
+		},
+		Link:    *link,
+		LinkTTL: 2 * time.Hour,
+		// The link goes to the terminal, never to the log: it is the credential.
+		LinkMinted: func(l proto.LinkCreated, err error) {
+			if err != nil {
+				fmt.Fprintf(stderr, "%sno link: %v\r\n", linkBanner, err)
+				return
+			}
+			fmt.Fprintf(stderr, "%s%s %s\r\n", linkBanner, l.Role, l.URL)
 		},
 	}
 	if f, ok := stdin.(*os.File); ok {

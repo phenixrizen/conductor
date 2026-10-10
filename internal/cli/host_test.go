@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -311,5 +313,76 @@ func TestServerIsMineOnlyForAServerHere(t *testing.T) {
 		if err := serverIsMineOK(tc.mine, tc.server); (err == nil) != tc.ok {
 			t.Errorf("serverIsMineOK(%v, %q) = %v", tc.mine, tc.server, err)
 		}
+	}
+}
+
+// --link has the server mint a share link over the host's own connection
+// and prints it to the terminal: on a switchyard, whose workbench token
+// mints none, the way the owner shares a session hosted there.
+func TestHostPrintsALinkMintedThroughItsConnection(t *testing.T) {
+	clearConductorEnv(t)
+	if code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--link", "admin", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "invalid --link") {
+		t.Fatalf("a bad role: exit %d, %v", code, err)
+	}
+	cfg := config.Defaults()
+	cfg.WorkbenchToken = "admin-token"
+	cfg.HostTokens = []string{"host-token"}
+	cfg.AllowedRoots = []string{t.TempDir()}
+	cfg.Switchyard.Enabled = true
+	cfg.Dev = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := api.New(cfg, catalog.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var stderr syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		args := []string{"--server", hs.URL, "--token", "host-token", "--no-local", "--relay-only", "--name", "shared", "--link", "control", "--", "/bin/cat"}
+		_, _ = runHost(ctx, args, strings.NewReader(""), &bytes.Buffer{}, &stderr)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	var url string
+	deadline := time.Now().Add(10 * time.Second)
+	for url == "" {
+		for _, line := range strings.Split(stderr.String(), "\n") {
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), linkBanner+"control "); ok {
+				url = rest
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no link printed: %q", stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.HasPrefix(url, hs.URL+"/join/") {
+		t.Fatalf("link %q", url)
+	}
+	resp, err := http.Get(strings.Replace(url, "/join/", "/api/join/", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var join struct {
+		Role    string `json:"role"`
+		Label   string `json:"label"`
+		Session struct {
+			Name string `json:"name"`
+		} `json:"session"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&join)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || join.Role != "control" || join.Session.Name != "shared" || join.Label != "conductor host" {
+		t.Fatalf("join %d %+v", resp.StatusCode, join)
 	}
 }
