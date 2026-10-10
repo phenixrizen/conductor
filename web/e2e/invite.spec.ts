@@ -52,5 +52,12 @@ test('an invite handed over the bridge opens the join page in place', async ({ p
   await expect(page.getByRole('heading', { name: 'Join invited' })).toBeVisible({ timeout: 15_000 })
   expect(await page.evaluate(() => (window as unknown as Invited).__loaded)).toBe('once')
   expect(await page.evaluate(() => history.length)).toBe(entries + 1)
+  // The same token for another server (the same one, named another way) is a new join page: it asks that server for the session
+  // anew rather than keeping the first page's.
+  const other = state.baseURL.replace('127.0.0.1', 'localhost')
+  const asked = page.waitForRequest((r) => r.url().startsWith(`${other}/api/join/`))
+  expect(await page.evaluate(({ server, token }) => (window as unknown as Invited).__invite!({ server, token }), { server: other, token })).toBe(true)
+  await asked
+  await expect(page).toHaveURL(`${state.baseURL}/join/${token}?server=${encodeURIComponent(other)}`)
   await api.stopSession(s.id)
 })

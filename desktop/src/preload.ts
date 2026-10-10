@@ -25,11 +25,17 @@ const bridge = {
   },
   /**
    * An invite the app was handed while this page is open: the page routes to its join page in place of a reload. cb says whether it
-   * did, and an invite routed is reported taken; one refused is left to the app, which loads the join page for it.
+   * did, once its navigation has finished, and an invite routed is reported taken; one refused is left to the app, which loads the
+   * join page for it.
    */
-  onInvite: (cb: (invite: { server: string; token: string }) => boolean): (() => void) => {
+  onInvite: (cb: (invite: { server: string; token: string }) => boolean | Promise<boolean>): (() => void) => {
     const handler = (_e: unknown, invite: { server: string; token: string }, id: number) => {
-      if (cb(invite)) void ipcRenderer.invoke('conductor:inviteTaken', id)
+      void Promise.resolve()
+        .then(() => cb(invite))
+        .then((routed) => {
+          if (routed) void ipcRenderer.invoke('conductor:inviteTaken', id)
+        })
+        .catch(() => {})
     }
     const ask = () => void ipcRenderer.invoke('conductor:inviteReady')
     ipcRenderer.on('conductor:invite', handler)

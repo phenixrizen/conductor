@@ -13,7 +13,9 @@ import { skipWords, type MemberStatus } from '~/utils/crews'
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
 // changed under a live terminal would remount the page and drop it.
-definePageMeta({ layout: false })
+// Keyed by the token and the server: a join page for another server (an invite for the same token, say) is a new page, with its own
+// session, metadata and connection, never the old one's.
+definePageMeta({ layout: false, key: (route) => `${String(route.params.token)}|${String(route.query.server ?? '')}` })
 const admin = useWorkbenchToken()
 const desktop = useDesktop()
 const inWorkbench = admin.hasToken.value || desktop.isDesktop.value
