@@ -81,11 +81,17 @@ func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "gitfile2"), []byte("gitdir: "+filepath.Join(root, ".git", "worktrees", "wt")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(root, "elsewhere"), 0o755); err != nil {
+	// git ends the path at the first NUL: what follows does not count.
+	if err := os.WriteFile(filepath.Join(root, "gitfile3"), []byte("gitdir: "+filepath.Join(root, ".git", "worktrees", "wt")+"\x00\nignored\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("../gitfile2", filepath.Join(root, "elsewhere", ".git")); err != nil {
-		t.Fatal(err)
+	for dir, to := range map[string]string{"elsewhere": "../gitfile2", "elsewhere3": "../gitfile3"} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, filepath.Join(root, dir, ".git")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	s, _ := newLocal(t, root)
 	sink := newChanSink(false)
@@ -93,14 +99,14 @@ func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, p := range []string{"unborn/config", "unborn/hooks/post-checkout", "gitfile2"} {
+	for i, p := range []string{"unborn/config", "unborn/hooks/post-checkout", "gitfile2", "gitfile3"} {
 		id := fmt.Sprintf("p%d", i)
 		save(s, sub, id, p, []byte("gitdir: /elsewhere\n"), 512, "", true)
 		if f := fileReply(t, sink, id); f.Kind != "error" || f.Error == nil || f.Error.Code != "read_only" {
 			t.Errorf("save %s: %+v %+v", p, f, f.Error)
 		}
 	}
-	for _, p := range []string{"unborn/config", "gitfile2"} {
+	for _, p := range []string{"unborn/config", "gitfile2", "gitfile3"} {
 		if h, _ := ReadPath(root, p, false, nil); h.Kind != "file" || !h.ReadOnly {
 			t.Errorf("read %s: %+v", p, h)
 		}
@@ -109,7 +115,7 @@ func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
 		t.Fatalf("gitfile2 changed: %q", b)
 	}
 	if nvim.Available() {
-		for i, p := range []string{"unborn/config", "gitfile2"} {
+		for i, p := range []string{"unborn/config", "gitfile2", "gitfile3"} {
 			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: fmt.Sprintf("n%d", i), Path: p}); !errors.Is(err, errGitDir) {
 				t.Errorf("Neovim on %s: %v", p, err)
 			}
@@ -220,6 +226,9 @@ func TestGitFilesAndHeadsAsGitReadsThem(t *testing.T) {
 		"padded":       {"gitdir: " + wtGitDir + strings.Repeat("\n", 8192), true},
 		"crlf":         {"gitdir: " + wtGitDir + "\r\n", true},
 		"relative":     {"gitdir: ../somewhere/.git/worktrees/x\n", true},
+		"nul":          {"gitdir: " + wtGitDir + "\x00\nignored\n", true},
+		"relnul":       {"gitdir: .git/worktrees/wt\x00 trailing\n", true},
+		"relmultiline": {"gitdir: notes\nmore: lines\n", false},
 		"yaml":         {"gitdir: null\nother: value\n", false},
 		"nospace":      {"gitdir:" + wtGitDir + "\n", false},
 		"notgitdir":    {"gitdir: " + filepath.Join(root, "docs") + "\n", false},

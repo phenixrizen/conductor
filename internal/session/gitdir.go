@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -169,9 +170,12 @@ func validHead(path string) bool {
 
 // isGitFile reports whether path is a file git would take as a .git file
 // (readGitFile), wherever it is, since a .git link anywhere may point to
-// it: one naming an absolute directory counts when that is a git directory;
-// one naming a relative path counts as it is, since the directory that path
-// is relative to is the linking .git's, unknown here.
+// it. One naming an absolute path counts when that is a git directory. A
+// relative path is relative to the linking .git's directory, unknown here:
+// it counts when it names a git directory from the file's own directory,
+// or when it is a single line, as a pointer is; a file whose "path" runs
+// over more lines and leads nowhere (a YAML file with a gitdir key and
+// more) does not.
 func isGitFile(path string) bool {
 	target, ok := readGitFile(path)
 	if !ok {
@@ -180,23 +184,29 @@ func isGitFile(path string) bool {
 	if filepath.IsAbs(target) {
 		return isGitDirectory(target)
 	}
-	return true
+	return isGitDirectory(filepath.Join(filepath.Dir(path), target)) || !strings.ContainsAny(target, "\r\n")
 }
 
 // readGitFile reads path as git reads a .git file: a regular file of at
-// most maxGitFile bytes that starts with "gitdir: ", its trailing line
-// breaks dropped, the rest a path on one line; the path is returned as
-// written.
+// most maxGitFile bytes that starts with "gitdir: "; its trailing line
+// breaks dropped, the rest up to the first NUL is the path, returned as
+// written (line breaks inside it are git's to refuse or not).
 func readGitFile(path string) (string, bool) {
 	b, whole, ok := readPrefix(path, maxGitFile)
 	if !ok || !whole {
 		return "", false
 	}
-	rest, ok := strings.CutPrefix(strings.TrimRight(string(b), "\r\n"), "gitdir: ")
-	if !ok || rest == "" || strings.ContainsAny(rest, "\r\n") {
+	rest, ok := bytes.CutPrefix(bytes.TrimRight(b, "\r\n"), []byte("gitdir: "))
+	if !ok {
 		return "", false
 	}
-	return rest, true
+	if i := bytes.IndexByte(rest, 0); i >= 0 {
+		rest = rest[:i]
+	}
+	if len(rest) == 0 {
+		return "", false
+	}
+	return string(rest), true
 }
 
 // hexPrefix reports whether s starts with n hex digits of either case.
