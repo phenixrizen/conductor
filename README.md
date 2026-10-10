@@ -1579,4 +1579,8 @@ The image keeps its data directory on the `/var/lib/conductor` volume.
 
 Sponsored and maintained by [RockSolid Labs](https://rocksolidlabs.io).
 Open source under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE)
-for the marks. © 2026 the Conductor Authors and RockSolid Labs, Inc.
+for the marks. © 2026 the Conductor Authors and RockSolid Labs, Inc. The
+software it includes, each under its own licence, is listed with those
+licences in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES): every server serves
+it at `/third-party-notices.txt` (Settings → The app links it), and the
+desktop packages and the image carry it.

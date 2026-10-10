@@ -26,6 +26,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `desktop/` | the Electron shell: starts `conductor serve` with a minted token and the settings it keeps, the handshake, health and restarts, the bridge the workbench reads the token from, WSL 2 on Windows |
+| `THIRD_PARTY_NOTICES`, `notices.go`, `scripts/notices.py` | the licences of what ships, generated (never hand-edited) from the binary's Go modules, the web bundle's npm packages (`web/build/bundledPackages.ts` lists them during the build) and the desktop app's; the root package embeds it and the server serves it at `/third-party-notices.txt` |
 | `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `tasks-todo.md` (the bugs known and the features set aside, in one place), `design/brand.md` |
 
 `internal/session.Local` is shared by the server and the host. Anything that
@@ -48,6 +49,11 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
   gets a size limit and a test.
 - Stdlib first: `net/http` mux with method patterns, `log/slog`, `encoding/json`
   with `DisallowUnknownFields`. New Go dependencies need a reason in the PR.
+- A dependency added, removed or upgraded (go.mod, `web/` or `desktop/`
+  packages) regenerates `THIRD_PARTY_NOTICES` with `make notices` (after
+  `npm ci` in `desktop/`), committed with it; CI checks it is current. A
+  package that ships without its licence text gets the upstream text in
+  `scripts/notices/`.
 - Commands are argv arrays. Never build a shell string from user input.
 - Compare tokens with `share.Equal`; store only hashes; never log query strings.
 - Server session working directories go through `resolveCwd`; file reads go
@@ -86,6 +92,7 @@ make vuln                      # govulncheck (network); the standard library's f
 make test-network              # the built-in agents' sites on the network (nightly)
 make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
+python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (codex_review.py)
 ```
 

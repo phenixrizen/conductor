@@ -72,6 +72,14 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await expect(about.locator('[data-about-copyright]')).toContainText('the Conductor Authors and RockSolid Labs, Inc.')
   await expect(about.locator('[data-about-credit]')).toContainText('Sponsored and maintained by RockSolid Labs')
   await expect(about.locator('[data-about-credit] a')).toHaveAttribute('href', 'https://rocksolidlabs.io')
+  // The License row links the third-party notices, which open as text from the app's own server.
+  const notices = about.locator('[data-about-notices]')
+  await expect(notices).toHaveText('Third-party notices')
+  const [tab] = await Promise.all([page.context().waitForEvent('page'), notices.click()])
+  await expect(tab).toHaveURL(`${state.baseURL}/third-party-notices.txt`)
+  await expect(tab.locator('body')).toContainText('THIRD-PARTY NOTICES')
+  await expect(tab.locator('body')).toContainText('github.com/pion/webrtc/v4')
+  await tab.close()
 })
 
 test('in a browser, Settings says what the server is and who sponsors it', async ({ page }) => {

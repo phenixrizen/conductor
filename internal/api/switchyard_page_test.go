@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor"
 	"github.com/phenixrizen/conductor/internal/certs"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -233,5 +234,29 @@ func TestSwitchyardPagesCarryTheCredit(t *testing.T) {
 		if !strings.Contains(body, "· Apache-2.0 ·") {
 			t.Fatalf("%s does not name the license", p)
 		}
+	}
+}
+
+// The third-party notices are served to anyone, by a workbench server and
+// by a switchyard, whose footer links them.
+func TestThirdPartyNoticesAreServedEverywhere(t *testing.T) {
+	for _, sy := range []bool{false, true} {
+		e := switchyardEnv(t, sy)
+		resp, err := http.Get(e.http.URL + "/third-party-notices.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" || string(b) != conductor.ThirdPartyNotices {
+			t.Fatalf("switchyard %v: %d %q %.120q", sy, resp.StatusCode, resp.Header.Get("Content-Type"), b)
+		}
+		if !strings.Contains(string(b), "github.com/pion/webrtc/v4") {
+			t.Fatalf("switchyard %v: the notices lack pion: %.200s", sy, b)
+		}
+	}
+	_, body := getPage(t, switchyardEnv(t, true), "/")
+	if !strings.Contains(body, `<a href="/third-party-notices.txt" data-notices>Third-party notices</a>`) {
+		t.Fatal("the landing page's footer does not link the notices")
 	}
 }

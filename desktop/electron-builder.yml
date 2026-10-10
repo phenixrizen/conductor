@@ -16,6 +16,13 @@ extraResources:
     to: icon.png
   - from: static
     to: static
+  # The licence and the notices of what the app ships (scripts/notices.py), beside Electron's LICENSES.chromium.html.
+  - from: ../LICENSE
+    to: LICENSE
+  - from: ../NOTICE
+    to: NOTICE
+  - from: ../THIRD_PARTY_NOTICES
+    to: THIRD_PARTY_NOTICES
 asar: true
 compression: normal
 publish:

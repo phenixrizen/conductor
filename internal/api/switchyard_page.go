@@ -419,7 +419,7 @@ footer.sy .note{flex-basis:100%}
 
 {{define "foot"}}
 <footer class="sy">
-<span>Conductor switchyard <span class="mono">{{.Version}}</span> · Apache-2.0 · <a href="{{.DocsURL}}">Docs</a> · <a href="{{.SourceURL}}">Source</a></span>
+<span>Conductor switchyard <span class="mono">{{.Version}}</span> · Apache-2.0 · <a href="{{.DocsURL}}">Docs</a> · <a href="{{.SourceURL}}">Source</a> · <a href="/third-party-notices.txt" data-notices>Third-party notices</a></span>
 <a class="right badge" href="https://rocksolidlabs.io" data-credit><span>Sponsored by</span><img src="/sponsor/rocksolidlabs-logo-reversed.png" alt="RockSolid Labs" width="82" height="18"></a>
 <span class="note">No cookies. An operator token you paste stays in this browser.</span>
 </footer>

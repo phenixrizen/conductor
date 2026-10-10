@@ -10,6 +10,8 @@ export const SOURCE_URL = 'https://github.com/phenixrizen/conductor'
 export const COPYRIGHT_HOLDER = 'the Conductor Authors and RockSolid Labs, Inc.'
 export const LICENSE = 'Apache-2.0'
 export const LICENSE_URL = `${SOURCE_URL}/blob/main/LICENSE`
+/** The licences of what the binary and the app ship (THIRD_PARTY_NOTICES), as the server serves them, a switchyard too. */
+export const NOTICES_PATH = '/third-party-notices.txt'
 /** The copyright line: the year of the first release, through `year` when later. */
 export function copyrightLine(year: number = new Date().getFullYear()): string {
   const first = 2026

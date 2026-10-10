@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/phenixrizen/conductor"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/crew"
@@ -363,6 +365,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /third-party-notices.txt", handleNotices)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
@@ -588,6 +591,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"switchyard": s.cfg.Switchyard.Enabled,
 		"relay":      !s.cfg.Switchyard.Enabled || s.cfg.SwitchyardRelay(),
 	})
+}
+
+// handleNotices serves THIRD_PARTY_NOTICES, on a switchyard too: the
+// licences of what the binary and the app ship, for anyone (Settings → The
+// app links it, and the switchyard's footer).
+func handleNotices(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = io.WriteString(w, conductor.ThirdPartyNotices)
 }
 
 // newInstance is a random id for this process (16 hex digits).
