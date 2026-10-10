@@ -1,6 +1,7 @@
 package hostagent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
@@ -134,6 +136,91 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 	}
 	if r := hsub.Reason(); r != nil {
 		t.Fatalf("the other viewer was closed: %v", r)
+	}
+}
+
+// A WebRTC viewer whose channel is full has its sink's write waiting for
+// room. When the peer lets go of the viewer and closes its connection, or the
+// viewer closes its channel, the write stops at once and the transport
+// closes, without running to the write's own time limit.
+func TestADataChannelWriteWaitingForRoomStopsWhenTheChannelCloses(t *testing.T) {
+	for _, how := range []string{"the peer closes", "the viewer closes its channel"} {
+		t.Run(how, func(t *testing.T) {
+			a, out := activityTestAgent(t, 0)
+			p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+			a.peers[p.id] = p
+			if err := p.startWebRTC(nil); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.close)
+			dc, frames := loopbackViewer(t, p, out)
+			dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24}))
+			deadline := time.After(10 * time.Second)
+			for ready := false; !ready; {
+				select {
+				case raw := <-frames:
+					if f, err := proto.Decode(raw); err == nil && f.Type == proto.TypeControl {
+						typ, _ := proto.ParseHeader(f.Payload)
+						ready = typ == proto.CtlReady
+					}
+				case <-deadline:
+					t.Fatal("the viewer was not attached")
+				}
+			}
+			// The viewer stops taking messages: its receive buffer fills, then the host's send buffer.
+			stop := make(chan struct{})
+			defer close(stop)
+			dc.OnMessage(func(webrtc.DataChannelMessage) { <-stop })
+			var sub *session.Subscription
+			for wait := time.Now().Add(5 * time.Second); sub == nil; time.Sleep(time.Millisecond) {
+				if time.Now().After(wait) {
+					t.Fatal("the peer never held its viewer")
+				}
+				p.mu.Lock()
+				sub = p.sub
+				p.mu.Unlock()
+			}
+			frame := proto.Encode(proto.TypeOutput, bytes.Repeat([]byte{'x'}, 30<<10))
+			// One frame at a time, until a write has waited for room, not merely
+			// sat queued: the channel over its mark and the frame unwritten across
+			// more than two of the wait's 250 ms looks.
+			until := time.Now().Add(30 * time.Second)
+			var waiting time.Time
+			for {
+				if time.Now().After(until) {
+					t.Fatalf("no write ever waited: %d bytes held", p.buffered())
+				}
+				if sub.Reason() != nil {
+					t.Fatalf("the viewer ended before its channel filled: %v", sub.Reason())
+				}
+				stalled := p.buffered() > dcHighWater && !a.local.Drained()
+				if !stalled {
+					waiting = time.Time{}
+					if a.local.Drained() {
+						a.local.Send(sub, frame)
+					}
+				} else if waiting.IsZero() {
+					waiting = time.Now()
+				} else if time.Since(waiting) > 600*time.Millisecond {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			start := time.Now()
+			if how == "the peer closes" {
+				p.close()
+			} else {
+				dc.Close()
+			}
+			select {
+			case <-sub.Closed():
+			case <-time.After(10 * time.Second):
+				t.Fatal("the transport never closed")
+			}
+			if took := time.Since(start); took > 2*time.Second {
+				t.Fatalf("the waiting write held the transport open %v after %s", took, how)
+			}
+		})
 	}
 }
 

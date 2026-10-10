@@ -88,7 +88,11 @@ func (s *dcSink) waitForRoom() error {
 			return errors.New("data channel send timeout")
 		case <-time.After(250 * time.Millisecond):
 		}
-		if s.closed.Load() {
+		// The sink's Close comes after the write (session.Sink), so the wait
+		// looks for the channel's own close too: the peer letting go of its
+		// viewer, or the viewer closing its channel. A closed channel keeps
+		// counting what it held, so the count alone would wait it out.
+		if s.closed.Load() || s.dc.ReadyState() != webrtc.DataChannelStateOpen {
 			return errors.New("data channel closed")
 		}
 	}
