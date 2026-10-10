@@ -45,6 +45,12 @@ type Options struct {
 	Argv      []string
 	Dir       string
 	RelayOnly bool
+	// ServerIsOwners says the server this host reports to runs on the
+	// owner's own machine (conductor host to a server on localhost): a
+	// viewer it sends with no link is then one of the owner's own windows,
+	// offered the editor's Neovim. Never so for a switchyard, whose
+	// workbench is its operator's, not the owner's: the uplink leaves it off.
+	ServerIsOwners bool
 	// LocalAttach connects Stdin/Stdout to the PTY as a controller.
 	LocalAttach bool
 	Stdin       *os.File
@@ -924,7 +930,7 @@ func (a *agent) sendViewerError(viewerID, code, msg string) {
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
-	p := newPeer(a, id, role, linkID, linkLabel, linkID == "")
+	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice

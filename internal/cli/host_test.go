@@ -292,3 +292,21 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 		t.Fatalf("hosted with server files it could not place: %+v", got)
 	}
 }
+
+// A server on this machine is the owner's; any other is not.
+func TestLoopbackServer(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"http://localhost:8080":             true,
+		"http://LOCALHOST":                  true,
+		"http://127.0.0.1:8080":             true,
+		"https://[::1]:8443":                true,
+		"https://switchyard.example":        false,
+		"https://192.168.1.20:8080":         false,
+		"http://localhost.example.com:8080": false,
+		"::not a url":                       false,
+	} {
+		if got := loopbackServer(raw); got != want {
+			t.Errorf("loopbackServer(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}

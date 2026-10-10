@@ -432,3 +432,29 @@ type nopSink struct{}
 
 func (nopSink) WriteFrame([]byte) error { return nil }
 func (nopSink) Close(error)             {}
+
+// A viewer a server sends with no link is one of the owner's own windows
+// only when that server is on the owner's machine (ServerIsOwners); from a
+// switchyard, whose workbench is its operator's, it is not, and a link is
+// never the owner's.
+func TestAViewerWithNoLinkIsTheOwnersOnlyFromTheOwnersServer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mine   bool
+		linkID string
+		owner  bool
+	}{
+		{"a switchyard's, no link", false, "", false},
+		{"the owner's server, no link", true, "", true},
+		{"the owner's server, a link", true, "l1", false},
+		{"a switchyard's, a link", false, "l1", false},
+	} {
+		a := &agent{opts: Options{RelayOnly: true, ServerIsOwners: tc.mine}, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		a.addPeer("0123456789abcdef", session.RoleControl, tc.linkID, "")
+		p := a.peers["0123456789abcdef"]
+		if p == nil || p.owner != tc.owner {
+			t.Fatalf("%s: owner %v, want %v", tc.name, p != nil && p.owner, tc.owner)
+		}
+		a.removePeer("0123456789abcdef")
+	}
+}

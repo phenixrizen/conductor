@@ -405,7 +405,7 @@ writes through Neovim, **Don't save** drops them), and the keymap button
 waits until nothing is left unsaved. The choice is kept per
 browser and is off until chosen, so nobody who never asked for Vim keys
 meets one. It needs `nvim` on that machine (the button says when it is
-missing), one of your own windows (not a share link or an invite), and the
+missing), one of your own windows (not a share link or an invite; for a `conductor host` session, the workbench of a server on the same machine), and the
 server's or host's `fileEdit` setting left at `control`
 (`CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`; `off` turns editing
 off for everyone). A control-link guest still edits and saves, with the
