@@ -86,6 +86,7 @@ make vuln                      # govulncheck (network); the standard library's f
 make test-network              # the built-in agents' sites on the network (nightly)
 make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (codex_review.py)
 ```
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
@@ -110,13 +111,13 @@ Codex plugin for Claude Code (`openai/codex-plugin-cc`; `/plugin marketplace
 add openai/codex-plugin-cc`, `/plugin install codex@openai-codex`,
 `/codex:setup`, a Codex login). A person types
 `/codex:adversarial-review --base origin/main <focus>`; an agent cannot
-invoke that command and runs the same review through the installed plugin's
-script (the registry names the active version; a `KeyError` means the
-plugin is not installed):
+invoke that command and runs the same review through the plugin's script,
+which `scripts/codex_review.py` finds (the installation Claude Code's
+registry names for this repository, else the user's; never the newest
+cached copy, and an ambiguous registry is refused):
 
 ```bash
-codex_root=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.claude/plugins/installed_plugins.json")))["plugins"]["codex@openai-codex"][0]["installPath"])')
-node "$codex_root/scripts/codex-companion.mjs" adversarial-review --wait --base origin/main "<focus: the risks this change touches>"
+python3 scripts/codex_review.py "<focus: the risks this change touches>"
 ```
 
 - `--base` reviews the commits `origin/main...HEAD`, not the working tree:

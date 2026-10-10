@@ -688,7 +688,11 @@ request each from main.
   change: three findings, all three confirmed in the plugin's code and taken
   (commit before reviewing, the plugin's root from the registry rather than
   the newest cached copy, and no reverse `/code-review` clause, which needs
-  an open pull request and skips drafts and simple ones).
+  an open pull request and skips drafts and simple ones). Its second pass
+  found the registry can list the plugin per project as well as for the
+  user, so the lookup became `scripts/codex_review.py`: this repository's
+  installation, else the user's, an ambiguous registry refused (unit tests
+  with another project's entry listed first).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
