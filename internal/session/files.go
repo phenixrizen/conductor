@@ -22,7 +22,26 @@ const (
 	MaxDirEntries    = 2000
 	MaxInflightFiles = 4
 	binarySniffBytes = 8192
+	// MaxFileFrameBody is the most of a file a FILE frame carries to a
+	// client (FileGet): what a client's queue takes (HighWaterMark) less the
+	// largest header (proto.MaxFileHeader) and the frame's own 13 bytes, so
+	// that the frame, whatever its header, fits a queue that holds nothing
+	// else instead of dropping the client that asked as a slow consumer.
+	MaxFileFrameBody = HighWaterMark - proto.MaxFileHeader - 13
 )
+
+// fitFrame cuts a body longer than MaxFileFrameBody to its first
+// MaxFileFrameBody bytes, marked truncated. The whole file's hash and time
+// go with it: they say what a save may replace, and a file read in part is
+// not saved.
+func fitFrame(h proto.FileHeader, body []byte) (proto.FileHeader, []byte) {
+	if len(body) <= MaxFileFrameBody {
+		return h, body
+	}
+	h.Truncated = true
+	h.Sha256, h.Mtime = "", ""
+	return h, body[:MaxFileFrameBody]
+}
 
 // fileAllowed reports whether role may read files under the current policy.
 func (s *Local) fileAllowed(role Role) bool {
@@ -82,6 +101,7 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 			h = proto.FileHeader{Path: req.Path, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "unknown file operation"}}
 		}
 		h.ReqID = req.ReqID
+		h, body = fitFrame(h, body)
 		frame, err := proto.EncodeFile(h, body)
 		if err != nil {
 			frame, _ = proto.EncodeFile(proto.FileHeader{ReqID: req.ReqID, Path: req.Path, Kind: "error",

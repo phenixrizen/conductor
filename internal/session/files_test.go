@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 func setupTree(t *testing.T) string {
@@ -322,6 +325,69 @@ func TestContainsFold(t *testing.T) {
 	} {
 		if got := containsFold(c.name, c.sub); got != c.want {
 			t.Errorf("containsFold(%q, %q) = %t, want %t", c.name, c.sub, got, c.want)
+		}
+	}
+}
+
+// A file larger than a viewer's queue takes is read in part: its first bytes,
+// marked truncated, in a frame the queue takes whole. Nothing drops the
+// viewer as a slow consumer for asking.
+func TestAFileLargerThanTheQueueIsReadInPart(t *testing.T) {
+	dir := t.TempDir()
+	content := bytes.Repeat([]byte("0123456789abcdef"), (MaxFileRead+64)/16)
+	// over and exact are cut; under fits the read but not, with its header,
+	// the queue, and is cut too; small is read whole.
+	sizes := map[string]int{"over.txt": MaxFileRead + 64, "exact.txt": MaxFileRead, "under.txt": MaxFileRead - 64, "small.txt": 512 << 10}
+	for name, n := range sizes {
+		if err := os.WriteFile(filepath.Join(dir, name), content[:n], 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := newLocal(t, dir)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "reader"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, n := range sizes {
+		before := sink.count()
+		if err := s.FileGet(sub, proto.FileGet{ReqID: name[:4], Path: name}); err != nil {
+			t.Fatal(err)
+		}
+		var h proto.FileHeader
+		var body []byte
+		ok := waitFor(3*time.Second, func() bool {
+			for i := before; i < sink.count(); i++ {
+				f, err := proto.Decode(sink.frame(i))
+				if err != nil || f.Type != proto.TypeFile {
+					continue
+				}
+				if len(sink.frame(i)) > HighWaterMark {
+					t.Fatalf("%s: a frame of %d bytes, over the queue's %d", name, len(sink.frame(i)), HighWaterMark)
+				}
+				h, body, err = proto.DecodeFile(f.Payload)
+				return err == nil && h.ReqID == name[:4]
+			}
+			return false
+		})
+		if !ok {
+			t.Fatalf("%s: no answer; the reader ended with %v", name, sub.Reason())
+		}
+		if sub.Reason() != nil {
+			t.Fatalf("%s: the reader was dropped: %v", name, sub.Reason())
+		}
+		if !bytes.Equal(body, content[:len(body)]) || len(body) == 0 {
+			t.Fatalf("%s: the body is not the file's first %d bytes", name, len(body))
+		}
+		whole := len(body) == n
+		if h.Truncated == whole || whole != (name == "small.txt") {
+			t.Fatalf("%s: %d of %d bytes, truncated %v", name, len(body), n, h.Truncated)
+		}
+		if h.Truncated && (h.Sha256 != "" || h.Mtime != "") {
+			t.Fatalf("%s: a part carries the whole file's hash %q or time %q", name, h.Sha256, h.Mtime)
+		}
+		if !h.Truncated && h.Sha256 == "" {
+			t.Fatalf("%s: a whole file without its hash", name)
 		}
 	}
 }

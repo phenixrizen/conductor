@@ -56,12 +56,6 @@ each reproduced with a Go test (round 15); none is fixed yet.
   the amber state goes, and in a crew the next member starts with the
   question unanswered. Expected: an agent's `needs_input` holds until input
   arrives.
-- **Opening a file of 1 MiB or more disconnects the viewer.** The Files
-  tab cuts a file's body at exactly 1 MiB (`internal/session/files.go`);
-  with its header the frame is over the viewer's 1 MiB queue mark, so the
-  viewer is dropped as one that stopped reading, and the "truncated" badge
-  never shows. Expected: the first part of the file, marked truncated. The
-  fix proposed: cut the body at 1 MiB less the header's bound.
 
 ## Features
 
