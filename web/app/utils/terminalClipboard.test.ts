@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { clipboardKey, readRightClickPastes, rightClick, RIGHT_CLICK_KEY, writeRightClickPastes, type KeyLike } from './terminalClipboard'
+import { clipboardKey, readRightClickPastes, rightClick, RIGHT_CLICK_KEY, writeRightClickPastes, type ClipboardKeyEvent } from './terminalClipboard'
 
-const key = (code: string, mods: Partial<KeyLike> = {}): KeyLike => ({ type: 'keydown', code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
+const key = (code: string, mods: Partial<ClipboardKeyEvent> = {}): ClipboardKeyEvent => ({ type: 'keydown', code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
 const ctx = (o: Partial<{ hasSelection: boolean; canPaste: boolean; mac: boolean }> = {}) => ({ hasSelection: false, canPaste: true, mac: false, ...o })
 
 describe('the terminal clipboard keys', () => {
