@@ -17,19 +17,6 @@ test that would have caught it when it is fixed.
 
 ### The browser terminal
 
-- **Copy and paste wired up, as Windows Terminal has them.** Today xterm.js's
-  own paste (Ctrl+V, Cmd+V, Shift+Insert into its textarea) reaches the
-  session and Cmd+C copies a selection on macOS; nothing else is wired. To
-  add: Ctrl+Shift+C and Ctrl+Shift+V (and Ctrl+Insert) everywhere; Ctrl+C
-  with a selection copies it and clears it rather than interrupting the
-  agent, without one it stays the interrupt; right-click pastes (a setting
-  to turn it off) and middle-click on Linux; Copy and Paste in the
-  terminal's own context menu; bracketed paste respected so a multi-line
-  paste lands as one; a view-only viewer can copy and never paste; the
-  Electron window's clipboard permission is already open for both. Tests:
-  vitest for the key policy; Playwright with the clipboard permissions
-  granted to the context, copying a line the stub printed and pasting into
-  the stub's transcript. Round 10.
 - **Mouse.** xterm.js forwards mouse clicks, drags and the wheel to the
   agent whenever the agent asks for mouse reporting (vim, htop, Codex's
   TUI do; Claude Code mostly does not), and selects text by drag otherwise,

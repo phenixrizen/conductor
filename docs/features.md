@@ -652,6 +652,30 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   since round 5).
 - aider's chat-history file as its session handle.
 
+## Round 15: copy and paste, attributions, invites into the open window, and three checks (started 2026-10-10)
+
+The plan is `docs/round15-plan.md`: the owner's pick of the todo, one pull
+request each from main.
+
+- **Copy and paste, as Windows Terminal has them.** Before, only xterm's own
+  paste (Ctrl+V, ⌘V, Shift+Insert) and ⌘C on macOS worked. Now Ctrl+Shift+C
+  and Ctrl+Insert copy the selection (Ctrl+Shift+C taken from Chrome's
+  element picker even with nothing selected), Ctrl+C on a selection copies and
+  clears it without the interrupt, and Ctrl+Shift+V and Shift+Insert paste
+  through the browser's own paste into xterm's text area, so bracketed paste
+  is kept and it works where the page cannot read the clipboard (plain HTTP).
+  Right-click copies a selection and otherwise pastes (`navigator.clipboard`,
+  or a note to use Ctrl+Shift+V where it cannot be read); Shift+right-click
+  opens the terminal's menu (Copy, Paste, Select all, "Right-click pastes",
+  kept per browser). A view link copies and never pastes. The policy is
+  `utils/terminalClipboard.ts`; the `?` list gains "The terminal". Tests:
+  vitest (every key and click case, the setting), Playwright
+  `clipboard.spec.ts` on a real shell (a word double-clicked and copied with
+  Ctrl+Shift+C; Ctrl+C on a selection copying with no `^C`; Ctrl+Shift+V and
+  right-click pasting a command that runs; right-click on a selection copying;
+  the menu and its toggle; a view link copying, its Paste disabled and its
+  paste reaching nothing; three runs out of three). No server change.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
