@@ -141,6 +141,15 @@ async function stop(s: SessionInfo) {
   }
 }
 
+// The focused header's actions on a phone, folded into a menu (round 14).
+const focusMenu = computed(() => {
+  const s = focused.value
+  if (!s) return []
+  const items: Array<{ label: string; icon: string; to?: string; color?: 'error'; onSelect?: () => void }> = [{ label: 'Open page', icon: 'i-lucide-square-terminal', to: `/sessions/${s.id}` }]
+  if (isActive(s)) items.push({ label: 'Stop', icon: 'i-lucide-square', color: 'error', onSelect: () => void stop(s) })
+  return items
+})
+
 // The editor on the focused tile (design round 12, F6 and F8): saves and Neovim as on the session page.
 const editor = useEditorBridge(focusTerminal as unknown as Ref<EditorTerminal | null>, () => (focused.value?.kind === 'hosted' ? focused.value.hostName || 'the host' : 'this server'))
 // The focused tile's activity, for the Files pane's Touched section (design 4e): what its connection replays and reports.
@@ -179,7 +188,9 @@ onMounted(() => {
 <template>
   <UDashboardPanel id="wall" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar :toggle="false" :title="focusId ? focused?.name || 'Session' : 'Yard'" :ui="{ root: 'h-14' }">
+      <!-- At phone width the focused header keeps its title: the transport and viewer badges hide and Open page and Stop fold into a
+           menu, as the session page's header does (round 14: everything stayed at every width and ran over the title at 390). -->
+      <UDashboardNavbar :toggle="false" :title="focusId ? focused?.name || 'Session' : 'Yard'" :ui="{ root: 'h-14', title: 'min-w-0 truncate' }" data-yard-header>
         <template #leading>
           <UTooltip v-if="focusId" text="Back to the grid" :kbds="['escape']">
             <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the grid" @click="backToGrid" />
@@ -190,8 +201,8 @@ onMounted(() => {
             <template v-if="focusId">
               <SessionStatusBadge v-if="focused" :status="focused.status" :exit-code="focused.exitCode" />
               <AttentionBadge :attention="focused?.attention" />
-              <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
-              <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
+              <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden sm:inline-flex" />
+              <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>
             <div v-else class="flex items-center gap-1.5 text-xs">
               <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" @click="filter = 'all'" />
@@ -204,9 +215,15 @@ onMounted(() => {
         </template>
         <template #right>
           <template v-if="focusId && focused">
-            <UButton label="Open page" icon="i-lucide-square-terminal" color="neutral" variant="soft" :to="`/sessions/${focused.id}`" />
-            <UButton v-if="isActive(focused)" label="Stop" icon="i-lucide-square" color="error" variant="soft" @click="stop(focused)" />
-            <ResumeButton v-else-if="focused.kind === 'server'" :session="focused" />
+            <div class="hidden items-center gap-2 sm:flex" data-yard-focus-actions>
+              <UButton label="Open page" icon="i-lucide-square-terminal" color="neutral" variant="soft" :to="`/sessions/${focused.id}`" />
+              <UButton v-if="isActive(focused)" label="Stop" icon="i-lucide-square" color="error" variant="soft" @click="stop(focused)" />
+              <ResumeButton v-else-if="focused.kind === 'server'" :session="focused" />
+            </div>
+            <ResumeButton v-if="!isActive(focused) && focused.kind === 'server'" :session="focused" icon-only class="sm:hidden" />
+            <UDropdownMenu :items="focusMenu" :content="{ align: 'end' }" class="sm:hidden">
+              <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Session actions" data-yard-focus-menu />
+            </UDropdownMenu>
           </template>
           <FullscreenButton />
         </template>
