@@ -44,61 +44,77 @@ export function inviteInArgv(argv: readonly string[]): Invite | null {
   return null
 }
 
-/** How long an invite waits for the window's page to say it listens before the window loads the join page itself. */
+/** How long an invite waits for the window's page to take it before the window loads the join page itself. */
 export const INVITE_ACK_MS = 10_000
 
 export interface InviteDeliveryDeps {
-  /** Hands the invite to the page over the bridge (`conductor:invite`), which routes to its join page in place. */
-  send(inv: Invite): void
-  /** Loads the join page in the window: a full page load, for a page that never said it listens. */
+  /** Hands the invite to the page over the bridge (`conductor:invite`, with its id), which routes to its join page in place. */
+  send(inv: Invite, id: number): void
+  /** Loads the join page in the window: a full page load, for a page that never took the invite. */
   load(inv: Invite): void
+  /** Asks the page whether it listens (`conductor:inviteAsk`); one that does says so again (`conductor:inviteReady`). */
+  ask(): void
+  /** Whether the window's main frame is loading a document: what a page says meanwhile may come from the one being replaced. */
+  loading(): boolean
   setTimer(f: () => void, ms: number): unknown
   clearTimer(t: unknown): void
 }
 
 /**
  * InviteDelivery takes an invite to the open window's page without reloading it, so the workbench keeps its terminals and its live
- * store. The page says it listens once loaded (`conductor:inviteReady`); until then, and from the moment a navigation starts, an
- * invite waits, the latest winning; a page that has not said so within INVITE_ACK_MS (a server page from before the bridge, an error
- * page) gets the join page loaded instead.
+ * store. The page says it listens (`conductor:inviteReady`) and, once it has routed an invite, that it took it
+ * (`conductor:inviteTaken`, by id); an invite stays pending, the latest winning, until it is taken. While the main frame loads a
+ * document neither word counts, since it may come from the page being replaced; when loading stops the page is asked again. An
+ * invite not taken within INVITE_ACK_MS (a page from before the bridge, an error page, an invite the page refused) gets the join page
+ * loaded instead, where the join page shows what is wrong with it.
  */
 export class InviteDelivery {
   private listening = false
-  private waiting: Invite | null = null
+  private pending: { inv: Invite; id: number } | null = null
+  private seq = 0
   private timer: unknown = null
 
   constructor(private readonly d: InviteDeliveryDeps) {}
 
-  /** deliver sends the invite to a page that listens, or keeps it for the next one ('sent' or 'waiting'). */
+  /** deliver sends the invite to a page that listens, or keeps it for the next one ('sent' or 'waiting'); either way it is pending until taken. */
   deliver(inv: Invite): 'sent' | 'waiting' {
-    if (this.listening) {
-      this.d.send(inv)
+    this.pending = { inv, id: ++this.seq }
+    this.stopTimer()
+    this.timer = this.d.setTimer(() => {
+      this.timer = null
+      const p = this.pending
+      this.pending = null
+      if (p) this.d.load(p.inv)
+    }, INVITE_ACK_MS)
+    if (this.listening && !this.d.loading()) {
+      this.d.send(inv, this.pending.id)
       return 'sent'
-    }
-    this.waiting = inv
-    if (this.timer === null) {
-      this.timer = this.d.setTimer(() => {
-        this.timer = null
-        const w = this.waiting
-        this.waiting = null
-        if (w) this.d.load(w)
-      }, INVITE_ACK_MS)
     }
     return 'waiting'
   }
 
-  /** pageReady is the page's word that it listens: a waiting invite goes to it now. */
+  /** pageReady is the page's word that it listens: the pending invite goes to it now. */
   pageReady(): void {
+    if (this.d.loading()) return
     this.listening = true
+    if (this.pending) this.d.send(this.pending.inv, this.pending.id)
+  }
+
+  /** pageTook is the page's word that it routed invite id: it is delivered. */
+  pageTook(id: number): void {
+    if (this.d.loading() || !this.pending || this.pending.id !== id) return
+    this.pending = null
     this.stopTimer()
-    const w = this.waiting
-    this.waiting = null
-    if (w) this.d.send(w)
   }
 
   /** pageLeft is a main-frame navigation starting (or a new window): nothing listens until the next page says so. */
   pageLeft(): void {
     this.listening = false
+  }
+
+  /** settled is the main frame done loading: the page there is asked whether it listens when an invite is pending. */
+  settled(): void {
+    if (this.pending) this.d.ask()
   }
 
   private stopTimer(): void {

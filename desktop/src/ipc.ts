@@ -20,8 +20,10 @@ export interface IpcDeps {
   allowIceFirewall: () => Promise<IceStatus['firewall']>
   /** Windows: the WSL distribution the server runs in, whose paths the settings are; null elsewhere. */
   wsl?: () => { distro: string } | null
-  /** The page in sender listens for invites (the bridge's onInvite): one waiting goes to it now. */
+  /** The page in sender listens for invites (the bridge's onInvite): one pending goes to it now. */
   inviteReady?: (sender: WebContents) => void
+  /** The page in sender routed the invite it was sent with id. */
+  inviteTaken?: (sender: WebContents, id: number) => void
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -93,6 +95,12 @@ export function registerIpc(d: IpcDeps): void {
     'conductor:inviteReady',
     guard((e) => {
       d.inviteReady?.(e.sender)
+    }),
+  )
+  ipcMain.handle(
+    'conductor:inviteTaken',
+    guard((e, id) => {
+      if (typeof id === 'number' && Number.isSafeInteger(id)) d.inviteTaken?.(e.sender, id)
     }),
   )
   ipcMain.handle(

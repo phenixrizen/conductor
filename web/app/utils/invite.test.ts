@@ -51,9 +51,23 @@ describe('inviteRoute', () => {
     expect(inviteRoute({ server: 'https://host.example/conductor', token: tok })).toBe(`/join/${tok}?server=https%3A%2F%2Fhost.example%2Fconductor`)
   })
 
+  it('routes every invite parseInvite takes, the server as the join page reads it (lower-case host, no default port)', () => {
+    const canonical = `/join/${tok}?server=https%3A%2F%2Fswitchyard.example.net`
+    for (const text of [
+      `conductor://switchyard.example.net/join/${tok}`,
+      `conductor://Switchyard.Example.NET/join/${tok}`,
+      `conductor://switchyard.example.net:443/join/${tok}`,
+    ]) {
+      const inv = parseInvite(text)
+      expect(inv, text).not.toBeNull()
+      expect(inviteRoute(inv!), text).toBe(canonical)
+    }
+    expect(inviteRoute(parseInvite(`conductor://LocalHost:80/join/${tok}?http=1`)!)).toBe(`/join/${tok}?server=http%3A%2F%2Flocalhost`)
+    expect(inviteRoute({ server: 'https://switchyard.example.net/', token: tok })).toBe(canonical)
+  })
+
   it('is nothing for what a join page would not take', () => {
     expect(inviteRoute({ server: 'http://switchyard.example.net', token: tok })).toBe('')
-    expect(inviteRoute({ server: 'https://switchyard.example.net/', token: tok })).toBe('')
     expect(inviteRoute({ server: 'https://a.example/../b', token: tok })).toBe('')
     expect(inviteRoute({ server: 'https://switchyard.example.net', token: 'short' })).toBe('')
     expect(inviteRoute({ server: 'https://switchyard.example.net', token: '../../settings?x=aaaaaaaaaaaaaaaa' })).toBe('')

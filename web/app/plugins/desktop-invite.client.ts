@@ -9,8 +9,10 @@ export default defineNuxtPlugin(() => {
   const bridge = desktopBridge()
   if (!bridge?.onInvite) return
   const router = useRouter()
+  // An invite this page refuses is left to the app (false), which loads the join page for it, where the page says what is wrong.
   bridge.onInvite((invite) => {
     const to = inviteRoute(invite)
     if (to) void router.push(to)
+    return !!to
   })
 })

@@ -172,13 +172,17 @@ async function run() {
 
   // An invite for the open window goes to its page over the bridge, which routes in place: the workbench keeps its terminals.
   const delivery = new InviteDelivery({
-    send: (inv) => {
-      if (main && !main.isDestroyed()) main.webContents.send('conductor:invite', inv)
+    send: (inv, id) => {
+      if (main && !main.isDestroyed()) main.webContents.send('conductor:invite', inv, id)
     },
     load: (inv) => {
-      log('main', 'invite: the page did not answer; loading the join page')
+      log('main', 'invite: the page did not take it; loading the join page')
       if (main && !main.isDestroyed()) void main.loadURL(origin() + invitePath(inv))
     },
+    ask: () => {
+      if (main && !main.isDestroyed()) main.webContents.send('conductor:inviteAsk')
+    },
+    loading: () => !!main && !main.isDestroyed() && main.webContents.isLoadingMainFrame(),
     setTimer: (f, ms) => setTimeout(f, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
   })
@@ -214,6 +218,7 @@ async function run() {
     main.webContents.on('did-start-navigation', (details) => {
       if (details.isMainFrame && !details.isSameDocument) delivery.pageLeft()
     })
+    main.webContents.on('did-stop-loading', () => delivery.settled())
     void main.loadURL(origin() + path)
     return main
   }
@@ -248,6 +253,9 @@ async function run() {
     mainWindow: () => main,
     inviteReady: (sender) => {
       if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
+    },
+    inviteTaken: (sender, id) => {
+      if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageTook(id)
     },
     serverVersion: () => supervisor.status.version ?? '',
     ice: () => ({ ...ice }),

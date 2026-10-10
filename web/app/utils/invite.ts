@@ -52,13 +52,13 @@ export function joinServer(value: string): string {
 }
 
 /**
- * inviteRoute is the join page an invite the desktop app hands over opens (desktop/src/invite.ts invitePath has the same shape):
- * '' for a token or a server a join page would not take.
+ * inviteRoute is the join page an invite the desktop app hands over opens (desktop/src/invite.ts invitePath has the same shape), the
+ * server as joinServer reads it (the host in lower case, no default port): '' for a token or a server a join page would not take.
  */
 export function inviteRoute(invite: { server?: unknown; token?: unknown }): string {
   const token = typeof invite.token === 'string' ? invite.token : ''
-  const server = typeof invite.server === 'string' ? invite.server : ''
-  if (!TOKEN.test(token) || !server || joinServer(server) !== server) return ''
+  const server = joinServer(typeof invite.server === 'string' ? invite.server : '')
+  if (!TOKEN.test(token) || !server) return ''
   return `/join/${encodeURIComponent(token)}?server=${encodeURIComponent(server)}`
 }
 

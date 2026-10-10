@@ -18,12 +18,15 @@ describe('invite', () => {
     const a: Invite = { server: 'https://switchyard.example.net', token: tok }
     const b: Invite = { server: 'https://other.example.net', token: tok.replace('M', 'N') }
     function harness() {
-      const sent: Invite[] = []
+      const sent: Array<{ inv: Invite; id: number }> = []
       const loaded: Invite[] = []
       const timers: Array<{ f: () => void; ms: number; cleared: boolean }> = []
+      const state = { loading: false, asked: 0 }
       const d = new InviteDelivery({
-        send: (inv) => sent.push(inv),
+        send: (inv, id) => sent.push({ inv, id }),
         load: (inv) => loaded.push(inv),
+        ask: () => state.asked++,
+        loading: () => state.loading,
         setTimer: (f, ms) => {
           const t = { f, ms, cleared: false }
           timers.push(t)
@@ -34,16 +37,20 @@ describe('invite', () => {
         },
       })
       const fire = () => timers.filter((t) => !t.cleared).forEach((t) => t.f())
-      return { d, sent, loaded, timers, fire }
+      const live = () => timers.filter((t) => !t.cleared)
+      return { d, sent, loaded, timers, fire, live, state }
     }
 
-    it('sends to a page that listens, at once and without a load', () => {
+    it('sends to a page that listens, at once and without a load, and is done when the page takes it', () => {
       const h = harness()
       h.d.pageReady()
       expect(h.d.deliver(a)).toBe('sent')
-      expect(h.sent).toEqual([a])
+      expect(h.sent.map((s) => s.inv)).toEqual([a])
+      expect(h.live()).toHaveLength(1)
+      h.d.pageTook(h.sent[0]!.id)
+      expect(h.live()).toHaveLength(0)
+      h.fire()
       expect(h.loaded).toEqual([])
-      expect(h.timers).toHaveLength(0)
     })
 
     it('keeps an invite for a page still loading and sends it when the page says it listens', () => {
@@ -51,8 +58,8 @@ describe('invite', () => {
       expect(h.d.deliver(a)).toBe('waiting')
       expect(h.sent).toEqual([])
       h.d.pageReady()
-      expect(h.sent).toEqual([a])
-      expect(h.timers[0]?.cleared).toBe(true)
+      expect(h.sent.map((s) => s.inv)).toEqual([a])
+      h.d.pageTook(h.sent[0]!.id)
       h.fire()
       expect(h.loaded).toEqual([])
     })
@@ -63,19 +70,71 @@ describe('invite', () => {
       h.d.pageLeft()
       expect(h.d.deliver(a)).toBe('waiting')
       expect(h.d.deliver(b)).toBe('waiting')
-      expect(h.timers).toHaveLength(1)
+      expect(h.live()).toHaveLength(1)
       h.d.pageReady()
-      expect(h.sent).toEqual([b])
+      expect(h.sent.map((s) => s.inv)).toEqual([b])
+      // The first invite's id is no longer the one pending.
+      h.d.pageTook(h.sent[0]!.id - 1)
+      expect(h.live()).toHaveLength(1)
+      h.d.pageTook(h.sent[0]!.id)
+      expect(h.live()).toHaveLength(0)
     })
 
-    it('loads the join page when the page never says it listens', () => {
+    it('counts nothing a page says while the main frame loads, and asks again once it has loaded', () => {
+      const h = harness()
+      h.d.pageReady()
+      h.d.pageLeft()
+      h.state.loading = true
+      h.d.deliver(a)
+      // The page being replaced says it listens late: nothing goes to it.
+      h.d.pageReady()
+      expect(h.sent).toEqual([])
+      h.state.loading = false
+      h.d.settled()
+      expect(h.state.asked).toBe(1)
+      h.d.pageReady()
+      expect(h.sent.map((s) => s.inv)).toEqual([a])
+    })
+
+    it('keeps an invite the outgoing page took while the next one loaded, and sends it to the new page', () => {
+      const h = harness()
+      h.d.pageReady()
+      h.d.deliver(a)
+      expect(h.sent).toHaveLength(1)
+      // A navigation starts before the page answers; its "took" arrives while the next document loads.
+      h.d.pageLeft()
+      h.state.loading = true
+      h.d.pageTook(h.sent[0]!.id)
+      expect(h.live()).toHaveLength(1)
+      h.state.loading = false
+      h.d.settled()
+      h.d.pageReady()
+      expect(h.sent).toHaveLength(2)
+      expect(h.sent[1]!.inv).toEqual(a)
+      h.d.pageTook(h.sent[1]!.id)
+      h.fire()
+      expect(h.loaded).toEqual([])
+    })
+
+    it('loads the join page for an invite the page received but never took (it refused it)', () => {
+      const h = harness()
+      h.d.pageReady()
+      h.d.deliver(a)
+      expect(h.sent).toHaveLength(1)
+      expect(h.timers[0]?.ms).toBe(INVITE_ACK_MS)
+      h.fire()
+      expect(h.loaded).toEqual([a])
+    })
+
+    it('loads the join page when the page never says it listens, and asks nobody once nothing is pending', () => {
       const h = harness()
       h.d.deliver(a)
-      expect(h.timers[0]?.ms).toBe(INVITE_ACK_MS)
       h.fire()
       expect(h.loaded).toEqual([a])
       expect(h.sent).toEqual([])
       // Nothing left over for the loaded page.
+      h.d.settled()
+      expect(h.state.asked).toBe(0)
       h.d.pageReady()
       expect(h.sent).toEqual([])
     })
