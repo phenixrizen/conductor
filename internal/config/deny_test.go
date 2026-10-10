@@ -389,9 +389,46 @@ func TestLocalFileDenyFunc(t *testing.T) {
 	if !slices.Equal(start, deny()[:len(start)]) {
 		t.Errorf("what was named first is not kept as it was: %q, then %q", start, deny())
 	}
-	write(cfg, `{oops`)
-	if again := deny(); !slices.Equal(again, got) {
-		t.Errorf("a config file broken later: %q, want the list as it was, %q", again, got)
+	// A config file broken later, or a path in it made relative: every file
+	// is refused (the root joins the list) until it can be read again, and
+	// what was named stays named.
+	root := string(filepath.Separator)
+	for _, body := range []string{`{oops`, `{"dataDir":"relative"}`, `{"catalogPath":"agents.json"}`} {
+		write(cfg, body)
+		again := deny()
+		if !slices.Contains(again, root) || !slices.Equal(again[:len(got)], got) {
+			t.Errorf("config %s later: %q, want the list as it was and %s", body, again, root)
+		}
+		if _, err := session.ResolvePath(home, "notes.txt", again); err == nil {
+			t.Errorf("config %s later: a file is served", body)
+		}
+	}
+	write(cfg, `{"dataDir":"`+third+`"}`)
+	if again := deny(); slices.Contains(again, root) || !slices.Equal(again, got) {
+		t.Errorf("the config file fixed: %q, want %q", again, got)
+	}
+	// A data directory given as a link that is pointed elsewhere later: the
+	// directory it led to before stays refused, beside the new one.
+	oldData, newData := filepath.Join(home, "data-old"), filepath.Join(home, "data-new")
+	write(filepath.Join(oldData, "catalog.json"), "secret\n")
+	write(filepath.Join(newData, "catalog.json"), "secret\n")
+	link := filepath.Join(t.TempDir(), "data")
+	if err := os.Symlink(oldData, link); err != nil {
+		t.Fatal(err)
+	}
+	write(cfg, `{"dataDir":"`+link+`"}`)
+	deny()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(newData, link); err != nil {
+		t.Fatal(err)
+	}
+	after := deny()
+	for _, p := range []string{"data-old/catalog.json", "data-new/catalog.json"} {
+		if r, err := session.ResolvePath(home, p, after); err == nil {
+			t.Errorf("after the link moved, %s resolved to %s, want it refused", p, r)
+		}
 	}
 	// Many requests at once.
 	var wg sync.WaitGroup

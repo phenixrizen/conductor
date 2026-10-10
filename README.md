@@ -446,7 +446,8 @@ in the shell that runs `conductor host`). The host looks these up again at
 each request and keeps refusing what it refused before, so a data directory
 moved while the session runs is refused at both places. The server resolves a relative path against the
 directory it runs in, which the host cannot know, so the host does not start
-when any of these is given as a relative path. The host knows of no other
+when any of these is given as a relative path, and refuses every file while
+the config file names one or cannot be read. The host knows of no other
 config file, so do not run `conductor host` from a directory that holds a
 server's config file without naming it.
 

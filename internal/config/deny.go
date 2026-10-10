@@ -95,34 +95,60 @@ func LocalFileDeny(path string) ([]string, error) {
 // list again at each call, so that what the config file or the desktop
 // app's settings come to name while the session runs is refused from then
 // on, and keeps every entry it has named before, so that what was refused
-// once stays refused until the session ends. The first computation's error
-// is returned; a later one leaves the list as it was. It is safe to call from
-// many goroutines, and the slices it returns are never changed.
+// once stays refused until the session ends. An entry is kept with the path
+// a symbolic link on its way led to when it was named (withTargets), so that
+// a link changed later still leaves what it named refused. The first
+// computation's error is returned; while a later one lasts (a config file
+// broken, or a path in it made relative), the list holds the file system's
+// root as well, which refuses every file. It is safe to call from many
+// goroutines, and the slices it returns are never changed.
 func LocalFileDenyFunc(path string) (func() []string, error) {
 	first, err := LocalFileDeny(path)
 	if err != nil {
 		return nil, err
 	}
 	var mu sync.Mutex
-	list := first
+	list := withTargets(nil, first)
+	everything := []string{string(filepath.Separator)}
 	return func() []string {
 		next, err := LocalFileDeny(path)
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {
-			return list
+			return slices.Concat(list, everything)
 		}
-		var added []string
-		for _, e := range next {
-			if !slices.Contains(list, e) {
-				added = append(added, e)
-			}
-		}
-		if len(added) > 0 {
-			list = slices.Concat(list, added)
-		}
+		list = withTargets(list, next)
 		return list
 	}, nil
+}
+
+// withTargets returns list with each entry of next it lacks, and after each
+// entry the path it names with the symbolic links on its way resolved, when
+// that differs: for a name entry ("*name*"), its directory resolved. list is
+// returned as it is when nothing is added, and never changed: a new slice
+// holds what is added.
+func withTargets(list, next []string) []string {
+	var added []string
+	add := func(e string) {
+		if e != "" && !slices.Contains(list, e) && !slices.Contains(added, e) {
+			added = append(added, e)
+		}
+	}
+	for _, e := range next {
+		add(e)
+		base := filepath.Base(e)
+		if len(base) >= 3 && base[0] == '*' && base[len(base)-1] == '*' {
+			if dir, err := filepath.EvalSymlinks(filepath.Dir(e)); err == nil {
+				add(filepath.Join(dir, base))
+			}
+		} else if real, err := filepath.EvalSymlinks(e); err == nil {
+			add(real)
+		}
+	}
+	if len(added) == 0 {
+		return list
+	}
+	return slices.Concat(list, added)
 }
 
 // desktopAppNames name the desktop app's own directory, Electron's userData:
