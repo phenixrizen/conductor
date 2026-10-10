@@ -64,9 +64,6 @@ and the Neovim keymap. What is set aside:
   path works from WSL with nothing configured by hand; today only ICE's UDP
   port is forwarded (`desktop/src/udp-forwarder.ts`). Round 6. The person
   configures no networking, ever (AGENTS.md).
-- **An invite pushed to the open window over a bridge event** instead of a
-  full page load. Round 9. Needs an ack or a `did-finish-load` gate and a
-  desktop test.
 - **Share tokens in the OS keychain** instead of the browser's storage
   (`conductor.joined`). Round 9.
 - **Signing and notarisation of the desktop builds**, once the secrets

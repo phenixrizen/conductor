@@ -1,4 +1,4 @@
-import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { external } from './window'
 import { serverAffecting, validate, type DesktopSettings } from './settings'
 import type { ServerSupervisor, ServerStatus } from './server'
@@ -20,6 +20,8 @@ export interface IpcDeps {
   allowIceFirewall: () => Promise<IceStatus['firewall']>
   /** Windows: the WSL distribution the server runs in, whose paths the settings are; null elsewhere. */
   wsl?: () => { distro: string } | null
+  /** The page in sender listens for invites (the bridge's onInvite): one waiting goes to it now. */
+  inviteReady?: (sender: WebContents) => void
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -86,6 +88,12 @@ export function registerIpc(d: IpcDeps): void {
   ipcMain.handle(
     'conductor:allowIceFirewall',
     guard(() => d.allowIceFirewall()),
+  )
+  ipcMain.handle(
+    'conductor:inviteReady',
+    guard((e) => {
+      d.inviteReady?.(e.sender)
+    }),
   )
   ipcMain.handle(
     'conductor:versions',

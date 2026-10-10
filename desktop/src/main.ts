@@ -18,7 +18,7 @@ import { nextZoom, zoomKey, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
-import { inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
+import { InviteDelivery, inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
 import { RELEASES_URL, startUpdater, updateChannel } from './updater'
 import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
@@ -170,15 +170,31 @@ async function run() {
   let quitting = false
   const origin = () => supervisor.status.url || 'http://127.0.0.1'
 
+  // An invite for the open window goes to its page over the bridge, which routes in place: the workbench keeps its terminals.
+  const delivery = new InviteDelivery({
+    send: (inv) => {
+      if (main && !main.isDestroyed()) main.webContents.send('conductor:invite', inv)
+    },
+    load: (inv) => {
+      log('main', 'invite: the page did not answer; loading the join page')
+      if (main && !main.isDestroyed()) void main.loadURL(origin() + invitePath(inv))
+    },
+    setTimer: (f, ms) => setTimeout(f, ms),
+    clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+  })
   /** openInvite opens the app's own join page for an invite: it signals to the server the invite names (a switchyard). */
   const openInvite = (inv: Invite) => {
     log('main', `invite: joining through ${inv.server}`)
-    const w = show()
-    void w.loadURL(origin() + invitePath(inv))
-    w.focus()
+    if (main && !main.isDestroyed()) {
+      main.show()
+      main.focus()
+      if (delivery.deliver(inv) === 'sent') log('main', 'invite: handed to the open window')
+      return
+    }
+    show(invitePath(inv)).focus()
   }
   pendingInvite = (inv) => openInvite(inv)
-  const show = () => {
+  const show = (path = '/') => {
     if (main && !main.isDestroyed()) {
       main.show()
       return main
@@ -194,7 +210,11 @@ async function run() {
         }
       },
     })
-    void main.loadURL(origin() + '/')
+    delivery.pageLeft()
+    main.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) delivery.pageLeft()
+    })
+    void main.loadURL(origin() + path)
     return main
   }
   const showLog = () => {
@@ -226,6 +246,9 @@ async function run() {
       return n
     },
     mainWindow: () => main,
+    inviteReady: (sender) => {
+      if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
+    },
     serverVersion: () => supervisor.status.version ?? '',
     ice: () => ({ ...ice }),
     wsl: () => (wsl ? { distro: wsl.distro() } : null),
@@ -300,7 +323,7 @@ async function run() {
   const opened = main as BrowserWindow | null
   if (opened && !opened.isDestroyed()) opened.once('show', endSplash)
   setTimeout(endSplash, 20_000)
-  tray = createTray({ icon: iconPath(), show, openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
+  tray = createTray({ icon: iconPath(), show: () => show(), openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
   log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
   void startUpdater(channel, logs, (version) => {
@@ -308,10 +331,9 @@ async function run() {
   })
 
   app.on('second-instance', (_e, argv) => {
-    const w = show()
-    w.focus()
     const inv = inviteInArgv(argv)
-    if (inv) openInvite(inv)
+    if (inv) return openInvite(inv)
+    show().focus()
   })
   app.on('activate', () => show())
   app.on('window-all-closed', () => {

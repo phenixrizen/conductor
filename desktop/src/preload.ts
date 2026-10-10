@@ -23,6 +23,13 @@ const bridge = {
     ipcRenderer.on('conductor:serverState', handler)
     return () => ipcRenderer.removeListener('conductor:serverState', handler)
   },
+  /** An invite the app was handed while this page is open: the page routes to its join page in place of a reload. */
+  onInvite: (cb: (invite: { server: string; token: string }) => void): (() => void) => {
+    const handler = (_e: unknown, invite: { server: string; token: string }) => cb(invite)
+    ipcRenderer.on('conductor:invite', handler)
+    void ipcRenderer.invoke('conductor:inviteReady')
+    return () => ipcRenderer.removeListener('conductor:invite', handler)
+  },
 }
 
 contextBridge.exposeInMainWorld('conductorDesktop', bridge)

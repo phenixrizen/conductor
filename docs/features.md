@@ -702,6 +702,23 @@ request each from main.
   variables are dropped, and the `GIT_DIR` test fails without the fix.
   Security findings, from a review or otherwise, stay out of this public
   repository until fixed (the owner's call): AGENTS.md says where they go.
+- **An invite goes to the open window, not a reload.** Before, a
+  `conductor://` invite the app received while its window was open loaded
+  the join page in full, dropping whatever the window held. Now the main
+  process sends it over the bridge (`conductor:invite`) once the page has
+  said it listens (`conductor:inviteReady`, from the preload's `onInvite`,
+  checked against the main window's own contents); the workbench routes to
+  `/join/<token>?server=…` in place (`plugins/desktop-invite.client.ts`, the
+  invite checked again by `inviteRoute`). A page that has not said it
+  listens yet (loading, or navigating: `did-start-navigation` resets it)
+  gets the latest invite when it does; one never acknowledged within 10 s
+  falls back to the full load. Tests: vitest (`InviteDelivery`: sent at
+  once, held until ready, the latest held invite wins, the 10 s fallback;
+  `inviteRoute` accepting a valid invite and refusing a bad token or server),
+  Playwright `invite.spec.ts` (a fake bridge's invite routes in place, the
+  page not reloaded, history one longer; bad invites ignored), and the
+  desktop smoke test (an `open-url` invite into the running app keeps the
+  window's state and lands on the join page).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 

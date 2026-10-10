@@ -43,3 +43,66 @@ export function inviteInArgv(argv: readonly string[]): Invite | null {
   }
   return null
 }
+
+/** How long an invite waits for the window's page to say it listens before the window loads the join page itself. */
+export const INVITE_ACK_MS = 10_000
+
+export interface InviteDeliveryDeps {
+  /** Hands the invite to the page over the bridge (`conductor:invite`), which routes to its join page in place. */
+  send(inv: Invite): void
+  /** Loads the join page in the window: a full page load, for a page that never said it listens. */
+  load(inv: Invite): void
+  setTimer(f: () => void, ms: number): unknown
+  clearTimer(t: unknown): void
+}
+
+/**
+ * InviteDelivery takes an invite to the open window's page without reloading it, so the workbench keeps its terminals and its live
+ * store. The page says it listens once loaded (`conductor:inviteReady`); until then, and from the moment a navigation starts, an
+ * invite waits, the latest winning; a page that has not said so within INVITE_ACK_MS (a server page from before the bridge, an error
+ * page) gets the join page loaded instead.
+ */
+export class InviteDelivery {
+  private listening = false
+  private waiting: Invite | null = null
+  private timer: unknown = null
+
+  constructor(private readonly d: InviteDeliveryDeps) {}
+
+  /** deliver sends the invite to a page that listens, or keeps it for the next one ('sent' or 'waiting'). */
+  deliver(inv: Invite): 'sent' | 'waiting' {
+    if (this.listening) {
+      this.d.send(inv)
+      return 'sent'
+    }
+    this.waiting = inv
+    if (this.timer === null) {
+      this.timer = this.d.setTimer(() => {
+        this.timer = null
+        const w = this.waiting
+        this.waiting = null
+        if (w) this.d.load(w)
+      }, INVITE_ACK_MS)
+    }
+    return 'waiting'
+  }
+
+  /** pageReady is the page's word that it listens: a waiting invite goes to it now. */
+  pageReady(): void {
+    this.listening = true
+    this.stopTimer()
+    const w = this.waiting
+    this.waiting = null
+    if (w) this.d.send(w)
+  }
+
+  /** pageLeft is a main-frame navigation starting (or a new window): nothing listens until the next page says so. */
+  pageLeft(): void {
+    this.listening = false
+  }
+
+  private stopTimer(): void {
+    if (this.timer !== null) this.d.clearTimer(this.timer)
+    this.timer = null
+  }
+}

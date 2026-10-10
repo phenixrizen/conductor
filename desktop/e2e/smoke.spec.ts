@@ -118,6 +118,13 @@ test('the app opens the workbench on its own server and stops it on quit', async
   expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
   await fsButton.click()
   await expect(fsButton).toHaveAttribute('aria-label', 'Enter fullscreen', { timeout: 10_000 })
+  // An invite handed to the app while its window is open (open-url on macOS; second-instance argv elsewhere goes the same way) reaches
+  // the page over the bridge: the join page opens in place, with no page load, where the app used to load the page anew.
+  await page.evaluate(() => ((window as unknown as { kept?: string }).kept = 'still here'))
+  const invited = 'SmokeInviteToken0123456789abcdefABCDEF_-xyz'
+  await app.evaluate(({ app }, url) => app.emit('open-url', { preventDefault: () => {} }, url), `conductor://${live.host}/join/${invited}?http=1`)
+  await expect.poll(() => page.url(), { timeout: 30_000 }).toBe(`${live.origin}/join/${invited}?server=${encodeURIComponent(live.origin)}`)
+  expect(await page.evaluate(() => (window as unknown as { kept?: string }).kept)).toBe('still here')
   const health = await fetch(`${live.origin}/api/health`)
   expect(health.ok).toBe(true)
   await app.close()

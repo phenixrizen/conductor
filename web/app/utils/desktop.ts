@@ -64,6 +64,8 @@ export interface DesktopBridge {
   allowIceFirewall(): Promise<DesktopIceStatus['firewall']>
   versions(): Promise<{ app: string; electron: string; node: string; chrome: string; server: string }>
   onServerState(cb: (state: DesktopServerState) => void): () => void
+  /** An invite the app was handed while this page is open (desktop/src/invite.ts InviteDelivery). Older apps lack it. */
+  onInvite?(cb: (invite: { server: string; token: string }) => void): () => void
 }
 
 /** desktopBridge is the bridge when the workbench runs in the desktop app, else null. */
