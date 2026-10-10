@@ -790,6 +790,36 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   no menu); on the old layout it found "WebSocket · 106 ms overlaps Open
   page". No logic changed, so no vitest.
 
+- **A red "error" badge on a crew member with no error of its own.** Seen
+  twice by the owner on 2026-10-08 in the rc.4 app: a shell member wore
+  "error" right after its run launched, another after it was stopped, the
+  Events page explained neither, and opening it cleared the badges. The
+  app's server log that day had two `publish to the rendezvous failed`
+  warnings, both `429`: the public switchyard admits open hosts (the app
+  publishes every session, with no token) four live sessions and six
+  registrations a minute per address, and a home's machines share one
+  address, so a crew launched beside other sessions was refused. The
+  failure was recorded as an `error` entry on the session ("an agent hit an
+  error", red), and never tried again. Now a refused publication is tried
+  again when the refusal passes with time (a 429: after 15 s, 30 s, 1 min,
+  2 min and 2 min, or the `Retry-After` the switchyard sends, the session's
+  end stopping it), the uplink keeps the switchyard's own words and code
+  (`open_host_limit`, `rate_limited`) instead of "expected handshake
+  response status code 101 but got 429", and the session's activity says
+  so in status lines ("not shared through the switchyard yet: …; trying
+  again", "shared through the switchyard after 3 tries"), which carry no
+  badge; a link asked for meanwhile says the switchyard's words. Tests: Go
+  `hostagent` (a 429 with its JSON and `Retry-After` read into a
+  `RefusedError`, retryable; a 401 not), `api` (a switchyard of one open
+  session per address: the second session noted, not errored, its link
+  saying "trying again", shared once the first ends; a switchyard that is
+  down noted the same way), vitest (the notes are no event), Playwright
+  `publishlimit.spec.ts` with its own switchyard so limited (no error badge
+  on either row, the Activity saying why, the second shared once the slot
+  frees; on the old code its Activity held the bare 429 as an error).
+  Still the operator's to weigh: the public switchyard's four sessions per
+  address, or a host token for the owner's own machines.
+
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 
 The owner asked why five Files items had been moved to the todo instead of

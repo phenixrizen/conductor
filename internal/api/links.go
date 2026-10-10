@@ -72,7 +72,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	var pub PublishedSession
 	why := ""
 	if server != "" {
-		wctx, wcancel := context.WithTimeout(r.Context(), 10*time.Second)
+		wctx, wcancel := context.WithTimeout(r.Context(), publicationWait)
 		pub, why = s.awaitPublication(wctx, id)
 		wcancel()
 	}
@@ -216,7 +216,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 	server := s.publisherServer()
 	why := ""
 	if server != "" {
-		wctx, wcancel := context.WithTimeout(r.Context(), 10*time.Second)
+		wctx, wcancel := context.WithTimeout(r.Context(), publicationWait)
 		g, carrier, w2 := s.awaitRunGroup(wctx, id)
 		wcancel()
 		why = w2

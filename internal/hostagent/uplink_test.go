@@ -2,8 +2,12 @@ package hostagent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,5 +98,45 @@ func TestPublishServesALocalSessionOverTheRelay(t *testing.T) {
 	}
 	if local.Info().Status != session.StatusRunning {
 		t.Fatalf("the local session was stopped by the publication's end: %s", local.Info().Status)
+	}
+}
+
+// A rendezvous that answers the registration with an HTTP error rather than
+// the WebSocket: Publish says why as a RefusedError, its code, words and
+// Retry-After read from the reply, and a 429 is one that passes with time
+// (round 14: the switchyard's per-address limits refused a crew's members,
+// and nothing said which limit or tried again).
+func TestPublishSaysWhyTheRendezvousRefused(t *testing.T) {
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "40")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"code":"open_host_limit","message":"this address holds as many open sessions as this switchyard allows; ask the operator for a host token"}}`))
+	}))
+	defer hs.Close()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm"}, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := session.NewLocal(session.Info{ID: "local-2", Name: "refused", Kind: session.KindServer, Command: []string{"/bin/cat"}, Cwd: t.TempDir(), Status: session.StatusRunning, Cols: 80, Rows: 24}, proc, session.Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	t.Cleanup(func() { _ = local.Stop(context.Background()) })
+	u := &Uplink{ServerURL: hs.URL, HostName: "home", Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	_, err = u.Publish(t.Context(), local)
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("not a refusal: %v", err)
+	}
+	if refused.Status != 429 || refused.Code != "open_host_limit" || refused.RetryAfter != 40*time.Second || !strings.Contains(refused.Message, "open sessions") {
+		t.Fatalf("refusal %+v", refused)
+	}
+	if again, after := refused.Retryable(); !again || after != 40*time.Second {
+		t.Fatalf("retryable %v %v", again, after)
+	}
+	if !strings.Contains(err.Error(), "open_host_limit") {
+		t.Fatalf("words: %v", err)
+	}
+	// Anything but a 429 does not pass with time.
+	if again, _ := (&RefusedError{Status: 401}).Retryable(); again {
+		t.Fatal("a 401 retried")
 	}
 }
