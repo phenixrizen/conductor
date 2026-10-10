@@ -23,16 +23,6 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
-- **The fullscreen button does nothing in the desktop app.** The owner,
-  2026-10-08, on the Windows app (rc.4): the maximize icon in every page
-  header (`FullscreenButton`, the `F` key) has no effect. The button
-  shows because `document.fullscreenEnabled` is true in Electron, but the
-  page's `requestFullscreen` does not take the window fullscreen there;
-  the app's View menu has its own "Toggle Full Screen" (`togglefullscreen`).
-  Fix: in the app, the button and `F` call the window's fullscreen through
-  the bridge (`setFullScreen`, with the change reported back so the icon
-  follows), and the layout's fullscreen state reads the window's; a
-  desktop e2e check in `desktop/e2e/smoke.spec.ts`. Platform: Windows app.
 - **The shortcuts table is too narrow to read.** The owner, 2026-10-08,
   on the Windows app: the `?` modal's three columns (the action, the keys
   in a terminal, the keys outside one; `ShortcutsModal`) sit so close that

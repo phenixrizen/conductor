@@ -736,6 +736,17 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   lines in the window (it saw an empty page without the preload). Locally
   the smoke runs on WSLg's display (`DISPLAY=:0`); the X server named by
   this shell's `DISPLAY` was not there.
+- **The fullscreen button did nothing in the desktop app.** Seen by the
+  owner 2026-10-08 on Windows: the maximize icon in every page header and
+  the F key had no effect. The cause was the app's permission handler, which
+  granted the pages the clipboard and nothing else, so the page's
+  `requestFullscreen` was refused (the todo guessed at a bridge to the
+  window's fullscreen; none is needed). `permissionAllowed` in
+  `desktop/src/window.ts` grants `fullscreen` too; the page's own state
+  (`fullscreenchange`) keeps the icon right. Tests: desktop vitest (the
+  clipboard and fullscreen granted, media, geolocation, notifications and
+  the rest refused), the Electron smoke clicking the header's button in
+  and out of fullscreen (it stayed "Enter fullscreen" without the grant).
 
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 

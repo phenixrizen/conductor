@@ -109,6 +109,15 @@ test('the app opens the workbench on its own server and stops it on quit', async
   const log = app.windows().find((p) => p.url().includes('log.html'))!
   await expect(log.locator('#log')).toContainText('msg=', { timeout: 30_000 })
   await log.close()
+  // The page header's fullscreen button takes the window fullscreen and back: the app refused the page's fullscreen request before,
+  // and the button did nothing (seen by the owner on Windows on 2026-10-08).
+  const fsButton = page.locator('[data-fullscreen]').first()
+  await expect(fsButton).toHaveAttribute('aria-label', 'Enter fullscreen')
+  await fsButton.click()
+  await expect(fsButton).toHaveAttribute('aria-label', 'Exit fullscreen', { timeout: 10_000 })
+  expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  await fsButton.click()
+  await expect(fsButton).toHaveAttribute('aria-label', 'Enter fullscreen', { timeout: 10_000 })
   const health = await fetch(`${live.origin}/api/health`)
   expect(health.ok).toBe(true)
   await app.close()

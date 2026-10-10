@@ -91,6 +91,14 @@ export function createWindow(o: WindowOptions): BrowserWindow {
 /** restrictPermissions denies every permission request but the clipboard's. */
 export function restrictPermissions(): void {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-    cb(permission === 'clipboard-read' || permission === 'clipboard-sanitized-write')
+    cb(permissionAllowed(permission))
   })
+}
+
+/**
+ * permissionAllowed is what the app's pages may have: the clipboard, and fullscreen, which the page header's button and the F key ask
+ * for (element.requestFullscreen); refused, the button did nothing in the app, seen by the owner on Windows on 2026-10-08.
+ */
+export function permissionAllowed(permission: string): boolean {
+  return permission === 'clipboard-read' || permission === 'clipboard-sanitized-write' || permission === 'fullscreen'
 }
