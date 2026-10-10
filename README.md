@@ -31,8 +31,10 @@ CONDUCTOR_WORKBENCH_TOKEN=change-me ./bin/conductor serve
 ```
 
 Open <http://localhost:8080>, paste the workbench token when prompted, and press
-**Launch agent**. Without `CONDUCTOR_WORKBENCH_TOKEN` the server prints a random
-token at startup.
+**Launch agent**. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random
+token at startup and prints it to the terminal it was started from, never to its
+log; a server whose output is not a terminal (a service, a container) needs the
+token set.
 
 Host a session from your own machine instead:
 
@@ -1602,7 +1604,9 @@ The wire protocol is documented in [docs/protocol.md](docs/protocol.md), the
 architecture in [docs/architecture.md](docs/architecture.md), and the brand in
 [docs/design/brand.md](docs/design/brand.md). A `Dockerfile` builds a server
 image without agent CLIs; install them in a derived image or use `conductor host`.
-The image keeps its data directory on the `/var/lib/conductor` volume.
+The image keeps its data directory on the `/var/lib/conductor` volume. Give it
+`CONDUCTOR_WORKBENCH_TOKEN` (`docker run -e`): a container without a terminal
+prints no generated token.
 
 ---
 

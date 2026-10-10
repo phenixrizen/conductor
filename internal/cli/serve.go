@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/certs"
@@ -35,6 +37,16 @@ import (
 
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
+
+// terminalOf is w when it is a terminal, where the person who started the
+// server reads it, and nil otherwise (a file, or a pipe to a parent process,
+// a service manager or a container's log). A test replaces it.
+var terminalOf = func(w io.Writer) io.Writer {
+	if f, ok := w.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		return f
+	}
+	return nil
+}
 
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -169,8 +181,18 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log.Debug("environment", "path", os.Getenv("PATH"))
 	if cfg.GeneratedWorkbenchToken {
-		// Printed once so a developer can sign in; set CONDUCTOR_WORKBENCH_TOKEN to avoid this.
-		log.Warn("no workbench token configured; generated one for this run", "workbenchToken", cfg.WorkbenchToken)
+		// Printed once, to the terminal, so the person who started the server
+		// can sign in; never through the logger, whose lines a file, a
+		// service manager or a container keeps. A parent process has it in
+		// the --print-listen line.
+		switch tty := terminalOf(stderr); {
+		case tty != nil:
+			fmt.Fprintf(tty, "\nNo workbench token is configured; this run generated one:\n\n    %s\n\nSet CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own.\n\n", cfg.WorkbenchToken)
+		case *printListen:
+			log.Info("no workbench token configured; generated one for this run, passed in the --print-listen line only")
+		default:
+			log.Warn("no workbench token configured; generated one for this run, not printed because the server's output is not a terminal: set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to sign in")
+		}
 	}
 	if cfg.WorkbenchTokenRenamed {
 		log.Warn("adminToken and CONDUCTOR_ADMIN_TOKEN are the old names of the workbench token; use workbenchToken or CONDUCTOR_WORKBENCH_TOKEN")

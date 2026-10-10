@@ -638,12 +638,83 @@ func TestServePrintsTheListenHandshake(t *testing.T) {
 	if lines := logLines(logs.String(), "conductor serving", "publicUrl=http://localhost:"+port); len(lines) != 1 {
 		t.Fatalf("publicUrl did not follow the port:\n%s", logs.String())
 	}
-	if strings.Contains(logs.String(), h.WorkbenchToken) {
-		// The generated token is logged once by design (a developer signs in with it); the handshake does not change that.
-		t.Log("the generated token is in the log, as before")
-	}
 	cancel()
 	<-done
+	// The generated token is the handshake's alone: the log does not have it.
+	if strings.Contains(logs.String(), h.WorkbenchToken) {
+		t.Fatalf("the generated token is in the log:\n%s", logs.String())
+	}
+	if lines := logLines(logs.String(), "level=INFO", "generated one for this run", "--print-listen line only"); len(lines) != 1 {
+		t.Fatalf("no line saying where the generated token went:\n%s", logs.String())
+	}
+}
+
+// A generated workbench token is printed once to the terminal the server was
+// started from, and never through the logger.
+func TestServePrintsAGeneratedTokenToTheTerminal(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	t.Cleanup(agents.ForgetBinary())
+	var tty syncBuffer
+	old := terminalOf
+	t.Cleanup(func() { terminalOf = old })
+	terminalOf = func(io.Writer) io.Writer { return &tty }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs, out syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(out.String(), "\n") {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned: %v\n%s", err, logs.String())
+		case <-deadline:
+			t.Fatalf("no handshake:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	var h handshake
+	if err := json.Unmarshal([]byte(strings.SplitN(out.String(), "\n", 2)[0]), &h); err != nil {
+		t.Fatalf("handshake %q: %v", out.String(), err)
+	}
+	if len(h.WorkbenchToken) < 32 {
+		t.Fatalf("handshake %+v", h)
+	}
+	if n := strings.Count(tty.String(), h.WorkbenchToken); n != 1 {
+		t.Fatalf("the token is on the terminal %d times:\n%s", n, tty.String())
+	}
+	if !strings.Contains(tty.String(), "CONDUCTOR_WORKBENCH_TOKEN") {
+		t.Fatalf("the terminal is not told how to choose a token:\n%s", tty.String())
+	}
+	if strings.Contains(logs.String(), h.WorkbenchToken) || strings.Contains(logs.String(), "generated one for this run") {
+		t.Fatalf("the generated token went through the logger:\n%s", logs.String())
+	}
+}
+
+// With no terminal and no parent process to hand it to, a generated token is
+// printed nowhere, and the log says how to sign in.
+func TestServeDoesNotLogAGeneratedToken(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "level=WARN", "generated one for this run, not printed", "CONDUCTOR_WORKBENCH_TOKEN"); len(lines) != 1 {
+		t.Fatalf("no warning saying the token was not printed:\n%s", logs)
+	}
+	if strings.Contains(logs, "workbenchToken=") {
+		t.Fatalf("a token value in the log:\n%s", logs)
+	}
 }
 
 func TestServeExitsWhenStdinCloses(t *testing.T) {

@@ -259,7 +259,8 @@ registers the `conductor:` scheme: an invite opens its own join page with
   requests are all bounded. Query strings (which may carry tokens) are never
   logged; a request is logged by the route pattern it matched (`/api/join/{token}`),
   or, on a catch-all route, by its path with a link's token replaced
-  (`/join/{token}`).
+  (`/join/{token}`). A workbench token the server generates is printed to the
+  terminal it was started from, never to the log.
 
 ## Persistence
 
