@@ -706,6 +706,25 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   laptop scaled with the chip naming Nate, neither window's resize moving
   the size, Fit to my window and back, the view link scaled with no chip;
   three runs out of three; it fails on main's build at the laptop's chip).
+- **The Launch dialog's long empty list on its first open.** Seen by the
+  owner 2026-10-08 on the Windows app (the server in WSL): the first Launch
+  agent after the app starts showed an empty grid for a long while. Two
+  causes: GET /api/catalog started each installed agent's identity probe
+  and waited for it (up to `probeWait`, 2 s) one agent after another, while
+  its comment said they ran together, so a cold catalog waited up to two
+  seconds per agent; and the dialog showed a blank grid until the reply
+  came, every time it opened. Now the probes are asked for together and
+  waited for together (2 s in all; a late one is `pending`), the server
+  warms the catalog as it starts (`WarmCatalog`, the lookups and probes the
+  first request would make), and the dialog says "Checking which agents
+  are installed here…" while its first catalog is under way and, opened
+  again, lists the last catalog at once while it refreshes behind. Tests:
+  Go (six probes of 700 ms: one wait, not six, the late ones pending, it
+  took 4.2 s waiting one by one; after the warm-up the request answers at
+  once with none pending), vitest (`launchListNote`), Playwright
+  `launch.spec.ts` with the catalog held back three seconds (the checking
+  note within a second, never "no agents"; opened again, the list within
+  half a second; it fails on main's dialog at the note).
 
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 

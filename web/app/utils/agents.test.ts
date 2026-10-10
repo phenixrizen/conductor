@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, identity, isAvailable, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents } from './agents'
+import { agentItem, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents } from './agents'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
 
@@ -85,5 +85,20 @@ describe('a program that only shares the agent\'s name', () => {
     expect(notInstalledBadge({ command: ['cursor-agent'] }, '')).toEqual({ label: 'Not installed on the server', title: notInstalledTitle('cursor-agent'), notAgent: false })
     // A verified probe that matched nothing is not an impostor: the agent stays offered, with its warning.
     expect(notInstalledBadge({ command: ['claude'], identity: { ran: true, identified: false, verified: true, name: 'Claude Code', output: 'build 3' } }, 'box').notAgent).toBe(false)
+  })
+})
+
+describe("the Launch dialog's note where its agents go", () => {
+  it('says it is checking while the first catalog is under way, never "no agents"', () => {
+    expect(launchListNote({ loading: true, known: 0, offered: 0, onServer: true })).toBe('checking')
+  })
+  it('says nothing once it lists some, a refresh under way included', () => {
+    expect(launchListNote({ loading: true, known: 3, offered: 2, onServer: true })).toBe(null)
+    expect(launchListNote({ loading: false, known: 3, offered: 2, onServer: true })).toBe(null)
+  })
+  it('tells none installed here from none at all', () => {
+    expect(launchListNote({ loading: false, known: 3, offered: 0, onServer: true })).toBe('none-installed')
+    expect(launchListNote({ loading: false, known: 0, offered: 0, onServer: true })).toBe('none')
+    expect(launchListNote({ loading: false, known: 0, offered: 0, onServer: false })).toBe('none')
   })
 })

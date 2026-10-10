@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, SessionInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { serverAgents } from '~/utils/agents'
+import { launchListNote, serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { showsRunsOn } from '~/utils/launch'
@@ -17,6 +17,8 @@ const live = useAttention()
 const { httpBase } = useApiBase()
 const agents = ref<AgentInfo[]>([])
 const loading = ref(false)
+// The last catalog this page fetched (round 14): the dialog opened again lists it at once and refreshes it behind.
+const cachedCatalog = useState<{ agents: AgentInfo[]; yoloDefault: boolean } | null>('launchCatalog', () => null)
 const submitting = ref(false)
 const error = ref('')
 const knownHosted = ref<Set<string>>(new Set())
@@ -42,6 +44,7 @@ watch(
 const selected = computed(() => agents.value.find((a) => a.id === state.agentId))
 /** The server tab offers the agents installed on the server; My machine offers every agent: what is installed there is the host's. */
 const offered = computed(() => (state.runsOn === 'server' ? serverAgents(agents.value) : agents.value))
+const listNote = computed(() => launchListNote({ loading: loading.value, known: agents.value.length, offered: offered.value.length, onServer: state.runsOn === 'server' }))
 // The pick stays one the tab offers.
 watch(offered, (list) => {
   if (!list.some((a) => a.id === state.agentId)) state.agentId = list[0]?.id ?? ''
@@ -51,10 +54,16 @@ watch(open, async (v) => {
   if (!v) return
   error.value = ''
   knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
-  loading.value = true
   state.yolo = undefined
+  if (cachedCatalog.value) {
+    agents.value = cachedCatalog.value.agents
+    yoloDefault.value = cachedCatalog.value.yoloDefault
+    if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
+  }
+  loading.value = true
   try {
     const info = await api.catalogInfo()
+    cachedCatalog.value = info
     agents.value = info.agents
     yoloDefault.value = info.yoloDefault
     if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
@@ -152,8 +161,11 @@ async function submit() {
             <SessionAvatar :agent-id="a.id" size="md" :solid="state.agentId === a.id" />
             <span class="text-sm" :class="state.agentId === a.id ? 'font-semibold' : 'font-medium'">{{ a.name }}</span>
           </button>
-          <p v-if="!offered.length && !loading" class="col-span-full text-sm text-muted" data-none-available>
-            <template v-if="state.runsOn === 'server' && agents.length">No agent in the catalog is installed on this server. <NuxtLink to="/agents" class="underline" @click="open = false">See the Agents page</NuxtLink> for what is missing, or run one on your machine.</template>
+          <p v-if="listNote === 'checking'" class="col-span-full flex items-center gap-2 text-sm text-muted" data-agents-checking>
+            <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking which agents are installed here…
+          </p>
+          <p v-else-if="listNote" class="col-span-full text-sm text-muted" data-none-available>
+            <template v-if="listNote === 'none-installed'">No agent in the catalog is installed on this server. <NuxtLink to="/agents" class="underline" @click="open = false">See the Agents page</NuxtLink> for what is missing, or run one on your machine.</template>
             <template v-else>No agents in the catalog.</template>
           </p>
         </div>

@@ -180,6 +180,8 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	defer stdinCancel()
 	mctx, mcancel := context.WithCancel(ctx)
 	go srv.RunMaintenance(mctx)
+	// The agents' lookups and probes, so the first Launch dialog lists them at once.
+	go srv.WarmCatalog(mctx)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- httpSrv.Serve(ln) }()
