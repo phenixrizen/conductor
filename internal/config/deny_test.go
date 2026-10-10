@@ -240,9 +240,27 @@ func TestLocalFileDeny(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		want := expect(home, nil, link, filepath.Join(dir, "*conductor.json*"), filepath.Join(filepath.Dir(target), "*prod.json*"))
+		want := expect(home, nil, link, filepath.Join(dir, "*conductor.json*"), filepath.Join(filepath.Dir(target), "*prod.json*"), target)
 		if got := deny(t, link); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
+		}
+		// The link pointed elsewhere while the file is read: the file read
+		// stays named, with the copies beside it.
+		other := writeFile(t, filepath.Join(t.TempDir(), "other.json"), `{}`)
+		readConfigFile = func(name string) ([]byte, error) {
+			b, err := os.ReadFile(name)
+			os.Remove(link)
+			if lerr := os.Symlink(other, link); lerr != nil {
+				t.Error(lerr)
+			}
+			return b, err
+		}
+		t.Cleanup(func() { readConfigFile = os.ReadFile })
+		got := deny(t, link)
+		for _, e := range []string{target, filepath.Join(filepath.Dir(target), "*prod.json*")} {
+			if !slices.Contains(got, e) {
+				t.Errorf("the link moved during the read: %q lacks %s", got, e)
+			}
 		}
 	})
 
@@ -305,6 +323,13 @@ func TestLocalFileDeny(t *testing.T) {
 		}
 		if _, err := LocalFileDeny(""); err == nil {
 			t.Error("settings that are a directory: no error")
+		}
+		os.Remove(filepath.Join(app, "settings.json"))
+		if err := os.Symlink(filepath.Join(t.TempDir(), "gone.json"), filepath.Join(app, "settings.json")); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := LocalFileDeny(""); err == nil || got != nil {
+			t.Errorf("settings that are a link to nothing: %q, %v; want an error", got, err)
 		}
 		os.Remove(filepath.Join(app, "settings.json"))
 		// Settings that are a link to a file elsewhere: that file and the

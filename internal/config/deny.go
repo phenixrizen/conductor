@@ -51,17 +51,25 @@ func (c *Config) fileDeny(dirs, files []string) []string {
 func LocalFileDeny(path string) ([]string, error) {
 	c := &Config{}
 	dataFrom, catalogFrom := "", ""
+	// read is the file the config is read from, its links resolved first: it
+	// is refused with the copies beside it even should a link on the way to
+	// it be pointed elsewhere while it is read.
+	var read string
 	if path != "" {
-		b, err := os.ReadFile(path)
+		c.Path = path
+		if abs, err := filepath.Abs(path); err == nil {
+			c.Path = abs
+		}
+		read = c.Path
+		if real, err := filepath.EvalSymlinks(c.Path); err == nil {
+			read = real
+		}
+		b, err := readConfigFile(read)
 		if err != nil {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
 		if err := store.DecodeStrict(b, c); err != nil {
 			return nil, fmt.Errorf("parse config %s: %w", path, err)
-		}
-		c.Path = path
-		if abs, err := filepath.Abs(path); err == nil {
-			c.Path = abs
 		}
 		dataFrom, catalogFrom = "dataDir in "+c.Path, "catalogPath in "+c.Path
 	}
@@ -94,8 +102,12 @@ func LocalFileDeny(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.fileDeny(append(dirs, desktopDirs...), desktopSettings), nil
+	return c.fileDeny(append(dirs, desktopDirs...), append([]string{read}, desktopSettings...)), nil
 }
+
+// readConfigFile is os.ReadFile: a test replaces it to move a link while
+// the config file is read.
+var readConfigFile = os.ReadFile
 
 // LocalFileDenyFunc is LocalFileDeny(path) for a session that runs a long
 // time (session.Options.FileDenyFunc): the function it returns computes the
@@ -211,12 +223,16 @@ func desktopFiles() (dirs, files []string, err error) {
 
 // desktopDataDir is the data directory the desktop app's settings file
 // names: "" when there is no such file or it names none, an error when the
-// file is there but cannot be read, is larger than maxDesktopSettings, is
+// file is there but cannot be read (a link to nothing included), is larger
+// than maxDesktopSettings, is
 // not a JSON object, or names one that is not an absolute path. Only dataDir
 // is read of the settings, which hold many other keys.
 func desktopDataDir(file string) (string, error) {
 	f, err := os.Open(file)
 	if errors.Is(err, fs.ErrNotExist) {
+		if _, lerr := os.Lstat(file); lerr == nil {
+			return "", errors.New("a link to a file that is not there")
+		}
 		return "", nil
 	}
 	if err != nil {
