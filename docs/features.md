@@ -820,6 +820,26 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   Still the operator's to weigh: the public switchyard's four sessions per
   address, or a host token for the owner's own machines.
 
+- **Two flaky trust tests, one of them a real race.** On main after #85 the
+  e2e failed once at `trust.spec.ts`'s Codex questions: "Update now" was never
+  held. Cause: answering a startup question cleared the question watcher's
+  screen after the answer was written, so a program that draws its next
+  question at once (Codex's update question after its background-server one)
+  could have it wiped before the watcher saw it, and the session waited
+  unheld. The screen is now cleared before the answer is written; a session
+  test reproduces it with a fake program that draws the next question inside
+  the write (it failed three runs out of three before). Running the spec under
+  load (64 busy loops) then found a test race at the first trust test: the
+  member's held state and the run log's line are two updates, and a read fell
+  between them; the test waits for both. Under the same load: 35 runs out of
+  35. The Go suite under that load found a third: `TestLinksListReportsActiveViewers`
+  read the link list the instant the viewer saw `ready`, which comes just
+  before the viewer joins the roster the count is taken from; it waits for the
+  count now (30 runs out of 30 under load). Also: the cli tests now run with
+  the system's PATH only, since the
+  catalog warm-up (#84) ran this machine's real Copilot, which went on writing
+  into a test's temp HOME after the test ended (CI has no agents installed).
+
 - **Checked in the installed rc.6 app (2026-10-09).** v0.7.0-rc.6 (8ad9ab1)
   installed on the Windows box (the owner answered the elevation prompt and
   finished the wizard) and driven through winctl-mcp with real keys and

@@ -908,9 +908,20 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			break
 		}
 	}
+	enter := choice || bytes.IndexByte(data, '\r') >= 0
+	// The screen that showed a startup question is behind once it is
+	// answered: only a new question counts. It is cleared before the answer
+	// is written, never after: a program that draws its next question as the
+	// first is answered (Codex's update question after its background-server
+	// one) can have drawn it before the write returns, and a clear after it
+	// took that question with it, unseen (round 14, the trust spec's flake).
+	answersQuestion := enter && s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceTrust && s.info.Attention.Since == promptSince
 	s.mu.Unlock()
 	if ended {
 		return ErrSessionEnded
+	}
+	if answersQuestion && s.trust != nil {
+		s.trust.Reset()
 	}
 	if _, err := s.proc.Write(data); err != nil {
 		return err
@@ -919,7 +930,7 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		return nil
 	}
 	s.stampTyping(sub)
-	s.answer(promptSince, sub.ID, sub.Name, true, choice || bytes.IndexByte(data, '\r') >= 0)
+	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 	return nil
 }
 
@@ -968,10 +979,6 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 	if told {
 		s.chatHook(answeredID, answered)
 		s.tellRun(answered)
-	}
-	if att.Source == SourceTrust && s.trust != nil {
-		// What showed the question is behind: only a new one counts.
-		s.trust.Reset()
 	}
 	if record {
 		s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: question})

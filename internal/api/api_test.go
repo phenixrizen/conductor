@@ -898,19 +898,29 @@ func TestLinksListReportsActiveViewers(t *testing.T) {
 	guest.hello(80, 24)
 	guest.expectControl(proto.CtlReady)
 
-	_, after := e.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
-	var found bool
-	for _, raw := range after["links"].([]any) {
-		l := raw.(map[string]any)
-		if l["id"] == linkID {
-			found = true
-			if l["active"] != float64(1) || l["label"] != "standup" {
-				t.Fatalf("active after join: %v", l)
+	// The viewer joins the session's roster just after its replay, which
+	// `ready` ends: under load the list was read in between (round 14), so
+	// the count is waited for, as the Share dialog's next refresh would.
+	var l map[string]any
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, after := e.do("GET", "/api/sessions/"+id+"/links", adminToken, nil)
+		l = nil
+		for _, raw := range after["links"].([]any) {
+			if m := raw.(map[string]any); m["id"] == linkID {
+				l = m
 			}
 		}
+		if l == nil {
+			t.Fatalf("link missing: %v", after)
+		}
+		if l["active"] == float64(1) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if !found {
-		t.Fatalf("link missing: %v", after)
+	if l["active"] != float64(1) || l["label"] != "standup" {
+		t.Fatalf("active after join: %v", l)
 	}
 }
 
