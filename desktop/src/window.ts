@@ -1,4 +1,5 @@
-import { BrowserWindow, shell, session } from 'electron'
+import { join } from 'node:path'
+import { BrowserWindow, shell, session, type BrowserWindowConstructorOptions } from 'electron'
 
 export interface WindowOptions {
   preload: string
@@ -45,6 +46,14 @@ export function external(url: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * logWindowOptions are the server log window's: its page (static/log.html) shows the lines its preload passes it (window.conductorLog,
+ * log-preload.js in dir), so without the preload it stayed an empty dark box, seen by the owner on Windows on 2026-10-06.
+ */
+export function logWindowOptions(dir: string): BrowserWindowConstructorOptions {
+  return { width: 900, height: 600, title: 'Conductor server log', webPreferences: { preload: join(dir, 'log-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } }
 }
 
 /**

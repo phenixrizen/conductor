@@ -725,6 +725,17 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   `launch.spec.ts` with the catalog held back three seconds (the checking
   note within a second, never "no agents"; opened again, the list within
   half a second; it fails on main's dialog at the note).
+- **The server log window was an empty dark box.** Seen by the owner
+  2026-10-06 on Windows, from the tray's Server log; the same on every
+  platform. The window was made with no preload, so `window.conductorLog`
+  (from `log-preload.ts`, built but never attached) was undefined and no
+  line reached the page. Its options are now `logWindowOptions(dir)` in
+  `desktop/src/window.ts`, which names `log-preload.js`. Tests: desktop
+  vitest (the preload named, the window isolated as every window), the
+  Electron smoke clicking Server log in the menu and expecting the server's
+  lines in the window (it saw an empty page without the preload). Locally
+  the smoke runs on WSLg's display (`DISPLAY=:0`); the X server named by
+  this shell's `DISPLAY` was not there.
 
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 

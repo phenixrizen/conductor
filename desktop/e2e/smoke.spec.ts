@@ -90,6 +90,25 @@ test('the app opens the workbench on its own server and stops it on quit', async
   await expect.poll(level).toBe(-0.5)
   await press('0')
   await expect.poll(level).toBe(0)
+  // Server log (the Server menu) opens a window that shows the server's log, the lines so far and then live: it was an empty dark box
+  // (no preload, so no line reached the page), seen by the owner on Windows on 2026-10-06.
+  await app.evaluate(({ Menu }) => {
+    const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+      for (const it of items) {
+        if (it.label === 'Server log') return it
+        const sub = it.submenu ? find(it.submenu.items) : undefined
+        if (sub) return sub
+      }
+    }
+    const item = find(Menu.getApplicationMenu()?.items ?? [])
+    if (!item) throw new Error('no Server log in the menu')
+    item.click()
+  })
+  // A new window's URL is still blank as it opens: the app's windows are polled until one shows the log page.
+  await expect.poll(() => app.windows().some((p) => p.url().includes('log.html')), { timeout: 30_000 }).toBe(true)
+  const log = app.windows().find((p) => p.url().includes('log.html'))!
+  await expect(log.locator('#log')).toContainText('msg=', { timeout: 30_000 })
+  await log.close()
   const health = await fetch(`${live.origin}/api/health`)
   expect(health.ok).toBe(true)
   await app.close()

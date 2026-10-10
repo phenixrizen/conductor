@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { trusted } from '../src/ipc'
-import { external, followOrigin, sameOrigin } from '../src/window'
+import { join } from 'node:path'
+import { external, followOrigin, logWindowOptions, sameOrigin } from '../src/window'
 
 describe('window guards', () => {
   it('keeps navigation on the server\'s origin and opens only http(s) outside', () => {
@@ -28,5 +29,15 @@ describe('followOrigin', () => {
     expect(followOrigin('file:///opt/Conductor/resources/static/splash.html', 'http://localhost:37225')).toBe(null)
     expect(followOrigin('https://switchyard.rslabs.net/join/x', 'http://localhost:37225')).toBe(null)
     expect(followOrigin('not a url', 'http://localhost:37225')).toBe(null)
+  })
+})
+
+describe('the server log window', () => {
+  it('has the preload that passes it the log lines, isolated as every window', () => {
+    const o = logWindowOptions('/app/dist')
+    expect(o.webPreferences?.preload).toBe(join('/app/dist', 'log-preload.js'))
+    expect(o.webPreferences?.contextIsolation).toBe(true)
+    expect(o.webPreferences?.nodeIntegration).toBe(false)
+    expect(o.webPreferences?.sandbox).toBe(true)
   })
 })
