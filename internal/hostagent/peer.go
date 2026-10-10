@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -31,6 +30,11 @@ type peer struct {
 	pending   []webrtc.ICECandidateInit
 	remoteSet bool
 	closed    bool
+
+	// typing runs the viewer's submits, chats to the agent and chat_sends,
+	// editor its nvim_opens (queue.go).
+	typing requestQueue
+	editor requestQueue
 }
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
@@ -221,22 +225,9 @@ func (p *peer) handleFrame(f proto.Frame) {
 			}
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if _, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub}); err != nil {
-					code := "input_failed"
-					switch {
-					case errors.Is(err, session.ErrReadOnly):
-						code = proto.ErrCodeReadOnly
-					case errors.Is(err, session.ErrSessionEnded):
-						code = proto.ErrCodeSessionEnded
-					case errors.Is(err, session.ErrTrustQuestion):
-						code = proto.ErrCodeNotSent
-					}
-					p.a.local.Send(sub, proto.NewError(code, err.Error()))
-				}
-			}()
+			if !p.typing.add(func() { p.submit(sub, m.Text) }) {
+				p.a.local.Send(sub, queueFull(""))
+			}
 		case proto.CtlChat:
 			var m proto.ChatPost
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -249,14 +240,11 @@ func (p *peer) handleFrame(f proto.Frame) {
 				return
 			}
 			if m.To != "" {
-				// Off the frame loop, as a submit is: the typing pauses before its Enter.
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					if err := p.a.local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}); err != nil {
-						p.a.local.Send(sub, session.ChatErrorFrame(err, msg.ID))
-					}
-				}()
+				// Typed as a submit is, in its turn among them.
+				send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
+				if !p.typing.add(func() { p.chatSend(sub, send) }) {
+					p.a.local.Send(sub, queueFull(msg.ID))
+				}
 			}
 		case proto.CtlChatSend:
 			var m proto.ChatSend
@@ -264,25 +252,17 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
 				return
 			}
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := p.a.local.ChatSend(ctx, sub, m); err != nil {
-					p.a.local.Send(sub, session.ChatErrorFrame(err, m.Ref))
-				}
-			}()
+			if !p.typing.add(func() { p.chatSend(sub, m) }) {
+				p.a.local.Send(sub, queueFull(m.Ref))
+			}
 		case proto.CtlNvimOpen:
 			var m proto.NvimOpen
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				if err := p.a.local.NvimOpen(ctx, sub, m); err != nil {
-					p.a.local.Send(sub, session.NvimRefused(m.ReqID, err))
-				}
-			}()
+			if !p.editor.add(func() { p.nvimOpen(sub, m) }) {
+				p.a.local.Send(sub, session.NvimRefused(m.ReqID, session.ErrTooManyRequests))
+			}
 		case proto.CtlNvimInput:
 			var m proto.NvimInput
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -347,6 +327,43 @@ func (p *peer) handleFrame(f proto.Frame) {
 	}
 }
 
+// submit types a viewer's line into the agent; its typing queue runs it.
+func (p *peer) submit(sub *session.Subscription, text string) {
+	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+	defer cancel()
+	if _, err := p.a.local.Submit(ctx, session.Submission{Text: text, By: sub}); err != nil {
+		code := "input_failed"
+		switch {
+		case errors.Is(err, session.ErrReadOnly):
+			code = proto.ErrCodeReadOnly
+		case errors.Is(err, session.ErrSessionEnded):
+			code = proto.ErrCodeSessionEnded
+		case errors.Is(err, session.ErrTrustQuestion):
+			code = proto.ErrCodeNotSent
+		}
+		p.a.local.Send(sub, proto.NewError(code, err.Error()))
+	}
+}
+
+// chatSend types a kept chat message into the agent (or the run's member
+// send names); its typing queue runs it.
+func (p *peer) chatSend(sub *session.Subscription, send proto.ChatSend) {
+	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+	defer cancel()
+	if err := p.a.local.ChatSend(ctx, sub, send); err != nil {
+		p.a.local.Send(sub, session.ChatErrorFrame(err, send.Ref))
+	}
+}
+
+// nvimOpen starts the viewer's Neovim on a file; its editor queue runs it.
+func (p *peer) nvimOpen(sub *session.Subscription, req proto.NvimOpen) {
+	ctx, cancel := context.WithTimeout(context.Background(), nvimOpenTimeout)
+	defer cancel()
+	if err := p.a.local.NvimOpen(ctx, sub, req); err != nil {
+		p.a.local.Send(sub, session.NvimRefused(req.ReqID, err))
+	}
+}
+
 func (p *peer) attach(hello proto.Hello) {
 	p.mu.Lock()
 	var sink session.Sink
@@ -395,6 +412,8 @@ func (p *peer) close() {
 	pc, sub := p.pc, p.sub
 	p.pc, p.sub = nil, nil
 	p.mu.Unlock()
+	p.typing.close()
+	p.editor.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
 	}
