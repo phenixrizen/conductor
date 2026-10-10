@@ -10,8 +10,11 @@ user's), never the newest copy in the cache.
     python3 scripts/codex_review.py "<focus: the risks this change touches>"
 
 It reviews the commits origin/main...HEAD (the plugin's --base), not the
-working tree, and waits for the result. Extra plugin flags go before the
-focus (--base <ref> replaces origin/main).
+working tree, and waits for the result, in the directory it is run from.
+Extra plugin flags go before the focus (--base <ref> replaces origin/main);
+--cwd and -C are refused, since the installation is chosen for this
+repository. The registry is under CLAUDE_CONFIG_DIR when that is set, as
+Claude Code's own is.
 """
 from __future__ import annotations
 
@@ -22,20 +25,38 @@ import subprocess
 import sys
 
 PLUGIN = "codex@openai-codex"
-REGISTRY = Path(os.path.expanduser("~/.claude/plugins/installed_plugins.json"))
 SCRIPT = "scripts/codex-companion.mjs"
+DIRECTORY_FLAGS = ("--cwd", "-C")
 
 
 class NotInstalled(Exception):
     pass
 
 
-def install_root(registry: dict, project: Path) -> Path:
+def registry_path(env: dict[str, str]) -> Path:
+    """Claude Code's plugin registry: under CLAUDE_CONFIG_DIR, else ~/.claude."""
+    return Path(os.path.expanduser(env.get("CLAUDE_CONFIG_DIR") or "~/.claude")) / "plugins/installed_plugins.json"
+
+
+def repository(path: Path) -> Path:
+    """The repository path belongs to, the same for its main checkout and every
+    linked worktree (git's common directory); path itself outside git."""
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+        return Path(out).resolve()
+    except (OSError, subprocess.CalledProcessError):
+        return path.resolve()
+
+
+def install_root(registry: dict, project: Path, repo=repository) -> Path:
     """The installPath of the plugin's installation that applies to project:
-    the one installed for project itself, else the one installed for the user;
-    two that apply equally are refused rather than guessed between."""
+    the one installed for project's repository (from any of its worktrees),
+    else the one installed for the user; two that apply equally are refused
+    rather than guessed between."""
     entries = registry.get("plugins", {}).get(PLUGIN, [])
-    here = [e for e in entries if e.get("projectPath") and Path(e["projectPath"]).resolve() == project.resolve()]
+    mine = repo(project)
+    here = [e for e in entries if e.get("projectPath") and repo(Path(e["projectPath"])) == mine]
     user = [e for e in entries if e.get("scope") == "user" and not e.get("projectPath")]
     for found in (here, user):
         if len(found) > 1:
@@ -49,10 +70,13 @@ def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__.strip() if __doc__ else "")
         return 0 if argv else 2
-    project = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True).stdout.strip())
+    if any(a in DIRECTORY_FLAGS or a.startswith("--cwd=") for a in argv):
+        sys.stderr.write("codex_review: run it from the repository to review; --cwd and -C are refused\n")
+        return 2
     try:
-        registry = json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
-        root = install_root(registry, project)
+        reg = registry_path(dict(os.environ))
+        registry = json.loads(reg.read_text()) if reg.exists() else {}
+        root = install_root(registry, Path.cwd())
     except NotInstalled as e:
         sys.stderr.write(f"codex_review: {e}\n")
         return 1
@@ -61,7 +85,7 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"codex_review: {script} is missing; reinstall {PLUGIN}\n")
         return 1
     flags = [] if "--base" in argv else ["--base", "origin/main"]
-    return subprocess.run(["node", str(script), "adversarial-review", "--wait", *flags, *argv], cwd=project).returncode
+    return subprocess.run(["node", str(script), "adversarial-review", "--wait", *flags, *argv]).returncode
 
 
 if __name__ == "__main__":

@@ -692,7 +692,10 @@ request each from main.
   found the registry can list the plugin per project as well as for the
   user, so the lookup became `scripts/codex_review.py`: this repository's
   installation, else the user's, an ambiguous registry refused (unit tests
-  with another project's entry listed first).
+  with another project's entry listed first). The third pass found three
+  more, taken: a linked worktree now finds its main checkout's installation
+  (git's common directory), the registry follows `CLAUDE_CONFIG_DIR`, and
+  `--cwd`/`-C` are refused, the review running where the script is run.
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
