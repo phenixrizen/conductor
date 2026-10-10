@@ -250,14 +250,26 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 		t.Fatalf("with --server-config: %+v\nwant the deny list %q", got, want)
 	}
 
+	// A file it cannot read or parse, and a relative dataDir or
+	// catalogPath, which serve resolves against a directory the host
+	// cannot know, stop it: what they name would go unrefused.
 	got = nil
-	for _, bad := range []string{filepath.Join(dir, "missing.json"), writeServeConfig(t, t.TempDir(), `{"dataDirectory":"x"}`)} {
-		code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", bad, "--", "sh")
-		if code != 2 || err == nil || !strings.Contains(err.Error(), "--server-config") {
-			t.Errorf("%s: exit %d, %v", bad, code, err)
+	for _, c := range []struct{ path, want string }{
+		{filepath.Join(dir, "missing.json"), "read config"},
+		{writeServeConfig(t, t.TempDir(), `{"dataDirectory":"x"}`), "parse config"},
+		{writeServeConfig(t, t.TempDir(), `{"dataDir":"state"}`), "dataDir in "},
+		{writeServeConfig(t, t.TempDir(), `{"catalogPath":"agents.json"}`), "catalogPath in "},
+	} {
+		code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", c.path, "--", "sh")
+		if code != 2 || err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: exit %d, %v; want an error about %q", c.path, code, err, c.want)
 		}
 	}
+	t.Setenv("CONDUCTOR_DATA_DIR", "state")
+	if code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") {
+		t.Errorf("a relative CONDUCTOR_DATA_DIR: exit %d, %v", code, err)
+	}
 	if len(got) != 0 {
-		t.Fatalf("hosted with a config file it could not read: %+v", got)
+		t.Fatalf("hosted with server files it could not place: %+v", got)
 	}
 }

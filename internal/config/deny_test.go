@@ -83,22 +83,68 @@ func TestLocalFileDeny(t *testing.T) {
 	})
 
 	t.Run("the config file's dataDir and catalogPath, and the copies beside the two files", func(t *testing.T) {
-		home, cwd := setup(t)
+		home, _ := setup(t)
 		etc := t.TempDir()
 		data := filepath.Join(t.TempDir(), "data")
-		cfg := writeFile(t, filepath.Join(etc, "conductor.json"), `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"agents.json"}`)
-		// catalogPath is made absolute as serve makes it: against the working directory.
-		want := []string{data, filepath.Join(home, ".conductor"), cfg, filepath.Join(etc, "*conductor.json*"), filepath.Join(cwd, "agents.json"), filepath.Join(cwd, "*agents.json*")}
+		catalogFile := filepath.Join(etc, "agents", "..", "agents.json")
+		cfg := writeFile(t, filepath.Join(etc, "conductor.json"), `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"`+catalogFile+`"}`)
+		want := []string{data, filepath.Join(home, ".conductor"), cfg, filepath.Join(etc, "*conductor.json*"), filepath.Join(etc, "agents.json"), filepath.Join(etc, "*agents.json*")}
 		if got := deny(t, cfg); !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
 	})
 
-	t.Run("a relative path to the config file and its dataDir", func(t *testing.T) {
+	t.Run("a relative path to the config file", func(t *testing.T) {
 		home, cwd := setup(t)
-		writeFile(t, filepath.Join(cwd, "conf", "conductor.json"), `{"dataDir":"state"}`)
-		want := []string{filepath.Join(cwd, "state"), filepath.Join(home, ".conductor"), filepath.Join(cwd, "conf", "conductor.json"), filepath.Join(cwd, "conf", "*conductor.json*")}
+		writeFile(t, filepath.Join(cwd, "conf", "conductor.json"), `{}`)
+		want := []string{filepath.Join(home, ".conductor"), filepath.Join(cwd, "conf", "conductor.json"), filepath.Join(cwd, "conf", "*conductor.json*")}
 		if got := deny(t, filepath.Join("conf", "conductor.json")); !slices.Equal(got, want) {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+	})
+
+	// A relative dataDir or catalogPath is resolved by conductor serve
+	// against the directory it runs in, which need not be this one: the
+	// server below runs in its own directory, the session in a home that
+	// holds a directory of the same name. Neither is guessed at.
+	t.Run("a relative dataDir or catalogPath is refused", func(t *testing.T) {
+		for _, c := range []struct{ name, body, env, value, want string }{
+			{"dataDir in the file", `{"dataDir":"state"}`, "", "", "dataDir in "},
+			{"catalogPath in the file", `{"catalogPath":"agents.json"}`, "", "", "catalogPath in "},
+			{"dataDir in the file, a dot path", `{"dataDir":"./state"}`, "", "", "dataDir in "},
+			{"CONDUCTOR_DATA_DIR", `{}`, "CONDUCTOR_DATA_DIR", "state", "CONDUCTOR_DATA_DIR"},
+			{"CONDUCTOR_CATALOG_PATH", `{}`, "CONDUCTOR_CATALOG_PATH", "agents.json", "CONDUCTOR_CATALOG_PATH"},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				setup(t)
+				service := t.TempDir()
+				cfg := writeFile(t, filepath.Join(service, "conductor.json"), c.body)
+				if c.env != "" {
+					t.Setenv(c.env, c.value)
+				}
+				got, err := LocalFileDeny(cfg)
+				if err == nil || got != nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "absolute") {
+					t.Fatalf("%q, %v; want an error naming %q", got, err, c.want)
+				}
+				if c.env != "" {
+					// Without a config file too.
+					if got, err := LocalFileDeny(""); err == nil || got != nil || !strings.Contains(err.Error(), c.env) {
+						t.Fatalf("without a config file: %q, %v", got, err)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("an older conductor.d beside the config file, and ~/.conductor", func(t *testing.T) {
+		home, _ := setup(t)
+		service := t.TempDir()
+		cfg := writeFile(t, filepath.Join(service, "conductor.json"), `{}`)
+		old := filepath.Join(service, "conductor.d")
+		if err := os.Mkdir(old, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := deny(t, cfg), []string{old, filepath.Join(home, ".conductor"), cfg, filepath.Join(service, "*conductor.json*")}; !slices.Equal(got, want) {
 			t.Errorf("got %q\nwant %q", got, want)
 		}
 	})

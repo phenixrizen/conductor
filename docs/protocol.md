@@ -654,7 +654,8 @@ well; the copies are matched by name alone. Every one of these rules answers
 the data directory `CONDUCTOR_DATA_DIR` names or the server would choose, and
 `~/.conductor` in any case, the catalog file `CONDUCTOR_CATALOG_PATH` names,
 and the config file `conductor host --server-config` names with its `dataDir`
-and `catalogPath`. Saves and the editor's Neovim go through the same rules.
+and `catalogPath` (the host does not start when one of these paths is
+relative). Saves and the editor's Neovim go through the same rules.
 Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?, sha256?, mtime?}`
 followed by up to 1 MiB of bytes for text files; `sha256` (hex) and `mtime` (RFC 3339)

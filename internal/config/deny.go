@@ -30,10 +30,13 @@ func (c *Config) FileDeny(dirs ...string) []string {
 // finds its data directory as ResolveDataDir does. The default data
 // directory, ~/.conductor, is refused whichever directory that is, as are
 // the copies beside the config file and the catalog file. A config file that
-// cannot be read or parsed is an error: what it names would go unrefused.
-// Nothing is created or written.
+// cannot be read or parsed is an error, and so is a data directory or a
+// catalog file given as a relative path: conductor serve resolves it against
+// the directory it runs in, which a session elsewhere cannot know, and what
+// it names would go unrefused. Nothing is created or written.
 func LocalFileDeny(path string) ([]string, error) {
 	c := &Config{}
+	dataFrom, catalogFrom := "", ""
 	if path != "" {
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -46,21 +49,27 @@ func LocalFileDeny(path string) ([]string, error) {
 		if abs, err := filepath.Abs(path); err == nil {
 			c.Path = abs
 		}
+		dataFrom, catalogFrom = "dataDir in "+c.Path, "catalogPath in "+c.Path
 	}
 	if v := os.Getenv("CONDUCTOR_DATA_DIR"); v != "" {
-		c.DataDir = v
+		c.DataDir, dataFrom = v, "CONDUCTOR_DATA_DIR"
 	}
 	if v := os.Getenv("CONDUCTOR_CATALOG_PATH"); v != "" {
-		c.CatalogPath = v
+		c.CatalogPath, catalogFrom = v, "CONDUCTOR_CATALOG_PATH"
+	}
+	for _, f := range []struct{ from, p string }{{dataFrom, c.DataDir}, {catalogFrom, c.CatalogPath}} {
+		if f.p != "" && !filepath.IsAbs(f.p) {
+			return nil, fmt.Errorf("%s is %q, a path relative to the directory conductor serve runs in, which is not known here: give it as an absolute path", f.from, f.p)
+		}
 	}
 	if c.CatalogPath != "" {
-		if abs, err := filepath.Abs(c.CatalogPath); err == nil {
-			c.CatalogPath = abs
-		}
+		c.CatalogPath = filepath.Clean(c.CatalogPath)
 	}
 	// The directory chosen, or none where ResolveDataDir finds none (no home
 	// directory, an older directory it refuses): ~/.conductor stands below.
-	if _, err := c.ResolveDataDir(path); err != nil {
+	// An older conductor.d is looked for beside the config file, as serve
+	// looks for it, or without one in this process's working directory.
+	if _, err := c.ResolveDataDir(c.Path); err != nil {
 		c.DataDir = ""
 	}
 	var dirs []string
