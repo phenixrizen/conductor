@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -226,7 +227,8 @@ func (p *peer) handleFrame(f proto.Frame) {
 			}
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
-			if !p.typing.add(p.attached(sub), func() { p.submit(sub, m.Text) }) {
+			deadline := p.a.submitDeadline()
+			if !p.typing.add(p.attached(sub), func() { p.submit(sub, m.Text, deadline) }) {
 				p.a.local.Send(sub, queueFull(""))
 			}
 		case proto.CtlChat:
@@ -243,7 +245,8 @@ func (p *peer) handleFrame(f proto.Frame) {
 			if m.To != "" {
 				// Typed as a submit is, in its turn among them.
 				send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
-				if !p.typing.add(p.attached(sub), func() { p.chatSend(sub, send) }) {
+				deadline := p.a.submitDeadline()
+				if !p.typing.add(p.attached(sub), func() { p.chatSend(sub, send, deadline) }) {
 					p.a.local.Send(sub, queueFull(msg.ID))
 				}
 			}
@@ -253,7 +256,8 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
 				return
 			}
-			if !p.typing.add(p.attached(sub), func() { p.chatSend(sub, m) }) {
+			deadline := p.a.submitDeadline()
+			if !p.typing.add(p.attached(sub), func() { p.chatSend(sub, m, deadline) }) {
 				p.a.local.Send(sub, queueFull(m.Ref))
 			}
 		case proto.CtlNvimOpen:
@@ -354,11 +358,16 @@ func (p *peer) attached(sub *session.Subscription) func() bool {
 	}
 }
 
-// submit types a viewer's line into the agent; its typing queue runs it.
-func (p *peer) submit(sub *session.Subscription, text string) {
-	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+// submit types a viewer's line into the agent by deadline; its typing
+// queue runs it. One whose deadline passed while it waited is refused.
+func (p *peer) submit(sub *session.Subscription, text string, deadline time.Time) {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	if _, err := p.a.local.Submit(ctx, session.Submission{Text: text, By: sub}); err != nil {
+	err := ctx.Err()
+	if err == nil {
+		_, err = p.a.local.Submit(ctx, session.Submission{Text: text, By: sub})
+	}
+	if err != nil {
 		code := "input_failed"
 		switch {
 		case errors.Is(err, session.ErrReadOnly):
@@ -373,11 +382,15 @@ func (p *peer) submit(sub *session.Subscription, text string) {
 }
 
 // chatSend types a kept chat message into the agent (or the run's member
-// send names); its typing queue runs it.
-func (p *peer) chatSend(sub *session.Subscription, send proto.ChatSend) {
-	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+// send names) by deadline, as submit does.
+func (p *peer) chatSend(sub *session.Subscription, send proto.ChatSend, deadline time.Time) {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	if err := p.a.local.ChatSend(ctx, sub, send); err != nil {
+	err := ctx.Err()
+	if err == nil {
+		err = p.a.local.ChatSend(ctx, sub, send)
+	}
+	if err != nil {
 		p.a.local.Send(sub, session.ChatErrorFrame(err, send.Ref))
 	}
 }

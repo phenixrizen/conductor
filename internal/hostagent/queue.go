@@ -21,8 +21,9 @@ const (
 	// viewer; one past it is refused (too_many_requests) and the connection
 	// stays.
 	maxQueued = 8
-	// submitTimeout bounds a submission from its turn: the wait for the
-	// session's turn, the pause and its Enter (the server's submitTimeout).
+	// submitTimeout bounds a submission from its arrival: its wait in the
+	// queue, the wait for the session's turn, the pause and its Enter (the
+	// server's submitTimeout, whose read loop has no queue).
 	submitTimeout = 10 * time.Second
 	// nvimOpenTimeout bounds an nvim_open (the server's).
 	nvimOpenTimeout = 15 * time.Second

@@ -30,11 +30,18 @@ type submitViewer struct {
 
 func newSubmitViewer(t *testing.T, pause time.Duration) *submitViewer {
 	t.Helper()
+	return newSubmitViewerWithin(t, pause, 0)
+}
+
+// newSubmitViewerWithin is newSubmitViewer whose host gives a submission
+// timeout from its arrival, instead of submitTimeout.
+func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitViewer {
+	t.Helper()
 	proc := sessiontest.NewFakeProc()
 	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
 	t.Cleanup(func() { proc.End(0) })
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout}
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
 	a.peers[p.id] = p
@@ -346,6 +353,41 @@ func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
 	}
 	v.quiet(300 * time.Millisecond)
 	v.p.typing.wait()
+}
+
+// A submission's time runs from its arrival: those that waited it out
+// behind one the process does not take are refused, never typed once the
+// process takes input again.
+func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	v := newSubmitViewerWithin(t, 10*time.Millisecond, timeout)
+	v.hold()
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 1"})
+	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: "ref-1"})
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 2"})
+	v.sync()
+	time.Sleep(2 * timeout)
+	// The first had the process's turn and was typed when it took input
+	// again; its time was out by then, so its Enter is left out.
+	if first := v.release(); first != "first" {
+		t.Fatalf("typed %q", first)
+	}
+	v.quiet(300 * time.Millisecond)
+	failed := map[string]int{}
+	for _, m := range v.sync() {
+		if m["t"] != proto.CtlError {
+			continue
+		}
+		if m["code"] != "input_failed" {
+			t.Fatalf("error %v", m)
+		}
+		id, _ := m["requestId"].(string)
+		failed[id]++
+	}
+	if failed[""] != 3 || failed["ref-1"] != 1 {
+		t.Fatalf("failed %v, want the three submits and ref-1", failed)
+	}
 }
 
 // The peer lets go of a subscription before the session's Detach, which
