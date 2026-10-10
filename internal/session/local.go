@@ -39,10 +39,11 @@ type Options struct {
 	// FileEdit decides whether a controller may edit files through the
 	// editor's Neovim (design round 12, F8): "control" (the default), "off".
 	FileEdit string
-	// FileDeny lists what no file read may reach, even inside the working
-	// directory: a directory with everything in it, or a single file. The
-	// server passes its data directory, whose catalog.json holds agent
-	// secrets, its config file and its catalog file; `conductor host` has none.
+	// FileDeny lists what no file read, save or editor may reach, even inside
+	// the working directory: a directory with everything in it, a single
+	// file, or a name entry (see insideAny); DenyList builds one. The server
+	// passes its data directory, whose catalog.json holds agent secrets, its
+	// config file and its catalog file; `conductor host` has none.
 	FileDeny []string
 	// Transport is reported in welcome messages ("ws" on the server, "webrtc"/"relay" on hosts).
 	Transport string
