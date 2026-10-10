@@ -45,15 +45,19 @@ var (
 		"clean.dat":      "x\n",
 		"proc.pdat":      "p\n",
 		"inc.idat":       "i\n",
+		"empty.edat":     "e\n",
+		"branch.bdat":    "b\n",
+		"tree.wdat":      "w\n",
 		"owner.own":      "o\n",
-		".gitattributes": "*.txt diff=conv\n*.dat filter=single\n*.pdat filter=proc\n*.idat filter=inc\n*.own filter=owner\n",
+		".gitattributes": "*.txt diff=conv\n*.dat filter=single\n*.pdat filter=proc\n*.idat filter=inc\n*.edat filter=\n*.bdat filter=onbranch\n*.wdat filter=inworktree\n*.own filter=owner\n",
 	}
 	Dirty = map[string]string{
-		"conv.txt":  "a\nb\n",
-		"clean.dat": "x\ny\n",
-		"proc.pdat": "p\nq\n",
-		"inc.idat":  "i\nj\n",
-		"new.txt":   "n\n",
+		"conv.txt":   "a\nb\n",
+		"clean.dat":  "x\ny\n",
+		"proc.pdat":  "p\nq\n",
+		"inc.idat":   "i\nj\n",
+		"empty.edat": "e\nf\n",
+		"new.txt":    "n\n",
 	}
 )
 
@@ -81,9 +85,11 @@ func Git(t testing.TB, dir string, args ...string) string {
 // when git is not installed, and sets HOME to a temporary directory so that
 // no configuration of the person running the tests applies. Armed, the
 // repository's own configuration names
-// a marking script as core.fsmonitor and diff.conv.textconv (from a file
-// include.path names), as the clean, smudge and process filters single, proc
-// and inc (inc from a file includeIf names), as core.pager and the pager of
+// a marking script as core.fsmonitor, diff.conv.textconv and the filter
+// with the empty name (from a file include.path names), as the clean,
+// smudge and process filters single, proc and inc (inc from a file an
+// includeIf gitdir: names), onbranch (included on a crew/ branch only) and
+// inworktree (included in a linked worktree only), as core.pager and the pager of
 // each command Conductor runs, as diff.external and diff.conv.command, as
 // core.editor and sequence.editor, as credential.helper and core.askPass,
 // as core.sshCommand, as the upload-pack and receive-pack of the remote
@@ -136,10 +142,17 @@ func New(t testing.TB, opts Options) *Repo {
 	remote := filepath.Join(base, "remote")
 	Git(t, base, "init", "-q", "--bare", remote)
 
+	filter := func(name, mark string) string {
+		return "[filter \"" + name + "\"]\n\tclean = " + cfgQuote(cmd(mark+"-clean")) + "\n\tsmudge = " + cfgQuote(cmd(mark+"-smudge")) + "\n\trequired = true\n"
+	}
 	included := filepath.Join(base, "included.cfg")
-	write(t, included, "[core]\n\tfsmonitor = "+cfgQuote(cmd("fsmonitor"))+"\n[diff \"conv\"]\n\ttextconv = "+cfgQuote(cmd("textconv"))+"\n", 0o644)
+	write(t, included, "[core]\n\tfsmonitor = "+cfgQuote(cmd("fsmonitor"))+"\n[diff \"conv\"]\n\ttextconv = "+cfgQuote(cmd("textconv"))+"\n"+filter("", "empty"), 0o644)
 	conditional := filepath.Join(base, "conditional.cfg")
-	write(t, conditional, "[filter \"inc\"]\n\tclean = "+cfgQuote(cmd("inc-clean"))+"\n\tsmudge = "+cfgQuote(cmd("inc-smudge"))+"\n\trequired = true\n", 0o644)
+	write(t, conditional, filter("inc", "inc"), 0o644)
+	onBranch := filepath.Join(base, "onbranch.cfg")
+	write(t, onBranch, filter("onbranch", "onbranch"), 0o644)
+	inWorktree := filepath.Join(base, "inworktree.cfg")
+	write(t, inWorktree, filter("inworktree", "inworktree"), 0o644)
 
 	set := [][2]string{
 		{"core.pager", cmd("pager")},
@@ -167,6 +180,8 @@ func New(t testing.TB, opts Options) *Repo {
 		{"log.showSignature", "true"},
 		{"include.path", included},
 		{"includeIf.gitdir:" + r.Dir + "/.path", conditional},
+		{"includeIf.onbranch:crew/**.path", onBranch},
+		{"includeIf.gitdir:" + r.Dir + "/.git/worktrees/**.path", inWorktree},
 	}
 	if opts.HooksPath {
 		set = append(set, [2]string{"core.hooksPath", hooks})

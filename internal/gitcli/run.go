@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/phenixrizen/conductor/internal/pty"
@@ -31,7 +32,16 @@ import (
 //   - each subcommand Conductor runs gets the options (commandOptions) that
 //     keep external diffs, text conversion and the submodules' own git out;
 //   - the clean, smudge and process filters the configuration names are
-//     turned off by name (filterArgs), git having no switch for all of them.
+//     turned off by name (filterArgs), git having no switch for all of
+//     them: every one, the global configuration's too (a filter such as
+//     Git LFS's reads the repository's configuration for programs of its
+//     own), so a checkout writes files as the repository stores them.
+//
+// The names are read in the directory the command runs in, just before it,
+// so a conditional include (includeIf onbranch:, gitdir:) counts as it will
+// for the command. A worktree's checkout reads its configuration only once
+// the worktree exists, on its new branch, so making one is two commands
+// (AddWorktree), and Run refuses a worktree add that checks out.
 //
 // The person's own identity and settings in the global configuration still
 // apply; Conductor commits nothing and signs nothing.
@@ -113,6 +123,9 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("git: no command")
 	}
+	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" && !slices.Contains(args, "--no-checkout") {
+		return "", errors.New("git worktree add: a worktree is checked out by AddWorktree")
+	}
 	filters, err := filterArgs(ctx, dir, args)
 	if err != nil {
 		return "", err
@@ -126,6 +139,25 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		return "", gitError(ctx, args[0], stderr, err)
 	}
 	return out, nil
+}
+
+// AddWorktree adds a worktree of the repository repo is in at path, on a
+// new branch made from rev, and checks it out: git worktree add
+// --no-checkout -b branch path rev, then git reset --hard in the new
+// worktree, whose filter look-up (filterArgs) then sees the configuration
+// its checkout reads, the includes that apply on its branch and in its git
+// directory among it. No hook runs (no post-checkout, no
+// reference-transaction) and no filter; git makes the parent directories
+// of path.
+func AddWorktree(ctx context.Context, repo, path, branch, rev string) error {
+	if strings.HasPrefix(branch, "-") || strings.HasPrefix(path, "-") || strings.HasPrefix(rev, "-") {
+		return fmt.Errorf("git worktree add: invalid branch, path or revision")
+	}
+	if _, err := Run(ctx, repo, "worktree", "add", "--no-checkout", "-b", branch, path, rev); err != nil {
+		return err
+	}
+	_, err := Run(ctx, path, "reset", "--hard", "-q", "--no-recurse-submodules", "HEAD")
+	return err
 }
 
 // baseArgs are the options every git Conductor runs starts with.
@@ -163,20 +195,14 @@ func gitError(ctx context.Context, sub, stderr string, err error) error {
 	return fmt.Errorf("git %s: %w", sub, err)
 }
 
-// filterArgs are the -c options that turn off the clean, smudge and process
-// filters the configuration for dir names (and that no filter is
-// required), read just before the command. A command that only reads
-// turns off every one, wherever it is defined. worktree add, which checks
-// files out, turns off those the repository's own configuration defines
-// (its local and worktree files and what they include) and keeps the ones
-// configured outside it, the person's system or global configuration (Git
-// LFS's, for one), so that the files come out as a checkout makes them.
+// filterArgs are the -c options that turn off every clean, smudge and
+// process filter the configuration for dir names (and that none is
+// required), read in dir just before the command.
 func filterArgs(ctx context.Context, dir string, args []string) ([]string, error) {
 	if noFilters[args[0]] {
 		return nil, nil
 	}
-	checkout := args[0] == "worktree" && len(args) > 1 && args[1] == "add"
-	names, err := filterNames(ctx, dir, checkout)
+	names, err := filterNames(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -201,67 +227,34 @@ func filterArgs(ctx context.Context, dir string, args []string) ([]string, error
 const filterKeys = `^filter\..*\.(clean|smudge|process)$`
 
 // filterNames lists the names of the filters the configuration for dir
-// gives a program, each once: only those in the repository's own files
-// when repoOnly (all of them with a git older than 2.26, which cannot say
-// where a value comes from), else all of them.
-func filterNames(ctx context.Context, dir string, repoOnly bool) ([]string, error) {
-	var names []string
-	seen := map[string]bool{}
-	add := func(key string) {
-		name, ok := strings.CutPrefix(key, "filter.")
-		if i := strings.LastIndexByte(name, '.'); ok && i > 0 {
-			if name = name[:i]; !seen[name] {
-				seen[name] = true
-				names = append(names, name)
-			}
-		}
-	}
-	if repoOnly {
-		out, ok, err := configList(ctx, dir, "--show-scope")
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			// Pairs of a scope and a key, each ended by a NUL.
-			f := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
-			for i := 0; i+1 < len(f); i += 2 {
-				if f[i] == "local" || f[i] == "worktree" {
-					add(f[i+1])
-				}
-			}
-			return names, nil
-		}
-	}
-	out, _, err := configList(ctx, dir)
-	if err != nil {
-		return nil, err
-	}
-	for _, key := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
-		add(key)
-	}
-	return names, nil
-}
-
-// configList is git config --get-regexp filterKeys for dir, with extra
-// options before it: the keys each ended by a NUL, "" when there is none.
-// ok is false when git does not know an option of extra.
-func configList(ctx context.Context, dir string, extra ...string) (out string, ok bool, err error) {
-	argv := append(baseArgs(), "-C", dir, "config")
-	argv = append(argv, extra...)
-	argv = append(argv, "-z", "--name-only", "--get-regexp", filterKeys)
+// gives a program, each once, the empty name too ([filter ""], which the
+// attribute filter= selects).
+func filterNames(ctx context.Context, dir string) ([]string, error) {
+	argv := append(baseArgs(), "-C", dir, "config", "-z", "--name-only", "--get-regexp", filterKeys)
 	out, stderr, err := execGit(ctx, argv)
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
-		return out, true, nil
 	case ctx.Err() != nil:
-		return "", false, ctx.Err()
+		return nil, ctx.Err()
 	case errors.As(err, &exit) && exit.ExitCode() == 1 && strings.TrimSpace(stderr) == "":
 		// No key matches.
-		return "", true, nil
-	case errors.As(err, &exit) && exit.ExitCode() == 129 && len(extra) > 0:
-		// An option this git does not know.
-		return "", false, nil
+		return nil, nil
+	default:
+		return nil, gitError(ctx, "config", stderr, err)
 	}
-	return "", false, gitError(ctx, "config", stderr, err)
+	var names []string
+	seen := map[string]bool{}
+	for _, key := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
+		rest, ok := strings.CutPrefix(key, "filter.")
+		i := strings.LastIndexByte(rest, '.')
+		if !ok || i < 0 {
+			continue
+		}
+		if name := rest[:i]; !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }

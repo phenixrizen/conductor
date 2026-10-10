@@ -971,13 +971,15 @@ answers `not_a_repo`), and `git` must be on the server's `PATH` (otherwise it
 answers `launch_failed`: git is not installed on the server). Each member gets its own checkout and branch:
 
 ```
-git worktree add -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
+git worktree add --no-checkout -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
+git -C <cwd>/.conductor/worktrees/<run>/<member> reset --hard
 ```
 
 Conductor runs it, as every git it runs, without the programs the
-repository's configuration names: no hook (no `post-checkout`), and no
-filter the repository's own configuration defines; a filter from your
-global configuration, such as Git LFS's, still checks its files out. The
+repository's configuration names: no hook (no `post-checkout`) and no
+clean or smudge filter, your global configuration's included, so a file a
+filter stores differently comes out as the repository stores it (a Git LFS
+file as its pointer, until `git lfs checkout` in the worktree). The
 run's id is the crew's id and eight hex digits. A crew whose `cwd` is
 below the top of the repository starts in the same subdirectory of its
 worktree. The first worktree adds a `.conductor/` line to the repository's

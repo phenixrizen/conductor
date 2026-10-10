@@ -88,7 +88,7 @@ func TestGitReadsStartNoProgramTheRepositoryNames(t *testing.T) {
 	for _, hooksPath := range []bool{false, true} {
 		r := gitclitest.New(t, gitclitest.Options{HooksPath: hooksPath})
 		h := GitStatusPath(r.Dir, "", nil)
-		if h.Kind != "status" || h.Branch != "main" || h.Base == "" || len(h.Changes) != 5 || h.Added != 5 || h.Removed != 0 {
+		if h.Kind != "status" || h.Branch != "main" || h.Base == "" || len(h.Changes) != len(gitclitest.Dirty) || h.Added != len(gitclitest.Dirty) || h.Removed != 0 {
 			t.Fatalf("hooksPath %v: status %+v", hooksPath, h)
 		}
 		r.NoneFired(t, "the status")
@@ -106,7 +106,7 @@ func TestGitReadsStartNoProgramTheRepositoryNames(t *testing.T) {
 		if b := GitBranch(r.Dir); b != "main" {
 			t.Fatalf("branch %q", b)
 		}
-		if snap, ok := gitSnapshot(context.Background(), r.Dir); !ok || len(snap) != 5 {
+		if snap, ok := gitSnapshot(context.Background(), r.Dir); !ok || len(snap) != len(gitclitest.Dirty) {
 			t.Fatalf("the look after a tool call: %v %v", snap, ok)
 		}
 		r.NoneFired(t, "the log, the branch and the look")

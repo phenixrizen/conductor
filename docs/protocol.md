@@ -872,9 +872,10 @@ hex>`. Members that start `immediately` start at launch; an `after` member
 starts when the member it names first reports `done` once its own prompt is
 typed; a `manual` member waits for its start route. With `isolation: worktree`,
 `cwd` is the top of a git working tree or a directory in one, and each member
-gets `git -C <cwd> worktree add -b crew/<run>/<member>
-<cwd>/.conductor/worktrees/<run>/<member> HEAD`, a worktree of the whole
-repository, and starts in the directory of that worktree which `cwd` is of the
+gets `git -C <cwd> worktree add --no-checkout -b crew/<run>/<member>
+<cwd>/.conductor/worktrees/<run>/<member> HEAD` and then `git reset --hard`
+in that worktree (with no hook and no filter of the repository's), a
+worktree of the whole repository, and starts in the directory of that worktree which `cwd` is of the
 repository (`git rev-parse --show-prefix`), made when no commit has a file
 there. The first worktree also adds a `.conductor/` line, once, to the file
 `git -C <cwd> rev-parse --git-path info/exclude` names (making `info/` when it

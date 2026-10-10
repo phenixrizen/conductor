@@ -216,13 +216,11 @@ func gitDirTree(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{
-		{"worktree", "add", "-q", "-b", "side", filepath.Join(root, "wt"), "HEAD"},
-		{"init", "-q", "--bare", filepath.Join(root, "store")},
-	} {
-		if _, err := gitcli.Run(context.Background(), root, args...); err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
+	if err := gitcli.AddWorktree(context.Background(), root, filepath.Join(root, "wt"), "side", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitcli.Run(context.Background(), root, "init", "-q", "--bare", filepath.Join(root, "store")); err != nil {
+		t.Fatal(err)
 	}
 	for _, d := range []string{"linked", "sub", "pointed"} {
 		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
