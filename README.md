@@ -151,7 +151,9 @@ relay only for the pairs ICE cannot connect. A switchyard that admits
 each address may hold `openHostSessions` live sessions (4), register
 `openHostRegistrationsPerMinute` times (6) and relay `openHostRelayKBps`
 (128 KiB/s) for all its sessions together; a host token (`rendezvous.token`) marks a trusted machine
-outside those limits. The switchyard launches nothing of its own:
+outside those limits. A session such a limit refuses is tried again for a
+few minutes (a slot frees as another session ends), and its Activity says
+it is not shared yet and why. The switchyard launches nothing of its own:
 
 ```bash
 CONDUCTOR_SWITCHYARD_OPEN_HOSTS=1 CONDUCTOR_MAX_SESSIONS=500 CONDUCTOR_MAX_VIEWERS_PER_SESSION=8 CONDUCTOR_HOST_TOKENS=a-host-token CONDUCTOR_REACH=manual CONDUCTOR_TLS_LISTEN=:443 CONDUCTOR_TLS_ACME=1 conductor switchyard --listen :80

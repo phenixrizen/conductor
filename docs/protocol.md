@@ -169,8 +169,12 @@ View-role INPUT, `resize`, `submit` and `chat_send` are dropped by the server be
 
 `GET /ws/host?token=…` (host token or workbench token; on a switchyard with
 `switchyard.openHosts`, none at all: an open host, limited per address in how
-often it registers, how many live sessions it holds and what it relays). Text
-frames are JSON; binary
+often it registers, how many live sessions it holds and what it relays). A
+refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
+`429 rate_limited` (registrations), `429 open_host_limit` (live sessions),
+`401 unauthorized`. A server publishing its sessions tries a 429 again after
+15 s, 30 s, 1 min, 2 min and 2 min, or after the `Retry-After` it is given
+when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
 
 Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -152,19 +154,48 @@ func (s *Server) publish(local *session.Local) {
 			s.pubMu.Unlock()
 			close(pending)
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		pub, err := p.Publish(ctx, local)
-		if err != nil {
-			s.log.Warn("publish to the rendezvous failed", "session", id, "err", err.Error())
-			local.Record(session.ActivityEntry{Type: session.ActivityError, Message: "not published to the rendezvous: " + err.Error()})
+		setWhy := func(why string) {
 			s.pubMu.Lock()
 			if s.pubErr == nil {
 				s.pubErr = map[string]string{}
 			}
-			s.pubErr[id] = err.Error()
+			s.pubErr[id] = why
 			s.pubMu.Unlock()
-			return
+		}
+		// A refusal that passes with time (the switchyard's 429: a rate, or
+		// its limit of live sessions per address) is tried again a few times
+		// over some minutes. Not publishing is never the agent's error: the
+		// session's activity says so as a status line, not an "error", which
+		// put a red badge on a crew member that had done nothing (round 14).
+		var pub PublishedSession
+		for attempt := 0; ; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			var err error
+			pub, err = p.Publish(ctx, local)
+			cancel()
+			if err == nil {
+				if attempt > 0 {
+					local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: fmt.Sprintf("shared through the switchyard after %d tries", attempt+1)})
+				}
+				break
+			}
+			wait, again := publishRetry(err, attempt)
+			s.log.Warn("publish to the rendezvous failed", "session", id, "err", err.Error(), "tryAgain", again)
+			if !again {
+				local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: "not shared through the switchyard: " + err.Error()})
+				setWhy(err.Error())
+				return
+			}
+			if attempt == 0 {
+				local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: "not shared through the switchyard yet: " + err.Error() + "; trying again"})
+			}
+			setWhy(err.Error() + "; trying again")
+			select {
+			case <-time.After(wait):
+			case <-local.Ended():
+				setWhy(err.Error())
+				return
+			}
 		}
 		s.pubMu.Lock()
 		if s.published == nil {
@@ -205,6 +236,13 @@ func (s *Server) awaitPublication(ctx context.Context, id string) (PublishedSess
 		select {
 		case <-pending:
 		case <-ctx.Done():
+			// Tried again after a refusal: what it said; else still connecting.
+			s.pubMu.Lock()
+			why = s.pubErr[id]
+			s.pubMu.Unlock()
+			if why != "" {
+				return nil, why
+			}
 			return nil, "still connecting to the switchyard"
 		}
 		s.pubMu.Lock()
@@ -291,4 +329,28 @@ func (s *Server) endLinks(id string) {
 			cancel()
 		}
 	})
+}
+
+// publicationWait is how long a link request waits for a publication under
+// way before it makes a local link that says why.
+var publicationWait = 10 * time.Second
+
+// publishBackoff is how long a publication refused for now waits before each
+// try again: about six minutes in all.
+var publishBackoff = []time.Duration{15 * time.Second, 30 * time.Second, 60 * time.Second, 2 * time.Minute, 2 * time.Minute}
+
+// publishRetry says whether a failed publication is tried again after
+// attempt, and when: a refusal that passes with time (Retryable), at most
+// len(publishBackoff) times, after the backoff or the wait the rendezvous
+// asked for, whichever is longer (at most five minutes).
+func publishRetry(err error, attempt int) (time.Duration, bool) {
+	var r interface{ Retryable() (bool, time.Duration) }
+	if !errors.As(err, &r) || attempt >= len(publishBackoff) {
+		return 0, false
+	}
+	ok, after := r.Retryable()
+	if !ok {
+		return 0, false
+	}
+	return max(publishBackoff[attempt], min(after, 5*time.Minute)), true
 }

@@ -459,3 +459,11 @@ describe('webhookHosts', () => {
     expect(webhookHosts([{ url: 'not a url', events: ['error'] }], 'error')).toEqual(['not a url'])
   })
 })
+
+describe('a note that the session is not shared', () => {
+  it('is no event: no badge, no alert (round 14: a refused publication was an "error" on the agent)', () => {
+    for (const message of ['not shared through the switchyard yet: the switchyard refused it (429 open_host_limit): …; trying again', 'not shared through the switchyard: dial tcp: connection refused', 'shared through the switchyard after 3 tries']) {
+      expect(eventTypeOf({ at: '2026-10-09T12:00:00Z', type: 'status', message })).toBe(null)
+    }
+  })
+})

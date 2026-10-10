@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +245,18 @@ func TestLinkOnAnUnpublishedSessionSaysWhy(t *testing.T) {
 	if !strings.HasPrefix(out["url"].(string), "http://example.test/join/") {
 		t.Fatalf("not a local link: %v", out["url"])
 	}
+	// Not publishing is no error of the agent's: a status line says it.
+	d, _ := local.srv.Registry().Get(id)
+	var noted bool
+	for _, e := range d.(*session.Local).Activity() {
+		if e.Type == session.ActivityError {
+			t.Fatalf("an error entry for a switchyard that is down: %+v", e)
+		}
+		noted = noted || (e.Type == session.ActivityStatus && strings.HasPrefix(e.Message, "not shared through the switchyard: "))
+	}
+	if !noted {
+		t.Fatalf("no status line: %+v", d.(*session.Local).Activity())
+	}
 }
 
 // waitMembersPublished waits until every member of a run with a session is published.
@@ -462,5 +475,82 @@ func TestChatCrossesTheRendezvous(t *testing.T) {
 	}
 	if marker := far.expectChat(proto.ChatKindSentToAgent); marker["ref"] != m["id"] {
 		t.Fatalf("marker afar %v", marker)
+	}
+}
+
+// A publication the switchyard refuses for now (its 429: here its limit of
+// one live open session per address) is tried again, and once the slot is
+// free the session is shared after all. Meanwhile the session's activity
+// says so as a status line, never an "error" (round 14: a refused crew
+// member wore a red error badge for something it had not done), and a link
+// asked for says the switchyard's own words.
+func TestAPublicationRefusedForNowIsTriedAgain(t *testing.T) {
+	was, waited := publishBackoff, publicationWait
+	publishBackoff = slices.Repeat([]time.Duration{100 * time.Millisecond}, 60)
+	publicationWait = 300 * time.Millisecond
+	t.Cleanup(func() { publishBackoff, publicationWait = was, waited })
+	rendezvous := newTestEnv(t, func(c *config.Config) {
+		c.PublicURL = "https://rendezvous.example.net"
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+		c.Switchyard.OpenHostSessions = 1
+		c.Switchyard.OpenHostRegistrationsPerMinute = 600
+	})
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, HostName: "home", RelayOnly: true}})
+	first := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(first) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if local.srv.publishedOf(first) == nil {
+		t.Fatal("the first session was never published")
+	}
+	second := local.createSession("cat")
+	d, _ := local.srv.Registry().Get(second)
+	activity := func() []session.ActivityEntry { return d.(*session.Local).Activity() }
+	waitFor := func(what string, ok func([]session.ActivityEntry) bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !ok(activity()) {
+			if time.Now().After(deadline) {
+				t.Fatalf("no %s in %+v", what, activity())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	waitFor("note of the refusal", func(es []session.ActivityEntry) bool {
+		for _, e := range es {
+			if e.Type == session.ActivityStatus && strings.Contains(e.Message, "not shared through the switchyard yet") && strings.Contains(e.Message, "open_host_limit") {
+				return true
+			}
+		}
+		return false
+	})
+	resp, out := local.do("POST", "/api/sessions/"+second+"/links", adminToken, map[string]any{"role": "view"})
+	if rv, _ := out["rendezvous"].(map[string]any); resp.StatusCode != http.StatusCreated || rv == nil || !strings.Contains(fmt.Sprint(rv["error"]), "trying again") {
+		t.Fatalf("a link while refused: %d %v", resp.StatusCode, out)
+	}
+	// The first ends: its slot is free, and the second is shared on a later try.
+	local.do("DELETE", "/api/sessions/"+first, adminToken, nil)
+	deadline = time.Now().Add(15 * time.Second)
+	for local.srv.publishedOf(second) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if local.srv.publishedOf(second) == nil {
+		t.Fatalf("never shared after the slot freed: %+v", activity())
+	}
+	waitFor("note of the share", func(es []session.ActivityEntry) bool {
+		for _, e := range es {
+			if e.Type == session.ActivityStatus && strings.HasPrefix(e.Message, "shared through the switchyard after") {
+				return true
+			}
+		}
+		return false
+	})
+	for _, e := range activity() {
+		if e.Type == session.ActivityError {
+			t.Fatalf("an error entry for a refusal: %+v", e)
+		}
 	}
 }

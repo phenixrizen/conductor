@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -374,9 +376,12 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.Token != "" {
 		header["Authorization"] = []string{"Bearer " + a.opts.Token}
 	}
-	c, _, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header})
+	c, resp, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header})
 	cancel()
 	if err != nil {
+		if refused := refusal(resp); refused != nil {
+			return nil, proto.Registered{}, refused
+		}
 		return nil, proto.Registered{}, err
 	}
 	c.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
@@ -979,4 +984,57 @@ func (a *agent) heldLinks() ([]string, bool) {
 		out = append(out, id)
 	}
 	return out, true
+}
+
+// RefusedError is the rendezvous answering a registration with an HTTP
+// error rather than the WebSocket: its status, the code and words of its
+// JSON error, and how long it asked to wait (Retry-After), when it said.
+type RefusedError struct {
+	Status     int
+	Code       string
+	Message    string
+	RetryAfter time.Duration
+}
+
+func (e *RefusedError) Error() string {
+	msg := e.Message
+	if msg == "" {
+		msg = http.StatusText(e.Status)
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("the switchyard refused it (%d %s): %s", e.Status, e.Code, msg)
+	}
+	return fmt.Sprintf("the switchyard refused it (%d): %s", e.Status, msg)
+}
+
+// Retryable says whether the refusal passes with time: 429, a rate or a
+// limit of live sessions per address (round 14: a crew launched from a home
+// running other sessions met the switchyard's limits and was never
+// published), and how long to wait first, when the rendezvous said.
+func (e *RefusedError) Retryable() (bool, time.Duration) {
+	return e.Status == http.StatusTooManyRequests, e.RetryAfter
+}
+
+// refusal reads a refused handshake's response (the WebSocket library keeps
+// the first 1024 bytes of its body) into a RefusedError; nil for none.
+func refusal(resp *http.Response) *RefusedError {
+	if resp == nil || resp.StatusCode == http.StatusSwitchingProtocols || resp.StatusCode < 400 {
+		return nil
+	}
+	e := &RefusedError{Status: resp.StatusCode}
+	if resp.Body != nil {
+		var body struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if b, err := io.ReadAll(io.LimitReader(resp.Body, 1024)); err == nil && json.Unmarshal(b, &body) == nil {
+			e.Code, e.Message = body.Error.Code, body.Error.Message
+		}
+	}
+	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
+		e.RetryAfter = time.Duration(min(s, 3600)) * time.Second
+	}
+	return e
 }
