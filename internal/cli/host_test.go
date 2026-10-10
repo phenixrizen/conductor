@@ -276,6 +276,18 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	if code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") {
 		t.Errorf("a relative CONDUCTOR_DATA_DIR: exit %d, %v", code, err)
 	}
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	// The desktop app's settings there but not readable for their data directory.
+	settings := filepath.Join(home, ".config", "conductor-desktop", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{oops`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), settings) {
+		t.Errorf("unreadable desktop settings: exit %d, %v", code, err)
+	}
 	if len(got) != 0 {
 		t.Fatalf("hosted with server files it could not place: %+v", got)
 	}

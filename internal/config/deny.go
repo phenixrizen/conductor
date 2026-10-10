@@ -2,8 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,11 +41,13 @@ func (c *Config) fileDeny(dirs, files []string) []string {
 // finds its data directory as ResolveDataDir does. The default data
 // directory, ~/.conductor, is refused whichever directory that is, as are
 // the copies beside the config file and the catalog file, and the
-// directories and settings of the desktop app's server (desktopFiles). A config file that
-// cannot be read or parsed is an error, and so is a data directory or a
-// catalog file given as a relative path: conductor serve resolves it against
-// the directory it runs in, which a session elsewhere cannot know, and what
-// it names would go unrefused. Nothing is created or written.
+// directories and settings of the desktop app's server (desktopFiles). A
+// config file that cannot be read or parsed is an error, and so are the
+// desktop app's settings when they are there but cannot be read, and a data
+// directory or a catalog file given as a relative path: conductor serve
+// resolves it against the directory it runs in, which a session elsewhere
+// cannot know, and what it names would go unrefused. Nothing is created or
+// written.
 func LocalFileDeny(path string) ([]string, error) {
 	c := &Config{}
 	dataFrom, catalogFrom := "", ""
@@ -86,7 +90,10 @@ func LocalFileDeny(path string) ([]string, error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".conductor"))
 	}
-	desktopDirs, desktopSettings := desktopFiles()
+	desktopDirs, desktopSettings, err := desktopFiles()
+	if err != nil {
+		return nil, err
+	}
 	return c.fileDeny(append(dirs, desktopDirs...), desktopSettings), nil
 }
 
@@ -167,51 +174,73 @@ const maxDesktopSettings = 1 << 20
 // settings rather than with a config file (desktop/src/env.ts). The
 // directories: the app's own (desktopAppNames), which holds its settings
 // (desktop/src/main.ts) and, unless they say otherwise, the data directory
-// (conductor in it); the data directory its settings name, when that is an
-// absolute path; and, inside WSL, where the app on Windows runs the server,
-// the default it gives a server there, ~/.local/share/conductor/data
-// (desktop/src/settings.ts, wslDefaults). The files: each settings.json, so
-// that one which is a symbolic link is refused at its target too, with the
-// copies beside it, as a config file is. The settings of the app on Windows
-// are not on this side, so a data directory they choose for the server
-// inside WSL is not known here. Only dataDir is read of the settings, which
-// hold many other keys; settings that cannot be read or parsed name nothing,
-// as the app then takes its defaults. Each path is named whether it exists or
-// not: one that does not denies nothing until it does (session.ResolvePath).
-func desktopFiles() (dirs, files []string) {
+// (conductor in it); the data directory its settings name; and, inside WSL,
+// where the app on Windows runs the server, the default it gives a server
+// there, ~/.local/share/conductor/data (desktop/src/settings.ts,
+// wslDefaults). The files: each settings.json, so that one which is a
+// symbolic link is refused at its target too, with the copies beside it, as
+// a config file is. The settings of the app on Windows are not on this side,
+// so a data directory they choose for the server inside WSL is not known
+// here. Each path is named whether it exists or not: one that does not
+// denies nothing until it does (session.ResolvePath). Settings that are
+// there but cannot be read for their data directory are an error
+// (desktopDataDir): the app may hold another in memory.
+func desktopFiles() (dirs, files []string, err error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".local", "share", "conductor", "data"))
 	}
-	base, err := os.UserConfigDir()
-	if err != nil || !filepath.IsAbs(base) {
-		return dirs, nil
+	base, berr := os.UserConfigDir()
+	if berr != nil || !filepath.IsAbs(base) {
+		return dirs, nil, nil
 	}
 	for _, name := range desktopAppNames {
 		app := filepath.Join(base, name)
 		settings := filepath.Join(app, "settings.json")
 		dirs = append(dirs, app)
 		files = append(files, settings)
-		if d := desktopDataDir(settings); d != "" {
+		d, err := desktopDataDir(settings)
+		if err != nil {
+			return nil, nil, fmt.Errorf("the desktop app's settings %s, which name its server's data directory: %w", settings, err)
+		}
+		if d != "" {
 			dirs = append(dirs, d)
 		}
 	}
-	return dirs, files
+	return dirs, files, nil
 }
 
 // desktopDataDir is the data directory the desktop app's settings file
-// names, or "" when it names none that is an absolute path or cannot be read.
-func desktopDataDir(file string) string {
+// names: "" when there is no such file or it names none, an error when the
+// file is there but cannot be read, is larger than maxDesktopSettings, is
+// not a JSON object, or names one that is not an absolute path. Only dataDir
+// is read of the settings, which hold many other keys.
+func desktopDataDir(file string) (string, error) {
 	f, err := os.Open(file)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxDesktopSettings+1))
+	if err != nil {
+		return "", err
+	}
+	if len(b) > maxDesktopSettings {
+		return "", fmt.Errorf("larger than %d bytes", maxDesktopSettings)
+	}
 	var settings struct {
 		DataDir string `json:"dataDir"`
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxDesktopSettings))
-	if err != nil || json.Unmarshal(b, &settings) != nil || !filepath.IsAbs(settings.DataDir) {
-		return ""
+	if err := json.Unmarshal(b, &settings); err != nil {
+		return "", err
 	}
-	return filepath.Clean(settings.DataDir)
+	if settings.DataDir == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(settings.DataDir) {
+		return "", fmt.Errorf("dataDir %q is not an absolute path", settings.DataDir)
+	}
+	return filepath.Clean(settings.DataDir), nil
 }

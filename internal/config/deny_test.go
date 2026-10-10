@@ -283,12 +283,30 @@ func TestLocalFileDeny(t *testing.T) {
 			t.Errorf("settings under both names: %q", got)
 		}
 		os.Remove(filepath.Join(renamed, "settings.json"))
-		for _, body := range []string{`{oops`, `{"dataDir":"relative/data"}`, `{"dataDir":7}`, `[]`, ``} {
+		// Settings without a data directory name the default, inside the
+		// app's directory.
+		for _, body := range []string{`{}`, `{"dataDir":""}`, `{"zoomLevel":1}`} {
 			writeFile(t, filepath.Join(app, "settings.json"), body)
 			if got := deny(t, ""); !slices.Equal(got, base) {
 				t.Errorf("settings %q: %q, want %q", body, got, base)
 			}
 		}
+		// Settings that are there but cannot be read for their data
+		// directory are an error: the app may hold another in memory.
+		for _, body := range []string{`{oops`, `{"dataDir":"relative/data"}`, `{"dataDir":7}`, `[]`, ``, `{"dataDir":"/x","pad":"` + strings.Repeat("p", 1<<20) + `"}`} {
+			writeFile(t, filepath.Join(app, "settings.json"), body)
+			if got, err := LocalFileDeny(""); err == nil || got != nil || !strings.Contains(err.Error(), filepath.Join(app, "settings.json")) {
+				t.Errorf("settings %.40q: %q, %v; want an error naming the file", body, got, err)
+			}
+		}
+		os.Remove(filepath.Join(app, "settings.json"))
+		if err := os.Mkdir(filepath.Join(app, "settings.json"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LocalFileDeny(""); err == nil {
+			t.Error("settings that are a directory: no error")
+		}
+		os.Remove(filepath.Join(app, "settings.json"))
 		// Settings that are a link to a file elsewhere: that file and the
 		// copies beside it are refused, as a config file's are.
 		dotfiles := filepath.Join(home, "dotfiles")
@@ -406,6 +424,15 @@ func TestLocalFileDenyFunc(t *testing.T) {
 	write(cfg, `{"dataDir":"`+third+`"}`)
 	if again := deny(); slices.Contains(again, root) || !slices.Equal(again, got) {
 		t.Errorf("the config file fixed: %q, want %q", again, got)
+	}
+	// The desktop app's settings broken later: the same.
+	write(settings, `{oops`)
+	if again := deny(); !slices.Contains(again, root) {
+		t.Errorf("desktop settings broken later: %q, want %s among them", again, root)
+	}
+	write(settings, `{"dataDir":"`+second+`"}`)
+	if again := deny(); slices.Contains(again, root) {
+		t.Errorf("desktop settings fixed: %q", again)
 	}
 	// A data directory given as a link that is pointed elsewhere later: the
 	// directory it led to before stays refused, beside the new one.
