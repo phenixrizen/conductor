@@ -52,16 +52,17 @@ type requestQueue struct {
 
 type queued struct {
 	run func()
-	// gone is closed once the request's viewer is gone (its subscription
-	// ended): a request still waiting then is dropped.
-	gone <-chan struct{}
+	// live says, when the request's turn comes, whether its viewer is
+	// still there; a request whose viewer is gone is dropped. Nil is
+	// always there.
+	live func() bool
 }
 
 // add runs fn after the requests added before it, or reports false, running
 // nothing, when maxQueued wait already or the queue is closed. fn is dropped
-// if gone is closed before its turn; the request added to an idle queue has
-// its turn at once. add never blocks.
-func (q *requestQueue) add(gone <-chan struct{}, fn func()) bool {
+// if live reports false when its turn comes; the request added to an idle
+// queue has its turn at once. add never blocks.
+func (q *requestQueue) add(live func() bool, fn func()) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	switch {
@@ -76,7 +77,7 @@ func (q *requestQueue) add(gone <-chan struct{}, fn func()) bool {
 	case len(q.waiting) >= maxQueued:
 		return false
 	default:
-		q.waiting = append(q.waiting, queued{run: fn, gone: gone})
+		q.waiting = append(q.waiting, queued{run: fn, live: live})
 	}
 	return true
 }
@@ -85,30 +86,29 @@ func (q *requestQueue) run(fn func(), done chan struct{}) {
 	defer close(done)
 	for fn != nil {
 		fn()
-		q.mu.Lock()
 		fn = q.next()
-		if fn == nil {
-			q.running = false
-		}
-		q.mu.Unlock()
 	}
 }
 
 // next takes the first waiting request whose viewer is still there, dropping
-// those before it whose viewer is gone; nil when none is left. The caller
-// holds mu.
+// those before it whose viewer is gone; nil, the queue idle, when none is
+// left. live is asked without the queue's lock.
 func (q *requestQueue) next() func() {
-	for len(q.waiting) > 0 {
+	for {
+		q.mu.Lock()
+		if len(q.waiting) == 0 {
+			q.running = false
+			q.mu.Unlock()
+			return nil
+		}
 		r := q.waiting[0]
 		q.waiting[0] = queued{}
 		q.waiting = q.waiting[1:]
-		select {
-		case <-r.gone:
-		default:
+		q.mu.Unlock()
+		if r.live == nil || r.live() {
 			return r.run
 		}
 	}
-	return nil
 }
 
 // close drops the requests that wait and refuses those added after it. The

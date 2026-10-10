@@ -348,6 +348,35 @@ func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
 	v.p.typing.wait()
 }
 
+// The peer lets go of a subscription before the session's Detach, which
+// ends the viewer's editors first and may wait for Neovim to exit: what
+// waits is dropped from the moment the peer lets go, though the
+// subscription has not ended yet.
+func TestAViewersWaitingRequestsAreDroppedOnceThePeerLetsGo(t *testing.T) {
+	v := newSubmitViewer(t, 10*time.Millisecond)
+	v.hold()
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits"})
+	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: "ref-1"})
+	v.sync()
+	// What detachDataChannel and startRelay do before Detach.
+	v.p.mu.Lock()
+	sub := v.p.sub
+	v.p.sub = nil
+	v.p.mu.Unlock()
+	defer v.p.a.local.Detach(sub)
+	if typed := v.typed(v.release(), 2); fmt.Sprint(typed) != fmt.Sprint([]string{"first", "\r"}) {
+		t.Fatalf("typed %q", typed)
+	}
+	v.quiet(300 * time.Millisecond)
+	v.p.typing.wait()
+	select {
+	case <-sub.Done():
+		t.Fatal("the subscription ended: the test did not hold it")
+	default:
+	}
+}
+
 // A viewer that moves to the relay attaches again: what it sent over the
 // data channel and waits is dropped with the subscription it came on.
 func TestAViewerMovingToTheRelayDropsWhatWaits(t *testing.T) {

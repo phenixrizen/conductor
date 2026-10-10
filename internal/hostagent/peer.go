@@ -226,7 +226,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 			}
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
-			if !p.typing.add(sub.Done(), func() { p.submit(sub, m.Text) }) {
+			if !p.typing.add(p.attached(sub), func() { p.submit(sub, m.Text) }) {
 				p.a.local.Send(sub, queueFull(""))
 			}
 		case proto.CtlChat:
@@ -243,7 +243,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 			if m.To != "" {
 				// Typed as a submit is, in its turn among them.
 				send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
-				if !p.typing.add(sub.Done(), func() { p.chatSend(sub, send) }) {
+				if !p.typing.add(p.attached(sub), func() { p.chatSend(sub, send) }) {
 					p.a.local.Send(sub, queueFull(msg.ID))
 				}
 			}
@@ -253,7 +253,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
 				return
 			}
-			if !p.typing.add(sub.Done(), func() { p.chatSend(sub, m) }) {
+			if !p.typing.add(p.attached(sub), func() { p.chatSend(sub, m) }) {
 				p.a.local.Send(sub, queueFull(m.Ref))
 			}
 		case proto.CtlNvimOpen:
@@ -333,6 +333,24 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeSessionEnded, "the session has ended"))
 			}
 		}
+	}
+}
+
+// attached says whether sub is still the viewer's attachment: neither let go
+// by the peer (its data channel closed, a move to the relay, the viewer
+// gone), which the peer does before the session's Detach (that ends the
+// viewer's editors first, and may wait for Neovim to exit), nor ended by the
+// session (a revoked link, a slow consumer).
+func (p *peer) attached(sub *session.Subscription) func() bool {
+	return func() bool {
+		select {
+		case <-sub.Done():
+			return false
+		default:
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.sub == sub && !p.closed
 	}
 }
 

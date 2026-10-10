@@ -3,6 +3,7 @@ package hostagent
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,7 +83,9 @@ func TestRequestQueueEndsItsGoroutineWhenIdle(t *testing.T) {
 func TestRequestQueueDropsWhatWaitsForAViewerGone(t *testing.T) {
 	var q requestQueue
 	release := make(chan struct{})
-	gone, here := make(chan struct{}), make(chan struct{})
+	var gone atomic.Bool
+	untilGone := func() bool { return !gone.Load() }
+	here := func() bool { return true }
 	var mu sync.Mutex
 	var ran []string
 	note := func(s string) func() {
@@ -92,12 +95,12 @@ func TestRequestQueueDropsWhatWaitsForAViewerGone(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	q.add(gone, func() { <-release })
-	q.add(gone, note("gone 1"))
+	q.add(untilGone, func() { <-release })
+	q.add(untilGone, note("gone 1"))
 	q.add(here, note("here 1"))
-	q.add(gone, note("gone 2"))
+	q.add(untilGone, note("gone 2"))
 	q.add(here, note("here 2"))
-	close(gone)
+	gone.Store(true)
 	close(release)
 	q.wait()
 	mu.Lock()
