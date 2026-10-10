@@ -22,8 +22,13 @@ import (
 // errGitDir refuses a save or an editor on a file in a repository's .git.
 var errGitDir = errors.New("session: a repository's .git is read only here")
 
-// maxGitFile bounds what is read of a .git file, a commondir or a HEAD.
-const maxGitFile = 4096
+// What is read of a repository's files, as git reads them: a .git file or
+// a commondir whole, up to the 1 MiB git takes of a .git file; of a HEAD
+// its first bytes, which are all git looks at to tell a git directory.
+const (
+	maxGitFile = 1 << 20
+	headPrefix = 255
+)
 
 // gitMetadata reports whether a file request for raw, which ResolvePath
 // resolved to real, is for a repository's .git: an element of raw as asked
@@ -41,17 +46,16 @@ func gitMetadata(raw, real string) bool {
 // inGitDir reports whether real, an absolute path with its symbolic links
 // resolved (ResolvePath's), is in a repository's .git. Any one of four
 // says so: an element of the path is .git however a file system may spell
-// it (isDotGit); the path is a file that reads as a .git file, which a
+// it (isDotGit); the path is a file git would take as a .git file, which a
 // .git link anywhere may point to (isGitFile); the path or one of its
-// parents is what a .git beside it
-// or beside one of its parents stands for (a .git directory, a .git file
-// itself, the git directory it names), compared as files (os.SameFile) so
-// that neither a link nor another spelling gets around it (gitDirsIn); or
-// the path or one of its parents is a git directory by its own files
-// (isGitDirectory), which finds a bare repository and a git directory a
-// .git elsewhere points to, whatever git's own settings would discover.
-// Nothing here runs git, and every file it reads is read bounded and
-// without blocking (readSmall).
+// parents is what a .git beside it or beside one of its parents stands for
+// (a .git directory, a .git file itself, the git directory it names),
+// compared as files (os.SameFile) so that neither a link nor another
+// spelling gets around it (gitDirsIn); or the path or one of its parents is
+// a git directory by its own files (isGitDirectory), which finds a bare
+// repository and a git directory a .git elsewhere points to, whatever
+// git's own settings would discover. Nothing here runs git, and every file
+// it reads is read bounded and without blocking (readPrefix).
 func inGitDir(real string) bool {
 	for _, el := range strings.Split(real, string(filepath.Separator)) {
 		if isDotGit(el) {
@@ -87,7 +91,7 @@ func inGitDir(real string) bool {
 
 // gitDirsIn is what dir's .git stands for: itself when it is a directory
 // (or a link to one); when it is a file (or a link to one), the file
-// itself, the directory its "gitdir:" line names and the one that
+// itself, the directory its "gitdir: " line names and the one that
 // directory's commondir names.
 func gitDirsIn(dir string) []os.FileInfo {
 	dotgit := filepath.Join(dir, ".git")
@@ -110,7 +114,7 @@ func gitDirsIn(dir string) []os.FileInfo {
 		return out
 	}
 	out = append(out, gfi)
-	if b, ok := readSmall(filepath.Join(gd, "commondir")); ok {
+	if b, whole, ok := readPrefix(filepath.Join(gd, "commondir"), maxGitFile); ok && whole {
 		common := strings.TrimSpace(string(b))
 		if !filepath.IsAbs(common) {
 			common = filepath.Join(gd, common)
@@ -123,10 +127,8 @@ func gitDirsIn(dir string) []os.FileInfo {
 }
 
 // isGitDirectory reports whether dir is a git directory by its files, as
-// git tells one: a HEAD naming a ref or a commit, or a link whose target
-// starts with refs/ (not followed: its ref may be packed or not born yet),
-// and either the refs and objects directories or (a linked worktree's) a
-// commondir file.
+// git tells one: a valid HEAD (validHead), and either the refs and objects
+// directories or (a linked worktree's) a commondir file.
 func isGitDirectory(dir string) bool {
 	if !validHead(filepath.Join(dir, "HEAD")) {
 		return false
@@ -143,7 +145,9 @@ func isGitDirectory(dir string) bool {
 }
 
 // validHead reports whether path is a HEAD as git takes one: a link whose
-// target starts with refs/, or a regular file naming a ref or a commit.
+// target starts with refs/ (not followed: its ref may be packed or not
+// born yet), or a regular file whose first bytes are "ref:", spaces and
+// refs/..., or an object id in hex of either case.
 func validHead(path string) bool {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -153,56 +157,86 @@ func validHead(path string) bool {
 		target, err := os.Readlink(path)
 		return err == nil && strings.HasPrefix(target, "refs/")
 	}
-	head, ok := readSmall(path)
+	head, _, ok := readPrefix(path, headPrefix)
 	if !ok {
 		return false
 	}
-	h := strings.TrimSpace(string(head))
-	return strings.HasPrefix(h, "ref:") || isObjectID(h)
+	if ref, ok := strings.CutPrefix(string(head), "ref:"); ok {
+		return strings.HasPrefix(strings.TrimLeft(ref, " \t\n\v\f\r"), "refs/")
+	}
+	return hexPrefix(string(head), 40)
 }
 
-// isGitFile reports whether path is a regular file that reads as a .git
-// file ("gitdir: <path>"), wherever it is: a .git link elsewhere may point
-// to it.
+// isGitFile reports whether path is a file git would take as a .git file
+// (readGitFile), wherever it is, since a .git link anywhere may point to
+// it: one naming an absolute directory counts when that is a git directory;
+// one naming a relative path counts as it is, since the directory that path
+// is relative to is the linking .git's, unknown here.
 func isGitFile(path string) bool {
-	b, ok := readSmall(path)
-	return ok && strings.HasPrefix(strings.TrimSpace(string(b)), "gitdir:")
-}
-
-// isObjectID reports whether s is a SHA-1 or SHA-256 object id in hex.
-func isObjectID(s string) bool {
-	if len(s) != 40 && len(s) != 64 {
+	target, ok := readGitFile(path)
+	if !ok {
 		return false
 	}
-	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+	if filepath.IsAbs(target) {
+		return isGitDirectory(target)
+	}
+	return true
+}
+
+// readGitFile reads path as git reads a .git file: a regular file of at
+// most maxGitFile bytes that starts with "gitdir: ", its trailing line
+// breaks dropped, the rest a path on one line; the path is returned as
+// written.
+func readGitFile(path string) (string, bool) {
+	b, whole, ok := readPrefix(path, maxGitFile)
+	if !ok || !whole {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(strings.TrimRight(string(b), "\r\n"), "gitdir: ")
+	if !ok || rest == "" || strings.ContainsAny(rest, "\r\n") {
+		return "", false
+	}
+	return rest, true
+}
+
+// hexPrefix reports whether s starts with n hex digits of either case.
+func hexPrefix(s string, n int) bool {
+	if len(s) < n {
+		return false
+	}
+	for _, c := range s[:n] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
 			return false
 		}
 	}
 	return true
 }
 
-// readSmall reads path when it is a regular file of at most maxGitFile
-// bytes, and nothing else: a link to a device or a FIFO is neither opened
-// for long nor read, since what is in a working directory is not trusted.
-// The open does not block, and the file is checked again once open.
-func readSmall(path string) ([]byte, bool) {
+// readPrefix reads at most n bytes from the start of path when it is a
+// regular file, and nothing else: a link to a device or a FIFO is neither
+// opened for long nor read, since what is in a working directory is not
+// trusted. The open does not block, and the file is checked again once
+// open. whole says the file has no more than what was read.
+func readPrefix(path string, n int) (b []byte, whole, ok bool) {
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
+		return nil, false, false
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
 	defer f.Close()
 	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
+		return nil, false, false
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxGitFile+1))
-	if err != nil || len(b) > maxGitFile {
-		return nil, false
+	b, err = io.ReadAll(io.LimitReader(f, int64(n)+1))
+	if err != nil {
+		return nil, false, false
 	}
-	return b, true
+	if len(b) > n {
+		return b[:n], false, true
+	}
+	return b, true, true
 }
 
 // isDotGit reports whether a file system may take name for .git: in any

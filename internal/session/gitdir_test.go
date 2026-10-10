@@ -118,9 +118,10 @@ func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
 }
 
 // What the .git check and the session's branch read of a .git file, a
-// commondir or a HEAD is read only when it is a regular file of at most
-// 4 KiB: one that is a FIFO, a link to /dev/zero or too long neither blocks
-// nor fills memory, and counts for nothing.
+// commondir or a HEAD is read only when it is a regular file, and bounded
+// (a .git file up to 1 MiB, as git takes one): one that is a FIFO, a link
+// to /dev/zero or too long neither blocks nor fills memory, and counts for
+// nothing.
 func TestGitDirReadsAreBounded(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -148,7 +149,7 @@ func TestGitDirReadsAreBounded(t *testing.T) {
 	}
 	fifo(filepath.Join(mk("fifo"), ".git"))
 	zero(filepath.Join(mk("zero"), ".git"))
-	os.WriteFile(filepath.Join(mk("long"), ".git"), []byte("gitdir: "+strings.Repeat("x", 5000)+"\n"), 0o644)
+	os.WriteFile(filepath.Join(mk("long"), ".git"), []byte("gitdir: "+strings.Repeat("x", maxGitFile)+"\n"), 0o644)
 	gd := mk("gd")
 	zero(filepath.Join(gd, "commondir"))
 	fifo(filepath.Join(gd, "HEAD"))
@@ -182,15 +183,110 @@ func TestGitDirReadsAreBounded(t *testing.T) {
 		t.Fatal("reading a FIFO or /dev/zero blocked")
 	}
 	for path, want := range map[string]bool{
-		filepath.Join(root, "fifo", ".git"):   false,
-		filepath.Join(root, "zero", ".git"):   false,
-		filepath.Join(root, "long", ".git"):   false,
-		filepath.Join(root, "wt", ".git"):     true,
-		filepath.Join(root, "missing", "x"):   false,
-		filepath.Join(root, "headzero", "nx"): false,
+		filepath.Join(root, "fifo", ".git"): false,
+		filepath.Join(root, "zero", ".git"): false,
+		filepath.Join(root, "long", ".git"): false,
+		filepath.Join(root, "wt", ".git"):   true,
+		filepath.Join(root, "missing", "x"): false,
 	} {
-		if _, ok := readSmall(path); ok != want {
-			t.Errorf("readSmall(%s) = %v, want %v", path, ok, want)
+		if _, ok := readGitFile(path); ok != want {
+			t.Errorf("readGitFile(%s) = %v, want %v", path, ok, want)
 		}
+	}
+}
+
+// A .git file is taken as git takes one, and nothing else is: "gitdir: "
+// then a path on one line, trailing line breaks dropped, up to 1 MiB, so a
+// padded pointer counts; a file that only starts like one (YAML with a
+// gitdir key and more) does not, nor does one naming an absolute directory
+// that is no git directory. A HEAD counts by its first bytes, a link by its
+// refs/ target, an object id in either case.
+func TestGitFilesAndHeadsAsGitReadsThem(t *testing.T) {
+	root := gitDirTree(t)
+	wtGitDir := filepath.Join(root, ".git", "worktrees", "wt")
+	write := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(root, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for name, c := range map[string]struct {
+		body string
+		want bool
+	}{
+		"pointer":      {"gitdir: " + wtGitDir + "\n", true},
+		"padded":       {"gitdir: " + wtGitDir + strings.Repeat("\n", 8192), true},
+		"crlf":         {"gitdir: " + wtGitDir + "\r\n", true},
+		"relative":     {"gitdir: ../somewhere/.git/worktrees/x\n", true},
+		"yaml":         {"gitdir: null\nother: value\n", false},
+		"nospace":      {"gitdir:" + wtGitDir + "\n", false},
+		"notgitdir":    {"gitdir: " + filepath.Join(root, "docs") + "\n", false},
+		"empty":        {"gitdir: \n", false},
+		"prose":        {"the gitdir: line names the git directory\n", false},
+		"overlong.yml": {"gitdir: " + wtGitDir + strings.Repeat("\n", maxGitFile), false},
+		"readme.md":    {"# notes\n", false},
+	} {
+		if got := isGitFile(write(name, c.body)); got != c.want {
+			t.Errorf("isGitFile(%s) = %v, want %v", name, got, c.want)
+		}
+	}
+	// A save of an ordinary YAML file that starts with a gitdir key goes through.
+	s, _ := newLocal(t, root)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := ReadPath(root, "yaml", false, nil)
+	if h.ReadOnly {
+		t.Fatalf("yaml read as ReadOnly: %+v", h)
+	}
+	save(s, sub, "y", "yaml", []byte("gitdir: null\nother: changed\n"), 512, h.Sha256, false)
+	if f := fileReply(t, sink, "y"); f.Kind != "written" {
+		t.Fatalf("yaml save: %+v %+v", f, f.Error)
+	}
+	// HEADs.
+	sha := strings.Repeat("ab", 20)
+	for name, c := range map[string]struct {
+		body string
+		want bool
+	}{
+		"ref":       {"ref: refs/heads/main\n", true},
+		"refspaced": {"ref:   refs/heads/main\n", true},
+		"padded":    {"ref: refs/heads/main" + strings.Repeat(" ", 8192), true},
+		"lower":     {sha + "\n", true},
+		"upper":     {strings.ToUpper(sha) + "\n", true},
+		"notrefs":   {"ref: heads/main\n", false},
+		"short":     {sha[:30] + "\n", false},
+		"words":     {"hello\n", false},
+	} {
+		d := filepath.Join(root, "heads", name)
+		for _, sub := range []string{"objects", "refs"} {
+			if err := os.MkdirAll(filepath.Join(d, sub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		os.WriteFile(filepath.Join(d, "HEAD"), []byte(c.body), 0o644)
+		if got := isGitDirectory(d); got != c.want {
+			t.Errorf("isGitDirectory(heads/%s) = %v, want %v", name, got, c.want)
+		}
+	}
+	link := filepath.Join(root, "heads", "link")
+	for _, sub := range []string{"objects", "refs"} {
+		os.MkdirAll(filepath.Join(link, sub), 0o755)
+	}
+	os.Symlink("refs/heads/unborn", filepath.Join(link, "HEAD"))
+	if !isGitDirectory(link) {
+		t.Error("a HEAD linked to an unborn branch")
+	}
+	// A bare repository with an upper-case detached HEAD is read only.
+	if err := os.WriteFile(filepath.Join(root, "store", "HEAD"), []byte(strings.ToUpper(sha)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	save(s, sub, "u", "store/config", []byte("x\n"), 512, "", true)
+	if f := fileReply(t, sink, "u"); f.Kind != "error" || f.Error == nil || f.Error.Code != "read_only" {
+		t.Fatalf("store/config with an upper-case HEAD: %+v %+v", f, f.Error)
 	}
 }

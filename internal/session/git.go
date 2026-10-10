@@ -40,19 +40,13 @@ func GitBranch(dir string) string {
 	}
 }
 
-// gitDirFromFile resolves a "gitdir: <path>" pointer file (read with
-// readSmall: a regular file of at most 4 KiB).
+// gitDirFromFile resolves a "gitdir: <path>" pointer file, read as git
+// reads one (readGitFile), a relative path from base.
 func gitDirFromFile(path, base string) string {
-	b, ok := readSmall(path)
+	target, ok := readGitFile(path)
 	if !ok {
 		return ""
 	}
-	line := strings.TrimSpace(string(b))
-	target, ok := strings.CutPrefix(line, "gitdir:")
-	if !ok {
-		return ""
-	}
-	target = strings.TrimSpace(target)
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(base, target)
 	}
@@ -60,10 +54,10 @@ func gitDirFromFile(path, base string) string {
 }
 
 // branchFromHead parses "ref: refs/heads/<branch>"; a bare SHA is detached.
-// HEAD is read with readSmall: a regular file of at most 4 KiB.
+// HEAD is read with readPrefix: a regular file, at most 4 KiB of it.
 func branchFromHead(headPath string) string {
-	b, ok := readSmall(headPath)
-	if !ok {
+	b, whole, ok := readPrefix(headPath, 4096)
+	if !ok || !whole {
 		return ""
 	}
 	line := strings.TrimSpace(string(b))
