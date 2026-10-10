@@ -32,6 +32,8 @@ type Link struct {
 	Group *Group `json:"-"`
 
 	hash Hash
+	// lapsed says ExpireDue has told the hooks this link expired.
+	lapsed bool
 }
 
 // Group is a crew run as a switchyard knows it: its name and its members.
@@ -67,6 +69,7 @@ var (
 	ErrExpired      = errors.New("share: link expired")
 	ErrInvalidRole  = errors.New("share: invalid role")
 	ErrTooManyLinks = errors.New("share: too many links for session")
+	ErrUnknownLink  = errors.New("share: unknown link")
 )
 
 // MaxLinksPerSession bounds link creation, for each session and for each run.
@@ -81,8 +84,10 @@ type Store struct {
 	byRun     map[string]map[string]*Link
 	now       func() time.Time
 
-	// OnRevoke is invoked after a session's link is revoked so live viewers
-	// can be closed.
+	// OnRevoke is invoked, outside the store's lock, after each revoke of a
+	// session's link (a link revoked before included) and once the link is
+	// found expired (ExpireDue), so live viewers can be closed. The link is
+	// marked first: a viewer that attaches after the mark is refused (Live).
 	OnRevoke func(sessionID, linkID string)
 	// OnRevokeRun is OnRevoke for a run's link.
 	OnRevokeRun func(runID, linkID string)
@@ -154,6 +159,26 @@ func (s *Store) Resolve(tok string) (*Link, error) {
 	return copyLink(link), nil
 }
 
+// Live returns the link with linkID while it still opens what it was made
+// for: ErrUnknownLink once it is forgotten (its session or run gone, or
+// dropped), ErrRevoked once revoked, ErrExpired once expired. A viewer's
+// attach asks it under the session's lock (session.AttachOptions.Authorize).
+func (s *Store) Live(linkID string) (*Link, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	link, ok := s.byID[linkID]
+	if !ok {
+		return nil, ErrUnknownLink
+	}
+	if link.Revoked {
+		return nil, ErrRevoked
+	}
+	if link.ExpiresAt != nil && !s.now().Before(*link.ExpiresAt) {
+		return nil, ErrExpired
+	}
+	return copyLink(link), nil
+}
+
 // Get returns a link by ID.
 func (s *Store) Get(linkID string) (*Link, bool) {
 	s.mu.RLock()
@@ -165,9 +190,10 @@ func (s *Store) Get(linkID string) (*Link, bool) {
 	return copyLink(l), true
 }
 
-// Revoke marks a session's link unusable and notifies OnRevoke the first
-// time. found is false when the link does not belong to sessionID; revoked
-// says whether this call revoked it (false when it was revoked before).
+// Revoke marks a session's link unusable and notifies OnRevoke, every time
+// (a viewer still attached through a link revoked before is closed too).
+// found is false when the link does not belong to sessionID; revoked says
+// whether this call revoked it (false when it was revoked before).
 func (s *Store) Revoke(sessionID, linkID string) (found, revoked bool) {
 	return s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {
 		if s.OnRevoke != nil {
@@ -186,7 +212,9 @@ func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
 }
 
 // revoke marks the link with linkID revoked when owned says it is the
-// caller's, and calls notify, outside the lock, the first time.
+// caller's, and then calls notify, outside the lock, each time: the mark
+// comes first, so a viewer attaching meanwhile either sees it or is there
+// for notify's close to find.
 func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) (found, revoked bool) {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
@@ -197,10 +225,43 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, notify func()) (fo
 	already := link.Revoked
 	link.Revoked = true
 	s.mu.Unlock()
-	if !already {
-		notify()
-	}
+	notify()
 	return true, !already
+}
+
+// ExpireDue tells the hooks of each link that has expired by now, once per
+// link, as a revoke does (OnRevoke for a session's link, OnRevokeRun for a
+// run's), so the viewers still attached through it are closed. A link
+// revoked before is not told again. It returns how many it told.
+func (s *Store) ExpireDue(now time.Time) int {
+	type due struct {
+		run         bool
+		scope, link string
+	}
+	var todo []due
+	s.mu.Lock()
+	for _, l := range s.byID {
+		if l.Revoked || l.lapsed || l.ExpiresAt == nil || now.Before(*l.ExpiresAt) {
+			continue
+		}
+		l.lapsed = true
+		if l.RunID != "" {
+			todo = append(todo, due{run: true, scope: l.RunID, link: l.ID})
+		} else {
+			todo = append(todo, due{scope: l.SessionID, link: l.ID})
+		}
+	}
+	s.mu.Unlock()
+	for _, d := range todo {
+		if d.run {
+			if s.OnRevokeRun != nil {
+				s.OnRevokeRun(d.scope, d.link)
+			}
+		} else if s.OnRevoke != nil {
+			s.OnRevoke(d.scope, d.link)
+		}
+	}
+	return len(todo)
 }
 
 // ListBySession returns links for a session, newest first.
@@ -355,20 +416,33 @@ func (s *Store) CreateGroupLink(runID, owner string, g Group, role session.Role,
 	return s.create(&Link{RunID: runID, Owner: owner, Group: &gc}, s.byRun, groupKey(owner, runID), role, label, ttl)
 }
 
-// SetGroup gives the live links of owner's run the members in g; it returns
-// how many it changed.
-func (s *Store) SetGroup(owner, runID string, g Group) int {
+// SetGroup gives the live links of owner's run the members in g. It returns
+// the ids of the links it changed, and those of the sessions they named
+// before and g no longer does: whoever is attached to one of those sessions
+// through one of those links is to be closed. The links name g's sessions
+// alone from the moment it returns, so a viewer attaching to a session that
+// left is refused (Live, then Group.Names).
+func (s *Store) SetGroup(owner, runID string, g Group) (changed, left []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := 0
+	next := &Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+	gone := map[string]bool{}
 	for _, l := range s.byRun[groupKey(owner, runID)] {
 		if l.Revoked || l.Group == nil {
 			continue
 		}
+		for _, m := range l.Group.Members {
+			if m.SessionID != "" && !next.Names(m.SessionID) && !gone[m.SessionID] {
+				gone[m.SessionID] = true
+				left = append(left, m.SessionID)
+			}
+		}
 		l.Group = &Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
-		n++
+		changed = append(changed, l.ID)
 	}
-	return n
+	sort.Strings(changed)
+	sort.Strings(left)
+	return changed, left
 }
 
 // RevokeGroup revokes owner's run link linkID, notifying OnRevokeRun.

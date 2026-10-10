@@ -65,16 +65,25 @@ Owner → client:
 | `chat_roster` | `scope: "run", count, list[{id, name, role, on?}]` — who is on the run's chat: every connection to any member, one row per name, `on` the member a person looks at (a connection that is not quiet); sent to every member's viewers whenever any member's roster changes; `count` counts everyone, `list` the first 32 |
 
 Error codes: `read_only`, `slow_consumer`, `bad_frame`, `hello_timeout`,
-`revoked`, `session_ended`, `host_disconnected`, `file_denied`,
-`too_many_requests`, `not_sent` (a run chat's `chat_send` whose member could
-not take the text, the message saying why; or a `submit`, a `chat` to the
-agent or a `chat_send` while the agent's trust question shows, the message
-saying so: its Enter would pick whatever the dialog highlights, and the
-question's own choices answer it).
+`revoked`, `expired` (the link reached its expiry), `session_ended`,
+`host_disconnected`, `file_denied`, `too_many_requests`, `not_sent` (a run
+chat's `chat_send` whose member could not take the text, the message saying
+why; or a `submit`, a `chat` to the agent or a `chat_send` while the agent's
+trust question shows, the message saying so: its Enter would pick whatever
+the dialog highlights, and the question's own choices answer it).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
-error, `4401` unauthorized, `4403` link revoked, `4404` unknown session, `4409`
-too many viewers, `4410` session or host gone.
+error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
+session, `4409` too many viewers, `4410` session or host gone.
+
+A share link is checked when its token is presented and again as the viewer
+attaches (on a server session, after its `hello`), under the lock a revoke
+takes to close the link's viewers: a link revoked, expired or gone (its run
+forgotten, a switchyard run no longer naming the session) in between closes
+the connection with an `error` (`revoked`, or `expired`) and `4403`, before
+any `welcome`. A viewer attached through a link that expires is closed as it
+expires, the same way with `expired`; every revoke of a link, one revoked
+before included, closes whoever is attached through it.
 
 ## Resize policy
 
@@ -212,8 +221,9 @@ member's session on this server; the run id ≤ 64 bytes, its name ≤ 120, 1 to
 an instance, else `error{no_instance}`, and every session must be one this
 instance registered, else `error{invalid_request}`; it shares the link bucket)
 and `link_run_update{requestId, run}` (the run's members now: the run's links
-follow them; at most 30 a minute per connection; `error{not_found}` when the
-run has no link here).
+follow them, and a viewer attached through one of them to a session the run
+no longer names is closed with `4403`; at most 30 a minute per connection;
+`error{not_found}` when the run has no link here).
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
 (`links`: the ids of the live links the server holds for the session, `[]`
@@ -746,7 +756,7 @@ its run, and on no other.
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
 | `GET /api/sessions/{id}/links` | admin | share links of a session, each with `active` viewers; for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
 | `POST /api/sessions/{id}/links` | admin | create a share link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
-| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link; `204`; revoking a revoked link answers `204` and records nothing; a session that ended took its links with it (local ones revoked and dropped, those minted at the rendezvous revoked there; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`; a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
+| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, those minted at the rendezvous revoked there; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`; a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin | report an event or an attention word, reply `202 {accepted}`, see Events |
@@ -973,9 +983,10 @@ token as they take a session link's for its session, and `GET
 /api/join/{token}` answers the run and its members. A run link is listed,
 capped at 100 and revoked through its run alone; revoking it closes the
 viewers attached through it on every session (`4403`). Creating and revoking
-one are noted in the run log; revoking a revoked link answers `204` and logs
-nothing. When the server forgets the run (past 100 runs, the oldest with
-nothing running), its links go with it, as a session's go with the session:
+one are noted in the run log; revoking a revoked link answers `204`, logs
+nothing and closes any viewer still attached through it. When the server
+forgets the run (past 100 runs, the oldest with nothing running), its links
+go with it, as a session's go with the session:
 they open nothing, the join route answers `404 invalid_link`, and the viewers
 still attached through them, to the ended sessions of its members, are closed
 with `4403` as on a revoke. The join route answers `404 run_gone` only when

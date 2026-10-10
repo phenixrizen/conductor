@@ -40,6 +40,7 @@ const (
 	ErrCodeBadFrame         = "bad_frame"
 	ErrCodeHelloTimeout     = "hello_timeout"
 	ErrCodeRevoked          = "revoked"
+	ErrCodeExpired          = "expired" // the viewer's link reached its expiry; closed with CloseForbidden as on a revoke
 	ErrCodeSessionEnded     = "session_ended"
 	ErrCodeRelayOff         = "relay_off" // a switchyard without a relay refused the viewer's relay request
 	ErrCodeHostDisconnected = "host_disconnected"

@@ -40,9 +40,11 @@ func TestCreateResolveRevoke(t *testing.T) {
 	if len(revoked) != 1 || revoked[0] != "sess/"+link.ID {
 		t.Fatalf("hook %v", revoked)
 	}
+	// A second revoke tells the hook again: whoever is still attached
+	// through the link is closed then too.
 	s.Revoke("sess", link.ID)
-	if len(revoked) != 1 {
-		t.Fatal("hook must fire once")
+	if len(revoked) != 2 || revoked[1] != "sess/"+link.ID {
+		t.Fatalf("hook after a second revoke %v", revoked)
 	}
 	if list := s.ListBySession("sess"); len(list) != 1 || !list[0].Revoked {
 		t.Fatalf("list %+v", list)
@@ -125,7 +127,7 @@ func TestRunLinks(t *testing.T) {
 		t.Fatalf("after revoke: %v", err)
 	}
 	s.RevokeRun("run", link.ID)
-	if len(runRevokes) != 1 || runRevokes[0] != "run/"+link.ID || len(sessionRevokes) != 0 {
+	if len(runRevokes) != 2 || runRevokes[0] != "run/"+link.ID || runRevokes[1] != "run/"+link.ID || len(sessionRevokes) != 0 {
 		t.Fatalf("hooks: run %v session %v", runRevokes, sessionRevokes)
 	}
 	if l := s.ListByRun("run"); len(l) != 1 || !l[0].Revoked {
@@ -224,7 +226,7 @@ func TestResolveWhileRevoking(t *testing.T) {
 func found(ok, _ bool) bool { return ok }
 
 // A revoke says whether it revoked the link: a second one finds it revoked
-// already, and the hook fires once.
+// already (and tells the hook again, TestCreateResolveRevoke).
 func TestRevokeSaysWhetherItRevoked(t *testing.T) {
 	s := NewStore()
 	link, _, _ := s.CreateRunLink("run", session.RoleView, "", 0)
@@ -258,11 +260,11 @@ func TestGroupLinks(t *testing.T) {
 		t.Fatalf("resolve: %+v %v", got, err)
 	}
 	g.Members = append(g.Members, GroupMember{Name: "core", SessionID: "s2", AgentID: "claude", Status: "running"})
-	if n := s.SetGroup("owner-b", "api-1", g); n != 0 {
-		t.Fatalf("another owner changed %d", n)
+	if changed, _ := s.SetGroup("owner-b", "api-1", g); len(changed) != 0 {
+		t.Fatalf("another owner changed %v", changed)
 	}
-	if n := s.SetGroup("owner-a", "api-1", g); n != 1 {
-		t.Fatalf("its owner changed %d", n)
+	if changed, left := s.SetGroup("owner-a", "api-1", g); len(changed) != 1 || changed[0] != l.ID || len(left) != 0 {
+		t.Fatalf("its owner changed %v, left %v", changed, left)
 	}
 	if ids := s.ListNaming("s2"); len(ids) != 1 || ids[0].ID != l.ID {
 		t.Fatalf("naming s2: %v", ids)
@@ -275,5 +277,99 @@ func TestGroupLinks(t *testing.T) {
 	}
 	if _, err := s.Resolve(tok); err != ErrRevoked {
 		t.Fatalf("after revoke: %v", err)
+	}
+}
+
+// Live answers a link by id while it still opens what it was made for, and
+// says why once it does not: revoked, expired, or forgotten.
+func TestLive(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	sl, _, _ := s.Create("sess", session.RoleControl, "", time.Minute)
+	rl, _, _ := s.CreateRunLink("run", session.RoleView, "", 0)
+	if got, err := s.Live(sl.ID); err != nil || got.ID != sl.ID || got.Role != session.RoleControl {
+		t.Fatalf("live: %+v %v", got, err)
+	}
+	if got, err := s.Live(rl.ID); err != nil || got.RunID != "run" {
+		t.Fatalf("live run link: %+v %v", got, err)
+	}
+	if _, err := s.Live("nope"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("unknown: %v", err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := s.Live(sl.ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("at its expiry: %v", err)
+	}
+	s.RevokeRun("run", rl.ID)
+	if _, err := s.Live(rl.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("revoked: %v", err)
+	}
+	s.DeleteRun("run")
+	if _, err := s.Live(rl.ID); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("forgotten: %v", err)
+	}
+}
+
+// ExpireDue tells the revoke hooks of each link that expired, once, and
+// leaves alone the links not expired yet, those without an expiry and those
+// revoked before.
+func TestExpireDue(t *testing.T) {
+	s := NewStore()
+	var sessions, runs []string
+	s.OnRevoke = func(sessionID, linkID string) { sessions = append(sessions, sessionID+"/"+linkID) }
+	s.OnRevokeRun = func(runID, linkID string) { runs = append(runs, runID+"/"+linkID) }
+	start := time.Now()
+	soon, _, _ := s.Create("sess", session.RoleView, "", time.Minute)
+	later, _, _ := s.Create("sess", session.RoleView, "", time.Hour)
+	s.Create("sess", session.RoleView, "", 0)
+	revoked, _, _ := s.Create("sess", session.RoleView, "", time.Minute)
+	s.Revoke("sess", revoked.ID)
+	sessions = nil
+	run, _, _ := s.CreateRunLink("run", session.RoleControl, "", time.Minute)
+
+	if n := s.ExpireDue(start); n != 0 || len(sessions) != 0 || len(runs) != 0 {
+		t.Fatalf("before any expiry: %d %v %v", n, sessions, runs)
+	}
+	if n := s.ExpireDue(start.Add(2 * time.Minute)); n != 2 {
+		t.Fatalf("told %d, want 2", n)
+	}
+	if !slices.Equal(sessions, []string{"sess/" + soon.ID}) || !slices.Equal(runs, []string{"run/" + run.ID}) {
+		t.Fatalf("hooks: sessions %v runs %v", sessions, runs)
+	}
+	if n := s.ExpireDue(start.Add(3 * time.Minute)); n != 0 {
+		t.Fatalf("told again: %d", n)
+	}
+	if n := s.ExpireDue(start.Add(2 * time.Hour)); n != 1 || sessions[len(sessions)-1] != "sess/"+later.ID {
+		t.Fatalf("the later one: %d %v", n, sessions)
+	}
+}
+
+// SetGroup says which links it changed and which sessions they no longer
+// name, so the viewers attached to those through them can be closed; the
+// links name the new group's sessions alone from then on.
+func TestSetGroupSaysWhichSessionsLeft(t *testing.T) {
+	s := NewStore()
+	g := Group{Name: "api", Members: []GroupMember{{Name: "lead", SessionID: "s1"}, {Name: "core", SessionID: "s2"}, {Name: "docs"}}}
+	a, _, _ := s.CreateGroupLink("api-1", "owner", g, session.RoleView, "", 0)
+	b, _, _ := s.CreateGroupLink("api-1", "owner", g, session.RoleControl, "", 0)
+	gone, _, _ := s.CreateGroupLink("api-1", "owner", g, session.RoleControl, "", 0)
+	s.RevokeGroup("owner", gone.ID)
+
+	g2 := Group{Name: "api", Members: []GroupMember{{Name: "lead", SessionID: "s1"}, {Name: "core"}, {Name: "docs", SessionID: "s3"}}}
+	changed, left := s.SetGroup("owner", "api-1", g2)
+	want := []string{a.ID, b.ID}
+	slices.Sort(want)
+	if !slices.Equal(changed, want) || !slices.Equal(left, []string{"s2"}) {
+		t.Fatalf("changed %v left %v", changed, left)
+	}
+	for _, id := range want {
+		l, err := s.Live(id)
+		if err != nil || l.Group.Names("s2") || !l.Group.Names("s3") {
+			t.Fatalf("link %s after the update: %+v %v", id, l, err)
+		}
+	}
+	if changed, left := s.SetGroup("owner", "api-1", g2); len(changed) != 2 || len(left) != 0 {
+		t.Fatalf("the same group again: changed %v left %v", changed, left)
 	}
 }

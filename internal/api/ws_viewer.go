@@ -52,17 +52,21 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(proto.CloseNotFound, "no such session")
 		return
 	}
+	// The role above lets the connection in; the link is checked again as
+	// the viewer attaches, under the lock a revoke takes to close the link's
+	// viewers, since the hello may come seconds later.
+	check := s.attachCheck(p, id)
 	switch drv := d.(type) {
 	case *session.Local:
-		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID())
+		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID(), check)
 	case *signal.HostedSession:
-		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID())
+		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check)
 	default:
 		c.Close(websocket.StatusInternalError, "unsupported session kind")
 	}
 }
 
-func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local *session.Local, role session.Role, linkID string) {
+func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local *session.Local, role session.Role, linkID string, check func() (session.Grant, error)) {
 	hello, err := s.readHello(ctx, c)
 	if err != nil {
 		return
@@ -70,11 +74,16 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 	sink := newWSSink(c)
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
+		Authorize: check,
 	}, sink)
 	if err != nil {
-		if errors.Is(err, session.ErrTooManyViewers) {
+		switch {
+		case errors.Is(err, session.ErrRevoked):
+			// Said as a revoke after the attach says it: an error frame, then 4403.
+			sink.Close(err)
+		case errors.Is(err, session.ErrTooManyViewers):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
-		} else {
+		default:
 			c.Close(websocket.StatusInternalError, "attach failed")
 		}
 		return
@@ -300,11 +309,13 @@ func (s *Server) linkLabel(linkID string) string {
 
 // serveHostedViewer brokers WebRTC signaling for a hosted session and relays
 // frames through the host connection when the viewer asks for it.
-func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string) {
+func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error)) {
 	viewerID := session.NewID()
-	v, err := hs.AddViewer(viewerID, role, linkID, s.linkLabel(linkID))
+	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check})
 	if err != nil {
 		switch {
+		case errors.Is(err, session.ErrRevoked):
+			newWSSink(c).Close(err)
 		case errors.Is(err, signal.ErrTooManyViewer):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
 		default:
@@ -325,7 +336,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		T:              proto.CtlWelcome,
 		Proto:          proto.ProtoVersion,
 		SessionID:      info.ID,
-		Role:           string(role),
+		Role:           string(v.Role),
 		ViewerID:       viewerID,
 		Cols:           info.Cols,
 		Rows:           info.Rows,

@@ -502,11 +502,21 @@ func (s *Server) hostRunLinkUpdate(hs *signal.HostedSession, hc *hostConnState, 
 		refuse(code, msg)
 		return
 	}
-	n := s.links.SetGroup(hs.Owner(), m.Run.ID, g)
-	if n == 0 {
+	changed, left := s.links.SetGroup(hs.Owner(), m.Run.ID, g)
+	if len(changed) == 0 {
 		refuse("not_found", "no links for this run")
 		return
 	}
+	// A session the run no longer names is no longer opened by its links:
+	// whoever is attached to it through one of them goes. The links name
+	// the new group first, so one attaching meanwhile is refused.
+	for _, sid := range left {
+		if d, ok := s.registry.Get(sid); ok {
+			for _, lid := range changed {
+				d.DisconnectLink(lid)
+			}
+		}
+	}
 	s.keepGroup(hs.Owner(), m.Run.ID)
-	_ = hs.Tell(proto.RunLinkUpdated{T: proto.HostRunLinkUpdated, RequestID: m.RequestID, RunID: m.Run.ID, Links: n})
+	_ = hs.Tell(proto.RunLinkUpdated{T: proto.HostRunLinkUpdated, RequestID: m.RequestID, RunID: m.Run.ID, Links: len(changed)})
 }

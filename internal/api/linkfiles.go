@@ -190,7 +190,7 @@ func (s *Server) sawHost(owner string) {
 }
 
 // sweepLinks drops the kept links that expired, and those whose host has not
-// registered for linkOrphanAfter.
+// registered for linkOrphanAfter, closing whoever is attached through them.
 func (s *Server) sweepLinks(now time.Time) {
 	k := s.keeper
 	if k == nil {
@@ -203,6 +203,9 @@ func (s *Server) sweepLinks(now time.Time) {
 		if orphan || (l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)) {
 			s.dropLinkFile(l.ID)
 			s.links.Drop(l.ID)
+			// Dropped, the link opens nothing (Live): whoever is still
+			// attached through it goes too, as on a revoke.
+			s.closeLinkViewers(l)
 		}
 	}
 }
