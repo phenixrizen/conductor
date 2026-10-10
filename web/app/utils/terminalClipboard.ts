@@ -12,7 +12,7 @@
  * Right-click: with a selection it copies and clears it, without one it pastes; Shift+right-click opens the terminal's menu (Copy, Paste,
  * Select all, "Right-click pastes"), and with that setting off right-click always opens it.
  */
-export interface KeyLike {
+export interface ClipboardKeyEvent {
   type: string
   code: string
   ctrlKey: boolean
@@ -24,7 +24,7 @@ export interface KeyLike {
 /** What a key does: copy the selection (and clear it), let the browser paste, swallow it, or nothing (xterm's as before). */
 export type ClipboardKey = 'copy' | 'copy-and-clear' | 'paste' | 'swallow' | null
 
-export function clipboardKey(e: KeyLike, ctx: { hasSelection: boolean; canPaste: boolean; mac: boolean }): ClipboardKey {
+export function clipboardKey(e: ClipboardKeyEvent, ctx: { hasSelection: boolean; canPaste: boolean; mac: boolean }): ClipboardKey {
   if (ctx.mac || e.metaKey || e.altKey) return null
   const ctrl = e.ctrlKey
   const shift = e.shiftKey
