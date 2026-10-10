@@ -192,6 +192,15 @@ func (p *peer) handleFrame(f proto.Frame) {
 	if closed {
 		return
 	}
+	if sub != nil {
+		// A viewer the session has ended (dropped as a slow consumer) is
+		// not acted on while its connection closes.
+		select {
+		case <-sub.Done():
+			return
+		default:
+		}
+	}
 	switch f.Type {
 	case proto.TypeControl:
 		t, err := proto.ParseHeader(f.Payload)

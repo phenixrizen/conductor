@@ -3,6 +3,7 @@ package hostagent
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -133,5 +134,60 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 	}
 	if r := hsub.Reason(); r != nil {
 		t.Fatalf("the other viewer was closed: %v", r)
+	}
+}
+
+// typedProc is a process that prints nothing and counts what it is typed.
+type typedProc struct {
+	done  chan struct{}
+	once  sync.Once
+	mu    sync.Mutex
+	typed []byte
+}
+
+func (p *typedProc) Read([]byte) (int, error) { <-p.done; return 0, io.EOF }
+func (p *typedProc) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	p.typed = append(p.typed, b...)
+	p.mu.Unlock()
+	return len(b), nil
+}
+func (p *typedProc) Resize(uint16, uint16) error { return nil }
+func (p *typedProc) Done() <-chan struct{}       { return p.done }
+func (p *typedProc) Exit() pty.ExitStatus        { return pty.ExitStatus{} }
+func (p *typedProc) Stop(context.Context, time.Duration) error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
+func (p *typedProc) text() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return string(p.typed)
+}
+
+// A viewer the session has ended (dropped as a slow consumer, which leaves
+// the peer holding it until its connection closes) is not acted on: what it
+// sends after is not typed into the agent.
+func TestAViewerTheSessionEndedIsNotActedOn(t *testing.T) {
+	proc := &typedProc{done: make(chan struct{})}
+	defer proc.Stop(context.Background(), 0)
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{})
+	const id = "viewer-012345678"
+	sub, err := a.local.AttachWith(session.AttachOptions{ID: id, Role: session.RoleControl, Name: "viewer"}, &outputCount{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newPeer(a, id, session.RoleControl, "", "")
+	p.sub = sub
+	p.handleFrame(proto.Frame{Type: proto.TypeInput, Payload: []byte("before")})
+	if got := proc.text(); got != "before" {
+		t.Fatalf("typed %q", got)
+	}
+	a.local.Detach(sub) // the session ends it; the peer still holds it
+	p.handleFrame(proto.Frame{Type: proto.TypeInput, Payload: []byte("after")})
+	if got := proc.text(); got != "before" {
+		t.Fatalf("the ended viewer's input was typed: %q", got)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -21,12 +22,14 @@ import (
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
-// pipeProc is a process whose output the test writes.
+// pipeProc is a process whose output the test writes; it counts what it is
+// typed.
 type pipeProc struct {
-	r    *io.PipeReader
-	w    *io.PipeWriter
-	done chan struct{}
-	once sync.Once
+	r     *io.PipeReader
+	w     *io.PipeWriter
+	done  chan struct{}
+	once  sync.Once
+	typed atomic.Int64
 }
 
 func newPipeProc() *pipeProc {
@@ -34,7 +37,7 @@ func newPipeProc() *pipeProc {
 	return &pipeProc{r: r, w: w, done: make(chan struct{})}
 }
 func (p *pipeProc) Read(b []byte) (int, error)  { return p.r.Read(b) }
-func (p *pipeProc) Write(b []byte) (int, error) { return len(b), nil }
+func (p *pipeProc) Write(b []byte) (int, error) { p.typed.Add(int64(len(b))); return len(b), nil }
 func (p *pipeProc) Resize(uint16, uint16) error { return nil }
 func (p *pipeProc) Done() <-chan struct{}       { return p.done }
 func (p *pipeProc) Exit() pty.ExitStatus        { return pty.ExitStatus{} }
@@ -210,5 +213,75 @@ func TestAWebSocketThatStopsReadingDoesNotStallTheSession(t *testing.T) {
 	}
 	if after == before {
 		t.Error("the healthy viewer received nothing after the drop")
+	}
+}
+
+// A client the session has ended (here dropped as a slow consumer) is not
+// acted on while its connection closes: what it sends after is not typed
+// into the agent.
+func TestAClientTheSessionEndedIsNotActedOn(t *testing.T) {
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "0")
+	proc := newPipeProc()
+	local := session.NewLocal(session.Info{ID: "ended-client", Cols: 80, Rows: 24}, proc, session.Options{ScrollbackBytes: 4096})
+	defer proc.Stop(context.Background(), 0)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		c.SetReadLimit(readLimit)
+		(&Server{}).serveLocalViewer(r.Context(), c, local, session.RoleControl, "", nil)
+	}))
+	srv.Listener = smallBufListener{srv.Listener}
+	srv.Start()
+	defer srv.Close()
+	dialer := &net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
+		var serr error
+		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4096) })
+		return serr
+	}}
+	hc := &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}
+	cc, _, err := websocket.Dial(context.Background(), "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{HTTPClient: hc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.CloseNow()
+	send := func(frame []byte) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := cc.Write(ctx, websocket.MessageBinary, frame); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test"}))
+	send(proto.Encode(proto.TypeInput, []byte("before")))
+	deadline := time.Now().Add(5 * time.Second)
+	for proc.typed.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the controller's input never arrived")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The client stops reading while the agent prints: it is dropped.
+	go func() {
+		chunk := bytes.Repeat([]byte("y"), proto.MaxOutput)
+		for range 4 * session.HighWaterMark / len(chunk) {
+			if _, err := proc.w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	deadline = time.Now().Add(10 * time.Second)
+	for local.Viewers() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the client that stopped reading was never dropped")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	typed := proc.typed.Load()
+	send(proto.Encode(proto.TypeInput, []byte("after")))
+	time.Sleep(500 * time.Millisecond)
+	if n := proc.typed.Load() - typed; n != 0 {
+		t.Fatalf("%d bytes the dropped client sent were typed into the agent", n)
 	}
 }

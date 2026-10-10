@@ -143,6 +143,10 @@ type Local struct {
 	// retired says the session left the server's registry (Retire): no
 	// client attaches any more.
 	retired bool
+	// closing holds the clients that have left the hub (Detach) while their
+	// transport still closes: with the hub's, every client until its
+	// transport has closed, for DisconnectLink and CloseAll to wait for.
+	closing map[*Subscription]struct{}
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
@@ -895,6 +899,11 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 			lapse.Stop()
 		}
 		s.Detach(sub)
+		// Detach keeps it among the closing until its transport has closed.
+		<-sub.closed
+		s.mu.Lock()
+		delete(s.closing, sub)
+		s.mu.Unlock()
 	}()
 	if !sub.quiet {
 		s.Record(ActivityEntry{Type: ActivityJoin, By: sub.ID, ByName: sub.Name})
@@ -910,6 +919,16 @@ func (s *Local) Detach(sub *Subscription) {
 	_, present := s.hub.subs[sub.ID]
 	s.hub.remove(sub.ID)
 	sub.closeWith(nil)
+	// Out of the hub, it stays among the closing until its transport has
+	// closed (AttachWith's watcher takes it out), for a revoke to wait for.
+	select {
+	case <-sub.closed:
+	default:
+		if s.closing == nil {
+			s.closing = map[*Subscription]struct{}{}
+		}
+		s.closing[sub] = struct{}{}
+	}
 	if s.sizer == sub.ID {
 		s.handOverSize()
 	}
@@ -1131,7 +1150,9 @@ func (s *Local) Stop(ctx context.Context) error {
 // that attaches after this finds the mark (AttachOptions.Authorize); and
 // nothing broadcast after reaches them. It returns once their transports
 // have closed, which they do together, each on its own goroutine, holding no
-// lock: as long as the slowest takes.
+// lock: as long as the slowest takes. That includes the link's clients that
+// had ended already (a slow consumer, an earlier revoke) and whose transport
+// still closes.
 func (s *Local) DisconnectLink(linkID string) {
 	reason := ErrRevoked
 	var hit []*Subscription
@@ -1145,6 +1166,11 @@ func (s *Local) DisconnectLink(linkID string) {
 			hit = append(hit, sub)
 		}
 	})
+	for sub := range s.closing {
+		if sub.LinkID == linkID {
+			hit = append(hit, sub)
+		}
+	}
 	s.mu.Unlock()
 	waitClosed(hit)
 }
@@ -1165,13 +1191,19 @@ func (s *Local) Retire() {
 
 // CloseAll evicts every subscription with the given reason (server shutdown)
 // and ends their editors. It returns once their transports have closed,
-// together, as DisconnectLink's do.
+// those of the clients that had ended already included, together, as
+// DisconnectLink's do.
 func (s *Local) CloseAll(reason error) {
 	var all []*Subscription
+	s.mu.Lock()
 	s.hub.Each(func(sub *Subscription) {
 		sub.closeWith(reason)
 		all = append(all, sub)
 	})
+	for sub := range s.closing {
+		all = append(all, sub)
+	}
+	s.mu.Unlock()
 	for _, sub := range all {
 		s.closeNvims(sub)
 	}

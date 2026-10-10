@@ -241,6 +241,107 @@ func (s *timedCloseSink) Close(error) {
 	s.closedAt.Store(time.Now().UnixNano())
 }
 
+// A link's viewer that the session ended already (dropped as a slow
+// consumer) has left the roster while its transport still closes: a revoke
+// of the link waits for that transport too, as a shutdown does.
+func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
+	for _, end := range []string{"revoke", "shutdown"} {
+		t.Run(end, func(t *testing.T) {
+			s, p := newLocal(t, t.TempDir())
+			held := newHeldSink()
+			sub, err := s.AttachWith(AttachOptions{Role: RoleControl, LinkID: "L", Name: "dropped"}, held)
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
+				for range 2 * HighWaterMark / len(chunk) {
+					if _, err := p.outW.Write(chunk); err != nil {
+						return
+					}
+				}
+			}()
+			if !waitFor(5*time.Second, func() bool { return errors.Is(sub.Reason(), ErrSlowConsumer) }) {
+				t.Fatal("the viewer was never dropped")
+			}
+			if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
+				t.Fatal("the dropped viewer stayed on the roster")
+			}
+			ended := make(chan struct{})
+			go func() {
+				if end == "revoke" {
+					s.DisconnectLink("L")
+				} else {
+					s.CloseAll(ErrSessionEnded)
+				}
+				close(ended)
+			}()
+			select {
+			case <-ended:
+				t.Fatalf("the %s returned while the dropped viewer's transport was still open", end)
+			case <-time.After(200 * time.Millisecond):
+			}
+			close(held.writes)
+			if r := <-held.entered; !errors.Is(r, ErrSlowConsumer) {
+				t.Fatalf("closed for %v", r)
+			}
+			select {
+			case <-ended:
+				t.Fatalf("the %s returned before the transport's close did", end)
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(held.closes)
+			select {
+			case <-ended:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("the %s never returned", end)
+			}
+		})
+	}
+}
+
+// A second revoke of a link whose viewer's transport is still closing waits
+// for it as the first does.
+func TestARepeatedRevokeWaitsForTheTransportToo(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	held := newHeldSink()
+	close(held.writes)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleControl, LinkID: "L", Name: "revoked"}, held); err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan struct{})
+	go func() { s.DisconnectLink("L"); close(first) }()
+	<-held.entered
+	if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
+		t.Fatal("the revoked viewer stayed on the roster")
+	}
+	second := make(chan struct{})
+	go func() { s.DisconnectLink("L"); close(second) }()
+	select {
+	case <-first:
+		t.Fatal("the first revoke returned before the transport closed")
+	case <-second:
+		t.Fatal("the second revoke returned before the transport closed")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(held.closes)
+	for _, ch := range []chan struct{}{first, second} {
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatal("a revoke never returned")
+		}
+	}
+	closing := func() int {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.closing)
+	}
+	if !waitFor(time.Second, func() bool { return closing() == 0 }) {
+		t.Fatalf("%d clients still kept among the closing after their transports closed", closing())
+	}
+}
+
 // A revoke closes the link's viewers together: it takes as long as the
 // slowest transport's close, not the sum of them, and returns after every one.
 func TestARevokeClosesTheLinksViewersTogether(t *testing.T) {
