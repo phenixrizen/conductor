@@ -54,6 +54,7 @@ func TestNoticesCarryWhatThePackageLicencesDoNot(t *testing.T) {
 		"lib/xterm.mjs (the file's own notice)", "Fabrice Bellard",
 		"utils/glob.js (the file's own notice)", "Nick Fitzgerald",
 		"dompurify/dompurify.js (the file's own notice)", "Cure53", "DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)",
+		"Codicons (the codicon.ttf icon font, CC BY 4.0)", "Attribution 4.0 International",
 		"tm-themes 1.12.3's NOTICE (the themes it carries)", "tm-grammars 1.32.3's NOTICE (the grammars it carries)",
 		"in the app's resources as LICENSES.chromium.html",
 	} {

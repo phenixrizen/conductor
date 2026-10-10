@@ -755,14 +755,15 @@ request each from main.
   the toolchain go.mod pins (`GOTOOLCHAIN`), checked, so a newer go on the
   PATH cannot scan its own sources under that name. And what a package
   builds from other projects (Oniguruma's COPYING for the wasm Shiki's
-  engine inlines; DOMPurify's licence, which Monaco's own notices leave out;
+  engine inlines; DOMPurify's licence and the Codicons font's attribution
+  under CC BY 4.0, both of which Monaco's own notices leave out;
   tm-themes' and tm-grammars' NOTICE files for the themes
   and grammars Shiki ships, every one a chunk of its own, taken at the
   versions Shiki 4.4.3 was built from and pinned to it, so an upgrade stops
   the script until they are taken again). Chromium's notices ship in the
   desktop app's resources, since electron-builder deletes them from a macOS
   app. Identical texts print once; the file is about 1.1 MB, most of it the
-  grammars' notices. Codex's reviews found these gaps in five passes; each
+  grammars' notices. Codex's reviews found these gaps in six passes; each
   was confirmed in the files and is pinned by a Go test, the comment scan
   by Python fixtures (`scripts/notices_test.py`). The file is embedded (`notices.go`) and served at
   `/third-party-notices.txt` by every server and switchyard, linked from

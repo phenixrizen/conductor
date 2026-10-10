@@ -62,8 +62,12 @@ SUPPLEMENTS: dict[str, list[dict[str, str]]] = {
     # ships, as a chunk of its own.
     "@shikijs/themes": [{"name": "tm-themes 1.12.3's NOTICE (the themes it carries)", "file": "tm-themes-1.12.3.NOTICE", "for": "4.4.3"}],
     "@shikijs/langs": [{"name": "tm-grammars 1.32.3's NOTICE (the grammars it carries)", "file": "tm-grammars-1.32.3.NOTICE", "for": "4.4.3"}],
-    # Monaco 0.57.0 vendors DOMPurify 3.4.15 (esm/vs/base/browser/dompurify), which its ThirdPartyNotices.txt leaves out.
-    "monaco-editor": [{"name": "DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)", "file": "dompurify-3.4.15.LICENSE", "for": "0.57.0"}],
+    # Monaco 0.57.0 vendors DOMPurify 3.4.15 (esm/vs/base/browser/dompurify) and ships the Codicons font (CC BY 4.0), both of
+    # which its ThirdPartyNotices.txt leaves out.
+    "monaco-editor": [
+        {"name": "DOMPurify 3.4.15's LICENSE (vendored as esm/vs/base/browser/dompurify)", "file": "dompurify-3.4.15.LICENSE", "for": "0.57.0"},
+        {"name": "Codicons (the codicon.ttf icon font, CC BY 4.0)", "file": "codicons.NOTICE", "for": "0.57.0"},
+    ],
 }
 # A file's own copyright line: "Copyright (c) 2014 Name", "SPDX-FileCopyrightText: 2026 Name <url>", "@license X | (c) Name | …".
 # A bare "(c)" or "©" counts only standing alone before a year or a name, so code in prose (f(c), lower(c)) does not.
