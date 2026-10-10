@@ -777,6 +777,18 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   sized as the first row's, the keys clear of the action, the names
   repeated) and 390 (nothing runs off the side); it failed on the old
   table at the modal's width. No logic changed, so no vitest.
+- **The Yard's focused header overlapped at phone width.** Seen 2026-10-08
+  in a headless render at 390: the status, transport and viewer badges ran
+  under Open page and Stop, and the title was gone, since the header kept
+  every badge and button at every width. Below `sm` the transport and
+  viewer badges now hide, Open page and Stop fold into a menu (Resume stays
+  as an icon on an ended session), and the title truncates rather than
+  vanishing, as the session page's header does. Tests: Playwright
+  `yardheader.spec.ts` at 390 (the title shows; every visible piece of the
+  header on screen and clear of every other; the menu's Open page and
+  Stop, Stop stopping the session) and 1440 (the buttons in the header,
+  no menu); on the old layout it found "WebSocket · 106 ms overlaps Open
+  page". No logic changed, so no vitest.
 
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 

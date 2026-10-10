@@ -23,13 +23,6 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
-- **The Yard's focused header overlaps at phone width.** Seen 2026-10-08 in
-  a headless render at 390 wide (round 12, F2b): the status, transport and
-  viewers badges run under Open page and Stop, and the title is gone. Cause:
-  the navbar's right slot keeps every button and badge at every width. Fix:
-  below `sm` the badges fold into the title row and the buttons into a menu,
-  as the session page's navbar does; Playwright at 390 checking nothing
-  overlaps (bounding boxes) on `/yard?focus=<id>`.
 ## Features
 
 ### The browser terminal
