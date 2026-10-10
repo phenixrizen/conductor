@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -46,5 +48,77 @@ func TestRegistryCapacityListAndGC(t *testing.T) {
 	}
 	if _, ok := r.Get("a"); ok {
 		t.Fatal("a should be gone")
+	}
+}
+
+// infoGate is a session whose Info waits, when armed, until it is released:
+// a session that cannot answer.
+type infoGate struct {
+	stubDriver
+	armed   atomic.Bool
+	release chan struct{}
+	asked   chan struct{}
+}
+
+func (d *infoGate) Info() Info {
+	if d.armed.Load() {
+		select {
+		case d.asked <- struct{}{}:
+		default:
+		}
+		<-d.release
+	}
+	return d.info
+}
+
+// The registry asks its sessions for their description outside its own lock:
+// one that cannot answer holds up whoever asks it (a listing, a launch
+// counting the sessions, the sweep), never a lookup of another session or a
+// removal.
+func TestTheRegistryAsksSessionsOutsideItsLock(t *testing.T) {
+	r := NewRegistry(10)
+	now := time.Now()
+	stuck := &infoGate{stubDriver: *stub("stuck", now), release: make(chan struct{}), asked: make(chan struct{}, 1)}
+	for _, d := range []Driver{stuck, stub("other", now), stub("gone", now)} {
+		if err := r.Add(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stuck.armed.Store(true)
+	release := sync.OnceFunc(func() { close(stuck.release) })
+	defer release()
+	pending := map[string]chan struct{}{}
+	for name, fn := range map[string]func(){
+		"List": func() { _ = r.List() },
+		"Add":  func() { _ = r.Add(stub("new", now)) },
+		"GC":   func() { _ = r.GC(time.Minute, now) },
+	} {
+		done := make(chan struct{})
+		pending[name] = done
+		go func() { fn(); close(done) }()
+		select {
+		case <-stuck.asked:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s never asked the session", name)
+		}
+	}
+	time.Sleep(20 * time.Millisecond) // whatever waits for the lock is waiting by now
+	if !within(time.Second, func() { _, _ = r.Get("other") }) {
+		t.Error("a lookup of another session waited on the one that cannot answer")
+	}
+	if !within(time.Second, func() { r.Remove("gone") }) {
+		t.Error("a removal waited on the session that cannot answer")
+	}
+	if !within(time.Second, func() { _ = r.Count() }) {
+		t.Error("Count waited on the session that cannot answer")
+	}
+	stuck.armed.Store(false)
+	release()
+	for name, done := range pending {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s never returned", name)
+		}
 	}
 }
