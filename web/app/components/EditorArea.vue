@@ -274,6 +274,12 @@ function setKeymap(k: Keymap) {
 const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
 const nvimState = ref<NvimViewState | null>(null)
+// Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
+// last tab's mode, banner or question stayed over the next tab's file, and a test typed into the new tab before its Neovim listened).
+watch(
+  () => `${active.value?.id ?? ''}:${nvimOn.value}`,
+  () => (nvimState.value = null),
+)
 /** Neovim's own question and its choices, when one shows (round 13, G3). */
 const nvimConfirm = computed(() => {
   const st = nvimState.value

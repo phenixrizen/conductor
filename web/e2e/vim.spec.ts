@@ -310,6 +310,8 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await expect(tab('a.txt').locator('[data-editor-dirty]')).toBeVisible()
     await tab('a.txt').click()
     await expect(lines).toContainText('xx alpha', { timeout: 15_000 })
+    // Its own Neovim reports its mode once it listens again (the status starts empty for each tab): only then are keys its.
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
     await expect(area.locator('[data-editor-swap]')).toHaveCount(0)
     await lines.click()
     await page.keyboard.type('A!')

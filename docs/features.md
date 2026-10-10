@@ -663,6 +663,18 @@ picker's cut lists; the shortcuts table; the Yard's header at phone width;
 the "error" badge on a shell crew member. The local echo's space came
 first, found measuring the echo over the switchyard (round 13, PR #81).
 
+- **A flaky Neovim tab test, and the stale status behind it.** The test
+  for keeping a tab's Neovim (#80) failed once in a full local run. The
+  editor area kept Neovim's status (the mode, the swap file banner, a
+  question) from the editor last in front until the next one reported, so
+  after a tab change the status said "normal" for a Neovim that was not
+  listening yet; the test waited for that and typed into nothing.
+  Reproduced on the old code under load (64 busy loops on this 64-core
+  machine): one run in six lost "Ayy" and never saw the unsaved dot. Now
+  the status starts empty whenever the editor in front changes (another
+  tab, the other keymap) and the test waits for the tab's own report after
+  switching back; under the same load, eight runs out of eight, and the
+  whole Neovim spec five times out of five.
 - **One window sizes a session.** Seen by the owner 2026-10-06: a crew
   shared with a coworker on a laptop shrank to the laptop's columns and
   rows on the owner's 34-inch screen, since the latest controller that
