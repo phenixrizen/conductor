@@ -80,3 +80,16 @@ export function gitCheckLine(check: GitCheckView | null, isolation: 'none' | 'wo
   if (check.inRepo) return { text: check.toplevel ? `Git repository at ${check.toplevel}.` : 'In a git repository.', tone: 'neutral', blocks: false }
   return { text: 'Not a git repository; fine with a shared working directory.', tone: 'neutral', blocks: false }
 }
+
+/**
+ * What a picker says under a listing that is not whole (round 14: a cut list looked whole, its faint note missed): how many folders
+ * matching what was typed were left out and that typing narrows it; when only git marks were cut short, that some are unmarked; null
+ * when the listing is whole.
+ */
+export function moreNote(r: { truncated: boolean; more?: number; moreUnknown?: boolean }): string | null {
+  if (!r.truncated) return null
+  const n = r.more ?? 0
+  if (n > 0) return `${n}${r.moreUnknown ? '+' : ''} more ${n === 1 && !r.moreUnknown ? 'folder' : 'folders'} here: type the start of a name to narrow the list.`
+  if (r.moreUnknown) return 'More folders here than were read: type the start of a name to narrow the list.'
+  return 'Some folders are not marked: git did not answer in time.'
+}

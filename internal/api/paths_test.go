@@ -174,11 +174,16 @@ func TestPathsBoundsTheListing(t *testing.T) {
 	for i := range 60 {
 		mkdirs(t, root, fmt.Sprintf("d%02d", i))
 	}
-	if _, out := e.paths(root, ""); len(entryNames(out)) != 50 || out["truncated"] != true {
-		t.Fatalf("default limit: %d %v", len(entryNames(out)), out["truncated"])
+	// The cut says how many were left out (round 14: a cut list looked whole).
+	if _, out := e.paths(root, ""); len(entryNames(out)) != 50 || out["truncated"] != true || out["more"] != float64(10) || out["moreUnknown"] != nil {
+		t.Fatalf("default limit: %d %v more %v", len(entryNames(out)), out["truncated"], out["more"])
 	}
-	if _, out := e.paths(root, "5"); !slices.Equal(entryNames(out), []string{"d00", "d01", "d02", "d03", "d04"}) || out["truncated"] != true {
+	if _, out := e.paths(root, "5"); !slices.Equal(entryNames(out), []string{"d00", "d01", "d02", "d03", "d04"}) || out["truncated"] != true || out["more"] != float64(55) {
 		t.Fatalf("limit 5: %v", out)
+	}
+	// What is typed narrows on the server, before the cut: the ten d5x, whole.
+	if _, out := e.paths(filepath.Join(root, "d5"), ""); len(entryNames(out)) != 10 || out["truncated"] != false || out["more"] != nil {
+		t.Fatalf("narrowed: %v", out)
 	}
 	if _, out := e.paths(root, "500"); len(entryNames(out)) != 50 {
 		t.Fatalf("limit 500 is clamped: %v", len(entryNames(out)))
@@ -210,7 +215,7 @@ func TestPathsReadsABoundedNumberOfEntries(t *testing.T) {
 	was := maxPathScan
 	maxPathScan = 10
 	t.Cleanup(func() { maxPathScan = was })
-	if _, out := e.paths(root, ""); len(entryNames(out)) != 10 || out["truncated"] != true {
+	if _, out := e.paths(root, ""); len(entryNames(out)) != 10 || out["truncated"] != true || out["moreUnknown"] != true {
 		t.Fatalf("capped read: %v", out)
 	}
 }

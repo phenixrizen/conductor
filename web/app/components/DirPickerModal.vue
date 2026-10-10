@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
 import { crumbs, parentDir, underRoots } from '~/utils/dirPicker'
-import { DIR_DEBOUNCE_MS, dirQuery, gitMark } from '~/utils/dirInput'
+import { DIR_DEBOUNCE_MS, dirQuery, gitMark, moreNote } from '~/utils/dirInput'
 
 /**
  * A folder picker that browses the server's own folders (GET /api/paths):
@@ -32,6 +32,8 @@ const typed = ref(props.start)
 const dir = ref('')
 const entries = ref<PathEntry[]>([])
 const truncated = ref(false)
+const more = ref<{ more?: number; moreUnknown?: boolean }>({})
+const moreWords = computed(() => moreNote({ truncated: truncated.value, ...more.value }))
 const problem = ref('')
 const loading = ref(false)
 let seq = 0
@@ -48,6 +50,7 @@ async function list(path: string) {
     dir.value = r.dir
     entries.value = r.entries
     truncated.value = r.truncated
+    more.value = { more: r.more, moreUnknown: r.moreUnknown }
     problem.value = ''
     typed.value = r.dir
   } catch (e) {
@@ -133,7 +136,7 @@ function onListKey(e: KeyboardEvent) {
             <UBadge v-if="gitMark(e.git).label" :label="gitMark(e.git).label" :color="gitMark(e.git).tone" variant="subtle" size="sm" class="ml-auto flex-none" />
           </li>
           <li v-if="!entries.length && !loading" class="px-3 py-3 text-sm text-muted">No folders here. Type a path above, or type one that does not exist yet in the field itself.</li>
-          <li v-if="truncated" class="px-3 py-1.5 text-xs text-muted">More folders than shown: type the start of a name above.</li>
+          <li v-if="moreWords" class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-toned" data-dir-more><UIcon name="i-lucide-list-filter" class="size-3.5 flex-none text-muted" />{{ moreWords }}</li>
         </ul>
         <p v-if="note" class="text-xs text-warning" data-dir-picker-note>{{ note }}</p>
       </div>

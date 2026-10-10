@@ -747,6 +747,23 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   clipboard and fullscreen granted, media, geolocation, notifications and
   the rest refused), the Electron smoke clicking the header's button in
   and out of fullscreen (it stayed "Enter fullscreen" without the grant).
+- **The folder lists looked whole when they were cut.** The owner,
+  2026-10-08: the Launch dialog's working directory list stopped before
+  the end of a large folder. The server already listed directories only
+  and narrowed by what was typed before cutting at 50, and both pickers
+  had a note, but a faint 11-pixel line ("More here than listed or
+  marked") under the list that was easy to miss and said nothing of how
+  many. GET /api/paths now says `more`, how many directories matching
+  what was typed were left out, and `moreUnknown` when the folder held
+  more entries than a listing reads; both pickers say "30 more folders
+  here: type the start of a name to narrow the list." in readable text,
+  and keep "some folders are not marked" for the case where only git's
+  marks were cut short. Tests: Go (the count at the default limit and at
+  5, a typed start narrowing to a whole list, `moreUnknown` past the scan
+  cap), vitest (`moreNote`), Playwright `dirpicker.spec.ts` with 80
+  folders (the field's note says 30 more and 50 are listed; typing
+  "project-07" lists the ten, whole, and the note goes; the folder
+  picker's note says the same).
 
 ## Round 13: what round 12 set aside, built (started 2026-10-09)
 
