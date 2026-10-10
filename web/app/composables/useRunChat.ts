@@ -2,6 +2,7 @@ import type { Ref } from 'vue'
 import type { JoinRunMember, RunMember } from './useSessions'
 import type { ChatMessage, ChatPost, ChatRoster, ChatSend, ViewerInfo } from '~/utils/protocol'
 import { FOLLOW_SIZE } from '~/utils/protocol'
+import { chatThreadKey } from '~/utils/chat'
 import type { TerminalTransport } from '~/utils/transport/types'
 
 /** A member as the run page or a run link knows it: enough to pick one to carry the chat. */
@@ -24,7 +25,7 @@ export interface RunChatRefusal {
 export function useRunChat(runId: Ref<string>, members: Ref<readonly RunChatMember[]>, opts: { token: Ref<string>; server?: Ref<string>; kept?: Ref<ChatMessage[] | undefined> }) {
   const { create } = useTerminalTransport()
   const unread = useChatUnread()
-  const key = computed(() => `run:${runId.value}`)
+  const key = computed(() => chatThreadKey('run', runId.value, opts.server?.value ?? ''))
   const chat = useChat(key)
   const roster = ref<ChatRoster | null>(null)
   const state = ref<'idle' | 'connecting' | 'open' | 'closed'>('idle')

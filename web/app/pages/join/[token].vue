@@ -7,13 +7,15 @@ import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import { emptyTabs } from '~/utils/editorTabs'
 import { joinServer } from '~/utils/invite'
 import { joinedFromInfo } from '~/utils/joined'
-import { scopeItems } from '~/utils/chat'
+import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
 // changed under a live terminal would remount the page and drop it.
-definePageMeta({ layout: false })
+// Keyed by the token and the server: a join page for another server (an invite for the same token, say) is a new page, with its own
+// session, metadata and connection, never the old one's.
+definePageMeta({ layout: false, key: (route) => `${String(route.params.token)}|${String(route.query.server ?? '')}` })
 const admin = useWorkbenchToken()
 const desktop = useDesktop()
 const inWorkbench = admin.hasToken.value || desktop.isDesktop.value
@@ -95,7 +97,7 @@ function hearFocused(patch: { status?: string; attention?: string }) {
 // The chat for whoever holds the link (design 2d): the session's own thread, over this page's connection, so it works through a
 // switchyard too. A panel beside the terminal where there is room, a sheet over it on a phone (2c). A view-only guest can talk
 // and never reaches the agent; the owner's welcome says whether chat exists at all.
-const chatKey = computed(() => `session:${current.value?.id ?? ''}`)
+const chatKey = computed(() => chatThreadKey('session', current.value?.id ?? '', server.value))
 const chat = useChat(chatKey)
 const unread = useChatUnread()
 const chatUnread = computed(() => unread.count(chatKey.value))

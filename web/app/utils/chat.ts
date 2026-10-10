@@ -10,6 +10,15 @@ import { linkableUrl } from './events'
 
 const encoder = new TextEncoder()
 
+/**
+ * chatThreadKey names a chat thread in this page's store (useChat) and its unread count: `session:<id>` or `run:<id>` on this
+ * workbench's own server, prefixed with the server for one reached elsewhere (a join page's `?server=`), so a thread kept from one
+ * server, its history or a message waiting to be sent, never shows or goes out on another's page with the same id.
+ */
+export function chatThreadKey(scope: 'session' | 'run', id: string, server = ''): string {
+  return server ? `${scope}:${server}|${id}` : `${scope}:${id}`
+}
+
 /** The bytes a text takes on the wire, which is what the owner bounds. */
 export function chatBytes(text: string): number {
   return encoder.encode(text).length

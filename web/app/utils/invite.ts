@@ -51,6 +51,17 @@ export function joinServer(value: string): string {
   return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`
 }
 
+/**
+ * inviteRoute is the join page an invite the desktop app hands over opens (desktop/src/invite.ts invitePath has the same shape), the
+ * server as joinServer reads it (the host in lower case, no default port): '' for a token or a server a join page would not take.
+ */
+export function inviteRoute(invite: { server?: unknown; token?: unknown }): string {
+  const token = typeof invite.token === 'string' ? invite.token : ''
+  const server = joinServer(typeof invite.server === 'string' ? invite.server : '')
+  if (!TOKEN.test(token) || !server) return ''
+  return `/join/${encodeURIComponent(token)}?server=${encodeURIComponent(server)}`
+}
+
 /** wsBaseOf turns a server base into its WebSocket base. */
 export function wsBaseOf(server: string): string {
   return server.replace(/^http/, 'ws')
