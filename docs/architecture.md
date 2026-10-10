@@ -122,7 +122,11 @@ lookup, the environment and the hook injection are the same as for any
 session. The session carries its run in `Info.crew`, and its process gets
 `CONDUCTOR_CREW`, `CONDUCTOR_RUN`, `CONDUCTOR_MEMBER` and `GOAL`. With
 worktree isolation the engine first runs `git worktree add` (argv, never a
-shell) and starts the member in its own worktree under
+shell, through `gitcli.Run` like every git Conductor runs: command-line
+configuration turns off the hooks, the file system monitor, the pager,
+external diff and text conversion, the editor, credential helpers and
+transports the repository's configuration may name, and the filters its own
+configuration defines) and starts the member in its own worktree under
 `<cwd>/.conductor/worktrees`; it never removes one. A launch returns once the
 sessions exist; a goroutine per member, on the run's own context, then waits
 until the session is ready (its agent reports `needs_input` or `done`, or its

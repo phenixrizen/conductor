@@ -972,7 +972,11 @@ answers `launch_failed`: git is not installed on the server). Each member gets i
 git worktree add -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
 ```
 
-The run's id is the crew's id and eight hex digits. A crew whose `cwd` is
+Conductor runs it, as every git it runs, without the programs the
+repository's configuration names: no hook (no `post-checkout`), and no
+filter the repository's own configuration defines; a filter from your
+global configuration, such as Git LFS's, still checks its files out. The
+run's id is the crew's id and eight hex digits. A crew whose `cwd` is
 below the top of the repository starts in the same subdirectory of its
 worktree. The first worktree adds a `.conductor/` line to the repository's
 `.git/info/exclude`, so the worktrees stay out of `git status` without touching
