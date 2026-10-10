@@ -64,7 +64,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	if len(reg.Session.Command) == 0 || strings.TrimSpace(reg.Session.Command[0]) == "" {
 		return nil, false, ErrBadRegister
 	}
-	if len(reg.Session.Name) > 120 || len(reg.Host.Name) > 120 || len(reg.Session.Cwd) > 4096 {
+	if len(reg.Session.Name) > 120 || len(reg.Host.Name) > 120 || len(reg.Session.Cwd) > proto.MaxCwd {
 		return nil, false, ErrBadRegister
 	}
 	if len(reg.Host.User) > proto.MaxHostUser || len(reg.Session.Branch) > session.MaxBranchLen {

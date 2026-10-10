@@ -302,6 +302,10 @@ const (
 	FileOpTouched = "touched"
 )
 
+// MaxCwd bounds a session's working directory where the protocol carries
+// it: HostSession.Cwd and Welcome.Cwd.
+const MaxCwd = 4096
+
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).
 type Welcome struct {
 	T            string `json:"t"`
@@ -334,7 +338,12 @@ type Welcome struct {
 	Chat bool `json:"chat,omitempty"`
 	// RunChat says the session is a run's member with a run chat: `chat` and
 	// `chat_send` take scope `run`, and `chat_roster` arrives.
-	RunChat        bool        `json:"runChat,omitempty"`
+	RunChat bool `json:"runChat,omitempty"`
+	// Cwd is the session's working directory on the machine that runs it,
+	// from the owner itself: the root of a guest's Files pane. A switchyard
+	// lists a published session with its folder's last element alone.
+	// Absent past MaxCwd bytes, and from an older owner.
+	Cwd            string      `json:"cwd,omitempty"`
 	ICEServers     []ICEServer `json:"iceServers,omitempty"`
 	RelayTimeoutMs int         `json:"relayTimeoutMs,omitempty"`
 	RelayOnly      bool        `json:"relayOnly,omitempty"`

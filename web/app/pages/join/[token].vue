@@ -6,7 +6,7 @@ import { CloseCode } from '~/utils/protocol'
 import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import { emptyTabs } from '~/utils/editorTabs'
 import { joinServer } from '~/utils/invite'
-import { joinedFromInfo } from '~/utils/joined'
+import { filesRoot, joinedFromInfo } from '~/utils/joined'
 import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
 
@@ -74,9 +74,11 @@ function onClosed(info: CloseInfo) {
 const run = computed(() => info.value?.run)
 const focus = ref<JoinRunMember | null>(null)
 /** The session shown in full: a session link's, or the member opened from a run link's tiles. */
+/** The session's folder as the session's own welcome named it: a switchyard lists only its last element (filesRoot). */
+const ownerCwd = ref('')
 const current = computed<{ id: string; name: string; agentId: string; kind: SessionKind; hostName?: string; hostUser?: string; cwd?: string } | null>(() => {
   const s = info.value?.session
-  if (s) return s
+  if (s) return { ...s, cwd: filesRoot(s.cwd, ownerCwd.value) }
   const m = focus.value
   // Crew members run on the server.
   return m?.sessionId ? { id: m.sessionId, name: m.name, agentId: m.agentId, kind: m.kind ?? 'server' } : null
@@ -134,6 +136,7 @@ function onActivity(e: ActivityEntry) {
 }
 function onWelcome(w: Welcome) {
   activity.value = []
+  ownerCwd.value = w.cwd ?? ''
   editor.onWelcome(w)
   unread.registerSelf(w.subscriberId ?? w.viewerId ?? '')
   chat.welcome(!!w.chat, viaChat)

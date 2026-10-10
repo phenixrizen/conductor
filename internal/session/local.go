@@ -836,6 +836,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		NvimOwnerOnly:   s.nvimOwnerOnly(sub),
 		Chat:            true,
 		RunChat:         room != nil,
+		Cwd:             welcomeCwd(s.info.Cwd),
 	}))
 	if !sub.quiet {
 		snap := s.ring.Snapshot()
@@ -1186,3 +1187,12 @@ func (s *Local) Drained() bool { return s.hub.Drained() }
 
 // LinkViewers counts attached clients per share link id.
 func (s *Local) LinkViewers() map[string]int { return s.hub.CountByLink() }
+
+// welcomeCwd is the working directory a welcome carries: the session's own,
+// or "" past proto.MaxCwd bytes.
+func welcomeCwd(cwd string) string {
+	if len(cwd) > proto.MaxCwd {
+		return ""
+	}
+	return cwd
+}

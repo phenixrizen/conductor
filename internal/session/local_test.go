@@ -909,3 +909,25 @@ func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
 		t.Fatalf("once ended: %v", subAfter.Reason())
 	}
 }
+
+// The welcome names the session's working directory, from the owner itself:
+// a guest's Files pane roots there, whatever a switchyard lists. A path past
+// the protocol's bound is left out.
+func TestTheWelcomeNamesTheSessionsFolder(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := newLocal(t, dir)
+	sink := newChanSink(false)
+	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	sink.waitFrames(t, 1)
+	if m := decodeControl(t, sink.frame(0)); m["t"] != proto.CtlWelcome || m["cwd"] != dir {
+		t.Fatalf("welcome: %v", m)
+	}
+	if got := welcomeCwd("/" + strings.Repeat("a", proto.MaxCwd)); got != "" {
+		t.Fatalf("an over-long folder went in the welcome: %d bytes", len(got))
+	}
+	if got := welcomeCwd("/srv/" + strings.Repeat("a", proto.MaxCwd-5)); len(got) != proto.MaxCwd {
+		t.Fatalf("a folder at the bound was left out: %d bytes", len(got))
+	}
+}

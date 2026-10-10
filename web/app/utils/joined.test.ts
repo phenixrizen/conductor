@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { JoinInfo } from '~/composables/useSessions'
-import { JOINED_KEY, JOINED_MAX, joinedDot, joinedFromInfo, joinedOpen, joinedPath, joinedStatusOf, patchJoined, readJoined, removeJoined, upsertJoined, writeJoined, type JoinedEntry } from './joined'
+import { filesRoot, JOINED_KEY, JOINED_MAX, joinedDot, joinedFromInfo, joinedOpen, joinedPath, joinedStatusOf, patchJoined, readJoined, removeJoined, upsertJoined, writeJoined, type JoinedEntry } from './joined'
 
 const memory = (init: Record<string, string> = {}) => {
   const data = new Map(Object.entries(init))
@@ -67,5 +67,18 @@ describe('the joined links', () => {
     expect(joinedDot({ kind: 'session', sessionStatus: 'exited' })).toBe('ended')
     expect(joinedDot({ kind: 'session', lastStatus: 'gone' })).toBe('revoked')
     expect(joinedDot({ kind: 'run', lastStatus: 'unreachable' })).toBe('unreachable')
+  })
+})
+
+describe('the Files root of a joined session', () => {
+  it('takes the folder the session\'s own welcome names over the one the switchyard lists', () => {
+    expect(filesRoot('acme-billing', '/home/nate/code/acme-billing')).toBe('/home/nate/code/acme-billing')
+    expect(filesRoot('/srv/old-listing', '/srv/repo')).toBe('/srv/repo')
+  })
+  it('roots nothing at a last element alone, and keeps a whole path from an older owner', () => {
+    expect(filesRoot('acme-billing', undefined)).toBeUndefined()
+    expect(filesRoot('acme-billing', '')).toBeUndefined()
+    expect(filesRoot('/home/nate/code', undefined)).toBe('/home/nate/code')
+    expect(filesRoot(undefined, undefined)).toBeUndefined()
   })
 })
