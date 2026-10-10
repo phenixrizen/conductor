@@ -530,7 +530,8 @@ func dialFakeHostWith(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.
 	return h, registered
 }
 
-// pump moves the server's text messages to msgs until the connection ends.
+// pump moves the server's text messages to msgs and its binary ones to bin
+// until the connection ends.
 func (h *fakeHost) pump() {
 	defer close(h.done)
 	for {

@@ -185,7 +185,18 @@ so the viewer stays on its WebRTC attempt; such a switchyard also refuses a
 host that registers with `relayOnly` (close 1002, `relay_off`). With
 `switchyard.relayKBps` set, a host's relayed output is read no faster than
 that many KiB a second (a burst of twice it): the host is slowed by its own
-connection, and every frame still arrives whole and in order. After `relay_ok` the same WebSocket carries terminal frames: the
+connection, and every frame still arrives whole and in order. The other way, on any server, what a hosted session's
+viewers send (SIGNAL and relayed frames) is read under one budget per
+address, `viewerRelayKBps` (128 KiB a second by default, a burst of twice
+it), shared by every hosted viewer of the address: a viewer past it is
+slowed the same way. What waits for a host's connection is bounded in bytes
+as well as in messages (8 MiB): the viewers' frames fill at most 7 MiB of it
+and then wait in their own read loops for the host to take some, which
+neither holds up the host's messages nor closes its connection; a server
+message that finds the whole queue full closes the connection, as a host
+too slow to keep. What waits for a viewer is bounded at 16 MiB beside its
+2048 frames: past either the viewer is closed as too slow (1008,
+`slow_consumer`). After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
 View-role INPUT, FILE_WRITE, `resize`, `submit`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).

@@ -44,6 +44,9 @@ type Server struct {
 	hostLimiter *rateLimiter
 	openHosts   *addrCounter
 	openRelay   *addrBuckets
+	// viewerRelay bounds, per address, what the viewers of hosted sessions
+	// send their hosts through this server (cfg.ViewerRelayKBps).
+	viewerRelay *addrBuckets
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -211,6 +214,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		hostLimiter: newRateLimiter(float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))/60, float64(max(1, cfg.Switchyard.OpenHostRegistrationsPerMinute))),
 		openHosts:   &addrCounter{},
 		openRelay:   &addrBuckets{},
+		viewerRelay: &addrBuckets{},
 		log:         log,
 		web:         web,
 		store:       st,

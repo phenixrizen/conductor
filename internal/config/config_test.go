@@ -1097,6 +1097,32 @@ func TestSwitchyardOpenHostsConfigAndEnv(t *testing.T) {
 	}
 }
 
+// What the viewers of one address send hosts is bounded by default, on any
+// server; the file and the environment set the bound, 0 is none, and a
+// negative or huge one is refused, naming the key.
+func TestViewerRelayKBps(t *testing.T) {
+	cfg := Defaults()
+	if cfg.ViewerRelayKBps != 128 {
+		t.Fatalf("default %d", cfg.ViewerRelayKBps)
+	}
+	if err := store.DecodeStrict([]byte(`{"viewerRelayKBps":0}`), cfg); err != nil || cfg.ViewerRelayKBps != 0 {
+		t.Fatalf("file: %d %v", cfg.ViewerRelayKBps, err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("no bound: %v", err)
+	}
+	if err := applyEnv(cfg, func(k string) string { return map[string]string{"CONDUCTOR_VIEWER_RELAY_KBPS": "64"}[k] }); err != nil || cfg.ViewerRelayKBps != 64 {
+		t.Fatalf("env: %d %v", cfg.ViewerRelayKBps, err)
+	}
+	for _, n := range []int{-1, 1<<20 + 1} {
+		c := Defaults()
+		c.ViewerRelayKBps = n
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "viewerRelayKBps") {
+			t.Errorf("%d: %v", n, err)
+		}
+	}
+}
+
 // paths.browse is roots unless the file or CONDUCTOR_PATHS_BROWSE says any;
 // another value is refused, naming the key.
 func TestPathsBrowse(t *testing.T) {

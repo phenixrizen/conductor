@@ -139,7 +139,8 @@ type Switchyard struct {
 	// RelayKBps bounds what one host connection may send through the relay,
 	// in kilobytes a second (the host's output to all of its viewers; a
 	// burst of twice that is allowed): a public switchyard's protection
-	// against a session that streams. 0, the default, is no bound.
+	// against a session that streams. 0, the default, is no bound. What
+	// viewers send hosts is bounded by Config.ViewerRelayKBps.
 	RelayKBps int `json:"relayKBps,omitempty"`
 	// AllowedOrigins are the browser origins that may fetch the join route
 	// and open a hosted session's WebSocket from another page, as host
@@ -331,6 +332,13 @@ type Config struct {
 	ICEServers []ICEServer `json:"iceServers"`
 	// RelayTimeoutMs is how long a viewer waits for a data channel before relaying.
 	RelayTimeoutMs int `json:"relayTimeoutMs"`
+	// ViewerRelayKBps bounds what the viewers of one address send hosted
+	// sessions' hosts through this server, all of them together, in KiB a
+	// second (128 by default): relayed frames and signaling alike, one
+	// bucket per address with a burst of twice the rate. A viewer past it is
+	// slowed, its connection read no faster than the bucket refills. It
+	// holds on a switchyard and on a plain server alike; 0 is no bound.
+	ViewerRelayKBps int `json:"viewerRelayKBps"`
 	// EnvPassthrough lists extra environment variables copied into PTYs.
 	EnvPassthrough []string `json:"envPassthrough"`
 	// FileView controls which roles may read session files.
@@ -408,6 +416,7 @@ func Defaults() *Config {
 		ExitedRetention:      Duration(10 * time.Minute),
 		ICEServers:           []ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 		RelayTimeoutMs:       8000,
+		ViewerRelayKBps:      128,
 		FileView:             FileViewView,
 		FileEdit:             FileEditControl,
 		Reach:                Reach{Mode: ReachAuto, PublicPort: 443},
@@ -538,6 +547,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		"CONDUCTOR_MAX_SESSIONS":            &cfg.MaxSessions,
 		"CONDUCTOR_MAX_VIEWERS_PER_SESSION": &cfg.MaxViewersPerSession,
 		"CONDUCTOR_RELAY_TIMEOUT_MS":        &cfg.RelayTimeoutMs,
+		"CONDUCTOR_VIEWER_RELAY_KBPS":       &cfg.ViewerRelayKBps,
 	} {
 		if err := num(key, dst); err != nil {
 			return err
@@ -727,6 +737,9 @@ func (c *Config) Validate() error {
 	}
 	if c.RelayTimeoutMs < 500 || c.RelayTimeoutMs > 120000 {
 		errs = append(errs, errors.New("relayTimeoutMs must be between 500 and 120000"))
+	}
+	if c.ViewerRelayKBps < 0 || c.ViewerRelayKBps > 1<<20 {
+		errs = append(errs, errors.New("viewerRelayKBps must be between 0 and 1048576"))
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))

@@ -60,7 +60,7 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	case *session.Local:
 		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID(), p.admin, check)
 	case *signal.HostedSession:
-		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check)
+		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check, clientKey(r))
 	default:
 		c.Close(websocket.StatusInternalError, "unsupported session kind")
 	}
@@ -319,8 +319,12 @@ func (s *Server) linkLabel(linkID string) string {
 }
 
 // serveHostedViewer brokers WebRTC signaling for a hosted session and relays
-// frames through the host connection when the viewer asks for it.
-func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error)) {
+// frames through the host connection when the viewer asks for it. What the
+// viewer sends is read under its address's budget (cfg.ViewerRelayKBps),
+// one bucket for every hosted viewer of the address, as the open hosts of
+// one address share theirs: past it the viewer is slowed, its connection
+// read no faster than the bucket refills.
+func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
 	viewerID := session.NewID()
 	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check})
 	if err != nil {
@@ -337,6 +341,11 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	defer hs.RemoveViewer(v)
 	sink := newWSSink(c)
 	defer sink.cancel()
+	var budget *byteBucket
+	if kbps := s.cfg.ViewerRelayKBps; kbps > 0 {
+		budget = s.viewerRelay.acquire(addr, kbps*1024)
+		defer s.viewerRelay.release(addr)
+	}
 
 	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
 	for _, srv := range s.cfg.ICEServers {
@@ -372,6 +381,15 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
 			return
+		}
+		// Every frame is counted, whatever becomes of it, before the next
+		// is read; a frame waits for the host's queue in its turn after
+		// (signal.HostConn's share for viewers), so neither wait holds up
+		// the host's connection or another viewer's.
+		if budget != nil {
+			if budget.take(sink.ctx, 1+len(f.Payload)) != nil {
+				return
+			}
 		}
 		switch f.Type {
 		case proto.TypeSignal:

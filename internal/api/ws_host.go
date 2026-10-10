@@ -201,11 +201,12 @@ type hostConnState struct {
 }
 
 // byteBucket is a token bucket of bytes: rate a second, burst at most.
-// take waits, as long as ctx allows, until n bytes are there, so a host
-// that streams more than the bound is slowed rather than cut off: the
-// server reads its connection no faster than the bucket refills, and TCP
+// take waits, as long as ctx allows, until n bytes are there, so a host (or
+// a viewer) that streams more than the bound is slowed rather than cut off:
+// the server reads its connection no faster than the bucket refills, and TCP
 // does the rest.
-// It is safe to share: the open hosts of one address take from one bucket.
+// It is safe to share: the open hosts of one address take from one bucket,
+// and so do the viewers of one address (Config.ViewerRelayKBps).
 type byteBucket struct {
 	mu          sync.Mutex
 	rate, burst float64

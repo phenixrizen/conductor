@@ -1397,6 +1397,7 @@ file must run `compinit` before that line.
 | `allowedOrigins` | `CONDUCTOR_ALLOWED_ORIGINS` | same host | extra WebSocket origin patterns |
 | `iceServers` | `CONDUCTOR_ICE_SERVERS` | Google STUN | handed to browsers and hosts |
 | `relayTimeoutMs` | `CONDUCTOR_RELAY_TIMEOUT_MS` | `8000` | wait before falling back to relay |
+| `viewerRelayKBps` | `CONDUCTOR_VIEWER_RELAY_KBPS` | `128` | what the viewers of one address send hosted sessions' hosts through this server a second, all of them together, in KiB (relayed frames and signaling; one bucket per address, a burst of twice that): a viewer past it is slowed, never cut; on a switchyard and a plain server alike; `0` is no bound |
 | `fileView` | `CONDUCTOR_FILE_VIEW` | `view` | who may read session files |
 | `scrollbackBytes`, `maxSessions`, `maxViewersPerSession`, `exitedRetention`, `envPassthrough` | matching `CONDUCTOR_*` | see example | limits |
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
