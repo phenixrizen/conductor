@@ -171,10 +171,10 @@ viewer sent them, as the server does, with at most 8 waiting behind the one
 being typed: one more is refused with `error{too_many_requests}` (`requestId`
 the chat message's id or the send's ref, none for a `submit`) and the
 connection stays. Each has 10 s from its arrival, its wait included: one
-whose time ran out before its turn is refused (`input_failed`), never typed
-late. When the viewer goes (its connection or data channel
-closes, or it moves to the relay and attaches again), what waits is dropped;
-the one being typed is finished. The viewer's `nvim_open`s start apart, at
+still waiting when its time runs out is refused then (`input_failed`), never
+typed late. When the viewer goes (its connection or data channel closes, or
+it moves to the relay and attaches again), what waits is dropped, and does
+not count against the 8; the one being typed is finished. The viewer's `nvim_open`s start apart, at
 most 4 at once (the editors a connection may hold), past which the
 `nvim_event` error is `too_many_requests`.
 

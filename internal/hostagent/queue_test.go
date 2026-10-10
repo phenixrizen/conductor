@@ -35,7 +35,7 @@ func TestRequestQueueRunsInOrderAndRefusesPastItsBound(t *testing.T) {
 	before := runtime.NumGoroutine()
 	var refused []int
 	for i := range maxQueued + 10 {
-		if !q.add(nil, job(i)) {
+		if !q.add(request{run: job(i)}) {
 			refused = append(refused, i)
 		}
 	}
@@ -64,7 +64,7 @@ func TestRequestQueueEndsItsGoroutineWhenIdle(t *testing.T) {
 	var q requestQueue
 	for range 3 {
 		done := make(chan struct{})
-		if !q.add(nil, func() { close(done) }) {
+		if !q.add(request{run: func() { close(done) }}) {
 			t.Fatal("refused on an idle queue")
 		}
 		<-done
@@ -95,11 +95,11 @@ func TestRequestQueueDropsWhatWaitsForAViewerGone(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	q.add(untilGone, func() { <-release })
-	q.add(untilGone, note("gone 1"))
-	q.add(here, note("here 1"))
-	q.add(untilGone, note("gone 2"))
-	q.add(here, note("here 2"))
+	q.add(request{run: func() { <-release }, live: untilGone})
+	q.add(request{run: note("gone 1"), live: untilGone})
+	q.add(request{run: note("here 1"), live: here})
+	q.add(request{run: note("gone 2"), live: untilGone})
+	q.add(request{run: note("here 2"), live: here})
 	gone.Store(true)
 	close(release)
 	q.wait()
@@ -110,21 +110,92 @@ func TestRequestQueueDropsWhatWaitsForAViewerGone(t *testing.T) {
 	}
 }
 
+// A waiting request whose time runs out is refused then, though the one
+// running holds the queue, and makes room; one whose turn came first is
+// not refused by its timer.
+func TestRequestQueueRefusesAWaitingRequestWhoseTimeRunsOut(t *testing.T) {
+	var q requestQueue
+	release := make(chan struct{})
+	q.add(request{run: func() { <-release }})
+	expired := make(chan int, maxQueued)
+	for i := range maxQueued {
+		q.add(request{
+			run:      func() { t.Errorf("request %d ran after its time", i) },
+			deadline: time.Now().Add(50 * time.Millisecond),
+			expired:  func() { expired <- i },
+		})
+	}
+	for range maxQueued {
+		select {
+		case <-expired:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a waiting request was not refused when its time ran out")
+		}
+	}
+	ran := make(chan struct{}, maxQueued)
+	for range maxQueued {
+		if !q.add(request{run: func() { ran <- struct{}{} }, deadline: time.Now().Add(time.Hour), expired: func() { t.Error("refused in its time") }}) {
+			t.Fatal("the room the refused requests left was not taken")
+		}
+	}
+	if q.add(request{run: func() {}}) {
+		t.Fatal("the queue took one past its bound")
+	}
+	close(release)
+	for range maxQueued {
+		select {
+		case <-ran:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a waiting request did not run")
+		}
+	}
+	q.wait()
+}
+
+// A full queue does not count the waiting requests whose viewer is gone:
+// a viewer that moved to the relay and attached again is not refused for
+// what its old attachment left waiting.
+func TestRequestQueueMakesRoomOfWhatWaitsForAViewerGone(t *testing.T) {
+	var q requestQueue
+	release := make(chan struct{})
+	q.add(request{run: func() { <-release }})
+	var gone atomic.Bool
+	old := func() bool { return !gone.Load() }
+	for range maxQueued {
+		q.add(request{run: func() { t.Error("a request of the old attachment ran") }, live: old})
+	}
+	if q.add(request{run: func() {}}) {
+		t.Fatal("the queue took one past its bound")
+	}
+	gone.Store(true)
+	ran := make(chan struct{})
+	if !q.add(request{run: func() { close(ran) }}) {
+		t.Fatal("refused for what waits for a viewer gone")
+	}
+	close(release)
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the new attachment's request did not run")
+	}
+	q.wait()
+}
+
 // close drops what waits and refuses what comes after it; the request
 // running finishes, and then nothing of the queue runs.
 func TestRequestQueueCloseDropsWhatWaits(t *testing.T) {
 	var q requestQueue
 	release := make(chan struct{})
 	finished := make(chan struct{})
-	q.add(nil, func() {
+	q.add(request{run: func() {
 		<-release
 		close(finished)
-	})
+	}})
 	for range maxQueued {
-		q.add(nil, func() { t.Error("a waiting request ran after close") })
+		q.add(request{run: func() { t.Error("a waiting request ran after close") }})
 	}
 	q.close()
-	if q.add(nil, func() { t.Error("a request added after close ran") }) {
+	if q.add(request{run: func() { t.Error("a request added after close ran") }}) {
 		t.Fatal("a closed queue took a request")
 	}
 	close(release)

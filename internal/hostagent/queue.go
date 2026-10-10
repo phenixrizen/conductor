@@ -1,6 +1,7 @@
 package hostagent
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -38,32 +39,45 @@ func queueFull(requestID string) []byte {
 	return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: proto.ErrCodeTooManyRequests, Message: queueFullWords, RequestID: requestID})
 }
 
+// request is one of a viewer's requests.
+type request struct {
+	run func()
+	// live says whether the request's viewer is still there; a waiting
+	// request whose viewer is gone is dropped, unanswered. Nil is always
+	// there. It may take the peer's lock, never the queue's.
+	live func() bool
+	// deadline, when set, is when a request still waiting is refused with
+	// expired, whether its turn has come or not: one stuck ahead of it
+	// holds it no longer than its own time.
+	deadline time.Time
+	expired  func()
+}
+
+// waitingRequest is a request in the queue, with its deadline's timer.
+type waitingRequest struct {
+	request
+	timer *time.Timer
+}
+
 // requestQueue runs requests one at a time, in the order they were added,
 // on one goroutine that it starts for the first and that ends once none is
 // left: an idle viewer holds no goroutine. At most maxQueued wait behind the
-// one running. Its zero value is ready.
+// one running. Its zero value is ready. Lock order: the queue's lock, then
+// the peer's (live).
 type requestQueue struct {
 	mu      sync.Mutex
-	waiting []queued
+	waiting []*waitingRequest
 	running bool
 	closed  bool
 	// done is closed when the goroutine running the requests ends.
 	done chan struct{}
 }
 
-type queued struct {
-	run func()
-	// live says, when the request's turn comes, whether its viewer is
-	// still there; a request whose viewer is gone is dropped. Nil is
-	// always there.
-	live func() bool
-}
-
-// add runs fn after the requests added before it, or reports false, running
-// nothing, when maxQueued wait already or the queue is closed. fn is dropped
-// if live reports false when its turn comes; the request added to an idle
-// queue has its turn at once. add never blocks.
-func (q *requestQueue) add(live func() bool, fn func()) bool {
+// add runs r after the requests added before it, or reports false, running
+// nothing, when maxQueued wait for viewers still there or the queue is
+// closed. The request added to an idle queue has its turn at once. add
+// never blocks.
+func (q *requestQueue) add(r request) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	switch {
@@ -74,12 +88,28 @@ func (q *requestQueue) add(live func() bool, fn func()) bool {
 		// the viewer going lets finish.
 		q.running = true
 		q.done = make(chan struct{})
-		go q.run(fn, q.done)
-	case len(q.waiting) >= maxQueued:
-		return false
-	default:
-		q.waiting = append(q.waiting, queued{run: fn, live: live})
+		go q.run(r.run, q.done)
+		return true
 	}
+	if len(q.waiting) >= maxQueued {
+		// Those whose viewer is gone (one that moved to the relay and
+		// attached again) do not count.
+		q.waiting = slices.DeleteFunc(q.waiting, func(w *waitingRequest) bool {
+			if w.live == nil || w.live() {
+				return false
+			}
+			w.stop()
+			return true
+		})
+		if len(q.waiting) >= maxQueued {
+			return false
+		}
+	}
+	w := &waitingRequest{request: r}
+	if !r.deadline.IsZero() && r.expired != nil {
+		w.timer = time.AfterFunc(time.Until(r.deadline), func() { q.expire(w) })
+	}
+	q.waiting = append(q.waiting, w)
 	return true
 }
 
@@ -102,13 +132,35 @@ func (q *requestQueue) next() func() {
 			q.mu.Unlock()
 			return nil
 		}
-		r := q.waiting[0]
-		q.waiting[0] = queued{}
+		w := q.waiting[0]
+		q.waiting[0] = nil
 		q.waiting = q.waiting[1:]
+		// Its expiry, if it is on its way, finds it gone; the request's own
+		// deadline answers it then.
+		w.stop()
 		q.mu.Unlock()
-		if r.live == nil || r.live() {
-			return r.run
+		if w.live == nil || w.live() {
+			return w.run
 		}
+	}
+}
+
+// expire refuses w, unless its turn came first or it was dropped.
+func (q *requestQueue) expire(w *waitingRequest) {
+	q.mu.Lock()
+	i := slices.Index(q.waiting, w)
+	if i >= 0 {
+		q.waiting = slices.Delete(q.waiting, i, i+1)
+	}
+	q.mu.Unlock()
+	if i >= 0 {
+		w.expired()
+	}
+}
+
+func (w *waitingRequest) stop() {
+	if w.timer != nil {
+		w.timer.Stop()
 	}
 }
 
@@ -118,6 +170,9 @@ func (q *requestQueue) next() func() {
 func (q *requestQueue) close() {
 	q.mu.Lock()
 	q.closed = true
+	for _, w := range q.waiting {
+		w.stop()
+	}
 	q.waiting = nil
 	q.mu.Unlock()
 }

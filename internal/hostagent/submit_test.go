@@ -273,7 +273,7 @@ func TestAViewerLeavingDropsWhatWaitsAndFinishesWhatIsTyped(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the viewer's queue still runs after it left")
 	}
-	if v.p.typing.add(nil, func() {}) {
+	if v.p.typing.add(request{run: func() {}}) {
 		t.Fatal("the queue of a viewer that left took a request")
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -355,9 +355,10 @@ func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
 	v.p.typing.wait()
 }
 
-// A submission's time runs from its arrival: those that waited it out
-// behind one the process does not take are refused, never typed once the
-// process takes input again.
+// A submission's time runs from its arrival: those waiting behind one the
+// process does not take are refused as their time runs out, while it still
+// takes none, and never typed once it takes input again; the queue has
+// room again.
 func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	v := newSubmitViewerWithin(t, 10*time.Millisecond, timeout)
@@ -366,7 +367,28 @@ func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 1"})
 	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: "ref-1"})
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 2"})
-	v.sync()
+	failed := map[string]int{}
+	v.until(func(m map[string]any) bool {
+		if m["t"] == proto.CtlError {
+			if m["code"] != "input_failed" {
+				t.Fatalf("error %v", m)
+			}
+			id, _ := m["requestId"].(string)
+			failed[id]++
+		}
+		return failed[""]+failed["ref-1"] == 3
+	})
+	if failed[""] != 2 || failed["ref-1"] != 1 {
+		t.Fatalf("failed %v, want the two waiting submits and ref-1", failed)
+	}
+	for i := range maxQueued {
+		v.send(proto.Submit{T: proto.CtlSubmit, Text: fmt.Sprintf("later %d", i)})
+	}
+	for _, m := range v.sync() {
+		if isRefusal(m) {
+			t.Fatalf("refused %v: the expired requests left no room", m)
+		}
+	}
 	time.Sleep(2 * timeout)
 	// The first had the process's turn and was typed when it took input
 	// again; its time was out by then, so its Enter is left out.
@@ -374,20 +396,6 @@ func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 		t.Fatalf("typed %q", first)
 	}
 	v.quiet(300 * time.Millisecond)
-	failed := map[string]int{}
-	for _, m := range v.sync() {
-		if m["t"] != proto.CtlError {
-			continue
-		}
-		if m["code"] != "input_failed" {
-			t.Fatalf("error %v", m)
-		}
-		id, _ := m["requestId"].(string)
-		failed[id]++
-	}
-	if failed[""] != 3 || failed["ref-1"] != 1 {
-		t.Fatalf("failed %v, want the three submits and ref-1", failed)
-	}
 }
 
 // The peer lets go of a subscription before the session's Detach, which
@@ -430,6 +438,59 @@ func TestAViewerMovingToTheRelayDropsWhatWaits(t *testing.T) {
 	v.p.startRelay()
 	if typed := v.typed(v.release(), 2); fmt.Sprint(typed) != fmt.Sprint([]string{"first", "\r"}) {
 		t.Fatalf("typed %q", typed)
+	}
+	v.quiet(300 * time.Millisecond)
+}
+
+// sinkFunc is a session.Sink of a function.
+type sinkFunc func(frame []byte)
+
+func (f sinkFunc) WriteFrame(frame []byte) error { f(frame); return nil }
+func (sinkFunc) Close(error)                     {}
+
+// A viewer that moves to the relay with its queue full is not refused, once
+// it has attached again, for what its old attachment left waiting.
+func TestAViewerAttachedAgainHasItsQueue(t *testing.T) {
+	v := newSubmitViewer(t, 10*time.Millisecond)
+	v.hold()
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
+	for i := range maxQueued {
+		v.send(proto.Submit{T: proto.CtlSubmit, Text: fmt.Sprintf("waits %d", i)})
+	}
+	v.sync()
+	v.p.startRelay()
+	// Its hello over the relay attaches it again (attach), here to a sink
+	// the test reads.
+	frames := make(chan []byte, 64)
+	sub, err := v.p.a.local.AttachWith(session.AttachOptions{ID: v.p.id, Role: session.RoleControl, Name: "Nate"}, sinkFunc(func(f []byte) { frames <- f }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.p.mu.Lock()
+	v.p.sub = sub
+	v.p.mu.Unlock()
+	v.p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Submit{T: proto.CtlSubmit, Text: "again"})})
+	v.p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Ping{T: proto.CtlPing, TS: 1})})
+	for pong := false; !pong; {
+		select {
+		case raw := <-frames:
+			f, err := proto.Decode(raw)
+			if err != nil || f.Type != proto.TypeControl {
+				continue
+			}
+			var m map[string]any
+			_ = json.Unmarshal(f.Payload, &m)
+			if isRefusal(m) {
+				t.Fatalf("refused %v", m)
+			}
+			pong = m["t"] == proto.CtlPong
+		case <-time.After(10 * time.Second):
+			t.Fatal("no pong")
+		}
+	}
+	want := []string{"first", "\r", "again", "\r"}
+	if typed := v.typed(v.release(), len(want)); fmt.Sprint(typed) != fmt.Sprint(want) {
+		t.Fatalf("typed %q, want %q", typed, want)
 	}
 	v.quiet(300 * time.Millisecond)
 }
