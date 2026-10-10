@@ -150,6 +150,14 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+		// A switchyard's bound on what the host sends: its relayed output,
+		// and its messages too, an answer or a candidate for a viewer among
+		// them. The host waits for it.
+		if hc.relay != nil {
+			if err := hc.relay.take(ctx, len(data)); err != nil {
+				return
+			}
+		}
 		if typ == websocket.MessageBinary {
 			f, err := proto.Decode(data)
 			if err != nil || f.Type != proto.TypeRelay {
@@ -160,12 +168,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				c.Close(proto.CloseProtocolError, "bad relay envelope")
 				return
-			}
-			// A switchyard's bound on relayed output: the host waits for it.
-			if hc.relay != nil {
-				if err := hc.relay.take(ctx, len(data)); err != nil {
-					return
-				}
 			}
 			s.relayed.add(len(data))
 			if inner.Type == proto.TypeInput {
@@ -189,7 +191,7 @@ func writeText(ctx context.Context, c *websocket.Conn, b []byte) error {
 
 // hostConnState is what one host connection keeps between its messages:
 // the base its links take, when it last asked for links, and the bucket
-// its relayed output drains (nil without a bound).
+// what it sends drains (nil without a bound).
 type hostConnState struct {
 	base string
 	// addr is an open host's address, for the bound on the links it keeps; "" for a tokened host.

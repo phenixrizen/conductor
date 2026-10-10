@@ -183,9 +183,10 @@ sends `relay`. A switchyard without a relay (`switchyard.relay: false`)
 answers a CONTROL `error{code:"relay_off"}` instead and keeps the connection,
 so the viewer stays on its WebRTC attempt; such a switchyard also refuses a
 host that registers with `relayOnly` (close 1002, `relay_off`). With
-`switchyard.relayKBps` set, a host's relayed output is read no faster than
-that many KiB a second (a burst of twice it): the host is slowed by its own
-connection, and every frame still arrives whole and in order. The other way, on any server, what a hosted session's
+`switchyard.relayKBps` set, a host's relayed output, and its messages with
+it, is read no faster than that many KiB a second (a burst of twice it):
+the host is slowed by its own connection, and every frame still arrives
+whole and in order. The other way, on any server, what a hosted session's
 viewers send (SIGNAL and relayed frames) is read under one budget per
 address, `viewerRelayKBps` (128 KiB a second by default, a burst of twice
 it), shared by every hosted viewer of the address: a viewer past it is

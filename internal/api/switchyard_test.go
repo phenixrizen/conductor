@@ -223,6 +223,45 @@ func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
 	}
 }
 
+// A host's messages count in its relay bound as its relayed frames do: the
+// answers it sends a viewer go no faster than the bound either.
+func TestSwitchyardRelayBoundCountsAHostsMessages(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.RelayKBps = 256
+	})
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	v := dialViewer(t, e, host.sessionID, adminToken)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
+	// 1 MiB of answers in 32 messages: past the burst of 512 KiB, two
+	// seconds or more.
+	const messages = 32
+	sdp := strings.Repeat("a", 32<<10)
+	start := time.Now()
+	go func() {
+		for i := 0; i < messages; i++ {
+			b, _ := json.Marshal(proto.ViewerSDP{T: proto.HostAnswer, ViewerID: viewerID, SDP: sdp})
+			if host.c.Write(t.Context(), websocket.MessageText, b) != nil {
+				return
+			}
+		}
+	}()
+	for got := 0; got < messages; {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("after %d answers: %v", got, err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigAnswer {
+			got++
+		}
+	}
+	if took := time.Since(start); took < 1500*time.Millisecond {
+		t.Fatalf("1 MiB of answers went through in %v with a bound of 256 KiB/s", took)
+	}
+}
+
 // relayOneMiB joins host's session as a relayed viewer, streams 1 MiB from
 // the host in 64 whole frames and says how long the viewer took to get it all.
 func relayOneMiB(t *testing.T, e *testEnv, host *fakeHost) time.Duration {

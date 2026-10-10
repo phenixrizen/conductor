@@ -137,8 +137,9 @@ type Switchyard struct {
 	// refused.
 	Relay *bool `json:"relay,omitempty"`
 	// RelayKBps bounds what one host connection may send through the relay,
-	// in kilobytes a second (the host's output to all of its viewers; a
-	// burst of twice that is allowed): a public switchyard's protection
+	// in kilobytes a second (the host's output to all of its viewers, and
+	// its messages, the answers and candidates for its viewers among them;
+	// a burst of twice that is allowed): a public switchyard's protection
 	// against a session that streams. 0, the default, is no bound. What
 	// viewers send hosts is bounded by Config.ViewerRelayKBps.
 	RelayKBps int `json:"relayKBps,omitempty"`
@@ -161,8 +162,9 @@ type Switchyard struct {
 	// OpenHostRegistrationsPerMinute bounds how often one address may
 	// register as an open host (6 a minute by default).
 	OpenHostRegistrationsPerMinute int `json:"openHostRegistrationsPerMinute,omitempty"`
-	// OpenHostRelayKBps bounds what the open hosts of one address relay,
-	// all of them together (128 KiB/s by default): one bucket per address,
+	// OpenHostRelayKBps bounds what the open hosts of one address relay
+	// (as RelayKBps counts it), all of them together (128 KiB/s by
+	// default): one bucket per address,
 	// shared by its connections, with a burst of twice the rate. 0 falls
 	// back to RelayKBps, which is per connection.
 	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
