@@ -160,7 +160,9 @@ func LocalFileDenyFunc(path string) (func() []string, error) {
 		if err != nil {
 			return slices.Concat(list, everything)
 		}
-		list = withTargets(list, next)
+		// The entries kept are looked at again too: a link among them
+		// pointed elsewhere since leaves its new target named as well.
+		list = withTargets(list, slices.Concat(list, next))
 		return list
 	}, nil
 }
@@ -254,8 +256,8 @@ func desktopFiles() (dirs, files []string, err error) {
 func desktopDataDir(file string) (string, error) {
 	f, err := os.Open(file)
 	if errors.Is(err, fs.ErrNotExist) {
-		if _, lerr := os.Lstat(file); lerr == nil {
-			return "", errors.New("a link to a file that is not there")
+		if danglingLink(file) {
+			return "", errors.New("a link on the way to it leads to nothing")
 		}
 		return "", nil
 	}
@@ -283,4 +285,22 @@ func desktopDataDir(file string) (string, error) {
 		return "", fmt.Errorf("dataDir %q is not an absolute path", settings.DataDir)
 	}
 	return filepath.Clean(settings.DataDir), nil
+}
+
+// danglingLink reports whether p is missing because a link on the way to it
+// leads to nothing, rather than because it, or a directory above it, is not
+// there: the deepest part of p that is there is a link whose target is not.
+func danglingLink(p string) bool {
+	for q := filepath.Clean(p); ; q = filepath.Dir(q) {
+		if fi, err := os.Lstat(q); err == nil {
+			if fi.Mode()&fs.ModeSymlink == 0 {
+				return false
+			}
+			_, err := os.Stat(q)
+			return err != nil
+		}
+		if filepath.Dir(q) == q {
+			return false
+		}
+	}
 }

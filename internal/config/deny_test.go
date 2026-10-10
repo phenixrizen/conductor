@@ -359,6 +359,22 @@ func TestLocalFileDeny(t *testing.T) {
 			t.Errorf("settings that are a link to nothing: %q, %v; want an error", got, err)
 		}
 		os.Remove(filepath.Join(app, "settings.json"))
+		// The app's directory a link to nothing: the same. Moved aside and
+		// put back after.
+		aside := filepath.Join(t.TempDir(), "aside")
+		if err := os.Rename(app, aside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), app); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := LocalFileDeny(""); err == nil || got != nil {
+			t.Errorf("the app's directory a link to nothing: %q, %v; want an error", got, err)
+		}
+		os.Remove(app)
+		if err := os.Rename(aside, app); err != nil {
+			t.Fatal(err)
+		}
 		// Settings that are a link to a file elsewhere: that file and the
 		// copies beside it are refused, as a config file's are.
 		dotfiles := filepath.Join(home, "dotfiles")
@@ -507,6 +523,24 @@ func TestLocalFileDenyFunc(t *testing.T) {
 	for _, p := range []string{"data-old/catalog.json", "data-new/catalog.json"} {
 		if r, err := session.ResolvePath(home, p, after); err == nil {
 			t.Errorf("after the link moved, %s resolved to %s, want it refused", p, r)
+		}
+	}
+	// The config file names another directory; the link, kept, is pointed
+	// elsewhere twice: each directory it led to stays refused.
+	write(cfg, `{"dataDir":"`+third+`"}`)
+	deny()
+	for _, next := range []string{"data-b", "data-c"} {
+		write(filepath.Join(home, next, "catalog.json"), "secret\n")
+		os.Remove(link)
+		if err := os.Symlink(filepath.Join(home, next), link); err != nil {
+			t.Fatal(err)
+		}
+		deny()
+	}
+	after = deny()
+	for _, p := range []string{"data-old/catalog.json", "data-new/catalog.json", "data-b/catalog.json", "data-c/catalog.json"} {
+		if r, err := session.ResolvePath(home, p, after); err == nil {
+			t.Errorf("after the kept link moved twice, %s resolved to %s, want it refused", p, r)
 		}
 	}
 	// Many requests at once.
