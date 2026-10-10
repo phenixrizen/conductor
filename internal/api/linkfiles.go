@@ -50,7 +50,11 @@ type linkKeeper struct {
 	files *store.Store
 	mu    sync.Mutex
 	addrs map[string]int
-	seen  map[string]time.Time
+	// counted are the links counted in addrs, by id, with the address each
+	// counts against: a link leaves its count once, however often it is
+	// dropped (a revoke tells its hook each time, an expiry and the sweep both).
+	counted map[string]string
+	seen    map[string]time.Time
 	// hashes are the kept links' token hashes (hex), for writing a file again.
 	hashes map[string]string
 }
@@ -64,7 +68,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.log.Error("links are not kept across restarts: cannot open the links directory", "err", err)
 		return
 	}
-	k := &linkKeeper{files: files, addrs: map[string]int{}, seen: map[string]time.Time{}, hashes: map[string]string{}}
+	k := &linkKeeper{files: files, addrs: map[string]int{}, counted: map[string]string{}, seen: map[string]time.Time{}, hashes: map[string]string{}}
 	s.keeper = k
 	entries, err := files.List()
 	if err != nil {
@@ -93,6 +97,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.links.Restore(share.Link{ID: f.ID, SessionID: f.SessionID, RunID: f.RunID, Group: f.Run, Role: f.Role, Label: f.Label, CreatedAt: f.CreatedAt, ExpiresAt: f.ExpiresAt, Owner: f.Owner, Addr: f.Addr}, h)
 		if f.Addr != "" {
 			k.addrs[f.Addr]++
+			k.counted[f.ID] = f.Addr
 		}
 		k.hashes[f.ID] = f.TokenHash
 		k.seen[f.Owner] = now
@@ -115,6 +120,7 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) bool {
 	full := s.links.Count() > maxDurableLinks || (addr != "" && k.addrs[addr] >= s.cfg.Switchyard.OpenHostLinks)
 	if !full && addr != "" {
 		k.addrs[addr]++
+		k.counted[link.ID] = addr
 	}
 	k.mu.Unlock()
 	if full {
@@ -161,20 +167,20 @@ func (s *Server) keepGroup(owner, runID string) {
 	}
 }
 
-// dropLinkFile forgets a kept link's file and its place in its address's count.
+// dropLinkFile forgets a kept link's file and its place in its address's
+// count. Calling it again for the same link changes nothing.
 func (s *Server) dropLinkFile(linkID string) {
 	k := s.keeper
 	if k == nil {
 		return
 	}
-	if l, ok := s.links.Get(linkID); ok && l.Addr != "" {
-		k.mu.Lock()
-		if k.addrs[l.Addr]--; k.addrs[l.Addr] <= 0 {
-			delete(k.addrs, l.Addr)
-		}
-		k.mu.Unlock()
-	}
 	k.mu.Lock()
+	if addr, ok := k.counted[linkID]; ok {
+		delete(k.counted, linkID)
+		if k.addrs[addr]--; k.addrs[addr] <= 0 {
+			delete(k.addrs, addr)
+		}
+	}
 	delete(k.hashes, linkID)
 	k.mu.Unlock()
 	_ = k.files.Delete(linkID + ".json")
