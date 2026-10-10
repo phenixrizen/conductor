@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test, type Api, type Session } from './fixtures'
@@ -16,6 +16,8 @@ import { expect, test, type Api, type Session } from './fixtures'
 test.use({ permissions: ['clipboard-read', 'clipboard-write'] })
 
 const APP = `import os, select, sys, termios, time, tty
+# With "letgo", the program lets go of the mouse and ends at the first right-button press it reads.
+letgo = sys.argv[1:] == ["letgo"]
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
 tty.setraw(fd)
@@ -30,6 +32,8 @@ while time.time() < end:
         if b == b"q":
             break
         log.write(b)
+        if letgo and b"\\x1b[<2;" in b:
+            break
 sys.stdout.write("\\x1b[?1006l\\x1b[?1002l\\x1b[?1000l")
 sys.stdout.flush()
 termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -44,6 +48,35 @@ async function cell(page: Page, api: Api, id: string, col: number, row: number) 
   const { cols, rows } = (await api.session(id)) as Session & { cols: number; rows: number }
   const box = (await page.locator('.terminal-host .xterm-screen').first().boundingBox())!
   return { x: box.x + ((col + 0.5) * box.width) / cols, y: box.y + ((row + 0.5) * box.height) / rows }
+}
+
+/**
+ * Waits for the program's request for reports to reach xterm. Left clicks probe it one at a time, each waited for in full (its press and
+ * release, or a second of nothing: a click before the request is never reported), and the log is then let go quiet, so nothing a probe
+ * sent arrives after a test takes its baseline.
+ */
+async function untilReporting(page: Page, at: { x: number; y: number }, got: () => string) {
+  await expect
+    .poll(async () => {
+      const before = got().length
+      await page.mouse.click(at.x, at.y)
+      const deadline = Date.now() + 1_000
+      while (Date.now() < deadline) {
+        if (/\x1b\[<0;\d+;\d+M\x1b\[<0;\d+;\d+m/.test(got().slice(before))) return true
+        await page.waitForTimeout(50)
+      }
+      return false
+    }, { timeout: 20_000 })
+    .toBe(true)
+  let last = -1
+  await expect
+    .poll(() => {
+      const n = got().length
+      const quiet = n === last
+      last = n
+      return quiet
+    }, { intervals: [300], timeout: 10_000 })
+    .toBe(true)
 }
 
 test('while the program holds the mouse, clicks are its own and Shift reaches the terminal', async ({ page, api, state }) => {
@@ -61,13 +94,7 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await page.keyboard.type('python3 app.py\n')
     await expect.poll(() => existsSync(join(cwd, 'ready.txt')), { timeout: 15_000 }).toBe(true)
     const mid = await cell(page, api, s.id, 40, 10)
-    // The program's request reaches xterm a moment after it is written: a click is reported once it has.
-    await expect
-      .poll(async () => {
-        await page.mouse.click(mid.x, mid.y)
-        return /\x1b\[<0;\d+;\d+M/.test(got())
-      }, { timeout: 15_000 })
-      .toBe(true)
+    await untilReporting(page, mid, got)
 
     // A right-click is the program's: a press and a release of the right button, nothing pasted, no menu.
     await setClip(page, 'PASTED-TEXT')
@@ -114,11 +141,33 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     // Once the program lets go of the mouse, a right-click pastes again.
     await page.keyboard.press('q')
     await expect.poll(() => existsSync(join(cwd, 'done.txt')), { timeout: 15_000 }).toBe(true)
+    rmSync(join(cwd, 'done.txt'))
     await setClip(page, 'echo pasted-again > again.txt')
     await screen.click()
     await page.mouse.click(mid.x, mid.y, { button: 'right' })
     await page.keyboard.press('Enter')
     await expect.poll(() => (existsSync(join(cwd, 'again.txt')) ? readFileSync(join(cwd, 'again.txt'), 'utf8') : ''), { timeout: 15_000 }).toBe('pasted-again\n')
+
+    // A program that lets go of the mouse between the press and the menu event (which comes after the release on Windows; Chromium on
+    // Linux sends it at the press, so the two events are sent here by hand) had the press: the click stays its own and pastes nothing
+    // into the shell that comes back.
+    rmSync(join(cwd, 'got.txt'), { force: true })
+    rmSync(join(cwd, 'ready.txt'), { force: true })
+    await setClip(page, 'echo leaked > leaked.txt')
+    await screen.click()
+    await page.keyboard.type('python3 app.py letgo\n')
+    await expect.poll(() => existsSync(join(cwd, 'ready.txt')), { timeout: 15_000 }).toBe(true)
+    await untilReporting(page, mid, got)
+    const at = { clientX: Math.round(mid.x), clientY: Math.round(mid.y), button: 2, buttons: 2, bubbles: true, cancelable: true, composed: true }
+    await page.locator('.terminal-host .xterm-screen').first().dispatchEvent('mousedown', at)
+    await expect.poll(() => existsSync(join(cwd, 'done.txt')), { timeout: 15_000 }).toBe(true)
+    await page.locator('.terminal-host .xterm-screen').first().dispatchEvent('mouseup', { ...at, buttons: 0 })
+    await page.locator('.terminal-host .xterm-screen').first().dispatchEvent('contextmenu', { ...at, buttons: 0 })
+    await page.waitForTimeout(500)
+    await screen.click()
+    await page.keyboard.type('echo after > after.txt\n')
+    // A paste would have joined the line typed after it ("echo leaked > leaked.txtecho after > after.txt").
+    await expect.poll(() => (existsSync(join(cwd, 'after.txt')) ? readFileSync(join(cwd, 'after.txt'), 'utf8') : ''), { timeout: 15_000 }).toBe('after\n')
   } finally {
     await api.stopSession(s.id)
   }

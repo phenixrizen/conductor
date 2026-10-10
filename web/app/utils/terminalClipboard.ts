@@ -12,7 +12,8 @@
  * Right-click: with a selection it copies and clears it, without one it pastes; Shift+right-click opens the terminal's menu (Copy, Paste,
  * Select all, "Right-click pastes"), and with that setting off right-click always opens it. While the program running asks for the
  * mouse (Codex's TUI, vim with mouse=a), a right-click is the program's, as in Windows Terminal: xterm reports it and nothing is copied,
- * pasted or opened; Shift+right-click still opens the menu, and Shift+drag still selects.
+ * pasted or opened. The key xterm takes back the mouse with, Shift (Option on a Mac), still opens the menu with a right-click and
+ * selects with a drag; xterm reports neither.
  */
 export interface ClipboardKeyEvent {
   type: string
@@ -42,15 +43,37 @@ export function clipboardKey(e: ClipboardKeyEvent, ctx: { hasSelection: boolean;
 export type RightClick = 'copy' | 'paste' | 'menu' | 'app'
 
 /**
- * appMouse: the program running asked for mouse reports. It gets the click only on a connection that may type (canPaste), since a view
- * link's reports reach nothing; there the right-click copies or opens the menu as ever.
+ * appMouse: the program running asked for mouse reports when the button went down. It gets the click only on a connection that may type
+ * (canPaste), since a view link's reports reach nothing; there the right-click copies or opens the menu as ever. force: the key xterm
+ * takes the mouse back with (Shift, Option on a Mac), with which xterm reports nothing and the menu opens.
  */
-export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; pastes: boolean; shift: boolean; appMouse?: boolean }): RightClick {
-  if (ctx.shift) return 'menu'
-  if (ctx.appMouse && ctx.canPaste) return 'app'
-  if (!ctx.pastes) return 'menu'
+export function rightClick(ctx: { hasSelection: boolean; canPaste: boolean; pastes: boolean; shift: boolean; appMouse?: boolean; force?: boolean }): RightClick {
+  if (ctx.appMouse && ctx.canPaste) return ctx.force ? 'menu' : 'app'
+  if (ctx.shift || !ctx.pastes) return 'menu'
   if (ctx.hasSelection) return 'copy'
   return ctx.canPaste ? 'paste' : 'menu'
+}
+
+/**
+ * The program's hold on the mouse when the right button went down, kept for the menu event that follows: on Windows it comes after the
+ * release, and a program that let go of the mouse in between has had the press reported to it already.
+ */
+export class RightPress {
+  private held: boolean | null = null
+  press(appMouse: boolean) {
+    this.held = appMouse
+  }
+  /** The hold to decide by: the one at the press, else the hold now (a menu from the keyboard). Read once. */
+  take(now: boolean): boolean {
+    const held = this.held ?? now
+    this.held = null
+    return held
+  }
+}
+
+/** The key xterm forces a selection with while the program holds the mouse, and that takes a right-click back from it. */
+export function forcesSelection(e: { shiftKey: boolean; altKey: boolean }, mac: boolean): boolean {
+  return mac ? e.altKey : e.shiftKey
 }
 
 /** Where the right-click setting is kept, per browser. */

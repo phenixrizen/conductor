@@ -2,7 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
-import { clipboardKey, readRightClickPastes, rightClick, writeRightClickPastes } from '~/utils/terminalClipboard'
+import { clipboardKey, forcesSelection, readRightClickPastes, rightClick, RightPress, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
@@ -131,9 +131,18 @@ async function pasteClipboard(): Promise<void> {
     notice.value = 'This page cannot read the clipboard: paste with Ctrl+Shift+V'
   }
 }
+/** Whether the program running asked for mouse reports. */
+function appHoldsMouse(): boolean {
+  return !!term && term.modes.mouseTrackingMode !== 'none'
+}
+/** A right-click is decided by the program's hold on the mouse at the press, not when the menu event comes (RightPress). */
+const rightPress = new RightPress()
+function onMouseDown(e: MouseEvent) {
+  if (e.button === 2) rightPress.press(appHoldsMouse())
+}
 function onContextMenu(e: MouseEvent) {
-  const appMouse = !!term && term.modes.mouseTrackingMode !== 'none'
-  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey, appMouse })
+  const appMouse = rightPress.take(appHoldsMouse())
+  const act = rightClick({ hasSelection: !!term?.hasSelection(), canPaste: canPaste(), pastes: rightClickPastes.value, shift: e.shiftKey, appMouse, force: forcesSelection(e, isMac) })
   if (act === 'menu') return // the terminal's menu opens
   e.preventDefault()
   e.stopImmediatePropagation()
@@ -603,6 +612,8 @@ onMounted(() => {
     convertEol: false,
     // Right-click is copy or paste (round 15), never a word selection first.
     rightClickSelectsWord: false,
+    // Option takes the mouse back from a program that holds it on a Mac (Shift elsewhere): a drag selects, a right-click opens the menu.
+    macOptionClickForcesSelection: true,
   })
   rightClickPastes.value = readRightClickPastes(typeof localStorage === 'undefined' ? null : localStorage)
   term.onSelectionChange(() => (hasSelection.value = !!term?.hasSelection()))
@@ -644,6 +655,7 @@ onMounted(() => {
   })
   term.open(host.value!)
   // Capture, so a right-click that copies or pastes never reaches the menu's trigger.
+  host.value!.addEventListener('mousedown', onMouseDown, true)
   host.value!.addEventListener('contextmenu', onContextMenu, true)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
@@ -690,6 +702,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  host.value?.removeEventListener('mousedown', onMouseDown, true)
   host.value?.removeEventListener('contextmenu', onContextMenu, true)
   observer?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)

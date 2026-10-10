@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clipboardKey, readRightClickPastes, rightClick, RIGHT_CLICK_KEY, writeRightClickPastes, type ClipboardKeyEvent } from './terminalClipboard'
+import { clipboardKey, forcesSelection, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, writeRightClickPastes, type ClipboardKeyEvent } from './terminalClipboard'
 
 const key = (code: string, mods: Partial<ClipboardKeyEvent> = {}): ClipboardKeyEvent => ({ type: 'keydown', code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
 const ctx = (o: Partial<{ hasSelection: boolean; canPaste: boolean; mac: boolean }> = {}) => ({ hasSelection: false, canPaste: true, mac: false, ...o })
@@ -47,13 +47,30 @@ describe('the terminal right-click', () => {
     expect(rightClick({ ...base, canPaste: false })).toBe('menu')
     expect(rightClick({ ...base, canPaste: false, hasSelection: true })).toBe('copy')
   })
-  it('leaves the click to a program that asked for the mouse, unless Shift is held or the connection may not type', () => {
+  it('leaves the click to a program that asked for the mouse, unless the forcing key is held or the connection may not type', () => {
     expect(rightClick({ ...base, appMouse: true })).toBe('app')
     expect(rightClick({ ...base, appMouse: true, hasSelection: true })).toBe('app')
     expect(rightClick({ ...base, appMouse: true, pastes: false })).toBe('app')
-    expect(rightClick({ ...base, appMouse: true, shift: true })).toBe('menu')
+    expect(rightClick({ ...base, appMouse: true, shift: true, force: true })).toBe('menu')
+    // On a Mac Shift is not the forcing key: xterm reports a Shift+right-click, so it stays the program's.
+    expect(rightClick({ ...base, appMouse: true, shift: true, force: false })).toBe('app')
     expect(rightClick({ ...base, appMouse: true, canPaste: false })).toBe('menu')
     expect(rightClick({ ...base, appMouse: true, canPaste: false, hasSelection: true })).toBe('copy')
+  })
+  it('decides by the hold at the press, read once; with no press (a menu from the keyboard), by the hold now', () => {
+    const r = new RightPress()
+    r.press(true)
+    expect(r.take(false)).toBe(true)
+    expect(r.take(false)).toBe(false)
+    r.press(false)
+    expect(r.take(true)).toBe(false)
+    expect(r.take(true)).toBe(true)
+  })
+  it('forces with Shift, and with Option on a Mac', () => {
+    expect(forcesSelection({ shiftKey: true, altKey: false }, false)).toBe(true)
+    expect(forcesSelection({ shiftKey: false, altKey: true }, false)).toBe(false)
+    expect(forcesSelection({ shiftKey: false, altKey: true }, true)).toBe(true)
+    expect(forcesSelection({ shiftKey: true, altKey: false }, true)).toBe(false)
   })
   it('keeps the setting per browser, on by default', () => {
     const m = new Map<string, string>()
