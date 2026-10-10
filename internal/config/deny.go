@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/store"
@@ -86,6 +88,41 @@ func LocalFileDeny(path string) ([]string, error) {
 	}
 	desktopDirs, desktopSettings := desktopFiles()
 	return c.fileDeny(append(dirs, desktopDirs...), desktopSettings), nil
+}
+
+// LocalFileDenyFunc is LocalFileDeny(path) for a session that runs a long
+// time (session.Options.FileDenyFunc): the function it returns computes the
+// list again at each call, so that what the config file or the desktop
+// app's settings come to name while the session runs is refused from then
+// on, and keeps every entry it has named before, so that what was refused
+// once stays refused until the session ends. The first computation's error
+// is returned; a later one leaves the list as it was. It is safe to call from
+// many goroutines, and the slices it returns are never changed.
+func LocalFileDenyFunc(path string) (func() []string, error) {
+	first, err := LocalFileDeny(path)
+	if err != nil {
+		return nil, err
+	}
+	var mu sync.Mutex
+	list := first
+	return func() []string {
+		next, err := LocalFileDeny(path)
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			return list
+		}
+		var added []string
+		for _, e := range next {
+			if !slices.Contains(list, e) {
+				added = append(added, e)
+			}
+		}
+		if len(added) > 0 {
+			list = slices.Concat(list, added)
+		}
+		return list
+	}, nil
 }
 
 // desktopAppNames name the desktop app's own directory, Electron's userData:

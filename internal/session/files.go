@@ -35,6 +35,15 @@ func (s *Local) fileAllowed(role Role) bool {
 	return false
 }
 
+// fileDeny is the deny list for one file request: FileDenyFunc's when it is
+// set, else FileDeny.
+func (s *Local) fileDeny() []string {
+	if s.opts.FileDenyFunc != nil {
+		return s.opts.FileDenyFunc()
+	}
+	return s.opts.FileDeny
+}
+
 // FileGet serves a file or directory read for sub. It enforces the role
 // policy, an in-flight cap, and resolves the path inside the session cwd. The
 // response is queued to the subscriber as a FILE frame.
@@ -53,21 +62,22 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 		defer sub.inflight.Add(-1)
 		var h proto.FileHeader
 		var body []byte
+		deny := s.fileDeny()
 		switch req.Op {
 		case "":
-			h, body = ReadPath(s.info.Cwd, req.Path, req.Stat, s.opts.FileDeny)
+			h, body = ReadPath(s.info.Cwd, req.Path, req.Stat, deny)
 		case proto.FileOpStatus:
-			h = GitStatusPath(s.info.Cwd, req.Base, s.opts.FileDeny)
+			h = GitStatusPath(s.info.Cwd, req.Base, deny)
 		case proto.FileOpShow:
-			h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, s.opts.FileDeny)
+			h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny)
 		case proto.FileOpLog:
-			h = GitLogPath(s.info.Cwd, req.Base, s.info.CreatedAt, s.opts.FileDeny)
+			h = GitLogPath(s.info.Cwd, req.Base, s.info.CreatedAt, deny)
 		case proto.FileOpCommit:
-			h = GitCommitPath(s.info.Cwd, req.Rev, s.opts.FileDeny)
+			h = GitCommitPath(s.info.Cwd, req.Rev, deny)
 		case proto.FileOpFind:
-			h = FindPath(s.info.Cwd, req.Path, s.opts.FileDeny)
+			h = FindPath(s.info.Cwd, req.Path, deny)
 		case proto.FileOpTouched:
-			h = s.TouchedPath(s.opts.FileDeny)
+			h = s.TouchedPath(deny)
 		default:
 			h = proto.FileHeader{Path: req.Path, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "unknown file operation"}}
 		}

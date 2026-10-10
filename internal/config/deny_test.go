@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/phenixrizen/conductor/internal/session"
@@ -340,4 +341,70 @@ func TestLocalFileDeny(t *testing.T) {
 			}
 		}
 	})
+}
+
+// LocalFileDenyFunc follows what the config file and the desktop app's
+// settings name while a session runs, and keeps what it named before: a
+// data directory moved is refused at both places. A config file that cannot
+// be used at the start is an error; later, it leaves the list as it was.
+func TestLocalFileDenyFunc(t *testing.T) {
+	home, config := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Chdir(t.TempDir())
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := LocalFileDenyFunc(filepath.Join(home, "missing.json")); err == nil {
+		t.Error("a config file that is not there: no error")
+	}
+	cfg := filepath.Join(home, "conductor.json")
+	first, second, third := filepath.Join(home, "first"), filepath.Join(home, "second"), filepath.Join(home, "third")
+	write(cfg, `{"dataDir":"`+first+`"}`)
+	deny, err := LocalFileDenyFunc(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := deny()
+	if !slices.Contains(start, first) || slices.Contains(start, second) {
+		t.Fatalf("at the start: %q", start)
+	}
+	settings := filepath.Join(config, "conductor-desktop", "settings.json")
+	write(settings, `{"dataDir":"`+second+`"}`)
+	write(cfg, `{"dataDir":"`+third+`"}`)
+	got := deny()
+	for _, d := range []string{first, second, third} {
+		if !slices.Contains(got, d) {
+			t.Errorf("after the moves: %q lacks %s", got, d)
+		}
+	}
+	if !slices.Equal(start, deny()[:len(start)]) {
+		t.Errorf("what was named first is not kept as it was: %q, then %q", start, deny())
+	}
+	write(cfg, `{oops`)
+	if again := deny(); !slices.Equal(again, got) {
+		t.Errorf("a config file broken later: %q, want the list as it was, %q", again, got)
+	}
+	// Many requests at once.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 20 {
+				if l := deny(); !slices.Contains(l, first) {
+					t.Errorf("concurrent: %q", l)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

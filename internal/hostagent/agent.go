@@ -60,11 +60,12 @@ type Options struct {
 	// FileEdit is whether the control role may edit files through the
 	// editor's Neovim on this machine: "control" (the default), "off".
 	FileEdit string
-	// FileDeny lists what no file read, save or editor of the session may
-	// reach, even inside its working directory (session.Options.FileDeny):
-	// conductor host passes config.LocalFileDeny's, the data directory, the
-	// config file and the catalog file of the server on this machine.
-	FileDeny []string
+	// FileDeny gives, for each file request, what no file read, save or
+	// editor of the session may reach, even inside its working directory
+	// (session.Options.FileDenyFunc): conductor host passes
+	// config.LocalFileDenyFunc's, the data directory, the config file and the
+	// catalog file of the server on this machine. Nil refuses nothing more.
+	FileDeny func() []string
 	Log      *slog.Logger
 	// Pattern, when set, is matched against the last line of the terminal after
 	// 500 ms without output; a match marks the session needs_input. See
@@ -180,7 +181,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		MaxViewers:      opts.MaxViewers,
 		FileView:        opts.FileView,
 		FileEdit:        opts.FileEdit,
-		FileDeny:        opts.FileDeny,
+		FileDenyFunc:    opts.FileDeny,
 		Transport:       proto.TransportWebRTC,
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,

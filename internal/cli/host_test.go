@@ -218,7 +218,7 @@ func TestHostNeedsNoToken(t *testing.T) {
 }
 
 // conductor host hands its session the deny list of the server on its
-// machine (config.LocalFileDeny): ~/.conductor and the desktop app's
+// machine (config.LocalFileDenyFunc): ~/.conductor and the desktop app's
 // directories, and with --server-config that file, its dataDir and its
 // catalogPath, the copies beside the two files included. A config file it
 // cannot read or parse stops it before it dials.
@@ -241,7 +241,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 0 || err != nil {
 		t.Fatalf("exit %d, %v, %s", code, err, stderr)
 	}
-	if want := slices.Concat(local, desktopSettings); len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
+	if want := slices.Concat(local, desktopSettings); len(got) != 1 || !slices.Equal(got[0].FileDeny(), want) {
 		t.Fatalf("without --server-config: %+v, want the deny list %q", got, want)
 	}
 
@@ -253,7 +253,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 		t.Fatalf("exit %d, %v, %s", code, err, stderr)
 	}
 	want := slices.Concat([]string{data}, local, []string{cfg, filepath.Join(dir, "*conductor.json*"), catalogFile, filepath.Join(dir, "*agents.json*")}, desktopSettings)
-	if len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
+	if len(got) != 1 || !slices.Equal(got[0].FileDeny(), want) {
 		t.Fatalf("with --server-config: %+v\nwant the deny list %q", got, want)
 	}
 

@@ -113,7 +113,7 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home, cfgPath := homeWithConductor(t, secret)
 	t.Setenv("HOME", home)
-	deny, err := config.LocalFileDeny(cfgPath)
+	deny, err := config.LocalFileDenyFunc(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,5 +244,25 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	raw, _ := json.Marshal(h.Entries)
 	if !strings.Contains(string(raw), `"notes.txt"`) {
 		t.Errorf("the folder's entries: %s", raw)
+	}
+
+	// The desktop app's settings move its data directory while the session
+	// runs: the new one is refused from the next request on, and the one
+	// before stays refused.
+	if h, body := ask(proto.FileGet{Path: "code/app/main.go"}); h.Kind != "file" || string(body) != "package main\n" {
+		t.Fatalf("code/app before the move: %+v %q", h, body)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "conductor-desktop", "settings.json"), []byte(`{"dataDir":"`+filepath.Join(home, "code", "app")+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"code/app/main.go", "code/app", "code/conductor-state/catalog.json"} {
+		for _, req := range []proto.FileGet{{Path: p}, {Path: p, Op: proto.FileOpShow, Rev: "HEAD"}} {
+			if h, body := ask(req); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(body) != 0 {
+				t.Errorf("after the move, %+v: %+v %q, want it refused", req, h, body)
+			}
+		}
+	}
+	if h, body := ask(proto.FileGet{Path: "notes.txt"}); h.Kind != "file" || string(body) != "ordinary\n" {
+		t.Errorf("notes.txt after the move: %+v %q", h, body)
 	}
 }

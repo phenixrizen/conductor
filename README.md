@@ -442,7 +442,9 @@ settings file wherever a link takes it, the data directory its settings
 name, and inside WSL
 `~/.local/share/conductor/data` (the Windows app's settings are not visible
 inside WSL: when they move that data directory, set `CONDUCTOR_DATA_DIR` to it
-in the shell that runs `conductor host`). The server resolves a relative path against the
+in the shell that runs `conductor host`). The host looks these up again at
+each request and keeps refusing what it refused before, so a data directory
+moved while the session runs is refused at both places. The server resolves a relative path against the
 directory it runs in, which the host cannot know, so the host does not start
 when any of these is given as a relative path. The host knows of no other
 config file, so do not run `conductor host` from a directory that holds a

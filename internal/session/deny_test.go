@@ -4,7 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"sync"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/nvim"
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // DenyList keeps each directory, and each file with the name entry beside
@@ -75,6 +80,66 @@ func TestDenyList(t *testing.T) {
 	for _, p := range []string{".", "etc", "etc/plain.json", "etc/same.json", "real"} {
 		if _, err := ResolvePath(root, p, deny); err != nil {
 			t.Errorf("%s: %v", p, err)
+		}
+	}
+}
+
+// FileDenyFunc is asked at each request, in place of FileDeny: a read, a
+// find, a save and the editor follow the list it gives at that moment.
+func TestFileDenyFuncIsAskedAtEachRequest(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "state")
+	os.MkdirAll(state, 0o700)
+	os.WriteFile(filepath.Join(state, "catalog.json"), []byte("secret\n"), 0o600)
+	var mu sync.Mutex
+	var list []string
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "sess", Cwd: dir, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096, FileDeny: []string{filepath.Join(dir, "unused")}, FileDenyFunc: func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return list
+	}})
+	t.Cleanup(func() { p.exit() })
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	read := func(req proto.FileGet) proto.FileHeader {
+		t.Helper()
+		n++
+		req.T, req.ReqID = proto.CtlFileGet, "r"+strconv.Itoa(n)
+		if err := s.FileGet(sub, req); err != nil {
+			t.Fatal(err)
+		}
+		return fileReply(t, sink, req.ReqID)
+	}
+	if h := read(proto.FileGet{Path: "state/catalog.json"}); h.Kind != "file" {
+		t.Fatalf("before the list names it: %+v", h)
+	}
+	mu.Lock()
+	list = []string{state}
+	mu.Unlock()
+	if h := read(proto.FileGet{Path: "state/catalog.json"}); h.Error == nil || h.Error.Code != "denied" {
+		t.Errorf("read: %+v, want it refused", h)
+	}
+	if h := read(proto.FileGet{Path: "catalog", Op: proto.FileOpFind}); h.Kind != "find" || len(h.Matches) != 0 {
+		t.Errorf("find: %+v, want nothing found", h)
+	}
+	save(s, sub, "w1", "state/catalog.json", []byte("changed\n"), 512, "", true)
+	if f := fileReply(t, sink, "w1"); f.Error == nil || f.Error.Code != "denied" {
+		t.Errorf("save: %+v, want it refused", f)
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, "catalog.json")); string(b) != "secret\n" {
+		t.Errorf("the file holds %q after a refused save", b)
+	}
+	if nvim.Available() {
+		if err := s.NvimOpen(t.Context(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n1", Path: "state/catalog.json"}); err != ErrFileDenied {
+			t.Errorf("the editor: %v, want ErrFileDenied", err)
 		}
 	}
 }

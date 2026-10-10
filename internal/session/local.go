@@ -43,9 +43,13 @@ type Options struct {
 	// the working directory: a directory with everything in it, a single
 	// file, or a name entry (see insideAny); DenyList builds one. The server
 	// passes its data directory, whose catalog.json holds agent secrets, its
-	// config file and its catalog file; `conductor host` the same for the
-	// server on its machine (config.LocalFileDeny).
+	// config file and its catalog file.
 	FileDeny []string
+	// FileDenyFunc, when set, gives the deny list for each file request in
+	// place of FileDeny: a list that may grow while the session runs, as
+	// `conductor host`'s follows the server on its machine
+	// (config.LocalFileDenyFunc). It is called from many goroutines.
+	FileDenyFunc func() []string
 	// Transport is reported in welcome messages ("ws" on the server, "webrtc"/"relay" on hosts).
 	Transport string
 	Log       *slog.Logger

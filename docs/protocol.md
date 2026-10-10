@@ -658,8 +658,10 @@ and `catalogPath` (the host does not start when one of these paths is
 relative); and for the desktop app's server, the app's own directory, its
 settings file as the config file is (its link target and the copies there
 included), the data directory its settings name and, inside WSL,
-`~/.local/share/conductor/data`.
-Saves and the editor's Neovim go through the same rules.
+`~/.local/share/conductor/data`. The host looks these up again at each request
+and keeps refusing what it refused before, so a data directory moved while
+the session runs is refused at both places. Saves and the editor's Neovim go
+through the same rules.
 Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?, sha256?, mtime?}`
 followed by up to 1 MiB of bytes for text files; `sha256` (hex) and `mtime` (RFC 3339)

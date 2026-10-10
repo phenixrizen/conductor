@@ -87,7 +87,7 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	if !s.editAllowed(sub.Role) || !nvimAvailable() {
 		return ErrNvimUnavailable
 	}
-	target, err := ResolvePath(s.info.Cwd, req.Path, s.opts.FileDeny)
+	target, err := ResolvePath(s.info.Cwd, req.Path, s.fileDeny())
 	if err != nil {
 		return ErrFileDenied
 	}
