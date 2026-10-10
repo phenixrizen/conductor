@@ -436,7 +436,10 @@ its own machine: the data directory `CONDUCTOR_DATA_DIR` names, else the one
 the server would choose (`~/.conductor`, which is refused in any case), the
 catalog file `CONDUCTOR_CATALOG_PATH` names, and, when `conductor host
 --server-config <file>` names the server's config file, that file with its
-`dataDir` and `catalogPath`. The server resolves a relative path against the
+`dataDir` and `catalogPath`; and the desktop app's server's: the app's own
+directory (its settings, and its data directory unless they move it), the
+data directory its settings name, and inside WSL
+`~/.local/share/conductor/data`. The server resolves a relative path against the
 directory it runs in, which the host cannot know, so the host does not start
 when any of these is given as a relative path. The host knows of no other
 config file, so do not run `conductor host` from a directory that holds a

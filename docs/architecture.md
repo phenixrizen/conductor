@@ -253,7 +253,8 @@ registers the `conductor:` scheme: an invite opens its own join page with
   server sessions they never reach the data directory, the config file or the
   catalog file, even when those lie inside it; a hosted session refuses the
   same files of the server on its machine (`~/.conductor` or the data
-  directory the environment names, and the files `--server-config` names).
+  directory the environment names, the files `--server-config` names, and
+  the desktop app's directories).
 - Frame sizes, viewer counts, session counts, scrollback and in-flight file
   requests are all bounded. Query strings (which may carry tokens) are never
   logged.

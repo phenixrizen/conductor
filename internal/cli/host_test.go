@@ -218,12 +218,15 @@ func TestHostNeedsNoToken(t *testing.T) {
 }
 
 // conductor host hands its session the deny list of the server on its
-// machine (config.LocalFileDeny): ~/.conductor, and with --server-config that
-// file, its dataDir and its catalogPath, the copies beside the two files
-// included. A config file it cannot read or parse stops it before it dials.
+// machine (config.LocalFileDeny): ~/.conductor and the desktop app's
+// directories, and with --server-config that file, its dataDir and its
+// catalogPath, the copies beside the two files included. A config file it
+// cannot read or parse stops it before it dials.
 func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	clearConductorEnv(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	home := os.Getenv("HOME")
+	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "Conductor")}
 	var got []hostagent.Options
 	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
 		got = append(got, opts)
@@ -234,7 +237,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 0 || err != nil {
 		t.Fatalf("exit %d, %v, %s", code, err, stderr)
 	}
-	if want := []string{filepath.Join(home, ".conductor")}; len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
+	if want := local; len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
 		t.Fatalf("without --server-config: %+v, want the deny list %q", got, want)
 	}
 
@@ -245,7 +248,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", cfg, "--", "sh"); code != 0 || err != nil {
 		t.Fatalf("exit %d, %v, %s", code, err, stderr)
 	}
-	want := []string{data, filepath.Join(home, ".conductor"), cfg, filepath.Join(dir, "*conductor.json*"), catalogFile, filepath.Join(dir, "*agents.json*")}
+	want := slices.Concat([]string{data}, local, []string{cfg, filepath.Join(dir, "*conductor.json*"), catalogFile, filepath.Join(dir, "*agents.json*")})
 	if len(got) != 1 || !slices.Equal(got[0].FileDeny, want) {
 		t.Fatalf("with --server-config: %+v\nwant the deny list %q", got, want)
 	}

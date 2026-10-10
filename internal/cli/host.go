@@ -42,7 +42,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	scrollback := fs.Int("scrollback", 256<<10, "scrollback bytes replayed to late viewers")
 	fileView := fs.String("file-view", "view", "which roles may read files: view, control, off")
 	fileEdit := fs.String("file-edit", "control", "whether the control role may edit files through the editor's Neovim on this machine: control, off")
-	serverConfig := fs.String("server-config", "", "the config file of a conductor serve on this machine: the Files tab refuses it, its dataDir and its catalogPath (absolute paths), as that server's own sessions do (the data directory CONDUCTOR_DATA_DIR names, ~/.conductor and the catalog file CONDUCTOR_CATALOG_PATH names are refused without it)")
+	serverConfig := fs.String("server-config", "", "the config file of a conductor serve on this machine: the Files tab refuses it, its dataDir and its catalogPath (absolute paths), as that server's own sessions do (the data directory CONDUCTOR_DATA_DIR names, ~/.conductor, the desktop app's directories and the catalog file CONDUCTOR_CATALOG_PATH names are refused without it)")
 	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {

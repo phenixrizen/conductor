@@ -52,18 +52,25 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 	home := t.TempDir()
 	cfg := filepath.Join(home, "conductor.json")
 	files := map[string]string{
-		".conductor/catalog.json":     `{"agents":[{"id":"x","env":{"TOKEN":"` + secret + `"}}]}`,
-		".conductor/workbench-token":  secret + "\n",
-		".conductor/crews/c1.json":    `{"note":"` + secret + `"}`,
-		"conductor.json":              `{"workbenchToken":"` + secret + `","catalogPath":"` + filepath.Join(home, "agents.json") + `"}`,
-		"conductor.json.bak":          secret,
-		".conductor.json.swp":         secret,
-		"#conductor.json#":            secret,
-		"agents.json":                 `{"agents":[{"id":"y","env":{"KEY":"` + secret + `"}}]}`,
-		"agents.json~":                secret,
-		"notes.txt":                   "ordinary\n",
-		"package.json":                `{"name":"ordinary"}`,
-		"project/src/conductor-ui.md": "ordinary too\n",
+		".conductor/catalog.json":    `{"agents":[{"id":"x","env":{"TOKEN":"` + secret + `"}}]}`,
+		".conductor/workbench-token": secret + "\n",
+		".conductor/crews/c1.json":   `{"note":"` + secret + `"}`,
+		"conductor.json":             `{"workbenchToken":"` + secret + `","catalogPath":"` + filepath.Join(home, "agents.json") + `"}`,
+		"conductor.json.bak":         secret,
+		".conductor.json.swp":        secret,
+		"#conductor.json#":           secret,
+		"agents.json":                `{"agents":[{"id":"y","env":{"KEY":"` + secret + `"}}]}`,
+		"agents.json~":               secret,
+		// The desktop app's: its own directory and, inside WSL, its server's data.
+		".config/Conductor/settings.json":           `{"switchyardToken":"` + secret + `"}`,
+		".config/Conductor/conductor/catalog.json":  secret,
+		".local/share/conductor/data/catalog.json":  secret,
+		".local/share/conductor/data/crews/c2.json": secret,
+		".config/other-app/settings.json":           "ordinary\n",
+		".local/share/other-app/data.json":          "ordinary\n",
+		"notes.txt":                                 "ordinary\n",
+		"package.json":                              `{"name":"ordinary"}`,
+		"project/src/conductor-ui.md":               "ordinary too\n",
 	}
 	for rel, body := range files {
 		p := filepath.Join(home, rel)
@@ -84,14 +91,15 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 
 // A hosted session whose folder holds what a conductor serve on the same
 // machine keeps (its data directory, ~/.conductor, its config file and its
-// catalog file, and the copies an editor leaves beside the two files)
-// refuses them to a view link as a server session refuses them: a read, a
-// stat, a find and a git show, under every spelling of the path. The rest of
-// the folder is served as before.
+// catalog file, the copies an editor leaves beside the two files, and the
+// desktop app's directories) refuses them to a view link as a server session
+// refuses them: a read, a stat, a find and a git show, under every spelling
+// of the path. The rest of the folder is served as before.
 func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	const secret = "s3cret-value-9f2"
 	t.Setenv("CONDUCTOR_DATA_DIR", "")
 	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	home, cfgPath := homeWithConductor(t, secret)
 	t.Setenv("HOME", home)
 	deny, err := config.LocalFileDeny(cfgPath)
@@ -167,6 +175,8 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 		"~/.conductor/catalog.json", filepath.Join(home, ".conductor", "workbench-token"), "project/../.conductor/catalog.json",
 		"conductor.json", "~/conductor.json", "CONDUCTOR.JSON.bak", "conductor.json.bak", ".conductor.json.swp", "#conductor.json#",
 		"agents.json", "agents.json~",
+		".config/Conductor", ".config/Conductor/settings.json", ".config/Conductor/conductor/catalog.json",
+		".local/share/conductor/data/catalog.json", ".local/share/conductor/data/crews/c2.json",
 	}
 	for _, p := range refused {
 		for _, req := range []proto.FileGet{{Path: p}, {Path: p, Stat: true}, {Path: p, Op: proto.FileOpShow, Rev: "HEAD"}} {
@@ -176,18 +186,22 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 			}
 		}
 	}
-	for _, q := range []string{"catalog", "token", "conductor", "json", "agents", "crews", "c1"} {
+	for _, q := range []string{"catalog", "token", "conductor", "json", "agents", "crews", "c1", "c2", "settings"} {
 		h, _ := ask(proto.FileGet{Op: proto.FileOpFind, Path: q})
 		if h.Kind != "find" {
 			t.Fatalf("find %q: %+v", q, h)
 		}
 		for _, m := range h.Matches {
-			if strings.Contains(m, ".conductor") || strings.Contains(strings.ToLower(filepath.Base(m)), "conductor.json") || strings.HasPrefix(filepath.Base(m), "agents.json") {
+			if strings.Contains(m, ".conductor") || strings.Contains(strings.ToLower(filepath.Base(m)), "conductor.json") || strings.HasPrefix(filepath.Base(m), "agents.json") ||
+				strings.HasPrefix(m, ".config/Conductor") || strings.HasPrefix(m, ".local/share/conductor") {
 				t.Errorf("find %q found %s", q, m)
 			}
 		}
 		if q == "json" && !slices.Contains(h.Matches, "package.json") {
 			t.Errorf("find json: %v, want package.json among them", h.Matches)
+		}
+		if q == "settings" && !slices.Contains(h.Matches, ".config/other-app/settings.json") {
+			t.Errorf("find settings: %v, want .config/other-app/settings.json among them", h.Matches)
 		}
 		if q == "conductor" && !slices.Contains(h.Matches, "project/src/conductor-ui.md") {
 			t.Errorf("find conductor: %v, want project/src/conductor-ui.md among them", h.Matches)
