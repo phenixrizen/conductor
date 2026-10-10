@@ -189,8 +189,9 @@ the host is slowed by its own connection, and every frame still arrives
 whole and in order. The other way, on any server, what a hosted session's
 viewers send (SIGNAL and relayed frames) is read under one budget per
 address, `viewerRelayKBps` (128 KiB a second by default, a burst of twice
-it), shared by every hosted viewer of the address: a viewer past it is
-slowed the same way. What waits for a host's connection is bounded in bytes
+it), shared by every hosted viewer of the address and kept after the last
+one leaves until it has refilled: a viewer past it is slowed the same way,
+and each frame is charged whole, in the order the frames come. What waits for a host's connection is bounded in bytes
 as well as in messages (8 MiB): the viewers' frames fill at most 7 MiB of it
 and then wait in their own read loops for the host to take some, which
 neither holds up the host's messages nor closes its connection; a server

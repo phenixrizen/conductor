@@ -203,17 +203,23 @@ type hostConnState struct {
 }
 
 // byteBucket is a token bucket of bytes: rate a second, burst at most.
-// take waits, as long as ctx allows, until n bytes are there, so a host (or
-// a viewer) that streams more than the bound is slowed rather than cut off:
+// take charges n bytes at once, all of them, and then waits, as long as ctx
+// allows, until the bucket has refilled what it owes, so a host (or a
+// viewer) that streams more than the bound is slowed rather than cut off:
 // the server reads its connection no faster than the bucket refills, and TCP
 // does the rest.
 // It is safe to share: the open hosts of one address take from one bucket,
-// and so do the viewers of one address (Config.ViewerRelayKBps).
+// and so do the viewers of one address (Config.ViewerRelayKBps). Since each
+// take is charged as it comes, takes are served in their order, whatever
+// their sizes: a large one never waits behind small ones that keep coming.
+// One that is cancelled while it waits stays charged: its bytes were read.
 type byteBucket struct {
 	mu          sync.Mutex
 	rate, burst float64
-	tokens      float64
-	last        time.Time
+	// tokens is what may be taken without waiting; below zero, what the
+	// takes so far owe.
+	tokens float64
+	last   time.Time
 }
 
 func newByteBucket(bytesPerSecond int) *byteBucket {
@@ -221,26 +227,37 @@ func newByteBucket(bytesPerSecond int) *byteBucket {
 	return &byteBucket{rate: r, burst: 2 * r, tokens: 2 * r, last: time.Now()}
 }
 
+// refill brings tokens up to now. Called with mu held.
+func (b *byteBucket) refill(now time.Time) {
+	b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
+	b.last = now
+}
+
 func (b *byteBucket) take(ctx context.Context, n int) error {
-	for {
-		b.mu.Lock()
-		now := time.Now()
-		b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
-		b.last = now
-		need := min(float64(n), b.burst)
-		if b.tokens >= need {
-			b.tokens -= need
-			b.mu.Unlock()
-			return nil
-		}
-		wait := time.Duration((need - b.tokens) / b.rate * float64(time.Second))
-		b.mu.Unlock()
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	b.mu.Lock()
+	b.refill(time.Now())
+	b.tokens -= float64(n)
+	owed := -b.tokens
+	b.mu.Unlock()
+	if owed <= 0 {
+		return nil
 	}
+	t := time.NewTimer(time.Duration(owed / b.rate * float64(time.Second)))
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// untilFull is how long the bucket takes, from now, to hold its burst again.
+func (b *byteBucket) untilFull(now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill(now)
+	return time.Duration((b.burst - b.tokens) / b.rate * float64(time.Second))
 }
 
 // handleHostMessage dispatches a JSON message from the host; false is fatal.

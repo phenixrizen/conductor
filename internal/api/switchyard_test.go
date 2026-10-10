@@ -314,8 +314,79 @@ func relayOneMiB(t *testing.T, e *testEnv, host *fakeHost) time.Duration {
 	return time.Since(start)
 }
 
+// A take larger than the burst is charged whole: what it brings past the
+// burst is owed, and the next take waits for it.
+func TestByteBucketChargesATakePastTheBurstWhole(t *testing.T) {
+	b := newByteBucket(100_000) // a burst of 200 000
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := b.take(ctx, 500_000); err == nil {
+		t.Fatal("500 000 bytes went at once from a burst of 200 000")
+	}
+	ctx2, cancel2 := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel2()
+	if err := b.take(ctx2, 1); err == nil {
+		t.Fatal("a byte went while 300 000 were owed")
+	}
+}
+
+// Takes are served in their order: a large one is not held back for ever by
+// small ones that keep coming, each fitting what has refilled meanwhile.
+func TestByteBucketServesTakesInOrder(t *testing.T) {
+	b := newByteBucket(64 << 10)
+	if err := b.take(t.Context(), 128<<10); err != nil { // the burst, spent
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		for b.take(ctx, 8<<10) == nil {
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	lctx, lcancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer lcancel()
+	if err := b.take(lctx, 32<<10); err != nil {
+		t.Fatalf("a take of 32 KiB waited %v behind takes of 8 KiB at 64 KiB/s: %v", time.Since(start), err)
+	}
+}
+
+// An address that leaves keeps its bucket until it has refilled: one that
+// comes back at once finds what it spent still spent; one that is full again
+// goes, and the next holder gets a fresh one.
+func TestAddrBucketsKeepASpentBucketUntilItRefills(t *testing.T) {
+	var c addrBuckets
+	b := c.acquire("a", 100_000)
+	if err := b.take(t.Context(), 200_000); err != nil {
+		t.Fatal(err)
+	}
+	c.release("a")
+	if again := c.acquire("a", 100_000); again != b {
+		t.Fatal("an address that came back at once got a fresh burst")
+	}
+	c.release("a")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		n := len(c.held)
+		c.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a refilled bucket nobody holds was kept")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if c.acquire("a", 100_000) == b {
+		t.Fatal("a refilled bucket was handed out again rather than a fresh one")
+	}
+	c.release("a")
+}
+
 // A byte bucket refills at its rate and allows a burst of twice it; a take
-// past the burst is cut to the burst (one frame never waits forever).
+// past what it holds is charged whole and waits for what it owes.
 func TestByteBucket(t *testing.T) {
 	b := newByteBucket(1000)
 	if b.burst != 2000 || b.tokens != 2000 {

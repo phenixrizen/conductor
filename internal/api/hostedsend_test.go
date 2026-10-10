@@ -208,6 +208,33 @@ func TestViewersOfOneAddressShareOneBudget(t *testing.T) {
 	}
 }
 
+// A viewer that spends its address's burst and connects again finds it still
+// spent: leaving buys no fresh burst.
+func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	tap := tapRelays(t, host)
+	const burst = 512 << 10
+	first := dialViewer(t, e, host.sessionID, adminToken)
+	idFirst := joinRelayed(t, host, first)
+	go flood(t.Context(), first, burst)
+	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idFirst) >= burst }) {
+		t.Fatalf("the first connection got %d of %d bytes through", tap.inputBytes(idFirst), burst)
+	}
+	first.c.Close(websocket.StatusNormalClosure, "")
+	host.expect(proto.HostViewerLeave)
+	again := dialViewer(t, e, host.sessionID, adminToken)
+	idAgain := joinRelayed(t, host, again)
+	start := time.Now()
+	go flood(t.Context(), again, burst)
+	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idAgain) >= burst }) {
+		t.Fatalf("the second connection got %d of %d bytes through", tap.inputBytes(idAgain), burst)
+	}
+	if took := time.Since(start); took < 1500*time.Millisecond {
+		t.Fatalf("a connection that came back sent a whole burst in %v", took)
+	}
+}
+
 // A viewer of another address sends under its own budget: one that drained
 // its address's does not slow it.
 func TestAnotherAddressKeepsItsOwnViewerBudget(t *testing.T) {
