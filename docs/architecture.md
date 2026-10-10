@@ -259,12 +259,14 @@ registers the `conductor:` scheme: an invite opens its own join page with
   requests are all bounded. Query strings (which may carry tokens) are never
   logged; a request is logged by the route pattern it matched (`/api/join/{token}`),
   or, on a catch-all route, by its path with a link's token replaced
-  (`/join/{token}`). A workbench token the server generates is printed to the
-  terminal it was started from and kept in `workbench-token` in the data
-  directory (mode 0600, written atomically) while the server runs; the log
-  names the file, never the token. A configured token removes the file. The
-  server that keeps it holds a lock on `workbench-token.lock` beside it, so a
-  second server started on the same data directory leaves it alone.
+  (`/join/{token}`). A workbench token the server generates is kept in
+  `workbench-token` in the data directory (mode 0600, written atomically) while
+  the server runs, and nowhere else but the `--print-listen` line; the
+  terminal and the log name the file, never the token. A configured token
+  removes the file. The server that keeps it holds a lock on
+  `workbench-token.lock` beside it, so a second server started on the same
+  data directory leaves it alone, and one of those that generates its own
+  token stops unless it has `--print-listen`.
 
 ## Persistence
 

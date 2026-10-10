@@ -32,11 +32,13 @@ CONDUCTOR_WORKBENCH_TOKEN=change-me ./bin/conductor serve
 
 Open <http://localhost:8080>, paste the workbench token when prompted, and press
 **Launch agent**. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random
-token at startup, prints it to the terminal it was started from and keeps it in
-`workbench-token` in its data directory (`~/.conductor/workbench-token` by
-default, mode 0600) while it runs: under a service manager, `cat` that file as
-the server's user. The log names the file, never the token. Every start without
-a token writes a new one there; a start with one configured removes the file.
+token at startup and keeps it in `workbench-token` in its data directory, mode
+0600, while it runs: `cat ~/.conductor/workbench-token` (the default data
+directory) as the server's user. The terminal and the log name the file, never
+the token. Every start without a token writes a new one there; a start with one
+configured removes the file. A second server started on the same data directory
+while the first runs cannot keep its own generated token there, so it stops
+unless a token is configured for it (or its parent reads `--print-listen`).
 
 Host a session from your own machine instead:
 
@@ -1346,7 +1348,7 @@ file must run `compinit` before that line.
 |---|---|---|---|
 | `listen` | `CONDUCTOR_LISTEN` | `:8080` | bind address |
 | `publicUrl` | `CONDUCTOR_PUBLIC_URL` | `http://localhost:8080` | base for share links and the agents' notify URL; while it names localhost, a share link takes the address its request came through instead (see Sharing) |
-| `workbenchToken` | `CONDUCTOR_WORKBENCH_TOKEN` | generated (printed to a terminal, kept in `<dataDir>/workbench-token` while the server runs) | the operator's token: opens the workbench and every management route (the old names `adminToken` and `CONDUCTOR_ADMIN_TOKEN` are still read, with a warning at start) |
+| `workbenchToken` | `CONDUCTOR_WORKBENCH_TOKEN` | generated (kept in `<dataDir>/workbench-token` while the server runs) | the operator's token: opens the workbench and every management route (the old names `adminToken` and `CONDUCTOR_ADMIN_TOKEN` are still read, with a warning at start) |
 | `hostTokens` | `CONDUCTOR_HOST_TOKENS` | workbench token only | tokens accepted from `conductor host` |
 | `allowedRoots` | `CONDUCTOR_ALLOWED_ROOTS` | current directory | where server sessions may run |
 | `defaultCwd` | `CONDUCTOR_DEFAULT_CWD` | current directory | working directory when a launch omits one |

@@ -11,8 +11,9 @@ import (
 )
 
 // The workbench token file holds a workbench token the server generated, in
-// the data directory, while that server runs: for whoever cannot read its
-// terminal (a service, a container). The server that keeps it holds an
+// the data directory, while that server runs: the one place its value is
+// kept, but for the --print-listen line a parent reads; the terminal and the
+// log name the file, never the value. The server that keeps it holds an
 // exclusive lock on the lock file beside it for as long as it runs, so
 // another server started on the same data directory leaves a live token file
 // alone; the kernel releases the lock when its holder exits, however it

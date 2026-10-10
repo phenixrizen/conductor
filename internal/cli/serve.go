@@ -40,7 +40,8 @@ var writeAssets = agents.WriteAssets
 
 // terminalOf is w when it is a terminal, where the person who started the
 // server reads it, and nil otherwise (a file, or a pipe to a parent process,
-// a service manager or a container's log). A test replaces it.
+// a service manager or a container's log): where a plain line says where a
+// generated workbench token is. A test replaces it.
 var terminalOf = func(w io.Writer) io.Writer {
 	if f, ok := w.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		return f
@@ -126,10 +127,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		forget, err := keepWorkbenchToken(st, cfg.WorkbenchToken)
 		switch {
 		case errors.Is(err, errTokenFileHeld):
-			// The token is not in the file: without a terminal or a parent
-			// to hand it to, nobody could sign in to this server.
-			if terminalOf(stderr) == nil && !*printListen {
-				return 1, fmt.Errorf("another server running on the data directory %s keeps the workbench token file, and this one's generated token could be shown nowhere; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config), or give this server a dataDir of its own", st.Dir())
+			// The token is not in the file, and its value is never printed:
+			// without a parent to hand it to (--print-listen), nobody could
+			// sign in to this server.
+			if !*printListen {
+				return 1, fmt.Errorf("another server running on the data directory %s keeps the workbench token file, so this one's generated token would be nowhere; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config), or give this server a dataDir of its own", st.Dir())
 			}
 			// Otherwise said below, with the token's own line.
 		case err != nil:
@@ -207,18 +209,21 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log.Debug("environment", "path", os.Getenv("PATH"))
 	if cfg.GeneratedWorkbenchToken {
-		// The value goes once to the terminal, so the person who started the
-		// server can sign in, and never through the logger, whose lines a
-		// file, a service manager or a container keeps: the log names the
-		// file that holds it. A parent process has it in the --print-listen
-		// line.
-		if tty := terminalOf(stderr); tty != nil {
-			fmt.Fprintf(tty, "\nNo workbench token is configured; this run generated one:\n\n    %s\n\nSet CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own.\n\n", cfg.WorkbenchToken)
-		}
+		// The value is printed nowhere, not even to a terminal, whose output
+		// a container or a session recorder may keep as a log: the terminal
+		// and the log name the file that holds it. A parent process has the
+		// value in the --print-listen line.
+		tty := terminalOf(stderr)
 		if tokenKept {
+			if tty != nil {
+				fmt.Fprintf(tty, "Workbench token: generated for this run, in %s (set CONDUCTOR_WORKBENCH_TOKEN to choose your own)\n", tokenFile)
+			}
 			log.Warn("no workbench token configured; generated one for this run, kept in file while the server runs; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config) to choose your own", "file", tokenFile)
 		} else {
-			log.Warn("no workbench token configured; generated one for this run, but another server running on this data directory keeps the token file, so this run's token is not in it; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config), or give this server a dataDir of its own", "file", tokenFile)
+			if tty != nil {
+				fmt.Fprintf(tty, "Workbench token: generated for this run, in the --print-listen line only: another server on this data directory keeps %s (set CONDUCTOR_WORKBENCH_TOKEN to choose your own)\n", tokenFile)
+			}
+			log.Warn("no workbench token configured; generated one for this run, in the --print-listen line only: another server running on this data directory keeps the token file; set CONDUCTOR_WORKBENCH_TOKEN (or workbenchToken in the config), or give this server a dataDir of its own", "file", tokenFile)
 		}
 	}
 	if cfg.WorkbenchTokenRenamed {
