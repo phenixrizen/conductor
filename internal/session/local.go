@@ -1126,9 +1126,12 @@ func (s *Local) Stop(ctx context.Context) error {
 // DisconnectLink evicts every subscription created through linkID: as
 // revoked, or, once the session has ended (its links go with it), as the
 // session's end, so that a viewer whose status frame the close overtakes
-// still learns which. It finds them under the lock AttachWith registers
-// them under, so a caller that marked the link first (a revoke) misses
-// none: one that attaches after this finds the mark (AttachOptions.Authorize).
+// still learns which. It ends them under the lock AttachWith registers them
+// under, so a caller that marked the link first (a revoke) misses none: one
+// that attaches after this finds the mark (AttachOptions.Authorize); and
+// nothing broadcast after reaches them. It returns once their transports
+// have closed, which they do together, each on its own goroutine, holding no
+// lock: as long as the slowest takes.
 func (s *Local) DisconnectLink(linkID string) {
 	reason := ErrRevoked
 	var hit []*Subscription
@@ -1138,42 +1141,41 @@ func (s *Local) DisconnectLink(linkID string) {
 	}
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
+			sub.closeWith(reason)
 			hit = append(hit, sub)
 		}
 	})
 	s.mu.Unlock()
-	// Closed outside the lock: a sink's Close may wait on its connection.
-	for _, sub := range hit {
-		sub.closeWith(reason)
-	}
+	waitClosed(hit)
 }
 
 // Retire is the session leaving the server's registry, which only an ended
 // session does: every client is closed as at the session's end, and none
 // attaches after (ErrSessionEnded). Whoever closes a link's clients finds
 // them through the registry, so none may stay where it no longer looks.
-// The closes run on goroutines of their own, one per client (at most the
-// session's MaxViewers): a client that does not read holds up only its own.
+// It does not wait: each client's transport closes on the client's own
+// goroutine, and its editors go as it detaches, so one that does not read
+// holds up only its own.
 func (s *Local) Retire() {
-	var all []*Subscription
 	s.mu.Lock()
 	s.retired = true
-	s.hub.Each(func(sub *Subscription) { all = append(all, sub) })
+	s.hub.Each(func(sub *Subscription) { sub.closeWith(ErrSessionEnded) })
 	s.mu.Unlock()
-	for _, sub := range all {
-		go func() {
-			s.closeNvims(sub)
-			sub.closeWith(ErrSessionEnded)
-		}()
-	}
 }
 
-// CloseAll evicts every subscription with the given reason (server shutdown).
+// CloseAll evicts every subscription with the given reason (server shutdown)
+// and ends their editors. It returns once their transports have closed,
+// together, as DisconnectLink's do.
 func (s *Local) CloseAll(reason error) {
+	var all []*Subscription
 	s.hub.Each(func(sub *Subscription) {
-		s.closeNvims(sub)
 		sub.closeWith(reason)
+		all = append(all, sub)
 	})
+	for _, sub := range all {
+		s.closeNvims(sub)
+	}
+	waitClosed(all)
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

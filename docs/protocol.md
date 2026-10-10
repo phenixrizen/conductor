@@ -79,6 +79,15 @@ token is control on every session of its own server and has no role on a
 switchyard's (`4401`): a session published there is opened by the links its
 publishing machine had minted.
 
+A client that a session's owner (the server for its own sessions, a host
+for its session) closes, revoked, expired, a slow consumer or at the
+session's end, is sent nothing more that was queued for it: the frame being
+written as it is closed is the last, then its `error` frame and the close.
+Each client's connection is written and closed apart from the session and
+the other clients, so one that stops reading holds up nobody else. On a
+server session a revoke answers once the connections of the link's viewers
+have closed.
+
 A share link is checked when its token is presented and again as the viewer
 attaches (on a server session, after its `hello`), under the lock a revoke
 takes to close the link's viewers: a link revoked, expired or gone (its run

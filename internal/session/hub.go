@@ -11,7 +11,13 @@ import (
 
 // Sink delivers frames to one attached client over some transport. WriteFrame
 // may block; the subscription queue in front of it enforces the slow-consumer
-// policy. Close is called exactly once with the reason the subscription ended.
+// policy. Both are called on the subscription's own goroutine, never under a
+// session's lock: WriteFrame for each frame in order, then Close, exactly
+// once, with the reason the subscription ended, after the last WriteFrame has
+// returned. Close may take its time (an error frame, a close handshake) and
+// holds up nobody but the one waiting for the transport to close
+// (Subscription.Closed). A WriteFrame in progress as the subscription ends is
+// not cut short: a transport bounds its own writes.
 type Sink interface {
 	WriteFrame(frame []byte) error
 	Close(reason error)
@@ -41,7 +47,10 @@ type Subscription struct {
 	// unsent counts the frames that are queued or being written; a frame
 	// leaves it when WriteFrame returns. See Hub.Drained.
 	unsent atomic.Int64
+	// done is closed as the subscription ends (closeWith), after reason is
+	// set; closed, once the sink's Close has returned (run).
 	done   chan struct{}
+	closed chan struct{}
 	once   sync.Once
 	reason error
 
@@ -78,7 +87,7 @@ func (s *Subscription) ownsSize() bool {
 }
 
 func newSubscription(id string, role Role, linkID string, sink Sink) *Subscription {
-	s := &Subscription{ID: id, Role: role, LinkID: linkID, Since: time.Now().UTC(), sink: sink, queue: make(chan []byte, queueSlots), done: make(chan struct{})}
+	s := &Subscription{ID: id, Role: role, LinkID: linkID, Since: time.Now().UTC(), sink: sink, queue: make(chan []byte, queueSlots), done: make(chan struct{}), closed: make(chan struct{})}
 	go s.run()
 	return s
 }
@@ -92,8 +101,21 @@ func (s *Subscription) Info() proto.ViewerInfo {
 	return v
 }
 
+// run is the subscription's own goroutine: it hands the queued frames to the
+// sink, in order, until the subscription ends, and then closes the sink, once,
+// with the reason, which is set before done is closed. The frames still queued
+// then are dropped, and nothing reaches the sink after its Close.
 func (s *Subscription) run() {
+	defer close(s.closed)
+	defer func() { s.sink.Close(s.reason) }()
 	for {
+		// The end comes before any frame still queued: select would pick
+		// at random between the two.
+		select {
+		case <-s.done:
+			return
+		default:
+		}
 		select {
 		case <-s.done:
 			return
@@ -142,16 +164,33 @@ func (s *Subscription) drained() bool {
 	return s.unsent.Load() == 0
 }
 
+// closeWith ends the subscription: the first reason given is kept and done
+// is closed, and nothing more is queued. It does no more, so any goroutine
+// may call it under any lock (a broadcast under the session's lock drops a
+// slow consumer): the sink is closed by the subscription's own goroutine
+// (run), which Closed waits for.
 func (s *Subscription) closeWith(reason error) {
 	s.once.Do(func() {
 		s.reason = reason
 		close(s.done)
-		s.sink.Close(reason)
 	})
 }
 
 // Done is closed when the subscription ends.
 func (s *Subscription) Done() <-chan struct{} { return s.done }
+
+// Closed is closed once the subscription has ended and its sink's Close has
+// returned: the transport is closed.
+func (s *Subscription) Closed() <-chan struct{} { return s.closed }
+
+// waitClosed waits until the transport of every subscription in subs has
+// closed. They close at once, each on its own goroutine, so this takes as
+// long as the slowest. The caller holds no lock.
+func waitClosed(subs []*Subscription) {
+	for _, sub := range subs {
+		<-sub.closed
+	}
+}
 
 // Reason returns why the subscription ended (nil for a normal detach).
 func (s *Subscription) Reason() error {

@@ -23,7 +23,11 @@ sequenceDiagram
 `internal/session.Local` owns the PTY: a pump goroutine copies output into a
 256 KiB ring buffer and broadcasts it to subscribers. Each subscriber has its own
 bounded queue; exceeding 1 MiB of backlog evicts it as a slow consumer, and the
-client reconnects to get a fresh replay.
+client reconnects to get a fresh replay. Each subscriber's own goroutine writes
+its frames and then closes its transport; ending a subscriber only marks it,
+so a transport that stops taking frames, or takes its time to close, holds up
+neither the pump nor anything else under the session's lock. A revoke waits
+for the link's viewers' transports to close, all at once, holding no lock.
 
 `Local.Submit` is the one way Conductor types into a session (a crew member's
 prompt, a handoff, a broadcast) and the way a reply box's `submit` message is

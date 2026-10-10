@@ -85,19 +85,30 @@ func TestHubFanOut(t *testing.T) {
 	}
 }
 
+// A subscriber whose queue passes the high-water mark is evicted at once;
+// its sink is closed on the subscription's own goroutine, once the write in
+// progress has returned, with the reason.
 func TestSlowConsumerEviction(t *testing.T) {
 	h := NewHub()
 	slow := newChanSink(true)
 	sub := newSubscription("slow", RoleView, "", slow)
 	h.add(sub)
 	frame := make([]byte, 64<<10)
+	h.Broadcast(frame)
+	deadline := time.Now().Add(3 * time.Second)
+	for sub.queued.Load() != 0 { // the first frame is being written
+		if time.Now().After(deadline) {
+			t.Fatal("the first frame was never taken")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	for i := 0; i < 40; i++ { // 2.5 MiB > high-water mark
 		h.Broadcast(frame)
 	}
 	select {
-	case reason := <-slow.closed:
-		if !errors.Is(reason, ErrSlowConsumer) {
-			t.Fatalf("reason %v", reason)
+	case <-sub.Done():
+		if !errors.Is(sub.Reason(), ErrSlowConsumer) {
+			t.Fatalf("reason %v", sub.Reason())
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("slow consumer was not evicted")
@@ -105,7 +116,30 @@ func TestSlowConsumerEviction(t *testing.T) {
 	if h.Count() != 0 {
 		t.Fatalf("evicted subscription still counted")
 	}
+	select {
+	case reason := <-slow.closed:
+		t.Fatalf("closed (%v) while its write was in progress", reason)
+	case <-sub.Closed():
+		t.Fatal("Closed before the sink's Close")
+	default:
+	}
 	close(slow.block)
+	select {
+	case reason := <-slow.closed:
+		if !errors.Is(reason, ErrSlowConsumer) {
+			t.Fatalf("reason %v", reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the evicted subscriber's sink was never closed")
+	}
+	select {
+	case <-sub.Closed():
+	case <-time.After(3 * time.Second):
+		t.Fatal("Closed never closed")
+	}
+	if n := slow.count(); n != 1 {
+		t.Fatalf("%d frames written; the one in progress only, the queued ones dropped", n)
+	}
 }
 
 func TestSinkWriteErrorClosesSubscription(t *testing.T) {
