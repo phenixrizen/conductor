@@ -167,6 +167,33 @@ func TestLocalFileDeny(t *testing.T) {
 		}
 	})
 
+	// A path to the config file with ".." after a link is opened as the
+	// system opens it, out of the link's target: the config read there is
+	// the one serve reads, and that file is refused.
+	t.Run("a config path with .. after a link", func(t *testing.T) {
+		setup(t)
+		base := t.TempDir()
+		v1 := filepath.Join(base, "releases", "v1")
+		if err := os.MkdirAll(v1, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(v1, filepath.Join(base, "current")); err != nil {
+			t.Fatal(err)
+		}
+		served, beside := filepath.Join(base, "served-data"), filepath.Join(base, "beside-data")
+		real := writeFile(t, filepath.Join(base, "releases", "conductor.json"), `{"dataDir":"`+served+`"}`)
+		writeFile(t, filepath.Join(base, "conductor.json"), `{"dataDir":"`+beside+`"}`)
+		for _, p := range []string{filepath.Join(base, "current") + "/../conductor.json", "current/../conductor.json"} {
+			if !filepath.IsAbs(p) {
+				t.Chdir(base)
+			}
+			got := deny(t, p)
+			if !slices.Contains(got, served) || slices.Contains(got, beside) || !slices.Contains(got, real) || !slices.Contains(got, filepath.Join(base, "releases", "*conductor.json*")) {
+				t.Errorf("%s: %q; want %s and the file read, %s, not %s", p, got, served, real, beside)
+			}
+		}
+	})
+
 	// A relative dataDir or catalogPath is resolved by conductor serve
 	// against the directory it runs in, which need not be this one: the
 	// server below runs in its own directory, the session in a home that

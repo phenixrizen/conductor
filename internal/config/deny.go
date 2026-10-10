@@ -51,18 +51,20 @@ func (c *Config) fileDeny(dirs, files []string) []string {
 func LocalFileDeny(path string) ([]string, error) {
 	c := &Config{}
 	dataFrom, catalogFrom := "", ""
-	// read is the file the config is read from, its links resolved first: it
-	// is refused with the copies beside it even should a link on the way to
-	// it be pointed elsewhere while it is read.
+	// read is the file the config is read from, path with its links resolved
+	// first as the system resolves them (a ".." after a link leads out of the
+	// link's target, not back beside the link): it is refused with the
+	// copies beside it even should a link on the way to it be pointed
+	// elsewhere while it is read.
 	var read string
 	if path != "" {
 		c.Path = path
 		if abs, err := filepath.Abs(path); err == nil {
 			c.Path = abs
 		}
-		read = c.Path
-		if real, err := filepath.EvalSymlinks(c.Path); err == nil {
-			read = real
+		var err error
+		if read, err = physicalPath(path); err != nil {
+			return nil, fmt.Errorf("read config: %w", err)
 		}
 		b, err := readConfigFile(read)
 		if err != nil {
@@ -108,6 +110,28 @@ func LocalFileDeny(path string) ([]string, error) {
 // readConfigFile is os.ReadFile: a test replaces it to move a link while
 // the config file is read.
 var readConfigFile = os.ReadFile
+
+// physicalPath is the absolute path of the file p names, with every link on
+// the way resolved in order, as opening p resolves them: a relative p is
+// taken from the working directory with its own links resolved, never from
+// a spelling of it that cleaning would shorten across a link.
+func physicalPath(p string) (string, error) {
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(real) {
+		return real, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if wd, err = filepath.EvalSymlinks(wd); err != nil {
+		return "", err
+	}
+	return filepath.Join(wd, real), nil
+}
 
 // LocalFileDenyFunc is LocalFileDeny(path) for a session that runs a long
 // time (session.Options.FileDenyFunc): the function it returns computes the
