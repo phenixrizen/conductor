@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean
+.PHONY: help deps check-tools build build-go notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -79,6 +79,9 @@ desktop-dev: build-go ## run the desktop app against the checkout's bin/conducto
 
 desktop-test: ## the desktop shell's type check and unit tests
 	cd desktop && npm run typecheck && npm test
+
+notices: web-build ## THIRD_PARTY_NOTICES from what the binary, the web bundle and the desktop app ship (npm ci in desktop/ first)
+	python3 scripts/notices.py
 
 desktop-e2e: build-go ## the desktop shell's smoke in Electron (needs a display: xvfb-run on Linux)
 	cd desktop && npm run build && npm run test:e2e

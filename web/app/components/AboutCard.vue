@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { copyrightLine, CREDIT, LICENSE, LICENSE_URL, SOURCE_URL, SPONSOR_HOST, SPONSOR_URL, versionOn } from '~/utils/about'
+import { copyrightLine, CREDIT, LICENSE, LICENSE_URL, NOTICES_PATH, SOURCE_URL, SPONSOR_HOST, SPONSOR_URL, versionOn } from '~/utils/about'
 
 /**
  * Settings → The app (the Sponsor Kit's 1c): what runs, where its source is, the copyright, and the sponsor credit as the
@@ -31,7 +31,7 @@ const rows = computed(() => {
           <dd class="min-w-0 truncate text-highlighted" :class="{ 'font-mono': r.mono }" :data-about-row="r.key">{{ r.value }}</dd>
         </template>
         <dt class="text-muted">License</dt>
-        <dd data-about-license><ULink :to="LICENSE_URL" target="_blank" class="text-primary">{{ LICENSE }}</ULink> · <ULink :to="SOURCE_URL" target="_blank" class="text-primary">Source</ULink></dd>
+        <dd data-about-license><ULink :to="LICENSE_URL" target="_blank" class="text-primary">{{ LICENSE }}</ULink> · <ULink :to="SOURCE_URL" target="_blank" class="text-primary">Source</ULink> · <ULink :to="NOTICES_PATH" external target="_blank" class="text-primary" data-about-notices>Third-party notices</ULink></dd>
         <dt class="text-muted">Copyright</dt>
         <dd data-about-copyright>{{ copyrightLine() }}</dd>
       </dl>

@@ -39,6 +39,12 @@ jobs:
           name: web-dist
           path: internal/web/dist
           if-no-files-found: error
+      # The npm packages the bundle carries (web/build/bundledPackages.ts), for the notices check in the go job.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-packages
+          path: web/.nuxt/bundled-packages.json
+          if-no-files-found: error
 
   go:
     runs-on: ubuntu-latest
@@ -66,6 +72,23 @@ jobs:
       - run: make build-go
       - run: python3 scripts/brand_assets.py --check
       - run: python3 -m unittest discover -s scripts -p '*_test.py'
+      # THIRD_PARTY_NOTICES is current: the Go modules, the web bundle's packages and the desktop app's, read from their node_modules.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: web
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-packages
+          path: web/.nuxt
+      - run: python3 scripts/notices.py --check
       - uses: actions/upload-artifact@v4
         with:
           name: conductor-linux-amd64

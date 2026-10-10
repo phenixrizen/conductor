@@ -47,16 +47,6 @@ and the Neovim keymap. What is set aside:
   run; share one member; open yesterday's run; tell a crew from a run),
   watched, to catch what the design missed.
 
-### Releases
-
-- **Dependency attributions for the shipped binaries.** The Go modules and
-  the npm packages are permissively licensed, and Apache-2.0's NOTICE rule
-  and their own terms want their copyright lines shipped with the binaries:
-  a `THIRD_PARTY_NOTICES` generated at release (go-licenses for `go.mod`,
-  license-checker for `web/` and `desktop/`), bundled into the packages, the
-  Docker image and the switchyard pages, and linked from Settings → The
-  app's License row; a CI check that it is current. Round 10.
-
 ### The desktop app
 
 - **The app forwards the TLS listener into WSL and maps the router from

@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && useradd -m -u 10001 conductor \
     && install -d -o conductor -g conductor -m 0700 /var/lib/conductor
 COPY --from=build /out/conductor /usr/local/bin/conductor
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES /usr/share/doc/conductor/
 USER conductor
 WORKDIR /home/conductor
 # Sessions run under /home/conductor. The data directory (catalog.json with the

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { copyrightLine, CREDIT, versionOn } from './about'
+import { copyrightLine, CREDIT, NOTICES_PATH, versionOn } from './about'
 
 describe('about', () => {
   it('says the credit in the kit words', () => {
@@ -9,6 +9,9 @@ describe('about', () => {
     expect(copyrightLine(2026)).toBe('© 2026 the Conductor Authors and RockSolid Labs, Inc.')
     expect(copyrightLine(2028)).toBe('© 2026–2028 the Conductor Authors and RockSolid Labs, Inc.')
     expect(copyrightLine(2020)).toBe('© 2026 the Conductor Authors and RockSolid Labs, Inc.')
+  })
+  it('links the notices where the server serves them (internal/api handleNotices)', () => {
+    expect(NOTICES_PATH).toBe('/third-party-notices.txt')
   })
   it('joins a version and its machine', () => {
     expect(versionOn('0.6.0', 'box')).toBe('0.6.0 · box')
