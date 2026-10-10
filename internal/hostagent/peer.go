@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	"github.com/pion/webrtc/v4"
 
@@ -31,6 +31,11 @@ type peer struct {
 	pending   []webrtc.ICECandidateInit
 	remoteSet bool
 	closed    bool
+
+	// typing runs the viewer's submits, chats to the agent and chat_sends;
+	// nvimOpening counts its nvim_opens running (queue.go).
+	typing      requestQueue
+	nvimOpening atomic.Int32
 }
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
@@ -221,22 +226,10 @@ func (p *peer) handleFrame(f proto.Frame) {
 			}
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if _, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub}); err != nil {
-					code := "input_failed"
-					switch {
-					case errors.Is(err, session.ErrReadOnly):
-						code = proto.ErrCodeReadOnly
-					case errors.Is(err, session.ErrSessionEnded):
-						code = proto.ErrCodeSessionEnded
-					case errors.Is(err, session.ErrTrustQuestion):
-						code = proto.ErrCodeNotSent
-					}
-					p.a.local.Send(sub, proto.NewError(code, err.Error()))
-				}
-			}()
+			p.typeIn(sub, "", func(ctx context.Context) error {
+				_, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
+				return err
+			}, func(err error) { p.a.local.Send(sub, submitError(err)) })
 		case proto.CtlChat:
 			var m proto.ChatPost
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -249,14 +242,11 @@ func (p *peer) handleFrame(f proto.Frame) {
 				return
 			}
 			if m.To != "" {
-				// Off the frame loop, as a submit is: the typing pauses before its Enter.
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					if err := p.a.local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}); err != nil {
-						p.a.local.Send(sub, session.ChatErrorFrame(err, msg.ID))
-					}
-				}()
+				// Typed as a submit is, in its turn among them.
+				send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
+				p.typeIn(sub, msg.ID, func(ctx context.Context) error {
+					return p.a.local.ChatSend(ctx, sub, send)
+				}, func(err error) { p.a.local.Send(sub, session.ChatErrorFrame(err, msg.ID)) })
 			}
 		case proto.CtlChatSend:
 			var m proto.ChatSend
@@ -264,24 +254,24 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
 				return
 			}
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := p.a.local.ChatSend(ctx, sub, m); err != nil {
-					p.a.local.Send(sub, session.ChatErrorFrame(err, m.Ref))
-				}
-			}()
+			p.typeIn(sub, m.Ref, func(ctx context.Context) error {
+				return p.a.local.ChatSend(ctx, sub, m)
+			}, func(err error) { p.a.local.Send(sub, session.ChatErrorFrame(err, m.Ref)) })
 		case proto.CtlNvimOpen:
 			var m proto.NvimOpen
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
+			// Side by side, as many at once as the editors a connection
+			// may hold: Neovim may take seconds to load the person's config.
+			if p.nvimOpening.Add(1) > proto.MaxNvimPerSub {
+				p.nvimOpening.Add(-1)
+				p.a.local.Send(sub, session.NvimRefused(m.ReqID, session.ErrTooManyRequests))
+				return
+			}
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				if err := p.a.local.NvimOpen(ctx, sub, m); err != nil {
-					p.a.local.Send(sub, session.NvimRefused(m.ReqID, err))
-				}
+				defer p.nvimOpening.Add(-1)
+				p.nvimOpen(sub, m)
 			}()
 		case proto.CtlNvimInput:
 			var m proto.NvimInput
@@ -347,6 +337,75 @@ func (p *peer) handleFrame(f proto.Frame) {
 	}
 }
 
+// attached says whether sub is still the viewer's attachment: neither let go
+// by the peer (its data channel closed, a move to the relay, the viewer
+// gone), which the peer does before the session's Detach (that ends the
+// viewer's editors first, and may wait for Neovim to exit), nor ended by the
+// session (a revoked link, a slow consumer).
+func (p *peer) attached(sub *session.Subscription) func() bool {
+	return func() bool {
+		select {
+		case <-sub.Done():
+			return false
+		default:
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.sub == sub && !p.closed
+	}
+}
+
+// typeIn queues what types into the agent for sub (a submit, a chat to the
+// agent, a chat_send) on the viewer's typing queue. Its time runs from now
+// (agent.submitDeadline): do runs in its turn within it, and refuse tells
+// the viewer why it was not done, do's error or the time run out, whether
+// its turn came or not. A full queue refuses it at once (too_many_requests,
+// requestID naming it).
+func (p *peer) typeIn(sub *session.Subscription, requestID string, do func(context.Context) error, refuse func(error)) {
+	deadline := p.a.submitDeadline()
+	if !p.typing.add(request{
+		run: func() {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			err := ctx.Err()
+			if err == nil {
+				err = do(ctx)
+			}
+			if err != nil {
+				refuse(err)
+			}
+		},
+		live:     p.attached(sub),
+		deadline: deadline,
+		expired:  func() { refuse(context.DeadlineExceeded) },
+	}) {
+		p.a.local.Send(sub, queueFull(requestID))
+	}
+}
+
+// submitError is the error a submit gets for err.
+func submitError(err error) []byte {
+	code := "input_failed"
+	switch {
+	case errors.Is(err, session.ErrReadOnly):
+		code = proto.ErrCodeReadOnly
+	case errors.Is(err, session.ErrSessionEnded):
+		code = proto.ErrCodeSessionEnded
+	case errors.Is(err, session.ErrTrustQuestion):
+		code = proto.ErrCodeNotSent
+	}
+	return proto.NewError(code, err.Error())
+}
+
+// nvimOpen starts the viewer's Neovim on a file.
+func (p *peer) nvimOpen(sub *session.Subscription, req proto.NvimOpen) {
+	ctx, cancel := context.WithTimeout(context.Background(), nvimOpenTimeout)
+	defer cancel()
+	if err := p.a.local.NvimOpen(ctx, sub, req); err != nil {
+		p.a.local.Send(sub, session.NvimRefused(req.ReqID, err))
+	}
+}
+
 func (p *peer) attach(hello proto.Hello) {
 	p.mu.Lock()
 	var sink session.Sink
@@ -395,6 +454,7 @@ func (p *peer) close() {
 	pc, sub := p.pc, p.sub
 	p.pc, p.sub = nil, nil
 	p.mu.Unlock()
+	p.typing.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
 	}

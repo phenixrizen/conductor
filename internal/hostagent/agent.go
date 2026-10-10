@@ -259,6 +259,19 @@ type agent struct {
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
+	// submitWait replaces submitTimeout in tests.
+	submitWait time.Duration
+}
+
+// submitDeadline is when a submission arriving now must be done by: its
+// wait in its viewer's queue counts, so one that waited out its time behind
+// a submission the process does not take is refused, never typed late.
+func (a *agent) submitDeadline() time.Time {
+	d := submitTimeout
+	if a.submitWait > 0 {
+		d = a.submitWait
+	}
+	return time.Now().Add(d)
 }
 
 func (a *agent) sessionID() string {

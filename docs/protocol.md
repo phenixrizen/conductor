@@ -165,6 +165,19 @@ server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
 View-role INPUT, `resize`, `submit` and `chat_send` are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent.
 
+The host types a viewer's `submit`, `chat` to the agent and `chat_send`
+(over the data channel or the relay alike) one at a time, in the order the
+viewer sent them, as the server does, with at most 8 waiting behind the one
+being typed: one more is refused with `error{too_many_requests}` (`requestId`
+the chat message's id or the send's ref, none for a `submit`) and the
+connection stays. Each has 10 s from its arrival, its wait included: one
+still waiting when its time runs out is refused then (`input_failed`), never
+typed late. When the viewer goes (its connection or data channel closes, or
+it moves to the relay and attaches again), what waits is dropped, and does
+not count against the 8; the one being typed is finished. The viewer's `nvim_open`s start apart, at
+most 4 at once (the editors a connection may hold), past which the
+`nvim_event` error is `too_many_requests`.
+
 ## Host control connection
 
 `GET /ws/host?token=…` (host token or workbench token; on a switchyard with
