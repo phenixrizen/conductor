@@ -75,10 +75,10 @@ func inGitDir(real string) bool {
 	if isGitFile(real) {
 		return true
 	}
-	var ids gitIDs
+	ids := gitIDs{budget: maxScan}
 	for p := real; ; p = filepath.Dir(p) {
 		gitDirsIn(p, &ids)
-		if filepath.Dir(p) == p {
+		if ids.incomplete || filepath.Dir(p) == p {
 			break
 		}
 	}
@@ -118,7 +118,16 @@ type gitIDs struct {
 	files      []os.FileInfo
 	missing    []string
 	incomplete bool
+	// scanned holds the git directories looked at already, each looked at
+	// once however many .git name it; budget is how many more entries may
+	// be looked at for this check (maxScan at first).
+	scanned []os.FileInfo
+	budget  int
 }
+
+// maxScan bounds the entries one check looks at, all git directories
+// together; past it, the path is read only (incomplete).
+var maxScan = 16384
 
 // rawJoin joins name to dir as the kernel walks them, without cleaning
 // the result: a link in dir followed by .. in name goes where git goes. An
@@ -216,6 +225,17 @@ const maxEntries = 4096
 // .git/reftable links to holds its refs, and a link to nothing yet names
 // the file a save would make (linkDestination).
 func linkedMetadata(gitDir string, ids *gitIDs) {
+	if ids.incomplete {
+		return
+	}
+	if fi, err := os.Stat(gitDir); err == nil {
+		for _, s := range ids.scanned {
+			if os.SameFile(fi, s) {
+				return
+			}
+		}
+		ids.scanned = append(ids.scanned, fi)
+	}
 	add := func(p string) {
 		fi, err := os.Lstat(p)
 		if err != nil {
@@ -235,9 +255,11 @@ func linkedMetadata(gitDir string, ids *gitIDs) {
 		}
 	}
 	for _, dir := range []string{gitDir, rawJoin(gitDir, "info"), rawJoin(gitDir, "hooks")} {
-		names, complete := dirNames(dir, maxEntries)
-		if !complete {
+		names, complete := dirNames(dir, min(maxEntries, ids.budget))
+		ids.budget -= len(names)
+		if !complete || ids.budget <= 0 {
 			ids.incomplete = true
+			return
 		}
 		for _, n := range names {
 			add(rawJoin(dir, n))

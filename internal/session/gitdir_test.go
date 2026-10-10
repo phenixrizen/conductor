@@ -448,6 +448,67 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	}
 }
 
+// A check looks at each git directory once, however many .git on the way
+// name it, and at no more than maxScan entries in all: past that the path
+// is read only rather than looked at further.
+func TestGitDirScanIsBounded(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(root, "shared.git")
+	for _, d := range []string{"objects", "refs", "extra"} {
+		if err := os.MkdirAll(filepath.Join(shared, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(shared, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	for i := range 100 {
+		os.WriteFile(filepath.Join(shared, fmt.Sprintf("entry%03d", i)), nil, 0o644)
+	}
+	// 200 folders deep, each with a .git naming the same git directory.
+	dir := filepath.Join(root, "w")
+	for range 200 {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+shared+"\n"), 0o644)
+		dir = filepath.Join(dir, "d")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "notes.txt")
+	os.WriteFile(file, []byte("x\n"), 0o644)
+	ids := gitIDs{budget: maxScan}
+	for p := file; p != root; p = filepath.Dir(p) {
+		gitDirsIn(p, &ids)
+	}
+	if len(ids.scanned) != 1 || ids.incomplete {
+		t.Fatalf("scanned %d git directories, incomplete %v; want the shared one once", len(ids.scanned), ids.incomplete)
+	}
+	start := time.Now()
+	if inGitDir(file) {
+		t.Fatal("a working-tree file read as .git")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the check took %v", d)
+	}
+	// With a budget below what the shared git directory holds, the check
+	// stops and the file is read only.
+	saved := maxScan
+	maxScan = 50
+	t.Cleanup(func() { maxScan = saved })
+	if !inGitDir(file) {
+		t.Fatal("a check past its budget let the file be edited")
+	}
+	plain := filepath.Join(root, "plain.txt")
+	os.WriteFile(plain, nil, 0o644)
+	if inGitDir(plain) {
+		t.Fatal("a file with no repository on its way read as .git")
+	}
+}
+
 // writeTemp writes body to a new file in a temporary directory.
 func writeTemp(t *testing.T, body string) string {
 	t.Helper()
