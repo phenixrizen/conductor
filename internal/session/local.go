@@ -402,7 +402,7 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 		s.noteTouched(e, false)
 	}
 	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
-	id, retired := s.info.ID, s.retired
+	id := s.info.ID
 	s.mu.Unlock()
 	switch e.Type {
 	case ActivityFile:
@@ -411,19 +411,10 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 		// A tool ran, or a turn ended or asked: a look at the tree a moment later.
 		s.gitSeenPoke()
 	}
-	if s.opts.OnActivity != nil && !retired {
+	if s.opts.OnActivity != nil {
 		s.opts.OnActivity(id, e, state)
 	}
 	return true
-}
-
-// isRetired reports whether the session left the server's registry
-// (Retire): it tells its hooks nothing more, so the lists it left do not
-// take it back as its last viewers leave.
-func (s *Local) isRetired() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.retired
 }
 
 // countDrop counts in dropped something of type typ that the event bucket
@@ -442,10 +433,9 @@ func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 // Activity returns the activity log, oldest first.
 func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
 
-// notifyChange hands a fresh Info snapshot to the OnChange hook, unless the
-// session left the registry.
+// notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
-	if s.opts.OnChange != nil && !s.isRetired() {
+	if s.opts.OnChange != nil {
 		s.opts.OnChange(s.Info())
 	}
 }

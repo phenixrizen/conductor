@@ -267,7 +267,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
 	s.hosts.OnChange = func(info session.Info) {
-		s.events.publish(info)
+		s.events.publishIf(info, s.listed)
 		// A hosted session that ended takes its links with it, as a server session does.
 		if info.Status.Ended() {
 			for _, l := range s.links.ListBySession(info.ID) {
@@ -282,16 +282,6 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// A hosted session's chat reaches the browsers' unread counts as a server session's does.
 	s.hosts.OnChat = func(id string, m session.ChatMessage) { s.events.chat(id, "", m) }
 	s.registry.OnRemove = func(id string, d session.Driver) {
-		// Its viewers go with it, and none attaches after: a run link's
-		// revoke, or its run forgotten, looks for them in the registry.
-		// Retired first, so that nothing they do as they leave (a leave
-		// line, the viewer count) brings the session back to the lists.
-		switch drv := d.(type) {
-		case *session.Local:
-			drv.Retire()
-		case *signal.HostedSession:
-			drv.Retire()
-		}
 		// A durable link outlives a host that went away (its session only
 		// expired) and goes with a session that ended.
 		for _, lid := range s.links.DeleteSession(id, d.Info().Status.Ended()) {
@@ -300,8 +290,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.removed(id)
 		s.unpublish(id)
 		s.pastes.closeAll(id)
-		if l, ok := d.(*session.Local); ok {
-			l.LeaveRunChat()
+		// Its viewers go with it, and none attaches after: a run link's
+		// revoke, or its run forgotten, looks for them in the registry.
+		// What they change as they leave reaches no browser's list
+		// (publishIf: the session is no longer listed).
+		switch drv := d.(type) {
+		case *session.Local:
+			drv.LeaveRunChat()
+			drv.Retire()
+		case *signal.HostedSession:
+			drv.Retire()
 		}
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {

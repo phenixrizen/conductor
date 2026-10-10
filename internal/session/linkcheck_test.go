@@ -169,6 +169,38 @@ func TestRetireClosesEveryClientAndRefusesMore(t *testing.T) {
 	}
 }
 
+// A retired session still tells its hooks what changes (its end among
+// them, which a run records): retiring closes clients, it silences nothing.
+func TestARetiredSessionStillTellsItsChanges(t *testing.T) {
+	var mu sync.Mutex
+	var statuses []Status
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, OnChange: func(i Info) {
+		mu.Lock()
+		statuses = append(statuses, i.Status)
+		mu.Unlock()
+	}})
+	sink := newChanSink(false)
+	if _, err := s.Attach("", RoleControl, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	s.Retire()
+	<-sink.closed
+	p.exit()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		ended := len(statuses) > 0 && statuses[len(statuses)-1].Ended()
+		mu.Unlock()
+		if ended {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the end was not told: %v", statuses)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A grant that lapses closes the client as it lapses, with ErrExpired, a
 // kind of revoke; one that lapsed already closes it at once.
 func TestGrantUntilClosesTheClient(t *testing.T) {

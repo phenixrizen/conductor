@@ -484,7 +484,7 @@ func (s *Local) keepChat(m ChatMessage) string {
 }
 
 func (s *Local) chatHook(id string, m ChatMessage) {
-	if s.opts.OnChat != nil && !s.isRetired() {
+	if s.opts.OnChat != nil {
 		s.opts.OnChat(id, m)
 	}
 }
