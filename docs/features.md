@@ -681,10 +681,14 @@ request each from main.
   raised eight findings (their investigation is its own report). AGENTS.md
   gains "Reviews": every pull request gets `codex-companion.mjs
   adversarial-review` against `origin/main` with a focus on the risks it
-  touches; each finding is reproduced or traced before it is fixed or
-  refuted, and the pull request lists them; a change Codex wrote gets Claude
-  Code's `/code-review`. The plugin (1.0.6) was installed on this machine and
-  its first review was of this change.
+  touches, after everything is committed (`--base` reads commits only), and
+  again for commits made after it; each finding is reproduced or traced
+  before it is fixed or refuted, and the pull request lists them. The plugin
+  (1.0.6) was installed on this machine and its first review was of this
+  change: three findings, all three confirmed in the plugin's code and taken
+  (commit before reviewing, the plugin's root from the registry rather than
+  the newest cached copy, and no reverse `/code-review` clause, which needs
+  an open pull request and skips drafts and simple ones).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 

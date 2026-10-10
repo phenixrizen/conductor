@@ -110,13 +110,19 @@ Codex plugin for Claude Code (`openai/codex-plugin-cc`; `/plugin marketplace
 add openai/codex-plugin-cc`, `/plugin install codex@openai-codex`,
 `/codex:setup`, a Codex login). A person types
 `/codex:adversarial-review --base origin/main <focus>`; an agent cannot
-invoke that command and runs the same review through the plugin's script:
+invoke that command and runs the same review through the installed plugin's
+script (the registry names the active version; a `KeyError` means the
+plugin is not installed):
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | tail -1)scripts/codex-companion.mjs" \
-  adversarial-review --wait --base origin/main "<focus: the risks this change touches>"
+codex_root=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.claude/plugins/installed_plugins.json")))["plugins"]["codex@openai-codex"][0]["installPath"])')
+node "$codex_root/scripts/codex-companion.mjs" adversarial-review --wait --base origin/main "<focus: the risks this change touches>"
 ```
 
+- `--base` reviews the commits `origin/main...HEAD`, not the working tree:
+  commit everything first. The pull request's body names the commit
+  reviewed; commits after it (the review's own fixes included) get another
+  review before the merge.
 - The focus names the risks the change touches: races and ownership,
   link scopes and revocation, credentials in logs, what the switchyard can
   see, recovery after a restart, per-connection bounds.
@@ -127,8 +133,6 @@ node "$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | tail -1)
 - The pull request's body lists the findings and what became of each. One
   outside the change's scope goes to `docs/tasks-todo.md`, never dropped
   silently.
-- A change Codex wrote is reviewed the other way round, by Claude Code's
-  `/code-review`.
 - When the review cannot run (no login, no network), the pull request says
   so: a limitation, not a pass.
 
