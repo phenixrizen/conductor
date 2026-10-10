@@ -34,6 +34,9 @@ test('copy and paste in the terminal: the keys, right-click, its menu, and a vie
     await page.goto(`/sessions/${s.id}`)
     const screen = page.locator('.terminal-host .xterm-screen').first()
     await expect(screen).toBeVisible({ timeout: 30_000 })
+    // Keys typed before the connection opens are dropped, and the shell's prompt shows it is reading: both before the first key.
+    await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+    await expect.poll(async () => (await rows(page)).some((r) => r.trim() !== ''), { timeout: 15_000 }).toBe(true)
     await screen.click()
     await page.keyboard.type('echo copyme-123\n')
     await expect.poll(async () => (await rows(page)).includes('copyme-123'), { timeout: 15_000 }).toBe(true)
