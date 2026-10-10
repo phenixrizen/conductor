@@ -106,4 +106,25 @@ var (
 	ErrTooManyViewers  = errors.New("session: too many viewers")
 	ErrFileDenied      = errors.New("session: file access denied")
 	ErrTooManyRequests = errors.New("session: too many in-flight requests")
+	// ErrExpired closes a viewer whose link reached its expiry, and refuses
+	// one that attaches through it after. It is a kind of ErrRevoked
+	// (errors.Is(ErrExpired, ErrRevoked) holds): whatever a revoke does to a
+	// viewer, an expiry does too; only the words differ.
+	ErrExpired error = linkExpired{}
 )
+
+// linkExpired is ErrExpired's type: an error that is also ErrRevoked.
+type linkExpired struct{}
+
+func (linkExpired) Error() string { return "session: link expired" }
+
+// Is makes errors.Is(ErrExpired, ErrRevoked) hold.
+func (linkExpired) Is(target error) bool { return target == ErrRevoked }
+
+// Grant is what a viewer's credential gives it on a session as it stands
+// when the viewer attaches: its role, and when the credential lapses (zero
+// for never). See AttachOptions.Authorize.
+type Grant struct {
+	Role  Role
+	Until time.Time
+}
