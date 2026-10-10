@@ -400,8 +400,10 @@ func TestALinkThatExpiresClosesItsViewers(t *testing.T) {
 	if !o.closed || o.closeCode != proto.CloseForbidden || o.errCode != proto.ErrCodeExpired {
 		t.Fatalf("at the expiry: %+v", o)
 	}
-	if time.Now().Before(at) {
-		t.Fatal("closed before the link expired")
+	// The server's timer runs on the monotonic clock, the expiry read here
+	// on the wall clock: a little slack between the two.
+	if early := time.Until(at); early > 100*time.Millisecond {
+		t.Fatalf("closed %v before the link expired", early)
 	}
 	dialViewer(t, e, id, token).expectClose(proto.CloseUnauthorized)
 

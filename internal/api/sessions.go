@@ -287,7 +287,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
 	}
-	s.events.publish(local.Info())
+	// Published while listed, as every change is (localChange): a session
+	// that ended and was removed at once is not brought back by its launch.
+	s.events.publishIf(local.Info(), s.listed)
 	s.publish(local)
 	return local, nil
 }

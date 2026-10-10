@@ -60,7 +60,7 @@ func TestEventHubActivityNeverBlocksOrEvictsAClientThatStoppedReading(t *testing
 	if n := len(stalled); n != activityQueueLimit {
 		t.Fatalf("queue holds %d entries, want it held at %d", n, activityQueueLimit)
 	}
-	h.publish(session.Info{ID: "s", Name: "n"})
+	h.publishIf(session.Info{ID: "s", Name: "n"}, nil)
 	h.removed("s")
 	if n := len(stalled); n != activityQueueLimit+2 {
 		t.Fatalf("session changes were not queued behind the entries: %d", n)
@@ -171,7 +171,7 @@ func TestEventHubIsSafeForConcurrentUse(t *testing.T) {
 			for i := 0; i < 300; i++ {
 				h.activity("s", session.ActivityEntry{Type: session.ActivityToolUse, Tool: "Bash"}, "")
 				if i%50 == 0 {
-					h.publish(session.Info{ID: "s"})
+					h.publishIf(session.Info{ID: "s"}, nil)
 					h.removed("s")
 				}
 			}
