@@ -127,6 +127,16 @@ type Server struct {
 	// runSyncMu orders, per run, what tells the rendezvous a run's members
 	// (lockRunSync); the map is guarded by pubMu.
 	runSyncMu map[string]*sync.Mutex
+	// runRevision is the last revision given a run's members as they were
+	// sent (nextRunRevision); runSyncRetry how long after a sync that failed
+	// it is first made again (the package's runSyncRetry when the server
+	// was made); runRetrying the runs whose next try is scheduled, and
+	// runSyncFails how many syncs of each failed in a row
+	// (scheduleRunSyncAfter). All under pubMu.
+	runRevision  int64
+	runSyncRetry time.Duration
+	runRetrying  map[string]bool
+	runSyncFails map[string]int
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and
@@ -239,6 +249,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		relayed:     newRelayMeter(nil),
 	}
 	s.relayBurstFloor = relayBurstFloor
+	s.runSyncRetry = runSyncRetry
 	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()

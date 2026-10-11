@@ -37,9 +37,15 @@ type Link struct {
 }
 
 // Group is a crew run as a switchyard knows it: its name and its members.
+//
+// Revision is the host's revision of the members (proto.RunGroup.Revision),
+// 0 from a host that numbers none. It is held in memory alone, never in a
+// kept link's file: a group sent before the switchyard started cannot reach
+// it after, for the connection it came on ended with the switchyard.
 type Group struct {
-	Name    string
-	Members []GroupMember
+	Name     string
+	Members  []GroupMember
+	Revision int64 `json:"-"`
 }
 
 // GroupMember is a member of a Group: its session there, "" while it has none.
@@ -70,6 +76,9 @@ var (
 	ErrInvalidRole  = errors.New("share: invalid role")
 	ErrTooManyLinks = errors.New("share: too many links for session")
 	ErrUnknownLink  = errors.New("share: unknown link")
+	// ErrStaleGroup refuses a run's group whose revision is not above the
+	// highest the run's links hold.
+	ErrStaleGroup = errors.New("share: the run's links hold a newer revision of its members")
 )
 
 // MaxLinksPerSession bounds link creation, for each session and for each run.
@@ -102,18 +111,19 @@ func NewStore() *Store {
 // Create issues a new link to a session and returns the record plus the
 // plaintext token.
 func (s *Store) Create(sessionID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
-	return s.create(&Link{SessionID: sessionID}, s.bySession, sessionID, role, label, ttl)
+	return s.create(&Link{SessionID: sessionID}, s.bySession, sessionID, role, label, ttl, nil)
 }
 
 // CreateRunLink issues a new link to a crew run and returns the record plus
 // the plaintext token.
 func (s *Store) CreateRunLink(runID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
-	return s.create(&Link{RunID: runID}, s.byRun, runID, role, label, ttl)
+	return s.create(&Link{RunID: runID}, s.byRun, runID, role, label, ttl, nil)
 }
 
 // create completes link, whose scope is set, and indexes it in scopes under
-// key: at most MaxLinksPerSession links per key.
-func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+// key: at most MaxLinksPerSession links per key, and only when admit (when
+// not nil, called with mu held) returns nil.
+func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key string, role session.Role, label string, ttl time.Duration, admit func() error) (*Link, string, error) {
 	if !role.Valid() {
 		return nil, "", ErrInvalidRole
 	}
@@ -130,6 +140,11 @@ func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key strin
 	defer s.mu.Unlock()
 	if len(scopes[key]) >= MaxLinksPerSession {
 		return nil, "", ErrTooManyLinks
+	}
+	if admit != nil {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
 	}
 	s.byHash[hash] = link
 	s.byID[link.ID] = link
@@ -410,18 +425,46 @@ func (s *Store) DeleteRun(runID string) []string {
 func copyLink(l *Link) *Link {
 	cp := *l
 	if l.Group != nil {
-		g := Group{Name: l.Group.Name, Members: append([]GroupMember(nil), l.Group.Members...)}
+		g := l.Group.clone()
 		cp.Group = &g
 	}
 	return &cp
 }
 
+// clone copies g, with members of its own.
+func (g *Group) clone() Group {
+	return Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...), Revision: g.Revision}
+}
+
+// staleFor says whether a group of revision rev comes too late for the
+// links under key: it has a revision, and one of them, revoked or not,
+// holds one as high. Called with mu held.
+func (s *Store) staleFor(key string, rev int64) bool {
+	if rev <= 0 {
+		return false
+	}
+	for _, l := range s.byRun[key] {
+		if l.Group != nil && l.Group.Revision >= rev {
+			return true
+		}
+	}
+	return false
+}
+
 // CreateGroupLink issues a link to a host's crew run, as a switchyard holds
 // it: the members' sessions are named in g, which SetGroup keeps current.
 // Indexed under the owner and the run, so two hosts' run ids never meet.
+// ErrStaleGroup, and no link, when the run's links hold a revision of its
+// members as high as g's or higher.
 func (s *Store) CreateGroupLink(runID, owner string, g Group, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
-	gc := Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
-	return s.create(&Link{RunID: runID, Owner: owner, Group: &gc}, s.byRun, groupKey(owner, runID), role, label, ttl)
+	gc := g.clone()
+	key := groupKey(owner, runID)
+	return s.create(&Link{RunID: runID, Owner: owner, Group: &gc}, s.byRun, key, role, label, ttl, func() error {
+		if s.staleFor(key, gc.Revision) {
+			return ErrStaleGroup
+		}
+		return nil
+	})
 }
 
 // SetGroup gives the live links of owner's run the members in g. It returns
@@ -430,27 +473,44 @@ func (s *Store) CreateGroupLink(runID, owner string, g Group, role session.Role,
 // through one of those links is to be closed. The links name g's sessions
 // alone from the moment it returns, so a viewer attaching to a session that
 // left is refused (Live, then Group.Names).
-func (s *Store) SetGroup(owner, runID string, g Group) (changed, left []string) {
+//
+// A g with a revision changes nothing when the run's links hold one as high
+// or higher, sent after it (ErrStaleGroup); one without (an older host's)
+// is taken whatever they hold, and they keep the highest they held. With no
+// live link, nothing changes and changed is empty, whatever g's revision.
+func (s *Store) SetGroup(owner, runID string, g Group) (changed, left []string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := &Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+	key := groupKey(owner, runID)
+	live := false
+	for _, l := range s.byRun[key] {
+		live = live || (!l.Revoked && l.Group != nil)
+	}
+	if !live {
+		return nil, nil, nil
+	}
+	if s.staleFor(key, g.Revision) {
+		return nil, nil, ErrStaleGroup
+	}
 	gone := map[string]bool{}
-	for _, l := range s.byRun[groupKey(owner, runID)] {
+	for _, l := range s.byRun[key] {
 		if l.Revoked || l.Group == nil {
 			continue
 		}
 		for _, m := range l.Group.Members {
-			if m.SessionID != "" && !next.Names(m.SessionID) && !gone[m.SessionID] {
+			if m.SessionID != "" && !g.Names(m.SessionID) && !gone[m.SessionID] {
 				gone[m.SessionID] = true
 				left = append(left, m.SessionID)
 			}
 		}
-		l.Group = &Group{Name: g.Name, Members: append([]GroupMember(nil), g.Members...)}
+		next := g.clone()
+		next.Revision = max(next.Revision, l.Group.Revision)
+		l.Group = &next
 		changed = append(changed, l.ID)
 	}
 	sort.Strings(changed)
 	sort.Strings(left)
-	return changed, left
+	return changed, left, nil
 }
 
 // RevokeGroup revokes owner's run link linkID, notifying OnRevokeRun.

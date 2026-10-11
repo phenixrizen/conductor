@@ -68,6 +68,7 @@ func TestRunGroupValidateBounds(t *testing.T) {
 	for i := range MaxRunLinkMembers {
 		g.Members = append(g.Members, member(i))
 	}
+	g.Revision = MaxRunRevision
 	if err := g.Validate(); err != nil {
 		t.Fatalf("a full group: %v", err)
 	}
@@ -82,6 +83,8 @@ func TestRunGroupValidateBounds(t *testing.T) {
 		func(g *RunGroup) { g.Members[1].Name = g.Members[0].Name },
 		func(g *RunGroup) { g.ID = strings.Repeat("r", MaxRunID+1) },
 		func(g *RunGroup) { g.Members = nil },
+		func(g *RunGroup) { g.Revision = -1 },
+		func(g *RunGroup) { g.Revision = MaxRunRevision + 1 },
 	}
 	for i, mutate := range bad {
 		c := g
@@ -90,6 +93,39 @@ func TestRunGroupValidateBounds(t *testing.T) {
 		if c.Validate() == nil {
 			t.Fatalf("bad group %d passed", i)
 		}
+	}
+}
+
+// A group's revision goes on the wire only when set; a host that sends
+// none (an older one) reads as 0, and a reader that knows no revision (an
+// older switchyard, which decodes host messages without refusing unknown
+// fields) reads the rest of a group that has one.
+func TestRunGroupRevisionOnTheWire(t *testing.T) {
+	g := RunGroup{ID: "api-1", Name: "api", Members: []RunMember{{Name: "lead", AgentID: "claude", Status: "running"}}}
+	b, _ := json.Marshal(HostRunLinkUpdateMsg{T: HostRunLinkUpdate, RequestID: "u", Run: g})
+	if strings.Contains(string(b), "revision") {
+		t.Fatalf("a group without a revision: %s", b)
+	}
+	g.Revision = 1760000000123
+	b, _ = json.Marshal(HostRunLinkUpdateMsg{T: HostRunLinkUpdate, RequestID: "u", Run: g})
+	if !strings.Contains(string(b), `"revision":1760000000123`) {
+		t.Fatalf("a group with a revision: %s", b)
+	}
+	var older struct {
+		T         string `json:"t"`
+		RequestID string `json:"requestId"`
+		Run       struct {
+			ID      string      `json:"id"`
+			Name    string      `json:"name"`
+			Members []RunMember `json:"members"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(b, &older); err != nil || older.Run.ID != "api-1" || len(older.Run.Members) != 1 {
+		t.Fatalf("an older reader: %+v %v", older, err)
+	}
+	var m HostRunLinkUpdateMsg
+	if err := json.Unmarshal([]byte(`{"t":"link_run_update","requestId":"u","run":{"id":"api-1","name":"api","members":[]}}`), &m); err != nil || m.Run.Revision != 0 {
+		t.Fatalf("an older host's update: %+v %v", m, err)
 	}
 }
 

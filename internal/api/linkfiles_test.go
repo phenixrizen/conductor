@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -271,6 +273,63 @@ func TestARevokeOutlastsARunUpdatesWriteAcrossARestart(t *testing.T) {
 	}
 	if back > 0 {
 		t.Fatalf("%d of %d revoked links open again after a restart", back, len(links))
+	}
+}
+
+// A kept run link's file holds its members as the host last sent them and
+// never their revision, so a switchyard that knows none reads it (a file
+// read back refuses unknown fields). The revision lives in memory alone:
+// after a restart the switchyard holds none for the run, and the host's
+// next update is taken whatever its revision, for nothing sent before the
+// restart reaches it after (the connection it came on ended with it).
+func TestAKeptRunLinksFileCarriesNoRevision(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	hi, hsA := instanceHost(e, "instance-secret-0123456789", "a")
+	_, hsB := instanceHost(e, "instance-secret-0123456789", "b")
+	a, _ := dialFakeHostWith(t, e, hi, hsA, "")
+	b, _ := dialFakeHostWith(t, e, hi, hsB, "")
+	group := func(rev int64, ids ...string) proto.RunGroup {
+		g := proto.RunGroup{ID: "pair-0123abcd", Name: "pair", Revision: rev}
+		for i, id := range ids {
+			g.Members = append(g.Members, proto.RunMember{Name: fmt.Sprintf("m%d", i), SessionID: id, AgentID: "cat", Status: "running"})
+		}
+		return g
+	}
+	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r1", Role: "view", TTLSeconds: 3600, Run: group(100, a.sessionID)})
+	created := a.expect(proto.HostLinkCreated)
+	linkID := created["linkId"].(string)
+	u := created["url"].(string)
+	token := u[strings.LastIndex(u, "/")+1:]
+	a.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u1", Run: group(101, a.sessionID, b.sessionID)})
+	a.expect(proto.HostRunLinkUpdated)
+	raw, err := os.ReadFile(filepath.Join(dir, "links", linkID+".json"))
+	if err != nil || strings.Contains(strings.ToLower(string(raw)), "revision") {
+		t.Fatalf("the kept file: %s (%v)", raw, err)
+	}
+	var f linkFile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil || f.Run == nil || len(f.Run.Members) != 2 {
+		t.Fatalf("the kept file read strictly: %+v %v", f, err)
+	}
+	a.c.Close(websocket.StatusNormalClosure, "")
+	b.c.Close(websocket.StatusNormalClosure, "")
+	<-a.done
+	<-b.done
+
+	e2 := keptSwitchyard(t, dir, nil)
+	hi, hsA = instanceHost(e2, "instance-secret-0123456789", "a")
+	_, hsB = instanceHost(e2, "instance-secret-0123456789", "b")
+	a2, _ := dialFakeHostWith(t, e2, hi, hsA, "")
+	b2, _ := dialFakeHostWith(t, e2, hi, hsB, "")
+	dialViewer(t, e2, b2.sessionID, token).expectControl(proto.CtlWelcome)
+	a2.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u2", Run: group(7, a2.sessionID)})
+	a2.expect(proto.HostRunLinkUpdated)
+	dialViewer(t, e2, b2.sessionID, token).expectClose(proto.CloseUnauthorized)
+	a2.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u3", Run: group(6, a2.sessionID, b2.sessionID)})
+	if m := a2.expect(proto.HostError); m["code"] != "stale" {
+		t.Fatalf("an older update after the restart's first: %v", m)
 	}
 }
 

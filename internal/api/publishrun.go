@@ -21,8 +21,36 @@ import (
 // session's remote links.
 
 // runSyncDelay coalesces a run's changes before the switchyard is told: the
-// engine reports a change on every log line.
-const runSyncDelay = 2 * time.Second
+// engine reports a change on every log line. runSyncWait is how long a sync
+// waits for the switchyard's answer. runSyncRetry is how long after a sync
+// that failed (no answer, or any refusal but not_found) the run's members
+// are sent again (Server.runSyncRetry), twice as long after each failure
+// in a row, runSyncRetryMax at most.
+const (
+	runSyncDelay    = 2 * time.Second
+	runSyncWait     = 15 * time.Second
+	runSyncRetry    = 5 * time.Second
+	runSyncRetryMax = time.Minute
+)
+
+// nextRunRevision is the revision of a run's members as they are about to be
+// sent (proto.RunGroup.Revision), higher than every one this server gave
+// before, whatever the run: the switchyard refuses members of a revision
+// not above those it holds, so members sent before others and delivered
+// after them (a sync whose wait ran out, over another member's connection
+// or one about to reconnect) change nothing. Called in the run's turn
+// (lockRunSync), as its members are read, so a later turn's members always
+// have the higher revision. It starts from the clock, in milliseconds, so
+// it goes on rising past a restart of this server too as long as the clock
+// does (today no run's links at a switchyard outlive the start that made
+// them: it holds them under the publisher's instance, made anew at each
+// start).
+func (s *Server) nextRunRevision() int64 {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	s.runRevision = max(s.runRevision+1, time.Now().UnixMilli())
+	return s.runRevision
+}
 
 // runGroup is the run as the switchyard should show it, and a publication to
 // carry requests about it (nil when no member is published).
@@ -54,13 +82,14 @@ func cmpLabel(label, name string) string {
 	return name
 }
 
-// awaitRunGroup is runGroup once the member publications still being made
-// are made, as long as ctx allows; why says what keeps a run from the
-// switchyard when no member is published.
-func (s *Server) awaitRunGroup(ctx context.Context, runID string) (proto.RunGroup, PublishedSession, string) {
+// awaitRunPublished waits, as long as ctx allows, for the member
+// publications still being made, and says whether a member is published
+// then (a carrier, as runGroup gives it); why says what keeps a run from
+// the switchyard when none is.
+func (s *Server) awaitRunPublished(ctx context.Context, runID string) (PublishedSession, string) {
 	run, ok := s.runs.Get(runID)
 	if !ok {
-		return proto.RunGroup{}, nil, "no such run"
+		return nil, "no such run"
 	}
 	why := ""
 	for _, m := range run.Members {
@@ -77,11 +106,11 @@ func (s *Server) awaitRunGroup(ctx context.Context, runID string) (proto.RunGrou
 		}
 	}
 	run, _ = s.runs.Get(runID)
-	g, carrier := s.runGroup(run)
+	_, carrier := s.runGroup(run)
 	if carrier == nil && why == "" {
 		why = "no member of the run is published yet"
 	}
-	return g, carrier, why
+	return carrier, why
 }
 
 // recordRemoteRunLink keeps a link minted at the rendezvous for a run.
@@ -120,6 +149,7 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	if linkID == "" {
 		delete(s.remoteRunLinks, runID)
 		delete(s.runSent, runID)
+		delete(s.runSyncFails, runID)
 		return
 	}
 	delete(s.remoteRunLinks[runID], linkID)
@@ -127,20 +157,35 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 
 // scheduleRunSync tells the switchyard a run's members after runSyncDelay,
 // once for the changes in between; nothing for a run without remote links.
-func (s *Server) scheduleRunSync(runID string) {
+func (s *Server) scheduleRunSync(runID string) { s.scheduleRunSyncAfter(runID, false) }
+
+// scheduleRunSyncAfter is scheduleRunSync, or with retry the next try of a
+// sync that failed: after the server's runSyncRetry, twice as long for each
+// failure in a row before it, runSyncRetryMax at most. The two are
+// scheduled apart, once each at a time, so a try waiting long never holds
+// back the sync of a change.
+func (s *Server) scheduleRunSyncAfter(runID string, retry bool) {
 	s.pubMu.Lock()
-	if len(s.remoteRunLinks[runID]) == 0 || s.runSyncing[runID] {
+	pending, wait := &s.runSyncing, runSyncDelay
+	if retry {
+		pending, wait = &s.runRetrying, s.runSyncRetry
+		for range min(s.runSyncFails[runID]-1, 8) {
+			wait *= 2
+		}
+		wait = min(wait, runSyncRetryMax)
+	}
+	if len(s.remoteRunLinks[runID]) == 0 || (*pending)[runID] {
 		s.pubMu.Unlock()
 		return
 	}
-	if s.runSyncing == nil {
-		s.runSyncing = map[string]bool{}
+	if *pending == nil {
+		*pending = map[string]bool{}
 	}
-	s.runSyncing[runID] = true
+	(*pending)[runID] = true
 	s.pubMu.Unlock()
-	time.AfterFunc(runSyncDelay, func() {
+	time.AfterFunc(wait, func() {
 		s.pubMu.Lock()
-		delete(s.runSyncing, runID)
+		delete(*pending, runID)
 		s.pubMu.Unlock()
 		s.track(func() { s.syncRunLinks(runID) })
 	})
@@ -168,7 +213,19 @@ func (s *Server) lockRunSync(runID string) func() {
 // syncRunLinks sends the run's members to the switchyard when they changed
 // since the last time; a switchyard that holds no link for the run any more
 // (not_found) has the records dropped here too. Syncs of one run take turns
-// (lockRunSync), each reading the members as they are when its turn comes.
+// (lockRunSync), each reading the members as they are when its turn comes
+// and giving them the next revision (nextRunRevision).
+//
+// A sync that is not answered leaves what the switchyard holds unknown: it
+// may hold these members, those before, or (the update still on its way)
+// take these later, when its revision has it refuse them if newer ones came
+// first. So the next sync sends the members whatever was sent before, and
+// one that failed is made again (scheduleRunSyncAfter): the switchyard ends
+// up with the members as they are, not as they were when an update went
+// astray. Every failure but not_found is tried again: no answer, stale,
+// rate_limited, and invalid_request too, which a member not registered
+// there yet answers (after a switchyard restart, the members' connections
+// come back one by one), as long as the run has links there.
 func (s *Server) syncRunLinks(runID string) {
 	defer s.lockRunSync(runID)()
 	run, ok := s.runs.Get(runID)
@@ -186,20 +243,38 @@ func (s *Server) syncRunLinks(runID string) {
 	if same {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	g.Revision = s.nextRunRevision()
+	ctx, cancel := context.WithTimeout(context.Background(), runSyncWait)
 	defer cancel()
-	if err := carrier.RunLinkUpdate(ctx, g); err != nil {
-		if strings.Contains(err.Error(), "not_found") {
-			s.forgetRemoteRunLinks(runID, "")
-		}
-		return
-	}
+	err := carrier.RunLinkUpdate(ctx, g)
 	s.pubMu.Lock()
-	if s.runSent == nil {
-		s.runSent = map[string]string{}
+	if err == nil {
+		if s.runSent == nil {
+			s.runSent = map[string]string{}
+		}
+		s.runSent[runID] = string(b)
+		delete(s.runSyncFails, runID)
+	} else {
+		delete(s.runSent, runID)
+		if s.runSyncFails == nil {
+			s.runSyncFails = map[string]int{}
+		}
+		s.runSyncFails[runID]++
 	}
-	s.runSent[runID] = string(b)
 	s.pubMu.Unlock()
+	switch {
+	case err == nil:
+	case refusedAs(err, "not_found"):
+		s.forgetRemoteRunLinks(runID, "")
+	default:
+		s.scheduleRunSyncAfter(runID, true)
+	}
+}
+
+// refusedAs says whether err is the switchyard's refusal of a request with
+// code (the host's error is "<code>: <message>").
+func refusedAs(err error, code string) bool {
+	return err != nil && strings.HasPrefix(err.Error(), code+": ")
 }
 
 // hasRemoteRunLink says whether a run has a record of the link.

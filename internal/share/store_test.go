@@ -1,8 +1,10 @@
 package share
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -260,10 +262,10 @@ func TestGroupLinks(t *testing.T) {
 		t.Fatalf("resolve: %+v %v", got, err)
 	}
 	g.Members = append(g.Members, GroupMember{Name: "core", SessionID: "s2", AgentID: "claude", Status: "running"})
-	if changed, _ := s.SetGroup("owner-b", "api-1", g); len(changed) != 0 {
+	if changed, _, _ := s.SetGroup("owner-b", "api-1", g); len(changed) != 0 {
 		t.Fatalf("another owner changed %v", changed)
 	}
-	if changed, left := s.SetGroup("owner-a", "api-1", g); len(changed) != 1 || changed[0] != l.ID || len(left) != 0 {
+	if changed, left, _ := s.SetGroup("owner-a", "api-1", g); len(changed) != 1 || changed[0] != l.ID || len(left) != 0 {
 		t.Fatalf("its owner changed %v, left %v", changed, left)
 	}
 	if ids := s.ListNaming("s2"); len(ids) != 1 || ids[0].ID != l.ID {
@@ -403,7 +405,7 @@ func TestSetGroupSaysWhichSessionsLeft(t *testing.T) {
 	s.RevokeGroup("owner", gone.ID)
 
 	g2 := Group{Name: "api", Members: []GroupMember{{Name: "lead", SessionID: "s1"}, {Name: "core"}, {Name: "docs", SessionID: "s3"}}}
-	changed, left := s.SetGroup("owner", "api-1", g2)
+	changed, left, _ := s.SetGroup("owner", "api-1", g2)
 	want := []string{a.ID, b.ID}
 	slices.Sort(want)
 	if !slices.Equal(changed, want) || !slices.Equal(left, []string{"s2"}) {
@@ -415,7 +417,78 @@ func TestSetGroupSaysWhichSessionsLeft(t *testing.T) {
 			t.Fatalf("link %s after the update: %+v %v", id, l, err)
 		}
 	}
-	if changed, left := s.SetGroup("owner", "api-1", g2); len(changed) != 2 || len(left) != 0 {
+	if changed, left, _ := s.SetGroup("owner", "api-1", g2); len(changed) != 2 || len(left) != 0 {
 		t.Fatalf("the same group again: changed %v left %v", changed, left)
+	}
+}
+
+// A group with a revision changes the run's links only when it is above
+// every revision they hold, a revoked link's included: one sent before
+// those they hold changes nothing, and neither does a link made with it. A
+// group without one (an older host's) is taken whatever they hold, which
+// they keep. Another owner's run of the same id is another run.
+func TestSetGroupRefusesAnOlderRevision(t *testing.T) {
+	s := NewStore()
+	group := func(rev int64, ids ...string) Group {
+		g := Group{Name: "api", Revision: rev}
+		for _, id := range ids {
+			g.Members = append(g.Members, GroupMember{Name: "m-" + id, SessionID: id})
+		}
+		return g
+	}
+	l, _, err := s.CreateGroupLink("api-1", "owner", group(10, "s1", "s2"), session.RoleView, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, left, err := s.SetGroup("owner", "api-1", group(12, "s1")); err != nil || len(changed) != 1 || !slices.Equal(left, []string{"s2"}) {
+		t.Fatalf("a newer group: changed %v left %v err %v", changed, left, err)
+	}
+	for _, rev := range []int64{11, 12} {
+		if changed, left, err := s.SetGroup("owner", "api-1", group(rev, "s1", "s2")); !errors.Is(err, ErrStaleGroup) || changed != nil || left != nil {
+			t.Fatalf("revision %d after 12: changed %v left %v err %v", rev, changed, left, err)
+		}
+	}
+	if got, _ := s.Live(l.ID); got.Group.Names("s2") || got.Group.Revision != 12 {
+		t.Fatalf("after the older groups: %+v", got.Group)
+	}
+	if _, _, err := s.CreateGroupLink("api-1", "owner", group(11, "s1", "s2"), session.RoleView, "", 0); !errors.Is(err, ErrStaleGroup) {
+		t.Fatalf("a link with an older group: %v", err)
+	}
+	if n := s.Count(); n != 1 {
+		t.Fatalf("links after the refused one: %d", n)
+	}
+	if _, _, err := s.CreateGroupLink("api-1", "another-owner", group(1, "s9"), session.RoleView, "", 0); err != nil {
+		t.Fatalf("another owner's run: %v", err)
+	}
+	// An older host's group, without a revision, is taken; the links keep 12.
+	if changed, _, err := s.SetGroup("owner", "api-1", group(0, "s1", "s2")); err != nil || len(changed) != 1 {
+		t.Fatalf("a group without a revision: changed %v err %v", changed, err)
+	}
+	if got, _ := s.Live(l.ID); !got.Group.Names("s2") || got.Group.Revision != 12 {
+		t.Fatalf("after a group without a revision: %+v", got.Group)
+	}
+	if _, _, err := s.SetGroup("owner", "api-1", group(12, "s1")); !errors.Is(err, ErrStaleGroup) {
+		t.Fatalf("12 again: %v", err)
+	}
+	// A revoked link's revision still counts; with no live link the run has
+	// nothing to change, whatever the revision.
+	s.RevokeGroup("owner", l.ID)
+	if _, _, err := s.CreateGroupLink("api-1", "owner", group(12, "s1"), session.RoleView, "", 0); !errors.Is(err, ErrStaleGroup) {
+		t.Fatalf("a link with an older group than a revoked link's: %v", err)
+	}
+	if changed, _, err := s.SetGroup("owner", "api-1", group(5, "s1")); err != nil || len(changed) != 0 {
+		t.Fatalf("no live link: changed %v err %v", changed, err)
+	}
+	if nl, _, err := s.CreateGroupLink("api-1", "owner", group(13, "s1"), session.RoleView, "", 0); err != nil || nl.Group.Revision != 13 {
+		t.Fatalf("a link with a newer group: %+v %v", nl, err)
+	}
+}
+
+// A group's revision is held in memory alone: a kept link's file, which
+// writes its group as JSON, never carries it.
+func TestAGroupsRevisionIsNotWritten(t *testing.T) {
+	b, err := json.Marshal(Group{Name: "api", Revision: 42, Members: []GroupMember{{Name: "lead"}}})
+	if err != nil || strings.Contains(string(b), "42") || strings.Contains(strings.ToLower(string(b)), "revision") {
+		t.Fatalf("written as %s (%v)", b, err)
 	}
 }
