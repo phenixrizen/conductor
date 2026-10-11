@@ -1110,13 +1110,18 @@ func TestARunsMembersGoOutWithRisingRevisions(t *testing.T) {
 	}
 }
 
-// A sync of a run's members that got no answer, or that the switchyard
-// refused for now (stale, rate_limited), is made again soon, with the next
-// revision; one refused for good is not.
-func TestARunSyncThatGotNoAnswerIsMadeAgain(t *testing.T) {
+// A sync of a run's members that failed is made again with the next
+// revision, each try twice as long after the one before: one that got no
+// answer, and one the switchyard refused but for not_found (invalid_request
+// among them, which a member not registered there yet answers, as after a
+// switchyard restart while the members' connections come back one by one).
+// A sync that lands ends the tries; not_found ends the run's records
+// instead. A try waiting long never holds back the sync of a change.
+func TestARunSyncThatFailedIsMadeAgain(t *testing.T) {
+	const first = 100 * time.Millisecond
 	local := newTestEnv(t, nil)
 	local.srv.pubMu.Lock()
-	local.srv.runSyncRetry = 50 * time.Millisecond
+	local.srv.runSyncRetry = first
 	local.srv.pubMu.Unlock()
 	sc := &runScript{calls: make(chan proto.RunGroup, 64)}
 	local.srv.SetPublisher(scriptedPublisher{sc})
@@ -1124,34 +1129,71 @@ func TestARunSyncThatGotNoAnswerIsMadeAgain(t *testing.T) {
 	waitMembersPublished(t, local, runID, 1)
 	local.waitRunning(t, runID, "lead")
 	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"})
-	for _, tc := range []struct {
-		answer error
-		again  bool
-	}{
-		{errors.New("invalid_request: session x is not this host's"), false},
-		{context.DeadlineExceeded, true},
-		{errors.New("stale: the run's links hold members the host sent after these"), true},
-		{errors.New("rate_limited: too many run updates; wait a minute"), true},
-	} {
-		sc.answer(tc.answer)
+	resend := func() {
 		local.srv.pubMu.Lock()
 		delete(local.srv.runSent, runID)
 		local.srv.pubMu.Unlock()
-		local.srv.syncRunLinks(runID)
-		first := sc.next(t, 5*time.Second)
-		// Well before runSyncDelay: nothing but the retry sends meanwhile.
+	}
+	quiet := func(what string, d time.Duration) {
+		t.Helper()
 		select {
-		case again := <-sc.calls:
-			if !tc.again {
-				t.Fatalf("after %v: sent again", tc.answer)
-			}
-			if again.Revision <= first.Revision {
-				t.Fatalf("after %v: revision %d, then %d", tc.answer, first.Revision, again.Revision)
-			}
-		case <-time.After(1500 * time.Millisecond):
-			if tc.again {
-				t.Fatalf("after %v: not sent again", tc.answer)
-			}
+		case g := <-sc.calls:
+			t.Fatalf("%s: sent %+v", what, g)
+		case <-time.After(d):
 		}
 	}
+
+	failures := []error{
+		context.DeadlineExceeded,
+		errors.New("invalid_request: session x is not this host's"),
+		errors.New("stale: the run's links hold members the host sent after these"),
+		errors.New("rate_limited: too many run updates; wait a minute"),
+	}
+	for _, err := range failures {
+		sc.answer(err)
+	}
+	resend()
+	local.srv.syncRunLinks(runID)
+	var last proto.RunGroup
+	var lastAt time.Time
+	for i := range len(failures) + 1 {
+		g := sc.next(t, 10*time.Second)
+		now := time.Now()
+		if i > 0 {
+			if g.Revision <= last.Revision {
+				t.Fatalf("try %d: revision %d after %d", i, g.Revision, last.Revision)
+			}
+			if wait := first << (i - 1); now.Sub(lastAt) < wait {
+				t.Fatalf("try %d came %v after the one before, before its wait of %v", i, now.Sub(lastAt), wait)
+			}
+		}
+		last, lastAt = g, now
+	}
+	quiet("after the sync that landed", time.Second)
+	local.srv.pubMu.Lock()
+	fails := local.srv.runSyncFails[runID]
+	local.srv.pubMu.Unlock()
+	if fails != 0 {
+		t.Fatalf("failures counted after the sync that landed: %d", fails)
+	}
+
+	// A try waiting long (the most a try waits) and a change's sync: the
+	// change's goes after runSyncDelay.
+	local.srv.pubMu.Lock()
+	local.srv.runSyncFails[runID] = 20
+	local.srv.pubMu.Unlock()
+	local.srv.scheduleRunSyncAfter(runID, true)
+	resend()
+	local.srv.scheduleRunSync(runID)
+	sc.next(t, runSyncDelay+3*time.Second)
+
+	// not_found: the switchyard holds no link of the run; its records go, and nothing is tried again.
+	sc.answer(errors.New("not_found: no links for this run"))
+	resend()
+	local.srv.syncRunLinks(runID)
+	sc.next(t, 5*time.Second)
+	if rl := local.srv.remoteRunLinksOf(runID); len(rl) != 0 {
+		t.Fatalf("records after not_found: %v", rl)
+	}
+	quiet("after not_found", time.Second)
 }

@@ -343,10 +343,14 @@ would send differ from the last), and revokes it with `link_revoke`. Its
 link requests and updates of one run take turns, each reading the members
 as they are when its turn comes and giving them a revision above every one
 it gave before (at least its clock's milliseconds). An update that gets no
-answer within 15 s, or is refused with `stale` or `rate_limited`, is made
-again five seconds later with the members as they are then, whatever was
-sent last; the one that got no answer, should it land after, is refused as
-stale.
+answer within 15 s, or is refused with any code but `not_found` (`stale`,
+`rate_limited`, or `invalid_request`, which a member not registered there
+yet answers while the members' connections come back after a switchyard
+restart), is made again with the members as they are then, whatever was
+sent last: five seconds later, twice as long after each failure in a row,
+a minute at most, until one lands or the run has no link there; the one
+that got no answer, should it land after, is refused as stale. A change
+of the run is still sent two seconds after it, whatever try is waiting.
 
 `activity` carries one activity-log entry, the fields of the `activity`
 control message above (`entry` has its own `t`), in both directions. Host to

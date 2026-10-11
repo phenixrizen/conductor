@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -23,13 +22,15 @@ import (
 
 // runSyncDelay coalesces a run's changes before the switchyard is told: the
 // engine reports a change on every log line. runSyncWait is how long a sync
-// waits for the switchyard's answer; runSyncRetry how long one that got
-// none, or was refused for now (stale, rate_limited), waits before the
-// run's members are sent again (Server.runSyncRetry).
+// waits for the switchyard's answer. runSyncRetry is how long after a sync
+// that failed (no answer, or any refusal but not_found) the run's members
+// are sent again (Server.runSyncRetry), twice as long after each failure
+// in a row, runSyncRetryMax at most.
 const (
-	runSyncDelay = 2 * time.Second
-	runSyncWait  = 15 * time.Second
-	runSyncRetry = 5 * time.Second
+	runSyncDelay    = 2 * time.Second
+	runSyncWait     = 15 * time.Second
+	runSyncRetry    = 5 * time.Second
+	runSyncRetryMax = time.Minute
 )
 
 // nextRunRevision is the revision of a run's members as they are about to be
@@ -148,6 +149,7 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	if linkID == "" {
 		delete(s.remoteRunLinks, runID)
 		delete(s.runSent, runID)
+		delete(s.runSyncFails, runID)
 		return
 	}
 	delete(s.remoteRunLinks[runID], linkID)
@@ -157,28 +159,33 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 // once for the changes in between; nothing for a run without remote links.
 func (s *Server) scheduleRunSync(runID string) { s.scheduleRunSyncAfter(runID, false) }
 
-// scheduleRunSyncAfter is scheduleRunSync, after the server's runSyncRetry
-// instead when retry: a sync that got no answer, or was refused for now, is
-// made again then (or by the sync already scheduled, which sends the
-// members whatever was sent before it).
+// scheduleRunSyncAfter is scheduleRunSync, or with retry the next try of a
+// sync that failed: after the server's runSyncRetry, twice as long for each
+// failure in a row before it, runSyncRetryMax at most. The two are
+// scheduled apart, once each at a time, so a try waiting long never holds
+// back the sync of a change.
 func (s *Server) scheduleRunSyncAfter(runID string, retry bool) {
 	s.pubMu.Lock()
-	if len(s.remoteRunLinks[runID]) == 0 || s.runSyncing[runID] {
+	pending, wait := &s.runSyncing, runSyncDelay
+	if retry {
+		pending, wait = &s.runRetrying, s.runSyncRetry
+		for range min(s.runSyncFails[runID]-1, 8) {
+			wait *= 2
+		}
+		wait = min(wait, runSyncRetryMax)
+	}
+	if len(s.remoteRunLinks[runID]) == 0 || (*pending)[runID] {
 		s.pubMu.Unlock()
 		return
 	}
-	if s.runSyncing == nil {
-		s.runSyncing = map[string]bool{}
+	if *pending == nil {
+		*pending = map[string]bool{}
 	}
-	s.runSyncing[runID] = true
-	wait := runSyncDelay
-	if retry {
-		wait = s.runSyncRetry
-	}
+	(*pending)[runID] = true
 	s.pubMu.Unlock()
 	time.AfterFunc(wait, func() {
 		s.pubMu.Lock()
-		delete(s.runSyncing, runID)
+		delete(*pending, runID)
 		s.pubMu.Unlock()
 		s.track(func() { s.syncRunLinks(runID) })
 	})
@@ -213,9 +220,12 @@ func (s *Server) lockRunSync(runID string) func() {
 // may hold these members, those before, or (the update still on its way)
 // take these later, when its revision has it refuse them if newer ones came
 // first. So the next sync sends the members whatever was sent before, and
-// one that got no answer, or was refused for now (stale, rate_limited), is
-// made again after runSyncRetry: the switchyard ends up with the members as
-// they are, not as they were when an update went astray.
+// one that failed is made again (scheduleRunSyncAfter): the switchyard ends
+// up with the members as they are, not as they were when an update went
+// astray. Every failure but not_found is tried again: no answer, stale,
+// rate_limited, and invalid_request too, which a member not registered
+// there yet answers (after a switchyard restart, the members' connections
+// come back one by one), as long as the run has links there.
 func (s *Server) syncRunLinks(runID string) {
 	defer s.lockRunSync(runID)()
 	run, ok := s.runs.Get(runID)
@@ -243,15 +253,20 @@ func (s *Server) syncRunLinks(runID string) {
 			s.runSent = map[string]string{}
 		}
 		s.runSent[runID] = string(b)
+		delete(s.runSyncFails, runID)
 	} else {
 		delete(s.runSent, runID)
+		if s.runSyncFails == nil {
+			s.runSyncFails = map[string]int{}
+		}
+		s.runSyncFails[runID]++
 	}
 	s.pubMu.Unlock()
 	switch {
 	case err == nil:
 	case refusedAs(err, "not_found"):
 		s.forgetRemoteRunLinks(runID, "")
-	case errors.Is(err, context.DeadlineExceeded), refusedAs(err, "stale"), refusedAs(err, "rate_limited"):
+	default:
 		s.scheduleRunSyncAfter(runID, true)
 	}
 }
