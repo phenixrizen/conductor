@@ -2,7 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
-import { clipboardKey, forcesSelection, menuPress, readRightClickPastes, rightClick, RightPress, writeRightClickPastes } from '~/utils/terminalClipboard'
+import { clipboardKey, forcesSelection, menuPress, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
@@ -157,6 +157,14 @@ function onContextMenu(e: MouseEvent) {
   if (act === 'app') return // xterm has reported the click to the program
   if (act === 'copy') copySelection(true)
   else void pasteClipboard()
+}
+/**
+ * A move xterm would report to a program that asks for every move, kept from it while Shift is held or a selection shows
+ * (withholdsMove): xterm takes the report for typing and clears the selection. Captured on the host, before xterm's own listener on its
+ * element; a drag (a button held) goes on to xterm's selection, whose listener is on the document.
+ */
+function onMouseMove(e: MouseEvent) {
+  if (term && withholdsMove(e, { tracking: term.modes.mouseTrackingMode, hasSelection: term.hasSelection(), mac: isMac })) e.stopPropagation()
 }
 function setRightClickPastes(on: boolean) {
   rightClickPastes.value = on
@@ -664,6 +672,7 @@ onMounted(() => {
   window.addEventListener('mousedown', onAnyMouseDown, true)
   window.addEventListener('keydown', onAnyKeyDown, true)
   host.value!.addEventListener('contextmenu', onContextMenu, true)
+  host.value!.addEventListener('mousemove', onMouseMove, true)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
     if (!term) return
@@ -712,6 +721,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('mousedown', onAnyMouseDown, true)
   window.removeEventListener('keydown', onAnyKeyDown, true)
   host.value?.removeEventListener('contextmenu', onContextMenu, true)
+  host.value?.removeEventListener('mousemove', onMouseMove, true)
   observer?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)
   stopTheme?.()

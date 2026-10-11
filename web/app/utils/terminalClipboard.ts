@@ -15,6 +15,12 @@
  * pasted or opened. Shift, with which xterm takes the mouse back, still opens the menu with a right-click and selects with a drag; xterm
  * reports neither. On a Mac nothing takes it back (xterm's Option forcing is left off: its Option-click would move the program's
  * cursor), so those are the program's too; ⌘C and ⌘V still copy and paste.
+ *
+ * Moves: a program that asks for every move (any-event tracking, which Codex and Claude Code turn on) has xterm report each move with no
+ * button held, Shift or not, and xterm takes a report for typing, which clears the selection: the move that ends a Shift+drag would
+ * clear what it selected. So while Shift is held, or a selection shows (⌘A selects all on a Mac), a move with no button held is kept
+ * from xterm and the program does not hear it (withholdsMove). A click is the program's as ever and clears the selection, and the
+ * moves after it are the program's again. A move with a button held always reaches xterm: its selection follows the drag with it.
  */
 export interface ClipboardKeyEvent {
   type: string
@@ -115,6 +121,18 @@ export function menuPress(e: { button: number; ctrlKey: boolean }, mac: boolean)
  */
 export function forcesSelection(e: { shiftKey: boolean; altKey: boolean }, mac: boolean): boolean {
   return !mac && e.shiftKey
+}
+
+/** The mouse reports the program running asked for, as xterm names them (its modes.mouseTrackingMode); 'any' reports every move. */
+export type MouseTracking = 'none' | 'x10' | 'vt200' | 'drag' | 'any'
+
+/**
+ * Whether a mouse move is kept from xterm, so that the program running does not hear it and the selection stays: a move with no button
+ * held, while the program asks for every move and the forcing key is held or a selection shows. A move with a button held is a drag,
+ * and is never kept. Under any other tracking xterm reports no move without a button, so nothing is kept.
+ */
+export function withholdsMove(e: { buttons: number; shiftKey: boolean; altKey: boolean }, ctx: { tracking: MouseTracking; hasSelection: boolean; mac: boolean }): boolean {
+  return ctx.tracking === 'any' && e.buttons === 0 && (forcesSelection(e, ctx.mac) || ctx.hasSelection)
 }
 
 /** Where the right-click setting is kept, per browser. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clipboardKey, forcesSelection, menuFromKeyboard, menuPress, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, writeRightClickPastes, type ClipboardKeyEvent } from './terminalClipboard'
+import { clipboardKey, forcesSelection, menuFromKeyboard, menuPress, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, withholdsMove, writeRightClickPastes, type ClipboardKeyEvent, type MouseTracking } from './terminalClipboard'
 
 const key = (code: string, mods: Partial<ClipboardKeyEvent> = {}): ClipboardKeyEvent => ({ type: 'keydown', code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
 const ctx = (o: Partial<{ hasSelection: boolean; canPaste: boolean; mac: boolean }> = {}) => ({ hasSelection: false, canPaste: true, mac: false, ...o })
@@ -116,5 +116,38 @@ describe('the terminal right-click', () => {
     expect(m.get(RIGHT_CLICK_KEY)).toBe('false')
     expect(readRightClickPastes(store)).toBe(false)
     expect(readRightClickPastes(null)).toBe(true)
+  })
+})
+
+describe('the terminal mouse moves', () => {
+  const move = (o: Partial<{ buttons: number; shiftKey: boolean; altKey: boolean }> = {}) => ({ buttons: 0, shiftKey: false, altKey: false, ...o })
+  const at = (o: Partial<{ tracking: MouseTracking; hasSelection: boolean; mac: boolean }> = {}) => ({ tracking: 'any' as MouseTracking, hasSelection: false, mac: false, ...o })
+  it('keeps a move with no button from a program that asks for every move while Shift is held or a selection shows', () => {
+    expect(withholdsMove(move({ shiftKey: true }), at())).toBe(true)
+    expect(withholdsMove(move(), at({ hasSelection: true }))).toBe(true)
+    expect(withholdsMove(move({ shiftKey: true }), at({ hasSelection: true }))).toBe(true)
+  })
+  it('lets a plain move through to the program while no selection shows', () => {
+    expect(withholdsMove(move(), at())).toBe(false)
+    expect(withholdsMove(move({ altKey: true }), at())).toBe(false)
+  })
+  it('never keeps a move with a button held: it is a drag, which the selection and a program that asked for drags need', () => {
+    for (const buttons of [1, 2, 4, 3]) {
+      expect(withholdsMove(move({ buttons, shiftKey: true }), at())).toBe(false)
+      expect(withholdsMove(move({ buttons }), at({ hasSelection: true }))).toBe(false)
+    }
+  })
+  it('keeps nothing under any other tracking: xterm reports no move without a button there', () => {
+    for (const tracking of ['none', 'x10', 'vt200', 'drag'] as MouseTracking[]) {
+      expect(withholdsMove(move({ shiftKey: true }), at({ tracking }))).toBe(false)
+      expect(withholdsMove(move(), at({ tracking, hasSelection: true }))).toBe(false)
+      expect(withholdsMove(move({ shiftKey: true }), at({ tracking, hasSelection: true }))).toBe(false)
+    }
+  })
+  it('leaves Shift to the program on a Mac, and keeps the moves there only while a selection shows', () => {
+    expect(withholdsMove(move({ shiftKey: true }), at({ mac: true }))).toBe(false)
+    expect(withholdsMove(move({ altKey: true }), at({ mac: true }))).toBe(false)
+    expect(withholdsMove(move(), at({ mac: true, hasSelection: true }))).toBe(true)
+    expect(withholdsMove(move({ buttons: 1 }), at({ mac: true, hasSelection: true }))).toBe(false)
   })
 })

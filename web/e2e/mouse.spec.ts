@@ -12,16 +12,19 @@ import { expect, test, type Api, type Session } from './fixtures'
 //
 // The program is a few lines of Python that ask for SGR mouse reports
 // (1000, 1002, 1006), put a word on the screen's first row and log every
-// byte they read to a file; "q" ends them.
+// byte they read to a file; "q" ends them. With "any" they ask for every
+// move too (1003, as Codex's and Claude Code's TUIs do).
 test.use({ permissions: ['clipboard-read', 'clipboard-write'] })
 
 const APP = `import os, select, sys, termios, time, tty
 # With "letgo", the program lets go of the mouse and ends at the first right-button press it reads.
-letgo = sys.argv[1:] == ["letgo"]
+letgo = "letgo" in sys.argv[1:]
+# With "any", it asks for every move, a button held or not (1003), after presses and drags, as crossterm asks for them.
+anymove = "any" in sys.argv[1:]
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
 tty.setraw(fd)
-sys.stdout.write("\\x1b[2J\\x1b[Hselect-me-42\\r\\n\\x1b[?1000h\\x1b[?1002h\\x1b[?1006h")
+sys.stdout.write("\\x1b[2J\\x1b[Hselect-me-42\\r\\n\\x1b[?1000h\\x1b[?1002h" + ("\\x1b[?1003h" if anymove else "") + "\\x1b[?1006h")
 sys.stdout.flush()
 open("ready.txt", "w").write("ready")
 log = open("got.txt", "ab", buffering=0)
@@ -34,7 +37,7 @@ while time.time() < end:
         log.write(b)
         if letgo and b"\\x1b[<2;" in b:
             break
-sys.stdout.write("\\x1b[?1006l\\x1b[?1002l\\x1b[?1000l")
+sys.stdout.write("\\x1b[?1006l\\x1b[?1003l\\x1b[?1002l\\x1b[?1000l")
 sys.stdout.flush()
 termios.tcsetattr(fd, termios.TCSADRAIN, old)
 open("done.txt", "w").write("done")
@@ -194,6 +197,72 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await page.keyboard.type('echo after > after.txt\n')
     // A paste would have joined the line typed after it ("echo leaked > leaked.txtecho after > after.txt").
     await expect.poll(() => (existsSync(join(cwd, 'after.txt')) ? readFileSync(join(cwd, 'after.txt'), 'utf8') : ''), { timeout: 15_000 }).toBe('after\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// A program that asks for every move (1003: Codex, Claude Code) has xterm report each move with no button held, Shift or not, and xterm
+// takes a report for typing, which clears the selection: the move after a Shift+drag used to clear what it had selected, and the
+// menu's Copy was greyed out. Such moves are kept from the program while Shift is held or a selection shows, until a click (the
+// program's) clears it.
+test('over a program that asks for every move, a Shift+drag selection stays until a click', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'mouse-any')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'app.py'), APP)
+  const got = () => (existsSync(join(cwd, 'got.txt')) ? readFileSync(join(cwd, 'got.txt'), 'latin1') : '')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'shell', name: 'mouse-any', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    const screen = page.locator('.terminal-host .xterm-screen').first()
+    await expect(screen).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+    await screen.click()
+    await page.keyboard.type('python3 app.py any\n')
+    await expect.poll(() => existsSync(join(cwd, 'ready.txt')), { timeout: 15_000 }).toBe(true)
+    await reporting(page, true)
+
+    // A move with no button held is the program's (35: a move, no button), up to the cell it ends on.
+    const mid = await cell(page, api, s.id, 40, 10)
+    await page.mouse.move(mid.x, mid.y, { steps: 4 })
+    await expect.poll(() => got()).toMatch(/\x1b\[<35;41;11M$/)
+    await setClip(page, 'nothing-copied')
+    const before = got().length
+
+    // Shift+drag selects the word on the first row. The moves after it, Shift still held and then let go, leave the selection, and
+    // Ctrl+Shift+C copies it.
+    const from = await cell(page, api, s.id, 0, 0)
+    const to = await cell(page, api, s.id, 12, 0) // the middle of the cell after the word: xterm ends a drag at the nearer cell edge
+    await page.keyboard.down('Shift')
+    await page.mouse.move(from.x - 2, from.y)
+    await page.mouse.down()
+    await page.mouse.move(to.x, to.y, { steps: 6 })
+    await page.mouse.up()
+    await page.mouse.move(to.x + 60, to.y + 30, { steps: 4 })
+    await page.keyboard.up('Shift')
+    await page.mouse.move(mid.x, mid.y, { steps: 4 })
+    await page.keyboard.press('Control+Shift+C')
+    await expect.poll(() => clip(page)).toBe('select-me-42')
+
+    // Shift+right-click then shows the menu's Copy to take, and the program read nothing while the selection showed.
+    await page.keyboard.down('Shift')
+    await page.mouse.click(mid.x, mid.y, { button: 'right' })
+    await page.keyboard.up('Shift')
+    await expect(page.getByRole('menuitem', { name: 'Copy' })).toBeEnabled()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await page.waitForTimeout(300)
+    expect(got().slice(before)).toBe('')
+
+    // A click is the program's, as ever, and clears the selection: the program reads its press and release and not the move to it.
+    const far = await cell(page, api, s.id, 20, 5)
+    await page.mouse.click(far.x, far.y)
+    await expect.poll(() => got().slice(before)).toMatch(/^\x1b\[<0;\d+;\d+M\x1b\[<0;\d+;\d+m$/)
+
+    // The selection gone, a move with no button held is the program's again.
+    const after = got().length
+    await page.mouse.move(mid.x, mid.y, { steps: 4 })
+    await expect.poll(() => got().slice(after)).toMatch(/\x1b\[<35;\d+;\d+M/)
   } finally {
     await api.stopSession(s.id)
   }
