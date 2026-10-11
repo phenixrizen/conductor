@@ -779,8 +779,11 @@ type Question struct {
 	// session's life, not only as it starts: it is watched until the
 	// session ends (a startup question only until the first submission),
 	// held as a startup question is but with source "question", and raised
-	// again each time it is drawn after an answer. Codex's command approval
-	// is one.
+	// again each time it is drawn after an answer. Its prompt and words are
+	// matched against the screen as the program drew it (session.Screen):
+	// its rows, each without the spaces at its end, joined by line breaks,
+	// without the blank rows at the bottom. Codex's command approval is
+	// one.
 	Anytime bool     `json:"anytime,omitempty"`
 	Answers []Answer `json:"answers,omitempty"`
 }

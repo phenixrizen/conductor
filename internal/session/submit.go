@@ -194,13 +194,16 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	// been quiet for patternQuiet: the trust watcher looks at what was drawn
 	// since the text. A question asked during the work can be drawn at any
 	// time, also just before the text, and an Enter that lands on it picks
-	// what it highlights (Codex's "Yes, proceed"): its watcher looks at
-	// everything drawn so far, so that a dialog drawn since the last quiet
-	// has raised the question by then, text or none.
+	// what it highlights (Codex's "Yes, proceed"): its watcher waits for a
+	// quiet screen, then looks at the screen as it is whether quiet or not
+	// (a program that never stops drawing runs the wait out), so that a
+	// dialog on the screen has raised the question before the Enter, text
+	// or none.
 	if s.asked != nil {
 		if err := s.awaitLook(ctx, time.Time{}); err != nil {
 			return res, err
 		}
+		s.asked.CheckNow()
 	} else if res.Typed && s.trust != nil {
 		if err := s.awaitLook(ctx, typedAt); err != nil {
 			return res, err
@@ -218,10 +221,6 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	if sub.BeforeEnter != nil {
 		sub.BeforeEnter()
-	}
-	if s.asked != nil {
-		// What the screen showed before the Enter is behind it (Input).
-		s.asked.Reset()
 	}
 	s.nextTurn()
 	enterAt := time.Now().UTC()

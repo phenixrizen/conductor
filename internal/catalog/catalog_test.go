@@ -1156,9 +1156,28 @@ func TestCodexCommandApproval(t *testing.T) {
 	if len(plain.Answers) != 2 || plain.Answers[0] != yes || plain.Answers[1] != no {
 		t.Fatalf("answers without the prefix %+v", plain.Answers)
 	}
-	// The dialog as ScreenTail reads it: escapes and line breaks one space each.
-	screen := "Would you like to run the following command? Environment: local Reason: May I rerun the curl command with network access? The sandboxed attempt failed to resolve the host. $ curl -sI https://example.com › 1. Yes, proceed (y) 2. Yes, and don't ask again for commands that start with `curl -sI https://example.com` (p) 3. No, and tell Codex what to do differently (esc) Press enter to confirm or esc to cancel "
-	noPrefix := "Would you like to run the following command? $ rm -rf build › 1. Yes, proceed (y) 2. No, and tell Codex what to do differently (esc) Press enter to confirm or esc to cancel"
+	// The dialog as the session's Screen reads it: its rows joined by line breaks, the history above.
+	screen := strings.Join([]string{
+		"• Ran curl -sI https://example.com",
+		"  └ curl: (6) Could not resolve host: example.com",
+		"",
+		"  Would you like to run the following command?",
+		"",
+		"  Environment: local",
+		"",
+		"  Reason: May I rerun the curl command with network access? The sandboxed",
+		"  attempt failed to resolve the host.",
+		"",
+		"  $ curl -sI https://example.com",
+		"",
+		"› 1. Yes, proceed (y)",
+		"  2. Yes, and don't ask again for commands that start with `curl -sI",
+		"     https://example.com` (p)",
+		"  3. No, and tell Codex what to do differently (esc)",
+		"",
+		"  Press enter to confirm or esc to cancel",
+	}, "\n")
+	noPrefix := "  Would you like to run the following command?\n\n  $ rm -rf build\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
 	re := func(p string) *regexp.Regexp {
 		t.Helper()
 		r, err := CompilePattern(p)
@@ -1174,7 +1193,13 @@ func TestCodexCommandApproval(t *testing.T) {
 	if styled := strings.NewReplacer("(y)", "( y )", "(p)", "( p )", "(esc)", "( esc )").Replace(screen); !re(withP.Prompt).MatchString(styled) {
 		t.Fatalf("the styled keys are not found: %q", styled)
 	}
-	for _, text := range []string{"Codex would proceed (y) if you said so", "Would you like to run the following command?", "› Ask Codex to do anything"} {
+	// Not the dialog: its words elsewhere, or the dialog's text above what Codex draws now (a file shown, a log).
+	for _, text := range []string{
+		"Codex would proceed (y) if you said so",
+		"  Would you like to run the following command?",
+		"› Ask Codex to do anything",
+		screen + "\n\n• Ran cat notes.txt\n  └ (the dialog above was in the file)\n\n› Ask Codex to do anything\n\n  ⏎ send   ⌃J newline   ⌃T transcript",
+	} {
 		if re(withP.Prompt).MatchString(text) || re(plain.Prompt).MatchString(text) {
 			t.Fatalf("%q held as the approval", text)
 		}
@@ -1183,7 +1208,12 @@ func TestCodexCommandApproval(t *testing.T) {
 	if m := words.FindStringSubmatch(screen); len(m) != 3 || m[1] != "Would you like to run the following command?" || m[2] != "$ curl -sI https://example.com" {
 		t.Fatalf("words %q", m)
 	}
-	if m := words.FindStringSubmatch("Would you like to make the following edits? src/a.go +1 -1 › 1. Yes, proceed (y)"); len(m) != 3 || m[1] != "Would you like to make the following edits?" || m[2] != "" {
+	// The command is the first "$ " row's, whole: a "$ " inside it, or rows of it, stay in.
+	tricky := strings.Replace(screen, "  $ curl -sI https://example.com", "  $ rm -rf build; printf '$ done'\n  echo second row", 1)
+	if m := words.FindStringSubmatch(tricky); len(m) != 3 || m[2] != "$ rm -rf build; printf '$ done'\n  echo second row" {
+		t.Fatalf("words of a command with a $ in it %q", m)
+	}
+	if m := words.FindStringSubmatch("  Would you like to make the following edits?\n\n  src/a.go +1 -1\n\n› 1. Yes, proceed (y)"); len(m) != 3 || m[1] != "Would you like to make the following edits?" || m[2] != "" {
 		t.Fatalf("words without a command %q", m)
 	}
 	for _, a := range append(withP.Answers, plain.Answers...) {

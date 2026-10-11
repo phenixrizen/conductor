@@ -251,6 +251,9 @@ type PatternWatcher struct {
 	re    *regexp.Regexp
 	quiet time.Duration
 	fire  func(line string)
+	// miss, when set, runs as fire does for a quiet period whose text does
+	// not match (NewScreenModelWatcher).
+	miss func(text string)
 
 	// fireMu is held while fire runs; Stop takes it to wait for a fire in
 	// flight. It is always taken before mu.
@@ -276,6 +279,47 @@ func NewPatternWatcher(re *regexp.Regexp, quiet time.Duration, fire func(line st
 // (ScreenTail) rather than its last line: fire gets that text.
 func NewScreenWatcher(re *regexp.Regexp, quiet time.Duration, fire func(text string)) *PatternWatcher {
 	return &PatternWatcher{re: re, quiet: quiet, fire: fire, tracker: &ScreenTail{}}
+}
+
+// NewScreenModelWatcher is NewPatternWatcher matching the whole screen as
+// the program drew it (Screen, cols by rows): fire gets its text when it
+// matches, miss when it does not. Its Reset changes nothing, and Resize
+// follows the terminal's size.
+func NewScreenModelWatcher(re *regexp.Regexp, quiet time.Duration, cols, rows int, fire, miss func(text string)) *PatternWatcher {
+	return &PatternWatcher{re: re, quiet: quiet, fire: fire, miss: miss, tracker: NewScreen(cols, rows)}
+}
+
+// Resize gives a screen watcher's screen the terminal's new size; nothing
+// for the others.
+func (w *PatternWatcher) Resize(cols, rows int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		sc.Resize(cols, rows)
+	}
+}
+
+// Poke starts a quiet period without output: the text is looked at once the
+// stream has been quiet for the watcher's time from now, as after a Feed.
+func (w *PatternWatcher) Poke() { w.Feed(nil) }
+
+// CheckNow looks at the text now, without waiting for the stream to go
+// quiet, and fires when it matches; it never calls miss. The quiet period
+// under way is taken: it does not look again at the same text.
+func (w *PatternWatcher) CheckNow() {
+	w.fireMu.Lock()
+	defer w.fireMu.Unlock()
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return
+	}
+	w.checked = w.feeds
+	line := w.tracker.Last()
+	w.mu.Unlock()
+	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
+		w.fire(line)
+	}
 }
 
 // Feed adds a chunk of the stream and restarts the quiet period. It never
@@ -315,6 +359,8 @@ func (w *PatternWatcher) expire() {
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
+	} else if w.miss != nil {
+		w.miss(line)
 	}
 }
 

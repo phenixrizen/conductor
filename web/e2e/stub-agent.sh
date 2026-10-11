@@ -47,10 +47,10 @@
 # A line `stub approve <command>` (letters, digits, spaces and ./:_-) makes
 # the stub ask, as Codex 0.161 does before a command outside its sandbox,
 # "Would you like to run the following command?" with its three choices
-# (y, p, Esc; Enter picks Yes) before it answers the line; the answer goes
-# into the transcript as "approval: …". It is never run. That turn ends as
-# Codex's does while its terminal is not focused: a bell after its done
-# ("bell: after done" in the transcript).
+# (y, p, Esc; the digits too; Enter picks Yes) before it answers the line;
+# the answer goes into the transcript as "approval: …". It is never run.
+# That turn ends as Codex's does while its terminal is not focused: a bell
+# after its done ("bell: after done" in the transcript).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -226,19 +226,24 @@ tool_replay() {
 
 # approval draws Codex 0.161's command approval for the command $1, as the
 # owner saw it in the rc.7 app (2026-10-11), with the bell first, as Codex
-# rings it while its terminal is not focused, and waits for one key: y
-# approves, p approves and stops asking for commands that start with it,
-# Esc declines, Enter picks the highlighted Yes; anything else (an arrow,
-# a paste, whose letters are not keys) is ignored. The answer goes into the
+# rings it while its terminal is not focused, on a cleared screen (the
+# overlay takes Codex's view, and goes with the answer), and waits for one
+# key: y or 1 approves, p or 2 approves and stops asking for commands that
+# start with it, 3 or Esc declines, Enter picks the highlighted Yes;
+# anything else (an arrow, a paste, whose letters are not keys) is
+# ignored. The answer goes into the
 # transcript as "approval: approved", "approval: approved-prefix" or
 # "approval: declined".
 approval() {
 	local cmd=$1 key seq answer= pasted
-	printf '\a\nWould you like to run the following command?\n\nEnvironment: local\n\nReason: May I run this with network access? The sandboxed attempt failed.\n\n$ %s\n\n› 1. Yes, proceed (y)\n  2. Yes, and don'"'"'t ask again for commands that start with `%s` (p)\n  3. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n' "$cmd" "$cmd"
+	# The dialog takes the screen, as Codex's overlay takes its view, and
+	# goes with the answer.
+	printf '\a\e[2J\e[H  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: May I run this with network access? The sandboxed attempt failed.\n\n  $ %s\n\n› 1. Yes, proceed (y)\n  2. Yes, and don'"'"'t ask again for commands that start with `%s` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n' "$cmd" "$cmd"
 	while IFS= read -rsn1 key; do
 		case $key in
-		y | '' | $'\r') answer=approved ;;
-		p) answer=approved-prefix ;;
+		y | 1 | '' | $'\r') answer=approved ;;
+		p | 2) answer=approved-prefix ;;
+		3) answer=declined ;;
 		$'\e')
 			seq=''
 			IFS= read -rsn2 -t 0.2 seq || true
@@ -259,6 +264,7 @@ approval() {
 	done
 	printf 'approval: %s\n' "$answer" >>"$transcript"
 	ring_at_end=1
+	printf '\e[2J\e[H'
 	if [[ $answer == declined ]]; then
 		printf '✗ You did not approve %s\n' "$cmd"
 	else

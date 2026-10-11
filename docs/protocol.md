@@ -591,32 +591,47 @@ without an Enter.
 
 A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
 one the agent asks during its work, not only as it starts. A server session
-watches for it for its whole life, with a screen watcher of its own (the
-startup questions' ends with the first submission's Enter): after 500 ms
-without output, title updates aside, a match marks the session
-`needs_input` with `source:"question"`, `kind:"permission"`, its words and
-its answers. It takes the place of a wait that has nothing to answer it with
-(a bell, an OSC notification, a pattern's prompt, a report without
-`options`, which says the same dialog with less) and of a `done`, never of a
-prompt with `options` or a question held already; a report without
-`options` that comes after it does not hide it. While it shows it is held as
-a trust question is: a crew types no prompt, handoff or broadcast into it,
-and the owner refuses a person's `submit`, a `chat` to the agent and a
-`chat_send` with `not_sent` ("the agent asks a question on its screen…"). A
-key that answers such a dialog (an Enter, or one of the anytime questions'
-answers' keys) puts what the screen showed before it behind, so that a
-dialog a person answered in the terminal before it was seen is not raised
-afterwards; the same dialog drawn again is asked again. Before the Enter of
-any submission the owner waits until the watcher has looked at everything
-drawn so far (at most 2 s), so that an Enter never lands on a dialog drawn
-just before it. Codex's built-in entry has its command approval (Codex 0.161:
-"Would you like to run the following command?", its reason, `$ <command>`,
-then "1. Yes, proceed (y)", "2. Yes, and don't ask again for commands that
-start with `<prefix>` (p)", "3. No, and tell Codex what to do differently
-(esc)"): found by its choices' keys, its words the heading and the command,
-its answers `y`, `p` and Escape, each of which picks at once (an Enter picks
-the highlighted Yes); the same dialog without the "don't ask again" choice
-is offered Yes and No alone.
+watches for it for its whole life (the startup questions' watch ends with
+the first submission's Enter), on the screen as the program drew it: the
+session keeps a model of the terminal (its size, each cell's character, the
+cursor, the scroll region, the alternate screen; cursor moves, erasing,
+inserting and deleting, scrolling and autowrap applied, colours and the
+rest skipped), and the question's `prompt` and `words` are matched against
+its rows, each without the spaces at its end, joined by line breaks,
+without the blank rows at the bottom. A dialog a TUI redraws only where it
+changed (ratatui does; Codex advances its queued approvals in place) reads
+whole there, and one the program has taken away is gone, however few bytes
+took it. After 500 ms without output, title updates aside, a match marks
+the session `needs_input` with `source:"question"`, `kind:"permission"`,
+its words and its answers. It takes the place of a wait that has nothing to
+answer it with (a bell, an OSC notification, a pattern's prompt, a report
+without `options`, which says the same dialog with less) and of a `done`,
+never of a prompt with `options` or a question held already; a report
+without `options` that comes after it does not hide it. While it shows it is
+held as a trust question is: a crew types no prompt, handoff or broadcast
+into it, and the owner refuses a person's `submit`, a `chat` to the agent
+and a `chat_send` with `not_sent` ("the agent asks a question on its
+screen…"). Its choices and an Enter answer it; the same dialog drawn again
+after an answer, or the next one in a queue, is asked again. When a person
+has typed into the session while it showed and a quiet screen no longer
+shows it (the dialog went with a key that is not one of its choices: a
+digit, Ctrl+C, a click), it is recorded as answered by that person; with no
+key typed, it stays until the agent reports something else. Before the
+Enter of any submission the owner waits for a quiet screen (at most 2 s),
+then looks at the screen once more whether quiet or not, so that an Enter
+never lands on a dialog drawn just before it. The words are bounded as a
+message is; longer ones end with "…". Codex's built-in entry has its
+command approval (Codex 0.161: "Would you like to run the following
+command?", its reason, `$ <command>`, then "1. Yes, proceed (y)", "2. Yes,
+and don't ask again for commands that start with `<prefix>` (p)", "3. No,
+and tell Codex what to do differently (esc)", then "Press enter to confirm
+or esc to cancel"): found by its choices' keys and its footer on one of the
+last rows shown (the dialog is the bottom of what Codex draws, so its words
+in a file on the screen do not count), its words the heading and the
+command from its first `$ ` row to the first choice, every row of it, its
+answers `y`, `p` and Escape, each of which picks at once (an Enter picks the
+highlighted Yes); the same dialog without the "don't ask again" choice is
+offered Yes and No alone.
 
 ## Events
 

@@ -2,9 +2,12 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -67,28 +70,43 @@ var approvalChoices = []Option{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes
 // approvalQuestions are the questions Codex's command approval is held by,
 // as the catalog has them: asked at any time.
 func approvalQuestions() []StartupQuestion {
-	words := regexp.MustCompile(`(?i)(would\s*you\s*like\s*to\s*\w[^?]{0,80}\?)(?:.*(\$ .{1,200}?)\s*›?\s*1\.\s*yes,\s*proceed)?`)
+	const footer = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+to\s+cancel[^\n]*(?:\n[^\n]*){0,3}\z`
+	words := regexp.MustCompile(`(?ism)(would\s+you\s+like\s+to\s+[^?]{1,80}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`)
 	return []StartupQuestion{{
-		Pattern: regexp.MustCompile(`(?i)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)`),
+		Pattern: regexp.MustCompile(`(?is)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)` + footer),
 		Words:   words, Anytime: true, Answers: approvalChoices,
 	}, {
-		Pattern: regexp.MustCompile(`(?i)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)`),
+		Pattern: regexp.MustCompile(`(?is)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)` + footer),
 		Words:   words, Anytime: true, Answers: []Option{approvalChoices[0], approvalChoices[2]},
 	}}
 }
 
 // approvalDialog is Codex 0.161's command approval for cmd as a TUI draws
-// it: cursor moves and styles between the words, each key in a style of its
-// own (the words of the screen the owner saw in the rc.7 app).
+// it at the bottom of an 80 by 24 screen: each run of cells placed with a
+// cursor move, styles between the words, each key in a style of its own
+// (the words of the screen the owner saw in the rc.7 app).
 func approvalDialog(cmd string) string {
-	return "\x1b[?2026h\x1b[14;1H\x1b[J\x1b[15;3H\x1b[1mWould you like to run the following command?\x1b[22m" +
-		"\x1b[17;3HEnvironment: local\x1b[19;3HReason: May I rerun the curl command with network access? The sandboxed attempt failed to resolve the host." +
-		"\x1b[21;3H\x1b[2m$\x1b[22m " + cmd +
-		"\x1b[23;1H\x1b[36m› 1. Yes, proceed (\x1b[1my\x1b[22m)" +
-		"\x1b[24;3H\x1b[39m2. Yes, and don't ask again for commands that start with `" + cmd + "` (\x1b[1mp\x1b[22m)" +
-		"\x1b[25;3H3. No, and tell Codex what to do differently (\x1b[1mesc\x1b[22m)" +
-		"\x1b[27;3H\x1b[2mPress enter to confirm or esc to cancel\x1b[22m\x1b[?2026l"
+	return "\x1b[?2026h\x1b[12;1H\x1b[J\x1b[13;3H\x1b[1mWould you like to run the following command?\x1b[22m" +
+		"\x1b[15;3HEnvironment: local\x1b[17;3HReason: May I rerun the curl command with network access?" +
+		"\x1b[19;3H\x1b[2m$\x1b[22m " + cmd +
+		"\x1b[20;1H\x1b[36m› 1. Yes, proceed (\x1b[1my\x1b[22m)" +
+		"\x1b[21;3H\x1b[39m2. Yes, and don't ask again for commands that start with" +
+		"\x1b[22;6H`" + cmd + "` (\x1b[1mp\x1b[22m)" +
+		"\x1b[23;3H3. No, and tell Codex what to do differently (\x1b[1mesc\x1b[22m)" +
+		"\x1b[24;3H\x1b[2mPress enter to confirm or esc to cancel\x1b[22m\x1b[?2026l"
 }
+
+// approvalNext is the next queued approval, for cmd, drawn over
+// approvalDialog's the way Codex 0.161 draws it (approval_overlay.rs
+// advances its queue in place, custom_terminal.rs writes only the cells
+// that changed): the command's row and the prefix's, nothing else.
+func approvalNext(cmd string) string {
+	return "\x1b[?2026h\x1b[19;5H" + cmd + "\x1b[K\x1b[22;7H" + cmd + "` (\x1b[1mp\x1b[22m)\x1b[K\x1b[?2026l"
+}
+
+// approvalGone is what Codex draws once the dialog is answered: the overlay
+// gives way to what it says next.
+func approvalGone(next string) string { return "\x1b[12;1H\x1b[J" + next }
 
 const approvalWords = "Would you like to run the following command? $ curl -sI https://example.com"
 
@@ -200,7 +218,7 @@ func TestTheSameApprovalAnsweredThenShownAgainIsAskedAgain(t *testing.T) {
 	if st := s.Info().Attention.State; st != AttentionNone {
 		t.Fatalf("not answered: %q", st)
 	}
-	p.outW.Write([]byte("\x1b[14;1H\x1b[J✔ You approved codex to run curl -sI https://example.com this time\r\nHTTP/2 200\r\n\x1b[2m• Working\x1b[22m"))
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\nHTTP/2 200\r\n\x1b[2m• Working\x1b[22m")))
 	time.Sleep(800 * time.Millisecond)
 	if a := s.Info().Attention; a.State != AttentionNone {
 		t.Fatalf("the answered dialog was asked again without being drawn: %+v", a)
@@ -233,7 +251,7 @@ func TestAnApprovalAnsweredInTheTerminalBeforeItIsSeenIsNotAskedAfter(t *testing
 	time.Sleep(100 * time.Millisecond) // read, not yet quiet
 	s.Input(sub, []byte("y"))
 	nextWrite(t, p)
-	p.outW.Write([]byte("\x1b[14;1H\x1b[JHTTP/2 200\r\n› "))
+	p.outW.Write([]byte(approvalGone("HTTP/2 200\r\n› ")))
 	time.Sleep(900 * time.Millisecond)
 	if a := s.Info().Attention; a.State == AttentionNeedsInput {
 		t.Fatalf("the answered dialog was asked: %+v", a)
@@ -294,5 +312,123 @@ func TestAnApprovalTakesThePlaceOfAWaitWithoutChoicesOnly(t *testing.T) {
 	time.Sleep(900 * time.Millisecond)
 	if a := s2.Info().Attention; a.Source != SourceAPI || a.Message != "Allow curl?" || !sameOptions(a.Options, mine) {
 		t.Fatalf("the question replaced a report with its choices: %+v", a)
+	}
+}
+
+// Codex 0.161 advances queued approvals in place and writes only the cells
+// that changed: the next approval, drawn after an answer, sends its command
+// and its prefix alone. It is asked again, with its own command, since the
+// session reads the screen, not the bytes since the answer.
+func TestAQueuedApprovalDrawnAsWhatChangedIsAskedAgain(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	waitAttention(t, s, asked)
+	s.Input(sub, []byte("y"))
+	nextWrite(t, p)
+	p.outW.Write([]byte(approvalNext("rm -rf build")))
+	next := waitAttention(t, s, asked)
+	if next.Message != "Would you like to run the following command? $ rm -rf build" || len(next.Options) != 3 {
+		t.Fatalf("the queued approval: %+v", next)
+	}
+}
+
+// A program that never stops drawing (a spinner) runs out the wait before
+// a submission's Enter; a dialog drawn as it runs out is still found, since
+// the screen is looked at once more, quiet or not, before the Enter.
+func TestAnApprovalDrawnAsTheLookRunsOutHoldsTheEnter(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	started := make(chan time.Time)
+	go func() {
+		defer close(done)
+		var start time.Time
+		drawn := false
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			case start = <-started:
+			case <-time.After(40 * time.Millisecond):
+			}
+			p.outW.Write([]byte(fmt.Sprintf("\x1b[10;1H\x1b[K• Working (%d)", i)))
+			if !drawn && !start.IsZero() && time.Since(start) > lookBudget-300*time.Millisecond {
+				p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+				drawn = true
+			}
+		}
+	}()
+	time.Sleep(200 * time.Millisecond) // the spinner is drawing
+	started <- time.Now()
+	res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
+	close(stop)
+	<-done
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	if a := s.Info().Attention; !asked(a) || a.Message != approvalWords {
+		t.Fatalf("attention %+v", a)
+	}
+}
+
+// The dialog can go with a key Conductor does not offer as a choice (a
+// digit, Ctrl+C, a click): once a person typed into the session while the
+// question showed and the screen no longer shows it, the question gives way,
+// answered by that person. With no key typed it stays: the dialog cannot
+// have been answered, and the held question keeps every Enter off it.
+func TestAnApprovalGoneAfterAKeyTypedIntoItGivesWay(t *testing.T) {
+	for _, key := range []string{"3", "\x03"} {
+		s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+		sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+		waitAttention(t, s, asked)
+		s.Input(sub, []byte(key))
+		nextWrite(t, p)
+		if a := s.Info().Attention; !asked(a) {
+			t.Fatalf("%q answered the question before the dialog went: %+v", key, a)
+		}
+		p.outW.Write([]byte(approvalGone("■ Conversation interrupted - tell the model what to do differently.\r\n› ")))
+		a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+		if info := s.Info(); info.LastAnswer == nil || info.LastAnswer.ByName != "nater" || info.LastAnswer.Message != approvalWords {
+			t.Fatalf("%q: %+v %+v", key, a, info.LastAnswer)
+		}
+	}
+
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	att := waitAttention(t, s, asked)
+	p.outW.Write([]byte(approvalGone("› ")))
+	time.Sleep(900 * time.Millisecond)
+	if a := s.Info().Attention; !asked(a) || *a.Since != *att.Since {
+		t.Fatalf("the question went without a key: %+v", a)
+	}
+}
+
+// The words are the command whole: a "$ " inside it does not start them
+// again, rows of it are joined, and a command longer than a message can
+// hold is cut with an ellipsis, never silently.
+func TestAnApprovalsWordsAreItsWholeCommand(t *testing.T) {
+	q := approvalQuestions()[0]
+	screen := func(cmdRows ...string) string {
+		return "  Would you like to run the following command?\n\n  Reason: needs the network.\n\n  " + strings.Join(cmdRows, "\n  ") +
+			"\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `rm` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
+	}
+	if got := q.words(screen("$ rm -rf build; printf '$ done'")); got != "Would you like to run the following command? $ rm -rf build; printf '$ done'" {
+		t.Fatalf("words %q", got)
+	}
+	if got := q.words(screen("$ cat <<'EOF' > notes.txt", "hello", "EOF")); got != "Would you like to run the following command? $ cat <<'EOF' > notes.txt hello EOF" {
+		t.Fatalf("words of a command on three rows %q", got)
+	}
+	long := "$ " + strings.Repeat("echo abcdefghij && ", 40) + "rm -rf /tmp/x"
+	got := q.words(screen(long))
+	if len(got) > MaxAttentionMessage || !strings.HasSuffix(got, "…") || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
+		t.Fatalf("words of a long command (%d bytes) %q", len(got), got)
 	}
 }

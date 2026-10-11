@@ -3,11 +3,19 @@ package catalog
 // uuidPattern is the shape of a UUID as the agents print it.
 const uuidPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 
-// codexApprovalWords picks the words of Codex's approval dialog out of its
-// screen: its heading ("Would you like to run the following command?") and,
-// when it shows one, the command ("$ curl -sI https://example.com") up to
-// the first choice.
-const codexApprovalWords = `(?i)(would\s*you\s*like\s*to\s*\w[^?]{0,80}\?)(?:.*(\$ .{1,200}?)\s*›?\s*1\.\s*yes,\s*proceed)?`
+// codexApprovalWords picks the words of Codex's approval dialog out of the
+// screen (its rows joined by line breaks): its heading ("Would you like to
+// run the following command?") and, when it shows one, the command, from
+// the first row after the heading that begins with "$ " up to the row of
+// the first choice, every row of it ("$ curl -sI https://example.com"); a
+// "$ " inside the command is part of it.
+const codexApprovalWords = `(?ism)(would\s+you\s+like\s+to\s+[^?]{1,80}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`
+
+// codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
+// on one of the last rows the screen shows (the dialog is the bottom of
+// what Codex draws), so that a dialog's words in a file or a log on the
+// screen are not taken for one.
+const codexApprovalFooter = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+to\s+cancel[^\n]*(?:\n[^\n]*){0,3}\z`
 
 // defaults lists the built-in agents: one for each agent Conductor has a hook
 // adapter for (internal/agents), with the signal its adapter reports
@@ -96,11 +104,14 @@ func defaults() []Agent {
 				// to confirm or esc to cancel". Each choice's own key picks
 				// it at once (a `y` typed there approved the command); an
 				// Enter picks the highlighted Yes, so no prompt's Enter may
-				// land on it. It is found by its choices' keys, a few short
-				// words, which a redraw of changed cells alone is less likely
-				// to break than the heading; its words are the heading and
-				// the command.
-				Prompt:  `(?i)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)`,
+				// land on it. Codex 0.161's overlay (approval_overlay.rs)
+				// also takes a digit, d (deny) where shown, and Esc or
+				// Ctrl+C as cancel; the choices here are the keys the dialog
+				// shows. Like every anytime question it is read off the
+				// screen as drawn; it is found by its choices' keys and its
+				// footer on the last rows, its words are the heading and the
+				// command.
+				Prompt:  `(?is)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)` + codexApprovalFooter,
 				Words:   codexApprovalWords,
 				Anytime: true,
 				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes, and don't ask again", Input: "p"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}},
@@ -108,7 +119,7 @@ func defaults() []Agent {
 				// The same dialog without the "don't ask again" of a prefix
 				// (Codex offers it only when it has a prefix to propose):
 				// Yes and No alone, whose keys are the same.
-				Prompt:  `(?i)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)`,
+				Prompt:  `(?is)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)` + codexApprovalFooter,
 				Words:   codexApprovalWords,
 				Anytime: true,
 				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}},

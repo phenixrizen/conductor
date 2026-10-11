@@ -105,8 +105,9 @@ type Options struct {
 	// source "trust", their answers the choices, typed text refused while
 	// one shows. Codex's "Hooks need review" is one. A question marked
 	// Anytime is one the agent asks during its work (Codex's command
-	// approval): it is watched for the session's whole life by a watcher of
-	// its own, with source "question" (fireAsked).
+	// approval): it is watched for the session's whole life on a model of the
+	// screen (Screen), by a watcher of its own, with source "question"
+	// (fireAsked, missAsked).
 	Questions []StartupQuestion
 	// SubmitPause is the pause between a submission's text and its Enter;
 	// SubmitPause when zero.
@@ -189,12 +190,15 @@ type Local struct {
 	pattern   *PatternWatcher   // nil without Options.Pattern
 	trust     *PatternWatcher   // nil without a startup question
 	questions []StartupQuestion // Options.TrustPattern's, then Options.Questions not marked Anytime
-	// asked watches for the questions the agent asks during its work
-	// (Options.Questions marked Anytime, askedQuestions) until the session
-	// ends; nil without one. askedKeys are their answers' keys.
+	// asked watches the screen for the questions the agent asks during its
+	// work (Options.Questions marked Anytime, askedQuestions) until the
+	// session ends; nil without one. askedKeys are their answers' keys.
+	// typedAtAsked is the person who last typed into the session while one
+	// showed, and that question's Since (missAsked); guarded by mu.
 	asked          *PatternWatcher
 	askedQuestions []StartupQuestion
 	askedKeys      map[string]bool
+	typedAtAsked   *typedAt
 	lastBell       time.Time
 	// turnEnded says a done was reported and no Enter has been written
 	// since (Input, Submit): the turn it ended is still the last one, and a
@@ -286,7 +290,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		s.trust = NewScreenWatcher(anyOf(s.questions), patternQuiet, s.fireTrust)
 	}
 	if len(s.askedQuestions) > 0 {
-		s.asked = NewScreenWatcher(anyOf(s.askedQuestions), patternQuiet, s.fireAsked)
+		s.asked = NewScreenModelWatcher(anyOf(s.askedQuestions), patternQuiet, int(info.Cols), int(info.Rows), s.fireAsked, s.missAsked)
 		s.askedKeys = map[string]bool{}
 		for _, q := range s.askedQuestions {
 			for _, a := range q.Answers {
@@ -552,7 +556,7 @@ func (s *Local) fireTrust(text string) {
 
 // fireAsked is the fire of the watcher for the questions the agent asks
 // during its work (Options.Questions marked Anytime): one is on the screen,
-// text its last ScreenTail. The session needs input with source
+// text the screen's (Screen.Text). The session needs input with source
 // "question", the words of the first question found and its answers. It
 // takes the place of a wait that has nothing to answer it with (the bell
 // that rang for the dialog, an OSC notification, a hook's report without
@@ -566,6 +570,22 @@ func (s *Local) fireAsked(text string) {
 			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessChoices)
 			return
 		}
+	}
+}
+
+// missAsked is the same watcher's look at a quiet screen that shows none of
+// the questions. A question asked during the work that is still held then
+// gives way, as answered, when a person typed into the session while it
+// showed: the dialog went with a key Conductor does not offer (a digit,
+// Ctrl+C, a click). Without such a key it stays: the dialog cannot have
+// been answered, and a held question keeps every Enter from the screen.
+func (s *Local) missAsked(string) {
+	s.mu.Lock()
+	att, typed := s.info.Attention, s.typedAtAsked
+	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.since == att.Since
+	s.mu.Unlock()
+	if gone {
+		s.answer(att.Since, typed.by, typed.name, true, true)
 	}
 }
 
@@ -603,30 +623,45 @@ type StartupQuestion struct {
 }
 
 // words returns the question's words when text shows it, "" when it does not.
+//
+// Each run of white space in them (a screen's line breaks and padding among
+// them) is one space, and words longer than a message can be are cut on a
+// character boundary with an ellipsis at their end, so that a long command
+// reads as cut rather than as all there is.
 func (q StartupQuestion) words(text string) string {
 	match := q.Pattern.FindString(text)
-	if match == "" || q.Words == nil {
-		return match
+	if match == "" {
+		return ""
 	}
-	all := q.Words.FindAllStringSubmatch(text, -1)
-	if len(all) == 0 {
-		return match
-	}
-	last := all[len(all)-1]
-	groups := last[1:]
-	if len(groups) == 0 {
-		groups = last[:1]
-	}
-	var parts []string
-	for _, g := range groups {
-		if g = strings.TrimSpace(g); g != "" {
-			parts = append(parts, g)
+	words := match
+	if q.Words != nil {
+		if all := q.Words.FindAllStringSubmatch(text, -1); len(all) > 0 {
+			last := all[len(all)-1]
+			groups := last[1:]
+			if len(groups) == 0 {
+				groups = last[:1]
+			}
+			var parts []string
+			for _, g := range groups {
+				if g = strings.TrimSpace(g); g != "" {
+					parts = append(parts, g)
+				}
+			}
+			if len(parts) > 0 {
+				words = strings.Join(parts, " ")
+			}
 		}
 	}
-	if len(parts) == 0 {
-		return match
+	words = strings.Join(strings.Fields(words), " ")
+	const more = "…"
+	if len(words) > MaxAttentionMessage {
+		cut := MaxAttentionMessage - len(more)
+		for cut > 0 && !utf8.RuneStart(words[cut]) {
+			cut--
+		}
+		words = words[:cut] + more
 	}
-	return strings.Join(parts, " ")
+	return words
 }
 
 // signalAttention wakes whoever waits for an attention change (Submit). The
@@ -993,7 +1028,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.sizer = id
 		if cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
-				s.info.Cols, s.info.Rows = cols, rows
+				s.sized(cols, rows)
 			}
 		}
 		s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: s.info.Cols, Rows: s.info.Rows, By: id}))
@@ -1202,16 +1237,6 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if answersQuestion && s.trust != nil {
 		s.trust.Reset()
 	}
-	// A question asked during the work is behind once a key that answers
-	// such a dialog is written (an Enter, or one of its choices' keys),
-	// whether or not the session showed it yet: a person who answers in the
-	// terminal before the watcher has seen the screen quiet leaves the
-	// dialog's words in its text, and they must not raise the question
-	// again once the program has moved on. Other keys (a mouse report, an
-	// arrow that moves the highlight) leave it.
-	if s.asked != nil && (enter || s.askedKeys[string(data)]) {
-		s.asked.Reset()
-	}
 	if enter {
 		s.nextTurn()
 	}
@@ -1222,8 +1247,42 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		return nil
 	}
 	s.stampTyping(sub)
+	if s.asked != nil {
+		s.noteTyped(promptSince, sub)
+		if enter || s.askedKeys[string(data)] {
+			// Look at the screen again even if the program draws nothing:
+			// a dialog the key did not take away is asked again.
+			s.asked.Poke()
+		}
+	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 	return nil
+}
+
+// typedAt is who typed into the session while a question asked during the
+// work showed, and that question's Since.
+type typedAt struct {
+	since    *time.Time
+	by, name string
+}
+
+// noteTyped notes sub as the person who typed into the session while the
+// question asked during the work stamped promptSince was showing.
+func (s *Local) noteTyped(promptSince *time.Time, sub *Subscription) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if att := s.info.Attention; promptSince != nil && att.Since == promptSince && att.Source == SourceQuestion {
+		s.typedAtAsked = &typedAt{since: promptSince, by: sub.ID, name: sub.Name}
+	}
+}
+
+// sized records the PTY's new size, which the screen the questions asked
+// during the work are read from follows. The caller holds s.mu.
+func (s *Local) sized(cols, rows uint16) {
+	s.info.Cols, s.info.Rows = cols, rows
+	if s.asked != nil {
+		s.asked.Resize(int(cols), int(rows))
+	}
 }
 
 // nextTurn says an Enter is about to be written: the turn a done ended is
@@ -1325,7 +1384,7 @@ func (s *Local) ResizeWith(sub *Subscription, cols, rows uint16, take bool) erro
 		if err := s.proc.Resize(cols, rows); err != nil {
 			return err
 		}
-		s.info.Cols, s.info.Rows = cols, rows
+		s.sized(cols, rows)
 	}
 	s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: cols, Rows: rows, By: sub.ID}))
 	return nil
@@ -1347,7 +1406,7 @@ func (s *Local) handOverSize() {
 		s.sizer = next.ID
 		if cols, rows := next.want[0], next.want[1]; cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
-				s.info.Cols, s.info.Rows = cols, rows
+				s.sized(cols, rows)
 			}
 		}
 	}
