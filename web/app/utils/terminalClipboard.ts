@@ -141,7 +141,8 @@ export function withholdsMove(e: { buttons: number; shiftKey: boolean; altKey: b
  * Whether a press clears the selection while the program running holds the mouse: a press of the main button, which is the program's.
  * xterm clears it only for a report it takes for typing (an SGR one, on a connection that may type); a report in its first encoding goes
  * out as bytes and a read-only view sends none, and the selection would stay, with the moves kept from the program while it shows. The
- * forcing key's press selects instead, and Control-click on a Mac brings the menu, whose Copy takes the selection.
+ * forcing key's press selects instead, and a press that brings a menu event (Control-click on a Mac; the right button is not the main
+ * one) is the right-click's to decide (rightClick), which may copy the selection or open the menu on it.
  */
 export function pressClearsSelection(e: { button: number; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }, ctx: { tracking: MouseTracking; mac: boolean }): boolean {
   return ctx.tracking !== 'none' && e.button === 0 && !forcesSelection(e, ctx.mac) && !menuPress(e, ctx.mac)

@@ -228,7 +228,15 @@ async function probe(page: Page, api: Api, root: string, name: string, args: str
   return { s, got }
 }
 
-/** Shift+drags over the word on the first row, then moves with Shift held and let go, no button, to rest. */
+/** The middle of the terminal's padding left of its screen, at y: xterm reports a move there too, at the nearest cell. */
+async function padding(page: Page, y: number) {
+  const outer = (await page.locator('.terminal-host .xterm').first().boundingBox())!
+  const screen = (await page.locator('.terminal-host .xterm-screen').first().boundingBox())!
+  expect(screen.x - outer.x).toBeGreaterThan(2)
+  return { x: (outer.x + screen.x) / 2, y }
+}
+
+/** Shift+drags over the word on the first row, then moves with Shift held and let go, no button, through the padding, to rest. */
 async function shiftDragWord(page: Page, api: Api, id: string, rest: { x: number; y: number }) {
   const from = await cell(page, api, id, 0, 0)
   const to = await cell(page, api, id, 12, 0) // the middle of the cell after the word: xterm ends a drag at the nearer cell edge
@@ -238,7 +246,10 @@ async function shiftDragWord(page: Page, api: Api, id: string, rest: { x: number
   await page.mouse.move(to.x, to.y, { steps: 6 })
   await page.mouse.up()
   await page.mouse.move(to.x + 60, to.y + 30, { steps: 4 })
+  const pad = await padding(page, to.y)
+  await page.mouse.move(pad.x, pad.y, { steps: 4 })
   await page.keyboard.up('Shift')
+  await page.mouse.move(pad.x, pad.y + 30, { steps: 4 })
   await page.mouse.move(rest.x, rest.y, { steps: 4 })
 }
 
