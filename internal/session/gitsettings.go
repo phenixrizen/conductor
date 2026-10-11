@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // A repository's .git and git's own settings and credentials are read by
@@ -25,7 +26,7 @@ var errForControllers = errors.New("a repository's .git and git's settings and c
 // real): a .git element, a .git file, a git directory, what a metadata
 // link leads to, a hard link to an entry); anywhere, a name that contains
 // git-credentials (git's credential store), a .gitconfig or gitconfig and
-// the copies beside it (.gitconfig.bak, .gitconfig.local); and git's
+// the copies an editor or a person leaves of it (gitconfigName); and git's
 // settings and credentials in the home (held, the deny set of
 // userGitFiles: compared as files, a link's target and the copies beside
 // it included, and by their paths where they are not there). Names are
@@ -37,11 +38,25 @@ func forControllers(raw, real string, held denySet, inGit func() bool) bool {
 		names = append(names, b)
 	}
 	for _, n := range names {
-		if containsFold(n, "git-credentials") || hasPrefixFold(n, ".gitconfig") || sameName(n, "gitconfig") {
+		if containsFold(n, "git-credentials") || gitconfigName(n) {
 			return true
 		}
 	}
 	return held.inside(real) || inGit()
+}
+
+// gitconfigName reports whether n names a git configuration file or a copy
+// of one: a name that contains .gitconfig (.gitconfig.bak, #.gitconfig#,
+// .gitconfig.swp), or gitconfig (as a dotfiles folder keeps it) with what
+// an editor puts around it (#gitconfig#, .#gitconfig, gitconfig~) or a
+// suffix after a dot (gitconfig.bak, gitconfig.local). A name that only
+// starts the same (gitconfig-guide.md) is not one.
+func gitconfigName(n string) bool {
+	if containsFold(n, ".gitconfig") {
+		return true
+	}
+	t := strings.TrimRight(strings.TrimLeft(n, "#.~"), "#~")
+	return sameName(t, "gitconfig") || hasPrefixFold(t, "gitconfig.")
 }
 
 // hasPrefixFold is strings.HasPrefix comparing names as containsFold does.

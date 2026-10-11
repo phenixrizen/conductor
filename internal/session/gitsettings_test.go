@@ -172,6 +172,40 @@ func TestGitSettingsBehindLinksAreForControllers(t *testing.T) {
 	}
 }
 
+// The copies an editor or a person leaves of a git configuration file are
+// held wherever they are, whatever wraps the name; names that only start
+// the same are not.
+func TestCopiesOfAGitConfigAreForControllers(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	held := []string{"#.gitconfig#", ".#.gitconfig", ".gitconfig.swp", "x.gitconfig~", "#gitconfig#", ".#gitconfig", "gitconfig~", "gitconfig.bak", "#.git-credentials#", ".git-credentials~"}
+	open := []string{"gitconfig-guide.md", "mygitconfig.go", "config.go"}
+	for _, n := range append(slices.Clone(held), open...) {
+		if err := os.WriteFile(filepath.Join(root, n), []byte("[user]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := OpenFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	for _, n := range held {
+		if h, body := f.read(n, false, nil, RoleView); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || body != nil {
+			t.Errorf("view, %q: %+v %q", n, h, body)
+		}
+		if h, _ := f.read(n, false, nil, RoleControl); h.Kind != "file" {
+			t.Errorf("control, %q: %+v", n, h)
+		}
+	}
+	for _, n := range open {
+		if h, _ := f.read(n, false, nil, RoleView); h.Kind != "file" {
+			t.Errorf("view, %q: %+v", n, h)
+		}
+	}
+}
+
 // Names are compared as a case-insensitive file system that leaves some
 // characters out (HFS+) would take them: a .gitconfig or a credential store
 // spelt with such characters in it is held, and so are the copies beside a
