@@ -451,22 +451,23 @@ func TestTheSweepClosesAnExpiredLinksViewers(t *testing.T) {
 	}
 }
 
-// A kept link the switchyard's sweep drops (its host gone for good) closes
-// whoever is still attached through it.
+// A kept link the switchyard's sweep drops (expired, its expiry not told
+// first) closes whoever is still attached through it.
 func TestAKeptLinkSweptAwayClosesItsViewers(t *testing.T) {
 	e := keptSwitchyard(t, t.TempDir(), nil)
 	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
 	host, _ := dialFakeHostWith(t, e, hi, hs, "")
-	_, token := mintHostLink(t, host, "r1")
-	v := dialViewer(t, e, host.sessionID, token)
+	host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "r1", Role: "view", TTLSeconds: 3600})
+	u := host.expect(proto.HostLinkCreated)["url"].(string)
+	v := dialViewer(t, e, host.sessionID, u[strings.LastIndex(u, "/")+1:])
 	v.expectControl(proto.CtlWelcome)
-	e.srv.sweepLinks(time.Now().Add(linkOrphanAfter + time.Hour))
+	e.srv.sweepLinks(time.Now().Add(2 * time.Hour))
 	v.expectClose(proto.CloseForbidden)
 }
 
 // The sweep closes a kept run link's viewers on every session the link
-// names as it drops it, one a run update added after the link was made
-// included.
+// names as it drops it (expired), one a run update added after the link
+// was made included.
 func TestAKeptRunLinkSweptAwayClosesItsViewersOnEveryMember(t *testing.T) {
 	e := keptSwitchyard(t, t.TempDir(), nil)
 	hi, hsA := instanceHost(e, "instance-secret-0123456789", "a")
@@ -480,7 +481,7 @@ func TestAKeptRunLinkSweptAwayClosesItsViewersOnEveryMember(t *testing.T) {
 		}
 		return g
 	}
-	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r1", Role: "view", Run: group(a.sessionID)})
+	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r1", Role: "view", TTLSeconds: 3600, Run: group(a.sessionID)})
 	u := a.expect(proto.HostLinkCreated)["url"].(string)
 	token := u[strings.LastIndex(u, "/")+1:]
 	a.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u1", Run: group(a.sessionID, b.sessionID)})
@@ -488,7 +489,7 @@ func TestAKeptRunLinkSweptAwayClosesItsViewersOnEveryMember(t *testing.T) {
 	onA, onB := dialViewer(t, e, a.sessionID, token), dialViewer(t, e, b.sessionID, token)
 	onA.expectControl(proto.CtlWelcome)
 	onB.expectControl(proto.CtlWelcome)
-	e.srv.sweepLinks(time.Now().Add(linkOrphanAfter + time.Hour))
+	e.srv.sweepLinks(time.Now().Add(2 * time.Hour))
 	onA.expectClose(proto.CloseForbidden)
 	onB.expectClose(proto.CloseForbidden)
 }

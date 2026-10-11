@@ -89,7 +89,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	if open {
 		hc.addr = addr
 	}
-	s.sawHost(hs.Owner())
 	if s.cfg.Switchyard.Enabled {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
@@ -107,6 +106,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		hs.HostDisconnected(conn)
 		s.log.Info("host disconnected", "session", info.ID)
 	}()
+	// The host's kept links wait for it while it is connected, from before
+	// it is told which the switchyard holds; its time away starts as this
+	// connection ends (before the session shows it gone).
+	defer s.hostUp(hs.Owner())()
 
 	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
 	for _, srv := range s.cfg.ICEServers {
@@ -398,9 +401,20 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if !found && hs.Owner() != "" {
 			found, _ = s.links.RevokeGroup(hs.Owner(), m.LinkID)
 		}
+		// One the switchyard no longer holds whose file waits to be
+		// deleted is still its host's to revoke: the delete is tried again.
 		if !found {
+			found = s.retryUndeleted(m.LinkID, hs.Owner())
+		}
+		switch {
+		case !found:
 			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: m.RequestID})
-		} else {
+		case s.linkFileUndeleted(m.LinkID):
+			// Revoked here, but what the switchyard keeps of it on disk is
+			// not deleted yet: the host is told so, keeps its record, and
+			// its next revoke tries the delete again.
+			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "store_unavailable", Message: "the link is revoked, but the switchyard could not yet delete what it keeps of it; revoke it again", RequestID: m.RequestID})
+		default:
 			s.log.Info("link revoked by its host", "session", hs.Info().ID, "link", m.LinkID)
 			_ = hs.Tell(proto.LinkRevoked{T: proto.HostLinkRevoked, RequestID: m.RequestID, LinkID: m.LinkID})
 		}
@@ -458,8 +472,8 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 		refuse("link_refused", err.Error())
 		return
 	}
-	if !s.keepLink(link, token, hs.Owner(), hc.addr) {
-		refuse("link_refused", "this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	if err := s.keepLink(link, token, hs.Owner(), hc.addr); err != nil {
+		refuse("link_refused", err.Error())
 		return
 	}
 	s.log.Info("link minted for a host", "session", hs.Info().ID, "role", role, "label", link.Label)
@@ -470,8 +484,10 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 	_ = hs.Tell(out)
 }
 
-// liveLinkIDs are the ids of the links that still open a hosted session here:
-// not revoked, not expired. Never nil, so registered always carries the list.
+// liveLinkIDs are the ids of the links that still open a hosted session here
+// (not revoked, not expired), and of those revoked whose revoke is not done
+// (their file waits to be deleted). Never nil, so registered always carries
+// the list.
 func (s *Server) liveLinkIDs(sessionID string) []string {
 	ids := []string{}
 	now := time.Now()
@@ -480,6 +496,14 @@ func (s *Server) liveLinkIDs(sessionID string) []string {
 			continue
 		}
 		ids = append(ids, l.ID)
+	}
+	// A revoked link whose file on a switchyard waits to be deleted is
+	// still the host's to revoke again (store_unavailable until it goes),
+	// so the host keeps its record of it.
+	for _, id := range s.undeletedLinks() {
+		if l, ok := s.links.Get(id); ok && l.Revoked && ((l.RunID == "" && l.SessionID == sessionID) || l.Group.Names(sessionID)) {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }
@@ -540,8 +564,8 @@ func (s *Server) hostRunLink(hs *signal.HostedSession, hc *hostConnState, m prot
 		refuse("link_refused", err.Error())
 		return
 	}
-	if !s.keepLink(link, token, hs.Owner(), hc.addr) {
-		refuse("link_refused", "this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	if err := s.keepLink(link, token, hs.Owner(), hc.addr); err != nil {
+		refuse("link_refused", err.Error())
 		return
 	}
 	s.log.Info("run link minted for a host", "run", m.Run.ID, "members", len(g.Members), "role", role)

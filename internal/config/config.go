@@ -173,7 +173,8 @@ type Switchyard struct {
 	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
 	// OpenHostLinks bounds the links the open hosts of one address keep on
 	// the switchyard at a time (32 by default): links outlive restarts, so
-	// they are counted, not only rate-limited.
+	// they are counted, not only rate-limited. A link whose host has been
+	// gone five minutes gives its place to a new one of the address.
 	OpenHostLinks int `json:"openHostLinks,omitempty"`
 }
 
