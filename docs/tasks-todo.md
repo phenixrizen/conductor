@@ -96,18 +96,27 @@ each reproduced with a Go test (round 15); none is fixed yet.
   none (the owner's has empty lists, so it was never added); and Codex
   seems to ring for an approval only while it thinks its terminal is not
   focused (not verified). Expected: Needs you with the dialog's words and
-  its three choices, whatever the hooks file holds. The fix proposed: a
-  catalog question for the dialog, as for Codex's update and hooks-review
-  screens, its answers `y`, `p` and Esc.
+  its three choices, whatever the hooks file holds. A catalog question
+  like Codex's update and hooks-review screens is not enough: those are
+  watched only until the first submission (`Submit` stops the watcher,
+  `internal/session/submit.go`), and a bell already waiting keeps the
+  question's words out (`fireTrust` gives way to it, `unlessWaiting`). The
+  fix proposed: a watcher for the dialog for the session's whole life,
+  taking precedence over a bare bell (its words and choices `y`, `p`,
+  Esc), with tests for an approval after a crew's first prompt and for a
+  bell that comes before or after the dialog is seen.
 - **Codex's bell at the end of a turn leaves a member waiting on
   nothing.** After the approved command ran, Codex reported its turn done
   ("`HTTP/2 200`") and then rang the bell Conductor asks it for; the bell
   came second, so the member sat in Needs you as "terminal bell" with
   nothing to answer, minutes later still (rc.7 app, 2026-10-11). Cause:
   `Local.scanOutput` makes any bell a question, even right after a done.
-  Expected: a done is not undone by the bell that comes with it. The fix
-  proposed: a bell within a short time after a turn's done report is not a
-  question.
+  Expected: a done is not undone by the bell that comes with it. A time
+  window alone would also swallow the bell of a new turn's approval that
+  comes quickly, which may be the only sign of it when the hooks are
+  missing. The fix proposed: the turn's own bell is not a question, the
+  allowance ending with that turn (new input, a submission, a working
+  report), with a test of a new turn asking for approval at once.
 - **Codex's folder-trust "No" says the wrong thing.** Codex 0.161's trust
   screen is "1. Trust and continue / 2. Quit"; the app's second answer
   reads "No, continue without trusting", and its keys (Down, Enter) pick
