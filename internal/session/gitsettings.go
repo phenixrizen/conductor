@@ -26,13 +26,13 @@ var errForControllers = errors.New("a repository's .git and git's settings and c
 // real): a .git element, a .git file, a git directory, what a metadata
 // link leads to, a hard link to an entry); anywhere, a name that contains
 // git-credentials (git's credential store), a .gitconfig or gitconfig and
-// the copies beside it (.gitconfig.bak, .gitconfig.local); and a name that
-// contains config or credential in git's directory of the user's
-// configuration (~/.config/git; inUserGitDir). Names are compared ignoring
-// case, raw's last element and real's both, so a link to one under another
-// name is caught at its target and one named so at its name. inGit is
-// asked only when the names do not tell.
-func forControllers(raw, real string, inGit func() bool) bool {
+// the copies beside it (.gitconfig.bak, .gitconfig.local); and git's
+// settings and credentials in the home (held, the deny set of
+// userGitFiles: compared as files, a link's target and the copies beside
+// it included, and by their paths where they are not there). Names are
+// compared ignoring case, raw's last element and real's both. inGit is
+// asked only when the rest does not tell.
+func forControllers(raw, real string, held denySet, inGit func() bool) bool {
 	names := []string{filepath.Base(real)}
 	if b := filepath.Base(filepath.Clean(raw)); b != names[0] {
 		names = append(names, b)
@@ -41,11 +41,8 @@ func forControllers(raw, real string, inGit func() bool) bool {
 		if containsFold(n, "git-credentials") || hasPrefixFold(n, ".gitconfig") || strings.EqualFold(n, "gitconfig") {
 			return true
 		}
-		if (containsFold(n, "config") || containsFold(n, "credential")) && inUserGitDir(real) {
-			return true
-		}
 	}
-	return inGit()
+	return held.inside(real) || inGit()
 }
 
 // hasPrefixFold is strings.HasPrefix ignoring case as containsFold does.
@@ -55,18 +52,24 @@ func hasPrefixFold(s, prefix string) bool {
 	return len(r) >= n && strings.EqualFold(string(r[:n]), prefix)
 }
 
-// inUserGitDir reports whether real is in git's directory of the user's
-// configuration: git under $XDG_CONFIG_HOME, and under ~/.config, compared
-// as a deny entry is (insideAny): as a file where it is there, by its path
-// where it is not, so that what a revision keeps there is held too once
-// the directory is gone.
-func inUserGitDir(real string) bool {
-	var dirs []string
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" && filepath.IsAbs(x) {
-		dirs = append(dirs, filepath.Join(x, "git"))
-	}
+// userGitFiles is the deny list (DenyList) of git's own settings and
+// credentials in the user's home: ~/.gitconfig and ~/.git-credentials,
+// and config and credentials in git's directory of the user's
+// configuration ($XDG_CONFIG_HOME/git, ~/.config/git). Each is a file
+// entry, so that a link to it, or the file a link of its leads to under
+// another name, is the same file, with the name entries beside it and
+// beside its target, so that its copies are too; one that is not there is
+// compared by its path (missingEntry), so what a revision keeps there is
+// held as well.
+func userGitFiles() []string {
+	var files []string
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
-		dirs = append(dirs, filepath.Join(home, ".config", "git"))
+		files = append(files,
+			filepath.Join(home, ".gitconfig"), filepath.Join(home, ".git-credentials"),
+			filepath.Join(home, ".config", "git", "config"), filepath.Join(home, ".config", "git", "credentials"))
 	}
-	return insideAny(real, dirs)
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" && filepath.IsAbs(x) {
+		files = append(files, filepath.Join(x, "git", "config"), filepath.Join(x, "git", "credentials"))
+	}
+	return DenyList(nil, files)
 }

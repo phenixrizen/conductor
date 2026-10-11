@@ -109,6 +109,113 @@ func TestGitSettingsAreForControllers(t *testing.T) {
 	}
 }
 
+// git's settings in the home are held as files: through the link the home
+// keeps them at, and at the file the link leads to under any name, with the
+// copies beside it, in a read and in a revision alike.
+func TestGitSettingsBehindLinksAreForControllers(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := gitcli.Run(context.Background(), root, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.name", "t")
+	run("config", "user.email", "t@t")
+	run("config", "commit.gpgsign", "false")
+	for p, body := range map[string]string{"dotfiles/private-settings": "[user]\n", "dotfiles/private-settings.bak": "[user]\n", "dotfiles/mine": "[user]\n", "dotfiles/readme.md": "# dotfiles\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, p), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".config", "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "dotfiles", "private-settings"), filepath.Join(root, ".config", "git", "config")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("dotfiles", "mine"), filepath.Join(root, ".gitconfig")); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "dotfiles")
+	run("commit", "-q", "-m", "dotfiles")
+	f, err := OpenFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	for _, p := range []string{".config/git/config", "dotfiles/private-settings", "dotfiles/private-settings.bak", ".gitconfig", "dotfiles/mine"} {
+		if h, body := f.read(p, false, nil, RoleView); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || body != nil {
+			t.Errorf("view, %q: %+v %q", p, h, body)
+		}
+		if h, _ := f.read(p, false, nil, RoleControl); h.Kind != "file" {
+			t.Errorf("control, %q: %+v", p, h)
+		}
+	}
+	for _, p := range []string{"dotfiles/private-settings", "dotfiles/mine"} {
+		if h, body := GitShowPath(root, "HEAD", p, nil, RoleView); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || len(body) != 0 {
+			t.Errorf("view, %s at HEAD: %+v %q", p, h, body)
+		}
+	}
+	if h, _ := f.read("dotfiles/readme.md", false, nil, RoleView); h.Kind != "file" {
+		t.Errorf("view, an ordinary file beside them: %+v", h)
+	}
+}
+
+// A view link's read is held to what it checked as it is opened: a file put
+// in its place since as a hard link to .git/config, or a folder swapped for
+// a repository's git directory, is refused, never read.
+func TestAViewReadIsHeldToItsCheckWhenOpened(t *testing.T) {
+	root := t.TempDir()
+	for p, body := range map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[remote]\n\turl = https://me:token@example.com\n", "notes.txt": "notes\n", "docs/config": "plain\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, p), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{".git/objects", ".git/refs"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := OpenFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	onceAfterCheck(t, func() {
+		os.Remove(filepath.Join(root, "notes.txt"))
+		if err := os.Link(filepath.Join(root, ".git", "config"), filepath.Join(root, "notes.txt")); err != nil {
+			t.Error(err)
+		}
+	})
+	if h, body := f.read("notes.txt", false, nil, RoleView); h.Kind != "error" || body != nil {
+		t.Fatalf("a hard link to .git/config put in place since its check: %+v %q", h, body)
+	}
+	onceAfterCheck(t, func() {
+		if err := os.Rename(filepath.Join(root, "docs"), filepath.Join(root, "docs.old")); err != nil {
+			t.Error(err)
+		}
+		if err := os.Rename(filepath.Join(root, ".git"), filepath.Join(root, "docs")); err != nil {
+			t.Error(err)
+		}
+	})
+	if h, body := f.read("docs/config", false, nil, RoleView); h.Kind != "error" || body != nil {
+		t.Fatalf("a git directory swapped in since its check: %+v %q", h, body)
+	}
+}
+
 // git's settings a revision keeps are a controller's too: a .gitconfig, and
 // what git's directory of the user's configuration held, once that
 // directory is gone from the working tree.

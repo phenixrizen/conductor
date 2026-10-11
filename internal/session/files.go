@@ -174,14 +174,32 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 		}
 		return inGit
 	}
-	if role != RoleControl && forControllers(raw, target, isGit) {
-		return fail(proto.ErrCodeFileDenied, errForControllers.Error())
+	// For a view link (forControllers), what the repositories beside the
+	// path stood for at its check (gitMeta) is held to each directory and
+	// to the file as they are opened, as a save holds it, and git's
+	// settings in the home join the deny set, so that metadata moved into
+	// the path's place since is refused too.
+	var check func(*os.Root) error
+	var snap gitMeta
+	if role != RoleControl {
+		held := newDenySet(userGitFiles())
+		in, s := gitMetadataIDs(raw, target)
+		inGit, looked = in, true
+		if forControllers(raw, target, held, isGit) {
+			return fail(proto.ErrCodeFileDenied, errForControllers.Error())
+		}
+		snap, check = s, refuseGit(s)
+		ds = ds.and(held)
 	}
 	h.Path = target
 	afterCheck()
 	// failOpen answers a path that changed or turned denied since its check
-	// as denied, and one whose file went as not found.
+	// as denied, one that turned into a repository's .git as a view link's
+	// refusal, and one whose file went as not found.
 	failOpen := func(err error) (proto.FileHeader, []byte) {
+		if errors.Is(err, errGitDir) {
+			return fail(proto.ErrCodeFileDenied, errForControllers.Error())
+		}
 		if errors.Is(err, errPathChanged) || errors.Is(err, errNotReadable) || errors.Is(err, errFolderGone) {
 			return fail("denied", err.Error())
 		}
@@ -191,12 +209,12 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 	var fi os.FileInfo
 	if rel == "." {
 		// The folder itself.
-		if dir, fi, err = f.openDir(".", ds); err != nil {
+		if dir, fi, err = f.openDirChecked(".", ds, check); err != nil {
 			return failOpen(err)
 		}
 		defer dir.Close()
 	} else {
-		parent, pid, err := f.openDir(filepath.Dir(rel), ds)
+		parent, pid, err := f.openDirChecked(filepath.Dir(rel), ds, check)
 		if err != nil {
 			return failOpen(err)
 		}
@@ -209,6 +227,9 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 		if ds.hit(fi, name, pid) {
 			return fail("denied", errNotReadable.Error())
 		}
+		if check != nil && (sameAsAny(fi, snap.files) || snap.makes(pid, name)) {
+			return failOpen(errGitDir)
+		}
 		switch {
 		case statOnly:
 		case fi.IsDir():
@@ -216,6 +237,11 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 				return failOpen(err)
 			}
 			defer dir.Close()
+			if check != nil {
+				if err := check(dir); err != nil {
+					return failOpen(err)
+				}
+			}
 		case fi.Mode().IsRegular():
 			file, got, err := openFileIn(parent, name, fi)
 			if err != nil {

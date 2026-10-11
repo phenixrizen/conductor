@@ -67,7 +67,7 @@ func GitShowPath(root, rev, path string, deny []string, role Role) (proto.FileHe
 	if err != nil {
 		return deniedHeader(path, err), nil
 	}
-	if role != RoleControl && forControllers(path, target, func() bool { return gitMetadata(path, target) }) {
+	if role != RoleControl && forControllers(path, target, newDenySet(userGitFiles()), func() bool { return gitMetadata(path, target) }) {
 		return proto.FileHeader{Path: path, Kind: "error", Error: &proto.ErrorInfo{Code: proto.ErrCodeFileDenied, Message: errForControllers.Error()}}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)

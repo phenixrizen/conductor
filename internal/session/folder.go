@@ -470,6 +470,11 @@ func appendTail(list []missingEntry, cur string, rest []string, name string) []m
 	}
 }
 
+// and is d with o's entries too.
+func (d denySet) and(o denySet) denySet {
+	return denySet{slices.Concat(d.files, o.files), slices.Concat(d.names, o.names), slices.Concat(d.missing, o.missing)}
+}
+
 func (d denySet) empty() bool {
 	return len(d.files) == 0 && len(d.names) == 0 && len(d.missing) == 0
 }

@@ -773,12 +773,17 @@ only: a `.git` element, a linked worktree's or a submodule's `.git` file, the
 git directory one names, a bare repository, a file of the working tree a
 metadata link leads to, a hard link to an entry); anywhere, a name that
 contains `git-credentials`, a `.gitconfig` or `gitconfig` and its copies; and
-a name that contains `config` or `credential` in `~/.config/git` (compared as
-a deny entry is, so also once that directory is gone). Names are compared
-ignoring case, at the path asked for and at its link's target. Such a read,
-whole or `stat`, or a `show` of one at a revision, answers `file_denied` ("a
-repository's .git and git's settings and credentials are for controllers"),
-403 over HTTP; a controller reads them as before.
+git's settings and credentials in the home (`~/.gitconfig`,
+`~/.git-credentials`, `config` and `credentials` in `~/.config/git` and in
+`$XDG_CONFIG_HOME/git`), held as the deny list's files are: as files, so the
+file a link of theirs leads to is held under any name, with the copies beside
+it, and by their paths where they are not there. Names are compared ignoring
+case, at the path asked for and at its link's target. What the repositories
+beside the path stood for at its check is held to each folder and to the file
+as they are opened, as a save is, so metadata put in the path's place since is
+refused too. Such a read, whole or `stat`, or a `show` of one at a revision,
+answers `file_denied` ("a repository's .git and git's settings and credentials
+are for controllers"), 403 over HTTP; a controller reads them as before.
 
 ## File saves
 
