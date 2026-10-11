@@ -121,6 +121,11 @@ type Options struct {
 	WatchGit bool
 	// Launched is what the session was launched with, for Resume.
 	Launched Launched
+	// Folder is the session's working directory, opened (and checked) by
+	// whoever started the process in it: the Files tab reads and saves
+	// through it, and the session closes it when it is retired. NewLocal
+	// opens Info.Cwd itself when it is nil.
+	Folder *Folder
 }
 
 // patternQuiet is how long the output must stay silent before the last line is
@@ -135,6 +140,9 @@ type Local struct {
 	ring *Ring
 	hub  *Hub
 	log  *slog.Logger
+	// folder is the working directory as opened (Options.Folder); nil when
+	// it could not be opened, which refuses every file request.
+	folder *Folder
 
 	mu   sync.Mutex // guards info, events and lastOutput, and orders ring writes against attaches
 	info Info
@@ -226,14 +234,19 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if info.CreatedAt.IsZero() {
 		info.CreatedAt = time.Now().UTC()
 	}
+	folder := opts.Folder
+	if folder == nil {
+		folder, _ = OpenFolder(info.Cwd)
+	}
 	s := &Local{
-		opts:  opts,
-		proc:  proc,
-		ring:  NewRing(opts.ScrollbackBytes),
-		hub:   NewHub(),
-		log:   opts.Log.With("session", info.ID),
-		info:  info,
-		ended: make(chan struct{}),
+		opts:   opts,
+		folder: folder,
+		proc:   proc,
+		ring:   NewRing(opts.ScrollbackBytes),
+		hub:    NewHub(),
+		log:    opts.Log.With("session", info.ID),
+		info:   info,
+		ended:  make(chan struct{}),
 
 		submitting:  make(chan struct{}, 1),
 		attnChanged: make(chan struct{}),
@@ -1243,6 +1256,10 @@ func (s *Local) Retire() {
 	s.retired = true
 	s.hub.Each(func(sub *Subscription) { sub.closeWith(ErrSessionEnded) })
 	s.mu.Unlock()
+	if s.folder != nil {
+		// A file request under way finishes or fails; none comes after.
+		s.folder.Close()
+	}
 }
 
 // CloseAll evicts every subscription with the given reason (server shutdown)

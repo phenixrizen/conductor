@@ -3,17 +3,17 @@ package session
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
-	"time"
 )
 
 // Limits for file reads.
@@ -64,8 +64,9 @@ func (s *Local) fileDeny() []string {
 }
 
 // FileGet serves a file or directory read for sub. It enforces the role
-// policy, an in-flight cap, and resolves the path inside the session cwd. The
-// response is queued to the subscriber as a FILE frame.
+// policy, an in-flight cap, and resolves the path inside the session cwd,
+// read through the session's folder (Folder). The response is queued to the
+// subscriber as a FILE frame.
 func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 	if !s.fileAllowed(sub.Role) {
 		return ErrFileDenied
@@ -84,17 +85,26 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 		deny := s.fileDeny()
 		switch req.Op {
 		case "":
-			h, body = ReadPath(s.info.Cwd, req.Path, req.Stat, deny)
-		case proto.FileOpStatus:
-			h = GitStatusPath(s.info.Cwd, req.Base, deny)
-		case proto.FileOpShow:
-			h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny)
-		case proto.FileOpLog:
-			h = GitLogPath(s.info.Cwd, req.Base, s.info.CreatedAt, deny)
-		case proto.FileOpCommit:
-			h = GitCommitPath(s.info.Cwd, req.Rev, deny)
+			h, body = s.folder.read(req.Path, req.Stat, deny)
+		case proto.FileOpStatus, proto.FileOpShow, proto.FileOpLog, proto.FileOpCommit:
+			// Git reads the files itself, by path: the session's path
+			// must still name its folder for them too.
+			if err := s.folder.check(); err != nil {
+				h = deniedHeader(req.Path, err)
+				break
+			}
+			switch req.Op {
+			case proto.FileOpStatus:
+				h = GitStatusPath(s.info.Cwd, req.Base, deny)
+			case proto.FileOpShow:
+				h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny)
+			case proto.FileOpLog:
+				h = GitLogPath(s.info.Cwd, req.Base, s.info.CreatedAt, deny)
+			case proto.FileOpCommit:
+				h = GitCommitPath(s.info.Cwd, req.Rev, deny)
+			}
 		case proto.FileOpFind:
-			h = FindPath(s.info.Cwd, req.Path, deny)
+			h = s.folder.find(req.Path, deny)
 		case proto.FileOpTouched:
 			h = s.TouchedPath(deny)
 		default:
@@ -116,21 +126,87 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 // be absolute, relative to root, or start with "~" (the process home). The
 // resolved target must stay under root after symlink evaluation and must not
 // be, or be inside, an entry of deny. When statOnly is set only existence and
-// kind are reported.
+// kind are reported. root is opened as a folder for this one read; a
+// session reads through the folder it holds (Local.ReadPath).
 func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
-	h := proto.FileHeader{Path: raw}
-	target, err := ResolvePath(root, raw, deny)
+	f, err := OpenFolder(root)
 	if err != nil {
-		h.Kind = "error"
-		h.Error = &proto.ErrorInfo{Code: "denied", Message: err.Error()}
+		return proto.FileHeader{Path: raw, Kind: "error", Error: &proto.ErrorInfo{Code: "denied", Message: errFolderGone.Error()}}, nil
+	}
+	defer f.Close()
+	return f.read(raw, statOnly, deny)
+}
+
+// ReadPath is the package's ReadPath through the session's own folder.
+func (s *Local) ReadPath(raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
+	return s.folder.read(raw, statOnly, deny)
+}
+
+// read is ReadPath in the folder: raw checked (resolve), then what it names
+// opened from the folder one element at a time (openDir, stepDir,
+// openFileIn), so that what is read, stat'ed or listed is the folder's file
+// the check passed, or nothing.
+func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
+	h := proto.FileHeader{Path: raw}
+	fail := func(code, msg string) (proto.FileHeader, []byte) {
+		h.Kind, h.Exists, h.Size = "error", false, 0
+		h.Error = &proto.ErrorInfo{Code: code, Message: msg}
 		return h, nil
 	}
-	h.Path = target
-	fi, err := os.Stat(target)
+	// The deny list as looked up once: the check and the use hold the path
+	// to the same files, wherever they are moved meanwhile.
+	ds := newDenySet(deny)
+	target, rel, err := f.resolve(raw, ds)
 	if err != nil {
-		h.Kind = "error"
-		h.Error = &proto.ErrorInfo{Code: "not_found", Message: "no such file or directory"}
-		return h, nil
+		return fail("denied", err.Error())
+	}
+	h.Path = target
+	afterCheck()
+	// failOpen answers a path that changed or turned denied since its check
+	// as denied, and one whose file went as not found.
+	failOpen := func(err error) (proto.FileHeader, []byte) {
+		if errors.Is(err, errPathChanged) || errors.Is(err, errNotReadable) || errors.Is(err, errFolderGone) {
+			return fail("denied", err.Error())
+		}
+		return fail("not_found", "no such file or directory")
+	}
+	var dir *os.Root // a directory to list
+	var fi os.FileInfo
+	if rel == "." {
+		// The folder itself.
+		if dir, fi, err = f.openDir(".", ds); err != nil {
+			return failOpen(err)
+		}
+		defer dir.Close()
+	} else {
+		parent, pid, err := f.openDir(filepath.Dir(rel), ds)
+		if err != nil {
+			return failOpen(err)
+		}
+		defer parent.Close()
+		name := filepath.Base(rel)
+		if fi, err = parent.Lstat(name); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+			// A link here leads nowhere: the check resolves the others.
+			return fail("not_found", "no such file or directory")
+		}
+		if ds.hit(fi, name, pid) {
+			return fail("denied", errNotReadable.Error())
+		}
+		switch {
+		case statOnly:
+		case fi.IsDir():
+			if dir, fi, err = stepDir(parent, pid, name, ds); err != nil {
+				return failOpen(err)
+			}
+			defer dir.Close()
+		case fi.Mode().IsRegular():
+			file, got, err := openFileIn(parent, name, fi)
+			if err != nil {
+				return failOpen(err)
+			}
+			defer file.Close()
+			return readFile(h, raw, file, got)
+		}
 	}
 	h.Exists = true
 	h.Size = fi.Size()
@@ -139,28 +215,8 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 		if statOnly {
 			return h, nil
 		}
-		entries, err := os.ReadDir(target)
-		if err != nil {
-			h.Kind = "error"
-			h.Error = &proto.ErrorInfo{Code: "read", Message: "cannot list directory"}
-			return h, nil
-		}
-		sort.Slice(entries, func(i, j int) bool {
-			if entries[i].IsDir() != entries[j].IsDir() {
-				return entries[i].IsDir()
-			}
-			return entries[i].Name() < entries[j].Name()
-		})
-		for i, e := range entries {
-			if i >= MaxDirEntries {
-				h.Truncated = true
-				break
-			}
-			var size int64
-			if info, err := e.Info(); err == nil {
-				size = info.Size()
-			}
-			h.Entries = append(h.Entries, proto.FileEntry{Name: e.Name(), Dir: e.IsDir(), Size: size})
+		if h.Entries, h.Truncated, err = listDir(dir); err != nil {
+			return fail("read", "cannot list directory")
 		}
 		return h, nil
 	}
@@ -169,23 +225,26 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 		h.Error = &proto.ErrorInfo{Code: "unsupported", Message: "not a regular file"}
 		return h, nil
 	}
+	// A regular file, stat'ed only.
 	h.Kind = "file"
-	h.Mime = mime.TypeByExtension(filepath.Ext(target))
+	h.Mime = mime.TypeByExtension(filepath.Ext(h.Path))
 	// A save of it would be refused (saveFile): the editor shows Read only.
-	h.ReadOnly = gitMetadata(raw, target)
-	if statOnly {
-		return h, nil
-	}
-	f, err := os.Open(target)
+	h.ReadOnly = gitMetadata(raw, h.Path)
+	return h, nil
+}
+
+// readFile completes h, a read of raw, for file, open and checked (its
+// stat fi): its first MaxFileRead bytes, none for a binary file.
+func readFile(h proto.FileHeader, raw string, file *os.File, fi os.FileInfo) (proto.FileHeader, []byte) {
+	h.Exists = true
+	h.Size = fi.Size()
+	h.Kind = "file"
+	h.Mime = mime.TypeByExtension(filepath.Ext(h.Path))
+	// A save of it would be refused (saveFile): the editor shows Read only.
+	h.ReadOnly = gitMetadata(raw, h.Path)
+	body, err := io.ReadAll(io.LimitReader(file, MaxFileRead+1))
 	if err != nil {
-		h.Kind = "error"
-		h.Error = &proto.ErrorInfo{Code: "read", Message: "cannot open file"}
-		return h, nil
-	}
-	defer f.Close()
-	body, err := io.ReadAll(io.LimitReader(f, MaxFileRead+1))
-	if err != nil {
-		h.Kind = "error"
+		h.Kind, h.Exists, h.Size = "error", false, 0
 		h.Error = &proto.ErrorInfo{Code: "read", Message: "cannot read file"}
 		return h, nil
 	}
@@ -205,32 +264,73 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 	return h, body
 }
 
+// maxListScan is the entries a listing reads at most (a test lowers it),
+// each name counted as it is read and then looked at through its folder
+// (readFolder): a listing of a folder with more sorts the first
+// maxListScan it reads and says it is truncated.
+var maxListScan = 10 * MaxDirEntries
+
+// listDir lists dir, open: directories first, then by name, at most
+// MaxDirEntries of the first maxListScan entries read (truncated when
+// there are more), each entry looked up through dir, not by a path that
+// could lead elsewhere by then.
+func listDir(dir *os.Root) (entries []proto.FileEntry, truncated bool, err error) {
+	budget := maxListScan
+	all, complete, err := readFolder(dir, &budget, func() bool { return false })
+	if err != nil {
+		return nil, false, err
+	}
+	truncated = !complete
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].fi.IsDir() != all[j].fi.IsDir() {
+			return all[i].fi.IsDir()
+		}
+		return all[i].name < all[j].name
+	})
+	for i, e := range all {
+		if i >= MaxDirEntries {
+			truncated = true
+			break
+		}
+		entries = append(entries, proto.FileEntry{Name: e.name, Dir: e.fi.IsDir(), Size: e.fi.Size()})
+	}
+	return entries, truncated, nil
+}
+
 // ResolvePath turns raw into an absolute path under root, following symlinks
 // and rejecting anything that escapes root, enters .git/objects or is one of
 // the deny entries or inside one (the server passes its data directory, its
 // config file and its catalog file, and a name entry for each of the two files,
 // see insideAny).
 func ResolvePath(root, raw string, deny []string) (string, error) {
+	real, _, err := resolvePath(root, raw, newDenySet(deny))
+	return real, err
+}
+
+// resolvePath is ResolvePath with the deny list looked up already (a
+// request looks it up once, for its check and its use alike), returning
+// root with its links resolved too, as the check took it.
+func resolvePath(root, raw string, deny denySet) (real, rootReal string, err error) {
 	if raw == "" {
 		raw = "."
 	}
 	if strings.ContainsRune(raw, 0) {
-		return "", errors.New("path contains NUL")
+		return "", "", errors.New("path contains NUL")
 	}
 	if raw == "~" || strings.HasPrefix(raw, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", errors.New("home directory unavailable")
+			return "", "", errors.New("home directory unavailable")
 		}
 		raw = filepath.Join(home, strings.TrimPrefix(raw, "~"))
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	rootReal, err = filepath.EvalSymlinks(rootAbs)
 	if err != nil {
-		return "", fmt.Errorf("session root unavailable")
+		return "", "", errFolderGone
 	}
 	var target string
 	if filepath.IsAbs(raw) {
@@ -240,24 +340,24 @@ func ResolvePath(root, raw string, deny []string) (string, error) {
 	}
 	// Evaluate the deepest existing prefix so a missing final component still
 	// reports not_found instead of leaking whether directories exist elsewhere.
-	real, err := evalExisting(target)
+	real, err = evalExisting(target)
 	if err != nil {
-		return "", errors.New("path unavailable")
+		return "", "", errors.New("path unavailable")
 	}
 	if real != rootReal && !strings.HasPrefix(real, rootReal+string(filepath.Separator)) {
-		return "", errors.New("path is outside the session directory")
+		return "", "", errors.New("path is outside the session directory")
 	}
 	rel, _ := filepath.Rel(rootReal, real)
 	parts := strings.Split(rel, string(filepath.Separator))
 	for i := 0; i+1 < len(parts); i++ {
 		if parts[i] == ".git" && parts[i+1] == "objects" {
-			return "", errors.New("path is not readable")
+			return "", "", errNotReadable
 		}
 	}
-	if insideAny(real, deny) {
-		return "", errors.New("path is not readable")
+	if deny.inside(real) {
+		return "", "", errNotReadable
 	}
-	return real, nil
+	return real, rootReal, nil
 }
 
 // insideAny reports whether real, an absolute path with its symlinks resolved,
@@ -274,57 +374,32 @@ func ResolvePath(root, raw string, deny []string) (string, error) {
 // as a file too. A name entry matches by name alone, so a hard link under an
 // unrelated name is not caught, and a "*" in any other place of an entry is not
 // a wildcard: a literal "*" in a path is not supported. An entry that does not
-// exist, or whose directory does not, denies nothing and is skipped.
+// exist, or whose directory does not, denies nothing and is skipped. A
+// request looks the entries up once (newDenySet) and holds what it opens
+// to them by identity too (denySet.hit), so an entry moved since its check
+// is still denied.
 func insideAny(real string, deny []string) bool {
-	type nameEntry struct {
-		dir  os.FileInfo
-		name string
-	}
-	var denied []os.FileInfo
-	var names []nameEntry
-	for _, d := range deny {
-		if name, ok := nameOf(filepath.Base(d)); ok {
-			if fi, err := os.Stat(filepath.Dir(d)); err == nil {
-				names = append(names, nameEntry{fi, name})
-			}
-			continue
-		}
-		if fi, err := os.Stat(d); err == nil {
-			denied = append(denied, fi)
-		}
-	}
-	if len(denied) == 0 && len(names) == 0 {
+	return newDenySet(deny).inside(real)
+}
+
+// inside is insideAny for the entries d holds.
+func (d denySet) inside(real string) bool {
+	if d.empty() {
 		return false
 	}
 	// Every ancestor counts, above root too: a session may run inside one.
 	for p := real; ; p = filepath.Dir(p) {
-		if len(denied) > 0 {
-			if fi, err := os.Stat(p); err == nil {
-				for _, d := range denied {
-					if os.SameFile(fi, d) {
-						return true
-					}
-				}
-			}
+		var fi, dir os.FileInfo
+		if len(d.files) > 0 {
+			fi, _ = os.Stat(p)
 		}
 		// The name decides first; the directory is looked at only for a match.
-		if base := filepath.Base(p); len(names) > 0 {
-			var dir os.FileInfo
-			for _, n := range names {
-				if !containsFold(base, n.name) {
-					continue
-				}
-				if dir == nil {
-					fi, err := os.Stat(filepath.Dir(p))
-					if err != nil {
-						break
-					}
-					dir = fi
-				}
-				if os.SameFile(dir, n.dir) {
-					return true
-				}
-			}
+		base := filepath.Base(p)
+		if slices.ContainsFunc(d.names, func(n nameEntry) bool { return containsFold(base, n.name) }) {
+			dir, _ = os.Stat(filepath.Dir(p))
+		}
+		if d.hit(fi, base, dir) {
+			return true
 		}
 		if filepath.Dir(p) == p {
 			return false

@@ -195,8 +195,23 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			env[k] = v
 		}
 	}
-	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, Env: hostEnv(env), Cols: cols, Rows: rows})
+	// The folder is opened once: the process starts in it and the
+	// session's file reads and saves go through it.
+	folder, err := session.OpenFolder(dir)
 	if err != nil {
+		firstConn.Close(websocket.StatusNormalClosure, "start failed")
+		return Result{}, err
+	}
+	dirFile, err := folder.Dir()
+	if err != nil {
+		folder.Close()
+		firstConn.Close(websocket.StatusNormalClosure, "start failed")
+		return Result{}, err
+	}
+	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: hostEnv(env), Cols: cols, Rows: rows})
+	dirFile.Close()
+	if err != nil {
+		folder.Close()
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
@@ -221,6 +236,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		FileView:        opts.FileView,
 		FileEdit:        opts.FileEdit,
 		FileDenyFunc:    opts.FileDeny,
+		Folder:          folder,
 		Transport:       proto.TransportWebRTC,
 		Log:             opts.Log,
 		OnChange:        a.onLocalChange,
