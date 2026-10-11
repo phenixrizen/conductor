@@ -1076,7 +1076,9 @@ func (a *agent) sendViewerError(viewerID, code, msg string) {
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
-	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners)
+	// A switchyard's viewer is never the owner's window, whatever else says
+	// so: its workbench is its operator's (Options.Switchyard).
+	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice

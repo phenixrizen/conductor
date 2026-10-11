@@ -934,3 +934,20 @@ func TestHostLinkIsAskedAgainAfterTheConnectionDrops(t *testing.T) {
 		t.Fatalf("link requests past the dropped one: %d", -n)
 	}
 }
+
+// A viewer a switchyard sends with no link is never one of the owner's own
+// windows, even with the server taken for the owner's: only a server of the
+// owner's own (conductor host --server-is-mine) sends those.
+func TestASwitchyardsViewerIsNeverTheOwners(t *testing.T) {
+	for _, tc := range []struct {
+		mine, yard, owner bool
+	}{{true, false, true}, {true, true, false}, {false, true, false}, {false, false, false}} {
+		a, _ := testAgent(t, Options{ServerIsOwners: tc.mine, Switchyard: tc.yard, RelayOnly: true})
+		a.addPeer("0123456789abcdef", session.RoleControl, "", "")
+		p := a.peer("0123456789abcdef")
+		if p == nil || p.owner != tc.owner {
+			t.Fatalf("mine %v, switchyard %v: owner %v", tc.mine, tc.yard, p != nil && p.owner)
+		}
+		a.removePeer("0123456789abcdef")
+	}
+}
