@@ -519,7 +519,7 @@ func (s *Server) groupOf(hs *signal.HostedSession, g proto.RunGroup) (share.Grou
 	if err := g.Validate(); err != nil {
 		return share.Group{}, "invalid_request", err.Error()
 	}
-	out := share.Group{Name: g.Name}
+	out := share.Group{Name: g.Name, Revision: g.Revision}
 	for _, m := range g.Members {
 		if m.SessionID != "" {
 			other, ok := s.hosts.Get(m.SessionID)
@@ -560,6 +560,12 @@ func (s *Server) hostRunLink(hs *signal.HostedSession, hc *hostConnState, m prot
 	}
 	hc.linkTimes = append(hc.linkTimes, now)
 	link, token, err := s.links.CreateGroupLink(m.Run.ID, hs.Owner(), g, role, m.Label, time.Duration(m.TTLSeconds)*time.Second)
+	if errors.Is(err, share.ErrStaleGroup) {
+		// Members the host sent before those the run's links hold: no link
+		// is made with them.
+		refuse("stale", "the run's links hold members the host sent after these")
+		return
+	}
 	if err != nil {
 		refuse("link_refused", err.Error())
 		return
@@ -577,7 +583,11 @@ func (s *Server) hostRunLink(hs *signal.HostedSession, hc *hostConnState, m prot
 }
 
 // hostRunLinkUpdate gives the links of a host's run its members now and
-// answers link_run_updated, or not_found when the run has none here.
+// answers link_run_updated, not_found when the run has none here, or stale
+// when its links hold members the host sent after these (a revision as
+// high or higher): an update that reaches the switchyard after a later one,
+// over another member's connection or the connection before a reconnect,
+// changes nothing.
 func (s *Server) hostRunLinkUpdate(hs *signal.HostedSession, hc *hostConnState, m proto.HostRunLinkUpdateMsg) {
 	refuse := func(code, msg string) {
 		_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: code, Message: msg, RequestID: m.RequestID})
@@ -594,7 +604,11 @@ func (s *Server) hostRunLinkUpdate(hs *signal.HostedSession, hc *hostConnState, 
 		refuse(code, msg)
 		return
 	}
-	changed, left := s.links.SetGroup(hs.Owner(), m.Run.ID, g)
+	changed, left, err := s.links.SetGroup(hs.Owner(), m.Run.ID, g)
+	if err != nil {
+		refuse("stale", "the run's links hold members the host sent after these")
+		return
+	}
 	if len(changed) == 0 {
 		refuse("not_found", "no links for this run")
 		return

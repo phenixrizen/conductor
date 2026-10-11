@@ -220,6 +220,71 @@ func TestAHostMintsARunLinkAtTheServer(t *testing.T) {
 	}
 }
 
+// A host's run members carry a revision: an update whose revision is not
+// above the one the run's links hold, from another member's connection or
+// the same one, is refused with stale and changes nothing (a session it
+// names that a later update dropped stays out of reach); so is a run link
+// minted with such members, which is not made. An update without a
+// revision, an older host's, is taken; a revision out of bounds is refused.
+func TestARunUpdateOlderThanTheOneHeldChangesNothing(t *testing.T) {
+	e := switchyardEnv(t, true)
+	hostInfo := proto.HostInfo{Name: "laptop", Instance: "instance-secret-0123456789"}
+	sess := func(local string) proto.HostSession {
+		return proto.HostSession{Name: local, AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, LocalID: local}
+	}
+	a, _ := dialFakeHostWith(t, e, hostInfo, sess("a"), "Bearer test-host-token")
+	b, _ := dialFakeHostWith(t, e, hostInfo, sess("b"), "Bearer test-host-token")
+	group := func(rev int64, ids ...string) proto.RunGroup {
+		g := proto.RunGroup{ID: "pair-0123abcd", Name: "pair", Revision: rev}
+		for i, id := range ids {
+			g.Members = append(g.Members, proto.RunMember{Name: fmt.Sprintf("m%d", i), SessionID: id, AgentID: "cat", Status: "running"})
+		}
+		return g
+	}
+	a.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r1", Role: "view", Run: group(10, a.sessionID, b.sessionID)})
+	u := a.expect(proto.HostLinkCreated)["url"].(string)
+	token := u[strings.LastIndex(u, "/")+1:]
+	onB := dialViewer(t, e, b.sessionID, token)
+	onB.expectControl(proto.CtlWelcome)
+
+	a.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u12", Run: group(12, a.sessionID, "")})
+	a.expect(proto.HostRunLinkUpdated)
+	onB.expectClose(proto.CloseForbidden)
+	for _, tc := range []struct {
+		host *fakeHost
+		rev  int64
+	}{{b, 11}, {a, 11}, {b, 12}} {
+		id := fmt.Sprintf("u%d", tc.rev)
+		tc.host.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: id, Run: group(tc.rev, a.sessionID, b.sessionID)})
+		if m := tc.host.expect(proto.HostError); m["code"] != "stale" || m["requestId"] != id {
+			t.Fatalf("revision %d after 12: %v", tc.rev, m)
+		}
+		dialViewer(t, e, b.sessionID, token).expectClose(proto.CloseUnauthorized)
+	}
+	links := e.srv.links.Count()
+	b.send(proto.HostRunLinkMsg{T: proto.HostRunLink, RequestID: "r2", Role: "view", Run: group(11, a.sessionID, b.sessionID)})
+	if m := b.expect(proto.HostError); m["code"] != "stale" || m["requestId"] != "r2" {
+		t.Fatalf("a run link with older members: %v", m)
+	}
+	if n := e.srv.links.Count(); n != links {
+		t.Fatalf("links %d after a refused run link, %d before", n, links)
+	}
+	for _, rev := range []int64{-1, proto.MaxRunRevision + 1} {
+		b.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "bad", Run: group(rev, a.sessionID)})
+		if m := b.expect(proto.HostError); m["code"] != "invalid_request" {
+			t.Fatalf("revision %d: %v", rev, m)
+		}
+	}
+
+	// An older host's update, without a revision, is taken as it comes.
+	b.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u0", Run: group(0, a.sessionID, b.sessionID)})
+	b.expect(proto.HostRunLinkUpdated)
+	dialViewer(t, e, b.sessionID, token).expectControl(proto.CtlWelcome)
+	b.send(proto.HostRunLinkUpdateMsg{T: proto.HostRunLinkUpdate, RequestID: "u13", Run: group(13, a.sessionID, "")})
+	b.expect(proto.HostRunLinkUpdated)
+	dialViewer(t, e, b.sessionID, token).expectClose(proto.CloseUnauthorized)
+}
+
 // A hosted session that ends takes its links with it: none listed, the join
 // says the link is revoked, and a revoke of it afterwards succeeds.
 func TestAHostedSessionThatEndedTakesItsLinks(t *testing.T) {

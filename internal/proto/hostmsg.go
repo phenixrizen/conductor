@@ -272,15 +272,27 @@ const (
 	// RunLinkUpdatesPerMinute bounds link_run_update per connection; link_run
 	// shares the link bucket (LinkRequestsPerMinute).
 	RunLinkUpdatesPerMinute = 30
+	// MaxRunRevision bounds RunGroup.Revision: the largest integer every
+	// JSON reader holds exactly (2^53 - 1).
+	MaxRunRevision = 1<<53 - 1
 )
 
 // RunGroup is a crew run as a switchyard shows it on the join page: the
 // host's run id (opaque there), its name, and its members with the id each
 // one's session has there, empty while it has none.
+//
+// Revision orders the groups a host sends of one run, in link_run and
+// link_run_update alike: each is higher than every one the host sent before
+// it, and a switchyard refuses a group whose revision is not above the
+// highest it holds for the run (error stale), so a group sent before
+// another and delivered after it never replaces it. 0 (no field) is a host
+// that numbers nothing, an older one, whose groups are taken in the order
+// they come; a switchyard that knows no revision ignores the field.
 type RunGroup struct {
-	ID      string      `json:"id"`
-	Name    string      `json:"name"`
-	Members []RunMember `json:"members"`
+	ID       string      `json:"id"`
+	Name     string      `json:"name"`
+	Members  []RunMember `json:"members"`
+	Revision int64       `json:"revision,omitempty"`
 }
 
 // RunMember is a member of a RunGroup.
@@ -293,10 +305,13 @@ type RunMember struct {
 
 // Validate checks a group against the bounds above: an id and a name, at
 // most MaxRunLinkMembers members with unique names, each with an agent and
-// one of the four statuses.
+// one of the four statuses, and a revision from 0 to MaxRunRevision.
 func (g RunGroup) Validate() error {
 	if g.ID == "" || len(g.ID) > MaxRunID || g.Name == "" || len(g.Name) > MaxRunName {
 		return errors.New("run: id and name required, within bounds")
+	}
+	if g.Revision < 0 || g.Revision > MaxRunRevision {
+		return fmt.Errorf("run: a revision from 0 to %d", int64(MaxRunRevision))
 	}
 	if len(g.Members) == 0 || len(g.Members) > MaxRunLinkMembers {
 		return fmt.Errorf("run: 1 to %d members", MaxRunLinkMembers)
@@ -330,7 +345,8 @@ type HostRunLinkMsg struct {
 }
 
 // HostRunLinkUpdateMsg tells the server a run's members now: the links
-// minted for the run follow them.
+// minted for the run follow them, unless they hold a group of a higher
+// revision already (RunGroup.Revision; error stale).
 type HostRunLinkUpdateMsg struct {
 	T         string   `json:"t"`
 	RequestID string   `json:"requestId"`

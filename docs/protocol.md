@@ -282,17 +282,31 @@ without a `requestId` is a protocol error), `link_revoke{requestId, linkId}`
 (revoke a link the server minted for this session, or a run link its
 instance minted: `linkId` ≤ 64 bytes; never counted against the link bucket;
 a missing or oversize field is a protocol error),
-`link_run{requestId, role, ttlSeconds?, label?, run: {id, name, members: [{name, sessionId?, agentId, status}]}}`
+`link_run{requestId, role, ttlSeconds?, label?, run: {id, name, members: [{name, sessionId?, agentId, status}], revision?}}`
 (one link to the sessions of a crew run's members, each `sessionId` the
 member's session on this server; the run id ≤ 64 bytes, its name ≤ 120, 1 to
 32 members with unique names ≤ 40 bytes, an agent ≤ 64, a status of
-`pending`, `starting`, `running` or `ended`; it needs a host registered with
+`pending`, `starting`, `running` or `ended`, a `revision` from 0 to 2^53 − 1
+(see below); it needs a host registered with
 an instance, else `error{no_instance}`, and every session must be one this
 instance registered, else `error{invalid_request}`; it shares the link bucket)
 and `link_run_update{requestId, run}` (the run's members now: the run's links
 follow them, and a viewer attached through one of them to a session the run
 no longer names is closed with `4403`; at most 30 a minute per connection;
 `error{not_found}` when the run has no link here).
+`run.revision` orders the members a host sends of one run: each group it
+sends, by `link_run` or `link_run_update`, has a higher revision than every
+one before it. A server that holds a revision for the run (the highest of
+its links', revoked ones included) refuses a group whose revision is not
+above it with `error{stale}`: no link is minted with it and no link changes,
+so members sent before others and delivered after them (over another
+member's connection, or the connection before a reconnect) never replace
+them. A group with no revision (0, an older host) is taken as it comes, and
+the links keep the highest revision they held. The server holds revisions in
+memory alone, never in the files it keeps links in: a group sent before it
+started cannot reach it after. A server that knows no revision ignores the
+field (it decodes host messages without refusing unknown fields), and an
+older host sends none.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
 (`links`: the ids of the live links the server holds for the session, `[]`
@@ -315,7 +329,7 @@ sweep, tries again; until then `registered.links` still lists it, so the
 host keeps its record), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
-`store_unavailable`).
+`store_unavailable`, `stale`).
 
 A run link minted by `link_run` resolves on the join page as a run link does
 (`{run: {id, name, members}, role, label, switchyard}`), each member with
@@ -325,7 +339,14 @@ mints it when its run's Share asks (`POST /api/runs/{run}/links` answers
 `201 {link: {…, runId, remote: true}, url, invite, remote: true}`, or a local
 link with `rendezvous: {server, error}` when no member is published), sends
 `link_run_update` two seconds after the run changes (only when the members it
-would send differ from the last), and revokes it with `link_revoke`.
+would send differ from the last), and revokes it with `link_revoke`. Its
+link requests and updates of one run take turns, each reading the members
+as they are when its turn comes and giving them a revision above every one
+it gave before (at least its clock's milliseconds). An update that gets no
+answer within 15 s, or is refused with `stale` or `rate_limited`, is made
+again five seconds later with the members as they are then, whatever was
+sent last; the one that got no answer, should it land after, is refused as
+stale.
 
 `activity` carries one activity-log entry, the fields of the `activity`
 control message above (`entry` has its own `t`), in both directions. Host to
