@@ -26,14 +26,9 @@ const (
 var errFindStop = errors.New("stop")
 
 // maxFindScan is the entries one find reads in all (MaxFindScan; a test
-// lowers it), and findChunk how many one read of a folder takes, the
-// deadline looked at between them. A folder opened through the session's
-// folder is read with each entry's stat (os.Root's ReadDir), which is the
-// work these bound.
-var (
-	maxFindScan = MaxFindScan
-	findChunk   = 256
-)
+// lowers it), each name counted as it is read and then looked at through
+// its folder (readFolder), the deadline looked at between reads.
+var maxFindScan = MaxFindScan
 
 // FindPath walks root for files whose name holds query (case-insensitive),
 // skipping .git, node_modules and what the deny list refuses, and answers a
@@ -112,11 +107,13 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 			dir.Close()
 		}
 	}()
-	entries, complete := w.readEntries(dir)
+	left := maxFindScan - w.read
+	entries, complete, _ := readFolder(dir, &left, func() bool { return time.Now().After(w.deadline) })
+	w.read = maxFindScan - left
 	if !complete {
 		w.h.Truncated = true
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 	// open has dir open again, from the top, once a folder inside it was
 	// walked and an entry left needs it; only then, and within the
 	// bounds checked before it, so going back up a deep tree costs nothing
@@ -143,9 +140,9 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 			w.h.Truncated = true
 			return errFindStop
 		}
-		name := e.Name()
+		name := e.name
 		p := path.Join(filepath.ToSlash(rel), name)
-		if e.IsDir() {
+		if e.fi.IsDir() {
 			if name == ".git" || name == "node_modules" {
 				continue
 			}
@@ -186,31 +183,4 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 		w.h.Matches = append(w.h.Matches, p)
 	}
 	return nil
-}
-
-// readEntries reads the entries of dir, open, findChunk at a time, each
-// counted against maxFindScan as it is read and the deadline looked at
-// between reads; complete is false when it stopped at either with entries
-// left (or when one more read is all that could tell). A folder that
-// cannot be read gives none, complete.
-func (w *finder) readEntries(dir *os.Root) (entries []os.DirEntry, complete bool) {
-	d, err := dir.Open(".")
-	if err != nil {
-		return nil, true
-	}
-	defer d.Close()
-	for {
-		left := maxFindScan - w.read
-		if left <= 0 || time.Now().After(w.deadline) {
-			more, _ := d.ReadDir(1)
-			return entries, len(more) == 0
-		}
-		chunk, err := d.ReadDir(min(findChunk, left))
-		w.read += len(chunk)
-		entries = append(entries, chunk...)
-		if err != nil || len(chunk) == 0 {
-			// io.EOF at the end; another error ends the folder's entries too.
-			return entries, true
-		}
-	}
 }

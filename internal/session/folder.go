@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,6 +259,50 @@ func stepDir(dir *os.Root, dirID os.FileInfo, name string, deny denySet) (*os.Ro
 		return nil, nil, errPathChanged
 	}
 	return next, got, nil
+}
+
+// folderEntry is an entry of a folder as read through its handle: its
+// name and its Lstat through the folder (a link not followed).
+type folderEntry struct {
+	name string
+	fi   os.FileInfo
+}
+
+// readChunk is how many names one read of a folder takes (readFolder).
+const readChunk = 256
+
+// readFolder reads the entries of dir, open: their names alone, readChunk
+// at a time, each counted against *budget before it is looked at through
+// dir (Lstat), so every name read is counted, one gone by its look
+// included (a stat in the read itself would skip those uncounted on some
+// systems). stop, asked between reads, ends it early. complete is false
+// when names were left unread (a last read of one name tells). err is
+// why the folder could not be opened or read, with what was read before.
+func readFolder(dir *os.Root, budget *int, stop func() bool) (entries []folderEntry, complete bool, err error) {
+	d, err := dir.Open(".")
+	if err != nil {
+		return nil, true, err
+	}
+	defer d.Close()
+	for {
+		if *budget <= 0 || stop() {
+			more, _ := d.Readdirnames(1)
+			return entries, len(more) == 0, nil
+		}
+		names, err := d.Readdirnames(min(readChunk, *budget))
+		for _, name := range names {
+			*budget--
+			if fi, err := dir.Lstat(name); err == nil {
+				entries = append(entries, folderEntry{name, fi})
+			}
+		}
+		switch {
+		case errors.Is(err, io.EOF) || err == nil && len(names) == 0:
+			return entries, true, nil
+		case err != nil:
+			return entries, true, err
+		}
+	}
 }
 
 // openFileIn opens the regular file name in dir for reading, which must be

@@ -264,54 +264,35 @@ func readFile(h proto.FileHeader, raw string, file *os.File, fi os.FileInfo) (pr
 	return h, body
 }
 
-// maxListScan is the entries a listing reads at most (a test lowers it):
-// a folder opened through the session's folder is read with each entry's
-// stat (os.Root's ReadDir), so a listing of a folder with more entries
-// sorts the first maxListScan it reads and says it is truncated.
+// maxListScan is the entries a listing reads at most (a test lowers it),
+// each name counted as it is read and then looked at through its folder
+// (readFolder): a listing of a folder with more sorts the first
+// maxListScan it reads and says it is truncated.
 var maxListScan = 10 * MaxDirEntries
 
 // listDir lists dir, open: directories first, then by name, at most
 // MaxDirEntries of the first maxListScan entries read (truncated when
-// there are more), each entry's size looked up through dir, not by a path
-// that could lead elsewhere by then.
+// there are more), each entry looked up through dir, not by a path that
+// could lead elsewhere by then.
 func listDir(dir *os.Root) (entries []proto.FileEntry, truncated bool, err error) {
-	d, err := dir.Open(".")
+	budget := maxListScan
+	all, complete, err := readFolder(dir, &budget, func() bool { return false })
 	if err != nil {
 		return nil, false, err
 	}
-	defer d.Close()
-	var all []os.DirEntry
-	for {
-		if len(all) >= maxListScan {
-			more, _ := d.ReadDir(1)
-			truncated = len(more) > 0
-			break
-		}
-		chunk, err := d.ReadDir(min(256, maxListScan-len(all)))
-		all = append(all, chunk...)
-		if errors.Is(err, io.EOF) || err == nil && len(chunk) == 0 {
-			break
-		}
-		if err != nil {
-			return nil, false, err
-		}
-	}
+	truncated = !complete
 	sort.Slice(all, func(i, j int) bool {
-		if all[i].IsDir() != all[j].IsDir() {
-			return all[i].IsDir()
+		if all[i].fi.IsDir() != all[j].fi.IsDir() {
+			return all[i].fi.IsDir()
 		}
-		return all[i].Name() < all[j].Name()
+		return all[i].name < all[j].name
 	})
 	for i, e := range all {
 		if i >= MaxDirEntries {
 			truncated = true
 			break
 		}
-		var size int64
-		if info, err := dir.Lstat(e.Name()); err == nil {
-			size = info.Size()
-		}
-		entries = append(entries, proto.FileEntry{Name: e.Name(), Dir: e.IsDir(), Size: size})
+		entries = append(entries, proto.FileEntry{Name: e.name, Dir: e.fi.IsDir(), Size: e.fi.Size()})
 	}
 	return entries, truncated, nil
 }

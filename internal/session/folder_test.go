@@ -630,6 +630,34 @@ func TestFindPathOpensAFolderAgainOnlyWhenAnEntryNeedsIt(t *testing.T) {
 	}
 }
 
+// A folder's read counts every name it reads against its budget before it
+// looks at it: it stops at the budget and says names were left, reads a
+// folder within it whole, and stops when asked to.
+func TestReadFolderCountsEveryName(t *testing.T) {
+	root := t.TempDir()
+	for i := range 10 {
+		os.WriteFile(filepath.Join(root, fmt.Sprintf("f%02d", i)), []byte("x"), 0o644)
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	never := func() bool { return false }
+	budget := 4
+	if entries, complete, err := readFolder(r, &budget, never); err != nil || len(entries) != 4 || complete || budget != 0 {
+		t.Fatalf("budget 4: %d entries, complete %v, budget left %d, %v", len(entries), complete, budget, err)
+	}
+	budget = 10
+	if entries, complete, err := readFolder(r, &budget, never); err != nil || len(entries) != 10 || !complete || budget != 0 || entries[0].fi == nil {
+		t.Fatalf("budget 10: %d entries, complete %v, budget left %d, %v", len(entries), complete, budget, err)
+	}
+	budget = 100
+	if entries, complete, _ := readFolder(r, &budget, func() bool { return true }); len(entries) != 0 || complete {
+		t.Fatalf("stopped at once: %d entries, complete %v", len(entries), complete)
+	}
+}
+
 // A listing reads at most maxListScan entries: a folder with more shows
 // those it read, sorted, and says it is truncated; one with fewer is
 // listed whole.
@@ -660,9 +688,9 @@ func TestReadPathListsAtMostItsReadBound(t *testing.T) {
 // one more look, and says it stopped short; a tree within the bound is read
 // whole.
 func TestFindPathReadsAtMostItsBoundInAll(t *testing.T) {
-	old, oldChunk := maxFindScan, findChunk
-	maxFindScan, findChunk = 30, 7
-	t.Cleanup(func() { maxFindScan, findChunk = old, oldChunk })
+	old := maxFindScan
+	maxFindScan = 30
+	t.Cleanup(func() { maxFindScan = old })
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "a"), 0o755)
 	for i := range 25 {
