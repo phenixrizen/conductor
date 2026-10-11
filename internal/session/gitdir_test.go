@@ -410,7 +410,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Stat(filepath.Join(root, branchRef)); err != nil {
 		t.Fatalf("the branch's loose ref: %v", err)
 	}
-	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new", "head-copy", "settings5", "project/git-pointer"}
+	refused := []string{"settings", "meta/config", "tools/hooks/pre-commit", "tools/hooks/post-checkout", "ptr4", branchRef, "split/shared/config", "worktree-settings", "spaced/shared /config", "settings3", "reftable-store/tables.list", "bigcommon/shared/config", "bigcommon/shared/new", "head-copy", "settings5", "project/git-pointer", "alias"}
 	for i, p := range refused {
 		id := fmt.Sprintf("m%d", i)
 		save(s, sub, id, p, []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
@@ -430,9 +430,16 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	if _, err := os.Lstat(filepath.Join(root, "project", "git-pointer")); err == nil {
 		t.Fatal("the file a dangling .git link names was made")
 	}
+	// alias, the link in the middle of .git/shallow's dangling chain, is
+	// still a link (a save would have replaced it with a file).
+	if fi, err := os.Lstat(filepath.Join(root, "alias")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("alias: %v %v", fi, err)
+	}
 	if nvim.Available() {
-		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-pointer", Path: "project/git-pointer"}); !errors.Is(err, errGitDir) {
-			t.Errorf("Neovim on project/git-pointer: %v", err)
+		for _, p := range []string{"project/git-pointer", "alias"} {
+			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
+				t.Errorf("Neovim on %s: %v", p, err)
+			}
 		}
 	}
 	for _, p := range []string{"settings", "tools/hooks/pre-commit", "ptr4", branchRef, "split/shared/config", "spaced/shared /config", "head-copy"} {

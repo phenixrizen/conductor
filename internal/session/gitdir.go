@@ -111,9 +111,9 @@ func inGitDir(real string) bool {
 }
 
 // gitIDs is what a repository's metadata is, to compare a path with:
-// files and directories by identity, the paths metadata links point to
-// that do not exist yet (a save there would make the file), and whether
-// any of it could not be told in full.
+// files and directories by identity, the paths a save would make or
+// replace along a metadata link that leads to nothing yet (the links of its
+// chain and its end), and whether any of it could not be told in full.
 type gitIDs struct {
 	files      []os.FileInfo
 	missing    []string
@@ -168,7 +168,7 @@ func gitDirsIn(dir string, ids *gitIDs) {
 		// end would be the folder's .git.
 		if lfi.Mode()&os.ModeSymlink != 0 {
 			if dest, ok := linkDestination(dotgit); ok {
-				ids.missing = append(ids.missing, dest)
+				ids.missing = append(ids.missing, dest...)
 			} else {
 				ids.incomplete = true
 			}
@@ -310,7 +310,7 @@ func linkedMetadata(gitDir string, ids *gitIDs) {
 		if target, err := os.Stat(p); err == nil {
 			ids.files = append(ids.files, target)
 		} else if dest, ok := linkDestination(p); ok {
-			ids.missing = append(ids.missing, dest)
+			ids.missing = append(ids.missing, dest...)
 		} else {
 			ids.incomplete = true
 		}
@@ -363,32 +363,38 @@ const maxLinkHops = 40
 // one, each target from its link's own directory, as the kernel walks
 // them, and the last spelt as ResolvePath spells a path whose last element
 // does not exist (its parent's links resolved, the element as written).
-func linkDestination(p string) (string, bool) {
+//
+// The links of the chain after the first are returned too, before the
+// end: a save to one of them (a dangling link resolves to itself) would
+// replace it with a file the chain then leads to.
+func linkDestination(p string) ([]string, bool) {
+	var chain []string
 	for range maxLinkHops {
 		t, err := os.Readlink(p)
 		if err != nil {
-			return "", false
+			return nil, false
 		}
 		dest := rawJoin(rawDir(p), t)
 		parent, err := filepath.EvalSymlinks(rawDir(dest))
 		if err != nil {
-			return "", false
+			return nil, false
 		}
 		last := dest[strings.LastIndexByte(dest, filepath.Separator)+1:]
 		if last == "" || last == "." || last == ".." {
-			return "", false
+			return nil, false
 		}
 		next := filepath.Join(parent, last)
 		fi, err := os.Lstat(next)
 		if err != nil {
-			return next, true
+			return append(chain, next), true
 		}
 		if fi.Mode()&os.ModeSymlink == 0 {
-			return "", false
+			return nil, false
 		}
+		chain = append(chain, next)
 		p = next
 	}
-	return "", false
+	return nil, false
 }
 
 // rawDir is the directory part of p, not cleaned: rawJoin's counterpart.
