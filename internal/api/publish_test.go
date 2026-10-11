@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -663,5 +665,95 @@ func TestAStopFromTheSwitchyardEndsThePublicationNotTheSession(t *testing.T) {
 	}
 	if nd, ok := rendezvous.srv.Registry().Get(pub.CurrentID()); !ok || nd.Info().Status != session.StatusRunning {
 		t.Fatalf("the new publication there: %v", ok)
+	}
+}
+
+// flakyPublisher is an uplink that refuses while down is set, as a
+// switchyard out of reach does.
+type flakyPublisher struct {
+	uplinkPublisher
+	down atomic.Bool
+}
+
+func (p *flakyPublisher) Publish(ctx context.Context, local *session.Local) (PublishedSession, error) {
+	if p.down.Load() {
+		return nil, errors.New("dial: connection refused")
+	}
+	return p.uplinkPublisher.Publish(ctx, local)
+}
+
+// A session whose publication the switchyard ended stays owed one until one
+// is made: a Share while the switchyard is out of reach makes a link here
+// and says why, and the next Share, once it is back, publishes the session
+// again. Two Shares at once make one publication.
+func TestARepublishThatFailedIsTriedAgainAtTheNextShare(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) {
+		c.PublicURL = "https://rendezvous.example.net"
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	})
+	local := newTestEnv(t, nil)
+	pub := &flakyPublisher{uplinkPublisher: uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, HostName: "office-server", RelayOnly: true}}}
+	local.srv.SetPublisher(pub)
+	id := local.createSession("cat")
+	var hosted session.Info
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && hosted.ID == "" {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" {
+				hosted = i
+			}
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hosted.ID == "" {
+		t.Fatal("the rendezvous never listed the session")
+	}
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+hosted.ID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the switchyard: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && local.srv.publishedOf(id) != nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if local.srv.publishedOf(id) != nil {
+		t.Fatal("the ended publication is still held")
+	}
+
+	// Out of reach: a link here, saying why.
+	pub.down.Store(true)
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	rv, _ := out["rendezvous"].(map[string]any)
+	if resp.StatusCode != http.StatusCreated || out["remote"] == true || !strings.Contains(fmt.Sprint(rv["error"]), "connection refused") {
+		t.Fatalf("share while out of reach: %d %v", resp.StatusCode, out)
+	}
+
+	// Back: the next Shares publish it again, once.
+	pub.down.Store(false)
+	var wg sync.WaitGroup
+	remote := make(chan bool, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+			remote <- out["remote"] == true
+		}()
+	}
+	wg.Wait()
+	close(remote)
+	for r := range remote {
+		if !r {
+			t.Fatal("a Share once the switchyard was back made a link here")
+		}
+	}
+	running := 0
+	rendezvous.srv.Registry().Each(func(d session.Driver) {
+		if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" && i.Status == session.StatusRunning {
+			running++
+		}
+	})
+	if running != 1 {
+		t.Fatalf("%d publications of the session there", running)
 	}
 }

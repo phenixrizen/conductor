@@ -143,11 +143,17 @@ func (s *Server) publish(local *session.Local) {
 		return
 	}
 	// A link request made meanwhile waits for this to end (awaitPublication).
+	// One publication of a session is made at a time: a second asked for
+	// while one is under way (two Shares republishing at once) is that one.
 	id := local.Info().ID
 	pending := make(chan struct{})
 	s.pubMu.Lock()
 	if s.pubPending == nil {
 		s.pubPending = map[string]chan struct{}{}
+	}
+	if s.pubPending[id] != nil {
+		s.pubMu.Unlock()
+		return
 	}
 	s.pubPending[id] = pending
 	delete(s.pubErr, id)
@@ -209,6 +215,7 @@ func (s *Server) publish(local *session.Local) {
 		gone := s.pubGone[local.Info().ID]
 		if !gone {
 			s.published[local.Info().ID] = pub
+			delete(s.pubStopped, local.Info().ID)
 		}
 		s.pubMu.Unlock()
 		if gone {
@@ -272,11 +279,13 @@ func (s *Server) watchPublication(local *session.Local, pub PublishedSession) {
 }
 
 // republish publishes session id again when the switchyard ended its
-// publication: its owner's Share is the word to. It reports whether it did.
+// publication: its owner's Share is the word to. The session stays owed a
+// publication until one is made, so a Share whose try failed (the
+// switchyard unreachable for a while) is followed by another try at the
+// next. It reports whether it tried.
 func (s *Server) republish(id string) bool {
 	s.pubMu.Lock()
-	again := s.pubStopped[id] && s.publisher != nil
-	delete(s.pubStopped, id)
+	again := s.pubStopped[id] && s.publisher != nil && s.published[id] == nil && s.pubPending[id] == nil
 	s.pubMu.Unlock()
 	if !again {
 		return false
