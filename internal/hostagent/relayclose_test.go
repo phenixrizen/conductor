@@ -304,11 +304,20 @@ func TestTheWaitForRoomHasOneDeadlinePerFrame(t *testing.T) {
 	}
 }
 
-// heldSink takes nothing until released: a transport still closing.
-type heldSink struct{ release chan struct{} }
+// heldSink takes nothing until released: a transport still closing. writing
+// is told once a write waits.
+type heldSink struct {
+	release chan struct{}
+	writing chan struct{}
+	once    *sync.Once
+}
 
-func (s heldSink) WriteFrame([]byte) error { <-s.release; return nil }
-func (s heldSink) Close(error)             {}
+func (s heldSink) WriteFrame([]byte) error {
+	s.once.Do(func() { close(s.writing) })
+	<-s.release
+	return nil
+}
+func (s heldSink) Close(error) {}
 
 // At the viewer cap, a viewer whose data channel went first and which then
 // moves to the relay takes over its own slot, though its old transport still
@@ -332,12 +341,14 @@ func TestAViewerMovingToTheRelayAfterItsChannelWentKeepsItsSlot(t *testing.T) {
 		}
 	}
 	const id = "0123456789abcdef"
-	held := heldSink{release: make(chan struct{})}
+	held := heldSink{release: make(chan struct{}), writing: make(chan struct{}), once: &sync.Once{}}
 	defer close(held.release)
 	old, err := local.AttachWith(session.AttachOptions{ID: id, Role: session.RoleView, Name: "v"}, held)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Its transport is busy with a write, so it still closes after the detach.
+	<-held.writing
 	p := newPeer(a, id, session.RoleView, "", "", false)
 	p.mu.Lock()
 	p.sub = old
@@ -359,5 +370,52 @@ func TestAViewerMovingToTheRelayAfterItsChannelWentKeepsItsSlot(t *testing.T) {
 	case <-old.Closed():
 		t.Fatal("the old transport was meant to be still closing")
 	default:
+	}
+}
+
+// The relay's attach can come while the data channel's detach is still on
+// its way (noted, its Local.Detach not run yet): the attach ends the old
+// subscription where it stands and takes its slot, and the late Detach
+// leaves the replacement attached.
+func TestARelayAttachBeforeTheChannelsDetachFinishesKeepsTheSlot(t *testing.T) {
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	local := session.NewLocal(session.Info{ID: "s", Cols: 80, Rows: 24}, proc, session.Options{MaxViewers: 1})
+	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: discardLog}
+	var mu sync.Mutex
+	var refused []string
+	a.sendHook = func(v any) {
+		if e, ok := v.(proto.ViewerError); ok {
+			mu.Lock()
+			refused = append(refused, e.Code+": "+e.Message)
+			mu.Unlock()
+		}
+	}
+	const id = "0123456789abcdef"
+	held := heldSink{release: make(chan struct{}), writing: make(chan struct{}), once: &sync.Once{}}
+	defer close(held.release)
+	old, err := local.AttachWith(session.AttachOptions{ID: id, Role: session.RoleView, Name: "v"}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-held.writing
+	p := newPeer(a, id, session.RoleView, "", "", false)
+	// What detachDataChannel has done before its Local.Detach.
+	p.mu.Lock()
+	p.replaces = old
+	p.relay = &relaySink{a: a, viewerID: id}
+	p.mu.Unlock()
+	p.attach(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "v"})
+	p.mu.Lock()
+	sub := p.sub
+	p.mu.Unlock()
+	local.Detach(old)
+	mu.Lock()
+	defer mu.Unlock()
+	if sub == nil || sub == old || len(refused) != 0 {
+		t.Fatalf("the relay's attach before the detach finished was refused: %q", refused)
 	}
 }

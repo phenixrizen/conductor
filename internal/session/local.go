@@ -146,10 +146,12 @@ type Local struct {
 	// closing holds the clients that have left the hub (Detach) while their
 	// transport still closes: with the hub's, every client until its
 	// transport has closed, for DisconnectLink and CloseAll to wait for.
-	// The value says whether its slot toward MaxViewers has passed to the
-	// client that replaced it (AttachOptions.Replaces): such a one no longer
-	// counts toward the cap, but revokes and shutdowns still wait for it.
-	closing map[*Subscription]bool
+	closing map[*Subscription]struct{}
+	// passedOn holds the clients whose slot toward MaxViewers another took
+	// over (AttachOptions.Replaces), still attached or still closing: they
+	// no longer count toward the cap, while revokes and shutdowns still wait
+	// for them. A client leaves it as its transport closes.
+	passedOn map[*Subscription]struct{}
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
@@ -799,14 +801,26 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	// Every client whose transport is still open counts, an ended one whose
 	// transport still closes included: at most MaxViewers connections at once.
 	// The one this client replaces gives it its slot.
-	open := s.hub.Len()
-	for _, passed := range s.closing {
-		if !passed {
-			open++
+	// The client this one takes over gives it its slot, once. One still
+	// attached (the move seen before its old transport's end) ends here: its
+	// own Detach later finds it gone, so the move makes no leave and no join.
+	r := o.Replaces
+	_, given := s.passedOn[r]
+	replacing := r != nil && !given
+	if replacing && s.hub.remove(r) {
+		r.closeWith(nil)
+		select {
+		case <-r.closed:
+		default:
+			if s.closing == nil {
+				s.closing = map[*Subscription]struct{}{}
+			}
+			s.closing[r] = struct{}{}
 		}
 	}
-	passed, replacing := s.closing[o.Replaces]
-	replacing = replacing && o.Replaces != nil && !passed
+	_, closing := s.closing[r]
+	replacing = replacing && closing
+	open := s.hub.Len() + len(s.closing) - len(s.passedOn)
 	if replacing {
 		open--
 	}
@@ -894,7 +908,10 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	s.hub.add(sub)
 	if replacing {
 		// Its slot is this client's now, for every later check too.
-		s.closing[o.Replaces] = true
+		if s.passedOn == nil {
+			s.passedOn = map[*Subscription]struct{}{}
+		}
+		s.passedOn[r] = struct{}{}
 	}
 	// A credential that lapses closes the client as it lapses, one that
 	// attached a moment before included (at once when that moment has passed).
@@ -930,6 +947,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		<-sub.closed
 		s.mu.Lock()
 		delete(s.closing, sub)
+		delete(s.passedOn, sub)
 		s.mu.Unlock()
 	}()
 	if !sub.quiet {
@@ -947,16 +965,14 @@ func (s *Local) Detach(sub *Subscription) {
 	sub.closeWith(nil)
 	// Out of the hub, it stays among the closing until its transport has
 	// closed (AttachWith's watcher takes it out), for a revoke to wait for.
-	// A second Detach keeps what the first left (a slot passed on stays so).
 	select {
 	case <-sub.closed:
+		delete(s.passedOn, sub)
 	default:
 		if s.closing == nil {
-			s.closing = map[*Subscription]bool{}
+			s.closing = map[*Subscription]struct{}{}
 		}
-		if _, ok := s.closing[sub]; !ok {
-			s.closing[sub] = false
-		}
+		s.closing[sub] = struct{}{}
 	}
 	if s.sizer == sub.ID {
 		s.handOverSize()

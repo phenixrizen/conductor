@@ -489,9 +489,6 @@ func TestAClientReplacingAnotherTakesItsSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "someone", Replaces: old}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
-		t.Fatalf("replacing a client still attached: %v", err)
-	}
 	s.Detach(old)
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "other"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
 		t.Fatalf("a new client while the old transport closes: %v", err)
@@ -502,6 +499,49 @@ func TestAClientReplacingAnotherTakesItsSlot(t *testing.T) {
 	close(held.writes)
 	close(held.closes)
 	<-old.Closed()
+}
+
+// A move seen before the old client's detach (its data channel's close
+// still on its way): the replacement ends the old one where it stands and
+// takes its slot, with no leave and no join, and the old one's own Detach
+// after it changes nothing.
+func TestAClientReplacingOneStillAttachedEndsItAndTakesItsSlot(t *testing.T) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 1})
+	held := newHeldSink()
+	old, err := s.AttachWith(AttachOptions{ID: "viewer1", Role: RoleView, Name: "moving"}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repl, err := s.AttachWith(AttachOptions{ID: "viewer1", Role: RoleView, Name: "moving", Replaces: old}, newChanSink(false))
+	if err != nil {
+		t.Fatalf("replacing a client still attached: %v", err)
+	}
+	select {
+	case <-old.Done():
+	default:
+		t.Fatal("the old client did not end")
+	}
+	s.Detach(old)
+	if s.Viewers() != 1 {
+		t.Fatalf("viewers after the old one's Detach: %d", s.Viewers())
+	}
+	select {
+	case <-repl.Done():
+		t.Fatalf("the replacement ended: %v", repl.Reason())
+	default:
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "other"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("a third at the cap: %v", err)
+	}
+	close(held.writes)
+	close(held.closes)
+	<-old.Closed()
+	if !waitFor(time.Second, func() bool {
+		_, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "other"}, newChanSink(false))
+		return errors.Is(err, ErrTooManyViewers)
+	}) {
+		t.Fatal("the cap gave room once the old transport closed: the replacement's slot was counted twice")
+	}
 }
 
 // Two viewers moving at once at the cap each take over their own slot: a

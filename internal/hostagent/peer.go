@@ -434,7 +434,6 @@ func (p *peer) attach(hello proto.Hello) {
 		sink = p.dc
 	}
 	replaces := p.replaces
-	p.replaces = nil
 	p.mu.Unlock()
 	if sink == nil {
 		return
@@ -449,6 +448,8 @@ func (p *peer) attach(hello proto.Hello) {
 	}
 	p.mu.Lock()
 	p.sub = sub
+	// Handed over: a later attach of this viewer replaces this one.
+	p.replaces = nil
 	p.mu.Unlock()
 }
 
