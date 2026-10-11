@@ -506,7 +506,7 @@ func (s *Local) firePattern(line string) {
 // already.
 func (s *Local) fireTrust(text string) {
 	for _, q := range s.questions {
-		if words := q.Pattern.FindString(text); words != "" {
+		if words := q.words(text); words != "" {
 			s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting)
 			return
 		}
@@ -517,7 +517,39 @@ func (s *Local) fireTrust(text string) {
 // the pattern of its words on the screen and its answers as choices.
 type StartupQuestion struct {
 	Pattern *regexp.Regexp
+	// Words, when set, picks the words a page shows out of the same text
+	// (the catalog's words): its last match's capturing groups joined by a
+	// space, or that whole match without a group. Without it, or when it
+	// matches nothing, the words are what Pattern matched.
+	Words   *regexp.Regexp
 	Answers []Option
+}
+
+// words returns the question's words when text shows it, "" when it does not.
+func (q StartupQuestion) words(text string) string {
+	match := q.Pattern.FindString(text)
+	if match == "" || q.Words == nil {
+		return match
+	}
+	all := q.Words.FindAllStringSubmatch(text, -1)
+	if len(all) == 0 {
+		return match
+	}
+	last := all[len(all)-1]
+	groups := last[1:]
+	if len(groups) == 0 {
+		groups = last[:1]
+	}
+	var parts []string
+	for _, g := range groups {
+		if g = strings.TrimSpace(g); g != "" {
+			parts = append(parts, g)
+		}
+	}
+	if len(parts) == 0 {
+		return match
+	}
+	return strings.Join(parts, " ")
 }
 
 // signalAttention wakes whoever waits for an attention change (Submit). The

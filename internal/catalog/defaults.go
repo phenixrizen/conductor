@@ -62,7 +62,13 @@ func defaults() []Agent {
 			// available" with "1. Update now (runs `npm install -g
 			// @openai/codex`)" highlighted, where an Enter installs: both held
 			// so a prompt's Enter never lands on them. The update question's
-			// answer is its own footer's "esc skip".
+			// answers are its own footer's "esc skip" and "3. Skip until next
+			// version": `3` alone picks that at once (verified in a PTY on
+			// 2026-10-11 with 0.161.0 and an isolated CODEX_HOME: Codex left the
+			// screen and wrote dismissed_version to its version.json; no Enter
+			// was ever sent). Its words are its heading, "Update available ·
+			// 0.161.0 → 0.162.1", not the highlighted line, which read as if
+			// Update had been the answer.
 			Questions: []Question{{
 				Prompt:  `(?i)hooks\s*n?eed\s*review`,
 				Answers: []Answer{{Label: "Trust all and continue", Input: "2\r"}, {Label: "Continue without trusting", Input: "3\r"}},
@@ -71,7 +77,8 @@ func defaults() []Agent {
 				Answers: []Answer{{Label: "Run without the daemon this time", Input: "1"}, {Label: "Cancel (Codex exits)", Input: "3"}},
 			}, {
 				Prompt:  `(?i)update\s*now\s*\(\s*runs`,
-				Answers: []Answer{{Label: "Skip this update", Input: "\x1b"}},
+				Words:   `(?i)(update\s*available)\W*?(\d+(?:\.\d+)+\s*(?:→|->)\s*\d+(?:\.\d+)+)`,
+				Answers: []Answer{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}},
 			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},

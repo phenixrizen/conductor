@@ -34,10 +34,11 @@
 # $HOME/.codex/stub-background and $HOME/.codex/stub-update present: Codex
 # 0.161's "Background server has incompatible feature settings" (a digit
 # picks at once: 1 runs without the daemon, 3 cancels and exits) and then
-# its "Update available" (Update now highlighted; Enter would install, Esc
-# skips) are drawn at start, as seen beside a newer background server; the
-# answers are written to $HOME/.codex/stub-background-answer and
-# stub-update-answer.
+# its "Update available · 0.161.0 → 0.162.0" (Update now highlighted;
+# Enter or 1 would install, Esc or 2 skips, 3 skips until the next version)
+# are drawn at start, as seen beside a newer background server; the answers
+# are written to $HOME/.codex/stub-background-answer and stub-update-answer
+# (update, skip or skip-version).
 # A line that is exactly `stub tools codex`, `stub tools copilot`,
 # `stub tools agy` or `stub tools goose` makes the stub write stub-tools.txt and report, through
 # that agent's hook flag, the payloads a live run of it sends (round 13,
@@ -302,22 +303,26 @@ background_question() {
 	fi
 }
 
-# update_question draws Codex's update question: Enter installs (what must
-# never happen from a prompt), Esc skips.
+# update_question draws Codex's update question as Codex 0.161 does: Enter
+# installs (what must never happen from a prompt), 1 too; Esc and 2 skip;
+# 3 skips until the next version (it picks at once, as in Codex 0.161,
+# verified in a PTY on 2026-10-11).
 update_question() {
-	local key
-	printf 'Update available · 0.161.0 -> 0.162.0\n> 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\nenter continue · esc skip\n'
+	local key answer=
+	printf 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
 	while IFS= read -rsn1 key; do
-		if [[ -z $key || $key == $'\r' ]]; then
-			printf 'update\n' >"${HOME:-/tmp}/.codex/stub-update-answer"
-			printf 'Updating Codex...\n'
-			return
-		fi
-		if [[ $key == $'\e' ]]; then
-			printf 'skip\n' >"${HOME:-/tmp}/.codex/stub-update-answer"
-			return
-		fi
+		case $key in
+		'' | $'\r' | 1) answer=update ;;
+		$'\e' | 2) answer=skip ;;
+		3) answer=skip-version ;;
+		*) continue ;;
+		esac
+		break
 	done
+	printf '%s\n' "$answer" >"${HOME:-/tmp}/.codex/stub-update-answer"
+	if [[ $answer == update ]]; then
+		printf 'Updating Codex...\n'
+	fi
 }
 
 # answer answers one line.

@@ -1080,6 +1080,24 @@ func TestStartupQuestions(t *testing.T) {
 	if up, _ := CompilePattern(codex.Questions[2].Prompt); up.MatchString("Update available! 0.161.0 -> 0.162.0 Run npm install -g @openai/codex to update.") {
 		t.Fatal("the update banner (no question) must not hold the session")
 	}
+	// The update question's words are its heading, as Codex 0.161 draws it (→) and as the e2e stub does (->);
+	// its answers are Escape (skip) and 3 (skip until the next version), which picks at once.
+	upd := codex.Questions[2]
+	words, err := CompilePattern(upd.Words)
+	if err != nil {
+		t.Fatalf("update words %q: %v", upd.Words, err)
+	}
+	for text, want := range map[string][]string{
+		"Update available · 0.161.0 → 0.162.1 Release notes: https://github.com/openai/codex/releases/latest › 1. Update now (runs `npm install -g @openai/codex`)": {"Update available", "0.161.0 → 0.162.1"},
+		"Update available · 0.161.0 -> 0.162.0 > 1. Update now (runs `npm install -g @openai/codex`)":                                                               {"Update available", "0.161.0 -> 0.162.0"},
+	} {
+		if m := words.FindStringSubmatch(text); len(m) != 3 || m[1] != want[0] || m[2] != want[1] {
+			t.Fatalf("update words in %q: %q", text, m)
+		}
+	}
+	if len(upd.Answers) != 2 || upd.Answers[0] != (Answer{Label: "Skip this update", Input: "\x1b"}) || upd.Answers[1] != (Answer{Label: "Skip until next version", Input: "3"}) {
+		t.Fatalf("update answers %+v", upd.Answers)
+	}
 	re, err := CompilePattern(codex.Questions[0].Prompt)
 	if err != nil || !re.MatchString("Hooks need review 7 hooks are new or changed") || !re.MatchString("Hooks  eed review") || re.MatchString("Trust this folder?") {
 		t.Fatalf("codex's pattern %q: %v", codex.Questions[0].Prompt, err)
@@ -1087,7 +1105,7 @@ func TestStartupQuestions(t *testing.T) {
 	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex, mine", Command: []string{"codex"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if mine, _ := c.Get("codex"); len(mine.Questions) != len(codex.Questions) || mine.Questions[0].Prompt != codex.Questions[0].Prompt {
+	if mine, _ := c.Get("codex"); len(mine.Questions) != len(codex.Questions) || mine.Questions[0].Prompt != codex.Questions[0].Prompt || mine.Questions[2].Words != codex.Questions[2].Words {
 		t.Fatalf("the override lost the questions: %+v", mine.Questions)
 	}
 	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}}
@@ -1096,6 +1114,8 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "Ready\\?", Answers: []Answer{{Label: "", Input: "\r"}}}},
+		{{Prompt: "Ready\\?", Words: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
+		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}},
 	} {
 		a := ok

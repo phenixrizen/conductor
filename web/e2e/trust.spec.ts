@@ -245,12 +245,15 @@ test("Codex's background-server and update questions hold the member; their choi
     const bar = page.locator('[data-quick-reply]')
     await expect(bar).toBeVisible({ timeout: 30_000 })
     await bar.getByRole('button', { name: /Run without the daemon this time/ }).click()
-    await held('Update now')
+    // The update question's words are its heading, never the highlighted Update now, which read as if it had been the answer.
+    await held('^Update available 0\\.161\\.0 → 0\\.162\\.0$')
     expect(readFileSync(answers[0]!, 'utf8').trim()).toBe('1')
     expect(logged(await api.run(run.id), "typed solo's prompt")).toBe(false)
-    await bar.getByRole('button', { name: /Skip this update/ }).click()
+    expect((await api.session(solo)).attention?.options?.map((o) => o.label)).toEqual(['Skip this update', 'Skip until next version'])
+    await bar.getByRole('button', { name: /Skip until next version/ }).click()
     await expect.poll(async () => logged(await api.run(run.id), "typed solo's prompt"), { timeout: 30_000 }).toBe(true)
-    expect(readFileSync(answers[1]!, 'utf8').trim(), 'Update now must never be picked').toBe('skip')
+    expect(readFileSync(answers[1]!, 'utf8').trim(), 'Update now must never be picked').toBe('skip-version')
+    expect((await api.session(solo)).lastAnswer?.message, 'the answer names the question by its heading').toBe('Update available 0.161.0 → 0.162.0')
     await api.stopRun(run.id)
   } finally {
     for (const m of [...marks, ...answers]) rmSync(m, { force: true })

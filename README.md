@@ -995,9 +995,11 @@ typed text is refused, and the choices are **Trust all and continue** and
 **Continue without trusting**. Two more are held too, seen when Codex runs
 beside a newer Codex background server: "Background server has incompatible
 feature settings" (**Run without the daemon this time**, or **Cancel**, which
-ends Codex) and "Update available" (**Skip this update**); an Enter typed
-there would have cancelled Codex or run `npm install -g` to update it. An agent's further startup questions are its
-`questions` in the catalog, each a `prompt` and its `answers`.
+ends Codex) and "Update available 0.161.0 → 0.162.1" (**Skip this update**,
+or **Skip until next version**); an Enter typed there would have cancelled
+Codex or run `npm install -g` to update it. An agent's further startup
+questions are its `questions` in the catalog, each a `prompt`, its `answers`
+and, when the words to show are not the ones that find it, its `words`.
 
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch

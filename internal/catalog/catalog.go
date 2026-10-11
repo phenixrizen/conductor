@@ -386,6 +386,11 @@ func validate(a Agent) error {
 		if _, err := CompilePattern(q.Prompt); err != nil {
 			return fmt.Errorf("agent %s: questions[%d].prompt: %w", a.ID, i, err)
 		}
+		if q.Words != "" {
+			if _, err := CompilePattern(q.Words); err != nil {
+				return fmt.Errorf("agent %s: questions[%d].words: %w", a.ID, i, err)
+			}
+		}
 		if err := validateTrustAnswers(q.Answers); err != nil {
 			return fmt.Errorf("agent %s: questions[%d].answers: %w", a.ID, i, err)
 		}
@@ -759,7 +764,16 @@ type Answer struct {
 // Question is one of the agent's other startup questions (Agent.Questions):
 // the pattern of its words on the screen and its answers.
 type Question struct {
-	Prompt  string   `json:"prompt"`
+	Prompt string `json:"prompt"`
+	// Words, when set, picks the question's words out of the same text for
+	// the message a page shows: what its last match's capturing groups
+	// matched, joined by a space, or the whole of that match when it has no
+	// group. Without it, or when it matches nothing, the words are what
+	// Prompt matched. A pattern as Prompt is. Codex's update question is
+	// found by its highlighted "Update now (runs …" and told by its heading,
+	// "Update available 0.161.0 → 0.162.0": the highlighted line read as if
+	// it had been the answer.
+	Words   string   `json:"words,omitempty"`
 	Answers []Answer `json:"answers,omitempty"`
 }
 
@@ -772,7 +786,8 @@ func cloneQuestions(qs []Question) []Question {
 	}
 	out := make([]Question, len(qs))
 	for i, q := range qs {
-		out[i] = Question{Prompt: q.Prompt, Answers: append([]Answer(nil), q.Answers...)}
+		q.Answers = append([]Answer(nil), q.Answers...)
+		out[i] = q
 	}
 	return out
 }
