@@ -327,6 +327,9 @@ const saving = ref(false)
 // A save with no answer after 20 s goes on waiting (the transport never gives one up while its connection lives): the bar says so.
 const saveSlow = ref(false)
 const savedFlash = ref(false)
+// A save asked for while one is on its way (Ctrl+S during a slow save) is not queued: the bar says one is on its way, and the person
+// saves again once it is answered. Never dropped without a word.
+const saveBusy = ref(false)
 // One timer for the flash: a save within two seconds of another restarts it, so the earlier save's timer cannot hide the new "Saved".
 let savedTimer: ReturnType<typeof setTimeout> | undefined
 onBeforeUnmount(() => clearTimeout(savedTimer))
@@ -347,7 +350,11 @@ function setDirty(id: string, d: boolean) {
 async function save(force = false) {
   const t = active.value
   const v = view.value
-  if (!t || !v || !editable.value || !props.write || saving.value) return
+  if (!t || !v || !editable.value || !props.write) return
+  if (saving.value) {
+    saveBusy.value = true
+    return
+  }
   // From the compare view the editor is not up: its text is the compare's right side, the model's text as Compare opened.
   const fromCompare = !!activeCompare.value
   const text = fromCompare ? activeCompare.value!.mine : (editorRef.value?.getText() ?? v.text ?? '')
@@ -356,6 +363,9 @@ async function save(force = false) {
   const sent = fromCompare ? activeCompare.value!.version : editorRef.value?.version()
   saving.value = true
   saveError.value = ''
+  // "Saved" is this save's to show: an earlier one's flash goes.
+  savedFlash.value = false
+  clearTimeout(savedTimer)
   try {
     const res = await props.write(t.path, new TextEncoder().encode(text), { baseSha256: v.header?.sha256, force, onSlow: () => (saveSlow.value = true) })
     const h = res.header
@@ -381,6 +391,8 @@ async function save(force = false) {
   } finally {
     saving.value = false
     saveSlow.value = false
+    // The note goes with the save it was about.
+    saveBusy.value = false
   }
 }
 /** The file as it is on disk now, the unsaved edits dropped. */
@@ -610,6 +622,9 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UButton label="Compare" size="xs" color="neutral" variant="soft" data-editor-compare @click="openCompare" />
         <UButton label="Reload" size="xs" color="neutral" variant="soft" data-editor-reload @click="reloadFromDisk" />
         <UButton label="Save anyway" size="xs" color="warning" variant="soft" :loading="saving" data-editor-save-anyway @click="save(true)" />
+      </div>
+      <div v-if="saveBusy" class="flex flex-none items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-editor-save-busy>
+        <UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin text-muted" /><span class="min-w-0 flex-1 text-muted">A save is still on its way: save again once it is answered to save what you changed since.</span>
       </div>
       <div v-if="saveSlow" class="flex flex-none items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-editor-save-slow>
         <UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin text-muted" /><span class="min-w-0 flex-1 text-muted">Still saving: no answer after 20 seconds. The save goes on, and its answer shows here.</span>

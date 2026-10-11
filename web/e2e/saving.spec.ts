@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
 function git(dir: string, ...args: string[]) {
@@ -179,21 +180,8 @@ test("a file in a repository's .git opens read only; the working tree beside it 
   }
 })
 
-// A save whose answer is slow (a relayed one slowed on its way) is not given
-// up on: the file is written, the bar says the save goes on, and when the
-// answer lands what was sent is saved, on the new hash, so the next save
-// goes through. What was typed meanwhile stays, unsaved, and a tab in
-// front when the answer lands keeps its own changes. The page holds the
-// answer back here, as a slow relay would.
-test('a save that answers late is still on its way, then saved', async ({ page, api, state }) => {
-  const cwd = join(state.root, 'files-saving-late')
-  mkdirSync(cwd, { recursive: true })
-  const file = join(cwd, 'notes.txt')
-  writeFileSync(file, 'alpha\n')
-  const other = join(cwd, 'other.txt')
-  writeFileSync(other, 'one\n')
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving late', cwd })
-  // While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later.
+/** While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later, as through a slow relay. */
+async function holdWrittenAnswers(page: Page) {
   await page.addInitScript(() => {
     const Native = window.WebSocket
     class Holding extends Native {
@@ -220,6 +208,23 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     }
     window.WebSocket = Holding
   })
+}
+
+// A save whose answer is slow (a relayed one slowed on its way) is not given
+// up on: the file is written, the bar says the save goes on, and when the
+// answer lands what was sent is saved, on the new hash, so the next save
+// goes through. What was typed meanwhile stays, unsaved, and a tab in
+// front when the answer lands keeps its own changes. The page holds the
+// answer back here, as a slow relay would.
+test('a save that answers late is still on its way, then saved', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-saving-late')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'notes.txt')
+  writeFileSync(file, 'alpha\n')
+  const other = join(cwd, 'other.txt')
+  writeFileSync(other, 'one\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving late', cwd })
+  await holdWrittenAnswers(page)
   const area = page.locator('[data-editor-area]')
   const lines = area.locator('.monaco-editor .view-lines')
   const typeAtEnd = async (text: string) => {
@@ -245,12 +250,18 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(slow).toContainText('Still saving')
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
-    // Typed while the answer is on its way.
+    // Typed while the answer is on its way, and a save asked for then: the
+    // bar says one is on its way, and nothing more is written.
     await typeAtEnd('more\n')
+    await page.keyboard.press('Control+s')
+    await expect(area.locator('[data-editor-save-busy]')).toBeVisible()
+    await expect(slow).toBeVisible()
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\n')
     // The answer lands: saved, the bar gone; what was typed meanwhile is
     // still there, and still unsaved.
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await expect(slow).toHaveCount(0)
+    await expect(area.locator('[data-editor-save-busy]')).toHaveCount(0)
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
     await page.waitForTimeout(500)
     await expect(lines).toContainText('more')
@@ -319,6 +330,54 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(lines).not.toContainText('zetaeta')
     await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(0)
     expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\nmore\ngamma\ndelta\nepsilon\nzeta\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// Ctrl+S while a save is on its way is not dropped without a word: the bar
+// says a save is still on its way, nothing more is sent, and once that save
+// is answered the note goes and the next Ctrl+S saves what was typed since.
+test('a save asked for while another is on its way says so, and the next one saves', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-saving-again')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'again.txt')
+  writeFileSync(file, 'one\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving again', cwd })
+  await holdWrittenAnswers(page)
+  const area = page.locator('[data-editor-area]')
+  const lines = area.locator('.monaco-editor .view-lines')
+  const typeAtEnd = async (text: string) => {
+    await lines.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type(text)
+  }
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await pane.locator('[data-files-section="explorer"]').click()
+    await pane.locator(`[data-file-node="${file}"]`).click()
+    await expect(lines).toBeVisible({ timeout: 30_000 })
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 4_000))
+    await typeAtEnd('two\n')
+    await page.keyboard.press('Control+s')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('one\ntwo\n')
+    // The first save's answer is still held.
+    await typeAtEnd('three\n')
+    await page.keyboard.press('Control+s')
+    const busy = area.locator('[data-editor-save-busy]')
+    await expect(busy).toBeVisible()
+    await expect(busy).toContainText('still on its way')
+    expect(readFileSync(file, 'utf8')).toBe('one\ntwo\n')
+    // Answered: the note goes, what was typed since is still unsaved, and the next save saves it.
+    await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
+    await expect(busy).toHaveCount(0)
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
+    await page.keyboard.press('Control+s')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('one\ntwo\nthree\n')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
   } finally {
     await api.stopSession(s.id)
   }
