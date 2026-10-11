@@ -230,7 +230,7 @@ func TestAClientTheSessionEndedIsNotActedOn(t *testing.T) {
 			return
 		}
 		c.SetReadLimit(readLimit)
-		(&Server{}).serveLocalViewer(r.Context(), c, local, session.RoleControl, "", nil)
+		(&Server{}).serveLocalViewer(r.Context(), c, local, session.RoleControl, "", true, nil)
 	}))
 	srv.Listener = smallBufListener{srv.Listener}
 	srv.Start()

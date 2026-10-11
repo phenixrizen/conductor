@@ -147,7 +147,7 @@ func TestADataChannelWriteWaitingForRoomStopsWhenTheChannelCloses(t *testing.T) 
 	for _, how := range []string{"the peer closes", "the viewer closes its channel"} {
 		t.Run(how, func(t *testing.T) {
 			a, out := activityTestAgent(t, 0)
-			p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+			p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 			a.peers[p.id] = p
 			if err := p.startWebRTC(nil); err != nil {
 				t.Fatal(err)
@@ -266,7 +266,7 @@ func TestAViewerTheSessionEndedIsNotActedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := newPeer(a, id, session.RoleControl, "", "")
+	p := newPeer(a, id, session.RoleControl, "", "", true)
 	p.sub = sub
 	p.handleFrame(proto.Frame{Type: proto.TypeInput, Payload: []byte("before")})
 	if got := proc.text(); got != "before" {
