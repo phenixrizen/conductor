@@ -95,11 +95,13 @@ type linkKeeper struct {
 	live map[string]int
 	seen map[string]time.Time
 	// undeleted are the links no longer kept whose file could not be
-	// deleted (its directory not writable for a while): each sweep, and a
-	// revoke of the link again, tries again, so the file does not bring
-	// the link back at the next start; until it goes, the host's revoke is
-	// answered that it is not done. Under fmu.
-	undeleted map[string]struct{}
+	// deleted (its directory not writable for a while), with the host
+	// instance each was kept for: each sweep, and that instance's revoke of
+	// the link again (even once the link is gone from the store), tries
+	// again, so the file does not bring the link back at the next start;
+	// until it goes, the host's revoke is answered that it is not done, and
+	// a revoked link is still listed as its host's (liveLinkIDs). Under fmu.
+	undeleted map[string]string
 }
 
 // linkFileUndeleted says whether the file of linkID, no longer kept, is
@@ -115,15 +117,52 @@ func (s *Server) linkFileUndeleted(linkID string) bool {
 	return ok
 }
 
-// deleteFile deletes the file of a link no longer kept, or notes it for the
-// sweep (and the link's next revoke) to try again. Called with fmu held.
-func (s *Server) deleteFile(id string) {
+// retryUndeleted tries again to delete the file of linkID when it waits to
+// be deleted and was kept for owner; false when it does not wait for owner.
+func (s *Server) retryUndeleted(linkID, owner string) bool {
+	k := s.keeper
+	if k == nil || owner == "" {
+		return false
+	}
+	k.fmu.Lock()
+	defer k.fmu.Unlock()
+	if o, ok := k.undeleted[linkID]; !ok || o != owner {
+		return false
+	}
+	s.deleteFile(linkID, owner)
+	return true
+}
+
+// undeletedLinks are the links whose file waits to be deleted.
+func (s *Server) undeletedLinks() []string {
+	k := s.keeper
+	if k == nil {
+		return nil
+	}
+	k.fmu.Lock()
+	defer k.fmu.Unlock()
+	ids := make([]string, 0, len(k.undeleted))
+	for id := range k.undeleted {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// deleteFile deletes the file of a link no longer kept for owner ("" when
+// the keeper no longer knows it: the instance noted before stays), or
+// notes it for the sweep (and the link's next revoke) to try again. Called
+// with fmu held.
+func (s *Server) deleteFile(id, owner string) {
 	k := s.keeper
 	if err := k.files.Delete(id + ".json"); err != nil {
-		if _, again := k.undeleted[id]; !again {
+		known, again := k.undeleted[id]
+		if !again {
 			s.log.Error("a link's file is not deleted yet; the sweep tries again", "link", id, "err", err)
 		}
-		k.undeleted[id] = struct{}{}
+		if owner == "" {
+			owner = known
+		}
+		k.undeleted[id] = owner
 		return
 	}
 	delete(k.undeleted, id)
@@ -150,11 +189,12 @@ func (k *linkKeeper) hold(id string, kl keptLink) {
 }
 
 // release forgets a kept link: its hash and its place in its address's
-// count. Releasing it again changes nothing. Called with mu held.
-func (k *linkKeeper) release(id string) {
+// count; it returns the host instance it was kept for ("" when it was not
+// kept). Releasing it again changes nothing. Called with mu held.
+func (k *linkKeeper) release(id string) string {
 	kl, ok := k.kept[id]
 	if !ok {
-		return
+		return ""
 	}
 	delete(k.kept, id)
 	if kl.addr != "" {
@@ -163,6 +203,7 @@ func (k *linkKeeper) release(id string) {
 			delete(k.addrs, kl.addr)
 		}
 	}
+	return kl.owner
 }
 
 // yielding is the n links counted against addr that give their places up
@@ -210,7 +251,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.log.Error("links are not kept across restarts: cannot open the links directory", "err", err)
 		return
 	}
-	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, undeleted: map[string]struct{}{}}
+	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, undeleted: map[string]string{}}
 	s.keeper = k
 	entries, err := files.List()
 	if err != nil {
@@ -270,9 +311,10 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	k.fmu.Lock()
 	k.mu.Lock()
 	var (
-		err     error
-		yielded []string
-		ended   []*share.Link
+		err        error
+		yielded    []string
+		yieldedFor = map[string]string{}
+		ended      []*share.Link
 	)
 	if s.links.Count() > maxDurableLinks {
 		err = errLinksFull
@@ -293,7 +335,7 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		// together under mu, so a host coming back (hostUp) either finds
 		// them gone or keeps them.
 		for _, id := range yielded {
-			k.release(id)
+			yieldedFor[id] = k.release(id)
 			if gone, ok := s.links.Drop(id); ok {
 				ended = append(ended, gone)
 			}
@@ -301,13 +343,18 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		k.hold(link.ID, keptLink{hash: hex.EncodeToString(h[:]), owner: owner, addr: addr, created: link.CreatedAt})
 	}
 	k.mu.Unlock()
-	for _, id := range yielded {
-		s.deleteFile(id)
-		s.log.Info("a kept link gave its place to a new one, its host gone", "link", id)
-	}
 	if err == nil {
 		link.Owner, link.Addr = owner, addr
-		s.saveLinkFile(link.ID)
+		// The files of the links that gave their places go once the new
+		// one's is written: should it not be, they stay, and a restart
+		// brings them back rather than lose them for a link it does not.
+		if serr := s.saveLinkFile(link.ID); serr != nil {
+			yielded = nil
+		}
+	}
+	for _, id := range yielded {
+		s.deleteFile(id, yieldedFor[id])
+		s.log.Info("a kept link gave its place to a new one, its host gone", "link", id)
 	}
 	k.fmu.Unlock()
 	for _, l := range ended {
@@ -321,31 +368,33 @@ func (s *Server) writeLinkFile(linkID string) {
 	k := s.keeper
 	k.fmu.Lock()
 	defer k.fmu.Unlock()
-	s.saveLinkFile(linkID)
+	_ = s.saveLinkFile(linkID)
 }
 
 // saveLinkFile is writeLinkFile with fmu held: the link as the store holds
 // it now, while it is kept and opens anything; nothing for one revoked,
-// dropped or no longer kept.
-func (s *Server) saveLinkFile(linkID string) {
+// dropped or no longer kept. The error is the save's (logged).
+func (s *Server) saveLinkFile(linkID string) error {
 	k := s.keeper
 	k.mu.Lock()
 	hash := k.kept[linkID].hash
 	k.mu.Unlock()
 	if hash == "" {
-		return
+		return nil
 	}
 	link, ok := s.links.Get(linkID)
 	if !ok || link.Revoked || link.Owner == "" {
-		return
+		return nil
 	}
 	f := linkFile{ID: link.ID, TokenHash: hash, SessionID: link.SessionID, Role: link.Role, Label: link.Label, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt, Owner: link.Owner, Addr: link.Addr}
 	if link.Group != nil {
 		f.RunID, f.Run = link.RunID, link.Group
 	}
-	if err := k.files.Save(link.ID+".json", f); err != nil {
+	err := k.files.Save(link.ID+".json", f)
+	if err != nil {
 		s.log.Error("a link is not kept across restarts", "link", link.ID, "err", err)
 	}
+	return err
 }
 
 // keepGroup writes again the files of owner's run links, whose members changed.
@@ -371,9 +420,9 @@ func (s *Server) dropLinkFile(linkID string) {
 	k.fmu.Lock()
 	defer k.fmu.Unlock()
 	k.mu.Lock()
-	k.release(linkID)
+	owner := k.release(linkID)
 	k.mu.Unlock()
-	s.deleteFile(linkID)
+	s.deleteFile(linkID, owner)
 }
 
 // hostUp notes that a host instance holds a connection, until the function
@@ -411,8 +460,8 @@ func (s *Server) sweepLinks(now time.Time) {
 		return
 	}
 	k.fmu.Lock()
-	for id := range k.undeleted {
-		s.deleteFile(id)
+	for id, owner := range k.undeleted {
+		s.deleteFile(id, owner)
 	}
 	k.fmu.Unlock()
 	// due is whether l goes now. Called with mu held.
@@ -457,10 +506,10 @@ func (s *Server) endKept(id string, due func(*share.Link) bool) bool {
 		k.fmu.Unlock()
 		return !ok
 	}
-	k.release(id)
+	owner := k.release(id)
 	gone, ok := s.links.Drop(id)
 	k.mu.Unlock()
-	s.deleteFile(id)
+	s.deleteFile(id, owner)
 	k.fmu.Unlock()
 	if ok {
 		s.closeLinkViewers(gone)

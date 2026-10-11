@@ -292,7 +292,8 @@ which the desktop app opens itself), `link_revoked{requestId, linkId}`
 for a link the server does not hold; `error{store_unavailable, requestId}`
 from a switchyard that revoked it but could not yet delete what it keeps
 of it on disk, which the host's next revoke of it, or the switchyard's
-sweep, tries again), `error{code, message, requestId?}`
+sweep, tries again; until then `registered.links` still lists it, so the
+host keeps its record), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
 `store_unavailable`).

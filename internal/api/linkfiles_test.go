@@ -303,6 +303,12 @@ func TestARevokedLinksFileIsDeletedOnceItCanBe(t *testing.T) {
 			t.Fatalf("the file went though its directory is read-only: %v", err)
 		}
 	}
+	// Back after a blip, the host is told the links are still its to revoke.
+	leave(t, e, host)
+	host, reg := dialFakeHostWith(t, e, hi, hs, "")
+	if held, _ := reg["links"].([]any); len(held) != 2 || !slices.Contains(held, any(again)) || !slices.Contains(held, any(swept)) {
+		t.Fatalf("registered links %v, want the two revokes not done", reg["links"])
+	}
 	if err := os.Chmod(links, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -327,6 +333,98 @@ func TestARevokedLinksFileIsDeletedOnceItCanBe(t *testing.T) {
 		if _, err := b.srv.links.Resolve(token); err == nil {
 			t.Fatal("a revoked link opens again after a restart")
 		}
+	}
+}
+
+// A revoke not done stays its host's to try again after the link has left
+// the switchyard's store (its session ended): the revoke again deletes the
+// file once it can, and only then is it done.
+func TestARevokeNotDoneOutlivesItsLink(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose mode keeps its owner from deleting in it")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	id, token := mintHostLink(t, host, "r1")
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	links := filepath.Join(dir, "links")
+	if err := os.Chmod(links, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv1", LinkID: id})
+	if m := linkAnswer(t, host, "rv1"); m["code"] != "store_unavailable" {
+		t.Fatalf("a revoke whose file stays: %v", m)
+	}
+	host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := e.srv.links.Get(id); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the link never left with its session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Another host instance cannot claim it.
+	other.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv-other", LinkID: id})
+	if m := linkAnswer(t, other, "rv-other"); m["code"] != "not_found" {
+		t.Fatalf("another host's revoke: %v", m)
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv2", LinkID: id})
+	if m := linkAnswer(t, host, "rv2"); m["code"] != "store_unavailable" {
+		t.Fatalf("the revoke again, its file still there: %v", m)
+	}
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv3", LinkID: id})
+	if m := linkAnswer(t, host, "rv3"); m["t"] != proto.HostLinkRevoked {
+		t.Fatalf("the revoke again once it can be done: %v", m)
+	}
+	host.c.Close(websocket.StatusNormalClosure, "")
+	<-host.done
+	b := keptSwitchyard(t, dir, nil)
+	if _, err := b.srv.links.Resolve(token); err == nil {
+		t.Fatal("the revoked link opens again after a restart")
+	}
+}
+
+// The files of links that give their places up go only once the new link's
+// is written: when it cannot be, they stay, and a restart brings them back.
+func TestYieldedLinksKeepTheirFilesUntilTheNewOneIsWritten(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose mode keeps its owner from writing in it")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	limit := func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 }
+	e := keptSwitchyard(t, dir, limit)
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	id, token := mintHostLink(t, host, "r1")
+	owner := ownerOf(t, e, host.sessionID)
+	leave(t, e, host)
+	awayFor(e, owner, time.Hour)
+	links := filepath.Join(dir, "links")
+	if err := os.Chmod(links, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	mintHostLink(t, other, "o1")
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sweepLinks(time.Now())
+	if _, err := os.Stat(filepath.Join(links, id+".json")); err != nil {
+		t.Fatalf("the file of the link that gave its place, the new one's unwritten: %v", err)
+	}
+	b := keptSwitchyard(t, dir, limit)
+	if _, err := b.srv.links.Resolve(token); err != nil {
+		t.Fatalf("the link that gave its place, after a restart: %v", err)
 	}
 }
 

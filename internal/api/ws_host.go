@@ -401,6 +401,11 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if !found && hs.Owner() != "" {
 			found, _ = s.links.RevokeGroup(hs.Owner(), m.LinkID)
 		}
+		// One the switchyard no longer holds whose file waits to be
+		// deleted is still its host's to revoke: the delete is tried again.
+		if !found {
+			found = s.retryUndeleted(m.LinkID, hs.Owner())
+		}
 		switch {
 		case !found:
 			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: m.RequestID})
@@ -479,8 +484,10 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 	_ = hs.Tell(out)
 }
 
-// liveLinkIDs are the ids of the links that still open a hosted session here:
-// not revoked, not expired. Never nil, so registered always carries the list.
+// liveLinkIDs are the ids of the links that still open a hosted session here
+// (not revoked, not expired), and of those revoked whose revoke is not done
+// (their file waits to be deleted). Never nil, so registered always carries
+// the list.
 func (s *Server) liveLinkIDs(sessionID string) []string {
 	ids := []string{}
 	now := time.Now()
@@ -489,6 +496,14 @@ func (s *Server) liveLinkIDs(sessionID string) []string {
 			continue
 		}
 		ids = append(ids, l.ID)
+	}
+	// A revoked link whose file on a switchyard waits to be deleted is
+	// still the host's to revoke again (store_unavailable until it goes),
+	// so the host keeps its record of it.
+	for _, id := range s.undeletedLinks() {
+		if l, ok := s.links.Get(id); ok && l.Revoked && ((l.RunID == "" && l.SessionID == sessionID) || l.Group.Names(sessionID)) {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }
