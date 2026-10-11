@@ -81,29 +81,77 @@ each reproduced with a Go test (round 15); none is fixed yet.
   no longer sends one (it refuses a part whose header would pass 4 KiB),
   but the owner could answer with the save's id or close the connection.
   Round 15 (#110).
+- **A Codex member's command approval is missed, or shows only as
+  "terminal bell".** Codex 0.161 asks "Would you like to run the following
+  command?" (1. Yes, proceed (y) · 2. Yes, and don't ask again … (p) ·
+  3. No, and tell Codex what to do differently (esc)). Seen in the rc.7
+  app on 2026-10-11, a crew member running `curl` outside Codex's sandbox:
+  with nobody watching that member, its row stayed green and nothing
+  reached Needs you or its Activity tab; with the Yard open on it, the row
+  came back as "terminal bell" with a free-text Reply box, neither the
+  question nor its choices (a `y` typed there approved it). Cause:
+  Conductor passes Codex only `notify` (the end of a turn) and
+  `tui.notification_method="bel"` at launch; the PermissionRequest hook
+  lives in `~/.codex/hooks.json`, which Install writes only when there is
+  none (the owner's has empty lists, so it was never added); and Codex
+  seems to ring for an approval only while it thinks its terminal is not
+  focused (not verified). Expected: Needs you with the dialog's words and
+  its three choices, whatever the hooks file holds. A catalog question
+  like Codex's update and hooks-review screens is not enough: those are
+  watched only until the first submission (`Submit` stops the watcher,
+  `internal/session/submit.go`), and a bell already waiting keeps the
+  question's words out (`fireTrust` gives way to it, `unlessWaiting`). The
+  fix proposed: a watcher for the dialog for the session's whole life,
+  taking precedence over a bare bell (its words and choices `y`, `p`,
+  Esc), with tests for an approval after a crew's first prompt and for a
+  bell that comes before or after the dialog is seen.
+- **Codex's bell at the end of a turn leaves a member waiting on
+  nothing.** After the approved command ran, Codex reported its turn done
+  ("`HTTP/2 200`") and then rang the bell Conductor asks it for; the bell
+  came second, so the member sat in Needs you as "terminal bell" with
+  nothing to answer, minutes later still (rc.7 app, 2026-10-11). Cause:
+  `Local.scanOutput` makes any bell a question, even right after a done.
+  Expected: a done is not undone by the bell that comes with it. A time
+  window alone would also swallow the bell of a new turn's approval that
+  comes quickly, which may be the only sign of it when the hooks are
+  missing. The fix proposed: the turn's own bell is not a question, the
+  allowance ending with that turn (new input, a submission, a working
+  report), with a test of a new turn asking for approval at once.
+- **Codex's folder-trust "No" says the wrong thing.** Codex 0.161's trust
+  screen is "1. Trust and continue / 2. Quit"; the app's second answer
+  reads "No, continue without trusting", and its keys (Down, Enter) pick
+  Quit, so Codex exits (catalog `TrustAnswers`). Seen in the rc.7 app,
+  2026-10-11. Expected: the label says Quit, as Claude Code's says "No,
+  exit".
+- **Codex's update question reads as if it was answered with Update.**
+  The question's words are the highlighted line, cut at its backtick:
+  "Update now (runs". After a Skip, the Activity tab says "nater answered:
+  Update now (runs". Expected: "Update available 0.161.0 → 0.162.x", and
+  Codex's "Skip until next version" offered beside "Skip this update"
+  (every Codex launch asks again until then). Seen in the rc.7 app,
+  2026-10-11.
+- **Small things seen in the rc.7 app (2026-10-11), 1440×900.** A
+  sidebar row's second choice button ("No, continue without trusting")
+  runs past the row's edge. The run header's stop confirm in the sidebar
+  ("Stop orders api? Every member's terminal closes …") is cut off under
+  its Cancel and Stop buttons. On a run's page the run's name is cut to
+  "or…" by the header's chips, and a red Stop shows on a run already
+  stopped. A row's "Share" tooltip stays up after the share dialog closes.
+  A crew member's Activity says "crew answered: <its prompt>" for the
+  prompt the crew typed. The sidebar's run block says "stopped 09:47"
+  where the crew's Runs list says "today 09:44 AM" for the same run.
 
 ## Features
-
-### The browser terminal
-
-- **Mouse, checked by hand with the real agents.** xterm.js forwards mouse
-  clicks, drags and the wheel to the agent whenever the agent asks for
-  mouse reporting (vim, htop, Codex's TUI do; Claude Code mostly does not),
-  and selects text by drag otherwise, with Shift+drag selecting while an
-  app holds the mouse (not on a Mac, where nothing takes the mouse back); a
-  right-click is the program's then too (round 15, with a probe program in
-  Playwright). Still to do: clicks, drags, the
-  wheel, Shift+drag and right-click with the real Codex and Claude Code in
-  the installed app, with the next release candidate. Round 10.
 
 ### The sidebar
 
 - **The sidebar, watched in use.** The 3-series sidebar was built in round
   11 (S1–S7, `docs/features.md`). The five tasks (find the agent asking
   you something; share one member; stop a run; open yesterday's run; tell
-  a crew from a run) are written out in `docs/sidebar-tasks.md`. Still to
-  do: the owner runs them with two coworkers, watched, to catch what the
-  design missed.
+  a crew from a run) are written out in `docs/sidebar-tasks.md`, and were
+  walked once in the rc.7 app on 2026-10-11 (round 15; what went wrong is
+  under Bugs). Still to do: the owner runs them with two coworkers,
+  watched, to catch what the design missed.
 
 ### The desktop app
 
