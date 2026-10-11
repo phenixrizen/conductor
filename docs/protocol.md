@@ -698,7 +698,17 @@ most 5 s, without following redirects.
 
 `file_get` resolves `path` against the session working directory (`~` expands to
 the owner's home). After symlink resolution the target must stay inside the
-working directory, and `.git/objects` is never readable. Server sessions also
+working directory, and `.git/objects` is never readable. The working
+directory is opened once, when the session starts, and every read, listing,
+find and save goes through it: the path checked, it is opened from that
+directory one element at a time, following no link (the check resolved
+them), so an element that became a link or another file since the check is
+refused (`denied`, "the path changed while it was opened; try again"), and
+nothing outside the working directory is reached whatever a link does
+meanwhile. The rules below are applied again to what is opened, by identity.
+When the session's path comes to name another directory (the folder moved,
+or a link put in its place), its files, git reads included, are refused
+(`denied`, "the session's folder is no longer at its path"). Server sessions also
 refuse the server's data directory (`dataDir`, which holds agent secrets) with
 everything in it, its config file (admin and host tokens) and its catalog file
 (`catalogPath`), and the editor and backup copies beside those two: any file or
@@ -755,7 +765,8 @@ deny list), and refuses with a FILE frame of kind `error` and code
 unless `force`: the header then carries the file's `sha256`, `mtime` and, from
 the newest file event that changed it, `by`, `tool` and `at`; a file deleted
 since is the same code with `exists: false`. Otherwise it writes the file
-atomically (a temporary file beside it, its mode kept, a rename) and answers
+atomically (a temporary file beside it, its mode kept, a rename, both in the
+file's directory as opened from the working directory) and answers
 kind `written` with the new `sha256`, `mtime` and `size`; the save is a `file`
 event `write` by the person with tool `editor`. Other refusals: `read_only`
 (not a controller, the session's `fileEdit` is `off`, or the file is in a

@@ -49,7 +49,8 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
-	if d.Info().Kind != session.KindServer {
+	local, ok := d.(*session.Local)
+	if !ok || d.Info().Kind != session.KindServer {
 		writeError(w, http.StatusBadRequest, "unsupported", "files of hosted sessions are read through the terminal connection")
 		return
 	}
@@ -58,7 +59,8 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "path too long")
 		return
 	}
-	h, body := session.ReadPath(d.Info().Cwd, path, r.URL.Query().Get("stat") == "1", s.fileDeny)
+	// Through the folder the session holds, as the in-band file_get reads.
+	h, body := local.ReadPath(path, r.URL.Query().Get("stat") == "1", s.fileDeny)
 	status := http.StatusOK
 	if h.Kind == "error" {
 		switch h.Error.Code {

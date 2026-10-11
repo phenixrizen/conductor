@@ -108,7 +108,9 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	if !s.nvimAllowed(sub) || !nvimAvailable() {
 		return ErrNvimUnavailable
 	}
-	target, err := ResolvePath(s.info.Cwd, req.Path, s.fileDeny())
+	// Checked as a read is, the session's path still naming its folder;
+	// Neovim then opens and writes the file by its path itself.
+	target, _, err := s.folder.resolve(req.Path, s.fileDeny())
 	if err != nil {
 		return ErrFileDenied
 	}
