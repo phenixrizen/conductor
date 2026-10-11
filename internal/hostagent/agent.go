@@ -199,12 +199,14 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// session's file reads and saves go through it.
 	folder, err := session.OpenFolder(dir)
 	if err != nil {
+		a.dropConn(firstConn)
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
 	dirFile, err := folder.Dir()
 	if err != nil {
 		folder.Close()
+		a.dropConn(firstConn)
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
@@ -212,6 +214,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	dirFile.Close()
 	if err != nil {
 		folder.Close()
+		a.dropConn(firstConn)
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
@@ -295,16 +298,22 @@ type agent struct {
 	proc  *pty.Process
 	log   *slog.Logger
 
-	mu      sync.Mutex
-	sessID  string
-	secret  string
-	ice     []proto.ICEServer
-	conn    *websocket.Conn
+	mu     sync.Mutex
+	sessID string
+	secret string
+	ice    []proto.ICEServer
+	// out writes on the current control connection (controlWriter); nil
+	// while there is none.
+	out     *controlWriter
 	peers   map[string]*peer
 	flushed chan struct{}
 
 	agentToken    string
 	lastAttention session.Attention
+	// attentionUntold says the last attention change was not sent (no
+	// connection, or no turn in time): the next change sends it, whatever
+	// it is. Guarded by mu.
+	attentionUntold bool
 	// instance and localID fix the session's id on the server across its
 	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
 	instance, localID string
@@ -331,6 +340,8 @@ type agent struct {
 	sendHook func(v any)
 	// submitWait replaces submitTimeout in tests.
 	submitWait time.Duration
+	// relayWait replaces relayTurnWait, and stallWait writeStall, in tests.
+	relayWait, stallWait time.Duration
 }
 
 // submitDeadline is when a submission arriving now must be done by: its
@@ -459,12 +470,15 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.Token != "" {
 		header["Authorization"] = []string{"Bearer " + a.opts.Token}
 	}
-	dial := &websocket.DialOptions{HTTPHeader: header}
+	var base *http.Client
 	if a.opts.ServerIsOwners {
-		dial.HTTPClient = ownersServerClient()
+		base = ownersServerClient()
 	}
-	c, resp, err := websocket.Dial(dialCtx, a.wsURL, dial)
+	// The connection's socket is a pacedConn (controlWriter).
+	client, dialed := pacedClient(base, a.stallWait)
+	c, resp, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header, HTTPClient: client})
 	cancel()
+	client.CloseIdleConnections()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
 			return nil, proto.Registered{}, refused
@@ -526,8 +540,8 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
 	}
-	a.conn = c
 	a.mu.Unlock()
+	a.useConn(c, dialed())
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
@@ -582,11 +596,17 @@ func lastElement(dir string) string {
 func (a *agent) onLocalChange(info session.Info) {
 	att := a.toServer(info.Attention)
 	a.mu.Lock()
-	changed := att.State != a.lastAttention.State || att.Message != a.lastAttention.Message || att.Kind != a.lastAttention.Kind || len(att.Options) != len(a.lastAttention.Options)
+	changed := a.attentionUntold || att.State != a.lastAttention.State || att.Message != a.lastAttention.Message || att.Kind != a.lastAttention.Kind || len(att.Options) != len(a.lastAttention.Options)
 	a.lastAttention = att
 	a.mu.Unlock()
 	if changed {
-		a.send(hostAttentionMsg(info.ID, att))
+		// One that does not get its turn on a connection the server reads
+		// slowly is dropped (controlWriter), and told again with the
+		// session's next change.
+		untold := a.send(hostAttentionMsg(info.ID, att)) != nil
+		a.mu.Lock()
+		a.attentionUntold = untold
+		a.mu.Unlock()
 	}
 }
 
@@ -671,7 +691,8 @@ func (a *agent) settle(ctx context.Context) {
 // flushViewers waits for the viewers to be handed the frames queued for them,
 // and for the data channels of the WebRTC viewers to have what they were given
 // acknowledged. A relay viewer's frames go out on the control connection, which
-// closes once settle returns, and a data channel drops what it still holds when
+// closes once settle returns (and drops what its socket has not taken yet), and
+// a data channel drops what it still holds when
 // its connection is closed: a frame that is queued or held by then is lost, and
 // the viewer is left without the status that says the session ended. Run it
 // after flushActivity: the session announces its end, and only then queues the
@@ -679,11 +700,23 @@ func (a *agent) settle(ctx context.Context) {
 func (a *agent) flushViewers(ctx context.Context) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		if a.local.Drained() && !a.channelsBuffered() {
+		if a.local.Drained() && !a.channelsBuffered() && a.unsent() == 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// unsent is what the control connection holds that its socket has not
+// taken yet (pacedConn), which closing the connection drops.
+func (a *agent) unsent() int {
+	a.mu.Lock()
+	w := a.out
+	a.mu.Unlock()
+	if w == nil {
+		return 0
+	}
+	return w.unsent()
 }
 
 // channelsBuffered reports whether the data channel of a WebRTC viewer still
@@ -723,25 +756,65 @@ func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivi
 	return proto.HostActivityMsg{T: proto.HostActivity, SessionID: sessionID, Entry: session.EntryToProto(e)}
 }
 
+// useConn makes c, whose socket is pc, the control connection the host
+// writes on, through a controlWriter of its own, which ends with the
+// connection (dropConn). A connection dialed without a pacedConn (nil) is
+// written to as its socket takes it.
+func (a *agent) useConn(c *websocket.Conn, pc *pacedConn) *controlWriter {
+	w := newControlWriter(c, pc)
+	a.mu.Lock()
+	old := a.out
+	a.out = w
+	a.mu.Unlock()
+	if old != nil {
+		old.stop()
+	}
+	return w
+}
+
+// writerFor is the writer of c, made now when c has none.
+func (a *agent) writerFor(c *websocket.Conn) *controlWriter {
+	a.mu.Lock()
+	w := a.out
+	a.mu.Unlock()
+	if w != nil && w.c == c {
+		return w
+	}
+	return a.useConn(c, nil)
+}
+
+// dropConn ends the writer of c, if it is the current one: what waits to be
+// written on c is answered errConnDown.
+func (a *agent) dropConn(c *websocket.Conn) {
+	a.mu.Lock()
+	w := a.out
+	if w != nil && w.c == c {
+		a.out = nil
+	} else {
+		w = nil
+	}
+	a.mu.Unlock()
+	if w != nil {
+		w.stop()
+	}
+}
+
 // serveConn processes messages on an established control connection until
 // it fails. Peers are closed when the connection ends.
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
+	w := a.writerFor(c)
 	// Re-send the current attention after a reconnect.
 	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
 		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
 	defer func() {
-		a.mu.Lock()
-		if a.conn == c {
-			a.conn = nil
-		}
-		a.mu.Unlock()
+		a.dropConn(c)
 		a.closeAllPeers()
 	}()
 
 	// Report the current status in case the process ended while disconnected.
-	go a.watchStatus(ctx, c)
+	go a.watchStatus(ctx, w)
 
 	for {
 		typ, data, err := c.Read(ctx)
@@ -768,14 +841,16 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	}
 }
 
-func (a *agent) watchStatus(ctx context.Context, c *websocket.Conn) {
+func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 	select {
 	case <-ctx.Done():
 		return
 	case <-a.local.Ended():
 	}
 	info := a.local.Info()
-	_ = writeJSON(ctx, c, proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode})
+	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
+		_ = w.sendControl(websocket.MessageText, b)
+	}
 	a.mu.Lock()
 	if a.flushed == nil {
 		a.flushed = make(chan struct{})
@@ -1067,40 +1142,51 @@ func (a *agent) answerLink(id string, link proto.LinkCreated, err error) {
 	}
 }
 
-// send delivers a JSON message on the current control connection.
-func (a *agent) send(v any) {
+// send delivers a JSON message on the current control connection, ahead of
+// the relayed frames waiting (controlWriter); one that waits longer than
+// controlTurnWait is dropped. The error says it was not sent; most callers
+// need not know.
+func (a *agent) send(v any) error {
 	if a.sendHook != nil {
 		a.sendHook(v)
-		return
+		return nil
 	}
 	a.mu.Lock()
-	c := a.conn
+	w := a.out
 	a.mu.Unlock()
-	if c == nil {
-		return
+	if w == nil {
+		return errConnDown
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := writeJSON(ctx, c, v); err != nil {
+	b, err := json.Marshal(v)
+	if err == nil {
+		err = w.sendControl(websocket.MessageText, b)
+	}
+	if err != nil {
 		a.log.Debug("control send failed", "err", err)
 	}
+	return err
 }
 
-// sendRelay delivers a relayed terminal frame for a viewer.
-func (a *agent) sendRelay(viewerID string, frame []byte) error {
+// sendRelay delivers a relayed terminal frame for a viewer, in its turn
+// among the other viewers' (controlWriter): session.ErrSlowConsumer when the
+// turn does not come within relayTurnWait, errViewerGone when gone closes
+// first. Neither touches the connection.
+func (a *agent) sendRelay(viewerID string, frame []byte, gone <-chan struct{}) error {
 	env, err := proto.EncodeRelay(viewerID, frame)
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
-	c := a.conn
+	w := a.out
 	a.mu.Unlock()
-	if c == nil {
-		return errors.New("host: control connection down")
+	if w == nil {
+		return errConnDown
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return c.Write(ctx, websocket.MessageBinary, env)
+	turn := relayTurnWait
+	if a.relayWait > 0 {
+		turn = a.relayWait
+	}
+	return w.sendRelay(env, turn, gone)
 }
 
 func (a *agent) sendViewerError(viewerID, code, msg string) {

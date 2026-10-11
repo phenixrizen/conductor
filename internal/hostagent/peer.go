@@ -169,8 +169,12 @@ func (p *peer) startRelay() {
 		p.replaces = p.sub
 		p.sub = nil
 	}
-	p.relay = &relaySink{a: p.a, viewerID: p.id}
+	old := p.relay
+	p.relay = newRelaySink(p.a, p.id)
 	p.mu.Unlock()
+	if old != nil {
+		old.let()
+	}
 	if pc != nil {
 		_ = pc.Close()
 	}
@@ -479,12 +483,18 @@ func (p *peer) close() {
 		return
 	}
 	p.closed = true
-	pc, sub := p.pc, p.sub
+	pc, sub, relay := p.pc, p.sub, p.relay
 	p.pc, p.sub = nil, nil
 	p.mu.Unlock()
 	p.typing.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
+	}
+	if relay != nil {
+		// A frame of the viewer's waiting for its turn on the control
+		// connection is withdrawn; after the Detach, which ends the
+		// subscription as the viewer leaving, not as a failed write.
+		relay.let()
 	}
 	if pc != nil {
 		_ = pc.Close()

@@ -123,23 +123,41 @@ func (s *dcSink) Close(reason error) {
 	})
 }
 
-// relaySink writes frames through the server relay.
+// relaySink writes frames through the server relay, on the host's control
+// connection, each in its turn among the other relayed viewers' (agent's
+// sendRelay): a frame whose turn does not come within relayTurnWait ends
+// the viewer's subscription as a slow consumer, the viewer alone.
 type relaySink struct {
 	a        *agent
 	viewerID string
 	once     sync.Once
+	// gone is closed when the peer lets go of the viewer (let): a frame
+	// waiting for its turn is withdrawn then. Nil never closes.
+	gone     chan struct{}
+	goneOnce sync.Once
+}
+
+func newRelaySink(a *agent, viewerID string) *relaySink {
+	return &relaySink{a: a, viewerID: viewerID, gone: make(chan struct{})}
+}
+
+// let has the sink stop waiting on the viewer's behalf.
+func (s *relaySink) let() {
+	if s.gone != nil {
+		s.goneOnce.Do(func() { close(s.gone) })
+	}
 }
 
 // Transport labels welcome messages sent through this sink.
 func (s *relaySink) Transport() string { return proto.TransportRelay }
 
-func (s *relaySink) WriteFrame(frame []byte) error { return s.a.sendRelay(s.viewerID, frame) }
+func (s *relaySink) WriteFrame(frame []byte) error { return s.a.sendRelay(s.viewerID, frame, s.gone) }
 
 func (s *relaySink) Close(reason error) {
 	s.once.Do(func() {
 		if reason != nil {
 			if code := errorCode(reason); code != "" {
-				_ = s.a.sendRelay(s.viewerID, proto.NewError(code, reason.Error()))
+				_ = s.a.sendRelay(s.viewerID, proto.NewError(code, reason.Error()), s.gone)
 			}
 			s.a.send(proto.ViewerRef{T: proto.HostViewerClose, ViewerID: s.viewerID})
 		}
