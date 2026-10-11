@@ -858,3 +858,85 @@ func TestARunMemberStoppedThereIsPublishedAgainByTheNextRunLink(t *testing.T) {
 		t.Fatalf("the run's links once published again: %v", out)
 	}
 }
+
+// gatedPublication is a publication whose run updates wait for a gate and
+// are recorded as the rendezvous would apply them, in the order they land.
+type gatedPublication struct {
+	id      string
+	gate    chan struct{}
+	applied *[]string
+	mu      *sync.Mutex
+	done    chan struct{}
+}
+
+func (p *gatedPublication) OnChange(session.Info)                                            {}
+func (p *gatedPublication) OnActivity(string, session.ActivityEntry, session.AttentionState) {}
+func (p *gatedPublication) OnChat(string, session.ChatMessage)                               {}
+func (p *gatedPublication) Stop()                                                            {}
+func (p *gatedPublication) Base() string                                                     { return "https://rendezvous.example.net" }
+func (p *gatedPublication) ID() string                                                       { return p.id }
+func (p *gatedPublication) CurrentID() string                                                { return p.id }
+func (p *gatedPublication) HeldLinks() ([]string, bool)                                      { return nil, false }
+func (p *gatedPublication) Done() <-chan struct{}                                            { return p.done }
+func (p *gatedPublication) StoppedThere() bool                                               { return false }
+func (p *gatedPublication) Link(context.Context, string, time.Duration, string) (proto.LinkCreated, error) {
+	return proto.LinkCreated{}, errors.New("not here")
+}
+func (p *gatedPublication) Revoke(context.Context, string) error { return nil }
+func (p *gatedPublication) RunLink(context.Context, string, time.Duration, string, proto.RunGroup) (proto.LinkCreated, error) {
+	return proto.LinkCreated{}, errors.New("not here")
+}
+func (p *gatedPublication) RunLinkUpdate(ctx context.Context, g proto.RunGroup) error {
+	select {
+	case <-p.gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	ids := make([]string, 0, len(g.Members))
+	for _, m := range g.Members {
+		ids = append(ids, m.SessionID)
+	}
+	p.mu.Lock()
+	*p.applied = append(*p.applied, strings.Join(ids, ","))
+	p.mu.Unlock()
+	return nil
+}
+
+// A run's syncs take turns: an update that omits a member, still on its way
+// through another member's connection when the member is published again,
+// lands before the update that names it, never after.
+func TestARunsUpdatesLandInTurn(t *testing.T) {
+	local := newTestEnv(t, nil)
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	run, _ := local.srv.runs.Get(runID)
+	lead, core := run.Members[0].SessionID, run.Members[1].SessionID
+	var mu sync.Mutex
+	var applied []string
+	slow := &gatedPublication{id: "there-core", gate: make(chan struct{}), applied: &applied, mu: &mu, done: make(chan struct{})}
+	quick := &gatedPublication{id: "there-lead-again", gate: make(chan struct{}), applied: &applied, mu: &mu, done: make(chan struct{})}
+	close(quick.gate)
+	local.srv.pubMu.Lock()
+	local.srv.published = map[string]PublishedSession{core: slow}
+	local.srv.pubMu.Unlock()
+	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"})
+
+	// The lead is not published: the update omits it and goes through the core's connection, slowly.
+	first := make(chan struct{})
+	go func() { defer close(first); local.srv.syncRunLinks(runID) }()
+	time.Sleep(100 * time.Millisecond)
+	// The lead is published again: the next update names it and goes through its own connection.
+	local.srv.pubMu.Lock()
+	local.srv.published[lead] = quick
+	local.srv.pubMu.Unlock()
+	second := make(chan struct{})
+	go func() { defer close(second); local.srv.syncRunLinks(runID) }()
+	time.Sleep(100 * time.Millisecond)
+	close(slow.gate)
+	<-first
+	<-second
+	mu.Lock()
+	defer mu.Unlock()
+	if len(applied) != 2 || applied[0] != ",there-core" || applied[1] != "there-lead-again,there-core" {
+		t.Fatalf("updates landed as %q", applied)
+	}
+}

@@ -243,8 +243,13 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		if carrier != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
+			// In turn with the run's syncs (syncRunLinks): an update the
+			// switchyard applies after this link is made would rename its
+			// members.
+			unlock := s.lockRunSync(id)
 			res, err := carrier.RunLink(ctx, string(req.Role), req.ttl(), req.Label, g)
 			if err != nil {
+				unlock()
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not mint the link: "+err.Error())
 				return
 			}
@@ -266,6 +271,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 				}
 				s.pubMu.Unlock()
 			}
+			unlock()
 			if others {
 				s.scheduleRunSync(id)
 			}
