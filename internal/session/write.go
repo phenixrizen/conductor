@@ -103,8 +103,9 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	errh := func(code, msg string) proto.FileHeader {
 		return proto.FileHeader{Path: h.Path, Kind: "error", Error: &proto.ErrorInfo{Code: code, Message: msg}}
 	}
-	deny := s.fileDeny()
-	target, rel, err := s.folder.resolve(h.Path, deny)
+	// The deny list as looked up once, for the check and the use (read).
+	ds := newDenySet(s.fileDeny())
+	target, rel, err := s.folder.resolve(h.Path, ds)
 	if err != nil {
 		return errh("denied", err.Error())
 	}
@@ -122,7 +123,6 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	if rel == "." {
 		return errh("denied", "not a regular file")
 	}
-	ds := newDenySet(deny)
 	// Each directory on the way, and the file replaced, is held to the .git
 	// rule again as opened.
 	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGit(gitIDs))

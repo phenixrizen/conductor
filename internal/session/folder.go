@@ -149,8 +149,9 @@ func (f *Folder) at(rootReal string) error {
 // resolve checks raw as ResolvePath does against the folder's path, and
 // returns what it resolves to and the same path from the folder (no
 // element of it a link when it was resolved), once that path is checked to
-// still name the folder.
-func (f *Folder) resolve(raw string, deny []string) (real, rel string, err error) {
+// still name the folder. deny is the request's deny list, looked up once
+// for its check and its use.
+func (f *Folder) resolve(raw string, deny denySet) (real, rel string, err error) {
 	if f == nil {
 		return "", "", errFolderGone
 	}

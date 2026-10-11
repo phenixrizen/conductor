@@ -213,6 +213,51 @@ func TestFilesStayOutOfTheDenyListWhenAFolderBecomesALinkInside(t *testing.T) {
 	})
 }
 
+// A denied folder moved into the place of a folder on a request's path
+// after the check (not a link: the folder itself) is still denied: the
+// read, the stat, the listing and the save are refused, and its files stay
+// as they were.
+func TestFilesStayOutOfTheDenyListWhenADeniedFolderIsMovedIn(t *testing.T) {
+	for _, op := range []struct {
+		name, path string
+		stat, save bool
+	}{{"read", "sub/file.txt", false, false}, {"stat", "sub/file.txt", true, false}, {"listing", "sub", false, false}, {"save", "sub/file.txt", false, true}} {
+		t.Run(op.name, func(t *testing.T) {
+			root, _ := linkTree(t)
+			state := filepath.Join(root, "state")
+			os.MkdirAll(state, 0o700)
+			os.WriteFile(filepath.Join(state, "file.txt"), []byte("secret\n"), 0o600)
+			p := newFakeProc()
+			s := NewLocal(Info{ID: "sess", Cwd: root, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096, FileDeny: []string{state}})
+			t.Cleanup(func() { p.exit() })
+			onceAfterCheck(t, func() {
+				sub := filepath.Join(root, "sub")
+				os.Rename(sub, sub+".was")
+				os.Rename(state, sub)
+			})
+			if op.save {
+				sink := newChanSink(false)
+				sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+				if err != nil {
+					t.Fatal(err)
+				}
+				save(s, sub, "w", op.path, []byte("changed\n"), 512, "", true)
+				if f := fileReply(t, sink, "w"); f.Kind != "error" || f.Error.Code != "denied" {
+					t.Fatalf("save once the denied folder was moved in: %+v", f)
+				}
+			} else {
+				h, body := s.ReadPath(op.path, op.stat, []string{state})
+				if h.Kind != "error" || h.Exists || strings.Contains(string(body), "secret") || len(h.Entries) > 0 {
+					t.Fatalf("%s once the denied folder was moved in: %+v %q", op.name, h, body)
+				}
+			}
+			if b, _ := os.ReadFile(filepath.Join(root, "sub", "file.txt")); string(b) != "secret\n" {
+				t.Fatalf("the denied file holds %q", b)
+			}
+		})
+	}
+}
+
 // Links that stay in the session's folder read, list and save as before,
 // whether they are absolute or relative, and so does one that leaves the
 // folder and comes back into it; one that leaves it is refused.

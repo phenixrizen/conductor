@@ -153,13 +153,15 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 		h.Error = &proto.ErrorInfo{Code: code, Message: msg}
 		return h, nil
 	}
-	target, rel, err := f.resolve(raw, deny)
+	// The deny list as looked up once: the check and the use hold the path
+	// to the same files, wherever they are moved meanwhile.
+	ds := newDenySet(deny)
+	target, rel, err := f.resolve(raw, ds)
 	if err != nil {
 		return fail("denied", err.Error())
 	}
 	h.Path = target
 	afterCheck()
-	ds := newDenySet(deny)
 	// failOpen answers a path that changed or turned denied since its check
 	// as denied, and one whose file went as not found.
 	failOpen := func(err error) (proto.FileHeader, []byte) {
@@ -301,13 +303,14 @@ func listDir(dir *os.Root) (entries []proto.FileEntry, truncated bool, err error
 // config file and its catalog file, and a name entry for each of the two files,
 // see insideAny).
 func ResolvePath(root, raw string, deny []string) (string, error) {
-	real, _, err := resolvePath(root, raw, deny)
+	real, _, err := resolvePath(root, raw, newDenySet(deny))
 	return real, err
 }
 
-// resolvePath is ResolvePath, returning root with its links resolved too,
-// as the check took it.
-func resolvePath(root, raw string, deny []string) (real, rootReal string, err error) {
+// resolvePath is ResolvePath with the deny list looked up already (a
+// request looks it up once, for its check and its use alike), returning
+// root with its links resolved too, as the check took it.
+func resolvePath(root, raw string, deny denySet) (real, rootReal string, err error) {
 	if raw == "" {
 		raw = "."
 	}
@@ -351,7 +354,7 @@ func resolvePath(root, raw string, deny []string) (real, rootReal string, err er
 			return "", "", errNotReadable
 		}
 	}
-	if insideAny(real, deny) {
+	if deny.inside(real) {
 		return "", "", errNotReadable
 	}
 	return real, rootReal, nil
@@ -372,10 +375,15 @@ func resolvePath(root, raw string, deny []string) (real, rootReal string, err er
 // unrelated name is not caught, and a "*" in any other place of an entry is not
 // a wildcard: a literal "*" in a path is not supported. An entry that does not
 // exist, or whose directory does not, denies nothing and is skipped. A
-// request's use holds what it opens to the same entries by identity
-// (denySet.hit).
+// request looks the entries up once (newDenySet) and holds what it opens
+// to them by identity too (denySet.hit), so an entry moved since its check
+// is still denied.
 func insideAny(real string, deny []string) bool {
-	d := newDenySet(deny)
+	return newDenySet(deny).inside(real)
+}
+
+// inside is insideAny for the entries d holds.
+func (d denySet) inside(real string) bool {
 	if d.empty() {
 		return false
 	}

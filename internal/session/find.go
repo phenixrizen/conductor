@@ -55,12 +55,14 @@ func (f *Folder) find(query string, deny []string) proto.FileHeader {
 	if q == "" || len(q) > MaxFindQuery {
 		return proto.FileHeader{Path: f.Path(), Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a find needs its words, at most 200 bytes"}}
 	}
-	base, _, err := f.resolve(".", deny)
+	// The deny list as looked up once, for the whole walk.
+	ds := newDenySet(deny)
+	base, _, err := f.resolve(".", ds)
 	if err != nil {
 		return deniedHeader(f.Path(), err)
 	}
 	h := proto.FileHeader{Path: base, Kind: "find", Exists: true}
-	w := finder{f: f, deny: newDenySet(deny), list: deny, q: q, base: base, h: &h, deadline: time.Now().Add(findTimeout), budget: proto.MaxFileHeader - 4096}
+	w := finder{f: f, deny: ds, q: q, base: base, h: &h, deadline: time.Now().Add(findTimeout), budget: proto.MaxFileHeader - 4096}
 	dir, id, err := f.openDir(".", w.deny)
 	if err != nil {
 		return deniedHeader(f.Path(), err)
@@ -73,7 +75,6 @@ func (f *Folder) find(query string, deny []string) proto.FileHeader {
 type finder struct {
 	f        *Folder
 	deny     denySet
-	list     []string
 	q        string
 	base     string
 	h        *proto.FileHeader
@@ -139,7 +140,7 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 		if err != nil || w.deny.hit(fi, name, id) {
 			continue
 		}
-		if fi.Mode()&os.ModeSymlink != 0 && insideAny(filepath.Join(w.base, filepath.FromSlash(p)), w.list) {
+		if fi.Mode()&os.ModeSymlink != 0 && w.deny.inside(filepath.Join(w.base, filepath.FromSlash(p))) {
 			continue
 		}
 		if w.used+len(p)+8 > w.budget || len(w.h.Matches) == MaxFindMatches {
