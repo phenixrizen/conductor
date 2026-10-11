@@ -373,14 +373,25 @@ func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
 // process is taking slowly are refused as their time runs out, while it
 // still takes none, and never typed once it takes input again; the queue
 // has room again. The one being taken is accepted, with no error, and
-// finished (its Enter) as the process reads.
+// finished (its Enter) as the process reads, holding the session's turn
+// till then.
+//
+// The first is accepted at its own deadline, a moment before those after
+// it reach theirs: one of them may get its turn in that moment and then
+// wait for the session's turn, held by the first, for the little time it
+// has left. It is refused for its time all the same (input_failed), never
+// typed. So the chat_send names a kept message: one naming none would be
+// refused for that instead, when it gets its turn in time.
 func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	v := newSubmitViewerWithin(t, 10*time.Millisecond, timeout)
+	v.send(proto.ChatPost{T: proto.CtlChat, Text: "kept", Nonce: "k"})
+	kept := v.until(func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["nonce"] == "k" })
+	ref := kept[len(kept)-1]["id"].(string)
 	v.hold()
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 1"})
-	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: "ref-1"})
+	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: ref})
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 2"})
 	failed := map[string]int{}
 	v.until(func(m map[string]any) bool {
@@ -391,10 +402,10 @@ func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 			id, _ := m["requestId"].(string)
 			failed[id]++
 		}
-		return failed[""]+failed["ref-1"] == 3
+		return failed[""]+failed[ref] == 3
 	})
-	if failed[""] != 2 || failed["ref-1"] != 1 {
-		t.Fatalf("failed %v, want the two waiting submits and ref-1", failed)
+	if failed[""] != 2 || failed[ref] != 1 {
+		t.Fatalf("failed %v, want the two waiting submits and the chat_send", failed)
 	}
 	for i := range maxQueued {
 		v.send(proto.Submit{T: proto.CtlSubmit, Text: fmt.Sprintf("later %d", i)})
