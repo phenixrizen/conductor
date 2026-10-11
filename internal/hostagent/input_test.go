@@ -132,6 +132,9 @@ func TestAViewerLeavingDropsTheKeystrokesThatWait(t *testing.T) {
 	v := newSubmitViewer(t, 10*time.Millisecond)
 	v.hold()
 	v.key("first")
+	// Being written, no longer waiting: keys not begun when the viewer
+	// goes are never written.
+	v.untilBegun(1)
 	v.key("waits")
 	v.sync()
 	v.p.close()

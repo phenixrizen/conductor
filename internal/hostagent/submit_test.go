@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,21 @@ type submitViewer struct {
 	dc     *webrtc.DataChannel
 	frames <-chan []byte
 	ts     int64
+	// begun counts the writes the session has begun to the process,
+	// those that wait in it (hold) among them.
+	begun *atomic.Int32
+}
+
+// countingProc is a FakeProc that counts the writes made to it as they
+// begin, before they wait for room.
+type countingProc struct {
+	*sessiontest.FakeProc
+	begun *atomic.Int32
+}
+
+func (c countingProc) Write(b []byte) (int, error) {
+	c.begun.Add(1)
+	return c.FakeProc.Write(b)
 }
 
 func newSubmitViewer(t *testing.T, pause time.Duration) *submitViewer {
@@ -45,7 +61,8 @@ func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitVi
 func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration) *submitViewer {
 	t.Helper()
 	proc := sessiontest.NewFakeProc()
-	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
+	begun := new(atomic.Int32)
+	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, countingProc{proc, begun}, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
 	t.Cleanup(func() { proc.End(0) })
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
@@ -57,7 +74,7 @@ func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration)
 	}
 	t.Cleanup(p.close)
 	dc, frames := loopbackViewer(t, p, out)
-	v := &submitViewer{t: t, p: p, proc: proc, dc: dc, frames: frames}
+	v := &submitViewer{t: t, p: p, proc: proc, dc: dc, frames: frames, begun: begun}
 	v.send(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "Nate"})
 	v.until(func(m map[string]any) bool { return m["t"] == proto.CtlReady })
 	// The session sends ready as it attaches the viewer, before the peer
@@ -113,6 +130,20 @@ func (v *submitViewer) sync() []map[string]any {
 	ts := v.ts
 	v.send(proto.Ping{T: proto.CtlPing, TS: ts})
 	return v.until(func(m map[string]any) bool { return m["t"] == proto.CtlPong && m["ts"] == float64(ts) })
+}
+
+// untilBegun waits until n writes to the process have begun: the last of
+// them may wait there (hold), but it is being written, no longer waiting
+// in a queue of the viewer's or the session's.
+func (v *submitViewer) untilBegun(n int32) {
+	v.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for v.begun.Load() < n {
+		if time.Now().After(deadline) {
+			v.t.Fatalf("%d writes to the process begun, want %d", v.begun.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // hold fills the process's input so that the next write to it waits: a
