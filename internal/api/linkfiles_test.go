@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/share"
 )
 
 // keptSwitchyard is a switchyard on the data directory dir, as a restart finds it.
@@ -200,5 +203,69 @@ func TestABadOrExpiredKeptLinkIsLeftOutAtStartup(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "links", "fedcba9876543210.json")); !os.IsNotExist(err) {
 		t.Fatalf("the expired file stays: %v", err)
+	}
+}
+
+// A run update writes the files of the run's links again; a revoke at the
+// same moment still has the last word on disk: after a restart every link
+// revoked meanwhile stays revoked.
+func TestARevokeOutlastsARunUpdatesWriteAcrossARestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+	d, _ := e.srv.hosts.Get(host.sessionID)
+	owner := d.Owner()
+	const runs, perRun = 4, 25
+	group := share.Group{Name: "pair", Members: []share.GroupMember{{Name: "m0", SessionID: host.sessionID, AgentID: "cat", Status: "running"}}}
+	type minted struct{ id, token string }
+	var links []minted
+	for r := range runs {
+		run := fmt.Sprintf("run-%d", r)
+		for range perRun {
+			l, tok, err := e.srv.links.CreateGroupLink(run, owner, group, session.RoleView, "", 0)
+			if err != nil || e.srv.keepLink(l, tok, owner, "") != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			links = append(links, minted{l.ID, tok})
+		}
+	}
+	// Each run's files are written again, over and over, while every link is revoked.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for r := range runs {
+		run := fmt.Sprintf("run-%d", r)
+		for range 2 {
+			wg.Go(func() {
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						e.srv.keepGroup(owner, run)
+					}
+				}
+			})
+		}
+	}
+	for _, l := range links {
+		if found, _ := e.srv.links.RevokeGroup(owner, l.id); !found {
+			t.Fatalf("revoke %s", l.id)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	host.c.Close(websocket.StatusNormalClosure, "")
+	<-host.done
+
+	b := keptSwitchyard(t, dir, nil)
+	back := 0
+	for _, l := range links {
+		if _, err := b.srv.links.Resolve(l.token); err == nil {
+			back++
+		}
+	}
+	if back > 0 {
+		t.Fatalf("%d of %d revoked links open again after a restart", back, len(links))
 	}
 }

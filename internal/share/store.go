@@ -330,13 +330,18 @@ func (s *Store) Restore(l Link, hash Hash) {
 }
 
 // SetOwner makes a link durable: minted for the host instance owner, from
-// the address addr ("" for a tokened host).
-func (s *Store) SetOwner(linkID, owner, addr string) {
+// the address addr ("" for a tokened host). False, and nothing changed,
+// when the store no longer holds the link or it was revoked: it is not to
+// be kept.
+func (s *Store) SetOwner(linkID, owner, addr string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l, ok := s.byID[linkID]; ok {
-		l.Owner, l.Addr = owner, addr
+	l, ok := s.byID[linkID]
+	if !ok || l.Revoked {
+		return false
 	}
+	l.Owner, l.Addr = owner, addr
+	return true
 }
 
 // Drop forgets one link outright (its file swept), whatever its state, and

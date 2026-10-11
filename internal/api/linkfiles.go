@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/hex"
+	"errors"
 	"sync"
 	"time"
 
@@ -46,8 +47,17 @@ const (
 
 // linkKeeper holds what keeping links needs beside the store: the files, how
 // many each open-host address holds, and when each host instance last registered.
+//
+// Locks go in this order: fmu, then mu, then the link store's own.
 type linkKeeper struct {
 	files *store.Store
+	// fmu orders the files' saves and deletes. A save looks, under it,
+	// whether its link is still kept and still opens anything, and a link
+	// stops being kept under it before its file goes: no save of a link's
+	// file lands after its delete (a run update writing its run's links
+	// again while one of them is revoked), so a revoked link is never back
+	// after a restart.
+	fmu   sync.Mutex
 	mu    sync.Mutex
 	addrs map[string]int
 	// counted are the links counted in addrs, by id, with the address each
@@ -108,42 +118,69 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 	}
 }
 
+// Why keepLink refuses a link.
+var (
+	errLinksFull = errors.New("this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	errLinkGone  = errors.New("the link was revoked, or its session ended, as it was made")
+)
+
 // keepLink makes a link minted for a hosted session of owner durable and
-// writes its file, within the bounds; false (and the link revoked) when
-// they leave no room.
-func (s *Server) keepLink(link *share.Link, token, owner, addr string) bool {
+// writes its file, within the bounds. It refuses (the link dropped) when
+// they leave no room, and keeps nothing of a link the store no longer
+// holds unrevoked: one revoked or dropped since it was made is neither
+// counted nor written.
+func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	k := s.keeper
 	if k == nil || owner == "" {
-		return true
+		return nil
 	}
+	h := share.HashToken(token)
+	k.fmu.Lock()
+	defer k.fmu.Unlock()
 	k.mu.Lock()
-	full := s.links.Count() > maxDurableLinks || (addr != "" && k.addrs[addr] >= s.cfg.Switchyard.OpenHostLinks)
-	if !full && addr != "" {
+	if s.links.Count() > maxDurableLinks || (addr != "" && k.addrs[addr] >= s.cfg.Switchyard.OpenHostLinks) {
+		k.mu.Unlock()
+		s.links.Drop(link.ID)
+		return errLinksFull
+	}
+	// Under mu, so a drop of the link (its file and its count, which
+	// follows the store's) comes after this whole or finds nothing.
+	if !s.links.SetOwner(link.ID, owner, addr) {
+		k.mu.Unlock()
+		return errLinkGone
+	}
+	if addr != "" {
 		k.addrs[addr]++
 		k.counted[link.ID] = addr
 	}
-	k.mu.Unlock()
-	if full {
-		s.links.Drop(link.ID)
-		return false
-	}
-	s.links.SetOwner(link.ID, owner, addr)
-	h := share.HashToken(token)
-	k.mu.Lock()
 	k.hashes[link.ID] = hex.EncodeToString(h[:])
 	k.mu.Unlock()
 	link.Owner, link.Addr = owner, addr
-	s.writeLinkFile(link)
-	return true
+	s.saveLinkFile(link.ID)
+	return nil
 }
 
 // writeLinkFile writes a kept link's file as the store holds it now.
-func (s *Server) writeLinkFile(link *share.Link) {
+func (s *Server) writeLinkFile(linkID string) {
+	k := s.keeper
+	k.fmu.Lock()
+	defer k.fmu.Unlock()
+	s.saveLinkFile(linkID)
+}
+
+// saveLinkFile is writeLinkFile with fmu held: the link as the store holds
+// it now, while it is kept and opens anything; nothing for one revoked,
+// dropped or no longer kept.
+func (s *Server) saveLinkFile(linkID string) {
 	k := s.keeper
 	k.mu.Lock()
-	hash := k.hashes[link.ID]
+	hash := k.hashes[linkID]
 	k.mu.Unlock()
 	if hash == "" {
+		return
+	}
+	link, ok := s.links.Get(linkID)
+	if !ok || link.Revoked || link.Owner == "" {
 		return
 	}
 	f := linkFile{ID: link.ID, TokenHash: hash, SessionID: link.SessionID, Role: link.Role, Label: link.Label, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt, Owner: link.Owner, Addr: link.Addr}
@@ -162,18 +199,21 @@ func (s *Server) keepGroup(owner, runID string) {
 	}
 	for _, l := range s.links.Durable() {
 		if l.Owner == owner && l.RunID == runID && l.Group != nil && !l.Revoked {
-			s.writeLinkFile(l)
+			s.writeLinkFile(l.ID)
 		}
 	}
 }
 
 // dropLinkFile forgets a kept link's file and its place in its address's
-// count. Calling it again for the same link changes nothing.
+// count. Calling it again for the same link changes nothing. A save of the
+// file that has begun ends before the delete; one after it writes nothing.
 func (s *Server) dropLinkFile(linkID string) {
 	k := s.keeper
 	if k == nil {
 		return
 	}
+	k.fmu.Lock()
+	defer k.fmu.Unlock()
 	k.mu.Lock()
 	if addr, ok := k.counted[linkID]; ok {
 		delete(k.counted, linkID)

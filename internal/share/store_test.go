@@ -331,6 +331,32 @@ func TestDropReturnsTheLinkAsItWent(t *testing.T) {
 	}
 }
 
+// SetOwner makes a link durable only while the store holds it unrevoked,
+// and says whether it did.
+func TestSetOwnerSaysWhetherTheLinkIsKept(t *testing.T) {
+	s := NewStore()
+	live, _, _ := s.Create("s1", session.RoleView, "", 0)
+	revoked, _, _ := s.Create("s1", session.RoleView, "", 0)
+	dropped, _, _ := s.Create("s1", session.RoleView, "", 0)
+	s.Revoke("s1", revoked.ID)
+	s.Drop(dropped.ID)
+	if !s.SetOwner(live.ID, "owner", "addr") {
+		t.Fatal("a live link was not kept")
+	}
+	if l, _ := s.Get(live.ID); l.Owner != "owner" || l.Addr != "addr" {
+		t.Fatalf("kept as %+v", l)
+	}
+	if s.SetOwner(revoked.ID, "owner", "addr") || s.SetOwner(dropped.ID, "owner", "addr") {
+		t.Fatal("a revoked or dropped link was kept")
+	}
+	if l, _ := s.Get(revoked.ID); l.Owner != "" {
+		t.Fatalf("the revoked link took an owner: %+v", l)
+	}
+	if len(s.Durable()) != 1 {
+		t.Fatalf("durable: %d", len(s.Durable()))
+	}
+}
+
 // ExpireDue tells the revoke hooks of each link that expired, once, and
 // leaves alone the links not expired yet, those without an expiry and those
 // revoked before.

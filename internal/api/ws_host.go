@@ -458,8 +458,8 @@ func (s *Server) hostLink(hs *signal.HostedSession, hc *hostConnState, m proto.H
 		refuse("link_refused", err.Error())
 		return
 	}
-	if !s.keepLink(link, token, hs.Owner(), hc.addr) {
-		refuse("link_refused", "this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	if err := s.keepLink(link, token, hs.Owner(), hc.addr); err != nil {
+		refuse("link_refused", err.Error())
 		return
 	}
 	s.log.Info("link minted for a host", "session", hs.Info().ID, "role", role, "label", link.Label)
@@ -540,8 +540,8 @@ func (s *Server) hostRunLink(hs *signal.HostedSession, hc *hostConnState, m prot
 		refuse("link_refused", err.Error())
 		return
 	}
-	if !s.keepLink(link, token, hs.Owner(), hc.addr) {
-		refuse("link_refused", "this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	if err := s.keepLink(link, token, hs.Owner(), hc.addr); err != nil {
+		refuse("link_refused", err.Error())
 		return
 	}
 	s.log.Info("run link minted for a host", "run", m.Run.ID, "members", len(g.Members), "role", role)
