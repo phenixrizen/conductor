@@ -44,12 +44,18 @@ type peer struct {
 	// nvimOpening counts its nvim_opens running (queue.go).
 	typing      requestQueue
 	nvimOpening atomic.Int32
+
+	// left is closed when the peer is closed (the viewer left): what waits
+	// to tell the server of the viewer is withdrawn then. erred says the
+	// viewer's error is on its way (sendViewerError), the first alone.
+	left  chan struct{}
+	erred atomic.Bool
 }
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
 
 func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string, owner bool) *peer {
-	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == ""}
+	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == "", left: make(chan struct{})}
 }
 
 // startWebRTC prepares a peer connection that answers the viewer's offer.
@@ -486,6 +492,7 @@ func (p *peer) close() {
 	pc, sub, relay := p.pc, p.sub, p.relay
 	p.pc, p.sub = nil, nil
 	p.mu.Unlock()
+	close(p.left)
 	p.typing.close()
 	if sub != nil {
 		p.a.local.Detach(sub)

@@ -3,9 +3,11 @@ package hostagent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"slices"
 	"sync"
@@ -233,11 +235,17 @@ func (p *pacedConn) send(b []byte) error {
 	return nil
 }
 
-// pacedClient is base (http.DefaultClient's transport when nil) with each
-// connection it dials made a pacedConn of the given stall; dialed returns
-// the last one. Its transport is its own: call its CloseIdleConnections once
-// the dial is done.
-func pacedClient(base *http.Client, stall time.Duration) (client *http.Client, dialed func() *pacedConn) {
+// errNotPaced is a dial's error when the connection it upgraded is not a
+// pacedConn: base's transport is not an *http.Transport.
+var errNotPaced = errors.New("host: the control connection was not dialed through a paced socket")
+
+// pacedDial dials url as websocket.Dial does, with base's client
+// (http.DefaultClient's transport when nil) made to dial each connection as
+// a pacedConn of the given stall, and returns the pacedConn under the
+// connection it upgraded: the one the upgrade request went out on, as the
+// request's trace saw it, which after a redirect need not be the last one
+// dialed. The transport is the dial's own and keeps no idle connection.
+func pacedDial(ctx context.Context, url string, header http.Header, base *http.Client, stall time.Duration) (*websocket.Conn, *pacedConn, *http.Response, error) {
 	if base == nil {
 		base = &http.Client{}
 	}
@@ -246,35 +254,48 @@ func pacedClient(base *http.Client, stall time.Duration) (client *http.Client, d
 		t, ok = http.DefaultTransport.(*http.Transport)
 	}
 	if !ok {
-		return base, func() *pacedConn { return nil }
+		return nil, nil, nil, errNotPaced
 	}
 	t = t.Clone()
 	dial := t.DialContext
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	}
-	var mu sync.Mutex
-	var last *pacedConn
 	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		c, err := dial(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		pc := newPacedConn(c, stall)
-		mu.Lock()
-		last = pc
-		mu.Unlock()
-		return pc, nil
+		return newPacedConn(c, stall), nil
 	}
 	// The transport layers TLS over what it dials.
 	t.DialTLSContext = nil
-	out := *base
-	out.Transport = t
-	return &out, func() *pacedConn {
+	client := *base
+	client.Transport = t
+	defer t.CloseIdleConnections()
+	var mu sync.Mutex
+	var used net.Conn
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
 		mu.Lock()
-		defer mu.Unlock()
-		return last
+		used = info.Conn
+		mu.Unlock()
+	}})
+	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header, HTTPClient: &client})
+	if err != nil {
+		return nil, nil, resp, err
 	}
+	mu.Lock()
+	conn := used
+	mu.Unlock()
+	if tc, ok := conn.(*tls.Conn); ok {
+		conn = tc.NetConn()
+	}
+	pc, ok := conn.(*pacedConn)
+	if !ok {
+		c.CloseNow()
+		return nil, nil, resp, errNotPaced
+	}
+	return c, pc, resp, nil
 }
 
 // outMessage is one message waiting for, or taking, its turn.
@@ -327,9 +348,9 @@ func (w *controlWriter) sendControl(typ websocket.MessageType, data []byte) erro
 
 // sendControlWhole is sendControl for a message the server must have while
 // the connection lasts: it waits for its turn as long as the connection
-// does, which writeStall bounds.
-func (w *controlWriter) sendControlWhole(typ websocket.MessageType, data []byte) error {
-	return w.put(true, typ, data, 0, nil)
+// does, which writeStall bounds, or until gone closes (errViewerGone).
+func (w *controlWriter) sendControlWhole(typ websocket.MessageType, data []byte, gone <-chan struct{}) error {
+	return w.put(true, typ, data, 0, gone)
 }
 
 // sendRelay writes a frame relayed to a viewer once its turn comes within

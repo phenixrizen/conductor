@@ -164,7 +164,7 @@ func (s *relaySink) Close(reason error) {
 			if code := errorCode(reason); code != "" {
 				_ = s.a.sendRelay(s.viewerID, proto.NewError(code, reason.Error()), s.gone)
 			}
-			_ = s.a.tell(proto.ViewerRef{T: proto.HostViewerClose, ViewerID: s.viewerID})
+			_ = s.a.tell(proto.ViewerRef{T: proto.HostViewerClose, ViewerID: s.viewerID}, s.gone)
 		}
 	})
 }

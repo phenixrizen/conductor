@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -61,16 +62,11 @@ func dialHeld(t *testing.T, stall time.Duration) (*heldServer, *websocket.Conn, 
 		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 4<<10) })
 		return serr
 	}}
-	hc, dialed := pacedClient(&http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, stall)
-	c, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{HTTPClient: hc})
+	c, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil, &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, stall)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.CloseNow() })
-	pc := dialed()
-	if pc == nil {
-		t.Fatal("the connection was not dialed paced")
-	}
 	return s, c, pc
 }
 
@@ -405,17 +401,13 @@ func TestAPacedDialWorksOverTLS(t *testing.T) {
 	t.Cleanup(srv.Close)
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
-	hc, dialed := pacedClient(&http.Client{Transport: tr}, 0)
-	c, _, err := websocket.Dial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), &websocket.DialOptions{HTTPClient: hc})
+	c, pc, _, err := pacedDial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), nil, &http.Client{Transport: tr}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.CloseNow()
-	w := newControlWriter(c, dialed())
+	w := newControlWriter(c, pc)
 	t.Cleanup(w.stop)
-	if w.pc == nil {
-		t.Fatal("the connection was not dialed paced")
-	}
 	if err := w.sendControl(websocket.MessageText, []byte(`{"t":"status"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -514,14 +506,22 @@ func TestAViewersErrorWaitsAsLongAsTheConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	backedUp(t, pc)
-	a.sendViewerError("0123456789abcdef", "attach_failed", "first")
-	a.sendViewerError("0123456789abcdef", "attach_failed", "second")
+	const staying, leaving = "0123456789abcdef", "fedcba9876543210"
+	a.peers[staying] = newPeer(a, staying, session.RoleView, "", "", false)
+	a.peers[leaving] = newPeer(a, leaving, session.RoleView, "", "", false)
+	a.sendViewerError(staying, "attach_failed", "first")
+	a.sendViewerError(staying, "attach_failed", "second")
+	// A viewer that leaves while its error waits takes the error with it:
+	// the server let it go itself.
+	a.sendViewerError(leaving, "attach_failed", "gone")
+	a.removePeer(leaving)
+	a.sendViewerError(leaving, "attach_failed", "after")
 	time.Sleep(500 * time.Millisecond)
 	close(s.read)
 	s.expectGot(t, big)
 	select {
 	case got := <-s.got:
-		if !bytes.Contains(got, []byte(`"viewer_error"`)) || !bytes.Contains(got, []byte("first")) {
+		if !bytes.Contains(got, []byte(`"viewer_error"`)) || !bytes.Contains(got, []byte(staying)) || !bytes.Contains(got, []byte("first")) {
 			t.Fatalf("the server got %.80q", got)
 		}
 	case <-time.After(10 * time.Second):
@@ -560,6 +560,61 @@ func TestAStatusWatcherEndsWithItsConnection(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("the watcher outlived its connection")
 		}
+	}
+}
+
+// The socket a dial writes on is the one its upgrade went out on: after a
+// redirect to another server and back, the first connection to the first
+// server carries the upgrade, though another was dialed after it.
+func TestAPacedDialFindsTheConnectionItUpgraded(t *testing.T) {
+	got := make(chan []byte, 1)
+	var first *httptest.Server
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, first.URL+"/final", http.StatusFound)
+	}))
+	t.Cleanup(other.Close)
+	var conns atomic.Int32
+	first = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, other.URL+"/redirect", http.StatusFound)
+			return
+		}
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		if _, data, err := c.Read(r.Context()); err == nil {
+			got <- data
+		}
+	}))
+	first.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	first.Start()
+	t.Cleanup(first.Close)
+	c, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(first.URL, "http")+"/start", nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if n := conns.Load(); n != 1 {
+		t.Skipf("the first server's connection was not kept for the upgrade (%d connections)", n)
+	}
+	w := newControlWriter(c, pc)
+	t.Cleanup(w.stop)
+	if err := w.sendControl(websocket.MessageText, []byte(`{"t":"status"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-got:
+		if string(data) != `{"t":"status"}` {
+			t.Fatalf("the server got %q", data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server got nothing")
 	}
 }
 

@@ -80,8 +80,7 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 4<<10) })
 		return serr
 	}}
-	hc, dialed := pacedClient(&http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, 0)
-	conn, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{HTTPClient: hc})
+	conn, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil, &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +95,7 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 	}
 	defer proc.Stop(context.Background(), time.Second)
 	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
-	a.useConn(conn, dialed())
+	a.useConn(conn, pc)
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
 
 	healthy := &outputCount{}
