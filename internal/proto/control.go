@@ -340,9 +340,10 @@ type Welcome struct {
 	// `chat_send` take scope `run`, and `chat_roster` arrives.
 	RunChat bool `json:"runChat,omitempty"`
 	// Cwd is the session's working directory on the machine that runs it,
-	// from the owner itself: the root of a guest's Files pane. A switchyard
-	// lists a published session with its folder's last element alone.
-	// Absent past MaxCwd bytes, and from an older owner.
+	// from the owner itself, to a viewer whose role may read files: the root
+	// of a guest's Files pane. A switchyard lists a published session with
+	// its folder's last element alone. Absent past MaxCwd bytes, to a role
+	// that may read no file, and from an older owner.
 	Cwd            string      `json:"cwd,omitempty"`
 	ICEServers     []ICEServer `json:"iceServers,omitempty"`
 	RelayTimeoutMs int         `json:"relayTimeoutMs,omitempty"`

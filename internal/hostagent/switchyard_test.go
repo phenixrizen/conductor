@@ -206,6 +206,7 @@ func publishCat(t *testing.T, y *stubYard, dir string, command []string) *publis
 	info := session.Info{ID: "local-1", Name: "billing-refactor", Kind: session.KindServer, AgentID: "claude", Command: command, Cwd: dir, Status: session.StatusRunning, Cols: 80, Rows: 24, CreatedAt: time.Now().UTC()}
 	pc.local = session.NewLocal(info, proc, session.Options{
 		Transport: proto.TransportWS,
+		FileView:  "view",
 		Log:       discardLog,
 		OnChange: func(i session.Info) {
 			if p := pub(); p != nil {
@@ -645,6 +646,7 @@ func TestASwitchyardOperatorListsAPublishedSessionAndNoMore(t *testing.T) {
 	}
 	local := session.NewLocal(session.Info{ID: "local-2", Name: "billing-refactor", Kind: session.KindServer, AgentID: "claude", Command: []string{"claude", "--dangerously-skip-permissions"}, Cwd: dir, Status: session.StatusRunning, Cols: 80, Rows: 24, CreatedAt: time.Now().UTC()}, proc, session.Options{
 		Transport: proto.TransportWS,
+		FileView:  "view",
 		Log:       discardLog,
 		OnChange: func(i session.Info) {
 			if p := published(); p != nil {

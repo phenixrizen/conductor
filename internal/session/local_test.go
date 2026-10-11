@@ -910,24 +910,42 @@ func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
 	}
 }
 
-// The welcome names the session's working directory, from the owner itself:
-// a guest's Files pane roots there, whatever a switchyard lists. A path past
-// the protocol's bound is left out.
+// The welcome names the session's working directory, from the owner itself,
+// to a viewer whose role may read files: a guest's Files pane roots there,
+// whatever a switchyard lists. A viewer who may read none is not told, and a
+// path past the protocol's bound is left out.
 func TestTheWelcomeNamesTheSessionsFolder(t *testing.T) {
-	dir := t.TempDir()
-	s, _ := newLocal(t, dir)
-	sink := newChanSink(false)
-	if _, err := s.Attach("", RoleView, "", 80, 24, sink); err != nil {
-		t.Fatal(err)
+	welcome := func(fileView string, role Role) map[string]any {
+		t.Helper()
+		s, _ := newLocalWith(t, Options{FileView: fileView})
+		sink := newChanSink(false)
+		if _, err := s.Attach("", role, "", 80, 24, sink); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitFrames(t, 1)
+		m := decodeControl(t, sink.frame(0))
+		if m["t"] != proto.CtlWelcome {
+			t.Fatalf("first frame %v", m)
+		}
+		m["want"] = s.Info().Cwd
+		return m
 	}
-	sink.waitFrames(t, 1)
-	if m := decodeControl(t, sink.frame(0)); m["t"] != proto.CtlWelcome || m["cwd"] != dir {
-		t.Fatalf("welcome: %v", m)
+	if m := welcome("view", RoleView); m["cwd"] != m["want"] || m["cwd"] == "" {
+		t.Fatalf("file view for all, a view link: %v", m)
 	}
-	if got := welcomeCwd("/" + strings.Repeat("a", proto.MaxCwd)); got != "" {
+	if m := welcome("control", RoleView); m["cwd"] != nil {
+		t.Fatalf("file view for control, a view link: %v", m)
+	}
+	if m := welcome("control", RoleControl); m["cwd"] != m["want"] {
+		t.Fatalf("file view for control, a control link: %v", m)
+	}
+	if m := welcome("off", RoleControl); m["cwd"] != nil {
+		t.Fatalf("file view off: %v", m)
+	}
+	if got := welcomeCwd("/"+strings.Repeat("a", proto.MaxCwd), true); got != "" {
 		t.Fatalf("an over-long folder went in the welcome: %d bytes", len(got))
 	}
-	if got := welcomeCwd("/srv/" + strings.Repeat("a", proto.MaxCwd-5)); len(got) != proto.MaxCwd {
+	if got := welcomeCwd("/srv/"+strings.Repeat("a", proto.MaxCwd-5), true); len(got) != proto.MaxCwd {
 		t.Fatalf("a folder at the bound was left out: %d bytes", len(got))
 	}
 }
