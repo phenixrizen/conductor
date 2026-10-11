@@ -118,13 +118,18 @@ type gitIDs struct {
 	files      []os.FileInfo
 	missing    []string
 	incomplete bool
-	// scanned holds the git directories looked at already, each looked at
-	// once however many .git name it; budget is how many more entries may
-	// be looked at for this check (maxScan at first), bytes how many more
-	// bytes of .git files and commondirs may be read (maxScanBytes).
-	scanned []os.FileInfo
-	budget  int
-	bytes   int
+	// scanned holds the directories whose entries were looked at already,
+	// resolved the git directories whose commondir was followed already:
+	// each is done once however many .git name it, and apart, since a
+	// directory first met as another's common directory may later be met as
+	// a git directory with a commondir of its own. budget is how many more
+	// entries may be looked at for this check (maxScan at first), bytes how
+	// many more bytes of .git files and commondirs may be read
+	// (maxScanBytes).
+	scanned  []os.FileInfo
+	resolved []os.FileInfo
+	budget   int
+	bytes    int
 }
 
 // maxScan bounds the entries one check looks at, and maxScanBytes the
@@ -190,19 +195,19 @@ func gitDirsIn(dir string, ids *gitIDs) {
 	}
 }
 
-// seen reports whether the directory dir was looked at already in this
-// check, and marks it looked at.
-func (ids *gitIDs) seen(dir string) bool {
+// once reports whether the directory dir is in set already, comparing as
+// files, and adds it when it is not.
+func once(set *[]os.FileInfo, dir string) bool {
 	fi, err := os.Stat(dir)
 	if err != nil {
 		return false
 	}
-	for _, s := range ids.scanned {
+	for _, s := range *set {
 		if os.SameFile(fi, s) {
 			return true
 		}
 	}
-	ids.scanned = append(ids.scanned, fi)
+	*set = append(*set, fi)
 	return false
 }
 
@@ -227,10 +232,12 @@ func (ids *gitIDs) charge(path string) bool {
 // objects there, with or without a HEAD of its own) and, for both, the
 // targets of their entries that are links (linkedMetadata).
 func gitDirFiles(gitDir string, ids *gitIDs) {
-	if ids.incomplete || ids.seen(gitDir) {
+	if ids.incomplete || once(&ids.resolved, gitDir) {
 		return
 	}
-	linkedMetadata(gitDir, ids)
+	if !once(&ids.scanned, gitDir) {
+		linkedMetadata(gitDir, ids)
+	}
 	if !ids.charge(rawJoin(gitDir, "commondir")) {
 		return
 	}
@@ -242,7 +249,7 @@ func gitDirFiles(gitDir string, ids *gitIDs) {
 	if ok {
 		if cfi, err := os.Stat(common); err == nil && cfi.IsDir() {
 			ids.files = append(ids.files, cfi)
-			if !ids.seen(common) {
+			if !once(&ids.scanned, common) {
 				linkedMetadata(common, ids)
 			}
 		}

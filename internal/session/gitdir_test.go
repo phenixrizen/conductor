@@ -540,6 +540,57 @@ func TestGitDirScanIsBounded(t *testing.T) {
 	}
 }
 
+// A git directory first met as another's common directory, and later as
+// the git directory of a .git further up, still has its own commondir
+// followed: W/n/.git names A, whose commondir is B; W/.git names B, whose
+// commondir is W/n/C (refs and objects, no HEAD). C's config is W's
+// repository configuration, and read only.
+func TestGitDirMetAsCommonThenAsGitDir(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := filepath.Join(base, "W")
+	a, b, c := filepath.Join(base, "A"), filepath.Join(base, "B"), filepath.Join(w, "n", "C")
+	for _, d := range []string{filepath.Join(a), filepath.Join(b, "refs"), filepath.Join(b, "objects"), filepath.Join(c, "refs"), filepath.Join(c, "objects")} {
+		must(os.MkdirAll(d, 0o755))
+	}
+	for _, d := range []string{a, b} {
+		must(os.WriteFile(filepath.Join(d, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	}
+	must(os.WriteFile(filepath.Join(a, "commondir"), []byte(b+"\n"), 0o644))
+	must(os.WriteFile(filepath.Join(b, "commondir"), []byte(c+"\n"), 0o644))
+	must(os.WriteFile(filepath.Join(w, ".git"), []byte("gitdir: "+b+"\n"), 0o644))
+	must(os.WriteFile(filepath.Join(w, "n", ".git"), []byte("gitdir: "+a+"\n"), 0o644))
+	must(os.WriteFile(filepath.Join(c, "config"), []byte("[core]\n"), 0o644))
+	must(os.WriteFile(filepath.Join(w, "notes.txt"), []byte("x\n"), 0o644))
+	if !inGitDir(filepath.Join(c, "config")) {
+		t.Fatal("W/n/C/config, W's common directory's configuration, reads as editable")
+	}
+	s, _ := newLocal(t, w)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save(s, sub, "c", "n/C/config", []byte("[core]\n\tfsmonitor = /bin/true\n"), 512, "", true)
+	if f := fileReply(t, sink, "c"); f.Kind != "error" || f.Error == nil || f.Error.Code != "read_only" {
+		t.Fatalf("save n/C/config: %+v %+v", f, f.Error)
+	}
+	if h, _ := ReadPath(w, "n/C/config", false, nil); !h.ReadOnly {
+		t.Fatalf("read n/C/config: %+v", h)
+	}
+	if h, _ := ReadPath(w, "notes.txt", false, nil); h.ReadOnly {
+		t.Fatalf("notes.txt reads as ReadOnly: %+v", h)
+	}
+}
+
 // writeTemp writes body to a new file in a temporary directory.
 func writeTemp(t *testing.T, body string) string {
 	t.Helper()
