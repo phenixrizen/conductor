@@ -902,7 +902,7 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 		return
 	case <-a.local.Ended():
 	}
-	a.handViewersTheEnd(ctx, w)
+	a.handViewersTheEnd(ctx, w.done)
 	info := a.local.Info()
 	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
 		_ = w.sendControl(websocket.MessageText, b)
@@ -925,17 +925,21 @@ const endDrain = 2 * time.Second
 // handed to their transports: those of the relayed viewers then go out on
 // the control connection ahead of what is handed to it after, the
 // session's end among it. The server ends a hosted session's links when it
-// hears the session ended, and with them the viewers attached through
+// hears the session ended (and the publishing server revokes them when its
+// session ends, requestRevoke), and with them the viewers attached through
 // them, dropping what was not relayed to them yet; the host's own messages
-// otherwise go ahead of relayed frames (controlWriter).
-func (a *agent) handViewersTheEnd(ctx context.Context, w *controlWriter) {
+// otherwise go ahead of relayed frames (controlWriter). done, when not nil,
+// ends the wait (the connection's writer ending).
+func (a *agent) handViewersTheEnd(ctx context.Context, done <-chan struct{}) {
 	deadline := time.Now().Add(endDrain)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
 		if a.statusQueued.Load() && a.local.Drained() {
 			return
 		}
 		select {
-		case <-w.done:
+		case <-done:
+			return
+		case <-ctx.Done():
 			return
 		case <-time.After(10 * time.Millisecond):
 		}
@@ -1159,8 +1163,18 @@ func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration,
 
 // requestRevoke asks the server to revoke a link it minted for the session
 // and waits for the answer; a link the server does not know answers
-// "not_found: …".
+// "not_found: …". While the session runs the request goes at once, ahead
+// of relayed frames; once it has ended (the publishing server ends its
+// links then), after the viewers' last frames (handViewersTheEnd), which
+// the revocation would drop.
 func (a *agent) requestRevoke(ctx context.Context, linkID string) error {
+	if a.local != nil {
+		select {
+		case <-a.local.Ended():
+			a.handViewersTheEnd(ctx, nil)
+		default:
+		}
+	}
 	_, err := a.ask(ctx, func(id string) any {
 		return proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: id, LinkID: linkID}
 	})

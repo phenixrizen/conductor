@@ -788,6 +788,77 @@ func TestTheSessionsEndGoesAfterTheViewersLastFrames(t *testing.T) {
 	}
 }
 
+// A link's revocation goes at once while the session runs, ahead of the
+// frames relayed to its viewers; once the session has ended (the publishing
+// server revokes its links then), after the viewers' last frames, which the
+// revocation would drop.
+func TestARevocationGoesAtOnceUnlessTheSessionEnded(t *testing.T) {
+	for _, ended := range []bool{false, true} {
+		t.Run(map[bool]string{false: "running", true: "ended"}[ended], func(t *testing.T) {
+			s, c, pc := dialHeld(t, 0)
+			dir := t.TempDir()
+			argv := []string{"/bin/cat"}
+			if ended {
+				argv = []string{"/bin/sh", "-c", "sleep 0.5; echo LAST"}
+			}
+			proc, err := pty.Start(pty.Spec{Argv: argv, Dir: dir, Env: hostEnv(nil)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer proc.Stop(context.Background(), time.Second)
+			a := &agent{opts: Options{Switchyard: true}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+			w := a.useConn(c, pc)
+			t.Cleanup(w.stop)
+			a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: a.onLocalActivity})
+			big := bytes.Repeat([]byte("b"), 1<<20)
+			if err := w.sendRelay(big, time.Second, nil); err != nil {
+				t.Fatal(err)
+			}
+			backedUp(t, pc)
+			const relayed = "relay-0123456789"
+			if _, err := a.local.AttachWith(session.AttachOptions{ID: relayed, Role: session.RoleView, Name: "relayed"}, newRelaySink(a, relayed)); err != nil {
+				t.Fatal(err)
+			}
+			if ended {
+				select {
+				case <-a.local.Ended():
+				case <-time.After(5 * time.Second):
+					t.Fatal("the session never ended")
+				}
+			}
+			waitLanes(t, w, 0, 1) // the viewer's first frame waits its turn
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			go func() { _ = a.requestRevoke(ctx, "link-1") }()
+			time.Sleep(500 * time.Millisecond)
+			close(s.read)
+			s.expectGot(t, big)
+			frames := 0
+			for {
+				select {
+				case got := <-s.got:
+					if bytes.Contains(got, []byte(relayed)) {
+						frames++
+						continue
+					}
+					if !bytes.Contains(got, []byte(`"link_revoke"`)) {
+						continue
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the revocation never went")
+				}
+				break
+			}
+			if ended && frames == 0 {
+				t.Fatal("the revocation of an ended session's link went before the viewer's last frames")
+			}
+			if !ended && frames != 0 {
+				t.Fatalf("the revocation of a running session's link went after %d of the viewer's frames", frames)
+			}
+		})
+	}
+}
+
 // A message taken from its lane is no longer kept, with its data, by the
 // array under the lane, and an emptied lane lets go of its array.
 func TestAMessageTakenIsNotKeptByItsLane(t *testing.T) {
