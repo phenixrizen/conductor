@@ -250,12 +250,18 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(slow).toContainText('Still saving')
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
-    // Typed while the answer is on its way.
+    // Typed while the answer is on its way, and a save asked for then: the
+    // bar says one is on its way, and nothing more is written.
     await typeAtEnd('more\n')
+    await page.keyboard.press('Control+s')
+    await expect(area.locator('[data-editor-save-busy]')).toBeVisible()
+    await expect(slow).toBeVisible()
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\n')
     // The answer lands: saved, the bar gone; what was typed meanwhile is
     // still there, and still unsaved.
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await expect(slow).toHaveCount(0)
+    await expect(area.locator('[data-editor-save-busy]')).toHaveCount(0)
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
     await page.waitForTimeout(500)
     await expect(lines).toContainText('more')

@@ -623,7 +623,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UButton label="Reload" size="xs" color="neutral" variant="soft" data-editor-reload @click="reloadFromDisk" />
         <UButton label="Save anyway" size="xs" color="warning" variant="soft" :loading="saving" data-editor-save-anyway @click="save(true)" />
       </div>
-      <div v-if="saveBusy && !saveSlow" class="flex flex-none items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-editor-save-busy>
+      <div v-if="saveBusy" class="flex flex-none items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-editor-save-busy>
         <UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin text-muted" /><span class="min-w-0 flex-1 text-muted">A save is still on its way: save again once it is answered to save what you changed since.</span>
       </div>
       <div v-if="saveSlow" class="flex flex-none items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-editor-save-slow>
