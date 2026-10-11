@@ -719,6 +719,10 @@ func TestARepublishThatFailedIsTriedAgainAtTheNextShare(t *testing.T) {
 	if local.srv.publishedOf(id) != nil {
 		t.Fatal("the ended publication is still held")
 	}
+	// The Share dialog is told a link made now publishes the session again.
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); out["republish"] != true {
+		t.Fatalf("links after the stop: %v", out)
+	}
 
 	// Out of reach: a link here, saying why.
 	pub.down.Store(true)
@@ -755,5 +759,48 @@ func TestARepublishThatFailedIsTriedAgainAtTheNextShare(t *testing.T) {
 	})
 	if running != 1 {
 		t.Fatalf("%d publications of the session there", running)
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); out["republish"] != nil {
+		t.Fatalf("links once published again: %v", out)
+	}
+}
+
+// A run member whose publication the switchyard ended is published again by
+// the run's next link: the run's links say so, so the Share dialog makes one
+// rather than show the one it made before.
+func TestARunMemberStoppedThereIsPublishedAgainByTheNextRunLink(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	if resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"}); resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	run, _ := local.srv.runs.Get(runID)
+	lead := run.Members[0].SessionID
+	there := local.srv.publishedOf(lead).CurrentID()
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+there, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the rendezvous: %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && local.srv.publishedOf(lead) != nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if local.srv.publishedOf(lead) != nil {
+		t.Fatal("the member's ended publication is still held")
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != true {
+		t.Fatalf("the run's links after a member's stop: %v", out)
+	}
+	if resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"}); resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("the next run link: %d %v", resp.StatusCode, out)
+	}
+	waitMembersPublished(t, local, runID, 2)
+	if again := local.srv.publishedOf(lead).CurrentID(); again == there {
+		t.Fatalf("published again under the ended id %s", again)
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != nil {
+		t.Fatalf("the run's links once published again: %v", out)
 	}
 }

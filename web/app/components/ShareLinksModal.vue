@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ReachInfo, ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
-import { shareReach, type ShareReach } from '~/utils/share'
+import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
 
 /**
  * Share in one click: opening the dialog makes a link for two hours, with the
@@ -26,14 +26,14 @@ function routes() {
   if (props.runId !== undefined) {
     const run = props.runId
     return {
-      list: () => api.listRunLinks(run),
+      list: () => api.runLinkList(run),
       create: (body: { role: Role; label?: string; ttlSeconds?: number }) => api.createRunLink(run, body),
       revoke: (linkId: string) => api.revokeRunLink(run, linkId),
     }
   }
   const id = props.sessionId
   return {
-    list: () => api.links(id),
+    list: () => api.linkList(id),
     create: (body: { role: Role; label?: string; ttlSeconds?: number }) => api.createLink(id, body),
     revoke: (linkId: string) => api.revokeLink(id, linkId),
   }
@@ -146,11 +146,16 @@ const ttlItems = [
   { label: 'In 7 days', value: '604800' },
 ]
 
+/** The switchyard ended the publication of the session (or of a run's member): a link made now publishes it again. */
+const republish = ref(false)
+
 async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    links.value = await routes().list()
+    const list = await routes().list()
+    links.value = list.links
+    republish.value = list.republish
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -161,7 +166,9 @@ async function refresh() {
 // Opening the dialog is the one click: the link already made for this
 // target is shown and copied again; otherwise a view link for two hours is
 // made, copied and shown. One mint per target, not per open: a switchyard
-// allows a host five link requests a minute.
+// allows a host five link requests a minute. When the switchyard ended the
+// publication since, the held link is made anew, which publishes it again
+// (reuseHeld).
 watch(open, async (v) => {
   if (!v) return
   error.value = ''
@@ -170,7 +177,7 @@ watch(open, async (v) => {
     .then((r) => (reach.value = r))
     .catch(() => (reach.value = null))
   await refresh()
-  const held = created.value && createdFor.value === targetKey.value && links.value.some((l) => l.id === created.value!.linkId && !l.revoked)
+  const held = reuseHeld(created.value, createdFor.value === targetKey.value, links.value, republish.value)
   if (held) {
     await copy(created.value!.url)
     return

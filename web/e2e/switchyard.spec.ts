@@ -369,24 +369,33 @@ test('a session a Conductor publishes is listed there by little, a guest\'s File
   await expect(pane.locator('[data-files-crumbs] [data-files-crumb]').last()).toHaveText('publisher3-repo')
   await expect(pane.locator(`[data-files-crumbs] [data-files-crumb="${repo3}"]`)).toHaveCount(1)
 
-  // The operator stops it at the switchyard: the guest is let go, the session runs on at home.
-  const stopped = await fetch(`${syURL}/api/sessions/${there.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${syAdmin}` } })
-  expect(stopped.status).toBe(200)
-  await expect.poll(() => page.locator('[data-transport-state]').first().getAttribute('data-transport-state'), { timeout: 30_000 }).not.toBe('open')
-  const home = await pub<{ session: { status: string } }>('GET', `/api/sessions/${made.body.id}`)
-  expect(home.body.session.status).toBe('running')
+  // The owner's Share before the stop: a link minted there, which the dialog keeps for its next open.
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   await ctx.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), publisher.token)
   const owner = await ctx.newPage()
   try {
     await owner.goto(`${publisher.baseURL}/sessions/${made.body.id}`)
-    await owner.locator('[data-inspector] button', { hasText: 'Activity' }).click()
-    await expect(owner.locator('[data-inspector]')).toContainText('no longer shared through the switchyard', { timeout: 30_000 })
-    // Share publishes it again: minted there, for a new session there.
     await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
     const dialog = owner.getByRole('dialog')
     await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
     await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
+    const before = await dialog.locator('[data-created-url]').getAttribute('title')
+    await owner.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+
+    // The operator stops it at the switchyard: the guest is let go, the session runs on at home.
+    const stopped = await fetch(`${syURL}/api/sessions/${there.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${syAdmin}` } })
+    expect(stopped.status).toBe(200)
+    await expect.poll(() => page.locator('[data-transport-state]').first().getAttribute('data-transport-state'), { timeout: 30_000 }).not.toBe('open')
+    const home = await pub<{ session: { status: string } }>('GET', `/api/sessions/${made.body.id}`)
+    expect(home.body.session.status).toBe('running')
+    await owner.locator('[data-inspector] button', { hasText: 'Activity' }).click()
+    await expect(owner.locator('[data-inspector]')).toContainText('no longer shared through the switchyard', { timeout: 30_000 })
+    // Share again, in the same page: a new link, which publishes it again there as a new session.
+    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
+    await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
+    await expect(dialog.locator('[data-created-url]')).not.toHaveAttribute('title', before ?? '')
     await expect.poll(async () => (await listed())?.id ?? '', { timeout: 30_000 }).not.toBe(there.id)
   } finally {
     await ctx.close()

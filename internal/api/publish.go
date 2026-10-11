@@ -278,6 +278,14 @@ func (s *Server) watchPublication(local *session.Local, pub PublishedSession) {
 	}
 }
 
+// owedPublication says the switchyard ended session id's publication and
+// none has been made since: the next link made for it publishes it again.
+func (s *Server) owedPublication(id string) bool {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	return s.pubStopped[id] && s.publisher != nil && s.published[id] == nil
+}
+
 // republish publishes session id again when the switchyard ended its
 // publication: its owner's Share is the word to. The session stays owed a
 // publication until one is made, so a Share whose try failed (the

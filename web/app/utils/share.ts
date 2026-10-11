@@ -17,6 +17,15 @@ export interface CreatedLink {
   rendezvous?: { server: string; error: string }
 }
 
+/**
+ * reuseHeld says whether the Share dialog shows again the link it made for this target rather than make one: while that link is
+ * listed and not revoked, unless the switchyard ended the publication since (republish), when a link made now publishes it again.
+ */
+export function reuseHeld(created: { linkId: string } | null, forThisTarget: boolean, links: ReadonlyArray<{ id: string; revoked?: boolean }>, republish: boolean): boolean {
+  if (!created || !forThisTarget || republish) return false
+  return links.some((l) => l.id === created.linkId && !l.revoked)
+}
+
 /** The host of a URL, for "shared through <host>"; the URL itself when it does not parse. */
 export function hostOf(url: string): string {
   try {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostOf, shareReach } from './share'
+import { hostOf, reuseHeld, shareReach } from './share'
 
 const offline = { mode: 'off' as const, mapped: false }
 
@@ -26,6 +26,15 @@ describe('shareReach', () => {
     expect(shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline, true).text).toBe(shareReach({ url: 'http://192.168.1.5:8080/join/abc' }, offline).text)
     expect(shareReach({ url: 'https://switchyard.example.net/join/abc', remote: true }, offline, true).text).toMatch(/opens every agent of the crew there/)
     expect(shareReach({ url: 'https://home.example.net/join/abc' }, null).title).toBe('Reachable from outside your network')
+  })
+  it('reuses the link made for this target while it is listed, unless the switchyard ended the publication since', () => {
+    const made = { linkId: 'l1' }
+    expect(reuseHeld(made, true, [{ id: 'l1' }], false)).toBe(true)
+    expect(reuseHeld(made, true, [{ id: 'l1' }], true)).toBe(false)
+    expect(reuseHeld(made, true, [{ id: 'l1', revoked: true }], false)).toBe(false)
+    expect(reuseHeld(made, true, [{ id: 'l2' }], false)).toBe(false)
+    expect(reuseHeld(made, false, [{ id: 'l1' }], false)).toBe(false)
+    expect(reuseHeld(null, true, [{ id: 'l1' }], false)).toBe(false)
   })
   it('hostOf', () => {
     expect(hostOf('https://switchyard.example.net/join/x')).toBe('switchyard.example.net')

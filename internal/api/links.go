@@ -52,7 +52,14 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": s.sessionLinks(id, d)})
+	out := map[string]any{"links": s.sessionLinks(id, d)}
+	// The switchyard ended the session's publication: a link made now
+	// publishes it again, so the Share dialog makes one rather than show
+	// the one it made before.
+	if s.owedPublication(id) {
+		out["republish"] = true
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +315,16 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 	for _, rl := range s.remoteRunLinksOf(id) {
 		out = append(out, linkView{Link: &share.Link{ID: rl.ID, RunID: id, Role: rl.Role, Label: rl.Label, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt}, Remote: true})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": out})
+	reply := map[string]any{"links": out}
+	// A member whose publication the switchyard ended is published again by
+	// a run link made now (see handleListLinks).
+	for _, m := range run.Members {
+		if m.SessionID != "" && s.owedPublication(m.SessionID) {
+			reply["republish"] = true
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // handleRevokeRunLink revokes a run's link, which closes every viewer

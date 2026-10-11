@@ -562,6 +562,9 @@ export function useSessions() {
       request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
     /** A run's share links, each with the viewers attached through it to the sessions of its members. */
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
+    /** The run's links and whether a member's publication was ended by the switchyard, which a run link made now publishes again. */
+    runLinkList: (runId: string) =>
+      request<{ links: ShareLink[]; republish?: boolean }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => ({ links: r.links ?? [], republish: r.republish === true })),
     /** Creates a run link: its role on the session of every member of the run, those added later included. The token is shown this once. */
     createRunLink: (runId: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
       request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
@@ -595,6 +598,9 @@ export function useSessions() {
     installIntegration: (id: string) =>
       request<{ changed: string[] }>(`/api/integrations/${encodeURIComponent(id)}/install`, { method: 'POST' }).then((r) => r.changed ?? []),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),
+    /** The links and whether the switchyard ended the session's publication, which a link made now publishes again (`republish`). */
+    linkList: (id: string) =>
+      request<{ links: ShareLink[]; republish?: boolean }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => ({ links: r.links ?? [], republish: r.republish === true })),
     /**
      * The token is shown this once; `invite` is the same link for the desktop app; `remote` says the switchyard minted it (no token here);
      * `rendezvous` says, for a link made here although a switchyard is configured, which one and why the session is not there.
