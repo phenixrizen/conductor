@@ -532,8 +532,10 @@ func validHeadContent(head []byte) bool {
 
 // gitDirectoryIn is isGitDirectory for the directory r, open: its files
 // looked at through r, so it tells what was opened, whatever its path
-// names by then. A link in it that leads out of it counts for nothing
-// (os.Root), so it finds no more git directories than isGitDirectory.
+// names by then. r follows no link out of it (os.Root), so a commondir,
+// objects or refs that is a link counts as there, wherever it leads: a
+// directory with a valid HEAD and such links is taken for a git directory
+// rather than looked past.
 func gitDirectoryIn(r *os.Root) bool {
 	fi, err := r.Lstat("HEAD")
 	switch {
@@ -557,15 +559,19 @@ func gitDirectoryIn(r *os.Root) bool {
 	default:
 		return false
 	}
-	if fi, err := r.Stat("commondir"); err == nil && fi.Mode().IsRegular() {
-		return true
-	}
-	for _, sub := range []string{"objects", "refs"} {
-		if fi, err := r.Stat(sub); err != nil || !fi.IsDir() {
+	there := func(name string, dir bool) bool {
+		fi, err := r.Lstat(name)
+		switch {
+		case err != nil:
 			return false
+		case fi.Mode()&os.ModeSymlink != 0:
+			return true
+		case dir:
+			return fi.IsDir()
 		}
+		return fi.Mode().IsRegular()
 	}
-	return true
+	return there("commondir", false) || there("objects", true) && there("refs", true)
 }
 
 // isGitFile reports whether path is a file git would take as a .git file

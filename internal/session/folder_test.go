@@ -442,6 +442,42 @@ func TestFileWriteStaysOutOfGitMetadataMovedInAfterTheCheck(t *testing.T) {
 	}
 }
 
+// A nested repository's .git whose refs and objects are absolute links
+// (which a folder's handle does not follow), moved into the place of the
+// save's folder after the check, is still taken for a git directory: the
+// save is refused and its config stays as it was.
+func TestFileWriteStaysOutOfANestedGitDirWithLinkedMarkers(t *testing.T) {
+	root, _ := linkTree(t)
+	nested := filepath.Join(root, "nested")
+	gitDir := filepath.Join(nested, ".git")
+	os.MkdirAll(gitDir, 0o755)
+	for _, d := range []string{"refs-store", "objects-store"} {
+		os.MkdirAll(filepath.Join(nested, d), 0o755)
+	}
+	os.Symlink(filepath.Join(nested, "refs-store"), filepath.Join(gitDir, "refs"))
+	os.Symlink(filepath.Join(nested, "objects-store"), filepath.Join(gitDir, "objects"))
+	os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "sub", "config"), []byte("mine\n"), 0o644)
+	s, _ := newLocal(t, root)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onceAfterCheck(t, func() {
+		os.Rename(filepath.Join(root, "sub"), filepath.Join(root, "sub.was"))
+		os.Rename(gitDir, filepath.Join(root, "sub"))
+	})
+	save(s, sub, "w", "sub/config", []byte("[core]\n\thooksPath = /tmp/x\n"), 512, "", true)
+	if f := fileReply(t, sink, "w"); f.Kind != "error" || f.Error.Code != "read_only" {
+		t.Fatalf("save sub/config once the nested .git was moved there: %+v %+v", f, f.Error)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "sub", "config")); string(b) != "[core]\n" {
+		t.Fatalf("the nested repository's config holds %q", b)
+	}
+}
+
 // A repository whose .git/config is a link to a file not made yet
 // (meta/config): the folder that file would be in, moved into the place of
 // the save's folder after the check (a link left where it was, so the
