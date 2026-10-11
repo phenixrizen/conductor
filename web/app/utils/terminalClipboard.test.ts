@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clipboardKey, forcesSelection, menuFromKeyboard, menuPress, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, withholdsMove, writeRightClickPastes, type ClipboardKeyEvent, type MouseTracking } from './terminalClipboard'
+import { clipboardKey, forcesSelection, menuFromKeyboard, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, RIGHT_CLICK_KEY, withholdsMove, writeRightClickPastes, type ClipboardKeyEvent, type MouseTracking } from './terminalClipboard'
 
 const key = (code: string, mods: Partial<ClipboardKeyEvent> = {}): ClipboardKeyEvent => ({ type: 'keydown', code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
 const ctx = (o: Partial<{ hasSelection: boolean; canPaste: boolean; mac: boolean }> = {}) => ({ hasSelection: false, canPaste: true, mac: false, ...o })
@@ -149,5 +149,23 @@ describe('the terminal mouse moves', () => {
     expect(withholdsMove(move({ altKey: true }), at({ mac: true }))).toBe(false)
     expect(withholdsMove(move(), at({ mac: true, hasSelection: true }))).toBe(true)
     expect(withholdsMove(move({ buttons: 1 }), at({ mac: true, hasSelection: true }))).toBe(false)
+  })
+  const press = (o: Partial<{ button: number; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => ({ button: 0, ctrlKey: false, shiftKey: false, altKey: false, ...o })
+  it("clears the selection with a press of the main button while the program holds the mouse, in every tracking", () => {
+    for (const tracking of ['x10', 'vt200', 'drag', 'any'] as MouseTracking[]) {
+      expect(pressClearsSelection(press(), { tracking, mac: false })).toBe(true)
+      expect(pressClearsSelection(press({ ctrlKey: true }), { tracking, mac: false })).toBe(true)
+      expect(pressClearsSelection(press({ altKey: true }), { tracking, mac: false })).toBe(true)
+    }
+    expect(pressClearsSelection(press(), { tracking: 'any', mac: true })).toBe(true)
+  })
+  it('leaves the selection to xterm while nothing holds the mouse, to the forcing key, to the other buttons and to the menu', () => {
+    expect(pressClearsSelection(press(), { tracking: 'none', mac: false })).toBe(false)
+    expect(pressClearsSelection(press({ shiftKey: true }), { tracking: 'any', mac: false })).toBe(false)
+    expect(pressClearsSelection(press({ button: 1 }), { tracking: 'any', mac: false })).toBe(false)
+    expect(pressClearsSelection(press({ button: 2 }), { tracking: 'any', mac: false })).toBe(false)
+    // On a Mac Shift is the program's, and Control-click brings the menu.
+    expect(pressClearsSelection(press({ shiftKey: true }), { tracking: 'any', mac: true })).toBe(true)
+    expect(pressClearsSelection(press({ ctrlKey: true }), { tracking: 'any', mac: true })).toBe(false)
   })
 })
