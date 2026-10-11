@@ -150,12 +150,13 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	defer func() { <-s.submitting }()
 
-	if s.asked != nil {
-		// A dialog already drawn and not yet seen quiet takes a paste and
-		// drops it (Codex routes a paste to its overlay): look at the screen
-		// before the text, so that a handoff waits for the answer instead.
-		s.asked.CheckNow()
-	}
+	// A dialog already drawn and not yet seen quiet takes a paste and drops
+	// it (Codex routes a paste to its overlay): look at the screen before the
+	// text, so that a handoff waits for the answer instead. A dialog on the
+	// screen holds every submission, whatever the session shows: a report
+	// with choices of its own keeps its place there (unlessChoices), and its
+	// reply would still be typed into the dialog.
+	onScreen := s.asked != nil && s.asked.CheckNow()
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
@@ -175,6 +176,12 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		return res, ErrTrustQuestion
 	}
 	if showing && source == SourceQuestion {
+		return res, ErrQuestion
+	}
+	if onScreen {
+		if sub.UnlessWaiting {
+			return res, nil
+		}
 		return res, ErrQuestion
 	}
 	byName := CleanName(sub.ByName)
@@ -216,7 +223,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		if err := s.awaitLook(ctx, time.Time{}); err != nil {
 			return res, err
 		}
-		s.asked.CheckNow()
+		if s.asked.CheckNow() {
+			return res, nil
+		}
 	} else if res.Typed && s.trust != nil {
 		if err := s.awaitLook(ctx, typedAt); err != nil {
 			return res, err

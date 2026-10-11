@@ -266,6 +266,8 @@ type PatternWatcher struct {
 	feeds   uint64    // Feeds so far
 	checked uint64    // the value of feeds at the last check of the line
 	stopped bool
+	// held is Hold's: CheckNow finds nothing until output comes.
+	held bool
 }
 
 // NewPatternWatcher returns a watcher for re. fire runs on the timer's
@@ -304,22 +306,35 @@ func (w *PatternWatcher) Resize(cols, rows int) {
 func (w *PatternWatcher) Poke() { w.Feed(nil) }
 
 // CheckNow looks at the text now, without waiting for the stream to go
-// quiet, and fires when it matches; it never calls miss. The quiet period
-// under way is left as it is: it still looks once the stream is quiet, and
-// calls miss then if nothing matches.
-func (w *PatternWatcher) CheckNow() {
+// quiet, fires when it matches and reports whether it did; it never calls
+// miss. The quiet period under way is left as it is: it still looks once
+// the stream is quiet, and calls miss then if nothing matches. After Hold,
+// until output comes, it finds nothing.
+func (w *PatternWatcher) CheckNow() bool {
 	w.fireMu.Lock()
 	defer w.fireMu.Unlock()
 	w.mu.Lock()
-	if w.stopped {
+	if w.stopped || w.held {
 		w.mu.Unlock()
-		return
+		return false
 	}
 	line := w.tracker.Last()
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
+		return true
 	}
+	return false
+}
+
+// Hold makes CheckNow find nothing until the stream brings output: the text
+// is what was just answered, and the program has not drawn what follows the
+// answer yet. The looks at the end of a quiet period are not held: a text
+// still there then is what the program shows.
+func (w *PatternWatcher) Hold() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.held = true
 }
 
 // Feed adds a chunk of the stream and restarts the quiet period. It never
@@ -331,6 +346,9 @@ func (w *PatternWatcher) Feed(chunk []byte) {
 		return
 	}
 	w.tracker.Write(chunk)
+	if len(chunk) > 0 {
+		w.held = false
+	}
 	w.last = time.Now()
 	w.feeds++
 	if w.timer == nil {

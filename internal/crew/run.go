@@ -834,7 +834,17 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
 				// A question the wait had not seen yet (a dialog Submit
 				// found on the screen) holds the prompt: nothing was
-				// typed, and it waits for the answer.
+				// typed, and it waits for the answer. The wait may find
+				// the session ready (a report of its own on show while the
+				// dialog is up), so it looks again a poll later.
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-local.Ended():
+					e.endedEarly(r, m, local)
+					return nil
+				case <-time.After(readyPoll):
+				}
 				continue
 			}
 			if err == nil {

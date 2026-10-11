@@ -1253,6 +1253,12 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if enter {
 		s.nextTurn()
 	}
+	if s.asked != nil && (enter || s.askedKeys[string(data)]) {
+		// What the screen shows is being answered: a look before a
+		// submission does not ask it again before the program draws what
+		// follows (the look at the end of a quiet period still does).
+		s.asked.Hold()
+	}
 	if _, err := s.proc.Write(data); err != nil {
 		return err
 	}

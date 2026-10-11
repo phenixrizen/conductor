@@ -566,3 +566,72 @@ func TestALookBeforeASubmissionLeavesTheQuietLook(t *testing.T) {
 		t.Fatalf("not answered: %+v", a)
 	}
 }
+
+// A report with choices of its own keeps its place over the dialog
+// (unlessChoices), but the dialog on the screen holds every submission all
+// the same: a reply to the report, a crew's prompt and a handoff write
+// nothing, since the dialog would take the text and its Enter would pick
+// Yes.
+func TestADialogOnTheScreenHoldsSubmissionsWhateverTheSessionShows(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := []Option{{Label: "Postgres", Input: "Postgres\r"}, {Label: "SQLite", Input: "SQLite\r"}}
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, mine); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(700 * time.Millisecond) // seen quiet: the report stays
+	if a := s.Info().Attention; a.Source != SourceAPI {
+		t.Fatalf("attention %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "Postgres", By: sub}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("a reply: %v", err)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "Plan it.", ByName: "crew", Confirm: true}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("a prompt: %v", err)
+	}
+	if res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
+		t.Fatalf("a handoff: %+v %v", res, err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A handoff that comes as a person answers the dialog, before the program
+// has drawn what follows, does not ask the answered dialog again (the look
+// before a submission finds nothing until output comes): it is typed with
+// its Enter once the dialog is gone, and no question is left held.
+func TestAHandoffAsTheDialogIsAnsweredLeavesNoQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h"))
+	waitPaste(t, s, true)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	waitAttention(t, s, asked)
+	s.Input(sub, []byte("y"))
+	nextWrite(t, p)
+	type result struct {
+		res SubmitResult
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
+		done <- result{res, err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\n› ")))
+	r := <-done
+	if r.err != nil || !r.res.Typed || !r.res.Entered {
+		t.Fatalf("the handoff: %+v %v", r.res, r.err)
+	}
+	time.Sleep(900 * time.Millisecond)
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("a question left held: %+v", a)
+	}
+}

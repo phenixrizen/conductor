@@ -626,8 +626,14 @@ session can have (500 by 500). Before a submission writes anything, and
 again before its Enter (after a wait for a quiet screen of at most 2 s),
 the owner looks at the screen whether quiet or not: a dialog drawn just
 before the text holds it back whole (Codex's overlay would drop the
-paste), and one drawn during the pause holds the Enter. The words are bounded as a
-message is; longer ones end with "…". Codex's built-in entry has its
+paste), and one drawn during the pause holds the Enter. A dialog on the
+screen holds every submission whatever the session shows (a report with
+`options` keeps its place over the question, but its reply would still be
+typed into the dialog): a person's and a crew's prompt get `not_sent`, a
+handoff waits. Right after a key that answers the dialog, and until the
+program draws again, that look finds nothing, so that a handoff coming as
+a person answers does not ask the answered dialog again. The words are
+bounded as a message is; longer ones end with "…". Codex's built-in entry has its
 command approval (Codex 0.161: "Would you like to run the following
 command?", its reason, `$ <command>`, then "1. Yes, proceed (y)", "2. Yes,
 and don't ask again for commands that start with `<prefix>` (p)", "3. No,
