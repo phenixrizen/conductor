@@ -194,6 +194,18 @@ func TestNamesAreComparedWithoutTheCharactersHFSIgnores(t *testing.T) {
 			t.Errorf("%q resolved to %s", p, r)
 		}
 	}
+	// A composed name and its decomposed spelling are one name (HFS+, APFS).
+	composed, decomposed := "caf\u00e9", "cafe\u0301"
+	deny = []string{filepath.Join(root, composed+".json"), filepath.Join(root, "*"+composed+".json*"), filepath.Join(root, "gone-"+composed, "x")}
+	for _, p := range []string{decomposed + ".json", decomposed + ".json.bak", "gone-" + decomposed + "/x"} {
+		if r, err := ResolvePath(root, p, deny); err == nil {
+			t.Errorf("%q resolved to %s", p, r)
+		}
+	}
+	deny = []string{filepath.Join(root, "*"+decomposed+".json*")}
+	if r, err := ResolvePath(root, composed+".json.bak", deny); err == nil {
+		t.Errorf("a composed copy beside a decomposed name resolved to %s", r)
+	}
 }
 
 // A home git file that is a link to nothing yet holds the copies beside the

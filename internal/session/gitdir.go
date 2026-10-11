@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // A repository's .git is read only through the Files tab: its directory,
@@ -402,14 +404,17 @@ func sameMissing(missing, real string) bool {
 	return err == nil && os.SameFile(a, b)
 }
 
-// foldName leaves out of name the characters HFS+ ignores in names.
+// foldName leaves out of name the characters HFS+ ignores in names, and
+// composes what is left (NFC): HFS+ and APFS take a name and its
+// decomposed spelling (an e and a combining acute for an é) for the same
+// name, so the two compare equal.
 func foldName(name string) string {
-	return strings.Map(func(r rune) rune {
+	return norm.NFC.String(strings.Map(func(r rune) rune {
 		if hfsIgnored(r) {
 			return -1
 		}
 		return r
-	}, name)
+	}, name))
 }
 
 // maxLinkHops bounds how many links linkDestination follows.
