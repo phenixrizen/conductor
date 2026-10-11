@@ -5,7 +5,7 @@ import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
 
@@ -251,10 +251,7 @@ function openFileOfDiff() {
   if (active.value?.kind === 'diff') tabs.value = openTab(tabs.value, 'file', active.value.path)
 }
 
-function refused(msg: string): { title: string; words: string; icon: string } {
-  if (/disabled|off/i.test(msg)) return { icon: 'i-lucide-eye-off', title: 'File viewing is off for this session', words: 'Nothing is read from its working directory, for anyone. The owner can turn it on in Settings.' }
-  return { icon: 'i-lucide-lock', title: 'Files are for controllers on this session', words: 'This link is view only. Ask for control, or for a controller to open it.' }
-}
+const refused = refusedWords
 
 function reload() {
   if (active.value) load(active.value)

@@ -374,7 +374,15 @@ configuration names, no clean filter either: a file a filter transforms
 (Git LFS, git-crypt) that git has to read again is compared as it is on
 disk, so it can show as changed, with its raw lines, when your own `git
 status` would not. A change inside a submodule shows once the submodule's
-commit moves.
+commit moves. The status is of the folder's own working tree: the folder, or
+the repository it is in; a repository whose `core.worktree` points anywhere
+else lists nothing from there and says so.
+
+A view-only guest does not open git's settings and credentials, which often
+hold the tokens git signs in with: a repository's `.git/config`,
+`config.worktree` and their copies, a `.git-credentials`, a `.gitconfig`, and
+git's own files in `~/.config/git`, nor those a commit keeps; the editor says
+they are for controllers. A controller opens them as before.
 
 The box at the top of the Explorer filters the tree as you type, and
 reaches folders you have not opened: a search on the session's machine

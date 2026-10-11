@@ -17,10 +17,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // ErrNotRepo is a directory outside any git working tree.
 var ErrNotRepo = errors.New("not a git repository")
+
+// ErrElsewhere is a directory whose working tree, as git reports it, is not
+// its own (ownTree): a repository's core.worktree points it elsewhere.
+var ErrElsewhere = errors.New("this repository's working tree is outside the folder (core.worktree): its changes are not listed here")
 
 // Bounds of a status: how many changed files are listed, and how much of a
 // file is read to count an untracked file's lines or to show a revision.
@@ -77,9 +82,10 @@ func Message(stderr string) string {
 // GetStatus is dir's working tree status against base (HEAD when empty):
 // every changed and untracked file with its status letter and its added and
 // removed lines (an untracked file's lines are counted from the file itself,
-// a binary one as none), at most MaxChanges of them, paths relative to the
-// tree's top. ErrNotRepo outside a repository; a base that does not resolve
-// leaves Base empty and the counts at zero.
+// a binary one as none, a link as none), at most MaxChanges of them, paths
+// relative to the tree's top. ErrNotRepo outside a repository, ErrElsewhere
+// for a working tree that is not dir's own (ownTree); a base that does not
+// resolve leaves Base empty and the counts at zero.
 func GetStatus(ctx context.Context, dir, base string) (Status, error) {
 	if base == "" {
 		base = "HEAD"
@@ -87,11 +93,11 @@ func GetStatus(ctx context.Context, dir, base string) (Status, error) {
 	if strings.HasPrefix(base, "-") {
 		return Status{}, fmt.Errorf("git: invalid base %q", base)
 	}
-	top, err := Run(ctx, dir, "rev-parse", "--show-toplevel")
+	top, err := TopOf(ctx, dir)
 	if err != nil {
 		return Status{}, err
 	}
-	st := Status{Top: strings.TrimSpace(top)}
+	st := Status{Top: top}
 	if out, err := Run(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		st.Branch = strings.TrimSpace(out)
 	}
@@ -174,10 +180,11 @@ func parsePorcelain(raw string) (changes []Change, truncated bool) {
 // Porcelain is dir's working tree status without the line counts: the
 // tree's top and its changed and untracked files with their status letters
 // (at most MaxChanges, truncated past that), paths relative to the top.
-// Two git runs; ErrNotRepo outside a repository. Files seen by git (the
-// session's look after an agent's tool call) read it.
+// Two git runs; ErrNotRepo outside a repository, ErrElsewhere for a working
+// tree that is not dir's own. Files seen by git (the session's look after
+// an agent's tool call) read it.
 func Porcelain(ctx context.Context, dir string) (top string, changes []Change, truncated bool, err error) {
-	t, err := Run(ctx, dir, "rev-parse", "--show-toplevel")
+	t, err := TopOf(ctx, dir)
 	if err != nil {
 		return "", nil, false, err
 	}
@@ -186,18 +193,89 @@ func Porcelain(ctx context.Context, dir string) (top string, changes []Change, t
 		return "", nil, false, err
 	}
 	changes, truncated = parsePorcelain(raw)
-	return strings.TrimSpace(t), changes, truncated, nil
+	return t, changes, truncated, nil
+}
+
+// TopOf is the top of dir's working tree as git reports it (rev-parse
+// --show-toplevel), once it is dir's own (ownTree): ErrNotRepo outside a
+// repository, ErrElsewhere when it is not.
+func TopOf(ctx context.Context, dir string) (string, error) {
+	out, err := Run(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	top := strings.TrimSpace(out)
+	if !ownTree(dir, top) {
+		return "", ErrElsewhere
+	}
+	return top, nil
+}
+
+// ownTree reports whether top, the working tree git reports for dir, is
+// dir's own: dir itself or a directory inside it, or the nearest directory
+// at or above dir that holds a .git (a directory, a file or a link), where
+// git finds the working tree when no setting points it elsewhere, so that
+// a folder inside a repository has the repository's. A working tree a
+// repository's core.worktree puts anywhere else (beside the folder, above
+// it but not where its .git is) is not: listing it would list files from
+// outside the folder. Directories are compared as files (os.SameFile), so
+// a link on the way or another spelling of one is the same directory.
+func ownTree(dir, top string) bool {
+	topID, err := os.Stat(top)
+	if err != nil || !topID.IsDir() {
+		return false
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return false
+	}
+	dirID, err := os.Stat(real)
+	if err != nil {
+		return false
+	}
+	topReal, err := filepath.EvalSymlinks(top)
+	if err != nil {
+		return false
+	}
+	for p := topReal; ; p = filepath.Dir(p) {
+		if fi, err := os.Stat(p); err == nil && os.SameFile(fi, dirID) {
+			return true
+		}
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	for p := real; ; p = filepath.Dir(p) {
+		if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
+			fi, err := os.Stat(p)
+			return err == nil && os.SameFile(fi, topID)
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
+	}
 }
 
 // countLines counts a file's lines for an untracked file's added count, up
 // to MaxShowBytes of it; a file with a NUL in its first bytes is binary and
-// counts none.
+// counts none, and so does anything but a regular file: a link is not
+// followed to what it points to, which may be outside the working tree.
 func countLines(path string) (int, bool) {
-	f, err := os.Open(path)
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
+		return 0, false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return 0, false
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return 0, false
+	}
 	buf := make([]byte, MaxShowBytes)
 	n, _ := f.Read(buf)
 	buf = buf[:n]

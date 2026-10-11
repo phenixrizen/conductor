@@ -85,7 +85,7 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 		deny := s.fileDeny()
 		switch req.Op {
 		case "":
-			h, body = s.folder.read(req.Path, req.Stat, deny)
+			h, body = s.folder.read(req.Path, req.Stat, deny, sub.Role)
 		case proto.FileOpStatus, proto.FileOpShow, proto.FileOpLog, proto.FileOpCommit:
 			// Git reads the files itself, by path: the session's path
 			// must still name its folder for them too.
@@ -97,7 +97,7 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 			case proto.FileOpStatus:
 				h = GitStatusPath(s.info.Cwd, req.Base, deny)
 			case proto.FileOpShow:
-				h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny)
+				h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny, sub.Role)
 			case proto.FileOpLog:
 				h = GitLogPath(s.info.Cwd, req.Base, s.info.CreatedAt, deny)
 			case proto.FileOpCommit:
@@ -126,27 +126,31 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 // be absolute, relative to root, or start with "~" (the process home). The
 // resolved target must stay under root after symlink evaluation and must not
 // be, or be inside, an entry of deny. When statOnly is set only existence and
-// kind are reported. root is opened as a folder for this one read; a
-// session reads through the folder it holds (Local.ReadPath).
+// kind are reported. root is opened as a folder for this one read, a
+// controller's; a session reads through the folder it holds, for the role
+// that asks (Local.ReadPath).
 func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
 	f, err := OpenFolder(root)
 	if err != nil {
 		return proto.FileHeader{Path: raw, Kind: "error", Error: &proto.ErrorInfo{Code: "denied", Message: errFolderGone.Error()}}, nil
 	}
 	defer f.Close()
-	return f.read(raw, statOnly, deny)
+	return f.read(raw, statOnly, deny, RoleControl)
 }
 
-// ReadPath is the package's ReadPath through the session's own folder.
-func (s *Local) ReadPath(raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
-	return s.folder.read(raw, statOnly, deny)
+// ReadPath is the package's ReadPath through the session's own folder, for
+// a viewer of role: one that is not a controller is not given git's
+// settings and credentials (forControllers).
+func (s *Local) ReadPath(raw string, statOnly bool, deny []string, role Role) (proto.FileHeader, []byte) {
+	return s.folder.read(raw, statOnly, deny, role)
 }
 
-// read is ReadPath in the folder: raw checked (resolve), then what it names
-// opened from the folder one element at a time (openDir, stepDir,
+// read is ReadPath in the folder for a viewer of role: raw checked
+// (resolve, and forControllers unless role is control), then what it
+// names opened from the folder one element at a time (openDir, stepDir,
 // openFileIn), so that what is read, stat'ed or listed is the folder's file
 // the check passed, or nothing.
-func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
+func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (proto.FileHeader, []byte) {
 	h := proto.FileHeader{Path: raw}
 	fail := func(code, msg string) (proto.FileHeader, []byte) {
 		h.Kind, h.Exists, h.Size = "error", false, 0
@@ -159,6 +163,9 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 	target, rel, err := f.resolve(raw, ds)
 	if err != nil {
 		return fail("denied", err.Error())
+	}
+	if role != RoleControl && forControllers(raw, target) {
+		return fail(proto.ErrCodeFileDenied, errForControllers.Error())
 	}
 	h.Path = target
 	afterCheck()

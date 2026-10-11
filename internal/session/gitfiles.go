@@ -25,7 +25,8 @@ const GitTimeout = 20 * time.Second
 // `status`: Path the working tree's top (the changes' paths are relative
 // to it), the branch, the base's id, the changes with their lines and the
 // totals; kind `error` with code `not_repo` outside a repository, `denied`
-// for a root in the deny list.
+// for a root in the deny list or a working tree that is not root's own
+// (gitcli.TopOf: one a repository's core.worktree puts elsewhere).
 func GitStatusPath(root, base string, deny []string) proto.FileHeader {
 	h := proto.FileHeader{Path: root, Kind: "status", Exists: true}
 	if _, err := ResolvePath(root, ".", deny); err != nil {
@@ -57,12 +58,17 @@ func GitStatusPath(root, base string, deny []string) proto.FileHeader {
 
 // GitShowPath is the file at path (relative to root, or absolute under it)
 // at rev, as a FILE header of kind `show` with the content as the body,
-// through ResolvePath so the deny list holds for what a revision keeps too.
-func GitShowPath(root, rev, path string, deny []string) (proto.FileHeader, []byte) {
+// through ResolvePath so the deny list holds for what a revision keeps too,
+// for a viewer of role: one that is not a controller is not given git's
+// settings and credentials a revision keeps (forControllers).
+func GitShowPath(root, rev, path string, deny []string, role Role) (proto.FileHeader, []byte) {
 	// ResolvePath follows what exists of the path, so a file the working tree no longer has (deleted) resolves too.
 	target, err := ResolvePath(root, path, deny)
 	if err != nil {
 		return deniedHeader(path, err), nil
+	}
+	if role != RoleControl && forControllers(path, target) {
+		return proto.FileHeader{Path: path, Kind: "error", Error: &proto.ErrorInfo{Code: proto.ErrCodeFileDenied, Message: errForControllers.Error()}}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)
 	defer cancel()
@@ -172,8 +178,11 @@ func looksBinary(b []byte) bool {
 
 func gitError(path string, err error) proto.FileHeader {
 	code := "git"
-	if errors.Is(err, gitcli.ErrNotRepo) {
+	switch {
+	case errors.Is(err, gitcli.ErrNotRepo):
 		code = "not_repo"
+	case errors.Is(err, gitcli.ErrElsewhere):
+		code = "denied"
 	}
 	return proto.FileHeader{Path: path, Kind: "error", Error: &proto.ErrorInfo{Code: code, Message: err.Error()}}
 }

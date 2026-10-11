@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -700,6 +701,78 @@ func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
 	}
 	if status, _, _ := e.getFile(id, view, "real/notes.txt", "raw"); status != http.StatusOK {
 		t.Fatalf("a file beside the target: %d", status)
+	}
+}
+
+// git's settings and credentials often hold access tokens: a remote URL with
+// one in it, an extra header, a credential store. A view link reads neither
+// a repository's config nor config.worktree in its .git, nor a
+// .git-credentials or .gitconfig in the folder, nor one a revision keeps
+// (show): it is answered file_denied, over HTTP and in-band. The owner still
+// reads them all, and the rest of .git and of the folder still reads.
+func TestRepositorySettingsAreForControllers(t *testing.T) {
+	const secret = "ghp-token-in-the-remote-url"
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	appendFile := func(p, s string) {
+		t.Helper()
+		f, err := os.OpenFile(filepath.Join(e.root, p), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendFile(".git/config", "[remote \"origin\"]\n\turl = https://me:"+secret+"@example.com/r.git\n")
+	appendFile(".git/config.worktree", "[http]\n\textraHeader = Authorization: Bearer "+secret+"\n")
+	appendFile(".git-credentials", "https://me:"+secret+"@example.com\n")
+	appendFile(".gitconfig", "[url \"https://"+secret+"@example.com/\"]\n\tinsteadOf = https://example.com/\n")
+	for _, args := range [][]string{{"add", ".gitconfig"}, {"-c", "commit.gpgsign=false", "commit", "-q", "-m", "settings"}} {
+		cmd := exec.Command("git", append([]string{"-C", e.root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+	held := []string{".git/config", ".git/config.worktree", ".git-credentials", ".gitconfig", filepath.Join(e.root, ".git", "config")}
+	for _, p := range held {
+		for _, mode := range []string{"raw", "stat", ""} {
+			if status, got, code := e.getFile(id, view, p, mode); status != http.StatusForbidden || code != proto.ErrCodeFileDenied || strings.Contains(got, secret) {
+				t.Errorf("view link, HTTP %q (mode %q): %d %s", p, mode, status, got)
+			}
+		}
+		if status, got, _ := e.getFile(id, adminToken, p, "raw"); status != http.StatusOK || !strings.Contains(got, secret) {
+			t.Errorf("owner, HTTP %q: %d %q", p, status, got)
+		}
+	}
+	for _, p := range []string{".git/HEAD", "README"} {
+		if status, _, _ := e.getFile(id, view, p, "raw"); status != http.StatusOK {
+			t.Errorf("view link, HTTP %q: %d", p, status)
+		}
+	}
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range held {
+		reqID := fmt.Sprintf("g%d", i)
+		c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p}))
+		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || len(b) != 0 {
+			t.Errorf("view link, file_get %q: %+v %q", p, h, b)
+		}
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "show", Op: proto.FileOpShow, Rev: "HEAD", Path: ".gitconfig"}))
+	if h, b := c.expectFile("show"); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || len(b) != 0 {
+		t.Errorf("view link, .gitconfig at HEAD: %+v %q", h, b)
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "readme", Op: proto.FileOpShow, Rev: "HEAD", Path: "README"}))
+	if h, b := c.expectFile("readme"); h.Kind != "show" || string(b) != "hello\n" {
+		t.Errorf("view link, README at HEAD: %+v %q", h, b)
 	}
 }
 

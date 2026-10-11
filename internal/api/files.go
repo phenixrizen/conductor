@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -62,13 +63,13 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Through the folder the session holds, as the in-band file_get reads.
-	h, body := local.ReadPath(path, r.URL.Query().Get("stat") == "1", s.fileDeny)
+	h, body := local.ReadPath(path, r.URL.Query().Get("stat") == "1", s.fileDeny, role)
 	status := http.StatusOK
 	if h.Kind == "error" {
 		switch h.Error.Code {
 		case "not_found":
 			status = http.StatusNotFound
-		case "denied":
+		case "denied", proto.ErrCodeFileDenied:
 			status = http.StatusForbidden
 		default:
 			status = http.StatusBadRequest
