@@ -114,9 +114,10 @@ type Options struct {
 	// Its registration names the session, its agent, the last element of
 	// its folder and the machine, and leaves out the command line, the OS
 	// user and the git branch (registration). Its viewers get all of it
-	// from the session itself, over their own connection. The Uplink sets
-	// it; `conductor host` publishes to the owner's own server, which shows
-	// the session in its workbench, and leaves it off.
+	// from the session itself, over their own connection. A stop it sends
+	// never stops the process: it ends the Uplink's publication. The Uplink
+	// sets it; `conductor host` publishes to the owner's own server, which
+	// shows the session in its workbench and stops it, and leaves it off.
 	Switchyard bool
 }
 
@@ -304,6 +305,11 @@ type agent struct {
 	// statusQueued says the session's final (status) entry is in it.
 	activity     *activityForwarder
 	statusQueued atomic.Bool
+
+	// unpublish ends the publication when a switchyard sends a stop
+	// (Options.Switchyard): the Uplink's, which leaves the session running
+	// here. Set before the control loop starts; nil ignores the stop.
+	unpublish func()
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
@@ -863,6 +869,14 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.local.Record(session.EntryFromProto(m.Entry))
 	case proto.HostStop:
+		if a.opts.Switchyard {
+			// A switchyard ends the publication; the process is the owner's.
+			a.log.Info("the switchyard ended the publication; the session goes on here")
+			if a.unpublish != nil {
+				go a.unpublish()
+			}
+			return nil
+		}
 		a.log.Info("stop requested by server")
 		go func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

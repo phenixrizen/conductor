@@ -109,6 +109,9 @@ type Server struct {
 	runSent        map[string]string
 	pubPending     map[string]chan struct{}
 	pubErr         map[string]string
+	// pubStopped are the sessions whose publication the rendezvous ended
+	// with a stop of its own: the next Share publishes them again.
+	pubStopped map[string]bool
 
 	// catalogEditMu serialises the catalog's editors. An edit holds it from
 	// reading overlay to publishing the new catalog, across the write and

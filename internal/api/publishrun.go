@@ -63,6 +63,11 @@ func (s *Server) awaitRunGroup(ctx context.Context, runID string) (proto.RunGrou
 	}
 	why := ""
 	for _, m := range run.Members {
+		if m.SessionID != "" {
+			s.republish(m.SessionID)
+		}
+	}
+	for _, m := range run.Members {
 		if m.SessionID == "" {
 			continue
 		}

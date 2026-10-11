@@ -572,3 +572,96 @@ func TestAPublicationRefusedForNowIsTriedAgain(t *testing.T) {
 		}
 	}
 }
+
+// A stop the switchyard's operator sends ends the publication, not the
+// session: the guest there is let go and the switchyard shows the session
+// ended, while at home it runs on and its activity says what happened. The
+// owner's next Share publishes it again, as a new session there.
+func TestAStopFromTheSwitchyardEndsThePublicationNotTheSession(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) {
+		c.PublicURL = "https://rendezvous.example.net"
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	})
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	var hosted session.Info
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && hosted.ID == "" {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" {
+				hosted = i
+			}
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hosted.ID == "" {
+		t.Fatal("the rendezvous never listed the session")
+	}
+	_, lo := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	_, token, _ := strings.Cut(fmt.Sprint(lo["url"]), "/join/")
+	if lo["remote"] != true || token == "" {
+		t.Fatalf("link %v", lo)
+	}
+	guest := dialViewer(t, rendezvous, hosted.ID, token)
+	guest.expectControl(proto.CtlWelcome)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
+	guest.send(relay)
+	guest.hello(80, 24)
+	guest.expectControl(proto.CtlReady)
+
+	// The operator stops it there.
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+hosted.ID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the switchyard: %d", resp.StatusCode)
+	}
+	for {
+		if _, err := guest.read(); err != nil {
+			break
+		}
+	}
+	rd, _ := rendezvous.srv.Registry().Get(hosted.ID)
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !rd.Info().Status.Ended() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !rd.Info().Status.Ended() {
+		t.Fatalf("the switchyard shows %s", rd.Info().Status)
+	}
+
+	// At home the session runs on, unpublished, and says so.
+	d, _ := local.srv.Registry().Get(id)
+	said := false
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !said {
+		for _, e := range d.(*session.Local).Activity() {
+			said = said || (e.Type == session.ActivityStatus && strings.Contains(e.Message, "no longer shared through the switchyard"))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !said {
+		t.Fatalf("the session's activity does not say the publication ended: %+v", d.(*session.Local).Activity())
+	}
+	if st := d.Info().Status; st != session.StatusRunning {
+		t.Fatalf("the session at home is %s", st)
+	}
+	if local.srv.publishedOf(id) != nil {
+		t.Fatal("the ended publication is still held")
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); strings.Contains(fmt.Sprint(out), "remote:true") {
+		t.Fatalf("the ended publication's link is still listed: %v", out)
+	}
+
+	// The next Share publishes it again: a new session there.
+	resp, again := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated || again["remote"] != true {
+		t.Fatalf("share again: %d %v", resp.StatusCode, again)
+	}
+	pub := local.srv.publishedOf(id)
+	if pub == nil || pub.CurrentID() == hosted.ID {
+		t.Fatalf("published again as %v", pub)
+	}
+	if nd, ok := rendezvous.srv.Registry().Get(pub.CurrentID()); !ok || nd.Info().Status != session.StatusRunning {
+		t.Fatalf("the new publication there: %v", ok)
+	}
+}

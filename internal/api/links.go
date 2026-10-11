@@ -79,6 +79,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	var pub PublishedSession
 	why := ""
 	if server != "" {
+		s.republish(id)
 		wctx, wcancel := context.WithTimeout(r.Context(), publicationWait)
 		pub, why = s.awaitPublication(wctx, id)
 		wcancel()

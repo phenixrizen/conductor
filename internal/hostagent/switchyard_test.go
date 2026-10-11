@@ -751,3 +751,103 @@ func TestASwitchyardOperatorListsAPublishedSessionAndNoMore(t *testing.T) {
 		return strings.HasPrefix(ev, "session ") && strings.Contains(ev, `"needs_input"`)
 	})
 }
+
+// A stop the switchyard sends ends the publication and nothing else: the
+// publisher tells the switchyard the session stopped there, lets go of its
+// connection and its viewers, and the session goes on here, its process
+// alive. Its next publication registers under a local id of its own.
+func TestASwitchyardsStopEndsThePublicationNotTheSession(t *testing.T) {
+	y := newStubYard(t)
+	pc := publishCat(t, y, t.TempDir(), []string{"/bin/cat"})
+	const guest = "guestrelay000003"
+	y.send(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: guest, Role: string(session.RoleView), LinkID: "link-1"})
+	y.send(proto.ViewerRef{T: proto.HostRelayStart, ViewerID: guest})
+	y.relay(guest, proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: proto.ProtoVersion, Cols: 80, Rows: 24}))
+	y.wait("the guest attached", func(m yardMsg) bool {
+		var c map[string]any
+		return m.viewer == guest && m.inner.Type == proto.TypeControl && json.Unmarshal(m.inner.Payload, &c) == nil && c["t"] == proto.CtlReady
+	})
+
+	y.send(proto.HostStopMsg{T: proto.HostStop, SessionID: "yard-session-1"})
+	y.wait("the stopped status", func(m yardMsg) bool {
+		return m.t == proto.HostStatus && m.raw["status"] == string(session.StatusStopped)
+	})
+	select {
+	case <-pc.pub.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the publication did not end")
+	}
+	if !pc.pub.StoppedThere() {
+		t.Fatal("the publication does not say the switchyard ended it")
+	}
+	select {
+	case <-pc.local.Ended():
+		t.Fatalf("the session ended: %s", pc.local.Info().Status)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if st := pc.local.Info().Status; st != session.StatusRunning {
+		t.Fatalf("the session at home is %s", st)
+	}
+	// The process still answers.
+	sink := &chanSink{ch: make(chan []byte, 256)}
+	owner, err := pc.local.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Owner", Cols: 80, Rows: 24}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pc.local.Input(owner, []byte("still here\n")); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	deadline := time.After(5 * time.Second)
+	for !strings.Contains(out.String(), "still here") {
+		select {
+		case raw := <-sink.ch:
+			if f, err := proto.Decode(raw); err == nil && (f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback) {
+				out.Write(f.Payload)
+			}
+		case <-deadline:
+			t.Fatalf("no echo from the process: %q", out.String())
+		}
+	}
+	// The guest's peer is gone with the publication.
+	if p := pc.pub.a.peer(guest); p != nil {
+		t.Fatal("the guest's peer outlived the publication")
+	}
+	// Published again, the session is a new one there.
+	if id := pc.pub.a.localID; id != "local-1" {
+		t.Fatalf("first publication's local id %q", id)
+	}
+	u := &Uplink{ServerURL: y.srv.URL, HostName: "office", Log: discardLog}
+	u.noteStopped("local-1")
+	if id := u.localID("local-1"); id != "local-1.1" {
+		t.Fatalf("a publication after a stop registers as %q", id)
+	}
+	if id := u.localID("local-2"); id != "local-2" {
+		t.Fatalf("another session registers as %q", id)
+	}
+}
+
+// The owner's own server (`conductor host`) still stops the process.
+func TestTheOwnersServerStillStopsAHostedProcess(t *testing.T) {
+	a, _ := activityTestAgent(t, 0)
+	if err := a.handleControl(context.Background(), mustJSON(proto.HostStopMsg{T: proto.HostStop, SessionID: "sess-1"})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-a.local.Ended():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the process was not stopped")
+	}
+}
+
+// chanSink hands what a session writes to a channel.
+type chanSink struct{ ch chan []byte }
+
+func (s *chanSink) WriteFrame(f []byte) error {
+	select {
+	case s.ch <- append([]byte(nil), f...):
+	default:
+	}
+	return nil
+}
+func (s *chanSink) Close(error) {}
