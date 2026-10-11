@@ -457,6 +457,11 @@ func (p *peer) detachDataChannel() {
 	sub := p.sub
 	if p.relay == nil {
 		p.sub = nil
+		// A move to the relay after this takes over its slot while its
+		// transport closes (as startRelay notes it when it detaches first).
+		if sub != nil {
+			p.replaces = sub
+		}
 	} else {
 		sub = nil
 	}

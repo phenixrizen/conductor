@@ -303,3 +303,61 @@ func TestTheWaitForRoomHasOneDeadlinePerFrame(t *testing.T) {
 		t.Fatalf("room: %v", err)
 	}
 }
+
+// heldSink takes nothing until released: a transport still closing.
+type heldSink struct{ release chan struct{} }
+
+func (s heldSink) WriteFrame([]byte) error { <-s.release; return nil }
+func (s heldSink) Close(error)             {}
+
+// At the viewer cap, a viewer whose data channel went first and which then
+// moves to the relay takes over its own slot, though its old transport still
+// closes: the data channel's detach keeps the subscription for the relay's
+// attach, as startRelay does.
+func TestAViewerMovingToTheRelayAfterItsChannelWentKeepsItsSlot(t *testing.T) {
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	local := session.NewLocal(session.Info{ID: "s", Cols: 80, Rows: 24}, proc, session.Options{MaxViewers: 1})
+	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: discardLog}
+	var mu sync.Mutex
+	var refused []string
+	a.sendHook = func(v any) {
+		if e, ok := v.(proto.ViewerError); ok {
+			mu.Lock()
+			refused = append(refused, e.Code+": "+e.Message)
+			mu.Unlock()
+		}
+	}
+	const id = "0123456789abcdef"
+	held := heldSink{release: make(chan struct{})}
+	defer close(held.release)
+	old, err := local.AttachWith(session.AttachOptions{ID: id, Role: session.RoleView, Name: "v"}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newPeer(a, id, session.RoleView, "", "", false)
+	p.mu.Lock()
+	p.sub = old
+	p.mu.Unlock()
+	p.detachDataChannel()
+	p.mu.Lock()
+	p.relay = &relaySink{a: a, viewerID: id}
+	p.mu.Unlock()
+	p.attach(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "v"})
+	p.mu.Lock()
+	sub := p.sub
+	p.mu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
+	if sub == nil || sub == old || len(refused) != 0 {
+		t.Fatalf("the relay's attach at the cap was refused: %q", refused)
+	}
+	select {
+	case <-old.Closed():
+		t.Fatal("the old transport was meant to be still closing")
+	default:
+	}
+}
