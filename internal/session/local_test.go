@@ -945,7 +945,29 @@ func TestTheWelcomeNamesTheSessionsFolder(t *testing.T) {
 	if got := welcomeCwd("/"+strings.Repeat("a", proto.MaxCwd), true); got != "" {
 		t.Fatalf("an over-long folder went in the welcome: %d bytes", len(got))
 	}
-	if got := welcomeCwd("/srv/"+strings.Repeat("a", proto.MaxCwd-5), true); len(got) != proto.MaxCwd {
+	// The bound is on the folder as the welcome encodes it: two quotes, and
+	// six bytes for each `&`.
+	if got := welcomeCwd("/srv/"+strings.Repeat("a", proto.MaxCwd-7), true); len(got) != proto.MaxCwd-2 {
 		t.Fatalf("a folder at the bound was left out: %d bytes", len(got))
+	}
+	amps := "/srv/" + strings.Repeat(strings.Repeat("&", 200)+"/", 7)
+	if len(amps) > 1500 || welcomeCwd(amps, true) != "" {
+		t.Fatalf("a %d-byte folder that encodes past the bound went in the welcome", len(amps))
+	}
+	// The longest folder a welcome carries keeps it within one CONTROL frame.
+	widest := "/" + strings.Repeat("a", proto.MaxCwd-3)
+	s, _ := newLocalWith(t, Options{FileView: "view"})
+	s.info.Cwd = widest
+	sink := newChanSink(false)
+	if _, err := s.Attach(strings.Repeat("v", 16), RoleControl, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	sink.waitFrames(t, 1)
+	f, err := proto.Decode(sink.frame(0))
+	if err != nil || len(f.Payload) > proto.MaxControl {
+		t.Fatalf("the widest welcome: %d bytes, %v", len(f.Payload), err)
+	}
+	if m := decodeControl(t, sink.frame(0)); m["cwd"] != widest {
+		t.Fatalf("the widest folder was left out: %v", m["t"])
 	}
 }
