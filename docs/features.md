@@ -1906,7 +1906,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 - **Chat beside the terminal** (2a, 2b, 2h, C1). One chat per session,
   over the connection the terminal takes (`chat`, `chat_send`,
   `chat_history`; `welcome.chat` gates a client), so it works wherever a
-  link works and the switchyard never reads it. Every viewer may post; a
+  link works; through a switchyard the publishing machine sends the
+  switchyard none of it, and a viewer relayed through the switchyard has it
+  in relayed frames, which the switchyard can read. Every viewer may post; a
   controller's "To agent" and "Send to agent" type a message into the
   agent through `Submit` and leave a `sent_to_agent` marker. The session
   keeps 200 (`session.chatRing`), replays the newest that fit 128 KiB, and
