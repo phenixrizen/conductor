@@ -42,7 +42,7 @@ func TestFolderOpensWaitOnNoFIFO(t *testing.T) {
 		}
 	})
 	returnsSoon(t, "OpenFolderIn", func() {
-		if f, err := OpenFolderIn(dir, "fifo"); err == nil {
+		if f, err := OpenFolderIn(dir, "fifo", nil); err == nil {
 			f.Close()
 			t.Error("a FIFO opened as a folder")
 		}

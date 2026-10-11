@@ -127,3 +127,29 @@ func TestLaunchUsesTheFolderItChecked(t *testing.T) {
 		t.Fatalf("the session's file read went outside the folder: %d %s", status, body)
 	}
 }
+
+// The allowed root itself replaced between its check and the folder's open
+// (a link put at its path, to a directory with the same folder in it): the
+// launch is refused, and nothing starts in the other directory.
+func TestLaunchRefusesARootReplacedAfterItsCheck(t *testing.T) {
+	e := newTestEnv(t, nil)
+	proj, outside, marker := launchTree(t, e)
+	root := filepath.Dir(proj)
+	os.MkdirAll(filepath.Join(outside, "proj"), 0o755)
+	onLaunch(t, "root", func() {
+		os.Rename(root, root+".was")
+		os.Symlink(outside, root)
+	})
+	t.Cleanup(func() {
+		os.Remove(root)
+		os.Rename(root+".was", root)
+	})
+	resp, out := e.launchIn(proj, marker)
+	if resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_cwd" {
+		t.Fatalf("launch with its root replaced after the check: %d %v", resp.StatusCode, out)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if b, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("a process started in %s", b)
+	}
+}

@@ -394,7 +394,13 @@ func (s *Server) openCwd(cwd string) (*session.Folder, error) {
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
-		if f, err := session.OpenFolderIn(rootReal, rel); err == nil {
+		// The root as checked: the folder is opened only through that one.
+		want, err := os.Stat(rootReal)
+		if err != nil {
+			continue
+		}
+		launchHook("root")
+		if f, err := session.OpenFolderIn(rootReal, rel, want); err == nil {
 			return f, nil
 		}
 	}

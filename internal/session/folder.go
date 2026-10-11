@@ -79,13 +79,24 @@ func OpenFolder(path string) (*Folder, error) {
 
 // OpenFolderIn opens the folder rel names under dir through dir (os.Root):
 // what it opens is under dir whatever a link on the way does meanwhile. Its
-// path is dir joined with rel.
-func OpenFolderIn(dir, rel string) (*Folder, error) {
+// path is dir joined with rel. want, when given, is dir as it was checked:
+// the directory opened must be that one (os.SameFile), so dir replaced in
+// between (a link put at its path or its parents') is refused.
+func OpenFolderIn(dir, rel string, want os.FileInfo) (*Folder, error) {
 	parent, err := os.OpenRoot(openDirOnly(dir))
 	if err != nil {
 		return nil, err
 	}
 	defer parent.Close()
+	if want != nil {
+		got, err := parent.Stat(".")
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(got, want) {
+			return nil, errors.New("session: the folder's root changed while it was opened")
+		}
+	}
 	r, err := parent.OpenRoot(openDirOnly(rel))
 	if err != nil {
 		return nil, err

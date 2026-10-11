@@ -521,13 +521,13 @@ func TestOpenFolderInStaysUnderItsDirectory(t *testing.T) {
 	os.Symlink(filepath.Join("..", "outside", "sub"), filepath.Join(root, "climb"))
 	os.Symlink("sub", filepath.Join(root, "rel"))
 	for _, rel := range []string{"abs", "climb", filepath.Join("abs", "deep"), filepath.Join("climb", "deep")} {
-		if f, err := OpenFolderIn(root, rel); err == nil {
+		if f, err := OpenFolderIn(root, rel, nil); err == nil {
 			f.Close()
 			t.Errorf("%s: opened, want it refused", rel)
 		}
 	}
 	for _, rel := range []string{".", "sub", filepath.Join("sub", "deep"), "rel"} {
-		f, err := OpenFolderIn(root, rel)
+		f, err := OpenFolderIn(root, rel, nil)
 		if err != nil {
 			t.Errorf("%s: %v", rel, err)
 			continue
