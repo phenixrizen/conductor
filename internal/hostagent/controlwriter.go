@@ -287,7 +287,12 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 	mu.Lock()
 	conn := used
 	mu.Unlock()
-	if tc, ok := conn.(*tls.Conn); ok {
+	// TLS to the server, over TLS to a proxy when it is an https one.
+	for {
+		tc, ok := conn.(*tls.Conn)
+		if !ok {
+			break
+		}
 		conn = tc.NetConn()
 	}
 	pc, ok := conn.(*pacedConn)

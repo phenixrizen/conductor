@@ -310,10 +310,14 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
-	// attentionUntold says the last attention change was not sent (no
-	// connection, or no turn in time): the next change sends it, whatever
-	// it is. Guarded by mu.
+	// attentionUntold says the last attention change was not sent for want
+	// of a connection: the next change sends it, whatever it is.
+	// attentionRetry says a retry of one that had no turn in time is under
+	// way (retryAttention); attentionOf is the session the last change was
+	// of. Guarded by mu.
 	attentionUntold bool
+	attentionRetry  bool
+	attentionOf     string
 	// instance and localID fix the session's id on the server across its
 	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
 	instance, localID string
@@ -596,18 +600,65 @@ func lastElement(dir string) string {
 func (a *agent) onLocalChange(info session.Info) {
 	att := a.toServer(info.Attention)
 	a.mu.Lock()
-	changed := a.attentionUntold || att.State != a.lastAttention.State || att.Message != a.lastAttention.Message || att.Kind != a.lastAttention.Kind || len(att.Options) != len(a.lastAttention.Options)
-	a.lastAttention = att
+	changed := a.attentionUntold || !sameAttention(att, a.lastAttention)
+	a.lastAttention, a.attentionOf = att, info.ID
+	retrying := a.attentionRetry
 	a.mu.Unlock()
-	if changed {
-		// One that does not get its turn on a connection the server reads
-		// slowly is dropped (controlWriter), and told again with the
-		// session's next change.
-		untold := a.send(hostAttentionMsg(info.ID, att)) != nil
-		a.mu.Lock()
-		a.attentionUntold = untold
-		a.mu.Unlock()
+	if !changed || retrying {
+		// A retry under way sends the latest when its turn comes.
+		return
 	}
+	err := a.send(hostAttentionMsg(info.ID, att))
+	switch {
+	case err == nil:
+		a.mu.Lock()
+		a.attentionUntold = false
+		a.mu.Unlock()
+	case errors.Is(err, errConnDown):
+		// No connection: the session's next change tells it, and a new
+		// connection is told the current attention as it starts.
+		a.mu.Lock()
+		a.attentionUntold = true
+		a.mu.Unlock()
+	default:
+		// No turn in time on a connection the server reads slowly.
+		a.retryAttention()
+	}
+}
+
+// retryAttention sends the latest attention as soon as the connection takes
+// it, however long that waits while the connection lasts, and again while
+// it changed meanwhile: one retry at a time, and while it runs the changes
+// are only noted (onLocalChange), so the server is told them in order.
+func (a *agent) retryAttention() {
+	a.mu.Lock()
+	if a.attentionRetry {
+		a.mu.Unlock()
+		return
+	}
+	a.attentionRetry = true
+	a.mu.Unlock()
+	go func() {
+		for {
+			a.mu.Lock()
+			att, id := a.lastAttention, a.attentionOf
+			a.mu.Unlock()
+			err := a.tell(hostAttentionMsg(id, att), nil)
+			a.mu.Lock()
+			if err != nil || sameAttention(att, a.lastAttention) {
+				a.attentionRetry = false
+				a.attentionUntold = err != nil
+				a.mu.Unlock()
+				return
+			}
+			a.mu.Unlock()
+		}
+	}()
+}
+
+// sameAttention says whether x and y tell the server the same.
+func sameAttention(x, y session.Attention) bool {
+	return x.State == y.State && x.Message == y.Message && x.Kind == y.Kind && len(x.Options) == len(y.Options)
 }
 
 // toServer is an attention change as the server is told it: in full to the

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -602,6 +604,114 @@ func TestAPacedDialFindsTheConnectionItUpgraded(t *testing.T) {
 	defer c.CloseNow()
 	if n := conns.Load(); n != 1 {
 		t.Skipf("the first server's connection was not kept for the upgrade (%d connections)", n)
+	}
+	w := newControlWriter(c, pc)
+	t.Cleanup(w.stop)
+	if err := w.sendControl(websocket.MessageText, []byte(`{"t":"status"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-got:
+		if string(data) != `{"t":"status"}` {
+			t.Fatalf("the server got %q", data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server got nothing")
+	}
+}
+
+// An attention change that had no turn in time on a connection the server
+// reads slowly is told once the connection takes it, with no other change
+// of the session's to carry it; and changes meanwhile are told in order,
+// the latest last.
+func TestAnAttentionChangeWithNoTurnIsToldOnceTheConnectionTakesIt(t *testing.T) {
+	s, c, pc := dialHeld(t, 0)
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", controlWait: 100 * time.Millisecond}
+	w := a.useConn(c, pc)
+	t.Cleanup(w.stop)
+	big := bytes.Repeat([]byte("b"), 1<<20)
+	if err := w.sendRelay(big, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	backedUp(t, pc)
+	a.onLocalChange(session.Info{ID: "sess-1", Attention: session.Attention{State: session.AttentionWorking, Source: "hook"}})
+	a.onLocalChange(session.Info{ID: "sess-1", Attention: session.Attention{State: session.AttentionNeedsInput, Message: "Allow?", Source: "hook"}})
+	time.Sleep(300 * time.Millisecond)
+	close(s.read)
+	s.expectGot(t, big)
+	var last []byte
+	for done := false; !done; {
+		select {
+		case got := <-s.got:
+			if !bytes.Contains(got, []byte(`"attention"`)) {
+				t.Fatalf("the server got %.80q", got)
+			}
+			last = got
+		case <-time.After(time.Second):
+			done = true
+		}
+	}
+	if !bytes.Contains(last, []byte(`"needs_input"`)) {
+		t.Fatalf("the server was told last %q", last)
+	}
+}
+
+// A host dials a server through an https proxy as it does without one: the
+// server's TLS goes over the proxy's, and the paced socket is found under
+// both.
+func TestAPacedDialWorksThroughAnHTTPSProxy(t *testing.T) {
+	got := make(chan []byte, 1)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		if _, data, err := c.Read(r.Context()); err == nil {
+			got <- data
+		}
+	}))
+	t.Cleanup(srv.Close)
+	var tunnels atomic.Int32
+	proxy := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "connect only", http.StatusMethodNotAllowed)
+			return
+		}
+		to, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer to.Close()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		from, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer from.Close()
+		tunnels.Add(1)
+		_, _ = from.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		go func() { _, _ = io.Copy(to, from) }()
+		_, _ = io.Copy(from, to)
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, _ := url.Parse(proxy.URL)
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// The test servers share one certificate.
+	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
+	tr.Proxy = http.ProxyURL(proxyURL)
+	c, pc, _, err := pacedDial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), nil, &http.Client{Transport: tr}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if tunnels.Load() != 1 {
+		t.Fatalf("%d tunnels through the proxy", tunnels.Load())
 	}
 	w := newControlWriter(c, pc)
 	t.Cleanup(w.stop)

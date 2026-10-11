@@ -225,9 +225,9 @@ viewer in turn, each viewer's in order. A relayed frame that waits more than
 (`slow_consumer`, then `viewer_closed`), as a WebRTC viewer is whose data
 channel stays full; one of the host's own messages that waits more than 15 s
 is dropped, but for `viewer_closed` and `viewer_error` (a viewer's first),
-which wait as long as the connection lasts and the viewer has not left (an
-attention change that was dropped is sent again with the session's next
-change). However slowly the server reads the
+which wait as long as the connection lasts and the viewer has not left, and
+for an attention change, the latest of which is sent once the connection
+takes it. However slowly the server reads the
 connection (a relay bound pauses its reading), the host answers its pings
 and keeps the connection; it gives the connection up only when its socket
 takes nothing at all for 2 minutes, or when it would hold more than 4 MiB
