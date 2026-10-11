@@ -35,6 +35,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	agentID := fs.String("agent", "", "agent id shown in the UI (default: command name); the id of an adapter with a launch route (claude, codex, pi, aider) also wires Conductor's hooks into the command at launch; other adapters install by hand (conductor hooks install)")
 	cwd := fs.String("cwd", "", "working directory for the command (default: current)")
 	relayOnly := fs.Bool("relay-only", false, "never use WebRTC; relay through the server")
+	serverIsMine := fs.Bool("server-is-mine", false, "the server is your own, on this machine: a window its workbench opens with no link is yours and gets the editor's Neovim")
 	noLocal := fs.Bool("no-local", false, "do not attach this terminal to the session")
 	stun := fs.String("stun", "", "comma separated ICE server URLs overriding the server's list")
 	iceUDPPort := fs.Int("ice-udp-port", envInt("CONDUCTOR_ICE_UDP_PORT"), "one UDP port for every WebRTC connection (env CONDUCTOR_ICE_UDP_PORT); 0 lets each connection pick its own")
@@ -109,6 +110,9 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			}
 		}
 	}
+	if err := serverIsMineOK(*serverIsMine, *server); err != nil {
+		return 2, err
+	}
 	opts := hostagent.Options{
 		ICE:             hostagent.ICE{UDPPort: *iceUDPPort, PublicIP: *icePublicIP},
 		ServerURL:       *server,
@@ -119,6 +123,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		Argv:            argv,
 		Dir:             *cwd,
 		RelayOnly:       *relayOnly,
+		ServerIsOwners:  *serverIsMine,
 		LocalAttach:     !*noLocal,
 		ICEServers:      ice,
 		ScrollbackBytes: *scrollback,
@@ -159,4 +164,15 @@ func envInt(key string) int {
 		return 0
 	}
 	return n
+}
+
+// serverIsMineOK refuses --server-is-mine for a server that is not on this
+// machine: a window a server sends with no link is taken for the owner's only
+// on the person's word and only for a server here (the connection is then
+// held to this machine; hostagent.Options.ServerIsOwners).
+func serverIsMineOK(mine bool, server string) error {
+	if mine && !hostagent.LoopbackServer(server) {
+		return fmt.Errorf("--server-is-mine needs a server on this machine (localhost), not %s", server)
+	}
+	return nil
 }

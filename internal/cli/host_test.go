@@ -292,3 +292,24 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 		t.Fatalf("hosted with server files it could not place: %+v", got)
 	}
 }
+
+// --server-is-mine is the person's word, and only for a server on this
+// machine; without it no server's window is taken for the owner's.
+func TestServerIsMineOnlyForAServerHere(t *testing.T) {
+	for _, tc := range []struct {
+		mine   bool
+		server string
+		ok     bool
+	}{
+		{false, "http://localhost:8080", true},
+		{false, "https://switchyard.example", true},
+		{true, "http://localhost:8080", true},
+		{true, "http://127.0.0.1:8080", true},
+		{true, "https://switchyard.example", false},
+		{true, "https://192.168.1.20:8080", false},
+	} {
+		if err := serverIsMineOK(tc.mine, tc.server); (err == nil) != tc.ok {
+			t.Errorf("serverIsMineOK(%v, %q) = %v", tc.mine, tc.server, err)
+		}
+	}
+}

@@ -43,7 +43,7 @@ func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitVi
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout}
 	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	a.peers[p.id] = p
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)

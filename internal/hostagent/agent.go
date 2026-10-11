@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -45,6 +47,15 @@ type Options struct {
 	Argv      []string
 	Dir       string
 	RelayOnly bool
+	// ServerIsOwners says the server this host reports to is the owner's
+	// own, on this machine (conductor host --server-is-mine, for a server on
+	// localhost): a viewer it sends with no link is then one of the owner's
+	// own windows, offered the editor's Neovim, and the connection is held
+	// to this machine (ownersServerClient). Off by default: a loopback
+	// address alone could be a forward to someone else's server. Never so
+	// for a switchyard, whose workbench is its operator's: the uplink leaves
+	// it off.
+	ServerIsOwners bool
 	// LocalAttach connects Stdin/Stdout to the PTY as a controller.
 	LocalAttach bool
 	Stdin       *os.File
@@ -396,7 +407,11 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.Token != "" {
 		header["Authorization"] = []string{"Bearer " + a.opts.Token}
 	}
-	c, resp, err := websocket.Dial(dialCtx, a.wsURL, &websocket.DialOptions{HTTPHeader: header})
+	dial := &websocket.DialOptions{HTTPHeader: header}
+	if a.opts.ServerIsOwners {
+		dial.HTTPClient = ownersServerClient()
+	}
+	c, resp, err := websocket.Dial(dialCtx, a.wsURL, dial)
 	cancel()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
@@ -924,7 +939,7 @@ func (a *agent) sendViewerError(viewerID, code, msg string) {
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
-	p := newPeer(a, id, role, linkID, linkLabel)
+	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice
@@ -1057,4 +1072,47 @@ func refusal(resp *http.Response) *RefusedError {
 		e.RetryAfter = time.Duration(min(s, 3600)) * time.Second
 	}
 	return e
+}
+
+// ownersServerClient is the HTTP client for a server taken for the owner's
+// (Options.ServerIsOwners): its no-link viewers are the owner's windows only
+// while it is this machine's, so the connection never leaves it. No proxy,
+// a dial only to a loopback address (checked on the address resolved, so no
+// spelling of a name gets past it), and a redirect elsewhere refused.
+func ownersServerClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	dialer := &net.Dialer{Timeout: 15 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("host: %s is not this machine", address)
+		}
+		return nil
+	}}
+	t.DialContext = dialer.DialContext
+	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if !loopbackHost(req.URL.Hostname()) {
+			return fmt.Errorf("host: refusing a redirect off this machine to %s", req.URL.Host)
+		}
+		return nil
+	}}
+}
+
+// LoopbackServer reports whether a server URL names this machine (localhost
+// or a loopback address): its workbench is the owner's, so a viewer it sends
+// with no link is one of the owner's own windows (Options.ServerIsOwners).
+func LoopbackServer(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && loopbackHost(u.Hostname())
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

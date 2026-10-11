@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -86,6 +87,33 @@ func Available() bool {
 	return err == nil
 }
 
+// childDropped reports whether an environment variable is kept from the
+// Neovim child: Conductor's own variables (its tokens and configuration, all
+// CONDUCTOR_*), and the dynamic linker's injection variables, which on glibc
+// and macOS begin LD_ or DYLD_ (LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH,
+// DYLD_INSERT_LIBRARIES and the rest of their families), are dropped so that
+// no Conductor secret, and no library the launcher's environment named,
+// reaches an editor the person drives.
+func childDropped(k string) bool {
+	return strings.HasPrefix(k, "CONDUCTOR_") || strings.HasPrefix(k, "LD_") || strings.HasPrefix(k, "DYLD_")
+}
+
+// childEnv is the environment for the Neovim child: the parent's, with the
+// dropped variables (childDropped) removed. The rest is kept as it is,
+// because the editor runs the person's own config and plugins, which read
+// HOME, the XDG directories, PATH and whatever else they were set up with.
+func childEnv(parent []string) []string {
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		k, _, ok := strings.Cut(kv, "=")
+		if !ok || childDropped(k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // Editor is one embedded Neovim showing one file.
 type Editor struct {
 	v      *nvim.Nvim
@@ -112,7 +140,7 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		return nil, err
 	}
 	v, err := nvim.NewChildProcess(nvim.ChildProcessCommand(prog), nvim.ChildProcessArgs("--embed"), nvim.ChildProcessDir(dir), nvim.ChildProcessContext(ctx),
-		nvim.ChildProcessLogf(func(string, ...interface{}) {}))
+		nvim.ChildProcessEnv(childEnv(os.Environ())), nvim.ChildProcessLogf(func(string, ...interface{}) {}))
 	if err != nil {
 		return nil, err
 	}

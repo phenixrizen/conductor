@@ -81,6 +81,8 @@ describe('the keymap setting', () => {
     expect(nvimUnavailableWords({ welcome: true, nvim: false, fileEdit: true, machine: 'lan-box' })).toBe('Neovim is not installed on lan-box')
     expect(nvimUnavailableWords({ welcome: true, nvim: true, fileEdit: false })).toMatch(/View only/)
     expect(nvimUnavailableWords({ welcome: false, nvim: true, fileEdit: true })).toBe('Not connected')
+    // A link's controller may edit but gets no Neovim; the words say so, not "not installed".
+    expect(nvimUnavailableWords({ welcome: true, nvim: false, fileEdit: true, ownerOnly: true, machine: 'lan-box' })).toMatch(/kept for the session's own window/)
   })
 })
 

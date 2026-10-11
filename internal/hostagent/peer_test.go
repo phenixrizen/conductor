@@ -92,7 +92,7 @@ func TestPeerDataChannelLoopback(t *testing.T) {
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 	a, out := activityTestAgent(t, 0)
 	a.flushed = make(chan struct{}) // no watchStatus here to report the status message
 	close(a.flushed)
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	a.peers[p.id] = p
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestAPeersHelloOfZeroFollowsTheSize(t *testing.T) {
 		{session.RoleControl, 0, 24, [2]uint16{0, 0}},
 		{session.RoleControl, 100, 30, [2]uint16{100, 30}},
 	} {
-		p := newPeer(a, fmt.Sprintf("%016x", i), tc.role, "", "")
+		p := newPeer(a, fmt.Sprintf("%016x", i), tc.role, "", "", true)
 		p.startRelay()
 		p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: tc.cols, Rows: tc.rows})})
 		if c, r := proc.Size(); [2]uint16{c, r} != tc.want {
@@ -326,7 +326,7 @@ func TestPeerCarriesChatOverTheDataChannel(t *testing.T) {
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestPeerTakesTheSizeOnlyByAsking(t *testing.T) {
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "link1", "laptop")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "link1", "laptop", false)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -432,3 +432,29 @@ type nopSink struct{}
 
 func (nopSink) WriteFrame([]byte) error { return nil }
 func (nopSink) Close(error)             {}
+
+// A viewer a server sends with no link is one of the owner's own windows
+// only when that server is on the owner's machine (ServerIsOwners); from a
+// switchyard, whose workbench is its operator's, it is not, and a link is
+// never the owner's.
+func TestAViewerWithNoLinkIsTheOwnersOnlyFromTheOwnersServer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mine   bool
+		linkID string
+		owner  bool
+	}{
+		{"a switchyard's, no link", false, "", false},
+		{"the owner's server, no link", true, "", true},
+		{"the owner's server, a link", true, "l1", false},
+		{"a switchyard's, a link", false, "l1", false},
+	} {
+		a := &agent{opts: Options{RelayOnly: true, ServerIsOwners: tc.mine}, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		a.addPeer("0123456789abcdef", session.RoleControl, tc.linkID, "")
+		p := a.peers["0123456789abcdef"]
+		if p == nil || p.owner != tc.owner {
+			t.Fatalf("%s: owner %v, want %v", tc.name, p != nil && p.owner, tc.owner)
+		}
+		a.removePeer("0123456789abcdef")
+	}
+}

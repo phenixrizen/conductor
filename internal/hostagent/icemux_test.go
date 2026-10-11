@@ -90,7 +90,7 @@ func testAgent(t *testing.T, opts Options) (*agent, chan any) {
 func TestICEOnOneUDPPortAdvertisesTheGivenAddress(t *testing.T) {
 	port := freeUDPPort(t)
 	a, out := testAgent(t, Options{ICE: ICE{UDPPort: port, PublicIP: "203.0.113.9"}})
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestICEOnOneUDPPortAdvertisesTheGivenAddress(t *testing.T) {
 
 	// The mux alone: the loopback viewer connects, on the one port.
 	b, out2 := testAgent(t, Options{ICE: ICE{UDPPort: port}})
-	q := newPeer(b, "fedcba9876543210", session.RoleControl, "", "")
+	q := newPeer(b, "fedcba9876543210", session.RoleControl, "", "", true)
 	if err := q.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestICERefusesWhatItCannotUse(t *testing.T) {
 	}
 	defer busy.Close()
 	a, _ := testAgent(t, Options{ICE: ICE{UDPPort: busy.LocalAddr().(*net.UDPAddr).Port}})
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "")
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err == nil || !strings.Contains(err.Error(), "ice udp port") {
 		t.Fatalf("a busy port: %v", err)
 	}

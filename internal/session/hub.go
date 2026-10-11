@@ -57,6 +57,9 @@ type Subscription struct {
 	// one at a time, its parts in order.
 	writeMu sync.Mutex
 	write   *pendingWrite
+	// owner marks one of the owner's own connections (AttachOptions.Owner),
+	// the only ones offered the editor's Neovim.
+	owner bool
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool

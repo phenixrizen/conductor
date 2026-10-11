@@ -351,3 +351,50 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await api.stopSession(s.id)
   }
 })
+
+// A control link may edit, but Neovim is kept for the session's own window
+// (the owner's). The guest gets the editor with Save, and the Keys button
+// shows Neovim's note saying so rather than offering it.
+test('a control-link guest edits in Monaco with Save, but is not offered Neovim', async ({ page, api, state, browser }) => {
+  const cwd = join(state.root, 'files-vim-link')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'notes.txt')
+  writeFileSync(file, 'alpha\nbeta\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-link', cwd })
+  try {
+    // The owner's own window is offered Neovim.
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${file}"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(area.locator('[data-nvim-status]')).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+
+    // A control link's guest may edit but gets no Neovim.
+    const link = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'control', ttlSeconds: 3600 })
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    await ctx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Jane'))
+    const guest = await ctx.newPage()
+    await guest.goto(`/join/${link.token}`)
+    await guest.getByRole('button', { name: /^Join/ }).first().click()
+    const aside = guest.locator('[data-files-aside]')
+    await expect(aside.locator(`[data-file-node="${file}"]`)).toBeVisible({ timeout: 30_000 })
+    await aside.locator(`[data-file-node="${file}"]`).click()
+    const garea = guest.locator('[data-editor-area]')
+    await expect(garea.locator('.monaco-editor .view-lines')).toContainText('alpha', { timeout: 30_000 })
+    // It may edit (Save shows, not Read only).
+    await expect(garea.locator('[data-editor-save]')).toBeVisible()
+    await expect(garea.locator('[data-editor-readonly]')).toHaveCount(0)
+    // The Keys button is Monaco's; choosing Neovim only shows why it is kept for the owner.
+    await expect(garea.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'default')
+    await garea.locator('[data-editor-keymap]').click()
+    await expect(garea.locator('[data-editor-keymap-note]')).toContainText("kept for the session's own window", { timeout: 15_000 })
+    await expect(garea.locator('[data-nvim-status]')).toHaveAttribute('data-nvim-mode', 'off')
+    await ctx.close()
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

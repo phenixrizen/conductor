@@ -67,6 +67,13 @@ func TestRelayEnvelope(t *testing.T) {
 	if _, _, err := DecodeRelay(sig[1:]); err == nil {
 		t.Fatal("signal must not be relayable")
 	}
+	// A file save relays like a file read: the editor saves over the relay
+	// on a connection that is not offered Neovim.
+	fw, _ := EncodeFileWrite(FileWrite{ReqID: "w1", Path: "a.txt", Total: 1}, []byte("x"))
+	wenv, _ := EncodeRelay("0123456789abcdef", fw)
+	if _, in, err := DecodeRelay(wenv[1:]); err != nil || in.Type != TypeFileWrite {
+		t.Fatalf("file write must be relayable: %v %+v", err, in)
+	}
 }
 
 func TestFileFrame(t *testing.T) {

@@ -43,6 +43,9 @@ CONDUCTOR_HOST_TOKEN=host-token ./bin/conductor host --server http://localhost:8
 Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
 headless, or `--stun stun:host:3478` to override the ICE servers.
+`--server-is-mine`, for a server on this machine only, says that server is
+yours: a window its workbench opens with no link is then one of yours and gets
+the editor's Neovim (without it, only this terminal is).
 `--ice-udp-port 7877` puts every WebRTC connection on that one UDP port and
 `--ice-public-ip 192.168.1.20` advertises that address as the host's own
 (`CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP`): what a forwarder in
@@ -405,17 +408,22 @@ writes through Neovim, **Don't save** drops them), and the keymap button
 waits until nothing is left unsaved. The choice is kept per
 browser and is off until chosen, so nobody who never asked for Vim keys
 meets one. It needs `nvim` on that machine (the button says when it is
-missing), control of the session, and the server's or host's `fileEdit`
-setting left at `control` (`CONDUCTOR_FILE_EDIT`, `conductor host
---file-edit`; `off` turns editing off for everyone). A view-only guest keeps
-the read-only editor. A file another Vim has open, or left a swap file for
+missing), one of your own windows (not a share link or an invite; for a `conductor host` session, only with `--server-is-mine`, which says the server on this machine is yours), and the
+server's or host's `fileEdit` setting left at `control`
+(`CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`; `off` turns editing
+off for everyone). A control-link guest still edits and saves, with the
+editor's own keys. A view-only guest keeps the read-only editor. A file another Vim has open, or left a swap file for
 when it died, opens read-only with a banner naming that Vim and what
 applies: **Edit anyway**, and once that Vim is gone **Recover** (its
 unsaved text, written with `:w`) and **Delete the swap file**. Neovim's own
 questions, such as `:confirm q` over unsaved changes, show their choices as
 buttons. Text that comes with no key press reaches Neovim too: an input
 method's committed word (not the composition on the way), a dead key's
-character, dictation. In insert mode a plain character shows at once,
+character, dictation. The real Neovim runs with your own config and
+plugins, so it is kept for your own windows: a guest through a share link or
+an invite edits with the editor's own keys and **Save**, and its keymap
+button says Neovim is kept for the session's own window. The Neovim child
+never carries Conductor's own variables. In insert mode a plain character shows at once,
 before the machine answers, then settles as Neovim has it; one Neovim has
 not handled after a tenth of a second is underlined. When Neovim's text is
 not the guess (an autopair, an abbreviation, a mapping) its text wins once

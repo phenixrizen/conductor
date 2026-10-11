@@ -482,6 +482,7 @@ type fakeHost struct {
 	c         *websocket.Conn
 	sessionID string
 	msgs      chan map[string]any // the server's text messages, in order
+	bin       chan []byte         // the server's binary messages (relay envelopes), in order
 	done      chan struct{}       // closed when the connection has ended
 	err       error               // why, once done is closed
 }
@@ -517,7 +518,7 @@ func dialFakeHostWith(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.
 	}
 	c.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
 	t.Cleanup(func() { c.CloseNow() })
-	h := &fakeHost{t: t, c: c, msgs: make(chan map[string]any, 4096), done: make(chan struct{})}
+	h := &fakeHost{t: t, c: c, msgs: make(chan map[string]any, 4096), bin: make(chan []byte, 4096), done: make(chan struct{})}
 	go h.pump()
 	h.send(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: host, Session: sess})
 	registered := h.expect(proto.HostRegistered)
@@ -538,6 +539,11 @@ func (h *fakeHost) pump() {
 			return
 		}
 		if typ != websocket.MessageText {
+			select {
+			case h.bin <- append([]byte(nil), data...):
+			case <-h.t.Context().Done():
+				return
+			}
 			continue
 		}
 		var m map[string]any
@@ -1445,4 +1451,61 @@ func TestFileWriteOverTheViewerWebSocket(t *testing.T) {
 	if g, _ := guest.expectFile("g1"); g.Kind != "error" || g.Error.Code != "read_only" {
 		t.Fatalf("a view link's save %+v", g)
 	}
+}
+
+// A hosted session's control viewer in relay mode saves a file: the server
+// forwards the FILE_WRITE frame to the host instead of closing the
+// connection as an unexpected frame. The editor saves this way on every
+// connection that is not offered Neovim, so the relay must carry it; without
+// it such a viewer could not save over the relay.
+func TestHostedViewerRelaysFileWrite(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	v := dialViewer(t, e, host.sessionID, adminToken)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
+	if viewerID == "" {
+		t.Fatal("no viewer id from the host")
+	}
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
+	v.send(relay)
+	for {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("waiting for relay_ok: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+			break
+		}
+	}
+	// The save frame the editor sends.
+	frame, err := proto.EncodeFileWrite(proto.FileWrite{ReqID: "w1", Path: "notes.txt", Total: 2}, []byte("x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.send(frame)
+	// The host sees it as a relayed envelope carrying the FILE_WRITE frame;
+	// nothing closed the viewer in between.
+	deadline := time.After(5 * time.Second)
+	for got := false; !got; {
+		select {
+		case <-deadline:
+			t.Fatal("the host did not receive the relayed save")
+		case env := <-host.bin:
+			id, inner, derr := proto.DecodeRelay(env[1:])
+			if derr != nil {
+				t.Fatalf("relay envelope: %v", derr)
+			}
+			if id == viewerID && inner.Type == proto.TypeFileWrite {
+				got = true
+			}
+		}
+	}
+	// The viewer connection is still open: a relayed output reaches it.
+	env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("alive")))
+	if err := host.c.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+		t.Fatalf("host relay write: %v", err)
+	}
+	v.expectOutput("alive")
 }
