@@ -129,12 +129,30 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
 /**
  * owedNotice is the notice to show once, and the settings with it marked shown: publishing, to settings that have not been told
  * yet while publishing is on (turned off, there is nothing to tell): a fresh install (defaultSettings marks nothing) and settings
- * from a file saved before the notice existed alike. The caller saves the settings it returns, which keeps the notice marked.
+ * from a file saved before the notice existed alike. The caller asks as it hands the notice to the workbench, and saves the
+ * settings it returns, which keeps the notice marked.
  */
 export function owedNotice(s: DesktopSettings): { notice: Notice | ''; settings: DesktopSettings } {
   if (s.noticed.includes('publishing')) return { notice: '', settings: s }
   const settings = { ...s, noticed: [...s.noticed, 'publishing'] }
   return { notice: s.switchyardEnabled ? 'publishing' : '', settings }
+}
+
+/**
+ * noticeOnce is the bridge's notice handler: the first time the workbench asks, the notice owed to the settings get() gives
+ * (owedNotice), marked through set() then; '' after, and when none is owed. Nothing is marked until the workbench asks, so a
+ * start that never shows it (Windows without WSL yet, a server that does not start) still owes the notice.
+ */
+export function noticeOnce(get: () => DesktopSettings, set: (s: DesktopSettings) => void): () => Notice | '' {
+  let taken = false
+  return () => {
+    if (taken) return ''
+    taken = true
+    const s = get()
+    const owed = owedNotice(s)
+    if (owed.settings !== s) set(owed.settings)
+    return owed.notice
+  }
 }
 
 /** saveSettings writes the file through a temporary one, mode 0600. */

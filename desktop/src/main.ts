@@ -10,7 +10,7 @@ import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
 import { ServerSupervisor } from './server'
-import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, type DesktopSettings } from './settings'
+import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin } from './window'
@@ -67,13 +67,15 @@ async function run() {
   const settingsFile = join(userData, 'settings.json')
   const defaults = defaultSettings(homedir(), userData)
   let settings = loadSettings(settingsFile, defaults)
-  // A notice owed to these settings (a fresh install's, or an earlier build's): shown once, in the workbench, then marked.
-  const owed = owedNotice(settings)
-  let notice = owed.notice
-  if (owed.settings !== settings) {
-    settings = owed.settings
-    saveSettings(settingsFile, settings)
-  }
+  // A notice owed to these settings (a fresh install's, or an earlier build's) is handed to the workbench once and marked then:
+  // a start that never shows the workbench (Windows without WSL yet) still owes it.
+  const takeNotice = noticeOnce(
+    () => settings,
+    (s) => {
+      settings = s
+      saveSettings(settingsFile, s)
+    },
+  )
   const token = randomBytes(32).toString('hex')
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
@@ -245,11 +247,7 @@ async function run() {
       },
     },
     showLog,
-    notice: () => {
-      const n = notice
-      notice = ''
-      return n
-    },
+    notice: takeNotice,
     mainWindow: () => main,
     inviteReady: (sender) => {
       if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
