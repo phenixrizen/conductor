@@ -51,9 +51,16 @@ describe('settings', () => {
 describe('server environment', () => {
   it.skipIf(win)('drops the app\'s CONDUCTOR_* variables, sets the settings\' and the token, and the login shell\'s PATH', () => {
     const defaults = defaultSettings('/home/me', '/ud')
-    const env = serverEnv({ HOME: '/home/me', PATH: '/usr/bin', CONDUCTOR_WORKBENCH_TOKEN: 'leaked', CONDUCTOR_YOLO: '1', LANG: 'C' }, { ...defaults, yolo: true, reach: 'manual' }, 'tok', '/opt/bin:/usr/bin')
-    expect(env).toEqual({ HOME: '/home/me', PATH: '/opt/bin:/usr/bin', LANG: 'C', CONDUCTOR_WORKBENCH_TOKEN: 'tok', CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_DATA_DIR: '/ud/conductor', CONDUCTOR_ALLOWED_ROOTS: '/home/me', CONDUCTOR_DEFAULT_CWD: '/home/me', CONDUCTOR_YOLO: '1', CONDUCTOR_REACH: 'manual', CONDUCTOR_PATHS_BROWSE: 'any' })
+    const env = serverEnv({ HOME: '/home/me', PATH: '/usr/bin', CONDUCTOR_WORKBENCH_TOKEN: 'leaked', CONDUCTOR_YOLO: '1', CONDUCTOR_DESKTOP_DIR: '/elsewhere', LANG: 'C' }, { ...defaults, yolo: true, reach: 'manual' }, 'tok', '/opt/bin:/usr/bin', '/ud')
+    expect(env).toEqual({ HOME: '/home/me', PATH: '/opt/bin:/usr/bin', LANG: 'C', CONDUCTOR_WORKBENCH_TOKEN: 'tok', CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_DATA_DIR: '/ud/conductor', CONDUCTOR_DESKTOP_DIR: '/ud', CONDUCTOR_ALLOWED_ROOTS: '/home/me', CONDUCTOR_DEFAULT_CWD: '/home/me', CONDUCTOR_YOLO: '1', CONDUCTOR_REACH: 'manual', CONDUCTOR_PATHS_BROWSE: 'any' })
     expect(SERVE_ARGS).toEqual(['serve', '--listen', '127.0.0.1:0', '--print-listen', '--exit-on-stdin-close'])
+  })
+  it('names the app\'s own directory, where its settings and their switchyard token are, for the server to refuse', () => {
+    const defaults = defaultSettings('/home/me', '/home/me/.config/conductor-desktop')
+    expect(serverEnv({}, defaults, 'tok', '/usr/bin', '/home/me/.config/conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('/home/me/.config/conductor-desktop')
+    expect(serverEnv({}, defaults, 'tok', '/usr/bin', 'C:\\Users\\me\\AppData\\Roaming\\conductor-desktop').CONDUCTOR_DESKTOP_DIR).toBe('C:\\Users\\me\\AppData\\Roaming\\conductor-desktop')
+    // None known: none named, and none the app itself was started with comes through.
+    expect(serverEnv({ CONDUCTOR_DESKTOP_DIR: '/elsewhere' }, defaults, 'tok', '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
   })
 })
 
@@ -67,15 +74,15 @@ describe('switchyard settings', () => {
     expect(validate({ ...base, switchyardServer: 'ftp://x' })).toContain('the switchyard must be an http(s) URL with a host and nothing after it')
     expect(validate({ ...base, switchyardServer: 'https://switchyard.example.net' })).toEqual([]) // no token needed
     expect(validate({ ...base, switchyardName: 'x'.repeat(65) })).toContain('the name at the switchyard is at most 64 characters')
-    const byDefault = serverEnv({}, base, 'tok', '/usr/bin')
+    const byDefault = serverEnv({}, base, 'tok', '/usr/bin', '')
     expect(byDefault.CONDUCTOR_RENDEZVOUS).toBe('1')
     expect(byDefault.CONDUCTOR_RENDEZVOUS_SERVER).toBeUndefined()
     expect(byDefault.CONDUCTOR_RENDEZVOUS_TOKEN).toBeUndefined()
-    const env = serverEnv({}, { ...base, switchyardServer: 'https://switchyard.example.net/', switchyardToken: 'sy-token', switchyardName: 'laptop' }, 'tok', '/usr/bin')
+    const env = serverEnv({}, { ...base, switchyardServer: 'https://switchyard.example.net/', switchyardToken: 'sy-token', switchyardName: 'laptop' }, 'tok', '/usr/bin', '')
     expect(env.CONDUCTOR_RENDEZVOUS_SERVER).toBe('https://switchyard.example.net')
     expect(env.CONDUCTOR_RENDEZVOUS_TOKEN).toBe('sy-token')
     expect(env.CONDUCTOR_RENDEZVOUS_HOST_NAME).toBe('laptop')
-    expect(serverEnv({}, { ...base, switchyardEnabled: false }, 'tok', '/usr/bin').CONDUCTOR_RENDEZVOUS).toBe('0')
+    expect(serverEnv({}, { ...base, switchyardEnabled: false }, 'tok', '/usr/bin', '').CONDUCTOR_RENDEZVOUS).toBe('0')
     expect(serverAffecting(base, { ...base, switchyardEnabled: false })).toBe(true)
     expect(serverAffecting(base, { ...base, switchyardServer: 'https://switchyard.example.net', switchyardToken: 't' })).toBe(true)
   })

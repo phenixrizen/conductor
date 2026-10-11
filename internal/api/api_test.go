@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -700,6 +701,178 @@ func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
 	}
 	if status, _, _ := e.getFile(id, view, "real/notes.txt", "raw"); status != http.StatusOK {
 		t.Fatalf("a file beside the target: %d", status)
+	}
+}
+
+// git's settings and credentials often hold access tokens: a remote URL with
+// one in it, an extra header, a credential store. A view link reads nothing
+// of a repository's .git (its config, config.worktree, the rest of it), nor
+// a .git-credentials or .gitconfig in the folder, nor one a revision keeps
+// (show): it is answered file_denied, over HTTP and in-band. The owner still
+// reads them all, and the rest of the folder still reads.
+func TestRepositorySettingsAreForControllers(t *testing.T) {
+	const secret = "ghp-token-in-the-remote-url"
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	appendFile := func(p, s string) {
+		t.Helper()
+		f, err := os.OpenFile(filepath.Join(e.root, p), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendFile(".git/config", "[remote \"origin\"]\n\turl = https://me:"+secret+"@example.com/r.git\n")
+	appendFile(".git/config.worktree", "[http]\n\textraHeader = Authorization: Bearer "+secret+"\n")
+	appendFile(".git-credentials", "https://me:"+secret+"@example.com\n")
+	appendFile(".gitconfig", "[url \"https://"+secret+"@example.com/\"]\n\tinsteadOf = https://example.com/\n")
+	for _, args := range [][]string{{"add", ".gitconfig"}, {"-c", "commit.gpgsign=false", "commit", "-q", "-m", "settings"}} {
+		cmd := exec.Command("git", append([]string{"-C", e.root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+	held := []string{".git/config", ".git/config.worktree", ".git-credentials", ".gitconfig", filepath.Join(e.root, ".git", "config"), ".git/HEAD", ".git"}
+	for _, p := range held {
+		for _, mode := range []string{"raw", "stat", ""} {
+			if status, got, code := e.getFile(id, view, p, mode); status != http.StatusForbidden || code != proto.ErrCodeFileDenied || strings.Contains(got, secret) {
+				t.Errorf("view link, HTTP %q (mode %q): %d %s", p, mode, status, got)
+			}
+		}
+		if status, got, _ := e.getFile(id, adminToken, p, "raw"); status != http.StatusOK || (!strings.HasPrefix(p, ".git/HEAD") && p != ".git" && !strings.Contains(got, secret)) {
+			t.Errorf("owner, HTTP %q: %d %q", p, status, got)
+		}
+	}
+	if status, _, _ := e.getFile(id, view, "README", "raw"); status != http.StatusOK {
+		t.Errorf("view link, HTTP README: %d", status)
+	}
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range held {
+		reqID := fmt.Sprintf("g%d", i)
+		c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p}))
+		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || len(b) != 0 {
+			t.Errorf("view link, file_get %q: %+v %q", p, h, b)
+		}
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "show", Op: proto.FileOpShow, Rev: "HEAD", Path: ".gitconfig"}))
+	if h, b := c.expectFile("show"); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || len(b) != 0 {
+		t.Errorf("view link, .gitconfig at HEAD: %+v %q", h, b)
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "readme", Op: proto.FileOpShow, Rev: "HEAD", Path: "README"}))
+	if h, b := c.expectFile("readme"); h.Kind != "show" || string(b) != "hello\n" {
+		t.Errorf("view link, README at HEAD: %+v %q", h, b)
+	}
+}
+
+// What the other Conductors on the machine keep is no more readable than the
+// server's own files, for a session in the home directory (the desktop app's
+// default root): the desktop app's directory under both names, its settings
+// (which hold its switchyard token) included, the default data directory
+// ~/.conductor while the server keeps its own elsewhere, and the directory
+// the app names for the server it starts, which for the app on Windows is
+// its folder in the Windows profile, under /mnt inside WSL. Over HTTP and
+// in-band, through a view link and with the admin token; the rest of the
+// home still reads.
+func TestFileReadsNeverReachAnotherConductorsFiles(t *testing.T) {
+	const secret = "switchyard-token-of-the-app"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsApp := filepath.Join(home, "mnt", "c", "Users", "me", "AppData", "Roaming", "conductor-desktop")
+	appSettings := `{"switchyardToken": "` + secret + `"}`
+	for path, body := range map[string]string{
+		filepath.Join(configDir, "conductor-desktop", "settings.json"):    appSettings,
+		filepath.Join(configDir, "conductor-desktop", "logs", "main.log"): secret,
+		filepath.Join(configDir, "Conductor", "settings.json"):            appSettings,
+		filepath.Join(home, ".conductor", "catalog.json"):                 secret,
+		filepath.Join(windowsApp, "settings.json"):                        appSettings,
+		filepath.Join(home, "notes.md"):                                   "# hi\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newTestEnv(t, func(c *config.Config) {
+		c.AllowedRoots, c.DefaultCwd = []string{home}, home
+		c.DesktopDir = windowsApp
+	})
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+	rel := func(p string) string {
+		r, err := filepath.Rel(home, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	denied := []string{
+		rel(filepath.Join(configDir, "conductor-desktop", "settings.json")),
+		rel(filepath.Join(configDir, "conductor-desktop", "logs", "main.log")),
+		rel(filepath.Join(configDir, "conductor-desktop")),
+		rel(filepath.Join(configDir, "Conductor", "settings.json")),
+		".conductor/catalog.json",
+		".conductor",
+		rel(filepath.Join(windowsApp, "settings.json")),
+		rel(windowsApp),
+	}
+	for _, token := range []string{view, adminToken} {
+		for _, p := range denied {
+			for _, mode := range []string{"raw", "stat", ""} {
+				if status, got, code := e.getFile(id, token, p, mode); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
+					t.Errorf("HTTP %q (mode %q): %d %s", p, mode, status, got)
+				}
+			}
+		}
+		if status, got, _ := e.getFile(id, token, "notes.md", "raw"); status != http.StatusOK || got != "# hi\n" {
+			t.Fatalf("an ordinary file in the home: %d %q", status, got)
+		}
+	}
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range denied {
+		reqID := fmt.Sprintf("m%d", i)
+		c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p}))
+		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+			t.Errorf("file_get %q: %+v %q", p, h, b)
+		}
+	}
+	// The desktop app moves its server's data into the home while this
+	// server runs: it is refused from the next request on.
+	moved := filepath.Join(home, "app-data")
+	if err := os.MkdirAll(moved, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moved, "catalog.json"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "conductor-desktop", "settings.json"), []byte(`{"dataDir": "`+moved+`", "switchyardToken": "`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, got, code := e.getFile(id, view, "app-data/catalog.json", "raw"); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
+		t.Errorf("HTTP, a data directory the app moved to: %d %s", status, got)
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "moved", Path: "app-data/catalog.json"}))
+	if h, b := c.expectFile("moved"); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+		t.Errorf("file_get, a data directory the app moved to: %+v %q", h, b)
 	}
 }
 

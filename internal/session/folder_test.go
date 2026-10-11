@@ -247,7 +247,7 @@ func TestFilesStayOutOfTheDenyListWhenADeniedFolderIsMovedIn(t *testing.T) {
 					t.Fatalf("save once the denied folder was moved in: %+v", f)
 				}
 			} else {
-				h, body := s.ReadPath(op.path, op.stat, []string{state})
+				h, body := s.ReadPath(op.path, op.stat, []string{state}, RoleControl)
 				if h.Kind != "error" || h.Exists || strings.Contains(string(body), "secret") || len(h.Entries) > 0 {
 					t.Fatalf("%s once the denied folder was moved in: %+v %q", op.name, h, body)
 				}
@@ -543,11 +543,11 @@ func TestOpenFolderInStaysUnderItsDirectory(t *testing.T) {
 func TestRetiredSessionReadsNoFile(t *testing.T) {
 	root, _ := linkTree(t)
 	s, _ := newLocal(t, root)
-	if h, _ := s.ReadPath("sub/file.txt", false, nil); h.Kind != "file" {
+	if h, _ := s.ReadPath("sub/file.txt", false, nil, RoleControl); h.Kind != "file" {
 		t.Fatalf("before: %+v", h)
 	}
 	s.Retire()
-	if h, body := s.ReadPath("sub/file.txt", false, nil); h.Kind != "error" || body != nil {
+	if h, body := s.ReadPath("sub/file.txt", false, nil, RoleControl); h.Kind != "error" || body != nil {
 		t.Fatalf("after Retire: %+v %q", h, body)
 	}
 }

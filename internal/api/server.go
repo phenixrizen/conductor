@@ -74,9 +74,10 @@ type Server struct {
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)
-	// fileDeny lists the directories and files no file read may reach, even
-	// inside a session's working directory (see fileDeny).
-	fileDeny []string
+	// fileDeny gives, for each file request, the directories and files no
+	// file read may reach, even inside a session's working directory (see
+	// fileDeny). It is safe to call from many goroutines.
+	fileDeny func() []string
 	// lookups says, for 30 s at a time, whether the programs of the catalog's
 	// agents resolve on this server (see lookupCache); probes, for 10 min,
 	// what their version output says they are (see probeCache).

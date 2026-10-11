@@ -374,7 +374,16 @@ configuration names, no clean filter either: a file a filter transforms
 (Git LFS, git-crypt) that git has to read again is compared as it is on
 disk, so it can show as changed, with its raw lines, when your own `git
 status` would not. A change inside a submodule shows once the submodule's
-commit moves.
+commit moves. The status is of the folder's own working tree: the folder, or
+the repository it is in; a repository whose `core.worktree` points anywhere
+else lists nothing from there and says so.
+
+A view-only guest opens nothing of a repository's `.git`, whose settings
+often hold the tokens git signs in with (a `.git/config` reached through a
+link or under another name included), nor a `.git-credentials`, a
+`.gitconfig` or git's own files in `~/.config/git`, nor those a commit keeps;
+the editor says git's files are for controllers. A controller opens them as
+before.
 
 The box at the top of the Explorer filters the tree as you type, and
 reaches folders you have not opened: a search on the session's machine
@@ -481,7 +490,12 @@ terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`;
 `--file-view` for `conductor host`). Server sessions never serve the server's
 data directory, config file or catalog file (`catalogPath`), even inside a
-working directory. A hosted session refuses the same files of the server on
+working directory, nor what the other Conductors on the machine keep:
+`~/.conductor`, the desktop app's own directory (`conductor-desktop` or
+`Conductor` in the user's config directory, and the one the app names with
+`CONDUCTOR_DESKTOP_DIR` for the server it starts: on Windows its folder in the
+Windows profile, under `/mnt` inside WSL), which holds its settings and their
+switchyard token, and the data directory those settings name. A hosted session refuses the same files of the server on
 its own machine: the data directory `CONDUCTOR_DATA_DIR` names, else the one
 the server would choose (`~/.conductor`, which is refused in any case); the
 catalog file `CONDUCTOR_CATALOG_PATH` names; with `conductor host
@@ -1404,6 +1418,7 @@ file must run `compinit` before that line.
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
+| — | `CONDUCTOR_DESKTOP_DIR` | none | the desktop app's own directory, named by the app for the server it starts (on Windows, its folder in the Windows profile as WSL mounts it): no session's file read reaches it; an absolute path, not a config-file key |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
 | `switchyard.enabled` | `CONDUCTOR_SWITCHYARD` (`1`/`true`), or `conductor switchyard` | `false` | coordinate hosted sessions and launch nothing: the launching routes answer `403 switchyard` (see [Switchyard](#switchyard)) |
 | `switchyard.relay` | `CONDUCTOR_SWITCHYARD_RELAY` (`1`/`true` on, `0`/`false` off) | `true` | on a switchyard, relay the terminal for viewers whose WebRTC fails; off, they get `relay_off` and relay-only hosts are refused |

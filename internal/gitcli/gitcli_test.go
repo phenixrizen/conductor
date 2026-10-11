@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
@@ -100,6 +101,68 @@ func TestGetStatusEdges(t *testing.T) {
 	}
 }
 
+// A working tree is the directory's own when it is the directory, inside it,
+// or the one its nearest .git stands for, a link on the way included; one a
+// core.worktree points elsewhere is ErrElsewhere for the status and the
+// porcelain alike, beside the directory or above it.
+func TestTheStatusIsOfTheDirectorysOwnWorkingTree(t *testing.T) {
+	dir := repo(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{dir, filepath.Join(dir, "internal", "api"), link, filepath.Join(link, "internal")} {
+		if top, err := TopOf(context.Background(), d); err != nil || filepath.Base(top) != filepath.Base(dir) {
+			t.Errorf("%s: %q %v", d, top, err)
+		}
+	}
+	base := t.TempDir()
+	inner := filepath.Join(base, "inner")
+	if err := os.MkdirAll(filepath.Join(base, "beside"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), base, "init", "-q", inner); err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range []string{filepath.Join(base, "beside"), base} {
+		if _, err := Run(context.Background(), inner, "config", "core.worktree", wt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := GetStatus(context.Background(), inner, ""); err != ErrElsewhere {
+			t.Errorf("core.worktree %s: the status: %v", wt, err)
+		}
+		if _, _, _, err := Porcelain(context.Background(), inner); err != ErrElsewhere {
+			t.Errorf("core.worktree %s: the porcelain: %v", wt, err)
+		}
+	}
+}
+
+// An untracked link's lines are not counted from what it points to, nor is a
+// FIFO's waited for.
+func TestCountLinesReadsRegularFilesOnly(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(file, []byte("1\n2\n3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := countLines(file); n != 3 {
+		t.Fatalf("a file: %d", n)
+	}
+	if err := os.Symlink(file, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if n, bin := countLines(filepath.Join(dir, "link")); n != 0 || bin {
+		t.Fatalf("a link: %d %v", n, bin)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, bin := countLines(fifo); n != 0 || bin {
+		t.Fatalf("a FIFO: %d %v", n, bin)
+	}
+}
+
 // The list stops at MaxChanges and says so.
 func TestGetStatusStopsAtTheBound(t *testing.T) {
 	dir := repo(t)
@@ -117,7 +180,7 @@ func itoa(i int) string {
 }
 
 // Show is a file at a revision; a path the revision lacks is an error; a
-// dash or a colon in what is asked for is refused.
+// dash or a colon in what is asked for is refused, and so is no revision.
 func TestShow(t *testing.T) {
 	dir := repo(t)
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("changed\n"), 0o644)
@@ -133,6 +196,35 @@ func TestShow(t *testing.T) {
 	}
 	if _, _, err := Show(context.Background(), dir, "HEAD", "-x"); err == nil {
 		t.Fatal("a dash path was taken")
+	}
+	// With no revision, ":0:README.md" would be the index's file, not a revision's.
+	if b, _, err := Show(context.Background(), dir, "", "0:README.md"); err == nil {
+		t.Fatalf("no revision was taken: %q", b)
+	}
+	// A revision names one commit: a folder's tree or a range would read the
+	// path from elsewhere.
+	tree, err := Run(context.Background(), dir, "rev-parse", "HEAD:internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{strings.TrimSpace(tree), "HEAD...HEAD", "HEAD^{tree}", "no-such-rev"} {
+		if b, _, err := Show(context.Background(), dir, rev, "api/users.go"); err == nil {
+			t.Errorf("revision %q was taken: %q", rev, b)
+		}
+	}
+	head, err := Run(context.Background(), dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{strings.TrimSpace(head), "HEAD~0", "main", "HEAD^{commit}"} {
+		if rev == "main" {
+			if _, err := Run(context.Background(), dir, "rev-parse", "--verify", "--quiet", "main"); err != nil {
+				continue // the default branch has another name here
+			}
+		}
+		if b, _, err := Show(context.Background(), dir, rev, "README.md"); err != nil || string(b) != "# repo\n\none\ntwo\n" {
+			t.Errorf("revision %q: %q %v", rev, b, err)
+		}
 	}
 	if _, _, err := Show(context.Background(), t.TempDir(), "HEAD", "README.md"); err != ErrNotRepo {
 		t.Fatalf("outside a repository: %v", err)

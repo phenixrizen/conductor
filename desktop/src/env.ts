@@ -2,9 +2,11 @@ import type { DesktopSettings } from './settings'
 
 /**
  * serverEnv is the environment the server runs with: the app's own minus any CONDUCTOR_* that was set, the login shell's PATH, and
- * the CONDUCTOR_* values the settings choose. The workbench token is minted per run and never written anywhere.
+ * the CONDUCTOR_* values the settings choose. The workbench token is minted per run and never written anywhere. appDir is the app's
+ * own directory (userData: its settings, which hold the switchyard token, its logs and its browser data), which the server's sessions
+ * must not read: CONDUCTOR_DESKTOP_DIR names it, a path on this machine (inside WSL, linuxEnv gives the distribution's path to it).
  */
-export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, token: string, path: string): Record<string, string> {
+export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, token: string, path: string, appDir: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined || k.startsWith('CONDUCTOR_')) continue
@@ -13,6 +15,7 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, to
   if (path) out.PATH = path
   out.CONDUCTOR_WORKBENCH_TOKEN = token
   out.CONDUCTOR_DATA_DIR = settings.dataDir
+  if (appDir) out.CONDUCTOR_DESKTOP_DIR = appDir
   out.CONDUCTOR_ALLOWED_ROOTS = settings.allowedRoots.join(',')
   out.CONDUCTOR_DEFAULT_CWD = settings.defaultCwd
   out.CONDUCTOR_YOLO = settings.yolo ? '1' : '0'

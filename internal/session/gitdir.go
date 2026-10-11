@@ -8,17 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // A repository's .git is read only through the Files tab: its directory,
 // the .git file of a linked worktree or a submodule, the git directory
 // such a file or a .git link names, a bare repository. A save there is
 // refused, as is a Neovim editor on a file there (Neovim would write it),
-// and a read says so (ReadOnly), so the editor shows Read only. Reads stay
-// as they were, .git/objects aside: the tab leaves .git out of the tree
-// and of Find, but a path an agent printed or touched still opens, and
-// what is in .git is no more private than the rest of the working
-// directory a link may read.
+// and a read says so (ReadOnly), so the editor shows Read only. A
+// controller's reads stay as they were, .git/objects aside: the tab leaves
+// .git out of the tree and of Find, but a path an agent printed or touched
+// still opens. A view link reads nothing of a repository's .git, whose
+// configuration can hold access tokens (forControllers).
 
 // errGitDir refuses a save or an editor on a file in a repository's .git.
 var errGitDir = errors.New("session: a repository's .git is read only here")
@@ -402,14 +404,20 @@ func sameMissing(missing, real string) bool {
 	return err == nil && os.SameFile(a, b)
 }
 
-// foldName leaves out of name the characters HFS+ ignores in names.
+// foldName leaves out of name the characters HFS+ ignores in names, and
+// decomposes what is left (NFD), as HFS+ keeps names: HFS+ and APFS take a
+// name and its composed or decomposed spelling (an é, or an e and a
+// combining acute) for the same name, so the two compare equal. Decomposed,
+// each base letter stands alone, so case folds rune by rune after
+// (strings.EqualFold): a composed form that only one case of a letter has
+// (U+01F0, j with caron) compares equal to the other case spelt out.
 func foldName(name string) string {
-	return strings.Map(func(r rune) rune {
+	return norm.NFD.String(strings.Map(func(r rune) rune {
 		if hfsIgnored(r) {
 			return -1
 		}
 		return r
-	}, name)
+	}, name))
 }
 
 // maxLinkHops bounds how many links linkDestination follows.

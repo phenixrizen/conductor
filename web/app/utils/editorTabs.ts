@@ -173,3 +173,14 @@ export function nvimUnavailableWords(opts: { welcome: boolean; nvim: boolean; fi
 export function fileReadOnlyWords(header?: { readOnly?: boolean } | null): string {
   return header?.readOnly ? "Read only here: a repository's .git is not edited from Conductor" : ''
 }
+
+/**
+ * What the editor says of a file the session refused to this viewer (`file_denied`), from the refusal's message: file viewing off for
+ * everyone; a repository's .git or git's settings and credentials, which a view-only link is not given (they often hold the tokens git
+ * signs in with); or files kept for controllers on this session.
+ */
+export function refusedWords(message: string): { title: string; words: string; icon: string } {
+  if (/disabled|off/i.test(message)) return { icon: 'i-lucide-eye-off', title: 'File viewing is off for this session', words: 'Nothing is read from its working directory, for anyone. The owner can turn it on in Settings.' }
+  if (/credentials/i.test(message)) return { icon: 'i-lucide-key-round', title: "Git's files are for controllers", words: "A repository's .git and git's own settings can hold the tokens git signs in with, so a view-only link does not open them. Ask for control, or for a controller to open it." }
+  return { icon: 'i-lucide-lock', title: 'Files are for controllers on this session', words: 'This link is view only. Ask for control, or for a controller to open it.' }
+}

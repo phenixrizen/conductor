@@ -85,7 +85,7 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 		deny := s.fileDeny()
 		switch req.Op {
 		case "":
-			h, body = s.folder.read(req.Path, req.Stat, deny)
+			h, body = s.folder.read(req.Path, req.Stat, deny, sub.Role)
 		case proto.FileOpStatus, proto.FileOpShow, proto.FileOpLog, proto.FileOpCommit:
 			// Git reads the files itself, by path: the session's path
 			// must still name its folder for them too.
@@ -97,7 +97,7 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 			case proto.FileOpStatus:
 				h = GitStatusPath(s.info.Cwd, req.Base, deny)
 			case proto.FileOpShow:
-				h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny)
+				h, body = GitShowPath(s.info.Cwd, req.Rev, req.Path, deny, sub.Role)
 			case proto.FileOpLog:
 				h = GitLogPath(s.info.Cwd, req.Base, s.info.CreatedAt, deny)
 			case proto.FileOpCommit:
@@ -126,27 +126,31 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 // be absolute, relative to root, or start with "~" (the process home). The
 // resolved target must stay under root after symlink evaluation and must not
 // be, or be inside, an entry of deny. When statOnly is set only existence and
-// kind are reported. root is opened as a folder for this one read; a
-// session reads through the folder it holds (Local.ReadPath).
+// kind are reported. root is opened as a folder for this one read, a
+// controller's; a session reads through the folder it holds, for the role
+// that asks (Local.ReadPath).
 func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
 	f, err := OpenFolder(root)
 	if err != nil {
 		return proto.FileHeader{Path: raw, Kind: "error", Error: &proto.ErrorInfo{Code: "denied", Message: errFolderGone.Error()}}, nil
 	}
 	defer f.Close()
-	return f.read(raw, statOnly, deny)
+	return f.read(raw, statOnly, deny, RoleControl)
 }
 
-// ReadPath is the package's ReadPath through the session's own folder.
-func (s *Local) ReadPath(raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
-	return s.folder.read(raw, statOnly, deny)
+// ReadPath is the package's ReadPath through the session's own folder, for
+// a viewer of role: one that is not a controller is not given git's
+// settings and credentials (forControllers).
+func (s *Local) ReadPath(raw string, statOnly bool, deny []string, role Role) (proto.FileHeader, []byte) {
+	return s.folder.read(raw, statOnly, deny, role)
 }
 
-// read is ReadPath in the folder: raw checked (resolve), then what it names
-// opened from the folder one element at a time (openDir, stepDir,
+// read is ReadPath in the folder for a viewer of role: raw checked
+// (resolve, and forControllers unless role is control), then what it
+// names opened from the folder one element at a time (openDir, stepDir,
 // openFileIn), so that what is read, stat'ed or listed is the folder's file
 // the check passed, or nothing.
-func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeader, []byte) {
+func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (proto.FileHeader, []byte) {
 	h := proto.FileHeader{Path: raw}
 	fail := func(code, msg string) (proto.FileHeader, []byte) {
 		h.Kind, h.Exists, h.Size = "error", false, 0
@@ -160,11 +164,42 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 	if err != nil {
 		return fail("denied", err.Error())
 	}
+	// Whether target is in a repository's .git, looked at once: a view
+	// link is not given it, and a save of it would be refused (saveFile),
+	// so the editor shows Read only.
+	inGit, looked := false, false
+	isGit := func() bool {
+		if !looked {
+			looked, inGit = true, gitMetadata(raw, target)
+		}
+		return inGit
+	}
+	// For a view link (forControllers), what the repositories beside the
+	// path stood for at its check (gitMeta) is held to each directory and
+	// to the file as they are opened, as a save holds it, and git's
+	// settings in the home join the deny set, so that metadata moved into
+	// the path's place since is refused too.
+	var check func(*os.Root) error
+	var snap gitMeta
+	if role != RoleControl {
+		held := newDenySet(userGitFiles())
+		in, s := gitMetadataIDs(raw, target)
+		inGit, looked = in, true
+		if forControllers(raw, target, held, isGit) {
+			return fail(proto.ErrCodeFileDenied, errForControllers.Error())
+		}
+		snap, check = s, refuseGit(s)
+		ds = ds.and(held)
+	}
 	h.Path = target
 	afterCheck()
 	// failOpen answers a path that changed or turned denied since its check
-	// as denied, and one whose file went as not found.
+	// as denied, one that turned into a repository's .git as a view link's
+	// refusal, and one whose file went as not found.
 	failOpen := func(err error) (proto.FileHeader, []byte) {
+		if errors.Is(err, errGitDir) {
+			return fail(proto.ErrCodeFileDenied, errForControllers.Error())
+		}
 		if errors.Is(err, errPathChanged) || errors.Is(err, errNotReadable) || errors.Is(err, errFolderGone) {
 			return fail("denied", err.Error())
 		}
@@ -174,12 +209,12 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 	var fi os.FileInfo
 	if rel == "." {
 		// The folder itself.
-		if dir, fi, err = f.openDir(".", ds); err != nil {
+		if dir, fi, err = f.openDirChecked(".", ds, check); err != nil {
 			return failOpen(err)
 		}
 		defer dir.Close()
 	} else {
-		parent, pid, err := f.openDir(filepath.Dir(rel), ds)
+		parent, pid, err := f.openDirChecked(filepath.Dir(rel), ds, check)
 		if err != nil {
 			return failOpen(err)
 		}
@@ -192,6 +227,9 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 		if ds.hit(fi, name, pid) {
 			return fail("denied", errNotReadable.Error())
 		}
+		if check != nil && (sameAsAny(fi, snap.files) || snap.makes(pid, name)) {
+			return failOpen(errGitDir)
+		}
 		switch {
 		case statOnly:
 		case fi.IsDir():
@@ -199,13 +237,18 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 				return failOpen(err)
 			}
 			defer dir.Close()
+			if check != nil {
+				if err := check(dir); err != nil {
+					return failOpen(err)
+				}
+			}
 		case fi.Mode().IsRegular():
 			file, got, err := openFileIn(parent, name, fi)
 			if err != nil {
 				return failOpen(err)
 			}
 			defer file.Close()
-			return readFile(h, raw, file, got)
+			return readFile(h, file, got, isGit())
 		}
 	}
 	h.Exists = true
@@ -228,20 +271,20 @@ func (f *Folder) read(raw string, statOnly bool, deny []string) (proto.FileHeade
 	// A regular file, stat'ed only.
 	h.Kind = "file"
 	h.Mime = mime.TypeByExtension(filepath.Ext(h.Path))
-	// A save of it would be refused (saveFile): the editor shows Read only.
-	h.ReadOnly = gitMetadata(raw, h.Path)
+	h.ReadOnly = isGit()
 	return h, nil
 }
 
-// readFile completes h, a read of raw, for file, open and checked (its
-// stat fi): its first MaxFileRead bytes, none for a binary file.
-func readFile(h proto.FileHeader, raw string, file *os.File, fi os.FileInfo) (proto.FileHeader, []byte) {
+// readFile completes h for file, open and checked (its stat fi): its first
+// MaxFileRead bytes, none for a binary file; readOnly when it is in a
+// repository's .git, whose save would be refused (saveFile), so the editor
+// shows Read only.
+func readFile(h proto.FileHeader, file *os.File, fi os.FileInfo, readOnly bool) (proto.FileHeader, []byte) {
 	h.Exists = true
 	h.Size = fi.Size()
 	h.Kind = "file"
 	h.Mime = mime.TypeByExtension(filepath.Ext(h.Path))
-	// A save of it would be refused (saveFile): the editor shows Read only.
-	h.ReadOnly = gitMetadata(raw, h.Path)
+	h.ReadOnly = readOnly
 	body, err := io.ReadAll(io.LimitReader(file, MaxFileRead+1))
 	if err != nil {
 		h.Kind, h.Exists, h.Size = "error", false, 0
@@ -374,10 +417,13 @@ func resolvePath(root, raw string, deny denySet) (real, rootReal string, err err
 // as a file too. A name entry matches by name alone, so a hard link under an
 // unrelated name is not caught, and a "*" in any other place of an entry is not
 // a wildcard: a literal "*" in a path is not supported. An entry that does not
-// exist, or whose directory does not, denies nothing and is skipped. A
-// request looks the entries up once (newDenySet) and holds what it opens
-// to them by identity too (denySet.hit), so an entry moved since its check
-// is still denied.
+// exist, or whose directory does not, is compared by its path: below the
+// deepest directory on it that exists, compared as a file, its elements
+// match real's ignoring case (missingEntry), so that what a revision keeps
+// at a path the list names is refused though the working tree no longer
+// has it. A request looks the entries up once (newDenySet) and holds what
+// it opens to them by identity too (denySet.hit), so an entry moved since
+// its check is still denied.
 func insideAny(real string, deny []string) bool {
 	return newDenySet(deny).inside(real)
 }
@@ -390,8 +436,11 @@ func (d denySet) inside(real string) bool {
 	// Every ancestor counts, above root too: a session may run inside one.
 	for p := real; ; p = filepath.Dir(p) {
 		var fi, dir os.FileInfo
-		if len(d.files) > 0 {
+		if len(d.files) > 0 || len(d.missing) > 0 {
 			fi, _ = os.Stat(p)
+		}
+		if fi != nil && len(d.missing) > 0 && d.below(real, p, fi) {
+			return true
 		}
 		// The name decides first; the directory is looked at only for a match.
 		base := filepath.Base(p)
@@ -416,13 +465,22 @@ func nameOf(elem string) (string, bool) {
 	return elem[1 : len(elem)-1], true
 }
 
+// sameName reports whether a and b are the same name as containsFold
+// compares names: ignoring case and the characters HFS+ leaves out.
+func sameName(a, b string) bool {
+	return strings.EqualFold(foldName(a), foldName(b))
+}
+
 // containsFold reports whether s contains sub, comparing rune by rune with
 // strings.EqualFold. That is simple Unicode case folding, which is what a
 // case-insensitive file system applies and is wider than lower-casing both
 // sides: the long s (U+017F) folds to s and the Kelvin sign (U+212A) to k.
 // Folding keeps the number of runes, so the window of s that is compared with
-// sub always holds as many runes as sub, though not as many bytes.
+// sub always holds as many runes as sub, though not as many bytes. The
+// characters HFS+ leaves out of names are left out of both first
+// (foldName), so a spelling that file system takes for the name holds it.
 func containsFold(s, sub string) bool {
+	s, sub = foldName(s), foldName(sub)
 	n := utf8.RuneCountInString(sub)
 	for i := 0; ; {
 		j, c := i, 0

@@ -23,9 +23,62 @@ import (
 // file (CatalogPath), which can hold env secrets. Each of the two files comes
 // with its name entries (session.DenyList), so an editor's or a backup's
 // copy beside it is refused too. A directory is denied with everything in
-// it, a file on its own.
+// it, a file on its own. What the other Conductors on this machine keep is
+// refused as well (machineFiles): a session must not read the desktop
+// app's settings, which hold its switchyard token, nor another server's
+// data directory.
 func (c *Config) FileDeny(dirs ...string) []string {
-	return c.fileDeny(dirs, nil)
+	more, files := c.machineFiles()
+	return c.fileDeny(append(slices.Clone(dirs), more...), files)
+}
+
+// FileDenyFunc is FileDeny(dirs...) for a server that runs a long time
+// (session.Options.FileDenyFunc, the files route): the function it returns
+// computes the list again at each call, so that what the other Conductors
+// on the machine come to keep while the server runs (a data directory the
+// desktop app's settings move to) is refused from then on, and keeps every
+// entry it has named before, with the path a link on its way led to then
+// (withTargets), so that what was refused once stays refused until the
+// server stops. The paths of c are taken when it is called. It is safe to
+// call from many goroutines, and the slices it returns are never changed.
+func (c *Config) FileDenyFunc(dirs ...string) func() []string {
+	own := &Config{DataDir: c.DataDir, Path: c.Path, CatalogPath: c.CatalogPath, DesktopDir: c.DesktopDir}
+	dirs = slices.Clone(dirs)
+	var mu sync.Mutex
+	list := withTargets(nil, own.FileDeny(dirs...))
+	return func() []string {
+		next := own.FileDeny(dirs...)
+		mu.Lock()
+		defer mu.Unlock()
+		list = withTargets(list, slices.Concat(list, next))
+		return list
+	}
+}
+
+// machineFiles are the directories and files of the other Conductors this
+// machine may run: ~/.conductor, the default data directory, whichever
+// this server uses; the desktop app's (desktopFiles: its own directory
+// under both names, its settings, the data directory they name, and inside
+// WSL the one it gives a server there); and the directory the app named
+// for the server it started (DesktopDir), with its settings file, which
+// for the app on Windows is in the Windows profile, under /mnt inside WSL.
+// Settings of the app that cannot be read leave out only the data
+// directory they would name: the directory that holds them, and holds the
+// app's data directory unless they say otherwise, is refused in any case.
+// A server does not stop for them, as conductor host does (LocalFileDeny):
+// the app starts its server with settings it read itself.
+func (c *Config) machineFiles() (dirs, files []string) {
+	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		dirs = append(dirs, filepath.Join(home, ".conductor"))
+	}
+	d, f, _ := desktopFiles()
+	dirs = append(dirs, d...)
+	files = append(files, f...)
+	if c.DesktopDir != "" {
+		dirs = append(dirs, c.DesktopDir)
+		files = append(files, filepath.Join(c.DesktopDir, "settings.json"))
+	}
+	return dirs, files
 }
 
 // fileDeny is FileDeny with more files, each denied as the two are.
@@ -169,7 +222,8 @@ func LocalFileDenyFunc(path string) (func() []string, error) {
 
 // withTargets returns list with each entry of next it lacks, and after each
 // entry the path it names with the symbolic links on its way resolved, when
-// that differs: for a name entry ("*name*"), its directory resolved; for a
+// that differs (session.Leads: a link to nothing yet resolved to where its
+// target would be): for a name entry ("*name*"), its directory resolved; for a
 // file, also the name entry beside the file it leads to (session.NameEntry),
 // so the copies beside whatever a kept link leads to are refused. list is
 // returned as it is when nothing is added, and never changed: a new slice
@@ -183,12 +237,15 @@ func withTargets(list, next []string) []string {
 	}
 	for _, e := range next {
 		add(e)
+		// Where a link on the way leads, one to nothing yet included
+		// (session.Leads): pointed elsewhere later, it leaves that path
+		// refused, whether or not anything is there yet.
 		base := filepath.Base(e)
 		if len(base) >= 3 && base[0] == '*' && base[len(base)-1] == '*' {
-			if dir, err := filepath.EvalSymlinks(filepath.Dir(e)); err == nil {
+			if dir := session.Leads(filepath.Dir(e)); dir != "" {
 				add(filepath.Join(dir, base))
 			}
-		} else if real, err := filepath.EvalSymlinks(e); err == nil {
+		} else if real := session.Leads(e); real != "" {
 			add(real)
 			if fi, err := os.Stat(real); err == nil && !fi.IsDir() {
 				add(session.NameEntry(real))
@@ -224,10 +281,11 @@ const maxDesktopSettings = 1 << 20
 // symbolic link is refused at its target too, with the copies beside it, as
 // a config file is. The settings of the app on Windows are not on this side,
 // so a data directory they choose for the server inside WSL is not known
-// here. Each path is named whether it exists or not: one that does not
-// denies nothing until it does (session.ResolvePath). Settings that are
+// here. Each path is named whether it exists or not: one that does not is
+// refused by its path (session.ResolvePath). Settings that are
 // there but cannot be read for their data directory are an error
-// (desktopDataDir): the app may hold another in memory.
+// (desktopDataDir): the app may hold another in memory. The error comes
+// with the rest of what is named, all but that data directory.
 func desktopFiles() (dirs, files []string, err error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".local", "share", "conductor", "data"))
@@ -241,15 +299,18 @@ func desktopFiles() (dirs, files []string, err error) {
 		settings := filepath.Join(app, "settings.json")
 		dirs = append(dirs, app)
 		files = append(files, settings)
-		d, err := desktopDataDir(settings)
-		if err != nil {
-			return nil, nil, fmt.Errorf("the desktop app's settings %s, which name its server's data directory: %w", settings, err)
+		d, derr := desktopDataDir(settings)
+		if derr != nil {
+			if err == nil {
+				err = fmt.Errorf("the desktop app's settings %s, which name its server's data directory: %w", settings, derr)
+			}
+			continue
 		}
 		if d != "" {
 			dirs = append(dirs, d)
 		}
 	}
-	return dirs, files, nil
+	return dirs, files, err
 }
 
 // desktopDataDir is the data directory the desktop app's settings file

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -12,12 +13,17 @@ import (
 // inside its working directory (config.Config.FileDeny): the data directory,
 // and the one st writes to should the two ever differ, the config file and
 // the catalog file, each of the two files with the copies an editor leaves
-// beside it.
-func fileDeny(cfg *config.Config, st *store.Store) []string {
+// beside it; and what the other Conductors on the machine keep: ~/.conductor,
+// the desktop app's directories and settings, and the directory the app
+// names for the server it starts (CONDUCTOR_DESKTOP_DIR). The list is
+// looked up again at each request and keeps what it named before
+// (config.Config.FileDenyFunc), so a data directory the desktop app's
+// settings move to while the server runs is refused from then on.
+func fileDeny(cfg *config.Config, st *store.Store) func() []string {
 	if st == nil {
-		return cfg.FileDeny()
+		return cfg.FileDenyFunc()
 	}
-	return cfg.FileDeny(st.Dir())
+	return cfg.FileDenyFunc(st.Dir())
 }
 
 // handleGetFile reads a file from a server-hosted session's working directory
@@ -60,13 +66,13 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Through the folder the session holds, as the in-band file_get reads.
-	h, body := local.ReadPath(path, r.URL.Query().Get("stat") == "1", s.fileDeny)
+	h, body := local.ReadPath(path, r.URL.Query().Get("stat") == "1", s.fileDeny(), role)
 	status := http.StatusOK
 	if h.Kind == "error" {
 		switch h.Error.Code {
 		case "not_found":
 			status = http.StatusNotFound
-		case "denied":
+		case "denied", proto.ErrCodeFileDenied:
 			status = http.StatusForbidden
 		default:
 			status = http.StatusBadRequest

@@ -652,7 +652,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
           <span class="font-medium text-highlighted">Not a git repository</span>
           <span class="text-muted">{{ cwd }} has no .git. Touched still lists what the agent did.</span>
         </div>
-        <div v-else-if="statusError" class="flex items-center gap-2 p-4 text-sm text-muted">
+        <div v-else-if="statusError" class="flex items-center gap-2 p-4 text-sm text-muted" data-files-changes-error>
           <UIcon name="i-lucide-triangle-alert" class="size-4 flex-none text-warning" /><span class="min-w-0 flex-1">{{ statusError }}</span>
           <UButton label="Retry" size="xs" color="neutral" variant="soft" @click="loadStatus" />
         </div>
