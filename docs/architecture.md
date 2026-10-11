@@ -251,8 +251,10 @@ registers the `conductor:` scheme: an invite opens its own join page with
 - Server session working directories must resolve under `allowedRoots` after
   symlink evaluation. File reads are confined to the session directory. In
   server sessions they never reach the data directory, the config file or the
-  catalog file, even when those lie inside it; a hosted session serves
-  everything under its working directory.
+  catalog file, even when those lie inside it; a hosted session refuses the
+  same files of the server on its machine (`~/.conductor` or the data
+  directory the environment names, the files `--server-config` names, and
+  the desktop app's directories).
 - Frame sizes, viewer counts, session counts, scrollback and in-flight file
   requests are all bounded. Query strings (which may carry tokens) are never
   logged.

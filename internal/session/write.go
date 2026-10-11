@@ -95,7 +95,7 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	errh := func(code, msg string) proto.FileHeader {
 		return proto.FileHeader{Path: h.Path, Kind: "error", Error: &proto.ErrorInfo{Code: code, Message: msg}}
 	}
-	target, err := ResolvePath(s.info.Cwd, h.Path, s.opts.FileDeny)
+	target, err := ResolvePath(s.info.Cwd, h.Path, s.fileDeny())
 	if err != nil {
 		return errh("denied", err.Error())
 	}

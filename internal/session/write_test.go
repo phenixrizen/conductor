@@ -3,10 +3,12 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/nvim"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
@@ -137,5 +139,62 @@ func TestFileWriteRefusedWhenEditingIsOff(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(s.info.Cwd, "a.txt")); string(b) != "a\n" {
 		t.Fatal("written with editing off")
+	}
+}
+
+// A save and the editor go through the deny list as a read does: a data
+// directory with everything in it, a config file and the copies beside it
+// are refused to a controller, a file the directory does not hold yet is not
+// made, and the files are left as they were; the rest of the folder saves.
+func TestFileWriteAndEditorRefuseTheDenyList(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, ".conductor")
+	os.MkdirAll(data, 0o700)
+	cfg := filepath.Join(dir, "conductor.json")
+	files := map[string]string{".conductor/catalog.json": "secret\n", "conductor.json": "secret\n", "conductor.json.bak": "secret\n", "notes.txt": "ordinary\n"}
+	for rel, body := range files {
+		os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o600)
+	}
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "sess", Cwd: dir, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096, FileDeny: DenyList([]string{data}, []string{cfg})})
+	t.Cleanup(func() { p.exit() })
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := []string{".conductor/catalog.json", ".conductor/new.json", filepath.Join(data, "catalog.json"), "conductor.json", "conductor.json.bak", ".conductor.json.swp"}
+	for i, rel := range refused {
+		id := "d" + strconv.Itoa(i)
+		save(s, sub, id, rel, []byte("changed\n"), 512, "", true)
+		if f := fileReply(t, sink, id); f.Error == nil || f.Error.Code != "denied" {
+			t.Errorf("save %s: %+v, want it refused", rel, f)
+		}
+	}
+	for rel, body := range files {
+		if b, _ := os.ReadFile(filepath.Join(dir, rel)); string(b) != body {
+			t.Errorf("%s holds %q after the refused saves", rel, b)
+		}
+	}
+	for _, rel := range []string{".conductor/new.json", ".conductor.json.swp"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); err == nil {
+			t.Errorf("a refused save made %s", rel)
+		}
+	}
+	save(s, sub, "ok", "notes.txt", []byte("mine\n"), 512, "", true)
+	if f := fileReply(t, sink, "ok"); f.Kind != "written" {
+		t.Fatalf("notes.txt: %+v", f)
+	}
+	if !nvim.Available() {
+		t.Log("nvim is not on PATH: the editor's refusals are not checked")
+		return
+	}
+	for i, rel := range refused {
+		if err := s.NvimOpen(t.Context(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n" + strconv.Itoa(i), Path: rel}); err != ErrFileDenied {
+			t.Errorf("the editor on %s: %v, want ErrFileDenied", rel, err)
+		}
 	}
 }

@@ -650,8 +650,20 @@ case-insensitive file system does (`conductor.json.bak`, `conductor.json~`,
 `.conductor.json.swp`, `#conductor.json#`), even inside the working directory.
 The two files themselves are matched as files, so a link to them is refused as
 well; the copies are matched by name alone. Every one of these rules answers
-`denied`. A hosted session applies only the first two: the host serves
-everything else under its working directory. Responses carry a JSON header
+`denied`. A hosted session applies them all for the server on its own machine:
+the data directory `CONDUCTOR_DATA_DIR` names or the server would choose, and
+`~/.conductor` in any case; the catalog file `CONDUCTOR_CATALOG_PATH` names;
+the config file `conductor host --server-config` names, with its `dataDir`
+and `catalogPath`; and for the desktop app's server, the app's own directory,
+its settings file as a config file (its link target and the copies there
+included), the data directory its settings name and, inside WSL,
+`~/.local/share/conductor/data`. The host looks these up again at each
+request and keeps refusing what it refused before, so a data directory moved
+while the session runs is refused at both places. While one of these paths
+is relative, or the config file or the desktop app's settings cannot be read,
+every file is refused (and the host does not start). Saves, and opening a file
+in the editor's Neovim, go through the same rules.
+Responses carry a JSON header
 `{reqId, path, kind:"file"|"dir"|"error", size, truncated, binary, mime, exists, entries?, error?, sha256?, mtime?}`
 followed by up to 1 MiB of bytes for text files; `sha256` (hex) and `mtime` (RFC 3339)
 come with a file read whole, for a save to tell the file changed since. Files with a NUL byte in the

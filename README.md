@@ -52,7 +52,10 @@ no hooks and no bell can still raise the needs-input badge:
 `--signal-pattern '<regexp>'` (RE2, at most 200 bytes, not matching an empty
 line) is matched against the last line of the terminal after 500 ms without
 output; the Launch dialog's command carries it for agents whose catalog entry
-has a pattern signal.
+has a pattern signal. On a machine that also runs `conductor serve --config
+<file>`, `--server-config <file>` names that file, so the session's Files tab
+refuses it, its data directory and its catalog file as the server's own
+sessions do (see the Files tab).
 
 ## The workbench
 
@@ -428,10 +431,24 @@ terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`;
 `--file-view` for `conductor host`). Server sessions never serve the server's
 data directory, config file or catalog file (`catalogPath`), even inside a
-working directory. A hosted session serves everything under its working
-directory, so do not run `conductor host` from a directory that holds a
-server's data directory or config file: anyone the session is shared with
-could read the catalog's env secrets and the workbench token.
+working directory. A hosted session refuses the same files of the server on
+its own machine: the data directory `CONDUCTOR_DATA_DIR` names, else the one
+the server would choose (`~/.conductor`, which is refused in any case); the
+catalog file `CONDUCTOR_CATALOG_PATH` names; with `conductor host
+--server-config <file>`, that config file and its `dataDir` and
+`catalogPath`; and for the desktop app's server, the app's own directory, its
+settings file (wherever a link takes it), the data directory its settings
+name and, inside WSL, `~/.local/share/conductor/data`. The Windows app's
+settings are not visible inside WSL: when they move that data directory, set
+`CONDUCTOR_DATA_DIR` to it in the shell that runs `conductor host`. The host
+looks these up again at each request and keeps refusing what it refused
+before, so a data directory moved while the session runs is refused at both
+places. The server resolves a relative path against the directory it runs
+in, which the host cannot know, so the host does not start when one of these
+paths is relative or the config file or the desktop app's settings cannot be
+read, and refuses every file while that is so later. The host knows of no
+other config file, so do not run `conductor host` from a directory that
+holds a server's config file without naming it.
 
 ## The Yard
 
@@ -1522,7 +1539,8 @@ that matches neither an empty id nor one that begins with a dash.
   values saved from the UI, secrets included, are stored in `catalog.json`
   (mode 0600) in the data directory. The file viewer of a server session never
   serves that directory, the config file or the catalog file, nor an editor or
-  backup copy beside those two: any file there whose name contains theirs,
+  backup copy beside those two (a hosted session refuses the same files of the
+  server on its machine, see the Files tab): any file there whose name contains theirs,
   ignoring case (`conductor.json.bak`, `conductor.json~`,
   `.conductor.json.swp`, `#conductor.json#`), but agents run as the same user
   and can read them.

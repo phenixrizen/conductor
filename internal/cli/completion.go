@@ -103,7 +103,7 @@ func completionSpec() []commandSpec {
 		{name: "serve", flags: serveFlags},
 		{name: "switchyard", flags: serveFlags},
 		{name: "host", flags: []flagSpec{{name: "--ice-udp-port", kind: flagValue}, {name: "--ice-public-ip", kind: flagValue}, {name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--name", kind: flagValue}, {name: "--host-name", kind: flagValue}, {name: "--agent", kind: flagValue}, {name: "--cwd", kind: flagFile}, {name: "--relay-only"}, {name: "--no-local"}, {name: "--stun", kind: flagValue}, {name: "--scrollback", kind: flagValue}, {name: "--file-view", kind: flagEnum, values: []string{"view", "control", "off"}},
-			{name: "--file-edit", kind: flagEnum, values: []string{"control", "off"}}, {name: "--signal-pattern", kind: flagValue}, {name: "--log-level", kind: flagEnum, values: levels}}},
+			{name: "--file-edit", kind: flagEnum, values: []string{"control", "off"}}, {name: "--server-config", kind: flagFile}, {name: "--signal-pattern", kind: flagValue}, {name: "--log-level", kind: flagEnum, values: levels}}},
 		{name: "notify", flags: notifyFlags},
 		{name: "mcp"},
 		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},

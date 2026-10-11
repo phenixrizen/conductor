@@ -18,6 +18,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -213,5 +214,81 @@ func TestHostNeedsNoToken(t *testing.T) {
 	code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh")
 	if err == nil || code == 2 || strings.Contains(err.Error()+stderr, "host token is required") {
 		t.Fatalf("code %d, err %v, stderr %q", code, err, stderr)
+	}
+}
+
+// conductor host hands its session the deny list of the server on its
+// machine (config.LocalFileDenyFunc): ~/.conductor and the desktop app's
+// directories, and with --server-config that file, its dataDir and its
+// catalogPath, the copies beside the two files included. A config file it
+// cannot read or parse stops it before it dials.
+func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	home := os.Getenv("HOME")
+	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "conductor-desktop"), filepath.Join(home, ".config", "Conductor")}
+	var desktopSettings []string
+	for _, name := range []string{"conductor-desktop", "Conductor"} {
+		desktopSettings = append(desktopSettings, filepath.Join(home, ".config", name, "settings.json"), filepath.Join(home, ".config", name, "*settings.json*"))
+	}
+	var got []hostagent.Options
+	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
+		got = append(got, opts)
+		return hostagent.Result{}, nil
+	}
+	t.Cleanup(func() { runHostAgent = hostagent.Run })
+
+	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 0 || err != nil {
+		t.Fatalf("exit %d, %v, %s", code, err, stderr)
+	}
+	if want := slices.Concat(local, desktopSettings); len(got) != 1 || !slices.Equal(got[0].FileDeny(), want) {
+		t.Fatalf("without --server-config: %+v, want the deny list %q", got, want)
+	}
+
+	dir := t.TempDir()
+	data, catalogFile := filepath.Join(dir, "state"), filepath.Join(dir, "agents.json")
+	cfg := writeServeConfig(t, dir, `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"`+catalogFile+`"}`)
+	got = nil
+	if code, stderr, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", cfg, "--", "sh"); code != 0 || err != nil {
+		t.Fatalf("exit %d, %v, %s", code, err, stderr)
+	}
+	want := slices.Concat([]string{data}, local, []string{cfg, filepath.Join(dir, "*conductor.json*"), catalogFile, filepath.Join(dir, "*agents.json*")}, desktopSettings)
+	if len(got) != 1 || !slices.Equal(got[0].FileDeny(), want) {
+		t.Fatalf("with --server-config: %+v\nwant the deny list %q", got, want)
+	}
+
+	// A file it cannot read or parse, and a relative dataDir or
+	// catalogPath, which serve resolves against a directory the host
+	// cannot know, stop it: what they name would go unrefused.
+	got = nil
+	for _, c := range []struct{ path, want string }{
+		{filepath.Join(dir, "missing.json"), "read config"},
+		{writeServeConfig(t, t.TempDir(), `{"dataDirectory":"x"}`), "parse config"},
+		{writeServeConfig(t, t.TempDir(), `{"dataDir":"state"}`), "dataDir in "},
+		{writeServeConfig(t, t.TempDir(), `{"catalogPath":"agents.json"}`), "catalogPath in "},
+	} {
+		code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--server-config", c.path, "--", "sh")
+		if code != 2 || err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: exit %d, %v; want an error about %q", c.path, code, err, c.want)
+		}
+	}
+	t.Setenv("CONDUCTOR_DATA_DIR", "state")
+	if code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_DATA_DIR") {
+		t.Errorf("a relative CONDUCTOR_DATA_DIR: exit %d, %v", code, err)
+	}
+	t.Setenv("CONDUCTOR_DATA_DIR", "")
+	// The desktop app's settings there but not readable for their data directory.
+	settings := filepath.Join(home, ".config", "conductor-desktop", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{oops`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, err := runHostWith(t, "--server", "http://127.0.0.1:1", "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), settings) {
+		t.Errorf("unreadable desktop settings: exit %d, %v", code, err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("hosted with server files it could not place: %+v", got)
 	}
 }

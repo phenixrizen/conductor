@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"path/filepath"
 
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -10,40 +9,15 @@ import (
 )
 
 // fileDeny returns what no file read of a server session may reach, even
-// inside its working directory: the data directory, whose catalog.json holds
-// the agents' env secrets; the config file, which holds the workbench token and
-// host tokens; and the catalog file (catalogPath), which can hold env secrets.
-// For each of the two files there is also a name entry (see
-// session.ResolvePath): beside it, and beside its target when the path is a
-// symbolic link, every name that contains its name, ignoring case, such as the
-// conductor.json.bak, conductor.json~, .conductor.json.swp or #conductor.json#
-// an editor leaves. It names both the configured data directory and the one st
-// writes to, should the two ever differ. A directory is denied with everything
-// in it, a file on its own.
+// inside its working directory (config.Config.FileDeny): the data directory,
+// and the one st writes to should the two ever differ, the config file and
+// the catalog file, each of the two files with the copies an editor leaves
+// beside it.
 func fileDeny(cfg *config.Config, st *store.Store) []string {
-	var deny []string
-	if cfg.DataDir != "" {
-		deny = append(deny, cfg.DataDir)
+	if st == nil {
+		return cfg.FileDeny()
 	}
-	if st != nil && st.Dir() != cfg.DataDir {
-		deny = append(deny, st.Dir())
-	}
-	for _, file := range []string{cfg.Path, cfg.CatalogPath} {
-		if file == "" {
-			continue
-		}
-		deny = append(deny, file, nameEntry(file))
-		if real, err := filepath.EvalSymlinks(file); err == nil && nameEntry(real) != nameEntry(file) {
-			deny = append(deny, nameEntry(real))
-		}
-	}
-	return deny
-}
-
-// nameEntry is the deny entry for the copies beside file: "*" and "*" around
-// its name, in its directory.
-func nameEntry(file string) string {
-	return filepath.Join(filepath.Dir(file), "*"+filepath.Base(file)+"*")
+	return cfg.FileDeny(st.Dir())
 }
 
 // handleGetFile reads a file from a server-hosted session's working directory
