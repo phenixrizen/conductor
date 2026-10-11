@@ -325,14 +325,7 @@ func TestAddWorktreeChecksOutWhereItWasMadeWhateverCoreWorktreeSays(t *testing.T
 // each once; a configuration's conditional includes count as they apply in
 // the directory asked about.
 func TestFilterNames(t *testing.T) {
-	// The machine's own system config (a CI runner's has Git LFS's filter)
-	// stays out of the names this test expects.
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	r := gitclitest.New(t, gitclitest.Options{})
-	global := "[filter \"owner\"]\n\tclean = x\n[filter \"Dotted.Name\"]\n\tsmudge = y\n\trequired = true\n[filter \"none\"]\n\trequired = true\n"
-	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	names := func(dir string) []string {
 		t.Helper()
 		n, err := filterNames(context.Background(), []string{"-C", dir})
@@ -342,16 +335,29 @@ func TestFilterNames(t *testing.T) {
 		slices.Sort(n)
 		return n
 	}
-	if got, want := names(r.Dir), []string{"", "Dotted.Name", "inc", "owner", "proc", "single"}; !slices.Equal(got, want) {
+	// The machine's system config (a CI runner's names Git LFS's filter) is
+	// listed too, as it should be; git reads it whatever the environment, so
+	// its names are expected beside the test's own.
+	system := names(t.TempDir())
+	with := func(want ...string) []string {
+		all := slices.Concat(want, system)
+		slices.Sort(all)
+		return slices.Compact(all)
+	}
+	global := "[filter \"owner\"]\n\tclean = x\n[filter \"Dotted.Name\"]\n\tsmudge = y\n\trequired = true\n[filter \"none\"]\n\trequired = true\n"
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := names(r.Dir), with("", "Dotted.Name", "inc", "owner", "proc", "single"); !slices.Equal(got, want) {
 		t.Fatalf("on main: %q, want %q", got, want)
 	}
 	// A linked worktree on a crew/ branch: both conditional includes apply there.
 	wt := filepath.Join(r.Dir, ".conductor", "wt")
 	gitclitest.Git(t, r.Dir, "worktree", "add", "-q", "--no-checkout", "-b", "crew/x/y", wt, "HEAD")
-	if got, want := names(wt), []string{"", "Dotted.Name", "inc", "inworktree", "onbranch", "owner", "proc", "single"}; !slices.Equal(got, want) {
+	if got, want := names(wt), with("", "Dotted.Name", "inc", "inworktree", "onbranch", "owner", "proc", "single"); !slices.Equal(got, want) {
 		t.Fatalf("in a crew worktree: %q, want %q", got, want)
 	}
-	if got := names(t.TempDir()); !slices.Equal(got, []string{"Dotted.Name", "owner"}) {
+	if got := names(t.TempDir()); !slices.Equal(got, with("Dotted.Name", "owner")) {
 		t.Fatalf("outside a repository: %q", got)
 	}
 	// The empty name goes through -c: a status turns it off and runs.
