@@ -527,6 +527,9 @@ func TestNoLinkGivesItsPlaceUpForOneExpired(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "links", expired.ID+".json")); !os.IsNotExist(err) {
 		t.Fatalf("a file for the expired link: %v", err)
 	}
+	if _, ok := e.srv.links.Get(expired.ID); ok {
+		t.Fatal("the link refused stays among its session's links")
+	}
 }
 
 // A save says when it wrote nothing because the link no longer opens

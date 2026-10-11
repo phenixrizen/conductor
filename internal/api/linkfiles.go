@@ -300,10 +300,10 @@ var (
 // give their places up (yielding) and are ended, only when that leaves the
 // new link room and once its file is written: a link that needed them and
 // whose file cannot be written is refused, and they stay as they were. It
-// refuses (the link dropped) when the bounds leave no room, ending no other
-// link, and keeps nothing of a link the store no longer holds unrevoked:
-// one revoked or dropped since it was made is neither counted nor written,
-// nor has any other ended for it.
+// refuses a link when the bounds leave no room, ending no other link, and
+// keeps nothing of a link the store no longer opens: one revoked, expired
+// or dropped since it was made is neither counted nor written, nor has any
+// other ended for it. A link refused is dropped from the store.
 func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	k := s.keeper
 	if k == nil || owner == "" {
@@ -327,16 +327,17 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 			err = errLinksFull
 		}
 	}
-	switch {
-	case errors.Is(err, errLinksFull):
-		s.links.Drop(link.ID)
-	case err != nil:
 	// Under mu, so a drop of the link (its file and its count, which
 	// follows the store's) comes after this whole or finds nothing.
-	case !s.links.SetOwner(link.ID, owner, addr):
+	if err == nil && !s.links.SetOwner(link.ID, owner, addr) {
 		err = errLinkGone
-	default:
+	}
+	if err == nil {
 		k.hold(link.ID, keptLink{hash: hex.EncodeToString(h[:]), owner: owner, addr: addr, created: link.CreatedAt})
+	} else {
+		// A link refused is forgotten: its host never hears its token, and
+		// it takes no place among its session's links.
+		s.links.Drop(link.ID)
 	}
 	k.mu.Unlock()
 	if err != nil {
@@ -346,13 +347,11 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	link.Owner, link.Addr = owner, addr
 	if serr := s.saveLinkFile(link.ID); serr != nil && len(yielded) > 0 {
 		// No link gives its place up for one that is not kept: neither one
-		// whose file cannot be written (dropped) nor one revoked or
-		// dropped since it was counted (left to its revoke or its drop).
+		// whose file cannot be written nor one revoked, expired or dropped
+		// since it was counted. It is refused, and forgotten.
 		k.mu.Lock()
 		k.release(link.ID)
-		if !errors.Is(serr, errNotSaved) {
-			s.links.Drop(link.ID)
-		}
+		s.links.Drop(link.ID)
 		k.mu.Unlock()
 		k.fmu.Unlock()
 		if errors.Is(serr, errNotSaved) {
