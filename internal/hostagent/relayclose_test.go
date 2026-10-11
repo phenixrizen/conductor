@@ -278,3 +278,28 @@ func TestAViewerTheSessionEndedIsNotActedOn(t *testing.T) {
 		t.Fatalf("the ended viewer's input was typed: %q", got)
 	}
 }
+
+// The parts of one frame share one deadline: a channel that stays over its
+// mark fails the frame once, at the deadline, however many parts are left,
+// and a channel no longer open ends the wait at once.
+func TestTheWaitForRoomHasOneDeadlinePerFrame(t *testing.T) {
+	full := func() uint64 { return dcHighWater + 1 }
+	open := func() bool { return true }
+	until := time.Now().Add(300 * time.Millisecond)
+	start := time.Now()
+	if err := waitForRoom(until, full, open, nil); err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("first part: %v", err)
+	}
+	if err := waitForRoom(until, full, open, nil); err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("second part: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("two parts waited %v against one 300 ms deadline", took)
+	}
+	if err := waitForRoom(time.Now().Add(time.Minute), full, func() bool { return false }, nil); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a closed channel: %v", err)
+	}
+	if err := waitForRoom(time.Now().Add(time.Minute), func() uint64 { return dcHighWater }, open, nil); err != nil {
+		t.Fatalf("room: %v", err)
+	}
+}
