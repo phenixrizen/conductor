@@ -287,11 +287,12 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		s.typedEntry(sub, text, st)
 	}
 	res, err = s.enter(ctx, sub, res, st)
-	if errors.Is(err, errEnterLater) {
-		// Its text is typed and its Enter had no turn in time (another's
-		// write the program does not take): accepted, and the Enter
-		// pressed as the program reads, holding the turn till then, so
-		// no other line joins its text.
+	if res.Typed && !res.Entered && (errors.Is(err, errEnterLater) || errors.Is(err, context.DeadlineExceeded)) {
+		// Its text is typed and its time ran out before its Enter (in its
+		// pause, its look, or another's write the program does not take
+		// ahead of it): accepted, and the rest of the line finished as
+		// the program reads, holding the turn till then, so no other line
+		// joins its text.
 		release = false
 		go s.finishEnter(sub, res, st)
 		return res, ErrSubmitPending
@@ -311,7 +312,20 @@ var errEnterLater = errors.New("session: the Enter is to be pressed later")
 // again, as for any.
 func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
 	defer func() { <-s.submitting }()
-	res, err := s.pressEnterHeld(sub, res, st)
+	s.finishLine(sub, res, st)
+}
+
+// finishLine finishes a line whose text is typed, the session's turn held
+// by its caller: its pause and looks again, then its Enter, with no time of
+// its own and no second Enter, its caller having had its answer; and tells
+// how it ended (finished).
+func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
+	sub.Confirm = false
+	st.wait.wait, st.wait.stall = 0, 0
+	res, err := s.enter(context.Background(), sub, res, st)
+	if errors.Is(err, errEnterLater) {
+		res, err = s.pressEnterHeld(sub, res, st)
+	}
 	s.finished(sub, res, err)
 }
 
@@ -376,13 +390,7 @@ func (s *Local) finishSubmission(landed <-chan error, sub Submission, text strin
 		return
 	}
 	s.typedEntry(sub, text, st)
-	sub.Confirm = false
-	st.wait.wait, st.wait.stall = 0, 0
-	res, err := s.enter(context.Background(), sub, SubmitResult{Typed: true}, st)
-	if errors.Is(err, errEnterLater) {
-		res, err = s.pressEnterHeld(sub, res, st)
-	}
-	s.finished(sub, res, err)
+	s.finishLine(sub, SubmitResult{Typed: true}, st)
 }
 
 // enter is the rest of a submission once its text is written (res.Typed),
@@ -451,16 +459,11 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		return res, err
 	}
 	// As the writer takes the Enter it looks again: a prompt raised while
-	// the Enter waited behind another write is never answered by it.
-	wait.guard = func() error {
-		s.mu.Lock()
-		att := s.info.Attention
-		s.mu.Unlock()
-		if att.State == AttentionNeedsInput && att.Since != promptSince {
-			return errPromptCame
-		}
-		return nil
-	}
+	// the Enter waited behind another write, or a dialog drawn on the
+	// screen meanwhile, is never answered by it.
+	wait.guard = s.enterGuard(func(att Attention) bool {
+		return att.State == AttentionNeedsInput && att.Since != promptSince
+	})
 	// As the writer takes the Enter, never for one not written: the
 	// caller's BeforeEnter, and the turn a done ended is behind (nextTurn).
 	wait.before = func() {
@@ -549,6 +552,27 @@ const lookBudget = 2 * time.Second
 // submission began would take (pressEnter's guard).
 var errPromptCame = errors.New("session: a prompt came before the Enter")
 
+// enterGuard is an Enter's guard (writeWait.guard), asked as the writer
+// takes it: errPromptCame when the session's attention is one waits says
+// the Enter must not answer, or when a dialog asked during the work is on
+// the screen as it is now (looked at whether quiet or not, and fired
+// then), or a key that answered one has not been followed by a look yet
+// (Held): the Enter would pick what the dialog highlights.
+func (s *Local) enterGuard(waits func(Attention) bool) func() error {
+	return func() error {
+		if s.asked != nil && (s.asked.Held() || s.asked.CheckNow()) {
+			return errPromptCame
+		}
+		s.mu.Lock()
+		att := s.info.Attention
+		s.mu.Unlock()
+		if waits(att) {
+			return errPromptCame
+		}
+		return nil
+	}
+}
+
 // waitedOut says a write was not made for want of a turn in time: its
 // context's deadline, InputWait, a stall, a full queue; not its sender's
 // withdrawal, its context's cancel or the session's end.
@@ -627,7 +651,12 @@ func (s *Local) enterAgain(ctx context.Context) bool {
 	if skip {
 		return false
 	}
-	if _, err := s.writeProc(ctx, []byte{'\r'}, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}); err != nil {
+	// Looked at again as the writer takes it: no prompt or dialog come
+	// meanwhile is answered by it.
+	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: s.enterGuard(func(att Attention) bool {
+		return att.State == AttentionNeedsInput
+	})}
+	if _, err := s.writeProc(ctx, []byte{'\r'}, again); err != nil {
 		return false
 	}
 	s.log.Info("pressed Enter again: the agent did not report taking the prompt", "after", s.opts.ConfirmWait)

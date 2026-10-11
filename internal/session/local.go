@@ -1336,11 +1336,35 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		// not written.
 		o.before = s.nextTurn
 	}
-	if _, err := s.writeProc(ctx, data, o); err != nil {
+	landed, err := s.writeProc(ctx, data, o)
+	if err != nil {
+		if landed != nil && !errors.Is(err, ErrSessionEnded) {
+			// Begun: the keys land as the program reads, and what follows
+			// written keys is done then (the prompt they answer still the
+			// one they were typed at). At most one write is begun at a
+			// time, so at most one such wait is under way.
+			go func() {
+				select {
+				case werr := <-landed:
+					if werr == nil {
+						s.typedKeys(sub, data, promptSince, enter, noted)
+					}
+				case <-s.ended:
+				}
+			}()
+		}
 		return err
 	}
+	s.typedKeys(sub, data, promptSince, enter, noted)
+	return nil
+}
+
+// typedKeys is what follows keys written to the program (input): sub is
+// typing, the dialog or question they answer is noted and looked at again,
+// and the prompt that showed as they were typed (promptSince) is answered.
+func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted bool) {
 	if isTerminalReport(data) {
-		return nil
+		return
 	}
 	s.stampTyping(sub)
 	if s.asked != nil {
@@ -1357,7 +1381,6 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
-	return nil
 }
 
 // askedOnScreen returns the words of the question asked during the work

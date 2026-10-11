@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -118,9 +119,10 @@ func TestInputToAProgramThatTakesNoInputFailsInItsTime(t *testing.T) {
 	if waiting, _ := writesWaiting(s); waiting != 0 {
 		t.Fatalf("%d writes still wait after their time", waiting)
 	}
-	// The writer waiting on the program is the one left (others' winding
-	// down from earlier tests may still count for a moment).
-	for deadline := time.Now().Add(5 * time.Second); runtime.NumGoroutine()-before > 1; {
+	// The writer waiting on the program, and the begun keystrokes' wait to
+	// finish what follows them, are what is left: none for those refused
+	// (others' winding down from earlier tests may still count a moment).
+	for deadline := time.Now().Add(5 * time.Second); runtime.NumGoroutine()-before > 2; {
 		if time.Now().After(deadline) {
 			t.Fatalf("%d goroutines more after four keystrokes the program did not take", runtime.NumGoroutine()-before)
 		}
@@ -927,4 +929,157 @@ func TestAQueuedEnterIsLeftOutForAPromptRaisedMeanwhile(t *testing.T) {
 	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Message != "Allow?" {
 		t.Fatalf("the newer prompt: %+v", att)
 	}
+}
+
+// gateWrites lets the test stop p taking input (hold) and take it again
+// (takeAgain), as often as it likes; it takes input again as the test ends.
+func gateWrites(t *testing.T, p *fakeProc) (hold, takeAgain func()) {
+	t.Helper()
+	var gate atomic.Pointer[chan struct{}]
+	hold = func() {
+		ch := make(chan struct{})
+		gate.Store(&ch)
+	}
+	takeAgain = func() {
+		if ch := gate.Swap(nil); ch != nil {
+			close(*ch)
+		}
+	}
+	t.Cleanup(takeAgain)
+	p.onWrite = func() {
+		if ch := gate.Load(); ch != nil {
+			<-*ch
+		}
+	}
+	return hold, takeAgain
+}
+
+// A submission's Enter queued behind another's write is left out when a
+// dialog asked during the work is drawn while it waits, before the screen
+// has gone quiet: the writer looks at the screen as it takes the Enter,
+// and the dialog is asked.
+func TestAQueuedEnterIsLeftOutForADialogDrawnMeanwhile(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions(), InputWait: 5 * time.Second, SubmitPause: 100 * time.Millisecond}))
+	hold, takeAgain := gateWrites(t, p)
+	other := ownerOf(t, s)
+	p.outW.Write([]byte("\x1b[?2004h› "))
+	waitPaste(t, s, true)
+	time.Sleep(700 * time.Millisecond)
+	type submitted struct {
+		res SubmitResult
+		err error
+	}
+	done := make(chan submitted, 1)
+	go func() {
+		res, err := s.Submit(context.Background(), Submission{Text: "line", ByName: "crew"})
+		done <- submitted{res, err}
+	}()
+	if got := written(t, p); got != "\x1b[200~line\x1b[201~" {
+		t.Fatalf("written %q", got)
+	}
+	hold()
+	go s.Input(other, []byte("x"))
+	untilWaiting(t, s, 1) // the Enter waits behind the other's key
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	takeAgain()
+	if got := written(t, p); got != "x" {
+		t.Fatalf("written %q", got)
+	}
+	got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
+	if got.err != nil || got.res.Entered {
+		t.Fatalf("result %+v, %v", got.res, got.err)
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("attention %+v", a)
+	}
+}
+
+// The Enter pressed again for a prompt the agent did not report taking
+// (Confirm) is left out when a prompt is raised while it waits behind
+// another's write.
+func TestAnEnterPressedAgainIsLeftOutForAPromptRaisedMeanwhile(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 10 * time.Millisecond, ConfirmSubmit: true, ConfirmWait: 300 * time.Millisecond})
+	hold, takeAgain := gateWrites(t, p)
+	other := ownerOf(t, s)
+	type submitted struct {
+		res SubmitResult
+		err error
+	}
+	done := make(chan submitted, 1)
+	go func() {
+		res, err := s.Submit(context.Background(), Submission{Text: "line", ByName: "crew", Confirm: true})
+		done <- submitted{res, err}
+	}()
+	for _, want := range []string{"line", "\r"} {
+		if got := written(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	hold()
+	go s.Input(other, []byte("x"))
+	untilWaiting(t, s, 1) // the Enter pressed again waits behind the key
+	s.SetAttention(AttentionNeedsInput, "Allow?", SourceAPI)
+	takeAgain()
+	if got := written(t, p); got != "x" {
+		t.Fatalf("written %q", got)
+	}
+	got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
+	if got.err != nil || !got.res.Entered || got.res.Reentered {
+		t.Fatalf("result %+v, %v", got.res, got.err)
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+}
+
+// A submission whose time runs out in its pause, its text typed, is
+// accepted and its line finished as the program reads, the session's turn
+// held: the next submission's text never joins it.
+func TestASubmissionWhoseTimeRunsOutInItsPauseIsFinished(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, SubmitPause: 300 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	res, err := s.Submit(ctx, Submission{Text: "line", ByName: "run"})
+	cancel()
+	if !errors.Is(err, ErrSubmitPending) || !res.Typed || res.Entered {
+		t.Fatalf("result %+v, %v", res, err)
+	}
+	third := make(chan error, 1)
+	go func() {
+		_, err := s.Submit(context.Background(), Submission{Text: "third", ByName: "run"})
+		third <- err
+	}()
+	var got []string
+	for range 4 {
+		got = append(got, written(t, p))
+	}
+	if want := []string{"line", "\r", "third", "\r"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("written %q, want %q", got, want)
+	}
+	if err := <-third; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A key answering a startup question that the program takes late (its
+// write begun when its time ran out) answers the question once it lands:
+// the question is not left held.
+func TestALateKeyAnswersTheQuestionItWasTypedAt(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{
+		InputWait:    100 * time.Millisecond,
+		TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`),
+		TrustAnswers: []Option{{Label: "Yes, trust this folder", Input: "\r"}},
+	}))
+	hold, takeAgain := gateWrites(t, p)
+	sub := ownerOf(t, s)
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Yes"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNeedsInput && a.Source == SourceTrust })
+	hold()
+	if err := s.Input(sub, []byte("\r")); !errors.Is(err, ErrInputStalled) {
+		t.Fatalf("the answer: %v", err)
+	}
+	takeAgain()
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
