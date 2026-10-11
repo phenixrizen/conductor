@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -272,6 +273,43 @@ func TestARevokeOutlastsARunUpdatesWriteAcrossARestart(t *testing.T) {
 	}
 }
 
+// A revoked link's file that cannot be deleted at once (its directory not
+// writable for a while) is deleted by a later sweep, once it can be: after
+// a restart the link stays revoked.
+func TestARevokedLinksFileIsDeletedOnceItCanBe(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose mode keeps its owner from deleting in it")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	id, token := mintHostLink(t, host, "r1")
+	links := filepath.Join(dir, "links")
+	if err := os.Chmod(links, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: id})
+	host.expect(proto.HostLinkRevoked)
+	if _, err := os.Stat(filepath.Join(links, id+".json")); err != nil {
+		t.Fatalf("the file went though its directory is read-only: %v", err)
+	}
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sweepLinks(time.Now())
+	if _, err := os.Stat(filepath.Join(links, id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("the revoked link's file stays after the sweep: %v", err)
+	}
+	host.c.Close(websocket.StatusNormalClosure, "")
+	<-host.done
+	b := keptSwitchyard(t, dir, nil)
+	if _, err := b.srv.links.Resolve(token); err == nil {
+		t.Fatal("the revoked link opens again after a restart")
+	}
+}
+
 // A link revoked, or gone with its session, before it is kept is neither
 // counted against its address nor written: the address's one place stays
 // free.
@@ -481,5 +519,76 @@ func TestRestoredLinksHoldTheirPlacesForAWhile(t *testing.T) {
 	}
 	if code, _ := joinStatus(t, b, token); code != http.StatusNotFound {
 		t.Fatalf("the restored link that gave its place: %d", code)
+	}
+}
+
+// A link refused for want of room ends no other: with the switchyard's
+// links at their bound, a gone host's link keeps its place at the address.
+func TestALinkRefusedEndsNoOther(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	id, _ := mintHostLink(t, host, "r1")
+	owner := ownerOf(t, e, host.sessionID)
+	leave(t, e, host)
+	awayFor(e, owner, time.Hour)
+	for i := 0; e.srv.links.Count() <= maxDurableLinks; i++ {
+		if _, _, err := e.srv.links.CreateRunLink(fmt.Sprintf("run-%d", i/share.MaxLinksPerSession), session.RoleView, "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o1", Role: "view"})
+	if m := linkAnswer(t, other, "o1"); m["code"] != "link_refused" {
+		t.Fatalf("past the switchyard's bound: %v", m)
+	}
+	if _, ok := e.srv.links.Get(id); !ok {
+		t.Fatal("the gone host's link was ended for a link refused")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", id+".json")); err != nil {
+		t.Fatalf("its file: %v", err)
+	}
+}
+
+// Links give their places up only when that makes room for the new one:
+// at an address holding more than its bound (lowered across a restart),
+// none is ended while too few may give way.
+func TestLinksGiveTheirPlacesUpOnlyForRoom(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	a := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 3 })
+	hi, hs := instanceHost(a, "instance-secret-0123456789", "1")
+	one, _ := dialFakeHostWith(t, a, hi, hs, "")
+	two, _ := dialFakeHostWith(t, a, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	var ids []string
+	for i, h := range []*fakeHost{one, one, two} {
+		id, _ := mintHostLink(t, h, fmt.Sprintf("r%d", i))
+		ids = append(ids, id)
+	}
+	owners := []string{ownerOf(t, a, one.sessionID), ownerOf(t, a, two.sessionID)}
+	leave(t, a, one)
+	leave(t, a, two)
+
+	b := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+	third, _ := dialFakeHostWith(t, b, proto.HostInfo{Name: "box", Instance: "third-instance-0123456789"}, hs, "")
+	awayFor(b, owners[0], time.Hour)
+	third.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "t1", Role: "view"})
+	if m := linkAnswer(t, third, "t1"); m["code"] != "link_refused" {
+		t.Fatalf("with two of three links free to go: %v", m)
+	}
+	for _, id := range ids {
+		if _, ok := b.srv.links.Get(id); !ok {
+			t.Fatalf("link %s was ended for a link refused", id)
+		}
+	}
+	awayFor(b, owners[1], time.Hour)
+	third.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "t2", Role: "view"})
+	if m := linkAnswer(t, third, "t2"); m["t"] != proto.HostLinkCreated {
+		t.Fatalf("with all three free to go: %v", m)
+	}
+	for _, id := range ids {
+		if _, ok := b.srv.links.Get(id); ok {
+			t.Fatalf("link %s kept its place", id)
+		}
 	}
 }

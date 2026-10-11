@@ -1,8 +1,11 @@
 package api
 
 import (
+	"cmp"
 	"encoding/hex"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +94,25 @@ type linkKeeper struct {
 	// of the links restored at startup, the start).
 	live map[string]int
 	seen map[string]time.Time
+	// undeleted are the links no longer kept whose file could not be
+	// deleted (its directory not writable for a while): each sweep tries
+	// again, so the file does not bring the link back at the next start.
+	// Under fmu.
+	undeleted map[string]struct{}
+}
+
+// deleteFile deletes the file of a link no longer kept, or notes it for the
+// sweep to try again. Called with fmu held.
+func (s *Server) deleteFile(id string) {
+	k := s.keeper
+	if err := k.files.Delete(id + ".json"); err != nil {
+		if _, again := k.undeleted[id]; !again {
+			s.log.Error("a link's file is not deleted yet; the sweep tries again", "link", id, "err", err)
+		}
+		k.undeleted[id] = struct{}{}
+		return
+	}
+	delete(k.undeleted, id)
 }
 
 // away is how long the host instance owner has been gone at now: none while
@@ -129,26 +151,40 @@ func (k *linkKeeper) release(id string) {
 	}
 }
 
-// yielding is the link counted against addr that gives its place up first:
-// of those whose host has been gone longer than linkYieldAfter, the oldest
-// of the host gone longest; "" when there is none. Called with mu held.
-func (k *linkKeeper) yielding(addr string, now time.Time) string {
-	var (
-		best     string
-		bestAway time.Duration
-		bestMade time.Time
-	)
+// yielding is the n links counted against addr that give their places up
+// first: of those whose host has been gone longer than linkYieldAfter, the
+// oldest of the hosts gone longest; nil when fewer than n may, so that none
+// is ended for a link that would still find no room. Called with mu held.
+func (k *linkKeeper) yielding(addr string, now time.Time, n int) []string {
+	type candidate struct {
+		id   string
+		away time.Duration
+		made time.Time
+	}
+	var cs []candidate
 	for id := range k.addrs[addr] {
 		kl := k.kept[id]
-		away := k.away(kl.owner, now)
-		if away <= linkYieldAfter {
-			continue
-		}
-		if best == "" || away > bestAway || (away == bestAway && (kl.created.Before(bestMade) || (kl.created.Equal(bestMade) && id < best))) {
-			best, bestAway, bestMade = id, away, kl.created
+		if away := k.away(kl.owner, now); away > linkYieldAfter {
+			cs = append(cs, candidate{id, away, kl.created})
 		}
 	}
-	return best
+	if len(cs) < n {
+		return nil
+	}
+	slices.SortFunc(cs, func(a, b candidate) int {
+		if c := cmp.Compare(b.away, a.away); c != 0 {
+			return c
+		}
+		if c := a.made.Compare(b.made); c != 0 {
+			return c
+		}
+		return strings.Compare(a.id, b.id)
+	})
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = cs[i].id
+	}
+	return ids
 }
 
 // openLinkKeeper opens links/ under st and puts the links kept there back
@@ -160,7 +196,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 		s.log.Error("links are not kept across restarts: cannot open the links directory", "err", err)
 		return
 	}
-	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}}
+	k := &linkKeeper{files: files, kept: map[string]keptLink{}, addrs: map[string]map[string]struct{}{}, live: map[string]int{}, seen: map[string]time.Time{}, undeleted: map[string]struct{}{}}
 	s.keeper = k
 	entries, err := files.List()
 	if err != nil {
@@ -204,11 +240,12 @@ var (
 
 // keepLink makes a link minted for a hosted session of owner durable and
 // writes its file, within the bounds. At an open host's address with no
-// room left, a link whose host has been gone longer than linkYieldAfter
-// gives its place up (yielding) and is ended. It refuses (the link
-// dropped) when the bounds leave no room still, and keeps nothing of a
-// link the store no longer holds unrevoked: one revoked or dropped since
-// it was made is neither counted nor written.
+// room left, links whose host has been gone longer than linkYieldAfter
+// give their places up (yielding) and are ended, only when that leaves the
+// new link room. It refuses (the link dropped) when the bounds leave none,
+// ending no other link, and keeps nothing of a link the store no longer
+// holds unrevoked: one revoked or dropped since it was made is neither
+// counted nor written, nor has any other ended for it.
 func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	k := s.keeper
 	if k == nil || owner == "" {
@@ -218,43 +255,40 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	now := time.Now()
 	k.fmu.Lock()
 	k.mu.Lock()
-	var err error
-	if l, ok := s.links.Get(link.ID); !ok || l.Revoked {
-		err = errLinkGone
-	}
-	// The links ended for the new one leave the keeper and the store
-	// together under mu, so a host coming back (hostUp) either finds them
-	// gone or keeps them.
 	var (
+		err     error
 		yielded []string
 		ended   []*share.Link
 	)
-	for err == nil && addr != "" && len(k.addrs[addr]) >= s.cfg.Switchyard.OpenHostLinks {
-		id := k.yielding(addr, now)
-		if id == "" {
-			break
-		}
-		k.release(id)
-		yielded = append(yielded, id)
-		if gone, ok := s.links.Drop(id); ok {
-			ended = append(ended, gone)
+	if s.links.Count() > maxDurableLinks {
+		err = errLinksFull
+	} else if over := len(k.addrs[addr]) - s.cfg.Switchyard.OpenHostLinks + 1; addr != "" && over > 0 {
+		if yielded = k.yielding(addr, now, over); yielded == nil {
+			err = errLinksFull
 		}
 	}
 	switch {
 	case err != nil:
-	case s.links.Count() > maxDurableLinks || (addr != "" && len(k.addrs[addr]) >= s.cfg.Switchyard.OpenHostLinks):
 		s.links.Drop(link.ID)
-		err = errLinksFull
 	// Under mu, so a drop of the link (its file and its count, which
 	// follows the store's) comes after this whole or finds nothing.
 	case !s.links.SetOwner(link.ID, owner, addr):
-		err = errLinkGone
+		err, yielded = errLinkGone, nil
 	default:
+		// The links ended for the new one leave the keeper and the store
+		// together under mu, so a host coming back (hostUp) either finds
+		// them gone or keeps them.
+		for _, id := range yielded {
+			k.release(id)
+			if gone, ok := s.links.Drop(id); ok {
+				ended = append(ended, gone)
+			}
+		}
 		k.hold(link.ID, keptLink{hash: hex.EncodeToString(h[:]), owner: owner, addr: addr, created: link.CreatedAt})
 	}
 	k.mu.Unlock()
 	for _, id := range yielded {
-		_ = k.files.Delete(id + ".json")
+		s.deleteFile(id)
 		s.log.Info("a kept link gave its place to a new one, its host gone", "link", id)
 	}
 	if err == nil {
@@ -325,7 +359,7 @@ func (s *Server) dropLinkFile(linkID string) {
 	k.mu.Lock()
 	k.release(linkID)
 	k.mu.Unlock()
-	_ = k.files.Delete(linkID + ".json")
+	s.deleteFile(linkID)
 }
 
 // hostUp notes that a host instance holds a connection, until the function
@@ -355,12 +389,18 @@ func (s *Server) hostUp(owner string) func() {
 
 // sweepLinks drops the kept links that expired, and those whose host has
 // been gone for linkOrphanAfter, closing whoever is attached through them,
-// and forgets the host instances neither connected nor holding a kept link.
+// deletes the files that could not be deleted before, and forgets the host
+// instances neither connected nor holding a kept link.
 func (s *Server) sweepLinks(now time.Time) {
 	k := s.keeper
 	if k == nil {
 		return
 	}
+	k.fmu.Lock()
+	for id := range k.undeleted {
+		s.deleteFile(id)
+	}
+	k.fmu.Unlock()
 	// due is whether l goes now. Called with mu held.
 	due := func(l *share.Link) bool {
 		return k.away(l.Owner, now) > linkOrphanAfter || (l.ExpiresAt != nil && !now.Before(*l.ExpiresAt))
@@ -406,7 +446,7 @@ func (s *Server) endKept(id string, due func(*share.Link) bool) bool {
 	k.release(id)
 	gone, ok := s.links.Drop(id)
 	k.mu.Unlock()
-	_ = k.files.Delete(id + ".json")
+	s.deleteFile(id)
 	k.fmu.Unlock()
 	if ok {
 		s.closeLinkViewers(gone)
