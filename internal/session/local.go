@@ -1310,31 +1310,35 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	if stale {
 		return ErrQuestion
 	}
-	if answersQuestion && s.trust != nil {
-		s.trust.Reset()
-	}
-	noted := false
-	if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
-		// A key that answers a dialog on the screen: the look before a
-		// submission does not ask the dialog again before the program draws
-		// what follows (the look at the end of a quiet period still does).
-		// The key is noted against the dialog, also one not yet asked: the
-		// dialog asked later, before the program took it away, gives way to
-		// it (missAsked).
-		if words := s.askedOnScreen(); words != "" {
-			s.mu.Lock()
-			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
-			s.mu.Unlock()
-			s.asked.Hold()
-			noted = true
-		}
-	}
+	// What a key does to the session's questions is done as the writer
+	// takes it, just before it is written, never for keys not written (a
+	// time run out, a stall, a connection gone): noted is set then, and
+	// read once the write is made.
+	var noted bool
 	o.from, o.anyEnd = sub, true
-	if enter {
-		// The turn a done ended is behind as the Enter is written: the
-		// writer says so as it takes the keys (nextTurn), never for keys
-		// not written.
-		o.before = s.nextTurn
+	o.before = func() {
+		if answersQuestion && s.trust != nil {
+			s.trust.Reset()
+		}
+		if enter {
+			// The turn a done ended is behind as the Enter is written.
+			s.nextTurn()
+		}
+		if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
+			// A key that answers a dialog on the screen: the look before a
+			// submission does not ask the dialog again before the program
+			// draws what follows (the look at the end of a quiet period
+			// still does). The key is noted against the dialog, also one
+			// not yet asked: the dialog asked later, before the program
+			// took it away, gives way to it (missAsked).
+			if words := s.askedOnScreen(); words != "" {
+				s.mu.Lock()
+				s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
+				s.mu.Unlock()
+				s.asked.Hold()
+				noted = true
+			}
+		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
 	if err != nil {

@@ -1083,3 +1083,83 @@ func TestALateKeyAnswersTheQuestionItWasTypedAt(t *testing.T) {
 	}
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
+
+// A submission's text queued behind another's write is held when a dialog
+// asked during the work is drawn while it waits: the writer looks at the
+// screen as it takes the text, and nothing of it is written; a person's
+// reply is refused (ErrQuestion), Conductor's own text with UnlessWaiting
+// gets a zero result.
+func TestQueuedTextIsHeldForADialogDrawnMeanwhile(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		reply   bool
+		wantErr error
+	}{{"a reply", true, ErrQuestion}, {"a handoff", false, nil}} {
+		t.Run(c.name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions(), InputWait: 5 * time.Second}))
+			hold, takeAgain := gateWrites(t, p)
+			other := ownerOf(t, s)
+			p.outW.Write([]byte("\x1b[?2004h› "))
+			waitPaste(t, s, true)
+			time.Sleep(700 * time.Millisecond)
+			hold()
+			go s.Input(other, []byte("x"))
+			untilWaiting(t, s, 0) // the other's key has the writer
+			sub := Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true}
+			if c.reply {
+				sub = Submission{Text: "over to you", By: other}
+			}
+			type submitted struct {
+				res SubmitResult
+				err error
+			}
+			done := make(chan submitted, 1)
+			go func() {
+				res, err := s.Submit(context.Background(), sub)
+				done <- submitted{res, err}
+			}()
+			untilWaiting(t, s, 1) // the text waits behind the key
+			p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+			time.Sleep(50 * time.Millisecond) // read, not yet quiet
+			takeAgain()
+			if got := written(t, p); got != "x" {
+				t.Fatalf("written %q", got)
+			}
+			got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
+			if !errors.Is(got.err, c.wantErr) || (c.wantErr == nil && got.err != nil) || got.res.Typed {
+				t.Fatalf("result %+v, %v", got.res, got.err)
+			}
+			nothingWritten(t, p, 300*time.Millisecond)
+			if a := s.Info().Attention; !asked(a) {
+				t.Fatalf("attention %+v", a)
+			}
+		})
+	}
+}
+
+// A key not written (its time out before its turn) does nothing to the
+// question it would have answered: it is not noted against the dialog,
+// and the screen is not held.
+func TestAKeyNotWrittenIsNotNotedAgainstTheDialog(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub := ownerOf(t, s)
+	p.outW.Write([]byte("\x1b[?2004h› "))
+	waitPaste(t, s, true)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	waitAttention(t, s, asked)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.InputContext(ctx, sub, []byte("y")); err == nil {
+		t.Fatal("a key whose time had run out was written")
+	}
+	nothingWritten(t, p, 100*time.Millisecond)
+	s.mu.Lock()
+	noted := s.typedAtAsked
+	s.mu.Unlock()
+	if noted != nil || s.asked.Held() {
+		t.Fatalf("a key not written was noted (%+v), held %v", noted, s.asked.Held())
+	}
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("attention %+v", a)
+	}
+}

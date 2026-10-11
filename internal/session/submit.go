@@ -269,7 +269,14 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		if s.paste.on() {
 			data = pasteStart + text + pasteEnd
 		}
-		landed, err := s.writeProc(ctx, []byte(data), st.wait)
+		// Looked at again as the writer takes the text: a question come
+		// meanwhile, or a dialog drawn, holds it as one seen before does.
+		textWait := st.wait
+		textWait.guard = s.textGuard(sub)
+		landed, err := s.writeProc(ctx, []byte(data), textWait)
+		if errors.Is(err, errWaiting) {
+			return res, nil
+		}
 		if err != nil {
 			if landed == nil || errors.Is(err, ErrSessionEnded) || s.isEnded() {
 				return res, err
@@ -547,6 +554,36 @@ func (s *Local) lookAsked(ctx context.Context) (bool, error) {
 // output, and a program that keeps drawing is not held up for longer than
 // this.
 const lookBudget = 2 * time.Second
+
+// errWaiting refuses the text of a submission with UnlessWaiting that a
+// prompt or a dialog come meanwhile would take (textGuard): Submit returns
+// a zero result then, as for one seen before the text.
+var errWaiting = errors.New("session: the session waits on a prompt")
+
+// textGuard is a submission's text's guard (writeWait.guard), asked as the
+// writer takes it: what Submit refuses before the text, looked at again,
+// for a question or a dialog come while the text waited behind another
+// write. With UnlessWaiting, any prompt (errWaiting); else a startup
+// question (ErrTrustQuestion), a question asked during the work or a
+// dialog on the screen now or Held (ErrQuestion).
+func (s *Local) textGuard(sub Submission) func() error {
+	return func() error {
+		dialog := s.asked != nil && (s.asked.Held() || s.asked.CheckNow())
+		s.mu.Lock()
+		att := s.info.Attention
+		s.mu.Unlock()
+		showing := att.State == AttentionNeedsInput
+		switch {
+		case sub.UnlessWaiting && (showing || dialog):
+			return errWaiting
+		case showing && att.Source == SourceTrust:
+			return ErrTrustQuestion
+		case dialog || showing && att.Source == SourceQuestion:
+			return ErrQuestion
+		}
+		return nil
+	}
+}
 
 // errPromptCame refuses a submission's Enter that a prompt raised since the
 // submission began would take (pressEnter's guard).
