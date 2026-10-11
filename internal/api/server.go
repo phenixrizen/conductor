@@ -53,6 +53,8 @@ type Server struct {
 	// relayBurstFloor is the least burst of a relay bound (relayBurst; the
 	// package's relayBurstFloor when the server was made).
 	relayBurstFloor int
+	// viewerSeam is nil but in tests (see viewerSeam).
+	viewerSeam *viewerSeam
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
