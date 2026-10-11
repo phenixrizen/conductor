@@ -340,12 +340,19 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	}
 	link.Owner, link.Addr = owner, addr
 	if serr := s.saveLinkFile(link.ID); serr != nil && len(yielded) > 0 {
-		// No link gives its place up for one that is not kept.
+		// No link gives its place up for one that is not kept: neither one
+		// whose file cannot be written (dropped) nor one revoked or
+		// dropped since it was counted (left to its revoke or its drop).
 		k.mu.Lock()
 		k.release(link.ID)
-		s.links.Drop(link.ID)
+		if !errors.Is(serr, errNotSaved) {
+			s.links.Drop(link.ID)
+		}
 		k.mu.Unlock()
 		k.fmu.Unlock()
+		if errors.Is(serr, errNotSaved) {
+			return errLinkGone
+		}
 		return errLinkNotKept
 	}
 	// The links that give their places up end now, leaving the keeper and
@@ -383,20 +390,24 @@ func (s *Server) writeLinkFile(linkID string) {
 	_ = s.saveLinkFile(linkID)
 }
 
+// errNotSaved is saveLinkFile's for a link it writes nothing of.
+var errNotSaved = errors.New("the link is revoked, dropped or no longer kept")
+
 // saveLinkFile is writeLinkFile with fmu held: the link as the store holds
-// it now, while it is kept and opens anything; nothing for one revoked,
-// dropped or no longer kept. The error is the save's (logged).
+// it now, while it is kept and opens anything. It writes nothing of one
+// revoked, dropped or no longer kept (errNotSaved); another error is the
+// save's (logged).
 func (s *Server) saveLinkFile(linkID string) error {
 	k := s.keeper
 	k.mu.Lock()
 	hash := k.kept[linkID].hash
 	k.mu.Unlock()
 	if hash == "" {
-		return nil
+		return errNotSaved
 	}
 	link, ok := s.links.Get(linkID)
 	if !ok || link.Revoked || link.Owner == "" {
-		return nil
+		return errNotSaved
 	}
 	f := linkFile{ID: link.ID, TokenHash: hash, SessionID: link.SessionID, Role: link.Role, Label: link.Label, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt, Owner: link.Owner, Addr: link.Addr}
 	if link.Group != nil {

@@ -498,6 +498,49 @@ func TestARevokeNotDoneAtTheSwitchyardIsTriedAgainFromHere(t *testing.T) {
 	}
 }
 
+// A save says when it wrote nothing because the link no longer opens
+// anything (revoked meanwhile, its delete still to come), so that no link
+// gives its place up for it.
+func TestASaveSaysWhenItWritesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	id, _ := mintHostLink(t, host, "r1")
+	k := e.srv.keeper
+	k.fmu.Lock()
+	if err := e.srv.saveLinkFile(id); err != nil {
+		k.fmu.Unlock()
+		t.Fatalf("a kept link's save: %v", err)
+	}
+	// Revoked: the store marks it at once; its delete waits for fmu.
+	revoked := make(chan struct{})
+	go func() {
+		e.srv.links.Revoke(host.sessionID, id)
+		close(revoked)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if l, _ := e.srv.links.Get(id); l.Revoked {
+			break
+		}
+		if time.Now().After(deadline) {
+			k.fmu.Unlock()
+			t.Fatal("never revoked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	err := e.srv.saveLinkFile(id)
+	k.fmu.Unlock()
+	<-revoked
+	if !errors.Is(err, errNotSaved) {
+		t.Fatalf("the save of a link revoked meanwhile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("its file stays: %v", err)
+	}
+}
+
 // A link revoked, or gone with its session, before it is kept is neither
 // counted against its address nor written: the address's one place stays
 // free.
