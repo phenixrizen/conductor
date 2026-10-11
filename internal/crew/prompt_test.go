@@ -521,3 +521,61 @@ func TestResumeMember(t *testing.T) {
 		t.Fatalf("not reopened: %+v", got)
 	}
 }
+
+// A handoff accepted while the member's program takes it slowly (its text
+// still being taken when its time ran out) is told in the run's log how it
+// ended once it has: delivered with its Enter, or typed without it for a
+// question come meanwhile.
+func TestAPendingHandoffIsToldHowItEnded(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		question bool
+		want     string
+	}{
+		{"entered", false, "handoff delivered from lead to core"},
+		{"without its Enter", true, "handoff from lead to core typed without its Enter"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, fl := newEngine(t)
+			fl.onLaunch = askAtOnce
+			fl.inputWait = 200 * time.Millisecond
+			run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+			lead, _ := fl.member("lead")
+			core, p := fl.member("core")
+			typed(p)
+			core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+			// The program takes nothing for now: the handoff's text waits.
+			for len(p.Input) < cap(p.Input) {
+				p.Input <- nil
+			}
+			lead.Record(session.ActivityEntry{Type: session.ActivityHandoff, To: "core", Message: "the handlers are in"})
+			waitLogged(t, e, run.ID, "waits for core to take its input", 1, 10*time.Second)
+			if c.question {
+				core.SetAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI)
+			}
+			// The program reads again.
+			var got string
+			deadline := time.After(10 * time.Second)
+			for !strings.Contains(got, "handlers") || !c.question && !strings.HasSuffix(got, "\r") {
+				select {
+				case b := <-p.Input:
+					got += string(b)
+				case <-deadline:
+					t.Fatalf("typed %q", got)
+				}
+			}
+			waitLogged(t, e, run.ID, c.want, 1, 10*time.Second)
+			if c.question {
+				time.Sleep(200 * time.Millisecond)
+				if w := typed(p); len(w) != 0 {
+					t.Fatalf("typed after the question: %q", w)
+				}
+				waitLogged(t, e, run.ID, "handoff delivered", 0, time.Second)
+			}
+		})
+	}
+}
