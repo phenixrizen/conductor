@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -191,6 +192,8 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		}
 		e.mu.Lock()
 		switch {
+		case errors.Is(err, session.ErrSubmitPending):
+			r.note(session.ActivityStatus, "handoff from %s to %s waits for %s to take its input: it is entered once it has", h.from, m.def.Name, m.def.Name)
 		case err != nil && !res.Typed:
 			r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, m.def.Name, err)
 		case err != nil:

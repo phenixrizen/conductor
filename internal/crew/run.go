@@ -807,6 +807,9 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 	name := m.def.Name
 	text := typedPrompt(m.def.Prompt, r.goal)
 	hasPrompt := strings.TrimSpace(text) != ""
+	// pending says its prompt was accepted while the program took it
+	// slowly (session.ErrSubmitPending): marked prompted by its Enter.
+	pending := false
 	if hasPrompt {
 		var res session.SubmitResult
 		for {
@@ -830,6 +833,9 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				e.mu.Lock()
 				m.markPrompted()
 				e.mu.Unlock()
+				// The handoffs waiting for its prompt may go (a pending
+				// prompt's Enter comes after this function has returned).
+				m.poke()
 			}})
 			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
 				// A question the wait had not seen yet (a dialog Submit
@@ -847,7 +853,8 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				}
 				continue
 			}
-			if err == nil {
+			pending = errors.Is(err, session.ErrSubmitPending)
+			if err == nil || pending {
 				break
 			}
 			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
@@ -858,6 +865,11 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		}
 		e.mu.Lock()
 		switch {
+		case pending:
+			// Accepted: entered as the program reads, and marked
+			// prompted then (BeforeEnter), never before: a done before
+			// its Enter starts nothing.
+			r.note(session.ActivityStatus, "%s's prompt waits for %s to take its input: it is entered once it has", name, name)
 		case !res.Entered:
 			// A question came up during the pause: the prompt waits in the
 			// agent's input, and is never typed again.
@@ -869,11 +881,16 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 		e.mu.Unlock()
 	}
 	e.mu.Lock()
-	m.markPrompted()
+	if !pending {
+		m.markPrompted()
+	}
 	m.state.Status = MemberRunning
-	if hasPrompt {
+	switch {
+	case pending:
+		r.touch()
+	case hasPrompt:
 		r.note(session.ActivityStatus, "typed %s's prompt", name)
-	} else {
+	default:
 		r.touch()
 	}
 	e.mu.Unlock()

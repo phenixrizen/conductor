@@ -449,6 +449,9 @@ func (s *Server) broadcastTo(ctx context.Context, run crew.Run, name, line, byNa
 	}
 	res, err := local.Submit(ctx, session.Submission{Text: line, ByName: byName, UnlessWaiting: true})
 	switch {
+	case errors.Is(err, session.ErrSubmitPending):
+		// Accepted: entered as the member's program reads.
+		return ""
 	case err != nil && !res.Typed:
 		// It ended, or the write failed as its process went.
 		if !errors.Is(err, session.ErrSessionEnded) {
