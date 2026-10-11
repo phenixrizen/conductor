@@ -47,6 +47,9 @@ type Server struct {
 	// viewerRelay bounds, per address, what the viewers of hosted sessions
 	// send their hosts through this server (cfg.ViewerRelayKBps).
 	viewerRelay *addrBuckets
+	// pingEvery is how often a WebSocket is pinged (the package's pingEvery
+	// when the server was made).
+	pingEvery time.Duration
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -215,6 +218,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		openHosts:   &addrCounter{},
 		openRelay:   &addrBuckets{},
 		viewerRelay: &addrBuckets{},
+		pingEvery:   pingEvery,
 		log:         log,
 		web:         web,
 		store:       st,

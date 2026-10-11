@@ -17,6 +17,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/signal"
 )
 
 // viewerBudget sets what the viewers of one address may send hosts through
@@ -210,12 +211,20 @@ func TestViewersOfOneAddressShareOneBudget(t *testing.T) {
 	}
 }
 
-// A viewer that disconnects while its frames wait for room in the queue of a
-// host that reads nothing is let go as soon as a write to it fails: the
-// session counts it no more, and the host stays connected.
-func TestAViewerThatLeavesWhileWaitingForTheHostIsLetGo(t *testing.T) {
-	e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
-	// A host that registers and then reads nothing more.
+// waitingViewer is a relayed viewer whose frames wait for room in the queue
+// of a host that reads nothing: hc is the host's connection, hs its session.
+type waitingViewer struct {
+	hc       *websocket.Conn
+	hs       *signal.HostedSession
+	v        *wsClient
+	viewerID string
+}
+
+// stallWaitingViewer registers a host that then reads nothing more, joins a
+// relayed viewer, and has it send until the host's queue holds all it may
+// and the server stops reading the viewer.
+func stallWaitingViewer(t *testing.T, e *testEnv) waitingViewer {
+	t.Helper()
 	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
 	hc, _, err := websocket.Dial(t.Context(), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
 	if err != nil {
@@ -268,20 +277,51 @@ func TestAViewerThatLeavesWhileWaitingForTheHostIsLetGo(t *testing.T) {
 	if sent.Load() < 7<<20 {
 		t.Fatalf("the server stopped reading after %d bytes", sent.Load())
 	}
-	v.c.CloseNow()
+	return waitingViewer{hc: hc, hs: hs, v: v, viewerID: viewerID}
+}
+
+// A viewer that disconnects while its frames wait for room in the queue of a
+// host that reads nothing is let go as soon as a write to it fails: the
+// session counts it no more, and the host stays connected.
+func TestAViewerThatLeavesWhileWaitingForTheHostIsLetGo(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
+	w := stallWaitingViewer(t, e)
+	w.v.c.CloseNow()
 	// The host writes to the viewer, which finds it gone.
 	start := time.Now()
 	for i := 0; i < 5; i++ {
-		env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
-		if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+		env, _ := proto.EncodeRelay(w.viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
+		if err := w.hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !waitFor(5*time.Second, func() bool { return hs.Info().Viewers == 0 }) {
+	if !waitFor(5*time.Second, func() bool { return w.hs.Info().Viewers == 0 }) {
 		t.Fatalf("a viewer gone for %v is still counted", time.Since(start))
 	}
-	if !hs.Connected() {
+	if !w.hs.Connected() {
+		t.Fatal("the host was disconnected")
+	}
+}
+
+// The same viewer is let go when nothing is written to it: its pings find
+// the connection gone, though its read loop is held.
+func TestAViewerThatLeavesWhileWaitingIsFoundByItsPings(t *testing.T) {
+	defer func(old time.Duration) { pingEvery = old }(pingEvery)
+	pingEvery = 200 * time.Millisecond
+	e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
+	w := stallWaitingViewer(t, e)
+	// Held, it does not answer pings, and stays.
+	time.Sleep(3 * pingEvery)
+	if w.hs.Info().Viewers != 1 {
+		t.Fatal("a viewer held in its read loop was let go")
+	}
+	w.v.c.CloseNow()
+	start := time.Now()
+	if !waitFor(5*time.Second, func() bool { return w.hs.Info().Viewers == 0 }) {
+		t.Fatalf("a viewer gone for %v is still counted", time.Since(start))
+	}
+	if !w.hs.Connected() {
 		t.Fatal("the host was disconnected")
 	}
 }

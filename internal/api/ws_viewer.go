@@ -93,7 +93,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 		return
 	}
 	defer local.Detach(sub)
-	go keepalive(sink.ctx, c)
+	go keepalive(sink.ctx, c, s.pingEvery)
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
@@ -378,7 +378,9 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		v.Pump(sink)
 		sink.cancel()
 	}()
-	go keepalive(sink.ctx, c)
+	// A connection that fails while nothing is written to it is found by
+	// its pings: the viewer is let go then, though its read loop is held.
+	go keepaliveUntilGone(sink.ctx, c, s.pingEvery, func() { hs.RemoveViewer(v) })
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {

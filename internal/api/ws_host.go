@@ -143,7 +143,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	go keepalive(ctx, c)
+	go keepalive(ctx, c, s.pingEvery)
 
 	for {
 		typ, data, err := c.Read(ctx)
