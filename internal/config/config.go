@@ -402,6 +402,13 @@ type Config struct {
 	// was none. It is not a config key: the decoder ignores it, so a "path" key
 	// in the file is rejected as unknown.
 	Path string `json:"-"`
+	// DesktopDir is the desktop app's own directory (Electron's userData,
+	// which holds its settings and their switchyard token), named by the app
+	// for the server it starts (CONDUCTOR_DESKTOP_DIR): on Windows, its
+	// folder in the Windows profile as WSL mounts it, which the server could
+	// not find on its own. No file read reaches it (FileDeny). An absolute
+	// path; not a config-file key.
+	DesktopDir string `json:"-"`
 
 	// warnings are what the last Validate found worth saying but not wrong.
 	warnings []string
@@ -531,6 +538,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	list("CONDUCTOR_ENV_PASSTHROUGH", &cfg.EnvPassthrough)
 	str("CONDUCTOR_CATALOG_PATH", &cfg.CatalogPath)
 	str("CONDUCTOR_DATA_DIR", &cfg.DataDir)
+	str("CONDUCTOR_DESKTOP_DIR", &cfg.DesktopDir)
 	if v := getenv("CONDUCTOR_FILE_VIEW"); v != "" {
 		cfg.FileView = FileView(v)
 	}
@@ -814,6 +822,13 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("catalogPath: %w", err))
 		} else {
 			c.CatalogPath = abs
+		}
+	}
+	if c.DesktopDir != "" {
+		if !filepath.IsAbs(c.DesktopDir) {
+			errs = append(errs, fmt.Errorf("CONDUCTOR_DESKTOP_DIR must be an absolute path, got %q", c.DesktopDir))
+		} else {
+			c.DesktopDir = filepath.Clean(c.DesktopDir)
 		}
 	}
 	for i, s := range c.ICEServers {

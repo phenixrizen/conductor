@@ -131,7 +131,7 @@ async function run() {
     launcher,
     args: SERVE_ARGS,
     env: () => {
-      const env = serverEnv(process.env, settings, token, shellPath)
+      const env = serverEnv(process.env, settings, token, shellPath, userData)
       // Inside a WSL distribution the paths are its own: the server's data
       // beside its binary, the Linux home as the root (and the Windows
       // profile under /mnt when asked).

@@ -59,6 +59,10 @@ describe('wsl', () => {
     // Linux paths saved in Settings are the server's.
     const saved = l.linuxEnv({ CONDUCTOR_DATA_DIR: '/home/me/.conductor', CONDUCTOR_ALLOWED_ROOTS: '/home/me/code,/srv', CONDUCTOR_DEFAULT_CWD: '/home/me/code' }, false, 'C:\\Users\\me')
     expect(saved).toMatchObject({ CONDUCTOR_DATA_DIR: '/home/me/.conductor', CONDUCTOR_ALLOWED_ROOTS: '/home/me/code,/srv', CONDUCTOR_DEFAULT_CWD: '/home/me/code' })
+    // The app's own directory, in the Windows profile, is named as the distribution mounts it; one it cannot name there is left out.
+    expect(l.linuxEnv({ CONDUCTOR_DESKTOP_DIR: 'C:\\Users\\me\\AppData\\Roaming\\conductor-desktop' }, false, 'C:\\Users\\me').CONDUCTOR_DESKTOP_DIR).toBe('/mnt/c/Users/me/AppData/Roaming/conductor-desktop')
+    expect(l.linuxEnv({ CONDUCTOR_DESKTOP_DIR: '\\\\server\\profiles\\me\\conductor-desktop' }, false, '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
+    expect(l.linuxEnv({}, false, '')).not.toHaveProperty('CONDUCTOR_DESKTOP_DIR')
     expect(WslLauncher.linuxRoots(true, 'C:\\Users\\me')).toEqual(['$HOME', '/mnt/c/Users/me'])
     expect(WslLauncher.linuxRoots(true, 'C:\\Users\\me', '/home/me', ['/home/me/code'])).toEqual(['/home/me/code', '/mnt/c/Users/me'])
     // The start script puts the shell's PATH first, then runs the server.

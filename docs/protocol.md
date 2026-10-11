@@ -719,9 +719,15 @@ everything in it, its config file (admin and host tokens) and its catalog file
 directory in the same directory (and in the target's directory, when either path
 is a symbolic link) whose name contains theirs, ignoring case as a
 case-insensitive file system does (`conductor.json.bak`, `conductor.json~`,
-`.conductor.json.swp`, `#conductor.json#`), even inside the working directory.
-The two files themselves are matched as files, so a link to them is refused as
-well; the copies are matched by name alone. One of these paths that is not on
+`.conductor.json.swp`, `#conductor.json#`), even inside the working directory;
+and what the other Conductors on the machine keep: `~/.conductor`, the desktop
+app's own directory (`conductor-desktop` and `Conductor` in the user's config
+directory, and the one `CONDUCTOR_DESKTOP_DIR` names, which the app sets for
+the server it starts: on Windows its folder in the Windows profile, under
+`/mnt` inside WSL), its settings file as a config file, the data directory
+those settings name and `~/.local/share/conductor/data`. The config file, the
+catalog file and the settings file are matched as files, so a link to them is
+refused as well; the copies are matched by name alone. One of these paths that is not on
 disk (a data directory never made, a config file moved away) is matched by its
 path instead: below the deepest directory on it that is there, compared as a
 file, its names compared ignoring case, so that what a revision keeps there

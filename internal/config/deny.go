@@ -23,9 +23,39 @@ import (
 // file (CatalogPath), which can hold env secrets. Each of the two files comes
 // with its name entries (session.DenyList), so an editor's or a backup's
 // copy beside it is refused too. A directory is denied with everything in
-// it, a file on its own.
+// it, a file on its own. What the other Conductors on this machine keep is
+// refused as well (machineFiles): a session must not read the desktop
+// app's settings, which hold its switchyard token, nor another server's
+// data directory.
 func (c *Config) FileDeny(dirs ...string) []string {
-	return c.fileDeny(dirs, nil)
+	more, files := c.machineFiles()
+	return c.fileDeny(append(slices.Clone(dirs), more...), files)
+}
+
+// machineFiles are the directories and files of the other Conductors this
+// machine may run: ~/.conductor, the default data directory, whichever
+// this server uses; the desktop app's (desktopFiles: its own directory
+// under both names, its settings, the data directory they name, and inside
+// WSL the one it gives a server there); and the directory the app named
+// for the server it started (DesktopDir), with its settings file, which
+// for the app on Windows is in the Windows profile, under /mnt inside WSL.
+// Settings of the app that cannot be read leave out only the data
+// directory they would name: the directory that holds them, and holds the
+// app's data directory unless they say otherwise, is refused in any case.
+// A server does not stop for them, as conductor host does (LocalFileDeny):
+// the app starts its server with settings it read itself.
+func (c *Config) machineFiles() (dirs, files []string) {
+	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		dirs = append(dirs, filepath.Join(home, ".conductor"))
+	}
+	d, f, _ := desktopFiles()
+	dirs = append(dirs, d...)
+	files = append(files, f...)
+	if c.DesktopDir != "" {
+		dirs = append(dirs, c.DesktopDir)
+		files = append(files, filepath.Join(c.DesktopDir, "settings.json"))
+	}
+	return dirs, files
 }
 
 // fileDeny is FileDeny with more files, each denied as the two are.
@@ -227,7 +257,8 @@ const maxDesktopSettings = 1 << 20
 // here. Each path is named whether it exists or not: one that does not is
 // refused by its path (session.ResolvePath). Settings that are
 // there but cannot be read for their data directory are an error
-// (desktopDataDir): the app may hold another in memory.
+// (desktopDataDir): the app may hold another in memory. The error comes
+// with the rest of what is named, all but that data directory.
 func desktopFiles() (dirs, files []string, err error) {
 	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
 		dirs = append(dirs, filepath.Join(home, ".local", "share", "conductor", "data"))
@@ -241,15 +272,18 @@ func desktopFiles() (dirs, files []string, err error) {
 		settings := filepath.Join(app, "settings.json")
 		dirs = append(dirs, app)
 		files = append(files, settings)
-		d, err := desktopDataDir(settings)
-		if err != nil {
-			return nil, nil, fmt.Errorf("the desktop app's settings %s, which name its server's data directory: %w", settings, err)
+		d, derr := desktopDataDir(settings)
+		if derr != nil {
+			if err == nil {
+				err = fmt.Errorf("the desktop app's settings %s, which name its server's data directory: %w", settings, derr)
+			}
+			continue
 		}
 		if d != "" {
 			dirs = append(dirs, d)
 		}
 	}
-	return dirs, files, nil
+	return dirs, files, err
 }
 
 // desktopDataDir is the data directory the desktop app's settings file

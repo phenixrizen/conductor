@@ -132,8 +132,10 @@ export class WslLauncher implements Launcher {
   }
 
   /**
-   * linuxEnv rewrites the paths the server gets to the distribution's own: its data beside its binary, its home as the root; with
-   * `ice`, the server puts every WebRTC connection on that UDP port and advertises the Windows address, the forwarder's.
+   * linuxEnv rewrites the paths the server gets to the distribution's own: its data beside its binary, its home as the root; the
+   * app's own directory, in the Windows profile, as the distribution mounts it (/mnt/c/..., as the binary is installed from), left
+   * out when it has no such path; with `ice`, the server puts every WebRTC connection on that UDP port and advertises the Windows
+   * address, the forwarder's.
    */
   linuxEnv(env: Record<string, string>, windowsHome: boolean, userProfile: string, ice?: { port: number; publicIp: string }): Record<string, string> {
     const home = this.home || '$HOME'
@@ -148,6 +150,9 @@ export class WslLauncher implements Launcher {
       CONDUCTOR_ALLOWED_ROOTS: WslLauncher.linuxRoots(windowsHome, userProfile, home, roots).join(','),
       CONDUCTOR_DEFAULT_CWD: posix(env.CONDUCTOR_DEFAULT_CWD) || home,
     }
+    const appDir = posix(windowsPathToWsl(env.CONDUCTOR_DESKTOP_DIR ?? ''))
+    if (appDir) out.CONDUCTOR_DESKTOP_DIR = appDir
+    else delete out.CONDUCTOR_DESKTOP_DIR
     if (this.path) out.CONDUCTOR_PATH = this.path
     if (ice && ice.port > 0 && ice.publicIp) {
       out.CONDUCTOR_ICE_UDP_PORT = String(ice.port)

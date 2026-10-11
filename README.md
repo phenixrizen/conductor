@@ -481,7 +481,12 @@ terminal connection, so for hosted sessions the file comes from the developer's
 machine. Limit reads with the `fileView` setting (`view`, `control` or `off`;
 `--file-view` for `conductor host`). Server sessions never serve the server's
 data directory, config file or catalog file (`catalogPath`), even inside a
-working directory. A hosted session refuses the same files of the server on
+working directory, nor what the other Conductors on the machine keep:
+`~/.conductor`, the desktop app's own directory (`conductor-desktop` or
+`Conductor` in the user's config directory, and the one the app names with
+`CONDUCTOR_DESKTOP_DIR` for the server it starts: on Windows its folder in the
+Windows profile, under `/mnt` inside WSL), which holds its settings and their
+switchyard token, and the data directory those settings name. A hosted session refuses the same files of the server on
 its own machine: the data directory `CONDUCTOR_DATA_DIR` names, else the one
 the server would choose (`~/.conductor`, which is refused in any case); the
 catalog file `CONDUCTOR_CATALOG_PATH` names; with `conductor host
@@ -1404,6 +1409,7 @@ file must run `compinit` before that line.
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
+| — | `CONDUCTOR_DESKTOP_DIR` | none | the desktop app's own directory, named by the app for the server it starts (on Windows, its folder in the Windows profile as WSL mounts it): no session's file read reaches it; an absolute path, not a config-file key |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
 | `switchyard.enabled` | `CONDUCTOR_SWITCHYARD` (`1`/`true`), or `conductor switchyard` | `false` | coordinate hosted sessions and launch nothing: the launching routes answer `403 switchyard` (see [Switchyard](#switchyard)) |
 | `switchyard.relay` | `CONDUCTOR_SWITCHYARD_RELAY` (`1`/`true` on, `0`/`false` off) | `true` | on a switchyard, relay the terminal for viewers whose WebRTC fails; off, they get `relay_off` and relay-only hosts are refused |

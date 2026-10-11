@@ -703,6 +703,89 @@ func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
 	}
 }
 
+// What the other Conductors on the machine keep is no more readable than the
+// server's own files, for a session in the home directory (the desktop app's
+// default root): the desktop app's directory under both names, its settings
+// (which hold its switchyard token) included, the default data directory
+// ~/.conductor while the server keeps its own elsewhere, and the directory
+// the app names for the server it starts, which for the app on Windows is
+// its folder in the Windows profile, under /mnt inside WSL. Over HTTP and
+// in-band, through a view link and with the admin token; the rest of the
+// home still reads.
+func TestFileReadsNeverReachAnotherConductorsFiles(t *testing.T) {
+	const secret = "switchyard-token-of-the-app"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsApp := filepath.Join(home, "mnt", "c", "Users", "me", "AppData", "Roaming", "conductor-desktop")
+	appSettings := `{"switchyardToken": "` + secret + `"}`
+	for path, body := range map[string]string{
+		filepath.Join(configDir, "conductor-desktop", "settings.json"):    appSettings,
+		filepath.Join(configDir, "conductor-desktop", "logs", "main.log"): secret,
+		filepath.Join(configDir, "Conductor", "settings.json"):            appSettings,
+		filepath.Join(home, ".conductor", "catalog.json"):                 secret,
+		filepath.Join(windowsApp, "settings.json"):                        appSettings,
+		filepath.Join(home, "notes.md"):                                   "# hi\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newTestEnv(t, func(c *config.Config) {
+		c.AllowedRoots, c.DefaultCwd = []string{home}, home
+		c.DesktopDir = windowsApp
+	})
+	id := e.createSession("cat")
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	view := lo["token"].(string)
+	rel := func(p string) string {
+		r, err := filepath.Rel(home, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	denied := []string{
+		rel(filepath.Join(configDir, "conductor-desktop", "settings.json")),
+		rel(filepath.Join(configDir, "conductor-desktop", "logs", "main.log")),
+		rel(filepath.Join(configDir, "conductor-desktop")),
+		rel(filepath.Join(configDir, "Conductor", "settings.json")),
+		".conductor/catalog.json",
+		".conductor",
+		rel(filepath.Join(windowsApp, "settings.json")),
+		rel(windowsApp),
+	}
+	for _, token := range []string{view, adminToken} {
+		for _, p := range denied {
+			for _, mode := range []string{"raw", "stat", ""} {
+				if status, got, code := e.getFile(id, token, p, mode); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
+					t.Errorf("HTTP %q (mode %q): %d %s", p, mode, status, got)
+				}
+			}
+		}
+		if status, got, _ := e.getFile(id, token, "notes.md", "raw"); status != http.StatusOK || got != "# hi\n" {
+			t.Fatalf("an ordinary file in the home: %d %q", status, got)
+		}
+	}
+	c := dialViewer(t, e, id, view)
+	c.hello(80, 24)
+	c.expectControl(proto.CtlReady)
+	for i, p := range denied {
+		reqID := fmt.Sprintf("m%d", i)
+		c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: reqID, Path: p}))
+		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+			t.Errorf("file_get %q: %+v %q", p, h, b)
+		}
+	}
+}
+
 func TestUnknownRoutesAndNoUI(t *testing.T) {
 	e := newTestEnv(t, nil)
 	resp, _ := e.do("GET", "/api/nope", adminToken, nil)
