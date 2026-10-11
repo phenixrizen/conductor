@@ -1277,6 +1277,7 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if enter {
 		s.nextTurn()
 	}
+	noted := false
 	if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
 		// A key that answers a dialog on the screen: the look before a
 		// submission does not ask the dialog again before the program draws
@@ -1289,6 +1290,7 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
 			s.mu.Unlock()
 			s.asked.Hold()
+			noted = true
 		}
 	}
 	if _, err := s.proc.Write(data); err != nil {
@@ -1299,7 +1301,12 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	}
 	s.stampTyping(sub)
 	if s.asked != nil {
-		s.noteTyped(promptSince, sub)
+		if !noted {
+			// The dialog the screen showed as the key was written, when
+			// there was one, says what it answers; the question shown is
+			// only the fallback (it can be one the screen has replaced).
+			s.noteTyped(promptSince, sub)
+		}
 		if enter || s.askedKeys[string(data)] {
 			// Look at the screen again even if the program draws nothing:
 			// a dialog the key did not take away is asked again.

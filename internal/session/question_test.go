@@ -696,6 +696,34 @@ func TestAKeyBeforeTheDialogIsAskedAnswersItWhenItGoesLate(t *testing.T) {
 	}
 }
 
+// A key is noted against the dialog the screen shows as it is written, not
+// the question the session still shows: a network approval answered with
+// p (a key it shows but Conductor does not offer for it), the next dialog
+// drawn and answered with Escape before it is asked, then, the program
+// being slow, asked anyway and taken away: it gives way to the Escape.
+func TestAKeyIsNotedAgainstTheDialogOnTheScreen(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[14;3HDo you want to approve network access to \"example.com\"?\x1b[16;1H› 1. Yes, just this once (y)\x1b[17;3H2. Yes, and allow this host in the future (p)\x1b[18;3H3. No, and block this host in the future (d)\x1b[20;3HPress enter to confirm or esc to cancel"))
+	if a := waitAttention(t, s, asked); !strings.HasPrefix(a.Message, "Do you want to approve network access") {
+		t.Fatalf("the network question %+v", a)
+	}
+	s.Input(sub, []byte("p"))
+	nextWrite(t, p)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	s.Input(sub, []byte("\x1b"))
+	nextWrite(t, p)
+	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Message == approvalWords })
+	p.outW.Write([]byte(approvalGone("■ Conversation interrupted\r\n› ")))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil || s.Info().LastAnswer.Message != approvalWords {
+		t.Fatalf("%+v %+v", a, s.Info().LastAnswer)
+	}
+}
+
 // A digit past the dialog's lines does nothing in Codex, and the dialog
 // stays: a handoff that comes right after it waits for the screen to be
 // looked at again, finds the dialog, and writes nothing.
