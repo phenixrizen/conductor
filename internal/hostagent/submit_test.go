@@ -60,6 +60,13 @@ func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration)
 	v := &submitViewer{t: t, p: p, proc: proc, dc: dc, frames: frames}
 	v.send(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "Nate"})
 	v.until(func(m map[string]any) bool { return m["t"] == proto.CtlReady })
+	// The session sends ready as it attaches the viewer, before the peer
+	// holds the subscription (attach). A frame on the data channel is
+	// handled after the hello has finished, but a test that hands the peer
+	// a frame itself (handleFrame) must not do so before: a frame of a
+	// viewer not attached yet is dropped. The ping is handled after the
+	// hello, so once its pong is in, the peer holds the subscription.
+	v.sync()
 	return v
 }
 

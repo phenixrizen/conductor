@@ -194,6 +194,15 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 		case raw := <-frames:
 			if f, err := proto.Decode(raw); err == nil && f.Type == proto.TypeControl {
 				if typ, _ := proto.ParseHeader(f.Payload); typ == proto.CtlReady {
+					// The session sends ready as it attaches the viewer,
+					// before the peer holds the subscription (attach).
+					for !holdsSub(p) {
+						select {
+						case <-deadline:
+							t.Fatal("the peer never held the viewer's subscription")
+						case <-time.After(5 * time.Millisecond):
+						}
+					}
 					return a, p, frames
 				}
 			}
@@ -201,6 +210,13 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 			t.Fatal("the viewer was not attached")
 		}
 	}
+}
+
+// holdsSub reports whether p holds its viewer's subscription.
+func holdsSub(p *peer) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sub != nil
 }
 
 // flood queues 480 KiB of output for the viewer: less than the session and the
