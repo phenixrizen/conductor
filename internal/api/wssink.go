@@ -20,9 +20,12 @@ const (
 	readLimit    = 64 << 10
 )
 
-// pingEvery is how often a connection is pinged. A server takes it when it is
-// made (Server.pingEvery), so a test may shorten it for the servers it makes.
-var pingEvery = 30 * time.Second
+// defaultPingEvery is how often a connection is pinged.
+const defaultPingEvery = 30 * time.Second
+
+// pingEvery is defaultPingEvery, which a server takes when it is made
+// (Server.pingEvery), so a test may shorten it for the servers it makes.
+var pingEvery = defaultPingEvery
 
 // wsSink writes session frames to a viewer WebSocket and translates the close
 // reason into a close code.
@@ -113,6 +116,9 @@ func readFrame(ctx context.Context, c *websocket.Conn, timeout time.Duration) (p
 
 // keepalive pings the peer every `every` until ctx ends or a ping fails.
 func keepalive(ctx context.Context, c *websocket.Conn, every time.Duration) {
+	if every <= 0 {
+		every = defaultPingEvery // a Server made without New
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -138,6 +144,9 @@ func keepalive(ctx context.Context, c *websocket.Conn, every time.Duration) {
 // pings go on. A write that times out closes the connection, and the next
 // ping says so.
 func keepaliveUntilGone(ctx context.Context, c *websocket.Conn, every time.Duration, gone func()) {
+	if every <= 0 {
+		every = defaultPingEvery
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
