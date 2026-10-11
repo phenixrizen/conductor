@@ -210,7 +210,11 @@ then wait in their own read loops, in the order they came, for the host
 to take some (a viewer whose connection fails meanwhile is let go), which
 neither holds up the host's messages nor closes its connection; a server
 message that finds the whole queue full closes the connection, as a host
-too slow to keep. What waits for a viewer is bounded at 16 MiB beside its
+too slow to keep. What a viewer sent before its connection closed reaches
+the host before its `viewer_leave`: once a write to the viewer or a ping
+has failed, its connection is still read for at most 2 s, and a frame that
+needs no wait is relayed; one that was waiting (the budget, room in the
+host's queue) is dropped, and nothing the viewer sent after it goes. What waits for a viewer is bounded at 16 MiB beside its
 2048 frames: past either the viewer is closed as too slow (1008,
 `slow_consumer`). After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps

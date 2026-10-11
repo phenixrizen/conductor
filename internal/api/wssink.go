@@ -97,6 +97,32 @@ func errorCodeFor(reason error) string {
 	return ""
 }
 
+// viewerSeam lets a test order what a hosted viewer's connection does as a
+// network may (serveHostedViewer). read, when set, is called before each read
+// of the connection, with a channel closed once the viewer's writer has
+// ended; write, when set, is called before each frame the writer writes, and
+// an error it returns fails that write; ended, when set, is called on the
+// writer's goroutine once Pump has returned, before the read loop's waits
+// end.
+type viewerSeam struct {
+	read  func(written <-chan struct{})
+	write func() error
+	ended func()
+}
+
+// seamSink is a sink whose writes fail when the seam says so.
+type seamSink struct {
+	*wsSink
+	fail func() error
+}
+
+func (s seamSink) WriteFrame(frame []byte) error {
+	if err := s.fail(); err != nil {
+		return err
+	}
+	return s.wsSink.WriteFrame(frame)
+}
+
 // readFrame reads one binary frame with a deadline.
 func readFrame(ctx context.Context, c *websocket.Conn, timeout time.Duration) (proto.Frame, error) {
 	if timeout > 0 {

@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -244,29 +246,10 @@ type waitingViewer struct {
 // and the server stops reading the viewer.
 func stallWaitingViewer(t *testing.T, e *testEnv) waitingViewer {
 	t.Helper()
-	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
-	hc, _, err := websocket.Dial(t.Context(), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { hc.CloseNow() })
-	hc.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
-	reg, _ := json.Marshal(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
-		Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}})
-	if err := hc.Write(t.Context(), websocket.MessageText, reg); err != nil {
-		t.Fatal(err)
-	}
-	_, data, err := hc.Read(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var registered proto.Registered
-	if err := json.Unmarshal(data, &registered); err != nil || registered.SessionID == "" {
-		t.Fatalf("registered %s: %v", data, err)
-	}
-	hs, _ := e.srv.hosts.Get(registered.SessionID)
+	hc, sessionID := dialRawHost(t, e)
+	hs, _ := e.srv.hosts.Get(sessionID)
 
-	v := dialViewer(t, e, registered.SessionID, adminToken)
+	v := dialViewer(t, e, sessionID, adminToken)
 	v.hello(80, 24)
 	viewerID, _ := v.expectControl(proto.CtlWelcome)["viewerId"].(string)
 	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
@@ -297,6 +280,315 @@ func stallWaitingViewer(t *testing.T, e *testEnv) waitingViewer {
 		t.Fatalf("the server stopped reading after %d bytes", sent.Load())
 	}
 	return waitingViewer{hc: hc, hs: hs, v: v, viewerID: viewerID}
+}
+
+// dialRawHost registers a host whose connection the test reads itself, the
+// server's messages in the order they come, and returns it with its
+// session's id.
+func dialRawHost(t *testing.T, e *testEnv) (*websocket.Conn, string) {
+	t.Helper()
+	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
+	hc, _, err := websocket.Dial(t.Context(), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hc.CloseNow() })
+	hc.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
+	reg, _ := json.Marshal(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
+		Session: proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}})
+	if err := hc.Write(t.Context(), websocket.MessageText, reg); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := hc.Read(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered proto.Registered
+	if err := json.Unmarshal(data, &registered); err != nil || registered.SessionID == "" {
+		t.Fatalf("registered %s: %v", data, err)
+	}
+	return hc, registered.SessionID
+}
+
+// hostMessage is one message a raw host read: a text message's type, or a
+// relayed frame and the viewer it came from.
+type hostMessage struct {
+	t      string
+	viewer string
+	frame  proto.Frame
+}
+
+// readHost reads hc's next message within d.
+func readHost(t *testing.T, hc *websocket.Conn, d time.Duration) hostMessage {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), d)
+	defer cancel()
+	typ, data, err := hc.Read(ctx)
+	if err != nil {
+		t.Fatalf("host read: %v", err)
+	}
+	if typ == websocket.MessageText {
+		var m struct{ T, ViewerID string }
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("host message %q: %v", data, err)
+		}
+		return hostMessage{t: m.T, viewer: m.ViewerID}
+	}
+	f, err := proto.Decode(data)
+	if err != nil || f.Type != proto.TypeRelay {
+		t.Fatalf("host frame %q: %v", data, err)
+	}
+	id, inner, err := proto.DecodeRelay(f.Payload)
+	if err != nil {
+		t.Fatalf("relay envelope: %v", err)
+	}
+	inner.Payload = bytes.Clone(inner.Payload)
+	return hostMessage{t: "relay", viewer: id, frame: inner}
+}
+
+// expectHost reads hc until a text message of type typ for viewer.
+func expectHost(t *testing.T, hc *websocket.Conn, typ, viewer string) {
+	t.Helper()
+	for {
+		if m := readHost(t, hc, 5*time.Second); m.t == typ && m.viewer == viewer {
+			return
+		}
+	}
+}
+
+// joinRawRelayed joins a relayed controller to a raw host's session and
+// returns it with its id, once the host has its join and relay_start.
+func joinRawRelayed(t *testing.T, e *testEnv, hc *websocket.Conn, sessionID string) (*wsClient, string) {
+	t.Helper()
+	v := dialViewer(t, e, sessionID, adminToken)
+	viewerID, _ := v.expectControl(proto.CtlWelcome)["viewerId"].(string)
+	expectHost(t, hc, proto.HostViewerJoin, viewerID)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
+	v.send(relay)
+	for {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("waiting for relay_ok: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+			break
+		}
+	}
+	expectHost(t, hc, proto.HostRelayStart, viewerID)
+	return v, viewerID
+}
+
+// writeFails is a viewerSeam whose writes fail once failing is set.
+func writeFails(failing *atomic.Bool) func() error {
+	return func() error {
+		if failing.Load() {
+			return errors.New("connection reset by peer")
+		}
+		return nil
+	}
+}
+
+// A viewer that sends a line and closes its connection at once, as a reply
+// box does, has the line reach the host before its viewer_leave, though a
+// write to it failed before its read loop had read the line: what it sent
+// before its connection closed is read and relayed before it is let go.
+func TestAViewersLastFramesReachTheHostBeforeItsLeave(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var hold, failing atomic.Bool
+	held := make(chan struct{}, 1)
+	e.srv.viewerSeam = &viewerSeam{
+		read: func(written <-chan struct{}) {
+			if !hold.Load() {
+				return
+			}
+			select {
+			case held <- struct{}{}:
+			default:
+			}
+			select {
+			case <-written:
+			case <-time.After(5 * time.Second):
+			}
+		},
+		write: writeFails(&failing),
+	}
+	hc, sessionID := dialRawHost(t, e)
+	v, viewerID := joinRawRelayed(t, e, hc, sessionID)
+
+	// The read loop reads a first frame, then holds its next read until the
+	// viewer's writer has ended.
+	hold.Store(true)
+	first := proto.Encode(proto.TypeInput, []byte("a"))
+	v.send(first)
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read loop did not come back to read")
+	}
+	line := proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "quick line"})
+	v.send(line)
+	v.c.CloseNow()
+	// The host writes to the viewer, and the write fails.
+	failing.Store(true)
+	env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
+	if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+		t.Fatal(err)
+	}
+
+	var relayed [][]byte
+	for {
+		m := readHost(t, hc, 5*time.Second)
+		if m.viewer != viewerID {
+			continue
+		}
+		if m.t == "relay" {
+			relayed = append(relayed, proto.Encode(m.frame.Type, m.frame.Payload))
+			continue
+		}
+		if m.t == proto.HostViewerLeave {
+			break
+		}
+	}
+	if len(relayed) != 2 || !bytes.Equal(relayed[0], first) || !bytes.Equal(relayed[1], line) {
+		t.Fatalf("before its leave the host got %d frames of the viewer's (%q), want the input and the line", len(relayed), relayed)
+	}
+}
+
+// A viewer whose frame waits for room in the queue of a host that reads
+// nothing, and whose connection then fails, has that frame dropped and
+// nothing it sent after it relayed, though a smaller frame behind it would
+// fit: the host gets what the viewer sent up to the dropped frame, in order,
+// and then its leave. So it is too when the writer that found the connection
+// failed is slow to end: the read loop wakes before its waits are ended.
+func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
+	for name, slow := range map[string]bool{"writer ends at once": false, "writer slow to end": true} {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
+			var failing atomic.Bool
+			readAgain := make(chan struct{}, 1)
+			seam := &viewerSeam{
+				write: writeFails(&failing),
+				read: func(<-chan struct{}) {
+					if failing.Load() {
+						select {
+						case readAgain <- struct{}{}:
+						default:
+						}
+					}
+				},
+			}
+			if slow {
+				// The writer has ended; the read loop's waits end once it has
+				// read again, or after a while.
+				seam.ended = func() {
+					select {
+					case <-readAgain:
+					case <-time.After(2 * time.Second):
+					}
+				}
+			}
+			e.srv.viewerSeam = seam
+			hc, sessionID := dialRawHost(t, e)
+			v, viewerID := joinRawRelayed(t, e, hc, sessionID)
+			// From here the host reads nothing until the viewer has failed.
+			// The viewer sends numbered frames, whole ones and small ones in
+			// turn, until the server stops reading it.
+			var sent atomic.Int64
+			go func() {
+				for i := 0; ; i++ {
+					size := proto.MaxInput
+					if i%2 == 1 {
+						size = 16
+					}
+					payload := bytes.Repeat([]byte("."), size)
+					copy(payload, fmt.Sprintf("%08d", i))
+					if v.c.Write(t.Context(), websocket.MessageBinary, proto.Encode(proto.TypeInput, payload)) != nil {
+						return
+					}
+					sent.Add(1)
+				}
+			}()
+			for last := int64(-1); last != sent.Load(); {
+				last = sent.Load()
+				time.Sleep(300 * time.Millisecond)
+			}
+			v.c.CloseNow()
+			failing.Store(true)
+			env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
+			if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+				t.Fatal(err)
+			}
+			next := 0
+			for {
+				m := readHost(t, hc, 10*time.Second)
+				if m.viewer != viewerID {
+					continue
+				}
+				if m.t == proto.HostViewerLeave {
+					break
+				}
+				if m.t != "relay" {
+					continue
+				}
+				if got := string(m.frame.Payload[:8]); got != fmt.Sprintf("%08d", next) {
+					t.Fatalf("frame %s reached the host where %08d was due", got, next)
+				}
+				next++
+			}
+			if next == 0 || int64(next) >= sent.Load() {
+				t.Fatalf("the host got %d of the %d frames sent", next, sent.Load())
+			}
+		})
+	}
+}
+
+// A viewer a write to which fails, while its connection stays open, is still
+// read for drainTimeout and no longer: what it sends meanwhile reaches the
+// host before its viewer_leave, and then it is let go and its connection
+// closed.
+func TestAViewerWhoseWriteFailsIsLetGoAfterItsDrain(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var failing atomic.Bool
+	e.srv.viewerSeam = &viewerSeam{write: writeFails(&failing)}
+	hc, sessionID := dialRawHost(t, e)
+	hs, _ := e.srv.hosts.Get(sessionID)
+	v, viewerID := joinRawRelayed(t, e, hc, sessionID)
+	failing.Store(true)
+	start := time.Now()
+	env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
+	if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+		t.Fatal(err)
+	}
+	late := proto.Encode(proto.TypeInput, []byte("late"))
+	v.send(late)
+	var relayed [][]byte
+	for {
+		m := readHost(t, hc, drainTimeout+5*time.Second)
+		if m.viewer != viewerID {
+			continue
+		}
+		if m.t == "relay" {
+			relayed = append(relayed, proto.Encode(m.frame.Type, m.frame.Payload))
+			continue
+		}
+		if m.t == proto.HostViewerLeave {
+			break
+		}
+	}
+	if took := time.Since(start); took > drainTimeout+3*time.Second {
+		t.Fatalf("a viewer whose write failed was let go after %v", took)
+	}
+	if len(relayed) != 1 || !bytes.Equal(relayed[0], late) {
+		t.Fatalf("before its leave the host got %q, want the frame sent during the drain", relayed)
+	}
+	if n := hs.Info().Viewers; n != 0 {
+		t.Fatalf("%d viewers counted after the leave", n)
+	}
+	for {
+		if _, err := v.read(); err != nil {
+			break
+		}
+	}
 }
 
 // A viewer that disconnects while its frames wait for room in the queue of a

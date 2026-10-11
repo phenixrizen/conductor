@@ -326,9 +326,21 @@ func (s *Server) linkLabel(linkID string) string {
 // read no faster than the bucket refills. Each frame is charged the larger
 // of what the viewer sent and what it sends the host (a relayed frame in its
 // envelope, a message encoded anew).
+//
+// What the viewer sent before its connection closed reaches the host before
+// the viewer's leave: the read loop reads the connection until it closes, or
+// for drainTimeout once it has failed (a write to the viewer, a ping), and
+// the viewer is let go (RemoveViewer, which tells the host it left) when the
+// read loop is done. The connection's failure ends the read loop's waits
+// (the budget, the join, room in the host's queue): the frame that waited is
+// dropped, and with it whatever the viewer sent after it.
 func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
 	sink := newWSSink(c)
 	defer sink.cancel()
+	// waits is what the read loop's waits wait under: it ends when the
+	// viewer's connection fails, or its writer ends.
+	waits, endWaits := context.WithCancel(sink.ctx)
+	defer endWaits()
 	var budget *byteBucket
 	if kbps := s.cfg.ViewerRelayKBps; kbps > 0 {
 		budget = s.viewerRelay.acquire(addr, kbps*1024, s.relayBurst(kbps*1024))
@@ -350,10 +362,10 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 			if n == use {
 				return nil
 			}
-			return budget.take(sink.ctx, n-use)
+			return budget.take(waits, n-use)
 		}
 		chargeJoin = func(stop <-chan struct{}, n int) error {
-			ctx, cancel := context.WithCancel(sink.ctx)
+			ctx, cancel := context.WithCancel(waits)
 			defer cancel()
 			go func() {
 				select {
@@ -402,20 +414,66 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	if err := sink.WriteFrame(welcome); err != nil {
 		return
 	}
+	// The read loop reads under reading: the connection's own until it
+	// closes, and at most drainTimeout past its failure (waits).
+	reading, endReading := context.WithCancel(sink.ctx)
+	defer endReading()
+	stopDrain := context.AfterFunc(waits, func() {
+		t := time.NewTimer(drainTimeout)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			endReading()
+		case <-reading.Done():
+		}
+	})
+	defer stopDrain()
+	// cut says a message the viewer sent was dropped (err) once its
+	// connection had failed, its wait cut short (the budget, the join, room
+	// in the host's queue): nothing the viewer sent after it goes, and the
+	// read loop ends. The failure is the viewer's own (Failed), set before
+	// any of those waits ends for it. A viewer the server let go is not cut:
+	// its connection closes as Pump ends, with what the viewer is owed.
+	cut := func(err error) bool {
+		return err != nil && v.Failed()
+	}
 	// Writer: drain frames queued by the host side. pumped closes when Pump
 	// has closed the sink, or given up on a connection that failed; the read
-	// loop's waits (the budget, readFrame) end with it.
+	// loop's waits end with it, and its reads soon after.
 	pumped := make(chan struct{})
+	var out session.Sink = sink
+	if s.viewerSeam != nil && s.viewerSeam.write != nil {
+		out = seamSink{sink, s.viewerSeam.write}
+	}
 	go func() {
 		defer close(pumped)
-		v.Pump(sink)
-		sink.cancel()
+		v.Pump(out)
+		if s.viewerSeam != nil && s.viewerSeam.ended != nil {
+			s.viewerSeam.ended()
+		}
+		endWaits()
+	}()
+	// A failed connection is left open for the read loop, the writer having
+	// given up on it: it is closed once the read loop is done. (A connection
+	// that has not failed is closed by the writer as it ends, which letting
+	// the viewer go makes it do.)
+	defer func() {
+		if v.Failed() {
+			c.CloseNow()
+		}
 	}()
 	// A connection that fails while nothing is written to it is found by
-	// its pings: the viewer is let go then, though its read loop is held.
-	go keepaliveUntilGone(sink.ctx, c, s.pingEvery, func() { hs.RemoveViewer(v) })
+	// its pings, though the read loop is held: its waits end, and the
+	// viewer is let go as the read loop ends.
+	go keepaliveUntilGone(sink.ctx, c, s.pingEvery, func() {
+		v.ConnFailed()
+		endWaits()
+	})
 	for {
-		f, err := readFrame(sink.ctx, c, 0)
+		if s.viewerSeam != nil && s.viewerSeam.read != nil {
+			s.viewerSeam.read(pumped)
+		}
+		f, err := readFrame(reading, c, 0)
 		if err != nil {
 			return
 		}
@@ -425,13 +483,13 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		// the host's connection or another viewer's.
 		if budget != nil {
 			credit = 1 + len(f.Payload)
-			if budget.take(sink.ctx, credit) != nil {
+			if budget.take(waits, credit) != nil {
 				return
 			}
 		}
 		switch f.Type {
 		case proto.TypeSignal:
-			if !s.handleViewerSignal(sink, pumped, hs, v, f.Payload) {
+			if !s.handleViewerSignal(sink, pumped, hs, v, f.Payload, cut) {
 				return
 			}
 		case proto.TypeInput, proto.TypeControl, proto.TypeFileWrite:
@@ -447,6 +505,8 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 				case errors.Is(err, signal.ErrHostGone):
 					hostGone(sink, pumped)
 					return
+				case cut(err):
+					return
 				}
 			}
 		default:
@@ -456,15 +516,19 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	}
 }
 
-// handleViewerSignal forwards signaling; false ends the connection.
-func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *signal.HostedSession, v *signal.Viewer, payload []byte) bool {
+// handleViewerSignal forwards signaling; false ends the connection, as a
+// message cut short does (serveHostedViewer).
+func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *signal.HostedSession, v *signal.Viewer, payload []byte, cut func(error) bool) bool {
 	t, err := proto.ParseHeader(payload)
 	if err != nil {
 		return false
 	}
 	fail := func(err error) bool {
-		if errors.Is(err, signal.ErrHostGone) {
+		switch {
+		case errors.Is(err, signal.ErrHostGone):
 			hostGone(sink, pumped)
+			return false
+		case cut(err):
 			return false
 		}
 		return true
@@ -499,6 +563,11 @@ func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *si
 	}
 	return false
 }
+
+// drainTimeout bounds how long a hosted viewer's connection is still read
+// once it has failed: what the viewer sent before it closed is in the
+// socket already.
+const drainTimeout = 2 * time.Second
 
 // nvimOpenTimeout bounds the start of an editor (Neovim loading a config).
 const nvimOpenTimeout = 15 * time.Second

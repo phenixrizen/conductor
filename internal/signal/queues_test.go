@@ -205,9 +205,11 @@ func TestViewersGetRoomInTheHostQueueInTheirOrder(t *testing.T) {
 	}
 }
 
-// A viewer whose connection fails, as a write to it does, is closed: a frame
-// of its that waits for room in the host's queue stops waiting, and the
-// viewer counts no more.
+// A viewer whose connection fails, as a write to it does, stops waiting: a
+// frame of its that waits for room in the host's queue stops waiting, and so
+// does any later one that would wait. It is not closed: a frame it sent
+// before its connection closed still goes when it needs no wait, until
+// whoever serves it lets it go; then nothing of its goes.
 func TestAViewerWhoseWriteFailsStopsWaitingForTheHost(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
 	v := relayedViewer(t, hs, conn, "0123456789abcdef")
@@ -222,8 +224,30 @@ func TestAViewerWhoseWriteFailsStopsWaitingForTheHost(t *testing.T) {
 		t.Fatal("a viewer whose connection failed kept waiting for room")
 	}
 	<-pumped
-	if v.Reason() == nil {
-		t.Fatal("a viewer whose write failed is not closed")
+	if v.Reason() != nil || !v.Failed() {
+		t.Fatalf("a viewer whose write failed: closed %v, failed %v", v.Reason(), v.Failed())
+	}
+	whole := proto.Frame{Type: proto.TypeInput, Payload: bytes.Repeat([]byte("x"), proto.MaxInput)}
+	if err := hs.RelayToHost(v, whole); !errors.Is(err, ErrViewerGone) {
+		t.Fatalf("a frame that would wait, after the connection failed: %v", err)
+	}
+	line := proto.Frame{Type: proto.TypeInput, Payload: []byte("last")}
+	// The host takes what is queued: a frame that needs no wait goes.
+	for len(conn.Send) > 0 {
+		conn.Took(<-conn.Send)
+	}
+	if err := hs.RelayToHost(v, line); err != nil {
+		t.Fatalf("a frame read after the connection failed, with room for it: %v", err)
+	}
+	o := <-conn.Send
+	conn.Took(o)
+	if id, inner, err := proto.DecodeRelay(o.Binary[1:]); err != nil || id != v.ID || string(inner.Payload) != "last" {
+		t.Fatalf("the host got %q %q: %v", id, inner.Payload, err)
+	}
+	// Once let go, nothing of the viewer's goes, room or not.
+	v.close(session.ErrRevoked)
+	if err := hs.RelayToHost(v, line); !errors.Is(err, ErrViewerGone) || len(conn.Send) != 0 {
+		t.Fatalf("a frame after the viewer was let go: %v, %d queued", err, len(conn.Send))
 	}
 }
 
