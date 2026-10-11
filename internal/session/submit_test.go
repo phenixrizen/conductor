@@ -164,7 +164,9 @@ func TestSubmitIsOneAtATime(t *testing.T) {
 }
 
 // A submission cut short in its pause returns with the text typed and never
-// writes the Enter.
+// writes the Enter. The pause begins once the writer has reported the
+// text's write; cut short while that write is still under way, the
+// submission is accepted and finished instead (ErrSubmitPending).
 func TestSubmitIsCancellable(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{SubmitPause: time.Second}))
 	ctx, cancel := context.WithCancel(t.Context())
@@ -176,6 +178,7 @@ func TestSubmitIsCancellable(t *testing.T) {
 		done <- err
 	}()
 	nextWrite(t, p)
+	untilIdle(t, s)
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) || !res.Typed || res.Entered {
 		t.Fatalf("%+v %v", res, err)

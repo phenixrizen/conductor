@@ -51,6 +51,39 @@ func untilWaiting(t *testing.T, s *Local, n int) {
 	}
 }
 
+// untilIdle waits until the writer has no write in hand: the last one made
+// has been reported to whoever waited for it. What the process received is
+// not that: it has the bytes a moment before the writer reports the write.
+func untilIdle(t *testing.T, s *Local) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		waiting, writing := writesWaiting(s)
+		if waiting == 0 && !writing {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d writes waiting (writing %v), want none", waiting, writing)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// untilWrites waits until n writes have reached the process, as its onWrite
+// counted them in writes: the n-th has begun, though it may wait there.
+// (untilWaiting cannot tell it from the write before it, which the writer
+// may still be reporting.)
+func untilWrites(t *testing.T, writes *atomic.Int32, n int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for writes.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d writes reached the process, want %d", writes.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // written returns the next write the process took.
 func written(t *testing.T, p *fakeProc) string {
 	t.Helper()
@@ -687,7 +720,7 @@ func TestASubmissionWhoseEnterWaitsWhenTheSessionEndsIsNotEntered(t *testing.T) 
 	if got := written(t, p); got != "line" {
 		t.Fatalf("written %q", got)
 	}
-	untilWaiting(t, s, 0) // the Enter has begun, and waits
+	untilWrites(t, &writes, 2) // the Enter has begun, and waits
 	p.exit()
 	got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
 	if !errors.Is(got.err, ErrSessionEnded) || !got.res.Typed || got.res.Entered {
@@ -748,7 +781,7 @@ func TestASubmissionWhosePendingEnterSeesTheSessionEndIsNotEntered(t *testing.T)
 	if got := written(t, p); got != "line" {
 		t.Fatalf("written %q", got)
 	}
-	untilWaiting(t, s, 0) // the Enter has begun, and waits
+	untilWrites(t, &writes, 2) // the Enter has begun, and waits
 	// The wait wakes on the cancel, and the session ends before it can
 	// take the Enter out of the queue (the writer's lock, held here).
 	s.writer.mu.Lock()
