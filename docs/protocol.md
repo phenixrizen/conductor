@@ -598,7 +598,8 @@ cursor, the scroll region, the alternate screen; cursor moves, erasing,
 inserting and deleting, scrolling and autowrap applied, colours and the
 rest skipped), and the question's `prompt` and `words` are matched against
 its rows, each without the spaces at its end, joined by line breaks,
-without the blank rows at the bottom. A dialog a TUI redraws only where it
+without the blank rows at the bottom, its last 80 rows at most (a dialog is
+the bottom of what a TUI draws). A dialog a TUI redraws only where it
 changed (ratatui does; Codex advances its queued approvals in place) reads
 whole there, and one the program has taken away is gone, however few bytes
 took it. After 500 ms without output, title updates aside, a match marks

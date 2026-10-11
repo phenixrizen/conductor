@@ -50,7 +50,7 @@ const (
 // writes is kept whole.
 type Screen struct {
 	rows, cols int
-	main, alt  [][]rune
+	main, alt  [][]rune // alt is nil until the program first switches to it
 	cells      [][]rune // main or alt
 	altOn      bool
 	x, y       int
@@ -119,7 +119,10 @@ func (s *Screen) Resize(cols, rows int) {
 	if s.altOn {
 		mainShift, altShift = 0, shift
 	}
-	s.main, s.alt = fit(s.main, mainShift), fit(s.alt, altShift)
+	s.main = fit(s.main, mainShift)
+	if s.alt != nil {
+		s.alt = fit(s.alt, altShift)
+	}
 	if s.altOn {
 		s.cells = s.alt
 	} else {
@@ -344,7 +347,7 @@ func (s *Screen) scrollDown(top, bot, n int) {
 }
 
 func (s *Screen) reset() {
-	s.main, s.alt = blankRows(s.rows, s.cols), blankRows(s.rows, s.cols)
+	s.main, s.alt = blankRows(s.rows, s.cols), nil
 	s.cells, s.altOn = s.main, false
 	s.x, s.y, s.top, s.bot, s.wrap = 0, 0, 0, s.rows-1, false
 }
@@ -531,7 +534,18 @@ func (s *Screen) altScreen(on, cursor bool) {
 // Text returns what the screen shows: each row's characters with the spaces
 // at its end left out, the rows joined by line breaks, the blank rows at the
 // bottom left out.
-func (s *Screen) Text() string {
+func (s *Screen) Text() string { return s.text(len(s.cells)) }
+
+// maxLookRows bounds the rows Last gives a pattern: a dialog is the bottom
+// of what a TUI draws, and a look at a screen of hundreds of wide rows would
+// cost a regular expression tens of milliseconds for nothing.
+const maxLookRows = 80
+
+// Last is what a PatternWatcher matches: Text, its last maxLookRows rows.
+func (s *Screen) Last() string { return s.text(maxLookRows) }
+
+// text is Text, its last n rows at most.
+func (s *Screen) text(n int) string {
 	var b strings.Builder
 	last := -1
 	for r := len(s.cells) - 1; r >= 0; r-- {
@@ -540,8 +554,9 @@ func (s *Screen) Text() string {
 			break
 		}
 	}
-	for r := 0; r <= last; r++ {
-		if r > 0 {
+	first := max(0, last-n+1)
+	for r := first; r <= last; r++ {
+		if r > first {
 			b.WriteByte('\n')
 		}
 		line := make([]rune, 0, len(s.cells[r]))
@@ -554,9 +569,6 @@ func (s *Screen) Text() string {
 	}
 	return b.String()
 }
-
-// Last is Text: what a PatternWatcher matches.
-func (s *Screen) Last() string { return s.Text() }
 
 // Reset changes nothing: the screen is what the program drew, and only the
 // program changes it.

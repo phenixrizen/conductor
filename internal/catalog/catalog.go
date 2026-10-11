@@ -782,8 +782,8 @@ type Question struct {
 	// again each time it is drawn after an answer. Its prompt and words are
 	// matched against the screen as the program drew it (session.Screen):
 	// its rows, each without the spaces at its end, joined by line breaks,
-	// without the blank rows at the bottom. Codex's command approval is
-	// one.
+	// without the blank rows at the bottom, its last 80 rows at most.
+	// Codex's command approval is one.
 	Anytime bool     `json:"anytime,omitempty"`
 	Answers []Answer `json:"answers,omitempty"`
 }

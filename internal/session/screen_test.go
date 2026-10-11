@@ -131,6 +131,19 @@ func TestScreenResize(t *testing.T) {
 	}
 }
 
+// A watcher looks at the last rows the screen shows, where a TUI's dialog is.
+func TestScreenLastIsItsBottomRows(t *testing.T) {
+	s := NewScreen(20, 120)
+	for r := 1; r <= 100; r++ {
+		s.Write([]byte("row\r\n"))
+	}
+	s.Write([]byte("bottom"))
+	last := strings.Split(s.Last(), "\n")
+	if len(last) != maxLookRows || last[len(last)-1] != "bottom" || len(strings.Split(s.Text(), "\n")) != 101 {
+		t.Fatalf("%d rows looked at, the last %q", len(last), last[len(last)-1])
+	}
+}
+
 // Whatever comes, a Screen neither panics nor grows past its bounds.
 func TestScreenTakesAnyBytes(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
