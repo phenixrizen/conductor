@@ -1163,3 +1163,55 @@ func TestAKeyNotWrittenIsNotNotedAgainstTheDialog(t *testing.T) {
 		t.Fatalf("attention %+v", a)
 	}
 }
+
+// Several keys with an Enter, queued behind another's write, are refused
+// when a dialog asked during the work is drawn while they wait and they
+// are none of its choices: the writer looks at the screen as it takes them
+// (a choice clicked late must not pick the dialog's highlighted line).
+func TestQueuedKeysWithAnEnterAreRefusedForADialogDrawnMeanwhile(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions(), InputWait: 5 * time.Second}))
+	hold, takeAgain := gateWrites(t, p)
+	a, b := ownerOf(t, s), ownerOf(t, s)
+	p.outW.Write([]byte("\x1b[?2004h› "))
+	waitPaste(t, s, true)
+	time.Sleep(700 * time.Millisecond)
+	hold()
+	go s.Input(a, []byte("x"))
+	untilWaiting(t, s, 0)
+	done := make(chan error, 1)
+	go func() { done <- s.Input(b, []byte("1\r")) }()
+	untilWaiting(t, s, 1) // the keys wait behind the other's
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	takeAgain()
+	if got := written(t, p); got != "x" {
+		t.Fatalf("written %q", got)
+	}
+	if err := returnsWithin(t, 5*time.Second, "the keys", func() error { return <-done }); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("keys at a dialog drawn meanwhile: %v", err)
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+	if att := s.Info().Attention; !asked(att) {
+		t.Fatalf("attention %+v", att)
+	}
+}
+
+// A caller may reuse its buffer once Input has returned, also when the
+// keys' write had begun and lands later: what runs as they land reads keys
+// of its own (go test -race tells).
+func TestInputsBufferIsTheCallersOnceItReturns(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions(), InputWait: 100 * time.Millisecond}))
+	hold, takeAgain := gateWrites(t, p)
+	sub := ownerOf(t, s)
+	hold()
+	buf := []byte("\r")
+	if err := s.Input(sub, buf); !errors.Is(err, ErrInputStalled) {
+		t.Fatalf("the keys: %v", err)
+	}
+	takeAgain()  // the keys land
+	buf[0] = 'x' // meanwhile the caller's buffer is its own again
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	time.Sleep(100 * time.Millisecond) // what follows the keys runs
+}

@@ -1252,6 +1252,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
+	// The keys are this call's own: what runs as they are written, or once
+	// they land late, reads them after Input has returned, and the caller
+	// may reuse its buffer then.
+	data = bytes.Clone(data)
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter (a page's choice, a paste): look at the
 		// screen first, so that a dialog drawn and not yet seen quiet is the
@@ -1316,6 +1320,26 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	// read once the write is made.
 	var noted bool
 	o.from, o.anyEnd = sub, true
+	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
+		// Several keys with an Enter, looked at again as the writer takes
+		// them (they may have waited behind another write): a key that
+		// answered a dialog not looked after yet, or a dialog on the screen
+		// now whose choices they are not, refuses them (ErrQuestion), as
+		// before they were queued.
+		o.guard = func() error {
+			if s.asked.Held() {
+				return ErrQuestion
+			}
+			s.asked.CheckNow()
+			s.mu.Lock()
+			att := s.info.Attention
+			s.mu.Unlock()
+			if att.State == AttentionNeedsInput && att.Source == SourceQuestion && !isChoice(att, data) {
+				return ErrQuestion
+			}
+			return nil
+		}
+	}
 	o.before = func() {
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
@@ -1361,6 +1385,16 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	}
 	s.typedKeys(sub, data, promptSince, enter, noted)
 	return nil
+}
+
+// isChoice reports whether data is the input of one of att's choices.
+func isChoice(att Attention, data []byte) bool {
+	for _, o := range att.Options {
+		if o.Input != "" && o.Input == string(data) {
+			return true
+		}
+	}
+	return false
 }
 
 // typedKeys is what follows keys written to the program (input): sub is
