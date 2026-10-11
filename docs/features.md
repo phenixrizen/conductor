@@ -826,6 +826,51 @@ request each from main.
   not run the hooks after a trust was not looked at again: Conductor
   launches Codex interactively, and those launches keep the trust.
 
+- **Hardening from the review and an audit.** The Codex review's findings
+  (investigated before the round) and an audit by OpenAI's defensive-security
+  model led to these changes, one pull request each. Each was reviewed by
+  Codex until it approved, and each has Go tests (and vitest and Playwright
+  where a person sees the change).
+  - **Viewers on links** (#101). A link's role is checked again as a viewer
+    attaches, under the lock a revoke takes. Every revoke, an expiry, a
+    forgotten run, a switchyard run that no longer names a session and the
+    kept-link sweep close the viewers attached through the link. A guest page
+    whose link expired says so.
+  - **Submissions on a host** (#100). A `conductor host` viewer's
+    submissions wait in a bounded queue of their own, in order, each with its
+    deadline from arrival.
+  - **Files on a host** (#103). A `conductor host` session refuses the files
+    of the server on its machine (its data directory, config and catalog,
+    the desktop app's), as a server session does.
+  - **Neovim** (#104). The editor's Neovim is kept for the owner's own
+    windows. A link or an invite edits with the editor's keys and Save. On a
+    host, a server's window is the owner's only with `--server-is-mine`, for
+    a server on this machine. The Neovim child inherits no `CONDUCTOR_*` or
+    loader variables.
+  - **Logs** (#105). Request and panic log lines name a request by its route.
+    A generated workbench token is kept in a 0600 file under the data
+    directory, and its path, never its value, is shown.
+  - **git** (#106). Conductor's own git calls start no program a repository
+    configures (hooks, fsmonitor, pager, external diff, textconv, filters).
+    Worktrees check out in two steps. `.git` is read only in the Files tab.
+  - **The switchyard** (#108). It is told a published session's state, not
+    its chat or activity, and less of its details. Its workbench token has no
+    role on published sessions. Its stop ends the publication, not the
+    session. `conductor host --link` mints a link over the host's connection.
+    A fresh desktop install says its sessions are published, and the docs say
+    what a switchyard is trusted with.
+  - **Slow viewers** (#109). A client's transport closes on its own goroutine,
+    never under the session's lock. Revokes and shutdowns wait for every
+    client still closing, and those count toward the viewer cap. A viewer
+    moving to the relay takes over its own slot. The registry asks sessions
+    outside its lock. A file larger than about 960 KiB opens cut short and
+    marked truncated.
+  - **Relayed traffic** (#110). What hosted sessions' viewers send their
+    hosts is bounded per source address (`viewerRelayKBps`) and in bytes in
+    the host's and each viewer's queues. A save is waited for while its
+    connection lives, and its answer marks saved only the text it sent.
+  - **Desktop tests** (#107). They fetch Electron's binary before they start.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop

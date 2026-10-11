@@ -67,6 +67,20 @@ each reproduced with a Go test (round 15); none is fixed yet.
   (round 15); older than it. The fix proposed: carry the size through the
   replacement (`AttachOptions.Replaces`) in either order, without undoing an
   explicit Fit to my window made in between.
+- **A long-connected host's kept links are swept on a switchyard.** The
+  switchyard notes when it last saw a host only when the host registers, so
+  a host that stays connected more than seven days has its kept links
+  swept as orphans. Expected: a connected host's links are kept. The fix
+  proposed: refresh that time while the host is connected. Round 15
+  (#101's review).
+- **The SIGNAL size limit holds one way only.** The server can send a
+  viewer a SIGNAL frame larger than the protocol's 64 KiB for SIGNAL (a
+  re-encoded answer); it is charged to the relay budget but not refused.
+  Round 15 (#110).
+- **A malformed save part gets an error that names no save.** The client
+  no longer sends one (it refuses a part whose header would pass 4 KiB),
+  but the owner could answer with the save's id or close the connection.
+  Round 15 (#110).
 
 ## Features
 
