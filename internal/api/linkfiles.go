@@ -290,7 +290,7 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 // Why keepLink refuses a link.
 var (
 	errLinksFull   = errors.New("this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
-	errLinkGone    = errors.New("the link was revoked, or its session ended, as it was made")
+	errLinkGone    = errors.New("the link was revoked or expired, or its session ended, as it was made")
 	errLinkNotKept = errors.New("the switchyard could not keep the link; try again")
 )
 
@@ -316,7 +316,11 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		err     error
 		yielded []string
 	)
-	if s.links.Count() > maxDurableLinks {
+	if _, lerr := s.links.Live(link.ID); lerr != nil {
+		// Revoked, expired or dropped since it was made: no place is given
+		// up for it.
+		err = errLinkGone
+	} else if s.links.Count() > maxDurableLinks {
 		err = errLinksFull
 	} else if over := len(k.addrs[addr]) - s.cfg.Switchyard.OpenHostLinks + 1; addr != "" && over > 0 {
 		if yielded = k.yielding(addr, time.Now(), over); yielded == nil {
@@ -324,8 +328,9 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		}
 	}
 	switch {
-	case err != nil:
+	case errors.Is(err, errLinksFull):
 		s.links.Drop(link.ID)
+	case err != nil:
 	// Under mu, so a drop of the link (its file and its count, which
 	// follows the store's) comes after this whole or finds nothing.
 	case !s.links.SetOwner(link.ID, owner, addr):
@@ -391,12 +396,12 @@ func (s *Server) writeLinkFile(linkID string) {
 }
 
 // errNotSaved is saveLinkFile's for a link it writes nothing of.
-var errNotSaved = errors.New("the link is revoked, dropped or no longer kept")
+var errNotSaved = errors.New("the link is revoked, expired, dropped or no longer kept")
 
 // saveLinkFile is writeLinkFile with fmu held: the link as the store holds
 // it now, while it is kept and opens anything. It writes nothing of one
-// revoked, dropped or no longer kept (errNotSaved); another error is the
-// save's (logged).
+// revoked, expired, dropped or no longer kept (errNotSaved); another error
+// is the save's (logged).
 func (s *Server) saveLinkFile(linkID string) error {
 	k := s.keeper
 	k.mu.Lock()
@@ -406,7 +411,7 @@ func (s *Server) saveLinkFile(linkID string) error {
 		return errNotSaved
 	}
 	link, ok := s.links.Get(linkID)
-	if !ok || link.Revoked || link.Owner == "" {
+	if !ok || link.Revoked || link.Owner == "" || (link.ExpiresAt != nil && !time.Now().Before(*link.ExpiresAt)) {
 		return errNotSaved
 	}
 	f := linkFile{ID: link.ID, TokenHash: hash, SessionID: link.SessionID, Role: link.Role, Label: link.Label, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt, Owner: link.Owner, Addr: link.Addr}

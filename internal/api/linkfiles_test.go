@@ -498,6 +498,37 @@ func TestARevokeNotDoneAtTheSwitchyardIsTriedAgainFromHere(t *testing.T) {
 	}
 }
 
+// A link expired by the time it is kept is refused as gone, and no other
+// link gives its place up for it.
+func TestNoLinkGivesItsPlaceUpForOneExpired(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	id, _ := mintHostLink(t, host, "r1")
+	owner := ownerOf(t, e, host.sessionID)
+	leave(t, e, host)
+	awayFor(e, owner, time.Hour)
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	expired, token, err := e.srv.links.Create(other.sessionID, session.RoleView, "", time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := e.srv.keepLink(expired, token, ownerOf(t, e, other.sessionID), "127.0.0.1"); !errors.Is(err, errLinkGone) {
+		t.Fatalf("keeping a link expired: %v", err)
+	}
+	if _, ok := e.srv.links.Get(id); !ok {
+		t.Fatal("the gone host's link ended for a link expired")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", id+".json")); err != nil {
+		t.Fatalf("its file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", expired.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("a file for the expired link: %v", err)
+	}
+}
+
 // A save says when it wrote nothing because the link no longer opens
 // anything (revoked meanwhile, its delete still to come), so that no link
 // gives its place up for it.
