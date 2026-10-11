@@ -738,6 +738,12 @@ type AttachOptions struct {
 	// connection is offered the editor's Neovim (see nvimAllowed); a link's
 	// never is, nor a paste invite's, whatever the caller says.
 	Owner bool
+	// Replaces is the subscription this client takes over: the same viewer
+	// moving to another transport (a host's viewer falling back from WebRTC
+	// to the relay). While that one's transport still closes, its slot is
+	// this client's and is not counted twice toward MaxViewers. Only a
+	// subscription of this session already ended counts.
+	Replaces *Subscription
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -789,7 +795,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	// Every client whose transport is still open counts, an ended one whose
 	// transport still closes included: at most MaxViewers connections at once.
-	if s.hub.Len()+len(s.closing) >= s.opts.MaxViewers {
+	// The one this client replaces gives it its slot.
+	open := s.hub.Len() + len(s.closing)
+	if _, ok := s.closing[o.Replaces]; ok && o.Replaces != nil {
+		open--
+	}
+	if open >= s.opts.MaxViewers {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
 	}

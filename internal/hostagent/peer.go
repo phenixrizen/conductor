@@ -27,6 +27,9 @@ type peer struct {
 	// offered the editor's Neovim. A paste invite's viewer has no link
 	// either and is not, nor one a switchyard sends.
 	owner bool
+	// replaces is the subscription the viewer had before it moved to the
+	// relay, for the relay's attach to take over its slot.
+	replaces *session.Subscription
 
 	mu        sync.Mutex
 	pc        *webrtc.PeerConnection
@@ -162,6 +165,8 @@ func (p *peer) startRelay() {
 	p.dc = nil
 	if p.sub != nil {
 		p.a.local.Detach(p.sub)
+		// The relay's attach takes this one's slot while its transport closes.
+		p.replaces = p.sub
 		p.sub = nil
 	}
 	p.relay = &relaySink{a: p.a, viewerID: p.id}
@@ -428,13 +433,15 @@ func (p *peer) attach(hello proto.Hello) {
 	} else if p.dc != nil {
 		sink = p.dc
 	}
+	replaces := p.replaces
+	p.replaces = nil
 	p.mu.Unlock()
 	if sink == nil {
 		return
 	}
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
-		Owner: p.owner,
+		Owner: p.owner, Replaces: replaces,
 	}, sink)
 	if err != nil {
 		p.a.sendViewerError(p.id, "attach_failed", err.Error())

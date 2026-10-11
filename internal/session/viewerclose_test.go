@@ -478,3 +478,28 @@ func TestNothingIsWrittenToARevokedViewer(t *testing.T) {
 		}
 	}
 }
+
+// A client that takes over another's connection (a viewer moving to the
+// relay) takes its slot while the old transport still closes; a client that
+// replaces nobody, or names one still attached, does not.
+func TestAClientReplacingAnotherTakesItsSlot(t *testing.T) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 1})
+	held := newHeldSink()
+	old, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "moving"}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "someone", Replaces: old}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("replacing a client still attached: %v", err)
+	}
+	s.Detach(old)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "other"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("a new client while the old transport closes: %v", err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "moving", Replaces: old}, newChanSink(false)); err != nil {
+		t.Fatalf("the client that replaces it: %v", err)
+	}
+	close(held.writes)
+	close(held.closes)
+	<-old.Closed()
+}
