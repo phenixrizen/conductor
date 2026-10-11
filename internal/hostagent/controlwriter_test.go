@@ -424,6 +424,36 @@ func TestAPacedDialWorksOverTLS(t *testing.T) {
 	}
 }
 
+// What a connection holds unsent is bounded: the writer adds a message only
+// under its mark, and the library's own frames (its answers to pings) that
+// would take it past the limit close the connection instead.
+func TestAConnectionHoldsBoundedUnsent(t *testing.T) {
+	_, c, pc := dialHeld(t, 0)
+	w := newControlWriter(c, pc)
+	t.Cleanup(w.stop)
+	if err := w.sendRelay(bytes.Repeat([]byte("b"), 1<<20), time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	backedUp(t, pc)
+	pc.mu.Lock()
+	pc.limit = pc.kept.Len() + pc.sending + 1024
+	pc.mu.Unlock()
+	if _, err := pc.Write(make([]byte, 512)); err != nil {
+		t.Fatalf("a write within the limit: %v", err)
+	}
+	if _, err := pc.Write(make([]byte, 1024)); !errors.Is(err, errTooMuchUnsent) {
+		t.Fatalf("a write past the limit: %v", err)
+	}
+	if _, _, err := pc.unsent(); !errors.Is(err, errTooMuchUnsent) {
+		t.Fatalf("the connection's failure: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, _, err := c.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatalf("the connection was not closed: %v", err)
+	}
+}
+
 // Stopping the writer, as the connection ends, answers what waits at once.
 func TestStoppingTheWriterAnswersWhatWaits(t *testing.T) {
 	_, c, pc := dialHeld(t, 0)

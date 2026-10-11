@@ -60,6 +60,13 @@ const (
 	// sendChunk is the most the socket is handed at once, each a sign that
 	// it still takes what it is given.
 	sendChunk = 64 << 10
+	// unsentLimit bounds what a connection holds unsent. The writer adds a
+	// message only under sendMark, so past the mark there is at most one
+	// message (a relayed frame of the largest size, proto.MaxFrame, in its
+	// envelope) and the library's own small frames, its answers to pings
+	// among them: more is a server that pings and does not read, and the
+	// connection is closed.
+	unsentLimit = 4 << 20
 )
 
 var (
@@ -69,6 +76,9 @@ var (
 	// errViewerGone is a relayed frame's error when its viewer goes while
 	// the frame waits for its turn.
 	errViewerGone = errors.New("host: viewer gone")
+	// errTooMuchUnsent is a connection's failure when it would hold more
+	// than unsentLimit unsent.
+	errTooMuchUnsent = errors.New("host: the server takes too little of the control connection")
 )
 
 // pacedConn is a control connection's socket (see above). Writes are kept
@@ -79,6 +89,8 @@ var (
 type pacedConn struct {
 	net.Conn
 	stall time.Duration
+	// limit is unsentLimit (a test's own).
+	limit int
 
 	mu sync.Mutex
 	// kept is what waits for the socket; sending, what pump is handing it
@@ -96,19 +108,26 @@ func newPacedConn(c net.Conn, stall time.Duration) *pacedConn {
 	if stall <= 0 {
 		stall = writeStall
 	}
-	p := &pacedConn{Conn: c, stall: stall, more: make(chan struct{}, 1), less: make(chan struct{})}
+	p := &pacedConn{Conn: c, stall: stall, limit: unsentLimit, more: make(chan struct{}, 1), less: make(chan struct{})}
 	go p.pump()
 	return p
 }
 
 // Write keeps b to be sent, after what was written before, and returns at
-// once; the socket's failure, once it has failed.
+// once; the socket's failure, once it has failed. Past unsentLimit the
+// connection fails and closes.
 func (p *pacedConn) Write(b []byte) (int, error) {
 	p.mu.Lock()
 	if p.err != nil {
 		err := p.err
 		p.mu.Unlock()
 		return 0, err
+	}
+	if p.kept.Len()+p.sending+len(b) > p.limit {
+		p.mu.Unlock()
+		p.fail(errTooMuchUnsent)
+		_ = p.Conn.Close()
+		return 0, errTooMuchUnsent
 	}
 	p.kept.Write(b)
 	p.mu.Unlock()
