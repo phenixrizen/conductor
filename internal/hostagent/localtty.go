@@ -85,7 +85,10 @@ func (a *agent) attachLocal(ctx context.Context) (func(), error) {
 		for {
 			n, err := a.opts.Stdin.Read(buf)
 			if n > 0 {
-				if ierr := a.local.Input(sub, buf[:n]); ierr != nil && errors.Is(ierr, session.ErrSessionEnded) {
+				// The host's own terminal waits for the program to take
+				// what is typed, as a terminal does; its loop holds no one
+				// else, and buf is copied before the write.
+				if ierr := a.local.InputWaiting(ctx, sub, buf[:n]); ierr != nil && (errors.Is(ierr, session.ErrSessionEnded) || ctx.Err() != nil) {
 					return
 				}
 			}

@@ -37,11 +37,18 @@ func newSubmitViewer(t *testing.T, pause time.Duration) *submitViewer {
 // timeout from its arrival, instead of submitTimeout.
 func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitViewer {
 	t.Helper()
+	return newSubmitViewerWaits(t, pause, timeout, 0)
+}
+
+// newSubmitViewerWaits is newSubmitViewerWithin whose host also gives
+// keystrokes inputWait from their arrival, instead of session.InputWait.
+func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration) *submitViewer {
+	t.Helper()
 	proc := sessiontest.NewFakeProc()
 	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
 	t.Cleanup(func() { proc.End(0) })
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	a.peers[p.id] = p
@@ -356,9 +363,10 @@ func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
 }
 
 // A submission's time runs from its arrival: those waiting behind one the
-// process does not take are refused as their time runs out, while it still
-// takes none, and never typed once it takes input again; the queue has
-// room again.
+// process is taking slowly are refused as their time runs out, while it
+// still takes none, and never typed once it takes input again; the queue
+// has room again. The one being taken is accepted, with no error, and
+// finished (its Enter) as the process reads.
 func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	v := newSubmitViewerWithin(t, 10*time.Millisecond, timeout)
@@ -390,10 +398,10 @@ func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 		}
 	}
 	time.Sleep(2 * timeout)
-	// The first had the process's turn and was typed when it took input
-	// again; its time was out by then, so its Enter is left out.
-	if first := v.release(); first != "first" {
-		t.Fatalf("typed %q", first)
+	// The first's text was being written when its time ran out: it lands
+	// when the process takes input again, and its Enter after it.
+	if typed := v.typed(v.release(), 2); fmt.Sprint(typed) != fmt.Sprint([]string{"first", "\r"}) {
+		t.Fatalf("typed %q", typed)
 	}
 	v.quiet(300 * time.Millisecond)
 }
@@ -500,6 +508,12 @@ func TestAViewerAttachedAgainHasItsQueue(t *testing.T) {
 // the test.
 func relayHost(t *testing.T) (string, string) {
 	t.Helper()
+	return relayHostOf(t, []string{"/bin/cat"})
+}
+
+// relayHostOf is relayHost of argv.
+func relayHostOf(t *testing.T, argv []string) (string, string) {
+	t.Helper()
 	_, hs := startServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	registered := make(chan string, 1)
@@ -507,7 +521,7 @@ func relayHost(t *testing.T) (string, string) {
 	go func() {
 		defer close(done)
 		if _, err := Run(ctx, Options{
-			ServerURL: hs.URL, Token: hostToken, Name: "submit test", Argv: []string{"/bin/cat"}, RelayOnly: true,
+			ServerURL: hs.URL, Token: hostToken, Name: "submit test", Argv: argv, RelayOnly: true,
 			Log:        discardLog,
 			Registered: func(id, _ string) { registered <- id },
 		}); err != nil {

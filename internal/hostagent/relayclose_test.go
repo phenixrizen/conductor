@@ -269,11 +269,13 @@ func TestAViewerTheSessionEndedIsNotActedOn(t *testing.T) {
 	p := newPeer(a, id, session.RoleControl, "", "", true)
 	p.sub = sub
 	p.handleFrame(proto.Frame{Type: proto.TypeInput, Payload: []byte("before")})
+	p.keys.wait() // keystrokes are written off the frame loop
 	if got := proc.text(); got != "before" {
 		t.Fatalf("typed %q", got)
 	}
 	a.local.Detach(sub) // the session ends it; the peer still holds it
 	p.handleFrame(proto.Frame{Type: proto.TypeInput, Payload: []byte("after")})
+	p.keys.wait()
 	if got := proc.text(); got != "before" {
 		t.Fatalf("the ended viewer's input was typed: %q", got)
 	}

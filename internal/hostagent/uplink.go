@@ -209,8 +209,9 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 }
 
 // OnChange forwards a change of the local session (its attention) to the
-// rendezvous; the caller chains it from the session's OnChange hook.
-func (p *Published) OnChange(info session.Info) { p.a.onLocalChange(info) }
+// rendezvous; the caller chains it from the session's OnChange hook. It
+// returns at once (noteChange).
+func (p *Published) OnChange(info session.Info) { p.a.noteChange(info) }
 
 // OnChat is the local session's OnChat hook. The rendezvous is sent no
 // chat: the people on the session have it over their own connection.
