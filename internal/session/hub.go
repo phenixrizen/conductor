@@ -230,10 +230,17 @@ func (h *Hub) add(s *Subscription) {
 	h.mu.Unlock()
 }
 
-func (h *Hub) remove(id string) {
+// remove takes sub out if it is the one held under its id, and says so: a
+// client that replaced it under the same id (a viewer moving to the relay)
+// stays.
+func (h *Hub) remove(sub *Subscription) bool {
 	h.mu.Lock()
-	delete(h.subs, id)
-	h.mu.Unlock()
+	defer h.mu.Unlock()
+	if h.subs[sub.ID] != sub {
+		return false
+	}
+	delete(h.subs, sub.ID)
+	return true
 }
 
 // Broadcast enqueues frame to every subscription.

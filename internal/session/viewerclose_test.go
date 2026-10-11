@@ -503,3 +503,74 @@ func TestAClientReplacingAnotherTakesItsSlot(t *testing.T) {
 	close(held.closes)
 	<-old.Closed()
 }
+
+// Two viewers moving at once at the cap each take over their own slot: a
+// slot passed on stays passed for every later check, while the old
+// transports still close.
+func TestTwoClientsReplacingOthersAtTheCapEachTakeTheirSlot(t *testing.T) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 2})
+	heldA, heldB := newHeldSink(), newHeldSink()
+	a, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "a"}, heldA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "b"}, heldB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Detach(a)
+	s.Detach(b)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "a", Replaces: a}, newChanSink(false)); err != nil {
+		t.Fatalf("a's replacement: %v", err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "b", Replaces: b}, newChanSink(false)); err != nil {
+		t.Fatalf("b's replacement: %v", err)
+	}
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "c"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("a third at the cap: %v", err)
+	}
+	// The old ones' own late Detach (the watcher's) leaves the slots passed.
+	s.Detach(a)
+	s.Detach(b)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "c"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("a third at the cap after a second Detach: %v", err)
+	}
+	// A slot is passed on once: naming a replaced one again gives nothing.
+	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "a again", Replaces: a}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
+		t.Fatalf("a second replacement of a: %v", err)
+	}
+	for _, h := range []*heldSink{heldA, heldB} {
+		close(h.writes)
+		close(h.closes)
+	}
+	<-a.Closed()
+	<-b.Closed()
+}
+
+// A client that replaced another under the same id (a viewer moving to the
+// relay) stays attached when the old one's Detach comes after it.
+func TestALateDetachOfTheOldClientLeavesItsReplacement(t *testing.T) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 2})
+	held := newHeldSink()
+	old, err := s.AttachWith(AttachOptions{ID: "viewer1", Role: RoleView, Name: "v"}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Detach(old)
+	repl, err := s.AttachWith(AttachOptions{ID: "viewer1", Role: RoleView, Name: "v", Replaces: old}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Detach(old)
+	if s.Viewers() != 1 {
+		t.Fatalf("viewers after the old one's late Detach: %d", s.Viewers())
+	}
+	select {
+	case <-repl.Done():
+		t.Fatalf("the replacement ended: %v", repl.Reason())
+	default:
+	}
+	close(held.writes)
+	close(held.closes)
+	<-old.Closed()
+}

@@ -78,11 +78,17 @@ func TestHubFanOut(t *testing.T) {
 	if h.Count() != 2 {
 		t.Fatalf("count %d", h.Count())
 	}
-	h.remove("a")
+	h.remove(sa)
 	sa.closeWith(nil)
 	if h.Count() != 1 {
 		t.Fatalf("count after remove %d", h.Count())
 	}
+	// A subscription under an id another now holds removes nothing.
+	sb2 := newSubscription("b", RoleControl, "l1", newChanSink(false))
+	if h.remove(sb2) || h.Count() != 1 {
+		t.Fatalf("removed another's: count %d", h.Count())
+	}
+	sb2.closeWith(nil)
 }
 
 // A subscriber whose queue passes the high-water mark is evicted at once;
