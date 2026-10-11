@@ -614,3 +614,24 @@ func TestALateDetachOfTheOldClientLeavesItsReplacement(t *testing.T) {
 	close(held.closes)
 	<-old.Closed()
 }
+
+// A Detach that finds the transport closed takes the client out of the
+// closing and of the slots passed on at once: a check between it and the
+// watcher's cleanup counts neither.
+func TestADetachAfterTheTransportClosedClearsItsAccountTogether(t *testing.T) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 2})
+	sub := newSubscription("x", RoleView, "", newChanSink(false))
+	sub.closeWith(nil)
+	<-sub.Closed()
+	// As the books stand when its watcher has not run yet.
+	s.mu.Lock()
+	s.closing = map[*Subscription]struct{}{sub: {}}
+	s.passedOn = map[*Subscription]struct{}{sub: {}}
+	s.mu.Unlock()
+	s.Detach(sub)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.closing) != 0 || len(s.passedOn) != 0 {
+		t.Fatalf("closing %d, passed on %d", len(s.closing), len(s.passedOn))
+	}
+}

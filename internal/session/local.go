@@ -967,6 +967,9 @@ func (s *Local) Detach(sub *Subscription) {
 	// closed (AttachWith's watcher takes it out), for a revoke to wait for.
 	select {
 	case <-sub.closed:
+		// Closed already: gone from the closing and from the slots passed on
+		// together, so no check in between counts it again.
+		delete(s.closing, sub)
 		delete(s.passedOn, sub)
 	default:
 		if s.closing == nil {
