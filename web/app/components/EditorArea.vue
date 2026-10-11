@@ -324,6 +324,8 @@ watch(
 // was read (Compare, Reload, Save anyway); a tab with unsaved changes wears a dot and asks before it closes.
 const dirty = reactive(new Set<string>())
 const saving = ref(false)
+// A save with no answer after 20 s goes on waiting (the transport never gives one up while its connection lives): the bar says so.
+const saveSlow = ref(false)
 const savedFlash = ref(false)
 // One timer for the flash: a save within two seconds of another restarts it, so the earlier save's timer cannot hide the new "Saved".
 let savedTimer: ReturnType<typeof setTimeout> | undefined
@@ -351,7 +353,7 @@ async function save(force = false) {
   saving.value = true
   saveError.value = ''
   try {
-    const res = await props.write(t.path, new TextEncoder().encode(text), { baseSha256: v.header?.sha256, force })
+    const res = await props.write(t.path, new TextEncoder().encode(text), { baseSha256: v.header?.sha256, force, onSlow: () => (saveSlow.value = true) })
     const h = res.header
     if (h.kind === 'written') {
       loaded.set(t.id, { ...v, text, header: { ...v.header!, sha256: h.sha256, mtime: h.mtime, size: h.size } })
@@ -372,6 +374,7 @@ async function save(force = false) {
     saveError.value = (e as Error).message
   } finally {
     saving.value = false
+    saveSlow.value = false
   }
 }
 /** The file as it is on disk now, the unsaved edits dropped. */
@@ -600,6 +603,9 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UButton label="Compare" size="xs" color="neutral" variant="soft" data-editor-compare @click="openCompare" />
         <UButton label="Reload" size="xs" color="neutral" variant="soft" data-editor-reload @click="reloadFromDisk" />
         <UButton label="Save anyway" size="xs" color="warning" variant="soft" :loading="saving" data-editor-save-anyway @click="save(true)" />
+      </div>
+      <div v-if="saveSlow" class="flex flex-none items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-editor-save-slow>
+        <UIcon name="i-lucide-loader-circle" class="size-3.5 flex-none animate-spin text-muted" /><span class="min-w-0 flex-1 text-muted">Still saving: no answer after 20 seconds. The save goes on, and its answer shows here.</span>
       </div>
       <div v-if="saveError && !activeConflict" class="flex flex-none items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-editor-save-error>
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" /><span class="min-w-0 flex-1">Not saved: {{ saveError }}</span>

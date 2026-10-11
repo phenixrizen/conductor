@@ -384,6 +384,11 @@ export interface FileWriteOptions {
   baseSha256?: string
   /** Save anyway, over a file changed on disk. */
   force?: boolean
+  /**
+   * Called once when the save has had no answer for 20 s. It goes on waiting while the connection lives (the owner answers every
+   * save, and a relayed one may be slowed on its way), so the page can say it is still on its way.
+   */
+  onSlow?: () => void
 }
 /** How a page saves a file over its terminal's connection: the reply is the FILE frame, kind `written` or `error`. */
 export type FileWriter = (path: string, data: Uint8Array, opts?: FileWriteOptions) => Promise<FileResponse>

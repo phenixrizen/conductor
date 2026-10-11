@@ -178,3 +178,82 @@ test("a file in a repository's .git opens read only; the working tree beside it 
     await api.stopSession(s.id)
   }
 })
+
+// A save whose answer is slow (a relayed one slowed on its way) is not given
+// up on: the file is written, the bar says the save goes on, and when the
+// answer lands the tab is saved, on the new hash, so the next save goes
+// through. The page holds the answer back here, as a slow relay would.
+test('a save that answers late is still on its way, then saved', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-saving-late')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'notes.txt')
+  writeFileSync(file, 'alpha\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving late', cwd })
+  // While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later.
+  await page.addInitScript(() => {
+    const Native = window.WebSocket
+    class Holding extends Native {
+      override set onmessage(fn: ((ev: MessageEvent) => void) | null) {
+        super.onmessage = fn && ((ev: MessageEvent) => {
+          const hold = (window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs
+          if (hold && ev.data instanceof ArrayBuffer) {
+            const b = new Uint8Array(ev.data)
+            if (b[0] === 0x06 && b.length > 13) {
+              const len = new DataView(ev.data).getUint32(9)
+              const header = JSON.parse(new TextDecoder().decode(b.subarray(13, 13 + len))) as { kind?: string }
+              if (header.kind === 'written') {
+                setTimeout(() => fn.call(this, ev), hold)
+                return
+              }
+            }
+          }
+          fn.call(this, ev)
+        })
+      }
+      override get onmessage(): ((ev: MessageEvent) => void) | null {
+        return super.onmessage
+      }
+    }
+    window.WebSocket = Holding
+  })
+  const area = page.locator('[data-editor-area]')
+  const lines = area.locator('.monaco-editor .view-lines')
+  const typeAtEnd = async (text: string) => {
+    await lines.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type(text)
+  }
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await pane.locator('[data-files-section="explorer"]').click()
+    await pane.locator(`[data-file-node="${file}"]`).click()
+    await expect(lines).toBeVisible({ timeout: 30_000 })
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 22_000))
+    await typeAtEnd('beta\n')
+    await page.keyboard.press('Control+s')
+    // Written at once on the session's machine; the page hears nothing for 22 s.
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\n')
+    // After 20 s the bar says the save goes on, and nothing says it failed.
+    const slow = area.locator('[data-editor-save-slow]')
+    await expect(slow).toBeVisible({ timeout: 25_000 })
+    await expect(slow).toContainText('Still saving')
+    await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    // The answer lands: saved, the dot gone, the bar gone.
+    await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
+    await expect(slow).toHaveCount(0)
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
+    await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
+    // The tab took the new hash: the next save is no conflict.
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
+    await typeAtEnd('gamma\n')
+    await page.keyboard.press('Control+s')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
+    await expect(area.locator('[data-editor-conflict]')).toHaveCount(0)
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

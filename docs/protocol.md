@@ -198,7 +198,8 @@ candidate as encoded for the host). Each of these bounds, and
 allows a burst of twice its rate and never less than 4 MiB: what a
 person's tabs ask for or send at once, three files of 1 MiB read or saved
 among it, passes at once whatever the rate, where the browser gives up on
-a file request or a save after 20 s; the rate bounds what goes over time.
+a file request after 20 s (and says a save is slow then); the rate bounds
+what goes over time.
 What waits for a host's connection is bounded in bytes
 as well as in messages (8 MiB): the viewers' frames fill at most 7 MiB of it
 and then wait in their own read loops, in the order they came, for the host
@@ -758,6 +759,15 @@ default, or `off`; `CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`) is the
 same that offers Neovim, and the welcome's `fileEdit` says whether this
 connection may save. The switchyard drops FILE_WRITE from view-role
 connections.
+
+Since the owner answers every save, written or refused, the browser never
+gives a save up while its connection lives: one given up on could still be
+written, its answer lost and the editor left on the old `sha256`, so the
+next save would be refused as `changed_on_disk`. After 20 s without an
+answer the editor says the save goes on (a relayed save can be slowed on
+its way: the relay's bounds, a slow link, a host that reads slowly), and the
+answer, when it lands, is taken as ever; a connection that closes ends the
+save with an error. A file request still gives up after 20 s.
 
 ## HTTP API
 

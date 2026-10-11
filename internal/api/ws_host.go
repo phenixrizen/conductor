@@ -231,7 +231,8 @@ func newByteBucket(bytesPerSecond, burst int) *byteBucket {
 
 // relayBurstFloor is the least burst a relay bound allows: what a person's
 // tabs ask for or send together, at most, passes at once whatever the rate,
-// for the browser gives up on a file request or a save after 20 s. That is
+// for the browser gives up on a file request after 20 s (and calls a save
+// slow then; docs/protocol.md, File saves). That is
 // three of the largest frames, a file of proto.MaxFileBytes read or saved
 // with its header, and room besides. A server takes it when it is made
 // (Server.relayBurstFloor), so a test may lower it for the servers it makes.

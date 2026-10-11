@@ -125,10 +125,10 @@ export abstract class BaseTransport implements TerminalTransport {
     if (data.length > MAX_WRITE_BYTES) return Promise.reject(new Error('a file saved from the editor is at most 1 MiB'))
     const reqId = `w${(++this.reqCounter).toString(36)}`
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        this.pendingFiles.delete(reqId)
-        reject(new Error('the save did not answer'))
-      }, FILE_TIMEOUT_MS)
+      // A save is not given up on while the connection lives: the owner answers every one, written or refused, and one given up on
+      // could still be written, its answer lost and the tab left on the old hash. After FILE_TIMEOUT_MS the page hears it is slow;
+      // a connection that closes rejects it (emitClose).
+      const timer = window.setTimeout(() => opts.onSlow?.(), FILE_TIMEOUT_MS)
       this.pendingFiles.set(reqId, { resolve, reject, timer })
       for (const [start, end] of writeParts(data.length)) {
         this.send(encodeFileWrite({ reqId, path, offset: start, total: data.length, baseSha256: opts.baseSha256, force: opts.force }, data.subarray(start, end)))
