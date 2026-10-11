@@ -16,10 +16,12 @@
 #                   Codex's agent-turn-complete with the thread id)
 #   STUB_CODEX_TITLE=1   a Codex title-thread turn is reported before the
 #                   answer, with a higher thread id, as Codex 0.159 does
-#   STUB_TRUST_DIALOG=1  "Trust this folder?" is drawn first and answered
-#                   by Enter alone, which writes the trust into
-#                   $HOME/.codex/config.toml; a launch with -c projects=…
-#                   (the yolo trust override) asks nothing
+#   STUB_TRUST_DIALOG=1  "Trust this folder?" is drawn first, as Codex
+#                   0.161 draws it (1. Trust and continue, 2. Quit), and
+#                   answered by Enter alone, which writes the trust into
+#                   $HOME/.codex/config.toml; Down then Enter, or Esc,
+#                   quits; a launch with -c projects=… (the yolo trust
+#                   override) asks nothing
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
@@ -227,17 +229,19 @@ report_done() {
 # holds reports whether branch $1 has stub-$2.txt, the file member $2 commits.
 holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 
-# trust_dialog draws the folder-trust question and waits for Enter; arrows
-# move the selection and redraw, anything else is ignored. Enter writes the
-# trust the way Codex keeps it.
+# trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
+# and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
+# selection and redraw, Esc quits, anything else is ignored. Enter on the
+# first writes the trust the way Codex keeps it; on Quit the stub exits, as
+# Codex does.
 trust_dialog() {
 	local sel=0 key seq
 	draw() {
 		local y n
-		if ((sel == 0)); then y='>' n=' '; else y=' ' n='>'; fi
-		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2KTrust this folder? (Enter accepts, arrows move)\n  %s Yes, trust this folder\n  %s No, continue without\n' "$y" "$n"
+		if ((sel == 0)); then y='›' n=' '; else y=' ' n='›'; fi
+		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2KTrust this folder?\n%s 1. Trust and continue\n%s 2. Quit\nenter continue · esc quit\n' "$y" "$n"
 	}
-	printf 'Trust this folder? (Enter accepts, arrows move)\n  > Yes, trust this folder\n    No, continue without\n'
+	printf 'Trust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit\n'
 	while IFS= read -rsn1 key; do
 		if [[ -z $key || $key == $'\r' ]]; then
 			break
@@ -247,6 +251,7 @@ trust_dialog() {
 			IFS= read -rsn2 -t 0.2 seq || true
 			case $seq in
 			'[A' | '[B') sel=$((1 - sel)) ;;
+			'') sel=1 && break ;;
 			esac
 			draw
 		fi
@@ -256,7 +261,8 @@ trust_dialog() {
 		printf '[projects.%s]\ntrust_level = "trusted"\n' "$(json_str "$PWD")" >>"${HOME:-/tmp}/.codex/config.toml"
 		printf 'Trusted.\n'
 	else
-		printf 'Not trusted.\n'
+		printf 'Quit.\n'
+		exit 0
 	fi
 }
 

@@ -134,14 +134,14 @@ test("the trust question's answers are choices on the page and in the chat; type
   await expect.poll(async () => member(await api.run(run.id), 'solo').needsInput === true, { timeout: 30_000, message: 'the member is held' }).toBe(true)
   const solo = member(await api.run(run.id), 'solo').sessionId ?? ''
   const session = await api.session(solo)
-  expect(session.attention?.options?.map((o) => o.label)).toEqual(['Yes, trust this folder', 'No, continue without'])
+  expect(session.attention?.options?.map((o) => o.label)).toEqual(['Yes, trust this folder', 'No, quit'])
   await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
   await page.goto(`/sessions/${encodeURIComponent(solo)}`)
   // The reply bar offers the answers and no text field.
   const bar = page.locator('[data-quick-reply]')
   await expect(bar).toBeVisible({ timeout: 30_000 })
   await expect(bar.getByRole('button', { name: /Yes, trust this folder/ })).toBeVisible()
-  await expect(bar.getByRole('button', { name: /No, continue without/ })).toBeVisible()
+  await expect(bar.getByRole('button', { name: /No, quit/ })).toBeVisible()
   await expect(bar.locator('input')).toHaveCount(0)
   // The chat has the question with the same two choices; a line typed to the agent is refused with the words, and the hold stays.
   await page.locator('[data-inspector] [data-chat-tab]').click()

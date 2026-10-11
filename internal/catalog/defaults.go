@@ -43,8 +43,11 @@ func defaults() []Agent {
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
 			TrustPrompt: `Trust\s*this\s*folder\?`,
-			// Codex highlights the trusting answer: Enter alone; "No" is Down, then Enter.
-			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, continue without trusting", Input: "\x1b[B\r"}},
+			// Codex highlights the trusting answer: Enter alone. Codex 0.161's
+			// other answer is "2. Quit" (Down, then Enter), which ends Codex:
+			// the label says so, as Claude Code's "No, exit" does (seen in the
+			// rc.7 app on 2026-10-11).
+			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}},
 			// Codex 0.161 opens on "Hooks need review" whenever its hooks are
 			// new or changed (1. Review hooks, highlighted; 2. Trust all and
 			// continue; 3. Continue without trusting): a digit moves the

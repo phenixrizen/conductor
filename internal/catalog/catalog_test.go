@@ -1010,8 +1010,8 @@ func TestOverlayInheritsProbe(t *testing.T) {
 
 // The trust question's answers: the built-in agents carry theirs (Claude
 // Code's trusting answer is Down then Enter, since it highlights "No, exit";
-// Codex's is Enter), a saved override inherits them, and a bad answer is
-// refused.
+// Codex's is Enter, and its other answer, Codex 0.161's "2. Quit", says it
+// quits), a saved override inherits them, and a bad answer is refused.
 func TestTrustAnswers(t *testing.T) {
 	c := Default()
 	claude, _ := c.Get("claude")
@@ -1019,7 +1019,7 @@ func TestTrustAnswers(t *testing.T) {
 		t.Fatalf("claude: %+v", claude.TrustAnswers)
 	}
 	codex, _ := c.Get("codex")
-	if len(codex.TrustAnswers) != 2 || codex.TrustAnswers[0].Input != "\r" || codex.TrustAnswers[1].Input != "\x1b[B\r" {
+	if len(codex.TrustAnswers) != 2 || codex.TrustAnswers[0].Input != "\r" || codex.TrustAnswers[1].Label != "No, quit" || codex.TrustAnswers[1].Input != "\x1b[B\r" {
 		t.Fatalf("codex: %+v", codex.TrustAnswers)
 	}
 	for id, a := range map[string]Agent{"claude": claude, "codex": codex} {
