@@ -940,3 +940,218 @@ func TestARunsUpdatesLandInTurn(t *testing.T) {
 		t.Fatalf("updates landed as %q", applied)
 	}
 }
+
+// lateUpdates is a member's publication whose first run update is still on
+// its way when the server stops waiting for it: the server is told the wait
+// ran out, and the update reaches the rendezvous once release is closed,
+// its answer then on result. The others go through at once.
+type lateUpdates struct {
+	PublishedSession
+	held    atomic.Bool
+	release chan struct{}
+	result  chan error
+}
+
+func (p *lateUpdates) RunLinkUpdate(ctx context.Context, g proto.RunGroup) error {
+	if !p.held.CompareAndSwap(false, true) {
+		return p.PublishedSession.RunLinkUpdate(ctx, g)
+	}
+	go func() {
+		<-p.release
+		late, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		p.result <- p.PublishedSession.RunLinkUpdate(late, g)
+	}()
+	return context.DeadlineExceeded
+}
+
+// A run update the server stopped waiting for, delivered after the update
+// that followed it, changes nothing at the rendezvous: a member that left
+// the run in between stays out of reach of the run's link.
+func TestALateRunUpdateLeavesAMemberThatLeftOutOfReach(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	run, _ := local.srv.runs.Get(runID)
+	lead, core := run.Members[0].SessionID, run.Members[1].SessionID
+	local.srv.pubMu.Lock()
+	corePub := local.srv.published[core]
+	late := &lateUpdates{PublishedSession: local.srv.published[lead], release: make(chan struct{}), result: make(chan error, 1)}
+	local.srv.published[lead] = late
+	// The next sync sends the members whatever was sent last.
+	delete(local.srv.runSent, runID)
+	local.srv.pubMu.Unlock()
+	coreThere := corePub.CurrentID()
+	v := dialViewer(t, rendezvous, coreThere, token)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+
+	// An update naming both members goes out over the lead's connection,
+	// and the wait for it runs out.
+	local.srv.syncRunLinks(runID)
+	// The core leaves the members as the rendezvous knows them; the update
+	// that says so lands.
+	local.srv.pubMu.Lock()
+	delete(local.srv.published, core)
+	local.srv.pubMu.Unlock()
+	t.Cleanup(corePub.Stop)
+	local.srv.syncRunLinks(runID)
+	v.expectClose(proto.CloseForbidden)
+	dialViewer(t, rendezvous, coreThere, token).expectClose(proto.CloseUnauthorized)
+
+	// The first update lands now, after the one that followed it.
+	close(late.release)
+	var err error
+	select {
+	case err = <-late.result:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the late update was never answered")
+	}
+	dialViewer(t, rendezvous, coreThere, token).expectClose(proto.CloseUnauthorized)
+	if err == nil || !strings.HasPrefix(err.Error(), "stale: ") {
+		t.Fatalf("the late update was answered %v, want stale", err)
+	}
+}
+
+// runScript is what a scriptedPublisher's publications do with a run's
+// members: each group they are sent, by link_run or link_run_update, goes
+// on calls, and the updates are answered by answers in turn (nil once they
+// run out).
+type runScript struct {
+	mu      sync.Mutex
+	answers []error
+	calls   chan proto.RunGroup
+}
+
+func (sc *runScript) answer(err error) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.answers = append(sc.answers, err)
+}
+
+// next is the next group sent, or fails the test after wait.
+func (sc *runScript) next(t *testing.T, wait time.Duration) proto.RunGroup {
+	t.Helper()
+	select {
+	case g := <-sc.calls:
+		return g
+	case <-time.After(wait):
+		t.Fatalf("no group sent within %v", wait)
+		return proto.RunGroup{}
+	}
+}
+
+// scriptedPublisher publishes every session as a scriptedPublication.
+type scriptedPublisher struct{ sc *runScript }
+
+func (p scriptedPublisher) Publish(_ context.Context, local *session.Local) (PublishedSession, error) {
+	return &scriptedPublication{gatedPublication: gatedPublication{id: "there-" + local.Info().ID, done: make(chan struct{})}, sc: p.sc}, nil
+}
+
+func (p scriptedPublisher) Server() string { return "https://rendezvous.example.net" }
+
+type scriptedPublication struct {
+	gatedPublication
+	sc *runScript
+}
+
+func (p *scriptedPublication) RunLink(_ context.Context, role string, _ time.Duration, label string, g proto.RunGroup) (proto.LinkCreated, error) {
+	p.sc.calls <- g
+	return proto.LinkCreated{LinkID: fmt.Sprintf("link-%d", g.Revision), Role: role, Label: label, RunID: g.ID, URL: p.Base() + "/join/token"}, nil
+}
+
+func (p *scriptedPublication) RunLinkUpdate(_ context.Context, g proto.RunGroup) error {
+	p.sc.calls <- g
+	p.sc.mu.Lock()
+	defer p.sc.mu.Unlock()
+	if len(p.sc.answers) == 0 {
+		return nil
+	}
+	err := p.sc.answers[0]
+	p.sc.answers = p.sc.answers[1:]
+	return err
+}
+
+// A run's members go to the switchyard with a revision that rises with
+// every group sent, the link's first and each update's after, from the
+// clock on.
+func TestARunsMembersGoOutWithRisingRevisions(t *testing.T) {
+	local := newTestEnv(t, nil)
+	sc := &runScript{calls: make(chan proto.RunGroup, 64)}
+	local.srv.SetPublisher(scriptedPublisher{sc})
+	start := time.Now().UnixMilli()
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	if resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"}); resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	minted := sc.next(t, 5*time.Second)
+	if minted.Revision < start || len(minted.Members) != 2 {
+		t.Fatalf("the link's members: %+v, revision from %d", minted, start)
+	}
+	last := minted.Revision
+	for range 3 {
+		local.srv.pubMu.Lock()
+		delete(local.srv.runSent, runID)
+		local.srv.pubMu.Unlock()
+		local.srv.syncRunLinks(runID)
+		g := sc.next(t, 5*time.Second)
+		if g.Revision <= last {
+			t.Fatalf("revision %d after %d", g.Revision, last)
+		}
+		last = g.Revision
+	}
+}
+
+// A sync of a run's members that got no answer, or that the switchyard
+// refused for now (stale, rate_limited), is made again soon, with the next
+// revision; one refused for good is not.
+func TestARunSyncThatGotNoAnswerIsMadeAgain(t *testing.T) {
+	local := newTestEnv(t, nil)
+	local.srv.pubMu.Lock()
+	local.srv.runSyncRetry = 50 * time.Millisecond
+	local.srv.pubMu.Unlock()
+	sc := &runScript{calls: make(chan proto.RunGroup, 64)}
+	local.srv.SetPublisher(scriptedPublisher{sc})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	local.waitRunning(t, runID, "lead")
+	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"})
+	for _, tc := range []struct {
+		answer error
+		again  bool
+	}{
+		{errors.New("invalid_request: session x is not this host's"), false},
+		{context.DeadlineExceeded, true},
+		{errors.New("stale: the run's links hold members the host sent after these"), true},
+		{errors.New("rate_limited: too many run updates; wait a minute"), true},
+	} {
+		sc.answer(tc.answer)
+		local.srv.pubMu.Lock()
+		delete(local.srv.runSent, runID)
+		local.srv.pubMu.Unlock()
+		local.srv.syncRunLinks(runID)
+		first := sc.next(t, 5*time.Second)
+		// Well before runSyncDelay: nothing but the retry sends meanwhile.
+		select {
+		case again := <-sc.calls:
+			if !tc.again {
+				t.Fatalf("after %v: sent again", tc.answer)
+			}
+			if again.Revision <= first.Revision {
+				t.Fatalf("after %v: revision %d, then %d", tc.answer, first.Revision, again.Revision)
+			}
+		case <-time.After(1500 * time.Millisecond):
+			if tc.again {
+				t.Fatalf("after %v: not sent again", tc.answer)
+			}
+		}
+	}
+}

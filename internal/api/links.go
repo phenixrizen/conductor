@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
 )
@@ -237,17 +238,37 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 	why := ""
 	if server != "" {
 		wctx, wcancel := context.WithTimeout(r.Context(), publicationWait)
-		g, carrier, w2 := s.awaitRunGroup(wctx, id)
+		carrier, w2 := s.awaitRunPublished(wctx, id)
 		wcancel()
 		why = w2
+		var (
+			g      proto.RunGroup
+			unlock func()
+		)
+		if carrier != nil {
+			// In turn with the run's syncs (syncRunLinks): an update the
+			// switchyard applies after this link is made would rename its
+			// members. The members are read in the turn, as they are then,
+			// and given the turn's revision: the link never names members
+			// older than those an update sent before it.
+			unlock = s.lockRunSync(id)
+			carrier = nil
+			if run, ok := s.runs.Get(id); ok {
+				g, carrier = s.runGroup(run)
+			}
+			if carrier == nil {
+				unlock()
+				if why == "" {
+					why = "no member of the run is published yet"
+				}
+			}
+		}
 		if carrier != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
-			// In turn with the run's syncs (syncRunLinks): an update the
-			// switchyard applies after this link is made would rename its
-			// members.
-			unlock := s.lockRunSync(id)
-			res, err := carrier.RunLink(ctx, string(req.Role), req.ttl(), req.Label, g)
+			sent := g
+			sent.Revision = s.nextRunRevision()
+			res, err := carrier.RunLink(ctx, string(req.Role), req.ttl(), req.Label, sent)
 			if err != nil {
 				unlock()
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not mint the link: "+err.Error())
