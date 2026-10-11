@@ -767,7 +767,9 @@ next save would be refused as `changed_on_disk`. After 20 s without an
 answer the editor says the save goes on (a relayed save can be slowed on
 its way: the relay's bounds, a slow link, a host that reads slowly), and the
 answer, when it lands, is taken as ever; a connection that closes ends the
-save with an error. A file request still gives up after 20 s.
+save with an error. The answer marks saved the text that was sent: what was
+typed meanwhile stays, unsaved, and a tab in front by then keeps its own
+changes. A file request still gives up after 20 s.
 
 ## HTTP API
 

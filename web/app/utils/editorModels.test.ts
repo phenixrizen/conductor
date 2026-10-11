@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { closeWords, conflictWords, forgetModel, hasModel, isDirty, markSaved } from './editorModels'
+import { closeWords, conflictWords, forgetModel, hasModel, isDirty, markSaved, noteVersion, savedAt } from './editorModels'
+
+describe('a save completing', () => {
+  it('marks the version it sent saved, and what was typed since stays unsaved', () => {
+    noteVersion('/r/s.go', 4)
+    markSaved('/r/s.go', 1)
+    // Sent at version 4; typed on to 6 while the answer was on its way.
+    noteVersion('/r/s.go', 6)
+    expect(savedAt('/r/s.go', 4)).toBe(true)
+    expect(isDirty('/r/s.go', 4)).toBe(false)
+    expect(isDirty('/r/s.go', 6)).toBe(true)
+  })
+  it('leaves a model with nothing typed since clean', () => {
+    noteVersion('/r/t.go', 7)
+    expect(savedAt('/r/t.go', 7)).toBe(false)
+    expect(isDirty('/r/t.go', 7)).toBe(false)
+  })
+  it('touches no other file', () => {
+    noteVersion('/r/u.go', 2)
+    markSaved('/r/u.go', 1)
+    noteVersion('/r/v.go', 3)
+    savedAt('/r/v.go', 3)
+    expect(isDirty('/r/u.go', 2)).toBe(true)
+  })
+  it('forgets a model whose text was not what was sent (a save from the compare view)', () => {
+    markSaved('/r/w.go', 1)
+    expect(savedAt('/r/w.go', undefined)).toBe(false)
+    expect(hasModel('/r/w.go')).toBe(false)
+  })
+})
 
 describe('the editor\'s saved versions', () => {
   it('knows an unsaved model by its version', () => {

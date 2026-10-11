@@ -3,7 +3,7 @@ import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge, Nvim
 import { swapChoices, swapWords, type NvimViewState } from '~/utils/nvimSwap'
 import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
-import { closeWords, conflictWords, forgetModel } from '~/utils/editorModels'
+import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
 import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { modeWords } from '~/utils/nvimKeys'
@@ -59,7 +59,7 @@ const editorRef = ref<{
   gotoLine: () => void
   focus: () => void
   getText: () => string
-  markClean: () => void
+  version: () => number | undefined
   setText: (t: string) => void
   getLines: () => string[]
 } | null>(null)
@@ -350,18 +350,20 @@ async function save(force = false) {
   // From the compare view the editor is not up: its text is the compare's right side, and its model takes the saved text when it returns.
   const fromCompare = !!activeCompare.value
   const text = fromCompare ? activeCompare.value!.mine : (editorRef.value?.getText() ?? v.text ?? '')
+  // The model's version whose text this is: the answer may land after more typing, or with another tab in front, and completes this
+  // version alone (savedAt); the editor on screen then may not be this tab's.
+  const sent = fromCompare ? undefined : editorRef.value?.version()
   saving.value = true
   saveError.value = ''
   try {
     const res = await props.write(t.path, new TextEncoder().encode(text), { baseSha256: v.header?.sha256, force, onSlow: () => (saveSlow.value = true) })
     const h = res.header
     if (h.kind === 'written') {
+      // The saved version first: the text below reaches the editor's watcher, which keeps a model with edits since as it is.
+      setDirty(t.id, savedAt(t.path, sent))
       loaded.set(t.id, { ...v, text, header: { ...v.header!, sha256: h.sha256, mtime: h.mtime, size: h.size } })
       conflict.value = null
       compare.value = null
-      if (fromCompare || !editorRef.value) forgetModel(t.path)
-      else editorRef.value.markClean()
-      dirty.delete(t.id)
       savedFlash.value = true
       clearTimeout(savedTimer)
       savedTimer = setTimeout(() => (savedFlash.value = false), 2000)

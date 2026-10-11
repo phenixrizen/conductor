@@ -5,7 +5,7 @@ import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { ECHO_HOLD_MS, NvimEcho, type EchoLines } from '~/utils/nvimEcho'
-import { hasModel, isDirty, markSaved } from '~/utils/editorModels'
+import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
 /**
  * A file in Monaco (design 4b): the gutter with folding, the minimap, find
@@ -54,8 +54,11 @@ async function mount() {
     model.setValue(props.text)
     markSaved(props.path, model.getAlternativeVersionId())
   }
+  noteVersion(props.path, model.getAlternativeVersionId())
   contentSub = model.onDidChangeContent(() => {
-    if (nvimId && model) markSaved(props.path, model.getAlternativeVersionId()) // Neovim's buffer, mirrored: Neovim keeps its own
+    if (!model) return
+    noteVersion(props.path, model.getAlternativeVersionId())
+    if (nvimId) markSaved(props.path, model.getAlternativeVersionId()) // Neovim's buffer, mirrored: Neovim keeps its own
     tellDirty()
   })
   editor = monaco.editor.create(host.value, {
@@ -103,10 +106,9 @@ function tellDirty() {
 function getText(): string {
   return model?.getValue() ?? ''
 }
-/** The text was saved: what the model holds now is the saved version. */
-function markClean() {
-  if (model) markSaved(props.path, model.getAlternativeVersionId())
-  tellDirty()
+/** The model's version now: what a save sends is this version's text (editorModels.savedAt). */
+function version(): number | undefined {
+  return model?.getAlternativeVersionId()
 }
 /** The file as read again (a reload): the model takes it, unsaved edits dropped. */
 function setText(text: string) {
@@ -485,7 +487,7 @@ function answerConfirm(key: string) {
   tellNvim()
   editor?.focus()
 }
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, markClean, setText, getLines, answerSwap, answerConfirm, nvimWrite })
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite })
 </script>
 
 <template>

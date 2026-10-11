@@ -181,13 +181,17 @@ test("a file in a repository's .git opens read only; the working tree beside it 
 
 // A save whose answer is slow (a relayed one slowed on its way) is not given
 // up on: the file is written, the bar says the save goes on, and when the
-// answer lands the tab is saved, on the new hash, so the next save goes
-// through. The page holds the answer back here, as a slow relay would.
+// answer lands what was sent is saved, on the new hash, so the next save
+// goes through. What was typed meanwhile stays, unsaved, and a tab in
+// front when the answer lands keeps its own changes. The page holds the
+// answer back here, as a slow relay would.
 test('a save that answers late is still on its way, then saved', async ({ page, api, state }) => {
   const cwd = join(state.root, 'files-saving-late')
   mkdirSync(cwd, { recursive: true })
   const file = join(cwd, 'notes.txt')
   writeFileSync(file, 'alpha\n')
+  const other = join(cwd, 'other.txt')
+  writeFileSync(other, 'one\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving late', cwd })
   // While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later.
   await page.addInitScript(() => {
@@ -241,18 +245,42 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(slow).toContainText('Still saving')
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
-    // The answer lands: saved, the dot gone, the bar gone.
+    // Typed while the answer is on its way.
+    await typeAtEnd('more\n')
+    // The answer lands: saved, the bar gone; what was typed meanwhile is
+    // still there, and still unsaved.
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await expect(slow).toHaveCount(0)
-    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
+    await page.waitForTimeout(500)
+    await expect(lines).toContainText('more')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
     // The tab took the new hash: the next save is no conflict.
     await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
-    await typeAtEnd('gamma\n')
     await page.keyboard.press('Control+s')
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
     await expect(area.locator('[data-editor-conflict]')).toHaveCount(0)
-    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\nmore\n')
+    // Another tab with changes of its own is in front when a save's answer
+    // lands: its changes stay, unsaved, and the saved tab is saved.
+    await pane.locator(`[data-file-node="${other}"]`).click()
+    await expect(lines).toContainText('one', { timeout: 30_000 })
+    await typeAtEnd('two\n')
+    const tabOf = (path: string) => area.locator(`[data-editor-tab]:has(button[title="${path}"])`)
+    await expect(tabOf(other).locator('[data-editor-dirty]')).toHaveCount(1)
+    await tabOf(file).locator('button').first().click()
+    await expect(lines).toContainText('more', { timeout: 15_000 })
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 3_000))
+    await typeAtEnd('gamma\n')
+    await page.keyboard.press('Control+s')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\nmore\ngamma\n')
+    await tabOf(other).locator('button').first().click()
+    await expect(lines).toContainText('two', { timeout: 15_000 })
+    await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
+    await page.waitForTimeout(500)
+    await expect(tabOf(other).locator('[data-editor-dirty]')).toHaveCount(1)
+    await expect(lines).toContainText('two')
+    expect(readFileSync(other, 'utf8')).toBe('one\n')
   } finally {
     await api.stopSession(s.id)
   }
