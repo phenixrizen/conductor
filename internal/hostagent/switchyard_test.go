@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +49,9 @@ type stubYard struct {
 	c    *websocket.Conn
 	seen []yardMsg
 	conn chan *websocket.Conn
+	// dropLinks is how many link requests are met by closing the connection
+	// before an answer, as a connection that drops at that moment does.
+	dropLinks atomic.Int32
 }
 
 func newStubYard(t *testing.T) *stubYard {
@@ -100,6 +104,10 @@ func (y *stubYard) read(c *websocket.Conn) {
 		if typ == websocket.MessageText {
 			_ = json.Unmarshal(data, &m.raw)
 			m.t, _ = m.raw["t"].(string)
+			if m.t == proto.HostLink && y.dropLinks.Add(-1) >= 0 {
+				c.CloseNow()
+				return
+			}
 			if m.t == proto.HostLink {
 				id, _ := m.raw["requestId"].(string)
 				role, _ := m.raw["role"].(string)
@@ -881,5 +889,48 @@ func TestASwitchyardReportsNothingForAPublishedSession(t *testing.T) {
 		if !yard && (got.State != session.AttentionNeedsInput || len(got.Options) != 1 || !planted) {
 			t.Fatalf("the owner's server set %+v, recorded %v", got, planted)
 		}
+	}
+}
+
+// --link's request is made again when the connection drops before the
+// server answers it: the control loop reconnects, and the link comes.
+func TestHostLinkIsAskedAgainAfterTheConnectionDrops(t *testing.T) {
+	wait, tries := linkAttemptWait, linkAttempts
+	linkAttemptWait, linkAttempts = 300*time.Millisecond, 10
+	t.Cleanup(func() { linkAttemptWait, linkAttempts = wait, tries })
+	y := newStubYard(t)
+	y.dropLinks.Store(1)
+	minted := make(chan proto.LinkCreated, 1)
+	failed := make(chan error, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(ctx, Options{ServerURL: y.srv.URL, Name: "shared", Argv: []string{"/bin/cat"}, Dir: t.TempDir(), ReconnectMax: 200 * time.Millisecond, Log: discardLog,
+			Link: "control", LinkTTL: time.Hour, LinkMinted: func(l proto.LinkCreated, err error) {
+				if err != nil {
+					failed <- err
+					return
+				}
+				minted <- l
+			}})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case l := <-minted:
+		if l.Role != "control" || l.URL != "https://yard.invalid/join/minted" {
+			t.Fatalf("link %+v", l)
+		}
+	case err := <-failed:
+		t.Fatalf("no link: %v", err)
+	case <-time.After(20 * time.Second):
+		t.Fatal("no link after the connection dropped")
+	}
+	// One request was dropped with the connection, and one answered.
+	if n := y.dropLinks.Load(); n != -1 {
+		t.Fatalf("link requests past the dropped one: %d", -n)
 	}
 }

@@ -811,9 +811,11 @@ func TestARunMemberStoppedThereIsPublishedAgainByTheNextRunLink(t *testing.T) {
 	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
 	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
 	waitMembersPublished(t, local, runID, 2)
-	if resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"}); resp.StatusCode != http.StatusCreated || out["remote"] != true {
-		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	resp, first := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated || first["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, first)
 	}
+	firstToken := strings.TrimPrefix(first["url"].(string), "https://rendezvous.example.net/join/")
 	run, _ := local.srv.runs.Get(runID)
 	lead := run.Members[0].SessionID
 	there := local.srv.publishedOf(lead).CurrentID()
@@ -834,8 +836,23 @@ func TestARunMemberStoppedThereIsPublishedAgainByTheNextRunLink(t *testing.T) {
 		t.Fatalf("the next run link: %d %v", resp.StatusCode, out)
 	}
 	waitMembersPublished(t, local, runID, 2)
-	if again := local.srv.publishedOf(lead).CurrentID(); again == there {
+	again := local.srv.publishedOf(lead).CurrentID()
+	if again == there {
 		t.Fatalf("published again under the ended id %s", again)
+	}
+	// The run's first link follows too: it opens the member's new session.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		_, got := rendezvous.do("GET", "/api/join/"+firstToken, firstToken, nil)
+		r, _ := got["run"].(map[string]any)
+		ms, _ := r["members"].([]any)
+		if len(ms) > 0 && ms[0].(map[string]any)["sessionId"] == again {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run's first link still names %v", ms)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != nil {
 		t.Fatalf("the run's links once published again: %v", out)

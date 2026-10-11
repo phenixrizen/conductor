@@ -245,14 +245,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 
 	go a.controlLoop(runCtx, firstConn)
 	if opts.Link != "" {
-		go func() {
-			lctx, lcancel := context.WithTimeout(runCtx, 15*time.Second)
-			defer lcancel()
-			res, err := a.requestLink(lctx, opts.Link, opts.LinkTTL, "conductor host")
-			if opts.LinkMinted != nil {
-				opts.LinkMinted(res, err)
-			}
-		}()
+		go a.mintLink(runCtx)
 	}
 
 	select {
@@ -920,6 +913,41 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		a.log.Warn("server error", "code", m.Code, "message", m.Message)
 	}
 	return nil
+}
+
+// linkAttemptWait is how long one try of --link's request waits for the
+// server's answer; linkAttempts how many tries it makes.
+var (
+	linkAttemptWait = 15 * time.Second
+	linkAttempts    = 5
+)
+
+// mintLink asks the server for the link Options.Link names and tells
+// Options.LinkMinted. A try that gets no answer (the connection dropped
+// before link_created, or was down) is made again once the control loop has
+// had time to reconnect, up to linkAttempts tries; a refusal is final.
+func (a *agent) mintLink(ctx context.Context) {
+	backoff := time.Second
+	for attempt := 1; ; attempt++ {
+		lctx, cancel := context.WithTimeout(ctx, linkAttemptWait)
+		res, err := a.requestLink(lctx, a.opts.Link, a.opts.LinkTTL, "conductor host")
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) || attempt >= linkAttempts {
+			if a.opts.LinkMinted != nil {
+				a.opts.LinkMinted(res, err)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, a.opts.ReconnectMax)
+	}
 }
 
 // linkAnswer is what a link request waits for.

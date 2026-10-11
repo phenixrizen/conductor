@@ -249,13 +249,25 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.recordRemoteRunLink(id, res)
+			// The new link names the members as they are now; the run's other
+			// links there may not (a member published again just now, for one):
+			// with others, the members are sent again so all of them follow.
+			others := false
 			if b, err := json.Marshal(g); err == nil {
 				s.pubMu.Lock()
-				if s.runSent == nil {
-					s.runSent = map[string]string{}
+				others = len(s.remoteRunLinks[id]) > 1
+				if others {
+					delete(s.runSent, id)
+				} else {
+					if s.runSent == nil {
+						s.runSent = map[string]string{}
+					}
+					s.runSent[id] = string(b)
 				}
-				s.runSent[id] = string(b)
 				s.pubMu.Unlock()
+			}
+			if others {
+				s.scheduleRunSync(id)
 			}
 			s.runs.Note(id, session.ActivityLink, "link created at the rendezvous: "+linkLabelOr(res.Label)+" ("+res.Role+")")
 			writeJSON(w, http.StatusCreated, map[string]any{
