@@ -19,10 +19,17 @@ export interface CreatedLink {
 
 /**
  * reuseHeld says whether the Share dialog shows again the link it made for this target rather than make one: while that link is
- * listed and not revoked, unless the switchyard ended the publication since (republish), when a link made now publishes it again.
+ * listed and not revoked, unless the switchyard ended the publication since (republish: a link made now publishes it again), or
+ * the link was made here because the session was not at the switchyard (rendezvous) and it is now (published).
  */
-export function reuseHeld(created: { linkId: string } | null, forThisTarget: boolean, links: ReadonlyArray<{ id: string; revoked?: boolean }>, republish: boolean): boolean {
-  if (!created || !forThisTarget || republish) return false
+export function reuseHeld(
+  created: { linkId: string; rendezvous?: unknown } | null,
+  forThisTarget: boolean,
+  links: ReadonlyArray<{ id: string; revoked?: boolean }>,
+  publication: { republish: boolean; published: boolean },
+): boolean {
+  if (!created || !forThisTarget || publication.republish) return false
+  if (created.rendezvous && publication.published) return false
   return links.some((l) => l.id === created.linkId && !l.revoked)
 }
 

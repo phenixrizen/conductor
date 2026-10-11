@@ -86,11 +86,24 @@ test('a session the switchyard refuses for now wears no error, says why, and is 
     await expect(row).toBeVisible()
     await expect(row.locator('[data-event-mark]')).toHaveCount(0)
     await expect(owner.locator('[data-event-mark]', { hasText: 'error' })).toHaveCount(0)
+    // Share meanwhile makes a link here, which says why the session is not at the switchyard.
+    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    const dialog = owner.getByRole('dialog')
+    await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
+    await expect(dialog.locator('[data-link-reach]')).not.toHaveAttribute('data-link-reach', 'remote')
+    await expect(dialog).toContainText('Not published to the switchyard')
+    await owner.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
     // The first ends: the slot frees, and the second is shared on a later try (the first wait is 15 seconds).
     await pub('DELETE', `/api/sessions/${first.id}`)
     await expect.poll(hostedNames, { timeout: 90_000, message: 'the second session is shared once the slot frees' }).toContain('second shell')
     await expect(inspector).toContainText('shared through the switchyard after', { timeout: 30_000 })
     await expect(owner.locator('[data-event-mark]', { hasText: 'error' })).toHaveCount(0)
+    // Share again, in the same page: the link made here gives way to one minted at the switchyard.
+    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
+    await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
+    await expect(dialog).toContainText('Works from anywhere')
   } finally {
     await ctx.close()
     await pub('DELETE', `/api/sessions/${second.id}`).catch(() => {})

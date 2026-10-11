@@ -146,8 +146,8 @@ const ttlItems = [
   { label: 'In 7 days', value: '604800' },
 ]
 
-/** The switchyard ended the publication of the session (or of a run's member): a link made now publishes it again. */
-const republish = ref(false)
+/** What the links list says of the publication: published to the switchyard now; ended there, a link made now making it again. */
+const publication = ref({ republish: false, published: false })
 
 async function refresh() {
   loading.value = true
@@ -155,7 +155,7 @@ async function refresh() {
   try {
     const list = await routes().list()
     links.value = list.links
-    republish.value = list.republish
+    publication.value = { republish: list.republish, published: list.published }
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -167,8 +167,8 @@ async function refresh() {
 // target is shown and copied again; otherwise a view link for two hours is
 // made, copied and shown. One mint per target, not per open: a switchyard
 // allows a host five link requests a minute. When the switchyard ended the
-// publication since, the held link is made anew, which publishes it again
-// (reuseHeld).
+// publication since, or the held link was made here while the session was
+// not published and it is now, a link is made anew (reuseHeld).
 watch(open, async (v) => {
   if (!v) return
   error.value = ''
@@ -177,7 +177,7 @@ watch(open, async (v) => {
     .then((r) => (reach.value = r))
     .catch(() => (reach.value = null))
   await refresh()
-  const held = reuseHeld(created.value, createdFor.value === targetKey.value, links.value, republish.value)
+  const held = reuseHeld(created.value, createdFor.value === targetKey.value, links.value, publication.value)
   if (held) {
     await copy(created.value!.url)
     return

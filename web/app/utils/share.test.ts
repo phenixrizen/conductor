@@ -29,12 +29,18 @@ describe('shareReach', () => {
   })
   it('reuses the link made for this target while it is listed, unless the switchyard ended the publication since', () => {
     const made = { linkId: 'l1' }
-    expect(reuseHeld(made, true, [{ id: 'l1' }], false)).toBe(true)
-    expect(reuseHeld(made, true, [{ id: 'l1' }], true)).toBe(false)
-    expect(reuseHeld(made, true, [{ id: 'l1', revoked: true }], false)).toBe(false)
-    expect(reuseHeld(made, true, [{ id: 'l2' }], false)).toBe(false)
-    expect(reuseHeld(made, false, [{ id: 'l1' }], false)).toBe(false)
-    expect(reuseHeld(null, true, [{ id: 'l1' }], false)).toBe(false)
+    const quiet = { republish: false, published: true }
+    expect(reuseHeld(made, true, [{ id: 'l1' }], quiet)).toBe(true)
+    expect(reuseHeld(made, true, [{ id: 'l1' }], { republish: true, published: false })).toBe(false)
+    expect(reuseHeld(made, true, [{ id: 'l1', revoked: true }], quiet)).toBe(false)
+    expect(reuseHeld(made, true, [{ id: 'l2' }], quiet)).toBe(false)
+    expect(reuseHeld(made, false, [{ id: 'l1' }], quiet)).toBe(false)
+    expect(reuseHeld(null, true, [{ id: 'l1' }], quiet)).toBe(false)
+  })
+  it('makes a link anew in place of one made here while the session was not at the switchyard, once it is', () => {
+    const fallback = { linkId: 'l1', rendezvous: { server: 'https://switchyard.example.net', error: 'connection refused' } }
+    expect(reuseHeld(fallback, true, [{ id: 'l1' }], { republish: false, published: false })).toBe(true)
+    expect(reuseHeld(fallback, true, [{ id: 'l1' }], { republish: false, published: true })).toBe(false)
   })
   it('hostOf', () => {
     expect(hostOf('https://switchyard.example.net/join/x')).toBe('switchyard.example.net')

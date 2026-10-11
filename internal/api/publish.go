@@ -282,8 +282,15 @@ func (s *Server) watchPublication(local *session.Local, pub PublishedSession) {
 // none has been made since: the next link made for it publishes it again.
 func (s *Server) owedPublication(id string) bool {
 	s.pubMu.Lock()
-	defer s.pubMu.Unlock()
-	return s.pubStopped[id] && s.publisher != nil && s.published[id] == nil
+	owed := s.pubStopped[id] && s.publisher != nil && s.published[id] == nil
+	s.pubMu.Unlock()
+	if !owed {
+		return false
+	}
+	// A session that ended is owed nothing: there is nothing left to share.
+	d, ok := s.registry.Get(id)
+	_, isLocal := d.(*session.Local)
+	return ok && isLocal && !d.Info().Status.Ended()
 }
 
 // republish publishes session id again when the switchyard ended its
@@ -404,6 +411,7 @@ func (s *Server) endLinks(id string) {
 	pub := s.published[id]
 	remote := s.remoteLinks[id]
 	delete(s.remoteLinks, id)
+	delete(s.pubStopped, id)
 	s.pubMu.Unlock()
 	if pub == nil || len(remote) == 0 {
 		return

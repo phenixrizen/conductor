@@ -53,11 +53,16 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{"links": s.sessionLinks(id, d)}
-	// The switchyard ended the session's publication: a link made now
-	// publishes it again, so the Share dialog makes one rather than show
-	// the one it made before.
-	if s.owedPublication(id) {
-		out["republish"] = true
+	// With a switchyard configured, whether the session is published there
+	// now, and whether the switchyard ended its publication, which a link
+	// made now makes again: the Share dialog makes a link anew rather than
+	// show one it made here while the session was not there, or one from
+	// before the switchyard ended it.
+	if s.publisherServer() != "" {
+		out["published"] = s.publishedOf(id) != nil
+		if s.owedPublication(id) {
+			out["republish"] = true
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -316,12 +321,21 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 		out = append(out, linkView{Link: &share.Link{ID: rl.ID, RunID: id, Role: rl.Role, Label: rl.Label, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt}, Remote: true})
 	}
 	reply := map[string]any{"links": out}
-	// A member whose publication the switchyard ended is published again by
-	// a run link made now (see handleListLinks).
-	for _, m := range run.Members {
-		if m.SessionID != "" && s.owedPublication(m.SessionID) {
+	// As a session's (handleListLinks): whether a member is published, and
+	// whether a member's publication the switchyard ended is made again by
+	// a run link made now.
+	if s.publisherServer() != "" {
+		published, owed := false, false
+		for _, m := range run.Members {
+			if m.SessionID == "" {
+				continue
+			}
+			published = published || s.publishedOf(m.SessionID) != nil
+			owed = owed || s.owedPublication(m.SessionID)
+		}
+		reply["published"] = published
+		if owed {
 			reply["republish"] = true
-			break
 		}
 	}
 	writeJSON(w, http.StatusOK, reply)

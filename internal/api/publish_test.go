@@ -760,8 +760,45 @@ func TestARepublishThatFailedIsTriedAgainAtTheNextShare(t *testing.T) {
 	if running != 1 {
 		t.Fatalf("%d publications of the session there", running)
 	}
-	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); out["republish"] != nil {
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); out["republish"] != nil || out["published"] != true {
 		t.Fatalf("links once published again: %v", out)
+	}
+}
+
+// A run member whose publication the switchyard ended and which then ended
+// here is owed nothing: the run's links stop saying a link would publish it
+// again, so the Share dialog keeps the run's link.
+func TestAMemberThatEndedIsOwedNoPublication(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	run, _ := local.srv.runs.Get(runID)
+	lead := run.Members[0].SessionID
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+local.srv.publishedOf(lead).CurrentID(), adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the rendezvous: %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && local.srv.publishedOf(lead) != nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != true || out["published"] != true {
+		t.Fatalf("the run's links after a member's stop: %v", out)
+	}
+	if resp, _ := local.do("DELETE", "/api/sessions/"+lead, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop the member: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		_, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil)
+		if out["republish"] == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("an ended member is still owed a publication: %v", out)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
