@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -334,10 +335,12 @@ func openFileIn(dir *os.Root, name string, fi os.FileInfo) (*os.File, os.FileInf
 
 // denySet is a deny list (see insideAny) ready to compare files with: its
 // directory and file entries as files, its name entries as their
-// directory, as a file, and the name.
+// directory, as a file, and the name; and the entries that were not there
+// when it was looked up by their path (missingEntry).
 type denySet struct {
-	files []os.FileInfo
-	names []nameEntry
+	files   []os.FileInfo
+	names   []nameEntry
+	missing []missingEntry
 }
 
 type nameEntry struct {
@@ -345,29 +348,93 @@ type nameEntry struct {
 	name string
 }
 
-// newDenySet looks up deny's entries; one that does not exist, or whose
-// directory does not, denies nothing and is left out.
+// missingEntry is an entry that was not there when the list was looked up,
+// or a name entry whose directory was not: the deepest directory on its
+// path that was there (dir, as a file, so that a link on the way or
+// another spelling of it is the same directory) and the elements of the
+// path below it (tail), compared with a path's elements as a
+// case-insensitive file system compares names (strings.EqualFold); a name
+// entry's name too, which an element right below the tail must contain.
+// What a revision keeps or a file event names is compared with it whether
+// or not the working tree has it: a repository's history can hold what the
+// list names, removed from the working tree since.
+type missingEntry struct {
+	dir  os.FileInfo
+	tail []string
+	name string
+}
+
+// maxMissingLinks bounds the links to nothing yet followed while a missing
+// entry is looked up, as the system bounds a path's links (ELOOP).
+const maxMissingLinks = 40
+
+// newDenySet looks up deny's entries. One that is not there, or whose
+// directory is not, is kept by its path (missingEntry); one that names a
+// link to nothing yet on its way is kept by the link's path and by its
+// target's, as the link would lead once its target is made.
 func newDenySet(deny []string) denySet {
 	var d denySet
 	for _, e := range deny {
-		if name, ok := nameOf(filepath.Base(e)); ok {
-			if fi, err := os.Stat(filepath.Dir(e)); err == nil {
+		p, name := e, ""
+		if n, ok := nameOf(filepath.Base(e)); ok {
+			p, name = filepath.Dir(e), n
+		}
+		if fi, err := os.Stat(p); err == nil {
+			if name != "" {
 				d.names = append(d.names, nameEntry{fi, name})
+			} else {
+				d.files = append(d.files, fi)
 			}
 			continue
 		}
-		if fi, err := os.Stat(e); err == nil {
-			d.files = append(d.files, fi)
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
 		}
+		links := 0
+		d.missing = appendMissing(d.missing, abs, name, &links)
 	}
 	return d
 }
 
-func (d denySet) empty() bool { return len(d.files) == 0 && len(d.names) == 0 }
+// appendMissing appends to list the missing entry for p, an absolute path
+// that is not there (with name, a name entry's): the deepest directory on
+// it that is there, and the rest. A link to nothing yet on the way is the
+// path it is and, from its target on, the path it would lead to; *links
+// counts the links followed so (maxMissingLinks).
+func appendMissing(list []missingEntry, p, name string, links *int) []missingEntry {
+	var tail []string
+	for q := filepath.Clean(p); ; q = filepath.Dir(q) {
+		if fi, err := os.Stat(q); err == nil {
+			slices.Reverse(tail)
+			return append(list, missingEntry{fi, tail, name})
+		}
+		if li, err := os.Lstat(q); err == nil && li.Mode()&os.ModeSymlink != 0 && *links < maxMissingLinks {
+			if target, err := os.Readlink(q); err == nil {
+				*links++
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(q), target)
+				}
+				rest := slices.Clone(tail)
+				slices.Reverse(rest)
+				list = appendMissing(list, filepath.Join(append([]string{target}, rest...)...), name, links)
+			}
+		}
+		if filepath.Dir(q) == q {
+			return list
+		}
+		tail = append(tail, filepath.Base(q))
+	}
+}
+
+func (d denySet) empty() bool {
+	return len(d.files) == 0 && len(d.names) == 0 && len(d.missing) == 0
+}
 
 // hit reports whether the file fi (nil for a name nothing has yet), named
 // name in the directory dir, is denied: one of the entries itself, compared
-// as a file, or a name a name entry for dir matches.
+// as a file, a name a name entry for dir matches, or an entry missing at
+// the lookup that names name in dir and has been made since.
 func (d denySet) hit(fi os.FileInfo, name string, dir os.FileInfo) bool {
 	if fi != nil {
 		for _, e := range d.files {
@@ -384,5 +451,55 @@ func (d denySet) hit(fi os.FileInfo, name string, dir os.FileInfo) bool {
 			return true
 		}
 	}
+	for _, m := range d.missing {
+		if m.name == "" && len(m.tail) == 1 && strings.EqualFold(name, m.tail[0]) && os.SameFile(dir, m.dir) {
+			return true
+		}
+	}
 	return false
+}
+
+// below reports whether real, an absolute path whose part that is there has
+// its links resolved, is one of the missing entries or inside one, given
+// one of its parents (or itself), at, and at as a file.
+func (d denySet) below(real, at string, atID os.FileInfo) bool {
+	var rest []string
+	split := false
+	for _, m := range d.missing {
+		if !os.SameFile(atID, m.dir) {
+			continue
+		}
+		if !split {
+			split = true
+			rel, err := filepath.Rel(at, real)
+			if err != nil {
+				return false
+			}
+			if rel != "." {
+				rest = strings.Split(rel, string(filepath.Separator))
+			}
+		}
+		if m.names(rest) {
+			return true
+		}
+	}
+	return false
+}
+
+// names reports whether rest, the elements of a path below the entry's
+// directory, are the entry's or start with them.
+func (m missingEntry) names(rest []string) bool {
+	n := len(m.tail)
+	if m.name != "" {
+		n++
+	}
+	if len(rest) < n {
+		return false
+	}
+	for j, el := range m.tail {
+		if !strings.EqualFold(rest[j], el) {
+			return false
+		}
+	}
+	return m.name == "" || containsFold(rest[len(m.tail)], m.name)
 }

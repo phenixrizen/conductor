@@ -721,8 +721,12 @@ is a symbolic link) whose name contains theirs, ignoring case as a
 case-insensitive file system does (`conductor.json.bak`, `conductor.json~`,
 `.conductor.json.swp`, `#conductor.json#`), even inside the working directory.
 The two files themselves are matched as files, so a link to them is refused as
-well; the copies are matched by name alone. Every one of these rules answers
-`denied`. A hosted session applies them all for the server on its own machine:
+well; the copies are matched by name alone. One of these paths that is not on
+disk (a data directory never made, a config file moved away) is matched by its
+path instead: below the deepest directory on it that is there, compared as a
+file, its names compared ignoring case, so that what a revision keeps there
+(`op: show`) and a file event naming it are refused as well. Every one of
+these rules answers `denied`. A hosted session applies them all for the server on its own machine:
 the data directory `CONDUCTOR_DATA_DIR` names or the server would choose, and
 `~/.conductor` in any case; the catalog file `CONDUCTOR_CATALOG_PATH` names;
 the config file `conductor host --server-config` names, with its `dataDir`

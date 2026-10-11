@@ -147,3 +147,72 @@ func TestGitLogAndCommitThroughTheFilePolicy(t *testing.T) {
 		t.Fatalf("a flag as a revision: %+v", h)
 	}
 }
+
+// A deny entry the working tree no longer has is compared by its path: a
+// repository that once committed what the list names (a data directory, a
+// config file and the copies beside it) and removed it since does not show
+// it at the revision that has it, whether the entry names it through a
+// symbolic link on the way or in another case. Names that only start the
+// same, and the rest of the revision, still show.
+func TestGitShowRefusesDeniedPathsTheWorkingTreeNoLongerHas(t *testing.T) {
+	dir := gitRepo(t)
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := gitcli.Run(context.Background(), dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	const secret = "sk-kept-in-history"
+	files := map[string]string{
+		".conductor/catalog.json":  secret,
+		"cfg/conductor.json":       secret,
+		"cfg/conductor.json.bak":   secret,
+		".conductor-notes/read.md": "notes\n",
+		"cfg-other/conductor.md":   "other\n",
+	}
+	for p, body := range files {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "kept")
+	run("rm", "-r", "-q", ".conductor", "cfg")
+	run("commit", "-q", "-m", "removed")
+	if _, err := os.Stat(filepath.Join(dir, "cfg")); !os.IsNotExist(err) {
+		t.Fatalf("the working tree still has cfg: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		deny []string
+		path string
+	}{
+		{"a directory", []string{filepath.Join(dir, ".conductor")}, ".conductor/catalog.json"},
+		{"a directory through a link", []string{filepath.Join(link, ".conductor")}, ".conductor/catalog.json"},
+		{"a directory in another case", []string{filepath.Join(dir, ".Conductor")}, ".conductor/catalog.json"},
+		{"a file", DenyList(nil, []string{filepath.Join(dir, "cfg", "conductor.json")}), "cfg/conductor.json"},
+		{"a copy beside a file", DenyList(nil, []string{filepath.Join(dir, "cfg", "conductor.json")}), "cfg/conductor.json.bak"},
+		{"a copy beside a file through a link", DenyList(nil, []string{filepath.Join(link, "cfg", "conductor.json")}), "cfg/conductor.json.bak"},
+		{"inside a directory named", []string{filepath.Join(dir, "cfg")}, "cfg/conductor.json"},
+	} {
+		if sh, body := GitShowPath(dir, "HEAD~1", c.path, c.deny); sh.Kind != "error" || sh.Error == nil || sh.Error.Code != "denied" || len(body) != 0 {
+			t.Errorf("%s: %s at HEAD~1: %+v %q", c.name, c.path, sh, body)
+		}
+		if _, err := ResolvePath(dir, c.path, c.deny); err == nil {
+			t.Errorf("%s: %s resolved", c.name, c.path)
+		}
+	}
+	deny := DenyList([]string{filepath.Join(dir, ".conductor")}, []string{filepath.Join(dir, "cfg", "conductor.json")})
+	for p, body := range map[string]string{".conductor-notes/read.md": "notes\n", "cfg-other/conductor.md": "other\n", "README.md": "one\ntwo\n"} {
+		if sh, b := GitShowPath(dir, "HEAD~1", p, deny); sh.Kind != "show" || string(b) != body {
+			t.Errorf("%s at HEAD~1: %+v %q", p, sh, b)
+		}
+	}
+}

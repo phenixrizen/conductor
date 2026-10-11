@@ -129,9 +129,64 @@ func TestResolvePathDenyList(t *testing.T) {
 			t.Errorf("root %s inside the deny directory: resolved to %s", r, got)
 		}
 	}
-	// A deny directory that does not exist hides nothing.
+	// A deny directory that does not exist hides nothing beside its path.
 	if _, err := ResolvePath(root, "sub/file.go", []string{filepath.Join(root, "gone")}); err != nil {
 		t.Errorf("missing deny directory: %v", err)
+	}
+}
+
+// An entry that is not there is refused by its path, below the deepest
+// directory on it that is, compared as a file: through a link on the way
+// to it, in another case, through a link on the way that leads nowhere yet
+// and at that link's target; a name entry whose directory is not there
+// too. A name that only starts the same, or a path beside it, reads; and
+// once the entry is made, a read of it is refused as before.
+func TestResolvePathDeniesAMissingEntryByItsPath(t *testing.T) {
+	root := setupTree(t)
+	other := t.TempDir()
+	if err := os.Symlink(root, filepath.Join(other, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "later"), filepath.Join(root, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		entry string
+		paths []string
+	}{
+		{filepath.Join(root, "gone"), []string{"gone", "gone/catalog.json", "gone/a/b", "GONE/catalog.json", filepath.Join(root, "gone", "x")}},
+		{filepath.Join(root, "sub", "gone", "conductor.json"), []string{"sub/gone/conductor.json", "inside/gone/conductor.json", "sub/Gone/Conductor.JSON"}},
+		{filepath.Join(other, "link", "gone"), []string{"gone/catalog.json"}},
+		{filepath.Join(root, "dangling", "data"), []string{"dangling/data/catalog.json", "later/data/catalog.json"}},
+		{filepath.Join(root, "gone", "*conductor.json*"), []string{"gone/conductor.json", "gone/conductor.json.bak", "gone/.Conductor.json.swp", "gone/conductor.json.d/x"}},
+	} {
+		for _, p := range c.paths {
+			if r, err := ResolvePath(root, p, []string{c.entry}); err == nil {
+				t.Errorf("entry %s: %q resolved to %s", c.entry, p, r)
+			}
+		}
+	}
+	for _, c := range []struct{ entry, path string }{
+		{filepath.Join(root, "gone"), "gone-not/catalog.json"},
+		{filepath.Join(root, "gone"), "sub/gone"},
+		{filepath.Join(root, "sub", "gone", "conductor.json"), "sub/gone/other.json"},
+		{filepath.Join(root, "gone", "*conductor.json*"), "gone/agents.json"},
+		{filepath.Join(root, "gone", "*conductor.json*"), "conductor.json"},
+	} {
+		if _, err := ResolvePath(root, c.path, []string{c.entry}); err != nil {
+			t.Errorf("entry %s: %q: %v", c.entry, c.path, err)
+		}
+	}
+	// Made since: refused as a file now, and listed nowhere.
+	deny := []string{filepath.Join(root, "made")}
+	if err := os.MkdirAll(filepath.Join(root, "made"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "made", "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if h, body := ReadPath(root, "made/f", false, deny); h.Kind != "error" || h.Error.Code != "denied" || body != nil {
+		t.Fatalf("an entry made since: %+v %q", h, body)
 	}
 }
 
@@ -222,7 +277,7 @@ func TestResolvePathDenyListIgnoresSpelling(t *testing.T) {
 // start with its name (conductor.json.bak, conductor.json~), end with it, or
 // wrap it (.conductor.json.swp, #conductor.json#, .#conductor.json). The files
 // beside it with other names still read, and an entry whose directory is gone
-// denies nothing.
+// denies nothing outside that directory's path.
 func TestResolvePathDeniesCopiesBesideADeniedFile(t *testing.T) {
 	root := setupTree(t)
 	copies := []string{

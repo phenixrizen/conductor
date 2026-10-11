@@ -224,8 +224,8 @@ const maxDesktopSettings = 1 << 20
 // symbolic link is refused at its target too, with the copies beside it, as
 // a config file is. The settings of the app on Windows are not on this side,
 // so a data directory they choose for the server inside WSL is not known
-// here. Each path is named whether it exists or not: one that does not
-// denies nothing until it does (session.ResolvePath). Settings that are
+// here. Each path is named whether it exists or not: one that does not is
+// refused by its path (session.ResolvePath). Settings that are
 // there but cannot be read for their data directory are an error
 // (desktopDataDir): the app may hold another in memory.
 func desktopFiles() (dirs, files []string, err error) {

@@ -374,10 +374,13 @@ func resolvePath(root, raw string, deny denySet) (real, rootReal string, err err
 // as a file too. A name entry matches by name alone, so a hard link under an
 // unrelated name is not caught, and a "*" in any other place of an entry is not
 // a wildcard: a literal "*" in a path is not supported. An entry that does not
-// exist, or whose directory does not, denies nothing and is skipped. A
-// request looks the entries up once (newDenySet) and holds what it opens
-// to them by identity too (denySet.hit), so an entry moved since its check
-// is still denied.
+// exist, or whose directory does not, is compared by its path: below the
+// deepest directory on it that exists, compared as a file, its elements
+// match real's ignoring case (missingEntry), so that what a revision keeps
+// at a path the list names is refused though the working tree no longer
+// has it. A request looks the entries up once (newDenySet) and holds what
+// it opens to them by identity too (denySet.hit), so an entry moved since
+// its check is still denied.
 func insideAny(real string, deny []string) bool {
 	return newDenySet(deny).inside(real)
 }
@@ -390,8 +393,11 @@ func (d denySet) inside(real string) bool {
 	// Every ancestor counts, above root too: a session may run inside one.
 	for p := real; ; p = filepath.Dir(p) {
 		var fi, dir os.FileInfo
-		if len(d.files) > 0 {
+		if len(d.files) > 0 || len(d.missing) > 0 {
 			fi, _ = os.Stat(p)
+		}
+		if fi != nil && len(d.missing) > 0 && d.below(real, p, fi) {
+			return true
 		}
 		// The name decides first; the directory is looked at only for a match.
 		base := filepath.Base(p)
