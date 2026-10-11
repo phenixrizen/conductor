@@ -932,6 +932,54 @@ request each from main.
   small layout slips. The watching, with two coworkers, stays the
   owner's.
 
+- **Codex's questions** (#121). What the rc.7 app showed wrong with Codex
+  0.161 is fixed. A command approval ("Would you like to run the following
+  command?") is a question with its words and choices (`y`, `p`, Esc),
+  however the hooks file is set up: questions an agent asks during its work
+  (a catalog question marked `anytime`) are read off a model of the
+  terminal's screen (`internal/session/screen.go`), since Codex redraws
+  only the cells that change, and while one shows nothing is typed into it,
+  neither a person's reply nor a crew's prompt (a handoff waits for the
+  answer). A done is no longer undone by its own turn's bell, which Codex
+  rings as it ends a turn; a new turn's bell still asks. The trust
+  question's "No" says it quits. The update question reads "Update available
+  0.161.0 → 0.162.1" and offers "Skip until next version" (the key `3`,
+  checked against the real Codex in a throwaway home: it skips at once and
+  never touches the install). Codex reviewed it ten times, the tenth
+  approving. Tests: Go (the screen model with a fuzz target, about 25
+  approval cases, the turn's bell, a crew prompt waiting for the answer),
+  Playwright (`approval.spec.ts`, `trust.spec.ts`). Still to see by hand: a
+  real approval in the next release candidate's app.
+- **More hardening** (one pull request each, each reviewed by Codex until it
+  approved, Go tests and, where a person sees it, vitest and Playwright):
+  - **Kept links** (#117). A switchyard saves and deletes a kept link's file
+    in one order, deletes one it could not at once on its next sweep, and
+    tells the host a revoke is done only once the file is gone
+    (`store_unavailable` until then). A connected host's links are never
+    swept, however long it stays connected; an open host's links give their
+    place in the address's count to a new link once their host has been gone
+    five minutes, and only when that room is needed.
+  - **A host's control connection** (#118). What a `conductor host` writes
+    to its server goes out from one writer per connection: its own messages
+    first, relayed viewers in turn, a viewer too slow to keep dropped alone,
+    and a server that reads slowly (a switchyard's bound on what open hosts
+    relay) never closes the connection.
+  - **Files** (#119). A deny entry not on disk is matched by its path; a
+    server session refuses what other Conductors on the machine keep (the
+    desktop app names its own directory, `CONDUCTOR_DESKTOP_DIR`); a view
+    link reads nothing of `.git` nor git's settings and credential files; the
+    Files status lists the folder's own working tree; a show reads the path
+    from the commit its revision names.
+  - **Run updates** (#120). A run's members carry a revision to the
+    switchyard, which takes only newer ones; a failed sync is tried again.
+  - **Writes to a program** (#122). Every write to a session's program
+    (keys, a submission's paste and Enter, a crew's prompt) goes through one
+    writer per session, in order, each with 10 s to be taken: a program that
+    stops reading fails its sender alone, and the next writes are refused at
+    once. On a host, a viewer's keys and editor requests leave the frame loop
+    for bounded queues. An editor's Neovim keeps to its request's time and is
+    registered only while its viewer is attached.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
