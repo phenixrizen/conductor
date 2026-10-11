@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // A repository's .git and git's own settings and credentials are read by
@@ -38,18 +37,19 @@ func forControllers(raw, real string, held denySet, inGit func() bool) bool {
 		names = append(names, b)
 	}
 	for _, n := range names {
-		if containsFold(n, "git-credentials") || hasPrefixFold(n, ".gitconfig") || strings.EqualFold(n, "gitconfig") {
+		if containsFold(n, "git-credentials") || hasPrefixFold(n, ".gitconfig") || sameName(n, "gitconfig") {
 			return true
 		}
 	}
 	return held.inside(real) || inGit()
 }
 
-// hasPrefixFold is strings.HasPrefix ignoring case as containsFold does.
+// hasPrefixFold is strings.HasPrefix comparing names as containsFold does.
 func hasPrefixFold(s, prefix string) bool {
+	prefix = foldName(prefix)
 	n := len([]rune(prefix))
-	r := []rune(s)
-	return len(r) >= n && strings.EqualFold(string(r[:n]), prefix)
+	r := []rune(foldName(s))
+	return len(r) >= n && sameName(string(r[:n]), prefix)
 }
 
 // userGitFiles is the deny list (DenyList) of git's own settings and

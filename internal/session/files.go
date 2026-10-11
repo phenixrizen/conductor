@@ -465,13 +465,22 @@ func nameOf(elem string) (string, bool) {
 	return elem[1 : len(elem)-1], true
 }
 
+// sameName reports whether a and b are the same name as containsFold
+// compares names: ignoring case and the characters HFS+ leaves out.
+func sameName(a, b string) bool {
+	return strings.EqualFold(foldName(a), foldName(b))
+}
+
 // containsFold reports whether s contains sub, comparing rune by rune with
 // strings.EqualFold. That is simple Unicode case folding, which is what a
 // case-insensitive file system applies and is wider than lower-casing both
 // sides: the long s (U+017F) folds to s and the Kelvin sign (U+212A) to k.
 // Folding keeps the number of runes, so the window of s that is compared with
-// sub always holds as many runes as sub, though not as many bytes.
+// sub always holds as many runes as sub, though not as many bytes. The
+// characters HFS+ leaves out of names are left out of both first
+// (foldName), so a spelling that file system takes for the name holds it.
 func containsFold(s, sub string) bool {
+	s, sub = foldName(s), foldName(sub)
 	n := utf8.RuneCountInString(sub)
 	for i := 0; ; {
 		j, c := i, 0

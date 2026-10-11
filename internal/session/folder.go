@@ -353,7 +353,7 @@ type nameEntry struct {
 // path that was there (dir, as a file, so that a link on the way or
 // another spelling of it is the same directory) and the elements of the
 // path below it (tail), compared with a path's elements as a
-// case-insensitive file system compares names (strings.EqualFold); a name
+// case-insensitive file system compares names (sameName); a name
 // entry's name too, which an element right below the tail must contain.
 // What a revision keeps or a file event names is compared with it whether
 // or not the working tree has it: a repository's history can hold what the
@@ -500,7 +500,7 @@ func (d denySet) hit(fi os.FileInfo, name string, dir os.FileInfo) bool {
 		}
 	}
 	for _, m := range d.missing {
-		if m.name == "" && len(m.tail) == 1 && strings.EqualFold(name, m.tail[0]) && os.SameFile(dir, m.dir) {
+		if m.name == "" && len(m.tail) == 1 && sameName(name, m.tail[0]) && os.SameFile(dir, m.dir) {
 			return true
 		}
 	}
@@ -545,7 +545,7 @@ func (m missingEntry) names(rest []string) bool {
 		return false
 	}
 	for j, el := range m.tail {
-		if !strings.EqualFold(rest[j], el) {
+		if !sameName(rest[j], el) {
 			return false
 		}
 	}

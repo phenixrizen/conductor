@@ -172,6 +172,30 @@ func TestGitSettingsBehindLinksAreForControllers(t *testing.T) {
 	}
 }
 
+// Names are compared as a case-insensitive file system that leaves some
+// characters out (HFS+) would take them: a .gitconfig or a credential store
+// spelt with such characters in it is held, and so are the copies beside a
+// denied file and a missing entry's path spelt so.
+func TestNamesAreComparedWithoutTheCharactersHFSIgnores(t *testing.T) {
+	held := newDenySet(nil)
+	never := func() bool { return false }
+	for _, n := range []string{".gitcon\u200cfig", ".GIT\u200dCONFIG.local", "git\ufeffconfig", ".git-cred\u200centials"} {
+		if !forControllers("dotfiles/"+n, "/x/dotfiles/"+n, held, never) {
+			t.Errorf("%q not held", n)
+		}
+	}
+	if forControllers("dotfiles/gitconfig-guide.md", "/x/dotfiles/gitconfig-guide.md", held, never) {
+		t.Error("an ordinary name held")
+	}
+	root := setupTree(t)
+	deny := []string{filepath.Join(root, "conductor.json"), filepath.Join(root, "*conductor.json*"), filepath.Join(root, "gone", "catalog.json")}
+	for _, p := range []string{"conductor\u200c.json.bak", "gone/cata\u200dlog.json", "go\ufeffne/catalog.json"} {
+		if r, err := ResolvePath(root, p, deny); err == nil {
+			t.Errorf("%q resolved to %s", p, r)
+		}
+	}
+}
+
 // A home git file that is a link to nothing yet holds the copies beside the
 // path its target would be: the copies there are a controller's, the files
 // beside them with other names are not held.
