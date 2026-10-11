@@ -1215,3 +1215,63 @@ func TestInputsBufferIsTheCallersOnceItReturns(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond) // what follows the keys runs
 }
+
+// A submission whose link is revoked once its text is typed (in its pause,
+// or while its Enter waits behind another's write) has its line finished:
+// its text is in the program and cannot be taken back, and left there
+// without its Enter it would be entered with the next submission's. The
+// next submission is a line of its own.
+func TestALineTypedBeforeItsLinkIsRevokedIsFinished(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		queue bool
+	}{{"in its pause", false}, {"behind another's write", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+			hold, takeAgain := gateWrites(t, p)
+			var linkRevoked atomic.Bool
+			guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+			other := ownerOf(t, s)
+			type submitted struct {
+				res SubmitResult
+				err error
+			}
+			done := make(chan submitted, 1)
+			go func() {
+				res, err := s.Submit(context.Background(), Submission{Text: "first", By: guest})
+				done <- submitted{res, err}
+			}()
+			if got := written(t, p); got != "first" {
+				t.Fatalf("written %q", got)
+			}
+			if c.queue {
+				// Another's keys take the writer in the pause, and wait.
+				hold()
+				go s.Input(other, []byte("k"))
+				untilWaiting(t, s, 0)
+			}
+			linkRevoked.Store(true)
+			s.DisconnectLink(guest.LinkID)
+			if c.queue {
+				untilWaiting(t, s, 1) // the Enter waits behind the keys
+				takeAgain()
+				if got := written(t, p); got != "k" {
+					t.Fatalf("written %q", got)
+				}
+			}
+			if got := written(t, p); got != "\r" {
+				t.Fatalf("written %q, want the line's Enter", got)
+			}
+			got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
+			if got.err != nil || !got.res.Typed || !got.res.Entered {
+				t.Fatalf("result %+v, %v", got.res, got.err)
+			}
+			go s.Submit(context.Background(), Submission{Text: "second", By: other})
+			for _, want := range []string{"second", "\r"} {
+				if got := written(t, p); got != want {
+					t.Fatalf("written %q, want %q", got, want)
+				}
+			}
+		})
+	}
+}

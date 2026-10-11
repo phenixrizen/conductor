@@ -167,7 +167,10 @@ type SubmitResult struct {
 // ErrInputStalled, ErrSubmitPending (accepted), ErrTooManyRequests, the
 // process's write error, or why
 // the session ended By for its link (ErrRevoked, ErrExpired) before
-// the text was typed.
+// the text was typed. Once the text is typed, its line is finished
+// whatever becomes of the link: the text cannot be taken back out of the
+// program, and left there without its Enter it would be entered with the
+// next submission's.
 func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error) {
 	var res SubmitResult
 	if sub.By != nil && sub.By.Role != RoleControl {
@@ -181,7 +184,8 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	// box closes its connection once it has sent, and one that fails or is
 	// too slow is no different), but not once the session has ended the
 	// controller for its link (revoked or expired): until its text is
-	// typed, it waits with that in view.
+	// typed, it waits with that in view. Once typed, the line is finished
+	// (its Enter), so that it stays a line of its own.
 	from := sub.By
 	if from == nil {
 		from = sub.From
@@ -276,6 +280,13 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
 			return res, nil
+		}
+		if err == nil || landed != nil {
+			// The text is typed, or its write begun: the line's Enter is no
+			// longer withdrawn with the controller's link. Held back, it
+			// would leave the text in the program's input, to be entered
+			// with the next submission's as one line.
+			st.wait.from = nil
 		}
 		if err != nil {
 			if landed == nil || errors.Is(err, ErrSessionEnded) || s.isEnded() {
@@ -382,8 +393,8 @@ func (s *Local) typedEntry(sub Submission, text string, st submitState) {
 // Enter, for its caller has had its answer. The Enter waits as long as the
 // session lasts, with no time of its own: the submission holds the
 // session's turn until then, so no other line joins its text, and gives it
-// back. The session's end, a prompt come meanwhile or its link no longer
-// standing ends it without its Enter, which is logged.
+// back. The session's end or a prompt come meanwhile ends it without its
+// Enter, which is logged.
 func (s *Local) finishSubmission(landed <-chan error, sub Submission, text string, st submitState) {
 	defer func() { <-s.submitting }()
 	select {
@@ -402,8 +413,8 @@ func (s *Local) finishSubmission(landed <-chan error, sub Submission, text strin
 
 // enter is the rest of a submission once its text is written (res.Typed),
 // or when it has none: the pause and the look for a trust question after a
-// text, then its Enter, unless a prompt came meanwhile or its controller's
-// link no longer stands.
+// text, then its Enter, unless a prompt came meanwhile (or, with no text,
+// its controller's link no longer stands).
 func (s *Local) enter(ctx context.Context, sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
 	if res.Typed {
 		t := time.NewTimer(s.opts.SubmitPause)
@@ -443,8 +454,9 @@ func (s *Local) enter(ctx context.Context, sub Submission, res SubmitResult, st 
 }
 
 // pressEnter writes a submission's Enter, unless the session has ended, a
-// prompt came since the submission began or its controller's link no
-// longer stands; BeforeEnter runs as the writer takes it. An Enter whose
+// prompt came since the submission began or (st.wait.from, a submission
+// with no text) its controller's link no longer stands; BeforeEnter runs as
+// the writer takes it. An Enter whose
 // write has begun counts as entered. With its text typed, an Enter whose
 // write had no turn in time (its context's deadline, InputWait, a stall)
 // and was not made is errEnterLater.
@@ -461,8 +473,8 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		return res, nil
 	}
 	if err := wait.withdrawn(); err != nil {
-		// The session ended the controller during the pause: its text
-		// waits without its Enter.
+		// An Enter alone (no text) whose controller the session ended:
+		// nothing of it is written.
 		return res, err
 	}
 	// As the writer takes the Enter it looks again: a prompt raised while
