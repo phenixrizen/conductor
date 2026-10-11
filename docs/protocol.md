@@ -201,8 +201,9 @@ among it, passes at once whatever the rate, where the browser gives up on
 a file request after 20 s (and says a save is slow then); the rate bounds
 what goes over time.
 What waits for a host's connection is bounded in bytes
-as well as in messages (8 MiB): the viewers' frames fill at most 7 MiB of it
-and then wait in their own read loops, in the order they came, for the host
+as well as in messages (8 MiB): the viewers' frames, and the server's
+`viewer_join` and `viewer_leave` for them, fill at most 7 MiB of it and
+then wait in their own read loops, in the order they came, for the host
 to take some (a viewer whose connection fails meanwhile is let go), which
 neither holds up the host's messages nor closes its connection; a server
 message that finds the whole queue full closes the connection, as a host

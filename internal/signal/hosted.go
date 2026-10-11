@@ -48,11 +48,11 @@ const (
 	hostQueue        = 8192
 	// hostQueueBytes bounds what is queued to a host connection.
 	hostQueueBytes = 8 << 20
-	// What the viewers' messages may fill of the host's queue (sendFrom):
-	// the rest is kept for the server's own (a viewer joining or leaving,
-	// the answer to the host's request, an agent's report), so viewers
-	// that send more than the host reads wait for room and never close the
-	// host's connection.
+	// What the viewers' messages (their joins and leaves among them) may
+	// fill of the host's queue (sendFrom): the rest is kept for the
+	// server's own (the answer to the host's request, an agent's report),
+	// so viewers that send more than the host reads, or come and go faster
+	// than it reads, wait for room and never close the host's connection.
 	hostViewerBytes = hostQueueBytes - 1<<20
 	hostViewerSlots = hostQueue - 512
 )
@@ -651,12 +651,22 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	}
 	conn := h.conn
 	h.mu.Unlock()
-	conn.sendJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel})
+	// The join is the viewer's own message: charged to it, and within the
+	// viewers' share of the host's queue in its turn (sendFrom), so viewers
+	// coming and going never spend the room kept for the server's messages.
+	// It waits while the viewer is registered, so a session has at most
+	// maxViewers joins waiting.
+	if join, err := jsonMarshal(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel}); err == nil && v.chargeHost(len(join)) == nil {
+		_ = conn.sendFrom(Outbound{Text: join}, v.done)
+	}
 	h.notifyChange()
 	return v, nil
 }
 
-// RemoveViewer unregisters a browser and notifies the host.
+// RemoveViewer unregisters a browser and notifies the host. The leave goes
+// as the viewer's join did, within the viewers' share of the host's queue:
+// it waits for room until the host's connection closes, and is never
+// dropped, for the host would keep a viewer it was not told left.
 func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Lock()
 	_, present := h.viewers[v.ID]
@@ -668,7 +678,9 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Unlock()
 	v.close(nil)
 	if present && conn != nil {
-		conn.sendJSON(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: v.ID})
+		if leave, err := jsonMarshal(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: v.ID}); err == nil {
+			_ = conn.sendFrom(Outbound{Text: leave}, nil)
+		}
 	}
 	if present {
 		h.notifyChange()

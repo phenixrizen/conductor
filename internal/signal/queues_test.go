@@ -2,8 +2,11 @@ package signal
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -110,44 +113,60 @@ func TestRelayedFramesWaitForRoomInTheHostQueue(t *testing.T) {
 }
 
 // While the viewers' share of the host's queue is full, the server's own
-// messages still go: a viewer joining, an answer to the host. A viewer that
-// is closed while it waits stops waiting, and so does one whose host's
-// connection closes.
+// messages still go: an answer to the host. A viewer joining is the viewer's
+// own and waits its turn, without closing the host's connection; one closed
+// while it waits stops waiting, its leave waits for room in turn, and both
+// stop when the host's connection closes.
 func TestServerMessagesKeepTheirRoomInTheHostQueue(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
 	v := relayedViewer(t, hs, conn, "0123456789abcdef")
 	sent := fillFromViewer(hs, v, 2*hostQueueBytes)
 	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+proto.MaxInput))
 	before := len(conn.Send)
-	if _, err := hs.AddViewer("fedcba9876543210", session.RoleView, "", ""); err != nil {
-		t.Fatal(err)
-	}
 	if err := hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: "r1"}); err != nil {
 		t.Fatalf("the server's answer to its host: %v", err)
 	}
-	if len(conn.Send) != before+2 {
-		t.Fatalf("%d messages queued, want %d", len(conn.Send), before+2)
+	if len(conn.Send) != before+1 {
+		t.Fatalf("%d messages queued, want %d", len(conn.Send), before+1)
+	}
+	joined := make(chan error, 1)
+	go func() {
+		_, err := hs.AddViewer("fedcba9876543210", session.RoleView, "", "")
+		joined <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-joined:
+		t.Fatalf("a viewer joined past a full share: %v", err)
+	default:
 	}
 	select {
 	case <-conn.Done():
 		t.Fatal("the host's connection was closed")
 	default:
 	}
-	// A second viewer waits as well, and stops waiting when it is closed.
-	w := relayedViewerNoDrain(t, hs, "aaaaaaaaaaaaaaaa")
-	other := fillFromViewer(hs, w, proto.MaxInput)
-	time.Sleep(50 * time.Millisecond)
-	hs.RemoveViewer(w)
-	select {
-	case n := <-other:
-		if n != 0 {
-			t.Fatalf("a closed viewer sent %d bytes", n)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a closed viewer kept waiting for room")
+	// Closed while its join waits: the join stops waiting; its leave waits.
+	w := hs.viewer("fedcba9876543210")
+	if w == nil {
+		t.Fatal("the joining viewer is not registered")
 	}
-	// The first stops when the host's connection closes.
+	removed := make(chan struct{})
+	go func() { hs.RemoveViewer(w); close(removed) }()
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a closed viewer's join kept waiting for room")
+	}
+	if len(conn.Send) != before+1 {
+		t.Fatalf("%d messages queued, want %d", len(conn.Send), before+1)
+	}
+	// Both stop when the host's connection closes.
 	conn.Close()
+	select {
+	case <-removed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a leave kept waiting on a closed connection")
+	}
 	select {
 	case <-sent:
 	case <-time.After(5 * time.Second):
@@ -228,16 +247,97 @@ type failSink struct{}
 func (failSink) WriteFrame([]byte) error { return errors.New("connection reset") }
 func (failSink) Close(error)             {}
 
-// relayedViewerNoDrain is relayedViewer for a host queue that is full: the
-// join and relay_start are queued among the rest.
-func relayedViewerNoDrain(t *testing.T, hs *HostedSession, id string) *Viewer {
-	t.Helper()
-	v, err := hs.AddViewer(id, session.RoleControl, "", "")
-	if err != nil {
-		t.Fatal(err)
+// Viewers coming and going while the viewers' share of the host's queue is
+// full never close the host's connection: each join and leave waits for room
+// in its turn, as the viewer's other messages do, and every one reaches the
+// host, each viewer's join before its leave, once the host reads.
+func TestViewersComingAndGoingNeverCloseTheHost(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	v := relayedViewer(t, hs, conn, "0123456789abcdef")
+	flooded := fillFromViewer(hs, v, 2*hostQueueBytes)
+	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+proto.MaxInput))
+	// More joins and leaves than the rest of the queue holds, by as many
+	// viewers at a time as the session takes.
+	const churn = 4500
+	var wg sync.WaitGroup
+	var next, joined atomic.Int64
+	for range hs.maxViewers - 1 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := next.Add(1)
+				if i > churn {
+					return
+				}
+				w, err := hs.AddViewer(fmt.Sprintf("c%015d", i), session.RoleView, "", "")
+				if err != nil {
+					t.Errorf("viewer %d: %v", i, err)
+					return
+				}
+				joined.Add(1)
+				hs.RemoveViewer(w)
+			}
+		}()
 	}
-	v.relay.Store(true)
-	return v
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-conn.Done():
+		t.Fatal("viewers coming and going closed the host's connection")
+	default:
+	}
+	// The host reads: every join and leave arrives, the join first.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	seen := map[string]string{}
+	finished := false
+	deadline := time.After(30 * time.Second)
+	for !finished {
+		select {
+		case o := <-conn.Send:
+			conn.Took(o)
+			if o.Text == nil {
+				continue
+			}
+			var m struct{ T, ViewerID string }
+			if json.Unmarshal(o.Text, &m) != nil || !strings.HasPrefix(m.ViewerID, "c") {
+				continue
+			}
+			switch m.T {
+			case proto.HostViewerJoin:
+				seen[m.ViewerID] = "joined"
+			case proto.HostViewerLeave:
+				if seen[m.ViewerID] != "joined" {
+					t.Fatalf("%s left before it joined", m.ViewerID)
+				}
+				seen[m.ViewerID] = "left"
+			}
+		case <-done:
+			done = nil
+			hs.RemoveViewer(v)
+		case <-deadline:
+			t.Fatalf("%d of %d viewers came and went", joined.Load(), churn)
+		default:
+			if done == nil && len(conn.Send) == 0 {
+				finished = true
+			}
+		}
+	}
+	<-flooded
+	select {
+	case <-conn.Done():
+		t.Fatal("viewers coming and going closed the host's connection")
+	default:
+	}
+	left := 0
+	for _, s := range seen {
+		if s == "left" {
+			left++
+		}
+	}
+	if joined.Load() != churn || left != churn {
+		t.Fatalf("%d joined, %d told the host they left, of %d", joined.Load(), left, churn)
+	}
 }
 
 // The frames queued to a viewer are bounded in bytes as well as in number:
@@ -302,10 +402,10 @@ func (s *countSink) WriteFrame([]byte) error { s.frames.Add(1); return nil }
 func (s *countSink) Close(error)             {}
 
 // A viewer's Charge is told what each of its messages brings the host's
-// connection: a relayed frame in its envelope (eighteen bytes for an empty
-// INPUT of one), an offer as encoded for the host (six bytes for each '<'
-// of the viewer's); a Charge that fails drops the message, and its error
-// comes back.
+// connection: its join, a relayed frame in its envelope (eighteen bytes for
+// an empty INPUT of one), an offer as encoded for the host (six bytes for
+// each '<' of the viewer's); a Charge that fails drops the message, and its
+// error comes back.
 func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
 	var told []int
@@ -316,10 +416,6 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 	}})
 	if err != nil {
 		t.Fatal(err)
-	}
-	drainText(t, conn, proto.HostViewerJoin)
-	if len(told) != 0 {
-		t.Fatalf("the server's own message was charged to the viewer: %v", told)
 	}
 	took := func(what string) Outbound {
 		t.Helper()
@@ -334,6 +430,9 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 			t.Fatalf("%s: nothing went to the host", what)
 		}
 		return Outbound{}
+	}
+	if tt, _ := proto.ParseHeader(took("the join").Text); tt != proto.HostViewerJoin {
+		t.Fatalf("the first message to the host is %q", tt)
 	}
 	if err := hs.StartRelay(v); err != nil {
 		t.Fatal(err)
