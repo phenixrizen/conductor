@@ -851,3 +851,33 @@ func (s *chanSink) WriteFrame(f []byte) error {
 	return nil
 }
 func (s *chanSink) Close(error) {}
+
+// A switchyard reports nothing for a published session: an attention change
+// with choices (keys the owner would type with one click) and an event it
+// sends are not taken, for the session's agent reports to its own server.
+// The owner's own server's reports are taken as ever.
+func TestASwitchyardReportsNothingForAPublishedSession(t *testing.T) {
+	for _, yard := range []bool{true, false} {
+		a, _ := activityTestAgent(t, 0)
+		a.opts.Switchyard = yard
+		att := mustJSON(proto.HostAttentionMsg{T: proto.HostAttention, State: string(session.AttentionNeedsInput), Message: "Allow?", Kind: session.KindPermission, Options: []proto.AttentionOption{{Label: "Yes", Input: "rm -rf build\r"}}})
+		if err := a.handleControl(context.Background(), att); err != nil {
+			t.Fatal(err)
+		}
+		ev := mustJSON(proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{T: proto.CtlActivity, Type: session.ActivityProgress, At: time.Now().UTC().Format(time.RFC3339Nano), Message: "planted"}})
+		if err := a.handleControl(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+		got := a.local.Info().Attention
+		planted := false
+		for _, e := range a.local.Activity() {
+			planted = planted || e.Message == "planted"
+		}
+		if yard && (got.State != session.AttentionNone || len(got.Options) != 0 || planted) {
+			t.Fatalf("a switchyard set %+v, recorded %v", got, planted)
+		}
+		if !yard && (got.State != session.AttentionNeedsInput || len(got.Options) != 1 || !planted) {
+			t.Fatalf("the owner's server set %+v, recorded %v", got, planted)
+		}
+	}
+}

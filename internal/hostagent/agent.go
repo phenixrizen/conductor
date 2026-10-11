@@ -115,9 +115,13 @@ type Options struct {
 	// its folder and the machine, and leaves out the command line, the OS
 	// user and the git branch (registration). Its viewers get all of it
 	// from the session itself, over their own connection. A stop it sends
-	// never stops the process: it ends the Uplink's publication. The Uplink
-	// sets it; `conductor host` publishes to the owner's own server, which
-	// shows the session in its workbench and stops it, and leaves it off.
+	// never stops the process: it ends the Uplink's publication. An
+	// attention change or an event it sends is not taken: the session's
+	// agent reports to its own server, never to the switchyard, so only the
+	// switchyard could send one, and an attention's choices are keys the
+	// owner types with one click. The Uplink sets it; `conductor host`
+	// publishes to the owner's own server, which shows the session in its
+	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
 }
 
@@ -843,6 +847,9 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.removePeer(m.ViewerID)
 	case proto.HostAttention:
+		if a.opts.Switchyard {
+			return nil // see Options.Switchyard
+		}
 		var m proto.HostAttentionMsg
 		if err := json.Unmarshal(data, &m); err != nil {
 			return err
@@ -857,6 +864,9 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 	case proto.HostActivity:
+		if a.opts.Switchyard {
+			return nil // see Options.Switchyard
+		}
 		// An event an agent reported through the API for this session. It is
 		// recorded like any other entry, so the people watching the host see
 		// it, and the OnActivity hook reports it back to the server.
