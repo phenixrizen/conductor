@@ -163,9 +163,12 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 		t.Fatalf("refusal: %+v", ev)
 	}
 	// Detach closes the editors, on their own goroutines: each leaves the
-	// connection and the session's count once Neovim has gone.
+	// connection and the session's count once Neovim has gone. A Neovim
+	// that does not leave as its connection closes (one of those that found
+	// the first's swap file can wait at that question) is ended once
+	// nvimEndWait has passed, so the wait here is longer than that.
 	s.Detach(sub)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(nvimEndWait + 5*time.Second)
 	for {
 		sub.nvimMu.Lock()
 		left := len(sub.nvims)

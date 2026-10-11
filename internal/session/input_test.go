@@ -1277,6 +1277,10 @@ func TestALineTypedBeforeItsLinkIsRevokedIsFinished(t *testing.T) {
 			if got := written(t, p); got != "first" {
 				t.Fatalf("written %q", got)
 			}
+			// In its pause: the writer has reported the text's write (the
+			// process has the bytes a moment before), so the text is typed,
+			// no longer being taken.
+			untilIdle(t, s)
 			if c.queue {
 				// Another's keys take the writer in the pause, and wait.
 				hold()
