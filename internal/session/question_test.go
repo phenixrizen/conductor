@@ -625,6 +625,31 @@ func TestADialogOnTheScreenHoldsWhatWasMeantForAnotherQuestion(t *testing.T) {
 	}
 }
 
+// A choice of the question the session shows, clicked as a dialog is drawn
+// and before the screen is seen quiet, is weighed against the dialog: the
+// look before the input finds it, and the choice, the keys of another
+// question with their Enter, is refused, nothing written.
+func TestAChoiceClickedAsADialogIsDrawnIsRefused(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := []Option{{Label: "Postgres", Input: "Postgres\r"}, {Label: "SQLite", Input: "SQLite\r"}}
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, mine); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	if err := s.Input(sub, []byte(mine[1].Input)); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("the choice: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("attention %+v", a)
+	}
+}
+
 // A digit past the dialog's lines does nothing in Codex, and the dialog
 // stays: a handoff that comes right after it waits for the screen to be
 // looked at again, finds the dialog, and writes nothing.

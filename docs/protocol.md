@@ -637,7 +637,9 @@ dialog asked again), so that a handoff coming as a person answers neither
 asks the answered dialog again nor lands on one still there. While the
 question shows, an input of several keys with a carriage return that is
 not one of its choices (another question's choice clicked late, a paste)
-is refused with `not_sent`, nothing written. A question asked again with
+is refused with `not_sent`, nothing written; the screen is looked at before
+such an input, so that a dialog drawn and not yet seen quiet is the
+question it is weighed against. A question asked again with
 the same words, the program being slow to draw after a person's key,
 gives way to that key once the dialog is gone. The words are
 bounded as a message is; longer ones end with "…". Codex's built-in entry has its

@@ -1213,6 +1213,12 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
+	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
+		// Several keys with an Enter (a page's choice, a paste): look at the
+		// screen first, so that a dialog drawn and not yet seen quiet is the
+		// question they are weighed against, not the one it replaced.
+		s.asked.CheckNow()
+	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	// The prompt this input answers is the one on the screen as it is typed.
