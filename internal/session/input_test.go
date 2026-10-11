@@ -874,3 +874,57 @@ func TestASubmissionWhoseEnterHasNoTurnInTimeIsFinishedAsTheProgramReads(t *test
 		t.Fatal(err)
 	}
 }
+
+// A submission's Enter queued behind another's write is left out when a
+// prompt is raised while it waits: the writer looks again as it takes it,
+// and the newer prompt is never answered by it.
+func TestAQueuedEnterIsLeftOutForAPromptRaisedMeanwhile(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 200 * time.Millisecond})
+	var gate atomic.Pointer[chan struct{}]
+	hold := func() {
+		ch := make(chan struct{})
+		gate.Store(&ch)
+	}
+	takeAgain := func() {
+		if ch := gate.Swap(nil); ch != nil {
+			close(*ch)
+		}
+	}
+	t.Cleanup(takeAgain)
+	p.onWrite = func() {
+		if ch := gate.Load(); ch != nil {
+			<-*ch
+		}
+	}
+	other := ownerOf(t, s)
+	type submitted struct {
+		res SubmitResult
+		err error
+	}
+	done := make(chan submitted, 1)
+	go func() {
+		res, err := s.Submit(context.Background(), Submission{Text: "line", ByName: "run"})
+		done <- submitted{res, err}
+	}()
+	if got := written(t, p); got != "line" {
+		t.Fatalf("written %q", got)
+	}
+	// During its pause another's keys take the writer, and the program
+	// stops reading: the Enter waits behind them.
+	hold()
+	go s.Input(other, []byte("other's"))
+	untilWaiting(t, s, 1)
+	s.SetAttention(AttentionNeedsInput, "Allow?", SourceAPI)
+	takeAgain()
+	if got := written(t, p); got != "other's" {
+		t.Fatalf("written %q", got)
+	}
+	got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
+	if got.err != nil || got.res.Entered {
+		t.Fatalf("result %+v, %v", got.res, got.err)
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Message != "Allow?" {
+		t.Fatalf("the newer prompt: %+v", att)
+	}
+}

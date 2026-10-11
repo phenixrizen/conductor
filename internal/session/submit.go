@@ -92,6 +92,11 @@ type Submission struct {
 	// the session's lock: the run engine stamps a member prompted there, so
 	// that a done reported before the Enter never counts for the prompt.
 	BeforeEnter func()
+	// Finished, when set, is told how a submission accepted while its
+	// program took it slowly (ErrSubmitPending) ended, once it has: its
+	// result (Entered, or typed without its Enter) and the error that
+	// ended it, if any.
+	Finished func(SubmitResult, error)
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -306,14 +311,26 @@ var errEnterLater = errors.New("session: the Enter is to be pressed later")
 // again, as for any.
 func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
 	defer func() { <-s.submitting }()
-	s.pressEnterHeld(sub, res, st)
+	res, err := s.pressEnterHeld(sub, res, st)
+	s.finished(sub, res, err)
+}
+
+// finished tells how a submission finished in the background ended: logged
+// when it was not entered, and to its Finished.
+func (s *Local) finished(sub Submission, res SubmitResult, err error) {
+	if err != nil || !res.Entered {
+		s.log.Info("a submission finished as its program read was typed without its Enter", "err", err)
+	}
+	if sub.Finished != nil {
+		sub.Finished(res, err)
+	}
 }
 
 // pressEnterHeld presses a submission's Enter, the session's turn held by
 // its caller, as long as the session lasts: with no time of its own, and
-// again a moment later while the writer's queue is full. An Enter not
-// pressed (the session's end, a prompt, its link) is logged.
-func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState) {
+// again a moment later while the writer's queue is full. It returns how
+// that ended (not entered: the session's end, a prompt, its link).
+func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
 	sub.Confirm = false
 	st.wait.wait, st.wait.stall = 0, 0
 	for {
@@ -323,13 +340,10 @@ func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState)
 			case <-time.After(100 * time.Millisecond):
 				continue
 			case <-s.ended:
-				err = ErrSessionEnded
+				return got, ErrSessionEnded
 			}
 		}
-		if err != nil || !got.Entered {
-			s.log.Info("a submission whose Enter waited for the program was typed without its Enter", "err", err)
-		}
-		return
+		return got, err
 	}
 }
 
@@ -354,21 +368,21 @@ func (s *Local) finishSubmission(landed <-chan error, sub Submission, text strin
 	select {
 	case err := <-landed:
 		if err != nil {
+			s.finished(sub, SubmitResult{}, err)
 			return
 		}
 	case <-s.ended:
+		s.finished(sub, SubmitResult{}, ErrSessionEnded)
 		return
 	}
 	s.typedEntry(sub, text, st)
 	sub.Confirm = false
 	st.wait.wait, st.wait.stall = 0, 0
 	res, err := s.enter(context.Background(), sub, SubmitResult{Typed: true}, st)
-	switch {
-	case errors.Is(err, errEnterLater):
-		s.pressEnterHeld(sub, res, st)
-	case err != nil || !res.Entered:
-		s.log.Info("a submission taken slowly was typed without its Enter", "err", err)
+	if errors.Is(err, errEnterLater) {
+		res, err = s.pressEnterHeld(sub, res, st)
 	}
+	s.finished(sub, res, err)
 }
 
 // enter is the rest of a submission once its text is written (res.Typed),
@@ -436,6 +450,17 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		// waits without its Enter.
 		return res, err
 	}
+	// As the writer takes the Enter it looks again: a prompt raised while
+	// the Enter waited behind another write is never answered by it.
+	wait.guard = func() error {
+		s.mu.Lock()
+		att := s.info.Attention
+		s.mu.Unlock()
+		if att.State == AttentionNeedsInput && att.Since != promptSince {
+			return errPromptCame
+		}
+		return nil
+	}
 	// As the writer takes the Enter, never for one not written: the
 	// caller's BeforeEnter, and the turn a done ended is behind (nextTurn).
 	wait.before = func() {
@@ -447,6 +472,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	enterAt := time.Now().UTC()
 	landed, err := s.writeProc(ctx, []byte{'\r'}, wait)
 	pending := landed != nil
+	if errors.Is(err, errPromptCame) {
+		// Left out, as one seen before the Enter is.
+		return res, nil
+	}
 	if err != nil && !pending && res.Typed && waitedOut(err) {
 		return res, errEnterLater
 	}
@@ -515,6 +544,10 @@ func (s *Local) lookAsked(ctx context.Context) (bool, error) {
 // output, and a program that keeps drawing is not held up for longer than
 // this.
 const lookBudget = 2 * time.Second
+
+// errPromptCame refuses a submission's Enter that a prompt raised since the
+// submission began would take (pressEnter's guard).
+var errPromptCame = errors.New("session: a prompt came before the Enter")
 
 // waitedOut says a write was not made for want of a turn in time: its
 // context's deadline, InputWait, a stall, a full queue; not its sender's

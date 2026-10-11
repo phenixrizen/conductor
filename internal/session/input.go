@@ -65,6 +65,10 @@ type writeWait struct {
 	// before, when set, runs as the writer takes the write, just before it
 	// is made, and never for a write not made: a submission's BeforeEnter.
 	before func()
+	// guard, when set, is asked as the writer takes the write, as over is:
+	// an error from it and the write is not made (a submission's Enter
+	// that a newer prompt would take).
+	guard func() error
 }
 
 // withdrawn says why the write's connection withdraws it, nil while it
@@ -141,6 +145,11 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if o.guard != nil {
+			if err := o.guard(); err != nil {
+				return err
+			}
 		}
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return ErrInputStalled

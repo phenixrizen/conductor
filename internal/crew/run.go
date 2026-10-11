@@ -836,6 +836,18 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				// The handoffs waiting for its prompt may go (a pending
 				// prompt's Enter comes after this function has returned).
 				m.poke()
+			}, Finished: func(res session.SubmitResult, err error) {
+				// A pending prompt ended without its Enter (a question
+				// came first): it waits in the agent's input, as one
+				// typed so at once does, and counts as given.
+				if res.Entered || !res.Typed {
+					return
+				}
+				e.mu.Lock()
+				m.markPrompted()
+				r.note(session.ActivityError, "typed %s's prompt without its Enter: %s waits on a question; answer it, then press Enter in its terminal", name, name)
+				e.mu.Unlock()
+				m.poke()
 			}})
 			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
 				// A question the wait had not seen yet (a dialog Submit

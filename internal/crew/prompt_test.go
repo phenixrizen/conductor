@@ -156,6 +156,59 @@ func TestADoneWhileAPromptsEnterWaitsDoesNotCount(t *testing.T) {
 	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
 }
 
+// A prompt accepted while the member's program takes it slowly, whose
+// Enter is then left out for a question come meanwhile, waits in the
+// agent's input as one typed so at once does: the run says so, and the
+// prompt counts as given, so the done after a person's Enter starts the
+// members after it.
+func TestAPendingPromptLeftWithoutItsEnterCountsAsGiven(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.inputWait = 200 * time.Millisecond
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member != "core" {
+			return
+		}
+		for len(p.Input) < cap(p.Input) {
+			p.Input <- nil
+		}
+		l.SetAttention(session.AttentionNeedsInput, "what next?", session.SourceAPI)
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for logCount(t, e, run.ID, "waits for core to take its input") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the prompt was never accepted as pending")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	core, p := fl.member("core")
+	core.SetAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI)
+	// The program reads again: the text, and no Enter.
+	for {
+		b := <-p.Input
+		if b != nil {
+			if string(b) != "Build it." {
+				t.Fatalf("typed %q", b)
+			}
+			break
+		}
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for logCount(t, e, run.ID, "typed core's prompt without its Enter") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never said the prompt waits without its Enter")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// A person answers and presses Enter; the agent works and is done.
+	core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	core.SetAttention(session.AttentionDone, "built", session.SourceAPI)
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+}
+
 // A trust question on a member's screen holds its prompt past the readiness
 // cap: the member needs input with the question's words, the run says so
 // once, and nothing is typed until a person answers it with Enter. Then the
