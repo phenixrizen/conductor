@@ -225,15 +225,6 @@ func (c *HostConn) admit(o Outbound, n int) bool {
 	}
 }
 
-// sendJSONFrom is sendFrom for a JSON message.
-func (c *HostConn) sendJSONFrom(v any, stop <-chan struct{}) error {
-	b, err := jsonMarshal(v)
-	if err != nil {
-		return err
-	}
-	return c.sendFrom(Outbound{Text: b}, stop)
-}
-
 func (c *HostConn) sendJSON(v any) bool {
 	b, err := jsonMarshal(v)
 	if err != nil {
@@ -261,6 +252,17 @@ type Viewer struct {
 	// Authorize gave a Grant with Until); set by AddViewerWith, stopped by
 	// RemoveViewer, both under the session's mu.
 	lapse *time.Timer
+	// charge is ViewerOptions.Charge.
+	charge func(n int) error
+}
+
+// chargeHost tells the viewer's Charge of a message of n bytes it sends the
+// host.
+func (v *Viewer) chargeHost(n int) error {
+	if v.charge == nil {
+		return nil
+	}
+	return v.charge(n)
 }
 
 func newViewer(id string, role session.Role, linkID, linkLabel string) *Viewer {
@@ -601,6 +603,14 @@ type ViewerOptions struct {
 	// refuses the viewer; a Grant with Until closes the viewer with
 	// session.ErrExpired then. It must not call the session.
 	Authorize func() (session.Grant, error)
+	// Charge, when set, is told the size of each message the viewer sends
+	// the host as the host's connection carries it (a relayed frame in its
+	// envelope, an offer or a candidate as encoded for the host), before
+	// the message waits for room: what the server bounds is what goes to
+	// the host. It is called on the goroutine that sends (RelayToHost,
+	// ForwardOffer, ForwardICE, StartRelay); an error drops the message
+	// and is returned.
+	Charge func(n int) error
 }
 
 // AddViewerWith registers a browser and notifies the host.
@@ -634,6 +644,7 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 		return nil, ErrTooManyViewer
 	}
 	v := newViewer(o.ID, role, o.LinkID, o.LinkLabel)
+	v.charge = o.Charge
 	h.viewers[o.ID] = v
 	if !until.IsZero() {
 		v.lapse = time.AfterFunc(time.Until(until), func() { v.close(session.ErrExpired) })
@@ -718,18 +729,29 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 	if conn == nil {
 		return ErrHostGone
 	}
+	if err := v.chargeHost(len(env)); err != nil {
+		return err
+	}
 	return conn.sendFrom(Outbound{Binary: env}, v.done)
 }
 
-// fromViewer sends the host a message on v's behalf (HostConn.sendFrom).
+// fromViewer sends the host a message on v's behalf, charged as encoded
+// (ViewerOptions.Charge), then queued (HostConn.sendFrom).
 func (h *HostedSession) fromViewer(v *Viewer, msg any) error {
+	b, err := jsonMarshal(msg)
+	if err != nil {
+		return err
+	}
 	h.mu.Lock()
 	conn := h.conn
 	h.mu.Unlock()
 	if conn == nil {
 		return ErrHostGone
 	}
-	return conn.sendJSONFrom(msg, v.done)
+	if err := v.chargeHost(len(b)); err != nil {
+		return err
+	}
+	return conn.sendFrom(Outbound{Text: b}, v.done)
 }
 
 // toHost sends the host a message of the server's own, without waiting

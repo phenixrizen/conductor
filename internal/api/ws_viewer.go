@@ -323,14 +323,39 @@ func (s *Server) linkLabel(linkID string) string {
 // viewer sends is read under its address's budget (cfg.ViewerRelayKBps),
 // one bucket for every hosted viewer of the address, as the open hosts of
 // one address share theirs: past it the viewer is slowed, its connection
-// read no faster than the bucket refills.
+// read no faster than the bucket refills. Each frame is charged the larger
+// of what the viewer sent and what it sends the host (a relayed frame in its
+// envelope, a message encoded anew).
 func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
+	sink := newWSSink(c)
+	defer sink.cancel()
+	var budget *byteBucket
+	if kbps := s.cfg.ViewerRelayKBps; kbps > 0 {
+		budget = s.viewerRelay.acquire(addr, kbps*1024, s.relayBurst(kbps*1024))
+		defer s.viewerRelay.release(addr)
+	}
+	// credit is what the frame in hand was charged as it was read and what
+	// it sends the host has not used yet: a message to the host is charged
+	// only what it brings past it. Read and charged on the read loop alone,
+	// which is where the viewer sends the host anything.
+	var credit int
+	var charge func(n int) error
+	if budget != nil {
+		charge = func(n int) error {
+			use := min(credit, n)
+			credit -= use
+			if n == use {
+				return nil
+			}
+			return budget.take(sink.ctx, n-use)
+		}
+	}
 	viewerID := session.NewID()
-	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check})
+	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check, Charge: charge})
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):
-			newWSSink(c).Close(err)
+			sink.Close(err)
 		case errors.Is(err, signal.ErrTooManyViewer):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
 		default:
@@ -339,13 +364,6 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		return
 	}
 	defer hs.RemoveViewer(v)
-	sink := newWSSink(c)
-	defer sink.cancel()
-	var budget *byteBucket
-	if kbps := s.cfg.ViewerRelayKBps; kbps > 0 {
-		budget = s.viewerRelay.acquire(addr, kbps*1024, s.relayBurst(kbps*1024))
-		defer s.viewerRelay.release(addr)
-	}
 
 	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
 	for _, srv := range s.cfg.ICEServers {
@@ -391,7 +409,8 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		// (signal.HostConn's share for viewers), so neither wait holds up
 		// the host's connection or another viewer's.
 		if budget != nil {
-			if budget.take(sink.ctx, 1+len(f.Payload)) != nil {
+			credit = 1 + len(f.Payload)
+			if budget.take(sink.ctx, credit) != nil {
 				return
 			}
 		}

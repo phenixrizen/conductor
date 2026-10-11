@@ -191,7 +191,9 @@ relayed frames) is read under one budget per address, `viewerRelayKBps`
 (128 KiB a second by default), shared by every hosted viewer of the
 address and kept after the last one leaves until it has refilled: a viewer
 past it is slowed the same way, and each frame is charged whole, in the
-order the frames come. Each of these bounds, and
+order the frames come, as the larger of what the viewer sent and what goes
+to the host for it (a relayed frame in its envelope, an offer or a
+candidate as encoded for the host). Each of these bounds, and
 `switchyard.openHostRelayKBps` (the open hosts of one address together),
 allows a burst of twice its rate and never less than 4 MiB: what a
 person's tabs ask for or send at once, three files of 1 MiB read or saved

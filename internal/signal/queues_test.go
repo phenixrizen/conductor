@@ -3,6 +3,7 @@ package signal
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,3 +300,70 @@ type countSink struct{ frames atomic.Int64 }
 
 func (s *countSink) WriteFrame([]byte) error { s.frames.Add(1); return nil }
 func (s *countSink) Close(error)             {}
+
+// A viewer's Charge is told what each of its messages brings the host's
+// connection: a relayed frame in its envelope (eighteen bytes for an empty
+// INPUT of one), an offer as encoded for the host (six bytes for each '<'
+// of the viewer's); a Charge that fails drops the message, and its error
+// comes back.
+func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	var told []int
+	var refuse error
+	v, err := hs.AddViewerWith(ViewerOptions{ID: "0123456789abcdef", Role: session.RoleControl, Charge: func(n int) error {
+		told = append(told, n)
+		return refuse
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainText(t, conn, proto.HostViewerJoin)
+	if len(told) != 0 {
+		t.Fatalf("the server's own message was charged to the viewer: %v", told)
+	}
+	took := func(what string) Outbound {
+		t.Helper()
+		select {
+		case o := <-conn.Send:
+			conn.Took(o)
+			if len(told) == 0 || told[len(told)-1] != o.size() {
+				t.Fatalf("%s: %d bytes went to the host, Charge was told %v", what, o.size(), told)
+			}
+			return o
+		case <-time.After(time.Second):
+			t.Fatalf("%s: nothing went to the host", what)
+		}
+		return Outbound{}
+	}
+	if err := hs.StartRelay(v); err != nil {
+		t.Fatal(err)
+	}
+	took("relay_start")
+	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeInput}); err != nil {
+		t.Fatal(err)
+	}
+	if o := took("an empty input"); o.size() != 1+proto.ViewerIDLen+1 {
+		t.Fatalf("an empty input took %d bytes to the host", o.size())
+	}
+	sdp := strings.Repeat("<", 1000)
+	if err := hs.ForwardOffer(v, sdp); err != nil {
+		t.Fatal(err)
+	}
+	if o := took("an offer"); o.size() < 6*len(sdp) {
+		t.Fatalf("an offer of %d bytes took %d to the host", len(sdp), o.size())
+	}
+	if err := hs.ForwardICE(v, proto.ICECandidate{Candidate: "candidate:1 1 udp 1 127.0.0.1 9 typ host"}); err != nil {
+		t.Fatal(err)
+	}
+	took("a candidate")
+	refuse = errors.New("over budget")
+	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeInput, Payload: []byte("x")}); !errors.Is(err, refuse) {
+		t.Fatalf("relay past a failing Charge: %v", err)
+	}
+	if err := hs.ForwardOffer(v, "v=0"); !errors.Is(err, refuse) {
+		t.Fatalf("offer past a failing Charge: %v", err)
+	}
+	if q := conn.queued(); q != 0 || len(conn.Send) != 0 {
+		t.Fatalf("%d bytes in %d messages went past a failing Charge", q, len(conn.Send))
+	}
+}

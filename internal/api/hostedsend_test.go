@@ -656,6 +656,38 @@ func TestThreeLargeReadsFromAnOpenHostAnswerWithinTheBrowsersDeadline(t *testing
 	}
 }
 
+// A viewer is charged what its messages bring the host, not only what it
+// sent: offers the server encodes anew for the host, six bytes for each '<'
+// the viewer sent as one, go no faster than the budget either.
+func TestAViewersOffersAreChargedAsTheHostGetsThem(t *testing.T) {
+	noBurstFloor(t)
+	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	v := dialViewer(t, e, host.sessionID, adminToken)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlWelcome)
+	host.expect(proto.HostViewerJoin)
+	// Four offers of 60 KiB of '<', as JSON allows it: 240 KiB from the
+	// viewer, inside its burst of 512 KiB, but about 1.4 MiB to the host,
+	// which past the burst goes at 256 KiB/s, three seconds or more.
+	const offers = 4
+	frame := proto.Encode(proto.TypeSignal, []byte(`{"t":"offer","sdp":"`+strings.Repeat("<", 60<<10)+`"}`))
+	start := time.Now()
+	go func() {
+		for range offers {
+			if v.c.Write(t.Context(), websocket.MessageBinary, frame) != nil {
+				return
+			}
+		}
+	}()
+	for range offers {
+		host.expect(proto.HostOffer)
+	}
+	if took := time.Since(start); took < 2*time.Second {
+		t.Fatalf("four offers of 360 KiB each reached the host in %v under a budget of 256 KiB/s", took)
+	}
+}
+
 // While one viewer sends past its budget, the host is answered at once and
 // another viewer's ping goes through: the flood waits in its own read loop
 // alone.
