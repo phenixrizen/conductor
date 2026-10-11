@@ -196,6 +196,11 @@ type Local struct {
 	askedQuestions []StartupQuestion
 	askedKeys      map[string]bool
 	lastBell       time.Time
+	// turnEnded says a done was reported and no Enter has been written
+	// since (Input, Submit): the turn it ended is still the last one, and a
+	// bell or OSC notification now is that turn's own (unlessTurnEnded).
+	// Guarded by mu.
+	turnEnded      bool
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -502,7 +507,8 @@ func (s *Local) notifyChange() {
 // which the bell would have replaced with "terminal bell" and no choice. An
 // OSC notification has words of its own and replaces a wait that has none
 // to answer it with, but never a question with its choices or one the
-// session holds (unlessChoices).
+// session holds (unlessChoices). Neither undoes a done until the next Enter
+// (unlessTurnEnded): it is the ended turn's own, as Codex's bell is.
 func (s *Local) scanOutput(chunk []byte) {
 	for _, ev := range s.scanner.Scan(chunk) {
 		s.mu.Lock()
@@ -516,7 +522,7 @@ func (s *Local) scanOutput(chunk []byte) {
 		if msg == "" {
 			msg, rule = "terminal bell", unlessWaiting
 		}
-		s.setAttention(AttentionNeedsInput, msg, ev.Source, "", nil, rule)
+		s.setAttention(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded)
 	}
 }
 
@@ -693,6 +699,13 @@ const (
 	// wait without anything to answer it with gives way, one with its
 	// answers stays.
 	unlessChoices
+	// unlessTurnEnded changes nothing when the session shows done and no
+	// Enter has been written since (turnEnded): Codex rings the bell it is
+	// asked for as its turn ends, after or before its notify reports done,
+	// and the turn that ended asks nothing more. The next Enter, a person's
+	// or a submission's, starts the next turn, whose bell is a question
+	// again; so does any change of state (a working report, a question).
+	unlessTurnEnded
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -729,9 +742,15 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	// answers the dialog on the screen (a hook that reports the same dialog
 	// late, say).
 	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && len(options) == 0 && waiting && cur.Source == SourceQuestion
-	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked {
+	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
+	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn {
 		s.mu.Unlock()
 		return nil
+	}
+	if state == AttentionDone {
+		// Also a done that changes nothing shown (the same words as the
+		// last turn's): the turn it reports has ended.
+		s.turnEnded = true
 	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
@@ -1193,6 +1212,9 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if s.asked != nil && (enter || s.askedKeys[string(data)]) {
 		s.asked.Reset()
 	}
+	if enter {
+		s.nextTurn()
+	}
 	if _, err := s.proc.Write(data); err != nil {
 		return err
 	}
@@ -1202,6 +1224,14 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	s.stampTyping(sub)
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 	return nil
+}
+
+// nextTurn says an Enter is about to be written: the turn a done ended is
+// behind, and a bell is a question again (unlessTurnEnded).
+func (s *Local) nextTurn() {
+	s.mu.Lock()
+	s.turnEnded = false
+	s.mu.Unlock()
 }
 
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText

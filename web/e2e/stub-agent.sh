@@ -48,7 +48,9 @@
 # the stub ask, as Codex 0.161 does before a command outside its sandbox,
 # "Would you like to run the following command?" with its three choices
 # (y, p, Esc; Enter picks Yes) before it answers the line; the answer goes
-# into the transcript as "approval: …". It is never run.
+# into the transcript as "approval: …". It is never run. That turn ends as
+# Codex's does while its terminal is not focused: a bell after its done
+# ("bell: after done" in the transcript).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -101,6 +103,10 @@ git_id=(-c user.name=conductor-e2e -c user.email=e2e@conductor.invalid -c commit
 [[ $member =~ $member_re ]] || member=agent
 [[ $run =~ $run_re ]] || run=
 handed_off=
+# ring_at_end: the turn's approval was drawn as Codex draws it while its
+# terminal is not focused, and the turn ends the same way: a bell after the
+# done.
+ring_at_end=
 
 # The arguments: the session, the trust override, the yolo flags. Anything
 # else is taken and ignored, as a flag of the real agent would be.
@@ -252,6 +258,7 @@ approval() {
 		break
 	done
 	printf 'approval: %s\n' "$answer" >>"$transcript"
+	ring_at_end=1
 	if [[ $answer == declined ]]; then
 		printf '✗ You did not approve %s\n' "$cmd"
 	else
@@ -428,6 +435,14 @@ answer() {
 	printf 'stub: merged [%s] failed [%s]\n' "${merged[*]-}" "${failed[*]-}"
 	msg="got: ${line:0:100}; merged: ${merged[*]-none}; failed: ${failed[*]-none}"
 	report_done "$msg" "$line"
+	if [[ -n $ring_at_end ]]; then
+		# Codex rings the bell it is asked for (tui.notification_method="bel")
+		# as its turn ends, after notify has reported done (rc.7 app,
+		# 2026-10-11).
+		ring_at_end=
+		printf '\a'
+		printf 'bell: after done\n' >>"$transcript"
+	fi
 }
 
 printf 'conductor e2e stub: %s in run %s (%s, session %s%s%s)\n' "$member" "${run:-none}" "$identity" "$id" "${yolo:+, yolo}" "${trusted:+, trusted}"

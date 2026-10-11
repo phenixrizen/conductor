@@ -682,7 +682,10 @@ files choose the commands agents run.
 for its next line reports `done`, whatever its hooks call it: Codex's
 `agent-turn-complete` and Claude Code's `idle_prompt` notification (sent after
 a minute at rest) both do, as Claude Code's `Stop` does. Needs input is kept
-for a real question: a permission request, a dialog, the bell. A crew relies
+for a real question: a permission request, a dialog, the bell. The bell an
+agent rings as its turn ends (Codex rings the one Conductor asks it for right
+after reporting `done`) is that turn's own: it does not undo the `done` until
+the next Enter starts another turn. A crew relies
 on this: a handoff or a broadcast is typed only into a member that is not
 waiting on a question, and an idle member is not.
 

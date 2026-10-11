@@ -223,6 +223,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// What the screen showed before the Enter is behind it (Input).
 		s.asked.Reset()
 	}
+	s.nextTurn()
 	enterAt := time.Now().UTC()
 	if _, err := s.proc.Write([]byte{'\r'}); err != nil {
 		return res, err

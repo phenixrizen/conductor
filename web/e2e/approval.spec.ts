@@ -7,7 +7,8 @@ import { expect, member, test } from './fixtures'
 // like to run the following command?" is in Needs you with the dialog's
 // words and its three choices, in the sidebar's row and on the Yard, with
 // nobody watching it; a choice types its key alone, which the stub reads;
-// the same dialog, shown again for the next command, is asked again.
+// the bell Codex rings after its turn's done leaves the member done; the
+// same dialog, shown again for the next command, is asked again.
 test.describe.configure({ mode: 'serial' })
 
 const words = 'Would you like to run the following command? $ curl -sI https://example.com'
@@ -68,7 +69,12 @@ test("a Codex member's command approval is in Needs you with its words and three
   await expect(row.locator('[data-row-choice="2"]')).toContainText("Yes, and don't ask again")
   await row.locator('[data-row-choice="1"]').click()
   await expect.poll(transcript, { timeout: 15_000, message: 'the stub read y' }).toContain('approval: approved\n')
+  // The turn ends as Codex's did in the rc.7 app: done, then the bell. The bell is the turn's own: the member stays done.
+  await expect.poll(transcript, { timeout: 15_000, message: 'the stub rang after its done' }).toContain('bell: after done\n')
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+  await page.waitForTimeout(1_000)
+  expect((await api.session(id)).attention?.state, 'the turn-end bell left the member waiting on nothing').toBe('done')
+  await expect(row).not.toHaveAttribute('data-row-state', 'needs')
 
   // The same dialog for the next command (a broadcast types the line): asked again, here on the Yard, and declined with Escape.
   await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/broadcast`, { text: 'stub approve curl -sI https://example.com' })
@@ -82,5 +88,7 @@ test("a Codex member's command approval is in Needs you with its words and three
   await card.getByRole('button', { name: /No, tell Codex what to do differently/ }).click()
   await expect.poll(transcript, { timeout: 15_000, message: 'the stub read Escape' }).toContain('approval: declined\n')
   expect((await transcript()).match(/^approval: /gm)).toHaveLength(2)
-  await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+  await expect.poll(async () => ((await transcript()).match(/^bell: after done$/gm) ?? []).length, { timeout: 15_000 }).toBe(2)
+  await page.waitForTimeout(1_000)
+  expect((await api.session(id)).attention?.state).toBe('done')
 })
