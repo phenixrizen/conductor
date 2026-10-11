@@ -543,6 +543,40 @@ func TestFileDenyFuncFollowsTheDesktopApp(t *testing.T) {
 	}
 }
 
+// A deny entry that is a link to nothing yet is kept with the path its
+// target would be: pointed elsewhere later, the path it led to stays
+// refused, so what a revision keeps there is not read.
+func TestFileDenyFuncKeepsWhereALinkToNothingLed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	old := filepath.Join(home, "repo", "old-data")
+	if err := os.MkdirAll(filepath.Join(home, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".conductor")
+	if err := os.Symlink(old, link); err != nil {
+		t.Fatal(err)
+	}
+	deny := (&Config{DataDir: filepath.Join(t.TempDir(), "data")}).FileDenyFunc()
+	if got := deny(); !slices.Contains(got, old) {
+		t.Fatalf("the path the link leads to: %q", got)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "elsewhere"), link); err != nil {
+		t.Fatal(err)
+	}
+	got := deny()
+	if !slices.Contains(got, old) {
+		t.Fatalf("after the link moved: %q", got)
+	}
+	if r, err := session.ResolvePath(home, "repo/old-data/catalog.json", got); err == nil {
+		t.Fatalf("a path the link led to resolved to %s", r)
+	}
+}
+
 // LocalFileDenyFunc follows what the config file and the desktop app's
 // settings name while a session runs, and keeps what it named before: a
 // data directory moved is refused at both places. A config file that cannot

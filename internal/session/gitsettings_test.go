@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/phenixrizen/conductor/internal/gitcli"
@@ -168,6 +169,43 @@ func TestGitSettingsBehindLinksAreForControllers(t *testing.T) {
 	}
 	if h, _ := f.read("dotfiles/readme.md", false, nil, RoleView); h.Kind != "file" {
 		t.Errorf("view, an ordinary file beside them: %+v", h)
+	}
+}
+
+// A home git file that is a link to nothing yet holds the copies beside the
+// path its target would be: the copies there are a controller's, the files
+// beside them with other names are not held.
+func TestCopiesBesideADanglingGitFileTargetAreHeld(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if err := os.MkdirAll(filepath.Join(root, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"private-store.bak", "notes.md"} {
+		if err := os.WriteFile(filepath.Join(root, "repo", n), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("repo", "private-store"), filepath.Join(root, ".git-credentials")); err != nil {
+		t.Fatal(err)
+	}
+	if deny := DenyList(nil, []string{filepath.Join(root, ".git-credentials")}); !slices.Contains(deny, filepath.Join(root, "repo", "*private-store*")) {
+		t.Fatalf("no entry beside the target to be: %q", deny)
+	}
+	f, err := OpenFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if h, body := f.read("repo/private-store.bak", false, nil, RoleView); h.Kind != "error" || h.Error == nil || h.Error.Code != proto.ErrCodeFileDenied || body != nil {
+		t.Errorf("view, a copy beside the target to be: %+v %q", h, body)
+	}
+	if h, _ := f.read("repo/private-store.bak", false, nil, RoleControl); h.Kind != "file" {
+		t.Errorf("control, a copy beside the target to be: %+v", h)
+	}
+	if h, _ := f.read("repo/notes.md", false, nil, RoleView); h.Kind != "file" {
+		t.Errorf("view, a file beside it: %+v", h)
 	}
 }
 
