@@ -327,14 +327,23 @@ func (w *PatternWatcher) CheckNow() bool {
 	return false
 }
 
-// Hold makes CheckNow find nothing until the stream brings output: the text
+// Hold makes CheckNow find nothing until the stream brings output or the
+// end of a quiet period has looked at the text (Held reports it): the text
 // is what was just answered, and the program has not drawn what follows the
-// answer yet. The looks at the end of a quiet period are not held: a text
-// still there then is what the program shows.
+// answer yet. Neither is a sign that the answer took: a caller about to
+// write waits until Held is false. The looks at the end of a quiet period
+// are not held: a text still there then is what the program shows.
 func (w *PatternWatcher) Hold() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.held = true
+}
+
+// Held reports whether a Hold still waits for output or a quiet look.
+func (w *PatternWatcher) Held() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.held && !w.stopped
 }
 
 // Feed adds a chunk of the stream and restarts the quiet period. It never
@@ -373,6 +382,7 @@ func (w *PatternWatcher) expire() {
 		return
 	}
 	w.checked = w.feeds
+	w.held = false // the screen after the answer has been looked at
 	line := w.tracker.Last()
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {

@@ -153,10 +153,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	// A dialog already drawn and not yet seen quiet takes a paste and drops
 	// it (Codex routes a paste to its overlay): look at the screen before the
 	// text, so that a handoff waits for the answer instead. A dialog on the
-	// screen holds every submission, whatever the session shows: a report
-	// with choices of its own keeps its place there (unlessChoices), and its
-	// reply would still be typed into the dialog.
-	onScreen := s.asked != nil && s.asked.CheckNow()
+	// screen holds every submission, whatever the session shows.
+	onScreen, err := s.lookAsked(ctx)
+	if err != nil {
+		return res, err
+	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
@@ -223,8 +224,8 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		if err := s.awaitLook(ctx, time.Time{}); err != nil {
 			return res, err
 		}
-		if s.asked.CheckNow() {
-			return res, nil
+		if onScreen, err := s.lookAsked(ctx); err != nil || onScreen {
+			return res, err
 		}
 	} else if res.Typed && s.trust != nil {
 		if err := s.awaitLook(ctx, typedAt); err != nil {
@@ -264,6 +265,36 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		res.Reentered = s.enterAgain()
 	}
 	return res, nil
+}
+
+// lookAsked looks at the screen for a question asked during the work, quiet
+// or not, and reports whether one is on it (false without that watcher).
+// Right after a key that answers such a dialog (Hold), the screen is still
+// the answered one: it waits until the program has drawn again or the end
+// of a quiet period has looked, since the key may have done nothing (a
+// digit past the dialog's lines); at most patternQuiet and a margin, after
+// which it counts the dialog as on the screen.
+func (s *Local) lookAsked(ctx context.Context) (bool, error) {
+	if s.asked == nil {
+		return false, nil
+	}
+	deadline := time.Now().Add(2 * patternQuiet)
+	for s.asked.Held() {
+		if time.Now().After(deadline) {
+			return true, nil
+		}
+		t := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return false, ctx.Err()
+		case <-s.ended:
+			t.Stop()
+			return false, ErrSessionEnded
+		}
+	}
+	return s.asked.CheckNow(), nil
 }
 
 // lookBudget bounds how long Submit waits, before its Enter, for the screen

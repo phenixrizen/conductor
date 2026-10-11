@@ -604,11 +604,12 @@ changed (ratatui does; Codex advances its queued approvals in place) reads
 whole there, and one the program has taken away is gone, however few bytes
 took it. After 500 ms without output, title updates aside, a match marks
 the session `needs_input` with `source:"question"`, `kind:"permission"`,
-its words and its answers. It takes the place of a wait that has nothing to
-answer it with (a bell, an OSC notification, a pattern's prompt, a report
-without `options`, which says the same dialog with less) and of a `done`,
-never of a prompt with `options` or a question held already; a report
-without `options` that comes after it does not hide it. While it shows it is
+its words and its answers. It takes the place of whatever the session
+shows but a startup question (a bell, an OSC notification, a pattern's
+prompt, a report with `options` or without, a `done`, its own question with
+other words): the dialog is what the terminal waits on, and another
+question's choices would land on it. A report of `needs_input` that comes
+after it, with `options` or without, does not hide it. While it shows it is
 held as a trust question is: a crew types no prompt, handoff or broadcast
 into it (a prompt the readiness wait typed anyway is refused, nothing
 written, and waits for the answer), and the owner refuses a person's
@@ -627,12 +628,18 @@ again before its Enter (after a wait for a quiet screen of at most 2 s),
 the owner looks at the screen whether quiet or not: a dialog drawn just
 before the text holds it back whole (Codex's overlay would drop the
 paste), and one drawn during the pause holds the Enter. A dialog on the
-screen holds every submission whatever the session shows (a report with
-`options` keeps its place over the question, but its reply would still be
-typed into the dialog): a person's and a crew's prompt get `not_sent`, a
-handoff waits. Right after a key that answers the dialog, and until the
-program draws again, that look finds nothing, so that a handoff coming as
-a person answers does not ask the answered dialog again. The words are
+screen holds every submission whatever the session shows: a person's and a
+crew's prompt get `not_sent`, a handoff waits. Right after a key that
+answers the dialog the screen is still the answered one: the look waits
+until the program draws again or the end of a quiet period has looked
+(a key that did nothing, a digit past the dialog's lines, leaves the
+dialog asked again), so that a handoff coming as a person answers neither
+asks the answered dialog again nor lands on one still there. While the
+question shows, an input of several keys with a carriage return that is
+not one of its choices (another question's choice clicked late, a paste)
+is refused with `not_sent`, nothing written. A question asked again with
+the same words, the program being slow to draw after a person's key,
+gives way to that key once the dialog is gone. The words are
 bounded as a message is; longer ones end with "…". Codex's built-in entry has its
 command approval (Codex 0.161: "Would you like to run the following
 command?", its reason, `$ <command>`, then "1. Yes, proceed (y)", "2. Yes,

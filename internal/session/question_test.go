@@ -315,9 +315,10 @@ func TestAnApprovalDrawnJustBeforeASubmissionHoldsIt(t *testing.T) {
 // What the question takes the place of, and what it does not: a hook's
 // report without choices (the PermissionRequest hook's "Allow exec?") gives
 // way to the dialog's words and choices, and the same report coming late
-// does not hide them; a report with choices of its own stays, and so does
-// the question under an OSC notification.
-func TestAnApprovalTakesThePlaceOfAWaitWithoutChoicesOnly(t *testing.T) {
+// does not hide them; nor does an OSC notification. A report with choices
+// of its own gives way too (its choices would land on the dialog), and
+// does not hide the question coming late; a startup question stays.
+func TestAnApprovalTakesThePlaceOfAnyWaitButAStartupQuestion(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow exec?", SourceAPI, KindPermission, nil); err != nil {
 		t.Fatal(err)
@@ -338,14 +339,29 @@ func TestAnApprovalTakesThePlaceOfAWaitWithoutChoicesOnly(t *testing.T) {
 	}
 
 	s2, p2 := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
-	mine := []Option{{Label: "Allow", Input: "y"}, {Label: "Deny", Input: "n"}}
-	if err := s2.TrySetAttentionFull(AttentionNeedsInput, "Allow curl?", SourceAPI, KindPermission, mine); err != nil {
+	mine := []Option{{Label: "Postgres", Input: "Postgres\r"}, {Label: "SQLite", Input: "SQLite\r"}}
+	if err := s2.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, mine); err != nil {
 		t.Fatal(err)
 	}
 	p2.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	att2 := waitAttention(t, s2, asked)
+	if att2.Message != approvalWords || len(att2.Options) != 3 {
+		t.Fatalf("the question after a report with choices: %+v", att2)
+	}
+	if err := s2.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, mine); err != nil {
+		t.Fatal(err)
+	}
+	if a := s2.Info().Attention; !asked(a) || *a.Since != *att2.Since {
+		t.Fatalf("a report with choices hid the question: %+v", a)
+	}
+
+	s3, p3 := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Questions: approvalQuestions()}))
+	p3.outW.Write([]byte("\x1b[2;1HTrust this folder?"))
+	waitAttention(t, s3, func(a Attention) bool { return a.Source == SourceTrust })
+	p3.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
 	time.Sleep(900 * time.Millisecond)
-	if a := s2.Info().Attention; a.Source != SourceAPI || a.Message != "Allow curl?" || !sameOptions(a.Options, mine) {
-		t.Fatalf("the question replaced a report with its choices: %+v", a)
+	if a := s3.Info().Attention; a.Source != SourceTrust {
+		t.Fatalf("the question replaced a startup question: %+v", a)
 	}
 }
 
@@ -567,12 +583,12 @@ func TestALookBeforeASubmissionLeavesTheQuietLook(t *testing.T) {
 	}
 }
 
-// A report with choices of its own keeps its place over the dialog
-// (unlessChoices), but the dialog on the screen holds every submission all
-// the same: a reply to the report, a crew's prompt and a handoff write
-// nothing, since the dialog would take the text and its Enter would pick
-// Yes.
-func TestADialogOnTheScreenHoldsSubmissionsWhateverTheSessionShows(t *testing.T) {
+// A dialog drawn while the session shows a report with choices of its own,
+// not yet seen quiet: a reply to the report, a crew's prompt and a handoff
+// write nothing (the dialog would take the text, its Enter would pick Yes),
+// and the look before them asks the dialog. A choice of the report clicked
+// late, its keys with an Enter, is refused too.
+func TestADialogOnTheScreenHoldsWhatWasMeantForAnotherQuestion(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
 	if err != nil {
@@ -583,12 +599,12 @@ func TestADialogOnTheScreenHoldsSubmissionsWhateverTheSessionShows(t *testing.T)
 		t.Fatal(err)
 	}
 	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
-	time.Sleep(700 * time.Millisecond) // seen quiet: the report stays
-	if a := s.Info().Attention; a.Source != SourceAPI {
-		t.Fatalf("attention %+v", a)
-	}
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
 	if _, err := s.Submit(t.Context(), Submission{Text: "Postgres", By: sub}); !errors.Is(err, ErrQuestion) {
 		t.Fatalf("a reply: %v", err)
+	}
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("the look did not ask the dialog: %+v", a)
 	}
 	if _, err := s.Submit(t.Context(), Submission{Text: "Plan it.", ByName: "crew", Confirm: true}); !errors.Is(err, ErrQuestion) {
 		t.Fatalf("a prompt: %v", err)
@@ -596,7 +612,62 @@ func TestADialogOnTheScreenHoldsSubmissionsWhateverTheSessionShows(t *testing.T)
 	if res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
 		t.Fatalf("a handoff: %+v %v", res, err)
 	}
+	if err := s.Input(sub, []byte(mine[0].Input)); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("the report's choice clicked late: %v", err)
+	}
 	noWrite(t, p, 200*time.Millisecond)
+	// The dialog's own keys, and a bare Enter, still go.
+	if err := s.Input(sub, []byte("\x1b[B")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "\x1b[B" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A digit past the dialog's lines does nothing in Codex, and the dialog
+// stays: a handoff that comes right after it waits for the screen to be
+// looked at again, finds the dialog, and writes nothing.
+func TestAHandoffAfterAKeyThatDidNothingWritesNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h"))
+	waitPaste(t, s, true)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	waitAttention(t, s, asked)
+	s.Input(sub, []byte("9"))
+	nextWrite(t, p)
+	res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
+	if err != nil || res.Typed || res.Entered {
+		t.Fatalf("the handoff: %+v %v", res, err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("the dialog is not asked again: %+v", a)
+	}
+}
+
+// A program slow to draw what follows an answer (past the quiet look, which
+// asks the dialog still on the screen again) takes it away later: the
+// question asked again gives way then, answered by the same key.
+func TestAnAnswerTheProgramTakesLateLeavesNoQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	first := waitAttention(t, s, asked)
+	s.Input(sub, []byte("y"))
+	nextWrite(t, p)
+	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\n› ")))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil || s.Info().LastAnswer.ByName != "nater" {
+		t.Fatalf("after the late answer %+v (asked again %+v): %+v", a, again, s.Info().LastAnswer)
+	}
 }
 
 // A handoff that comes as a person answers the dialog, before the program

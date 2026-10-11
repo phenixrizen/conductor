@@ -558,16 +558,16 @@ func (s *Local) fireTrust(text string) {
 // during its work (Options.Questions marked Anytime): one is on the screen,
 // text the screen's (Screen.Text). The session needs input with source
 // "question", the words of the first question found and its answers. It
-// takes the place of a wait that has nothing to answer it with (the bell
-// that rang for the dialog, an OSC notification, a hook's report without
-// choices) and of a done: the dialog on the screen is what the program
-// waits on now, and its choices are the only safe answer, since typed text
-// would reach the dialog's keys. It never replaces a question with its
-// choices, a hook's or another (unlessChoices).
+// takes the place of whatever the session shows but a startup question
+// (unlessStartup): the bell that rang for the dialog, an OSC notification,
+// a report, with choices of its own or none, a done, its own question with
+// other words (the next of a queue). The dialog on the screen is what the
+// program waits on now, and its choices are the only safe answer: typed
+// text, or another question's choice, would reach the dialog's keys.
 func (s *Local) fireAsked(text string) {
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
-			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessChoices|overAsked)
+			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup)
 			return
 		}
 	}
@@ -575,14 +575,16 @@ func (s *Local) fireAsked(text string) {
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
 // the questions. A question asked during the work that is still held then
-// gives way, as answered, when a person typed into the session while it
-// showed: the dialog went with a key Conductor does not offer (a digit,
-// Ctrl+C, a click). Without such a key it stays: the dialog cannot have
+// gives way, as answered, when a person typed into the session while a
+// question with the same words showed (asked again, as after a key the
+// program was slow to answer, it is the same dialog): the dialog went with
+// a key Conductor does not offer (d, a click) or one it did that the
+// program took late. Without such a key it stays: the dialog cannot have
 // been answered, and a held question keeps every Enter from the screen.
 func (s *Local) missAsked(string) {
 	s.mu.Lock()
 	att, typed := s.info.Attention, s.typedAtAsked
-	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.since == att.Since
+	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.words == att.Message
 	s.mu.Unlock()
 	if gone {
 		s.answer(att.Since, typed.by, typed.name, true, true)
@@ -741,11 +743,9 @@ const (
 	// or a submission's, starts the next turn, whose bell is a question
 	// again; so does any change of state (a working report, a question).
 	unlessTurnEnded
-	// overAsked lets the watcher of the questions asked during the work
-	// replace its own question (unlessChoices aside): the screen shows the
-	// dialog there is now, the next of a queue answered by a key Conductor
-	// did not see as an answer, say.
-	overAsked
+	// unlessStartup changes nothing while the session holds a startup
+	// question (source trust): the program shows that one.
+	unlessStartup
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -776,14 +776,16 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	}
 	cur := s.info.Attention
 	waiting := cur.State == AttentionNeedsInput
-	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source)) && (rules&overAsked == 0 || cur.Source != SourceQuestion)
-	// A report from outside that the session waits, without choices, does
-	// not hide a question asked during the work, whose choices are what
-	// answers the dialog on the screen (a hook that reports the same dialog
-	// late, say).
-	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && len(options) == 0 && waiting && cur.Source == SourceQuestion
+	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
+	// A report from outside that the session waits, with choices or
+	// without, does not hide a question asked during the work: the dialog
+	// on the screen is what answers go to (a hook that reports the same
+	// dialog late, say, or another question whose choices would land on
+	// it).
+	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
 	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
-	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn {
+	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
+	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup {
 		s.mu.Unlock()
 		return nil
 	}
@@ -1204,7 +1206,9 @@ func (s *Local) Detach(sub *Subscription) {
 // Input forwards keystrokes from a controller, raw. They answer the
 // needs_input prompt that was showing as they were written, unless they are
 // only a terminal's own report (isTerminalReport: xterm answering a cursor
-// position query), which is written and answers nothing.
+// position query), which is written and answers nothing. While a question
+// asked during the work shows, a write of several keys with an Enter that
+// is not one of its choices is refused with ErrQuestion, nothing written.
 func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
@@ -1243,9 +1247,17 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	// one) can have drawn it before the write returns, and a clear after it
 	// took that question with it, unseen (round 14, the trust spec's flake).
 	answersQuestion := enter && s.info.Attention.State == AttentionNeedsInput && heldSource(s.info.Attention.Source) && s.info.Attention.Since == promptSince
+	// More than one key with an Enter among them, while a question asked
+	// during the work shows, is no key of its dialog: a choice of the
+	// question it took the place of (a page's button clicked late), or a
+	// paste. Its Enter would pick the dialog's highlighted line.
+	stale := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && !choice && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data)
 	s.mu.Unlock()
 	if ended {
 		return ErrSessionEnded
+	}
+	if stale {
+		return ErrQuestion
 	}
 	if answersQuestion && s.trust != nil {
 		s.trust.Reset()
@@ -1279,9 +1291,9 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 }
 
 // typedAt is who typed into the session while a question asked during the
-// work showed, and that question's Since.
+// work showed, and that question's words.
 type typedAt struct {
-	since    *time.Time
+	words    string
 	by, name string
 }
 
@@ -1291,7 +1303,7 @@ func (s *Local) noteTyped(promptSince *time.Time, sub *Subscription) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if att := s.info.Attention; promptSince != nil && att.Since == promptSince && att.Source == SourceQuestion {
-		s.typedAtAsked = &typedAt{since: promptSince, by: sub.ID, name: sub.Name}
+		s.typedAtAsked = &typedAt{words: att.Message, by: sub.ID, name: sub.Name}
 	}
 }
 
