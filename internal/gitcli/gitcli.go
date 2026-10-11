@@ -300,7 +300,7 @@ func countLines(path string) (int, bool) {
 // at most MaxShowBytes of it (truncated says so); ErrNotRepo outside a
 // repository, an error for a path the revision does not have.
 func Show(ctx context.Context, dir, rev, path string) (content []byte, truncated bool, err error) {
-	if strings.HasPrefix(rev, "-") || strings.HasPrefix(path, "-") || strings.Contains(rev, ":") {
+	if rev == "" || strings.HasPrefix(rev, "-") || strings.HasPrefix(path, "-") || strings.Contains(rev, ":") {
 		return nil, false, fmt.Errorf("git show: invalid revision or path")
 	}
 	out, err := Run(ctx, dir, "show", rev+":"+filepath.ToSlash(path))

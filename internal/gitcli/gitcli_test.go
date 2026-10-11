@@ -180,7 +180,7 @@ func itoa(i int) string {
 }
 
 // Show is a file at a revision; a path the revision lacks is an error; a
-// dash or a colon in what is asked for is refused.
+// dash or a colon in what is asked for is refused, and so is no revision.
 func TestShow(t *testing.T) {
 	dir := repo(t)
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("changed\n"), 0o644)
@@ -196,6 +196,10 @@ func TestShow(t *testing.T) {
 	}
 	if _, _, err := Show(context.Background(), dir, "HEAD", "-x"); err == nil {
 		t.Fatal("a dash path was taken")
+	}
+	// With no revision, ":0:README.md" would be the index's file, not a revision's.
+	if b, _, err := Show(context.Background(), dir, "", "0:README.md"); err == nil {
+		t.Fatalf("no revision was taken: %q", b)
 	}
 	if _, _, err := Show(context.Background(), t.TempDir(), "HEAD", "README.md"); err != ErrNotRepo {
 		t.Fatalf("outside a repository: %v", err)

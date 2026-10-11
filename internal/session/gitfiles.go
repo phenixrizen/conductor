@@ -62,6 +62,11 @@ func GitStatusPath(root, base string, deny []string) proto.FileHeader {
 // for a viewer of role: one that is not a controller is not given git's
 // settings and credentials a revision keeps (forControllers).
 func GitShowPath(root, rev, path string, deny []string, role Role) (proto.FileHeader, []byte) {
+	// A revision is needed: with none, rev:path would name what git keeps
+	// elsewhere (":<stage>:<path>", the index), not path.
+	if rev == "" || len(rev) > 256 || strings.HasPrefix(rev, "-") || strings.Contains(rev, ":") {
+		return proto.FileHeader{Path: path, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a file at a revision needs its revision"}}, nil
+	}
 	// ResolvePath follows what exists of the path, so a file the working tree no longer has (deleted) resolves too.
 	target, err := ResolvePath(root, path, deny)
 	if err != nil {

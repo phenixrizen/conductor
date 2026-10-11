@@ -277,6 +277,14 @@ func TestGitShowRefusesDeniedPathsTheWorkingTreeNoLongerHas(t *testing.T) {
 		}
 	}
 	deny := DenyList([]string{filepath.Join(dir, ".conductor")}, []string{filepath.Join(dir, "cfg", "conductor.json")})
+	// A show needs its revision: with none, "0:<path>" would name the
+	// index's file, which the path's check never saw.
+	run("add", "-f", "README.md")
+	for _, c := range []struct{ rev, path string }{{"", "0:README.md"}, {"", "0:.conductor/catalog.json"}, {"", "README.md"}, {"HEAD:", "README.md"}, {"-p", "README.md"}} {
+		if sh, body := GitShowPath(dir, c.rev, c.path, deny, RoleControl); sh.Kind != "error" || sh.Error == nil || sh.Error.Code != "bad_request" || len(body) != 0 {
+			t.Errorf("revision %q, %s: %+v %q", c.rev, c.path, sh, body)
+		}
+	}
 	for p, body := range map[string]string{".conductor-notes/read.md": "notes\n", "cfg-other/conductor.md": "other\n", "README.md": "one\ntwo\n"} {
 		if sh, b := GitShowPath(dir, "HEAD~1", p, deny, RoleControl); sh.Kind != "show" || string(b) != body {
 			t.Errorf("%s at HEAD~1: %+v %q", p, sh, b)
