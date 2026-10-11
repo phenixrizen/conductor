@@ -289,9 +289,13 @@ when none; an older server sends no field, which says nothing),
 `conductor://<host>/join/<token>` with `?http=1` for a plain-http base,
 which the desktop app opens itself), `link_revoked{requestId, linkId}`
 (the link is revoked and its viewers closed; `error{not_found, requestId}`
-for a link the server does not hold), `error{code, message, requestId?}`
+for a link the server does not hold; `error{store_unavailable, requestId}`
+from a switchyard that revoked it but could not yet delete what it keeps
+of it on disk, which the host's next revoke of it, or the switchyard's
+sweep, tries again), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
-`invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`).
+`invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
+`store_unavailable`).
 
 A run link minted by `link_run` resolves on the join page as a run link does
 (`{run: {id, name, members}, role, label, switchyard}`), each member with

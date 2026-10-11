@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
@@ -274,8 +275,10 @@ func TestARevokeOutlastsARunUpdatesWriteAcrossARestart(t *testing.T) {
 }
 
 // A revoked link's file that cannot be deleted at once (its directory not
-// writable for a while) is deleted by a later sweep, once it can be: after
-// a restart the link stays revoked.
+// writable for a while) stays until it can be: the host's revoke is
+// answered that it is not done (store_unavailable) while the file is
+// there, and the host's revoke again, or the sweep, deletes it once it
+// can. A revoke the host was told was done stays done after a restart.
 func TestARevokedLinksFileIsDeletedOnceItCanBe(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a directory whose mode keeps its owner from deleting in it")
@@ -284,29 +287,97 @@ func TestARevokedLinksFileIsDeletedOnceItCanBe(t *testing.T) {
 	e := keptSwitchyard(t, dir, nil)
 	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
 	host, _ := dialFakeHostWith(t, e, hi, hs, "")
-	id, token := mintHostLink(t, host, "r1")
+	again, againToken := mintHostLink(t, host, "r1")
+	swept, sweptToken := mintHostLink(t, host, "r2")
 	links := filepath.Join(dir, "links")
 	if err := os.Chmod(links, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
-	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: id})
-	host.expect(proto.HostLinkRevoked)
-	if _, err := os.Stat(filepath.Join(links, id+".json")); err != nil {
-		t.Fatalf("the file went though its directory is read-only: %v", err)
+	for _, id := range []string{again, swept} {
+		host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv-" + id, LinkID: id})
+		if m := linkAnswer(t, host, "rv-"+id); m["code"] != "store_unavailable" {
+			t.Fatalf("a revoke whose file stays: %v", m)
+		}
+		if _, err := os.Stat(filepath.Join(links, id+".json")); err != nil {
+			t.Fatalf("the file went though its directory is read-only: %v", err)
+		}
 	}
 	if err := os.Chmod(links, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv-again", LinkID: again})
+	if m := linkAnswer(t, host, "rv-again"); m["t"] != proto.HostLinkRevoked {
+		t.Fatalf("the revoke again: %v", m)
+	}
 	e.srv.sweepLinks(time.Now())
-	if _, err := os.Stat(filepath.Join(links, id+".json")); !os.IsNotExist(err) {
-		t.Fatalf("the revoked link's file stays after the sweep: %v", err)
+	for _, id := range []string{again, swept} {
+		if _, err := os.Stat(filepath.Join(links, id+".json")); !os.IsNotExist(err) {
+			t.Fatalf("a revoked link's file stays: %v", err)
+		}
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv-swept", LinkID: swept})
+	if m := linkAnswer(t, host, "rv-swept"); m["t"] != proto.HostLinkRevoked {
+		t.Fatalf("a revoke after the sweep: %v", m)
 	}
 	host.c.Close(websocket.StatusNormalClosure, "")
 	<-host.done
 	b := keptSwitchyard(t, dir, nil)
-	if _, err := b.srv.links.Resolve(token); err == nil {
-		t.Fatal("the revoked link opens again after a restart")
+	for _, token := range []string{againToken, sweptToken} {
+		if _, err := b.srv.links.Resolve(token); err == nil {
+			t.Fatal("a revoked link opens again after a restart")
+		}
+	}
+}
+
+// A Conductor publishing to a switchyard hears a revoke that is not done
+// yet (store_unavailable) as a failure: the DELETE fails and the link
+// stays listed, and the next DELETE, once the switchyard can delete what it
+// keeps, is done.
+func TestARevokeNotDoneAtTheSwitchyardIsTriedAgainFromHere(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose mode keeps its owner from deleting in it")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	rendezvous := keptSwitchyard(t, dir, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "pairing"})
+	link, _ := out["link"].(map[string]any)
+	linkID, _ := link["id"].(string)
+	if linkID == "" {
+		t.Fatalf("link %v", out)
+	}
+	links := filepath.Join(dir, "links")
+	if err := os.Chmod(links, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
+	if resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusBadGateway || !strings.Contains(fmt.Sprint(out), "store_unavailable") {
+		t.Fatalf("a revoke not done at the switchyard: %d %v", resp.StatusCode, out)
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); !strings.Contains(fmt.Sprint(out), "pairing") {
+		t.Fatalf("no longer listed: %v", out)
+	}
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the revoke again: %d %v", resp.StatusCode, out)
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); strings.Contains(fmt.Sprint(out), "pairing") {
+		t.Fatalf("still listed: %v", out)
+	}
+	if _, err := os.Stat(filepath.Join(links, linkID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("its file stays: %v", err)
 	}
 }
 

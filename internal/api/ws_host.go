@@ -401,9 +401,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if !found && hs.Owner() != "" {
 			found, _ = s.links.RevokeGroup(hs.Owner(), m.LinkID)
 		}
-		if !found {
+		switch {
+		case !found:
 			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: m.RequestID})
-		} else {
+		case s.linkFileUndeleted(m.LinkID):
+			// Revoked here, but what the switchyard keeps of it on disk is
+			// not deleted yet: the host is told so, keeps its record, and
+			// its next revoke tries the delete again.
+			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "store_unavailable", Message: "the link is revoked, but the switchyard could not yet delete what it keeps of it; revoke it again", RequestID: m.RequestID})
+		default:
 			s.log.Info("link revoked by its host", "session", hs.Info().ID, "link", m.LinkID)
 			_ = hs.Tell(proto.LinkRevoked{T: proto.HostLinkRevoked, RequestID: m.RequestID, LinkID: m.LinkID})
 		}

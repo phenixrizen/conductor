@@ -95,14 +95,28 @@ type linkKeeper struct {
 	live map[string]int
 	seen map[string]time.Time
 	// undeleted are the links no longer kept whose file could not be
-	// deleted (its directory not writable for a while): each sweep tries
-	// again, so the file does not bring the link back at the next start.
-	// Under fmu.
+	// deleted (its directory not writable for a while): each sweep, and a
+	// revoke of the link again, tries again, so the file does not bring
+	// the link back at the next start; until it goes, the host's revoke is
+	// answered that it is not done. Under fmu.
 	undeleted map[string]struct{}
 }
 
+// linkFileUndeleted says whether the file of linkID, no longer kept, is
+// still waiting to be deleted: a revoke is not reported done until it is.
+func (s *Server) linkFileUndeleted(linkID string) bool {
+	k := s.keeper
+	if k == nil {
+		return false
+	}
+	k.fmu.Lock()
+	defer k.fmu.Unlock()
+	_, ok := k.undeleted[linkID]
+	return ok
+}
+
 // deleteFile deletes the file of a link no longer kept, or notes it for the
-// sweep to try again. Called with fmu held.
+// sweep (and the link's next revoke) to try again. Called with fmu held.
 func (s *Server) deleteFile(id string) {
 	k := s.keeper
 	if err := k.files.Delete(id + ".json"); err != nil {
