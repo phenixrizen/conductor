@@ -442,6 +442,39 @@ func TestFileWriteStaysOutOfGitMetadataMovedInAfterTheCheck(t *testing.T) {
 	}
 }
 
+// A repository whose .git/config is a link to a file not made yet
+// (meta/config): the folder that file would be in, moved into the place of
+// the save's folder after the check (a link left where it was, so the
+// .git/config link leads there), is still read only for that name.
+func TestFileWriteStaysOutOfAMetadataLinksEndMovedInAfterTheCheck(t *testing.T) {
+	root, _ := linkTree(t)
+	gitDir := filepath.Join(root, ".git")
+	for _, d := range []string{"objects", "refs/heads"} {
+		os.MkdirAll(filepath.Join(gitDir, d), 0o755)
+	}
+	os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	os.MkdirAll(filepath.Join(root, "meta"), 0o755)
+	os.Symlink(filepath.Join("..", "meta", "config"), filepath.Join(gitDir, "config"))
+	s, _ := newLocal(t, root)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onceAfterCheck(t, func() {
+		os.Rename(filepath.Join(root, "sub"), filepath.Join(root, "sub.was"))
+		os.Rename(filepath.Join(root, "meta"), filepath.Join(root, "sub"))
+		os.Symlink("sub", filepath.Join(root, "meta"))
+	})
+	save(s, sub, "w", "sub/config", []byte("[core]\n\thooksPath = /tmp/x\n"), 512, "", true)
+	if f := fileReply(t, sink, "w"); f.Kind != "error" || f.Error.Code != "read_only" {
+		t.Fatalf("save sub/config once meta was moved there: %+v %+v", f, f.Error)
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "config")); err == nil {
+		t.Fatal("the save made the file .git/config leads to")
+	}
+}
+
 // A folder opened under a directory stays under it: a link out of it on
 // the way, absolute or climbing out, is refused; a relative one that stays
 // in it is followed.

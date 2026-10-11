@@ -40,16 +40,43 @@ func gitMetadata(raw, real string) bool {
 	return in
 }
 
+// gitMeta is what the repositories beside a path and its parents stood
+// for when the path was checked (gitMetadataIDs): their .git directories
+// and files, the git directories they name, their entries and the targets
+// of those that are links, as files; and the files their links to nothing
+// yet would make, as their directory (a file) and their name. A save holds
+// what it opens to it (saveFile), so that metadata moved into its place
+// since its check is still read only.
+type gitMeta struct {
+	files   []os.FileInfo
+	missing []missingFile
+}
+
+// missingFile is a file a metadata link to nothing yet would make: its
+// directory, as a file, and its name as foldName leaves it.
+type missingFile struct {
+	dir  os.FileInfo
+	name string
+}
+
+// makes reports whether name in the directory dir (a file) is one of the
+// files the snapshot's links to nothing would make, its name compared as
+// sameMissing compares it.
+func (g gitMeta) makes(dir os.FileInfo, name string) bool {
+	for _, m := range g.missing {
+		if os.SameFile(dir, m.dir) && strings.EqualFold(foldName(name), m.name) {
+			return true
+		}
+	}
+	return false
+}
+
 // gitMetadataIDs is gitMetadata, and when it says no, what the
-// repositories beside real and its parents stand for, as files (the
-// .git directories and files, the git directories they name, their
-// entries and the targets of those that are links): a save holds what it
-// opens to them (saveFile), so that metadata moved into its place since
-// this check is still read only.
-func gitMetadataIDs(raw, real string) (bool, []os.FileInfo) {
+// repositories beside real and its parents stand for (gitMeta).
+func gitMetadataIDs(raw, real string) (bool, gitMeta) {
 	for _, el := range strings.Split(filepath.ToSlash(raw), "/") {
 		if isDotGit(el) {
-			return true, nil
+			return true, gitMeta{}
 		}
 	}
 	return inGitDirIDs(real)
@@ -82,16 +109,16 @@ func inGitDir(real string) bool {
 	return in
 }
 
-// inGitDirIDs is inGitDir, and when it says no, the identities it held
-// real and its parents to (gitIDs.files).
-func inGitDirIDs(real string) (bool, []os.FileInfo) {
+// inGitDirIDs is inGitDir, and when it says no, what it held real and its
+// parents to (gitMeta).
+func inGitDirIDs(real string) (bool, gitMeta) {
 	for _, el := range strings.Split(real, string(filepath.Separator)) {
 		if isDotGit(el) {
-			return true, nil
+			return true, gitMeta{}
 		}
 	}
 	if isGitFile(real) {
-		return true, nil
+		return true, gitMeta{}
 	}
 	ids := gitIDs{budget: maxScan, bytes: maxScanBytes}
 	for p := real; ; p = filepath.Dir(p) {
@@ -104,22 +131,28 @@ func inGitDirIDs(real string) (bool, []os.FileInfo) {
 		// What a repository on the way stands for could not be told in full
 		// (an oversized commondir, more entries than are looked at): read
 		// only rather than guess.
-		return true, nil
+		return true, gitMeta{}
 	}
 	for _, m := range ids.missing {
 		if sameMissing(m, real) {
-			return true, nil
+			return true, gitMeta{}
 		}
 	}
 	for p := real; ; p = filepath.Dir(p) {
 		if fi, err := os.Stat(p); err == nil && sameAsAny(fi, ids.files) {
-			return true, nil
+			return true, gitMeta{}
 		}
 		if isGitDirectory(p) {
-			return true, nil
+			return true, gitMeta{}
 		}
 		if filepath.Dir(p) == p {
-			return false, ids.files
+			snap := gitMeta{files: ids.files}
+			for _, m := range ids.missing {
+				if dir, err := os.Stat(filepath.Dir(m)); err == nil {
+					snap.missing = append(snap.missing, missingFile{dir, foldName(filepath.Base(m))})
+				}
+			}
+			return false, snap
 		}
 	}
 }

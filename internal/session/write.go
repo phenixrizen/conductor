@@ -109,7 +109,7 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	if err != nil {
 		return errh("denied", err.Error())
 	}
-	inGit, gitIDs := gitMetadataIDs(h.Path, target)
+	inGit, gitSnap := gitMetadataIDs(h.Path, target)
 	if inGit {
 		return errh("read_only", "a repository's .git is read only here")
 	}
@@ -125,7 +125,7 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	}
 	// Each directory on the way, and the file replaced, is held to the .git
 	// rule again as opened.
-	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGit(gitIDs))
+	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGit(gitSnap))
 	switch {
 	case errors.Is(err, errGitDir):
 		return errh("read_only", "a repository's .git is read only here")
@@ -149,7 +149,9 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 		return errh("write", "cannot read the file")
 	case ds.hit(fi, name, dirID):
 		return errh("denied", errNotReadable.Error())
-	case err == nil && sameAsAny(fi, gitIDs):
+	case err == nil && sameAsAny(fi, gitSnap.files), gitSnap.makes(dirID, name):
+		// What the repository's metadata was, or a file one of its links
+		// to nothing would make, moved here since the check.
 		return errh("read_only", "a repository's .git is read only here")
 	case err == nil && !fi.Mode().IsRegular():
 		return errh("denied", "not a regular file")
