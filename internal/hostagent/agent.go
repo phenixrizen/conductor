@@ -102,10 +102,13 @@ type Options struct {
 	// session once it is registered, over the host's own connection (`link`),
 	// good for LinkTTL: how the owner shares a session hosted on a
 	// switchyard, whose workbench token mints none. LinkMinted is told the
-	// link, or why there is none.
+	// link, or why there is none. Each receive on LinkAgain mints another
+	// the same way: the owner's way to a new one once the first expired or
+	// could not be had (conductor host takes SIGUSR1 for it).
 	Link       string
 	LinkTTL    time.Duration
 	LinkMinted func(proto.LinkCreated, error)
+	LinkAgain  <-chan struct{}
 	// Switchyard says the server is a switchyard, which someone else may
 	// run, rather than the owner's own Conductor: it is told what it needs
 	// to list the session and introduce its viewers, and no more. No chat
@@ -923,10 +926,24 @@ var (
 )
 
 // mintLink asks the server for the link Options.Link names and tells
-// Options.LinkMinted. A try that gets no answer (the connection dropped
-// before link_created, or was down) is made again once the control loop has
-// had time to reconnect, up to linkAttempts tries; a refusal is final.
+// Options.LinkMinted, then again at each receive on Options.LinkAgain, until
+// ctx ends.
 func (a *agent) mintLink(ctx context.Context) {
+	for {
+		a.mintLinkOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.opts.LinkAgain: // nil: never
+		}
+	}
+}
+
+// mintLinkOnce is one link of mintLink's. A try that gets no answer (the
+// connection dropped before link_created, or was down) is made again once
+// the control loop has had time to reconnect, up to linkAttempts tries; a
+// refusal is final.
+func (a *agent) mintLinkOnce(ctx context.Context) {
 	backoff := time.Second
 	for attempt := 1; ; attempt++ {
 		lctx, cancel := context.WithTimeout(ctx, linkAttemptWait)

@@ -54,7 +54,9 @@ yours: a window its workbench opens with no link is then one of yours and gets
 the editor's Neovim (without it, only this terminal is).
 `--link view` (or `control`) has the server mint a share link to the session
 once it is registered, good for two hours, and prints it: the way to share a
-session hosted on a switchyard, whose workbench token mints none. Either way
+session hosted on a switchyard, whose workbench token mints none; the line
+names `kill -USR1 <pid>`, which mints another (once the first expired, or
+could not be had). Either way
 `conductor host` sends its server the session's chat, activity and full
 details, for that server's workbench, and obeys its Stop: point it at a
 server you trust.

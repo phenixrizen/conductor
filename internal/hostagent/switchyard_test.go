@@ -3,6 +3,7 @@ package hostagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -949,5 +950,58 @@ func TestASwitchyardsViewerIsNeverTheOwners(t *testing.T) {
 			t.Fatalf("mine %v, switchyard %v: owner %v", tc.mine, tc.yard, p != nil && p.owner)
 		}
 		a.removePeer("0123456789abcdef")
+	}
+}
+
+// A link that could not be had (every try dropped) is had at the owner's
+// next word (Options.LinkAgain), and so is another once the first expires.
+func TestHostLinkIsMintedAgainOnTheOwnersWord(t *testing.T) {
+	wait, tries := linkAttemptWait, linkAttempts
+	linkAttemptWait, linkAttempts = 300*time.Millisecond, 2
+	t.Cleanup(func() { linkAttemptWait, linkAttempts = wait, tries })
+	y := newStubYard(t)
+	y.dropLinks.Store(2)
+	minted := make(chan proto.LinkCreated, 4)
+	failed := make(chan error, 4)
+	again := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(ctx, Options{ServerURL: y.srv.URL, Name: "shared", Argv: []string{"/bin/cat"}, Dir: t.TempDir(), ReconnectMax: 200 * time.Millisecond, Log: discardLog,
+			Link: "view", LinkTTL: time.Hour, LinkAgain: again, LinkMinted: func(l proto.LinkCreated, err error) {
+				if err != nil {
+					failed <- err
+					return
+				}
+				minted <- l
+			}})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case err := <-failed:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the first link failed with %v", err)
+		}
+	case l := <-minted:
+		t.Fatalf("a link through dropped tries: %+v", l)
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first link neither came nor failed")
+	}
+	for i := range 2 {
+		again <- struct{}{}
+		select {
+		case l := <-minted:
+			if l.Role != "view" {
+				t.Fatalf("link %d: %+v", i, l)
+			}
+		case err := <-failed:
+			t.Fatalf("link %d: %v", i, err)
+		case <-time.After(20 * time.Second):
+			t.Fatalf("link %d never came", i)
+		}
 	}
 }

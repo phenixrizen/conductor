@@ -8,9 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -50,7 +52,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fileEdit := fs.String("file-edit", "control", "whether the control role may edit files through the editor's Neovim on this machine: control, off")
 	serverConfig := fs.String("server-config", "", "the config file of a conductor serve on this machine: the Files tab refuses it, its dataDir and its catalogPath (absolute paths), as that server's own sessions do (the data directory CONDUCTOR_DATA_DIR names, ~/.conductor, the desktop app's directories and the catalog file CONDUCTOR_CATALOG_PATH names are refused without it)")
 	signalPattern := fs.String("signal-pattern", "", "regular expression (RE2, at most 200 bytes, not matching an empty line) for the last line of the terminal: a match after 500 ms without output marks the session as needing input")
-	link := fs.String("link", "", "once registered, have the server mint a share link to the session, good for two hours, and print it: view or control (the way to share a session hosted on a switchyard)")
+	link := fs.String("link", "", "once registered, have the server mint a share link to the session, good for two hours, and print it: view or control (the way to share a session hosted on a switchyard); SIGUSR1 mints another")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: conductor host [flags] -- <command...>")
@@ -150,11 +152,31 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		// The link goes to the terminal, never to the log: it is the credential.
 		LinkMinted: func(l proto.LinkCreated, err error) {
 			if err != nil {
-				fmt.Fprintf(stderr, "%sno link: %v\r\n", linkBanner, err)
+				fmt.Fprintf(stderr, "%sno link: %v (kill -USR1 %d to ask again)\r\n", linkBanner, err, os.Getpid())
 				return
 			}
-			fmt.Fprintf(stderr, "%s%s %s\r\n", linkBanner, l.Role, l.URL)
+			fmt.Fprintf(stderr, "%s%s %s (kill -USR1 %d for another)\r\n", linkBanner, l.Role, l.URL, os.Getpid())
 		},
+	}
+	if *link != "" {
+		// SIGUSR1 from the owner mints another link: the first lasts two
+		// hours, and the server's workbench token may mint none (a switchyard).
+		again := make(chan struct{}, 1)
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGUSR1)
+		defer func() {
+			signal.Stop(sig)
+			close(sig)
+		}()
+		go func() {
+			for range sig {
+				select {
+				case again <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		opts.LinkAgain = again
 	}
 	if f, ok := stdin.(*os.File); ok {
 		opts.Stdin = f

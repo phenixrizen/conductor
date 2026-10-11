@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -353,18 +355,29 @@ func TestHostPrintsALinkMintedThroughItsConnection(t *testing.T) {
 		cancel()
 		<-done
 	}()
-	var url string
-	deadline := time.Now().Add(10 * time.Second)
-	for url == "" {
+	links := func() []string {
+		var out []string
 		for _, line := range strings.Split(stderr.String(), "\n") {
 			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), linkBanner+"control "); ok {
-				url = rest
+				out = append(out, strings.Fields(rest)[0])
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no link printed: %q", stderr.String())
+		return out
+	}
+	waitLinks := func(n int) []string {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for len(links()) < n {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d links printed, want %d: %q", len(links()), n, stderr.String())
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
+		return links()
+	}
+	url := waitLinks(1)[0]
+	if !strings.Contains(stderr.String(), fmt.Sprintf("kill -USR1 %d for another", os.Getpid())) {
+		t.Fatalf("the line does not say how to get another: %q", stderr.String())
 	}
 	if !strings.HasPrefix(url, hs.URL+"/join/") {
 		t.Fatalf("link %q", url)
@@ -384,5 +397,12 @@ func TestHostPrintsALinkMintedThroughItsConnection(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || join.Role != "control" || join.Session.Name != "shared" || join.Label != "conductor host" {
 		t.Fatalf("join %d %+v", resp.StatusCode, join)
+	}
+	// SIGUSR1 mints another, while the session runs on.
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitLinks(2); got[1] == got[0] {
+		t.Fatalf("the same link twice: %q", got)
 	}
 }
