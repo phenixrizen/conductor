@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -606,7 +607,8 @@ func TestFindPathOpensAFolderAgainOnlyWhenAnEntryNeedsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	h, reopened := f.findWalk("only", nil)
+	h, w := f.findWalk("only", nil)
+	reopened := w.reopened
 	if len(h.Matches) != 1 || !strings.HasSuffix(h.Matches[0], "d/only-bottom.txt") || h.Truncated || reopened != 0 {
 		t.Fatalf("a chain 300 deep: %v truncated %v, opened again %d times", h.Matches, h.Truncated, reopened)
 	}
@@ -620,9 +622,48 @@ func TestFindPathOpensAFolderAgainOnlyWhenAnEntryNeedsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.Close()
-	h, reopened = g.findWalk("only", nil)
+	h, w = g.findWalk("only", nil)
+	reopened = w.reopened
 	// Opened again for b, c (folders to go into) and z-only.txt (a match).
 	if !slices.Equal(h.Matches, []string{"a/x-only.txt", "c/y-only.txt", "z-only.txt"}) || reopened != 3 {
 		t.Fatalf("matches %v, opened again %d times", h.Matches, reopened)
+	}
+}
+
+// A find reads at most maxFindScan entries in all, wherever they are: a
+// wide folder whose first entry is another wide folder reads the bound and
+// one more look, and says it stopped short; a tree within the bound is read
+// whole.
+func TestFindPathReadsAtMostItsBoundInAll(t *testing.T) {
+	old, oldChunk := maxFindScan, findChunk
+	maxFindScan, findChunk = 30, 7
+	t.Cleanup(func() { maxFindScan, findChunk = old, oldChunk })
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "a"), 0o755)
+	for i := range 25 {
+		os.WriteFile(filepath.Join(root, fmt.Sprintf("f%02d-only.txt", i)), []byte("x"), 0o644)
+		os.WriteFile(filepath.Join(root, "a", fmt.Sprintf("g%02d-only.txt", i)), []byte("x"), 0o644)
+	}
+	f, err := OpenFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h, w := f.findWalk("only", nil)
+	if w.read > maxFindScan || !h.Truncated || len(h.Matches) == 0 {
+		t.Fatalf("read %d entries (bound %d), truncated %v, %d matches", w.read, maxFindScan, h.Truncated, len(h.Matches))
+	}
+	small := t.TempDir()
+	os.MkdirAll(filepath.Join(small, "a"), 0o755)
+	for i := range 10 {
+		os.WriteFile(filepath.Join(small, "a", fmt.Sprintf("g%02d-only.txt", i)), []byte("x"), 0o644)
+	}
+	g, err := OpenFolder(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if h, w := g.findWalk("only", nil); w.read != 11 || h.Truncated || len(h.Matches) != 10 {
+		t.Fatalf("a small tree: read %d, truncated %v, %d matches", w.read, h.Truncated, len(h.Matches))
 	}
 }

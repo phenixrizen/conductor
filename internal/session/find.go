@@ -2,7 +2,6 @@ package session
 
 import (
 	"errors"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,12 +25,22 @@ const (
 // errFindStop ends the walk early.
 var errFindStop = errors.New("stop")
 
+// maxFindScan is the entries one find reads in all (MaxFindScan; a test
+// lowers it), and findChunk how many one read of a folder takes, the
+// deadline looked at between them. A folder opened through the session's
+// folder is read with each entry's stat (os.Root's ReadDir), which is the
+// work these bound.
+var (
+	maxFindScan = MaxFindScan
+	findChunk   = 256
+)
+
 // FindPath walks root for files whose name holds query (case-insensitive),
 // skipping .git, node_modules and what the deny list refuses, and answers a
 // FILE header of kind `find`: Path the root, Matches the paths from it,
-// Truncated when the walk stopped at a bound (200 matches, 20,000 entries,
-// 3 s, the header's size). root is opened as a folder for this one find; a
-// session finds through the folder it holds.
+// Truncated when the walk stopped at a bound (200 matches, 20,000 entries
+// read in all, 3 s, the header's size). root is opened as a folder for
+// this one find; a session finds through the folder it holds.
 func FindPath(root, query string, deny []string) proto.FileHeader {
 	f, err := OpenFolder(root)
 	if err != nil {
@@ -55,26 +64,27 @@ func (f *Folder) find(query string, deny []string) proto.FileHeader {
 	return h
 }
 
-// findWalk is find, and how many folders its walk opened again.
-func (f *Folder) findWalk(query string, deny []string) (proto.FileHeader, int) {
+// findWalk is find, and its walk as done (what it read, what it opened
+// again).
+func (f *Folder) findWalk(query string, deny []string) (proto.FileHeader, finder) {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" || len(q) > MaxFindQuery {
-		return proto.FileHeader{Path: f.Path(), Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a find needs its words, at most 200 bytes"}}, 0
+		return proto.FileHeader{Path: f.Path(), Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a find needs its words, at most 200 bytes"}}, finder{}
 	}
 	// The deny list as looked up once, for the whole walk.
 	ds := newDenySet(deny)
 	base, _, err := f.resolve(".", ds)
 	if err != nil {
-		return deniedHeader(f.Path(), err), 0
+		return deniedHeader(f.Path(), err), finder{}
 	}
 	h := proto.FileHeader{Path: base, Kind: "find", Exists: true}
 	w := finder{f: f, deny: ds, q: q, base: base, h: &h, deadline: time.Now().Add(findTimeout), budget: proto.MaxFileHeader - 4096}
 	dir, id, err := f.openDir(".", w.deny)
 	if err != nil {
-		return deniedHeader(f.Path(), err), 0
+		return deniedHeader(f.Path(), err), finder{}
 	}
 	w.walk(".", dir, id)
-	return h, w.reopened
+	return h, w
 }
 
 // finder is one find's walk and what it found so far.
@@ -86,8 +96,9 @@ type finder struct {
 	h        *proto.FileHeader
 	deadline time.Time
 	budget   int
-	scanned  int
-	used     int
+	// read is the entries read so far, all folders together (maxFindScan).
+	read int
+	used int
 	// reopened counts the folders opened again from the top (walk).
 	reopened int
 }
@@ -101,9 +112,9 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 			dir.Close()
 		}
 	}()
-	entries, err := readEntries(dir, MaxFindScan-w.scanned+1)
-	if err != nil {
-		return nil
+	entries, complete := w.readEntries(dir)
+	if !complete {
+		w.h.Truncated = true
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	// open has dir open again, from the top, once a folder inside it was
@@ -128,8 +139,7 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 		return true
 	}
 	for _, e := range entries {
-		w.scanned++
-		if w.scanned > MaxFindScan || time.Now().After(w.deadline) {
+		if time.Now().After(w.deadline) {
 			w.h.Truncated = true
 			return errFindStop
 		}
@@ -178,16 +188,29 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 	return nil
 }
 
-// readEntries reads at most n entries of dir, open.
-func readEntries(dir *os.Root, n int) ([]os.DirEntry, error) {
+// readEntries reads the entries of dir, open, findChunk at a time, each
+// counted against maxFindScan as it is read and the deadline looked at
+// between reads; complete is false when it stopped at either with entries
+// left (or when one more read is all that could tell). A folder that
+// cannot be read gives none, complete.
+func (w *finder) readEntries(dir *os.Root) (entries []os.DirEntry, complete bool) {
 	d, err := dir.Open(".")
 	if err != nil {
-		return nil, err
+		return nil, true
 	}
 	defer d.Close()
-	entries, err := d.ReadDir(n)
-	if errors.Is(err, io.EOF) {
-		err = nil
+	for {
+		left := maxFindScan - w.read
+		if left <= 0 || time.Now().After(w.deadline) {
+			more, _ := d.ReadDir(1)
+			return entries, len(more) == 0
+		}
+		chunk, err := d.ReadDir(min(findChunk, left))
+		w.read += len(chunk)
+		entries = append(entries, chunk...)
+		if err != nil || len(chunk) == 0 {
+			// io.EOF at the end; another error ends the folder's entries too.
+			return entries, true
+		}
 	}
-	return entries, err
 }
