@@ -13,7 +13,7 @@ what was expected, what is known of the cause, and the round or pull
 request that fixes it; one that a person found by hand says so, and gets a
 test that would have caught it when it is fixed.
 
-These five came from a Codex review of the repository on 2026-10-10,
+The first four came from a Codex review of the repository on 2026-10-10,
 each reproduced with a Go test (round 15); none is fixed yet.
 
 - **A stopped run can be resumed twice.** A run's page header offers
@@ -56,6 +56,17 @@ each reproduced with a Go test (round 15); none is fixed yet.
   the amber state goes, and in a crew the next member starts with the
   question unanswered. Expected: an agent's `needs_input` holds until input
   arrives.
+- **A viewer holding the terminal's size can lose it when it falls back to
+  the relay.** A `conductor host` viewer whose WebRTC connection fails moves
+  to the relay as a new subscription under the same viewer id. When its data
+  channel's detach comes before the relay's attach, the detach hands the size
+  on as at any leave (to another of the owner's windows that is attached, or
+  to nobody), and the relay's attach does not take it back, so that window's
+  resizes are then refused until Fit to my window. Expected: a move keeps the
+  size where it was. Seen by the Codex review of the slow-viewer change
+  (round 15); older than it. The fix proposed: carry the size through the
+  replacement (`AttachOptions.Replaces`) in either order, without undoing an
+  explicit Fit to my window made in between.
 
 ## Features
 
