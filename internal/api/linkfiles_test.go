@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -268,4 +269,31 @@ func TestARevokeOutlastsARunUpdatesWriteAcrossARestart(t *testing.T) {
 	if back > 0 {
 		t.Fatalf("%d of %d revoked links open again after a restart", back, len(links))
 	}
+}
+
+// A link revoked, or gone with its session, before it is kept is neither
+// counted against its address nor written: the address's one place stays
+// free.
+func TestALinkGoneAsItIsMadeIsNotKept(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 })
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	d, _ := e.srv.hosts.Get(host.sessionID)
+	revoked, revokedToken, _ := e.srv.links.Create(host.sessionID, session.RoleView, "", 0)
+	e.srv.links.Revoke(host.sessionID, revoked.ID)
+	dropped, droppedToken, _ := e.srv.links.Create(host.sessionID, session.RoleView, "", 0)
+	e.srv.links.Drop(dropped.ID)
+	for _, l := range []struct {
+		link  *share.Link
+		token string
+	}{{revoked, revokedToken}, {dropped, droppedToken}} {
+		if err := e.srv.keepLink(l.link, l.token, d.Owner(), "127.0.0.1"); !errors.Is(err, errLinkGone) {
+			t.Fatalf("keeping a link gone: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "links", l.link.ID+".json")); !os.IsNotExist(err) {
+			t.Fatalf("a file for a link gone: %v", err)
+		}
+	}
+	mintHostLink(t, host, "r1")
 }
