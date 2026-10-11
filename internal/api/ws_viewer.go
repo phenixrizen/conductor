@@ -102,6 +102,13 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 			}
 			return
 		}
+		// A client the session has ended (revoked, expired, dropped as a
+		// slow consumer) is not acted on while its connection closes.
+		select {
+		case <-sub.Done():
+			return
+		default:
+		}
 		switch f.Type {
 		case proto.TypeInput:
 			if err := local.Input(sub, f.Payload); err != nil {

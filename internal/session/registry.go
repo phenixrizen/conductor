@@ -13,11 +13,17 @@ var ErrNotFound = errors.New("session: not found")
 // ErrTooManySessions is returned when the registry is full.
 var ErrTooManySessions = errors.New("session: too many sessions")
 
-// Registry indexes live and recently ended sessions.
+// Registry indexes live and recently ended sessions. It asks a session for
+// its description (Info) holding none of its own locks, from a copy of its
+// index: a session that is slow to answer holds up whoever asks it, never a
+// lookup or the removal of another.
 type Registry struct {
 	mu    sync.RWMutex
 	max   int
 	items map[string]Driver
+	// addMu makes Add's count and insert one step for the other Adds: only
+	// an Add raises the count.
+	addMu sync.Mutex
 	// OnRemove is called after a session leaves the registry (e.g. to delete
 	// links), with the session as it was.
 	OnRemove func(id string, d Driver)
@@ -30,10 +36,11 @@ func NewRegistry(max int) *Registry {
 
 // Add inserts d, enforcing the capacity limit against non-ended sessions.
 func (r *Registry) Add(d Driver) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	id := d.Info().ID
+	r.addMu.Lock()
+	defer r.addMu.Unlock()
 	active := 0
-	for _, it := range r.items {
+	for _, it := range r.snapshot() {
 		if !it.Info().Status.Ended() {
 			active++
 		}
@@ -41,8 +48,21 @@ func (r *Registry) Add(d Driver) error {
 	if active >= r.max {
 		return ErrTooManySessions
 	}
-	r.items[d.Info().ID] = d
+	r.mu.Lock()
+	r.items[id] = d
+	r.mu.Unlock()
 	return nil
+}
+
+// snapshot copies the index's sessions.
+func (r *Registry) snapshot() []Driver {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	list := make([]Driver, 0, len(r.items))
+	for _, d := range r.items {
+		list = append(list, d)
+	}
+	return list
 }
 
 // Get returns the session with the given ID.
@@ -55,12 +75,11 @@ func (r *Registry) Get(id string) (Driver, bool) {
 
 // List returns session descriptions, newest first.
 func (r *Registry) List() []Info {
-	r.mu.RLock()
-	out := make([]Info, 0, len(r.items))
-	for _, d := range r.items {
+	list := r.snapshot()
+	out := make([]Info, 0, len(list))
+	for _, d := range list {
 		out = append(out, d.Info())
 	}
-	r.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
 }
@@ -76,6 +95,20 @@ func (r *Registry) Remove(id string) {
 	}
 }
 
+// removeIf deletes the session id from the index if it is still d.
+func (r *Registry) removeIf(id string, d Driver) bool {
+	r.mu.Lock()
+	ok := r.items[id] == d
+	if ok {
+		delete(r.items, id)
+	}
+	r.mu.Unlock()
+	if ok && r.OnRemove != nil {
+		r.OnRemove(id, d)
+	}
+	return ok
+}
+
 // Count returns the number of indexed sessions.
 func (r *Registry) Count() int {
 	r.mu.RLock()
@@ -85,13 +118,7 @@ func (r *Registry) Count() int {
 
 // Each calls fn for every driver.
 func (r *Registry) Each(fn func(Driver)) {
-	r.mu.RLock()
-	list := make([]Driver, 0, len(r.items))
-	for _, d := range r.items {
-		list = append(list, d)
-	}
-	r.mu.RUnlock()
-	for _, d := range list {
+	for _, d := range r.snapshot() {
 		fn(d)
 	}
 }
@@ -99,16 +126,11 @@ func (r *Registry) Each(fn func(Driver)) {
 // GC removes ended sessions older than retention. It returns the removed IDs.
 func (r *Registry) GC(retention time.Duration, now time.Time) []string {
 	var expired []string
-	r.mu.RLock()
-	for id, d := range r.items {
+	for _, d := range r.snapshot() {
 		info := d.Info()
-		if info.Status.Ended() && info.EndedAt != nil && now.Sub(*info.EndedAt) >= retention {
-			expired = append(expired, id)
+		if info.Status.Ended() && info.EndedAt != nil && now.Sub(*info.EndedAt) >= retention && r.removeIf(info.ID, d) {
+			expired = append(expired, info.ID)
 		}
-	}
-	r.mu.RUnlock()
-	for _, id := range expired {
-		r.Remove(id)
 	}
 	return expired
 }

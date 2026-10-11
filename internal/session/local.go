@@ -143,6 +143,15 @@ type Local struct {
 	// retired says the session left the server's registry (Retire): no
 	// client attaches any more.
 	retired bool
+	// closing holds the clients that have left the hub (Detach) while their
+	// transport still closes: with the hub's, every client until its
+	// transport has closed, for DisconnectLink and CloseAll to wait for.
+	closing map[*Subscription]struct{}
+	// passedOn holds the clients whose slot toward MaxViewers another took
+	// over (AttachOptions.Replaces), still attached or still closing: they
+	// no longer count toward the cap, while revokes and shutdowns still wait
+	// for them. A client leaves it as its transport closes.
+	passedOn map[*Subscription]struct{}
 	// lastOutput is when the pump last read output; zero until it has.
 	lastOutput time.Time
 
@@ -734,6 +743,12 @@ type AttachOptions struct {
 	// connection is offered the editor's Neovim (see nvimAllowed); a link's
 	// never is, nor a paste invite's, whatever the caller says.
 	Owner bool
+	// Replaces is the subscription this client takes over: the same viewer
+	// moving to another transport (a host's viewer falling back from WebRTC
+	// to the relay). While that one's transport still closes, its slot is
+	// this client's and is not counted twice toward MaxViewers. Only a
+	// subscription of this session already ended counts.
+	Replaces *Subscription
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -783,7 +798,38 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		}
 		role, until = g.Role, g.Until
 	}
-	if s.hub.Count() >= s.opts.MaxViewers {
+	// Every client whose transport is still open counts, an ended one whose
+	// transport still closes included: at most MaxViewers connections at once.
+	// The one this client replaces gives it its slot.
+	// The client this one takes over gives it its slot, once. One still
+	// attached (the move seen before its old transport's end) ends here: its
+	// own Detach later finds it gone, so the move makes no leave and no join.
+	r := o.Replaces
+	_, given := s.passedOn[r]
+	replacing := r != nil && !given
+	if replacing && s.hub.remove(r) {
+		r.closeWith(nil)
+		// The size stays with the viewer's id, which a replacement under the
+		// same id keeps; under another id it is handed on as at a leave.
+		if s.sizer == r.ID && o.ID != r.ID {
+			s.handOverSize()
+		}
+		select {
+		case <-r.closed:
+		default:
+			if s.closing == nil {
+				s.closing = map[*Subscription]struct{}{}
+			}
+			s.closing[r] = struct{}{}
+		}
+	}
+	_, closing := s.closing[r]
+	replacing = replacing && closing
+	open := s.hub.Len() + len(s.closing) - len(s.passedOn)
+	if replacing {
+		open--
+	}
+	if open >= s.opts.MaxViewers {
 		s.mu.Unlock()
 		return nil, ErrTooManyViewers
 	}
@@ -865,6 +911,13 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		}
 	}
 	s.hub.add(sub)
+	if replacing {
+		// Its slot is this client's now, for every later check too.
+		if s.passedOn == nil {
+			s.passedOn = map[*Subscription]struct{}{}
+		}
+		s.passedOn[r] = struct{}{}
+	}
 	// A credential that lapses closes the client as it lapses, one that
 	// attached a moment before included (at once when that moment has passed).
 	var lapse *time.Timer
@@ -895,6 +948,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 			lapse.Stop()
 		}
 		s.Detach(sub)
+		// Detach keeps it among the closing until its transport has closed.
+		<-sub.closed
+		s.mu.Lock()
+		delete(s.closing, sub)
+		delete(s.passedOn, sub)
+		s.mu.Unlock()
 	}()
 	if !sub.quiet {
 		s.Record(ActivityEntry{Type: ActivityJoin, By: sub.ID, ByName: sub.Name})
@@ -907,10 +966,26 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 func (s *Local) Detach(sub *Subscription) {
 	s.closeNvims(sub)
 	s.mu.Lock()
-	_, present := s.hub.subs[sub.ID]
-	s.hub.remove(sub.ID)
+	present := s.hub.remove(sub)
 	sub.closeWith(nil)
-	if s.sizer == sub.ID {
+	// Out of the hub, it stays among the closing until its transport has
+	// closed (AttachWith's watcher takes it out), for a revoke to wait for.
+	select {
+	case <-sub.closed:
+		// Closed already: gone from the closing and from the slots passed on
+		// together, so no check in between counts it again.
+		delete(s.closing, sub)
+		delete(s.passedOn, sub)
+	default:
+		if s.closing == nil {
+			s.closing = map[*Subscription]struct{}{}
+		}
+		s.closing[sub] = struct{}{}
+	}
+	// Only the client that held the size as it left hands it on: a late
+	// Detach of one a replacement took over (the same id) leaves the size
+	// with the replacement.
+	if present && s.sizer == sub.ID {
 		s.handOverSize()
 	}
 	var left ChatMessage
@@ -1126,9 +1201,14 @@ func (s *Local) Stop(ctx context.Context) error {
 // DisconnectLink evicts every subscription created through linkID: as
 // revoked, or, once the session has ended (its links go with it), as the
 // session's end, so that a viewer whose status frame the close overtakes
-// still learns which. It finds them under the lock AttachWith registers
-// them under, so a caller that marked the link first (a revoke) misses
-// none: one that attaches after this finds the mark (AttachOptions.Authorize).
+// still learns which. It ends them under the lock AttachWith registers them
+// under, so a caller that marked the link first (a revoke) misses none: one
+// that attaches after this finds the mark (AttachOptions.Authorize); and
+// nothing broadcast after reaches them. It returns once their transports
+// have closed, which they do together, each on its own goroutine, holding no
+// lock: as long as the slowest takes. That includes the link's clients that
+// had ended already (a slow consumer, an earlier revoke) and whose transport
+// still closes.
 func (s *Local) DisconnectLink(linkID string) {
 	reason := ErrRevoked
 	var hit []*Subscription
@@ -1138,42 +1218,52 @@ func (s *Local) DisconnectLink(linkID string) {
 	}
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
+			sub.closeWith(reason)
 			hit = append(hit, sub)
 		}
 	})
-	s.mu.Unlock()
-	// Closed outside the lock: a sink's Close may wait on its connection.
-	for _, sub := range hit {
-		sub.closeWith(reason)
+	for sub := range s.closing {
+		if sub.LinkID == linkID {
+			hit = append(hit, sub)
+		}
 	}
+	s.mu.Unlock()
+	waitClosed(hit)
 }
 
 // Retire is the session leaving the server's registry, which only an ended
 // session does: every client is closed as at the session's end, and none
 // attaches after (ErrSessionEnded). Whoever closes a link's clients finds
 // them through the registry, so none may stay where it no longer looks.
-// The closes run on goroutines of their own, one per client (at most the
-// session's MaxViewers): a client that does not read holds up only its own.
+// It does not wait: each client's transport closes on the client's own
+// goroutine, and its editors go as it detaches, so one that does not read
+// holds up only its own.
 func (s *Local) Retire() {
-	var all []*Subscription
 	s.mu.Lock()
 	s.retired = true
-	s.hub.Each(func(sub *Subscription) { all = append(all, sub) })
+	s.hub.Each(func(sub *Subscription) { sub.closeWith(ErrSessionEnded) })
 	s.mu.Unlock()
-	for _, sub := range all {
-		go func() {
-			s.closeNvims(sub)
-			sub.closeWith(ErrSessionEnded)
-		}()
-	}
 }
 
-// CloseAll evicts every subscription with the given reason (server shutdown).
+// CloseAll evicts every subscription with the given reason (server shutdown)
+// and ends their editors. It returns once their transports have closed,
+// those of the clients that had ended already included, together, as
+// DisconnectLink's do.
 func (s *Local) CloseAll(reason error) {
+	var all []*Subscription
+	s.mu.Lock()
 	s.hub.Each(func(sub *Subscription) {
-		s.closeNvims(sub)
 		sub.closeWith(reason)
+		all = append(all, sub)
 	})
+	for sub := range s.closing {
+		all = append(all, sub)
+	}
+	s.mu.Unlock()
+	for _, sub := range all {
+		s.closeNvims(sub)
+	}
+	waitClosed(all)
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

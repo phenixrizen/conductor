@@ -50,8 +50,13 @@ func (s *dcSink) WriteFrame(frame []byte) error {
 		return errors.New("data channel closed")
 	}
 	parts := proto.Chunk(uint16(s.msgID.Add(1)), frame)
+	// One deadline for the whole frame, not one per part: a peer that drains
+	// a part just before each wait ran out would stretch a frame of many
+	// parts, and a client the session dropped holds its slot until its
+	// write returns (session.Sink).
+	until := time.Now().Add(dcSendTimeout)
 	for _, part := range parts {
-		if err := s.waitForRoom(); err != nil {
+		if err := s.waitForRoom(until); err != nil {
 			return err
 		}
 		if err := s.dc.Send(part); err != nil {
@@ -71,24 +76,36 @@ func (s *dcSink) buffered() uint64 {
 	return s.dc.BufferedAmount()
 }
 
-func (s *dcSink) waitForRoom() error {
-	deadline := time.NewTimer(dcSendTimeout)
-	defer deadline.Stop()
+func (s *dcSink) waitForRoom(until time.Time) error {
+	return waitForRoom(until, s.dc.BufferedAmount, func() bool {
+		// The sink's Close comes after the write (session.Sink), so the wait
+		// looks for the channel's own close too: the peer letting go of its
+		// viewer, or the viewer closing its channel. A closed channel keeps
+		// counting what it held, so the count alone would wait it out.
+		return !s.closed.Load() && s.dc.ReadyState() == webrtc.DataChannelStateOpen
+	}, s.low)
+}
+
+// waitForRoom waits until the channel holds no more than its mark, its
+// buffered count over the hard limit, the channel no longer open, or until.
+func waitForRoom(until time.Time, buffered func() uint64, open func() bool, low <-chan struct{}) error {
 	for {
-		buffered := s.dc.BufferedAmount()
-		if buffered > dcHardLimit {
+		n := buffered()
+		if n > dcHardLimit {
 			return errors.New("data channel backlog too large")
 		}
-		if buffered <= dcHighWater {
+		if n <= dcHighWater {
 			return nil
 		}
-		select {
-		case <-s.low:
-		case <-deadline.C:
+		left := time.Until(until)
+		if left <= 0 {
 			return errors.New("data channel send timeout")
-		case <-time.After(250 * time.Millisecond):
 		}
-		if s.closed.Load() {
+		select {
+		case <-low:
+		case <-time.After(min(left, 250*time.Millisecond)):
+		}
+		if !open() {
 			return errors.New("data channel closed")
 		}
 	}
