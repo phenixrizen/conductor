@@ -224,8 +224,8 @@ func TestAViewerWhoseWriteFailsStopsWaitingForTheHost(t *testing.T) {
 		t.Fatal("a viewer whose connection failed kept waiting for room")
 	}
 	<-pumped
-	if v.Reason() != nil {
-		t.Fatalf("a viewer whose write failed was closed: %v", v.Reason())
+	if v.Reason() != nil || !v.Failed() {
+		t.Fatalf("a viewer whose write failed: closed %v, failed %v", v.Reason(), v.Failed())
 	}
 	whole := proto.Frame{Type: proto.TypeInput, Payload: bytes.Repeat([]byte("x"), proto.MaxInput)}
 	if err := hs.RelayToHost(v, whole); !errors.Is(err, ErrViewerGone) {

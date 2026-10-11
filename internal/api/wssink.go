@@ -101,10 +101,13 @@ func errorCodeFor(reason error) string {
 // network may (serveHostedViewer). read, when set, is called before each read
 // of the connection, with a channel closed once the viewer's writer has
 // ended; write, when set, is called before each frame the writer writes, and
-// an error it returns fails that write.
+// an error it returns fails that write; ended, when set, is called on the
+// writer's goroutine once Pump has returned, before the read loop's waits
+// end.
 type viewerSeam struct {
 	read  func(written <-chan struct{})
 	write func() error
+	ended func()
 }
 
 // seamSink is a sink whose writes fail when the seam says so.

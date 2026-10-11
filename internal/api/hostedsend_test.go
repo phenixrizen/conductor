@@ -458,60 +458,87 @@ func TestAViewersLastFramesReachTheHostBeforeItsLeave(t *testing.T) {
 // nothing, and whose connection then fails, has that frame dropped and
 // nothing it sent after it relayed, though a smaller frame behind it would
 // fit: the host gets what the viewer sent up to the dropped frame, in order,
-// and then its leave.
+// and then its leave. So it is too when the writer that found the connection
+// failed is slow to end: the read loop wakes before its waits are ended.
 func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
-	e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
-	var failing atomic.Bool
-	e.srv.viewerSeam = &viewerSeam{write: writeFails(&failing)}
-	hc, sessionID := dialRawHost(t, e)
-	v, viewerID := joinRawRelayed(t, e, hc, sessionID)
-	// From here the host reads nothing until the viewer has failed. The
-	// viewer sends numbered frames, whole ones and small ones in turn, until
-	// the server stops reading it.
-	var sent atomic.Int64
-	go func() {
-		for i := 0; ; i++ {
-			size := proto.MaxInput
-			if i%2 == 1 {
-				size = 16
+	for name, slow := range map[string]bool{"writer ends at once": false, "writer slow to end": true} {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
+			var failing atomic.Bool
+			readAgain := make(chan struct{}, 1)
+			seam := &viewerSeam{
+				write: writeFails(&failing),
+				read: func(<-chan struct{}) {
+					if failing.Load() {
+						select {
+						case readAgain <- struct{}{}:
+						default:
+						}
+					}
+				},
 			}
-			payload := bytes.Repeat([]byte("."), size)
-			copy(payload, fmt.Sprintf("%08d", i))
-			if v.c.Write(t.Context(), websocket.MessageBinary, proto.Encode(proto.TypeInput, payload)) != nil {
-				return
+			if slow {
+				// The writer has ended; the read loop's waits end once it has
+				// read again, or after a while.
+				seam.ended = func() {
+					select {
+					case <-readAgain:
+					case <-time.After(2 * time.Second):
+					}
+				}
 			}
-			sent.Add(1)
-		}
-	}()
-	for last := int64(-1); last != sent.Load(); {
-		last = sent.Load()
-		time.Sleep(300 * time.Millisecond)
-	}
-	v.c.CloseNow()
-	failing.Store(true)
-	env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
-	if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
-		t.Fatal(err)
-	}
-	next := 0
-	for {
-		m := readHost(t, hc, 10*time.Second)
-		if m.viewer != viewerID {
-			continue
-		}
-		if m.t == proto.HostViewerLeave {
-			break
-		}
-		if m.t != "relay" {
-			continue
-		}
-		if got := string(m.frame.Payload[:8]); got != fmt.Sprintf("%08d", next) {
-			t.Fatalf("frame %s reached the host where %08d was due", got, next)
-		}
-		next++
-	}
-	if next == 0 || int64(next) >= sent.Load() {
-		t.Fatalf("the host got %d of the %d frames sent", next, sent.Load())
+			e.srv.viewerSeam = seam
+			hc, sessionID := dialRawHost(t, e)
+			v, viewerID := joinRawRelayed(t, e, hc, sessionID)
+			// From here the host reads nothing until the viewer has failed.
+			// The viewer sends numbered frames, whole ones and small ones in
+			// turn, until the server stops reading it.
+			var sent atomic.Int64
+			go func() {
+				for i := 0; ; i++ {
+					size := proto.MaxInput
+					if i%2 == 1 {
+						size = 16
+					}
+					payload := bytes.Repeat([]byte("."), size)
+					copy(payload, fmt.Sprintf("%08d", i))
+					if v.c.Write(t.Context(), websocket.MessageBinary, proto.Encode(proto.TypeInput, payload)) != nil {
+						return
+					}
+					sent.Add(1)
+				}
+			}()
+			for last := int64(-1); last != sent.Load(); {
+				last = sent.Load()
+				time.Sleep(300 * time.Millisecond)
+			}
+			v.c.CloseNow()
+			failing.Store(true)
+			env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
+			if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
+				t.Fatal(err)
+			}
+			next := 0
+			for {
+				m := readHost(t, hc, 10*time.Second)
+				if m.viewer != viewerID {
+					continue
+				}
+				if m.t == proto.HostViewerLeave {
+					break
+				}
+				if m.t != "relay" {
+					continue
+				}
+				if got := string(m.frame.Payload[:8]); got != fmt.Sprintf("%08d", next) {
+					t.Fatalf("frame %s reached the host where %08d was due", got, next)
+				}
+				next++
+			}
+			if next == 0 || int64(next) >= sent.Load() {
+				t.Fatalf("the host got %d of the %d frames sent", next, sent.Load())
+			}
+		})
 	}
 }
 

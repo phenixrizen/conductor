@@ -275,6 +275,8 @@ type Viewer struct {
 	// join, a message of its for room in the host's queue) ends with it.
 	stop     chan struct{}
 	stopOnce sync.Once
+	// failed is set by ConnFailed before it closes stop.
+	failed atomic.Bool
 	// lapse closes the viewer when its link expires (ViewerOptions'
 	// Authorize gave a Grant with Until); set by AddViewerWith, stopped by
 	// RemoveViewer, both under the session's mu.
@@ -351,7 +353,14 @@ func (v *Viewer) close(reason error) {
 // before, when it needs no wait; whoever serves it lets it go
 // (RemoveViewer) once it has read what the connection held, and its leave
 // comes after.
-func (v *Viewer) ConnFailed() { v.halt() }
+func (v *Viewer) ConnFailed() {
+	v.failed.Store(true)
+	v.halt()
+}
+
+// Failed reports whether the viewer's connection has failed (ConnFailed). A
+// message of the viewer's that stopped waiting for it sees it so.
+func (v *Viewer) Failed() bool { return v.failed.Load() }
 
 func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 

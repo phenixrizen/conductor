@@ -431,10 +431,11 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	// cut says a message the viewer sent was dropped (err) once its
 	// connection had failed, its wait cut short (the budget, the join, room
 	// in the host's queue): nothing the viewer sent after it goes, and the
-	// read loop ends. A viewer the server let go is not cut: its connection
-	// closes as Pump ends, with what the viewer is owed.
+	// read loop ends. The failure is the viewer's own (Failed), set before
+	// any of those waits ends for it. A viewer the server let go is not cut:
+	// its connection closes as Pump ends, with what the viewer is owed.
 	cut := func(err error) bool {
-		return err != nil && waits.Err() != nil && !letGo(v)
+		return err != nil && v.Failed()
 	}
 	// Writer: drain frames queued by the host side. pumped closes when Pump
 	// has closed the sink, or given up on a connection that failed; the read
@@ -447,7 +448,19 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	go func() {
 		defer close(pumped)
 		v.Pump(out)
+		if s.viewerSeam != nil && s.viewerSeam.ended != nil {
+			s.viewerSeam.ended()
+		}
 		endWaits()
+	}()
+	// A failed connection is left open for the read loop, the writer having
+	// given up on it: it is closed once the read loop is done. (A connection
+	// that has not failed is closed by the writer as it ends, which letting
+	// the viewer go makes it do.)
+	defer func() {
+		if v.Failed() {
+			c.CloseNow()
+		}
 	}()
 	// A connection that fails while nothing is written to it is found by
 	// its pings, though the read loop is held: its waits end, and the
@@ -549,17 +562,6 @@ func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *si
 		return true
 	}
 	return false
-}
-
-// letGo reports whether the server let v go (closed it): a revoke, the
-// host's leaving or its word, the viewer falling too far behind.
-func letGo(v *signal.Viewer) bool {
-	select {
-	case <-v.Done():
-		return true
-	default:
-		return false
-	}
 }
 
 // drainTimeout bounds how long a hosted viewer's connection is still read
