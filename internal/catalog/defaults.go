@@ -3,6 +3,21 @@ package catalog
 // uuidPattern is the shape of a UUID as the agents print it.
 const uuidPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 
+// codexApprovalWords picks the words of Codex's approval dialog out of the
+// screen (its rows joined by line breaks): its heading ("Would you like to
+// run the following command?", "Do you want to approve network access to
+// …?") and, when it shows one, the command, from the first row after the
+// heading that begins with "$ " up to the row of the first choice, every
+// row of it ("$ curl -sI https://example.com"); a "$ " inside the command
+// is part of it.
+const codexApprovalWords = `(?ism)((?:would\s+you\s+like|do\s+you\s+want)\s+to\s+[^?]{1,120}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`
+
+// codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
+// on one of the last rows the screen shows (the dialog is the bottom of
+// what Codex draws), so that a dialog's words in a file or a log on the
+// screen are not taken for one.
+const codexApprovalFooter = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+to\s+cancel[^\n]*(?:\n[^\n]*){0,3}\z`
+
 // defaults lists the built-in agents: one for each agent Conductor has a hook
 // adapter for (internal/agents), with the signal its adapter reports
 // through and its website as best known (to be checked in a browser: the
@@ -43,8 +58,11 @@ func defaults() []Agent {
 			Signal:      &Signal{Kind: SignalHook},
 			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
 			TrustPrompt: `Trust\s*this\s*folder\?`,
-			// Codex highlights the trusting answer: Enter alone; "No" is Down, then Enter.
-			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, continue without trusting", Input: "\x1b[B\r"}},
+			// Codex highlights the trusting answer: Enter alone. Codex 0.161's
+			// other answer is "2. Quit" (Down, then Enter), which ends Codex:
+			// the label says so, as Claude Code's "No, exit" does (seen in the
+			// rc.7 app on 2026-10-11).
+			TrustAnswers: []Answer{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}},
 			// Codex 0.161 opens on "Hooks need review" whenever its hooks are
 			// new or changed (1. Review hooks, highlighted; 2. Trust all and
 			// continue; 3. Continue without trusting): a digit moves the
@@ -59,7 +77,13 @@ func defaults() []Agent {
 			// available" with "1. Update now (runs `npm install -g
 			// @openai/codex`)" highlighted, where an Enter installs: both held
 			// so a prompt's Enter never lands on them. The update question's
-			// answer is its own footer's "esc skip".
+			// answers are its own footer's "esc skip" and "3. Skip until next
+			// version": `3` alone picks that at once (verified in a PTY on
+			// 2026-10-11 with 0.161.0 and an isolated CODEX_HOME: Codex left the
+			// screen and wrote dismissed_version to its version.json; no Enter
+			// was ever sent). Its words are its heading, "Update available ·
+			// 0.161.0 → 0.162.1", not the highlighted line, which read as if
+			// Update had been the answer.
 			Questions: []Question{{
 				Prompt:  `(?i)hooks\s*n?eed\s*review`,
 				Answers: []Answer{{Label: "Trust all and continue", Input: "2\r"}, {Label: "Continue without trusting", Input: "3\r"}},
@@ -68,7 +92,55 @@ func defaults() []Agent {
 				Answers: []Answer{{Label: "Run without the daemon this time", Input: "1"}, {Label: "Cancel (Codex exits)", Input: "3"}},
 			}, {
 				Prompt:  `(?i)update\s*now\s*\(\s*runs`,
-				Answers: []Answer{{Label: "Skip this update", Input: "\x1b"}},
+				Words:   `(?i)(update\s*available)\W*?(\d+(?:\.\d+)+\s*(?:→|->)\s*\d+(?:\.\d+)+)`,
+				Answers: []Answer{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}},
+			}, {
+				// Codex 0.161 asks before a command it would run outside its
+				// sandbox, at any time in a session (seen in the rc.7 app on
+				// 2026-10-11, a crew member running curl): "Would you like to
+				// run the following command?", its reason, "$ <command>",
+				// then "› 1. Yes, proceed (y)", "2. Yes, and don't ask again
+				// for commands that start with `<prefix>` (p)", "3. No, and
+				// tell Codex what to do differently (esc)" and "Press enter
+				// to confirm or esc to cancel". Each choice's own key picks
+				// it at once (a `y` typed there approved the command); an
+				// Enter picks the highlighted Yes, so no prompt's Enter may
+				// land on it. Codex 0.161's overlay (approval_overlay.rs)
+				// also takes a digit, d (deny) where shown, and Esc or
+				// Ctrl+C as cancel; the choices here are the keys the dialog
+				// shows. Like every anytime question it is read off the
+				// screen as drawn; it is found by its choices' keys and its
+				// footer on the last rows, its words are the heading and the
+				// command.
+				Prompt:  `(?is)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)` + codexApprovalFooter,
+				Words:   codexApprovalWords,
+				Anytime: true,
+				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes, and don't ask again", Input: "p"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}},
+			}, {
+				// The same dialog whose No is "No, continue without running
+				// it (d)" (an accept-or-decline request: the deny shortcut
+				// of approval_overlay.rs, its test pressing d); Escape, in
+				// its footer, cancels it.
+				Prompt:  `(?is)proceed\s*\(\s*y\s*\).{0,600}?\(\s*d\s*\)` + codexApprovalFooter,
+				Words:   codexApprovalWords,
+				Anytime: true,
+				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "No, continue without running it", Input: "d"}, {Label: "Cancel", Input: "\x1b"}},
+			}, {
+				// The same dialog without the "don't ask again" of a prefix
+				// (Codex offers it only when it has a prefix to propose):
+				// Yes and No alone, whose keys are the same.
+				Prompt:  `(?is)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)` + codexApprovalFooter,
+				Words:   codexApprovalWords,
+				Anytime: true,
+				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}},
+			}, {
+				// Any other of Codex's approvals (network access: "Do you
+				// want to approve network access to …?", "Yes, just this
+				// once (y)"): its y and the footer's Escape, which cancels.
+				Prompt:  `(?is)\(\s*y\s*\).{0,800}?` + codexApprovalFooter,
+				Words:   codexApprovalWords,
+				Anytime: true,
+				Answers: []Answer{{Label: "Yes", Input: "y"}, {Label: "Cancel", Input: "\x1b"}},
 			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},

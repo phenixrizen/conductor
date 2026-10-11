@@ -797,7 +797,9 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 // in it, as one line (typedPrompt), and m is running; a member without a
 // prompt runs at once. A trust question on the member's screen holds the
 // prompt until a person answers it (awaitReady), noted once in the run log
-// each time. m is prompted as the Enter is written, so a done the agent
+// each time; so does a question the session finds only as the prompt is
+// submitted (Submit refuses it, nothing typed), and the wait starts over.
+// m is prompted as the Enter is written, so a done the agent
 // reported before it never starts the members after m. A session that ends
 // first gets no prompt: m ends, with how its process ended. An error means
 // the start failed: ctx ended or the prompt could not be written.
@@ -806,28 +808,48 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 	text := typedPrompt(m.def.Prompt, r.goal)
 	hasPrompt := strings.TrimSpace(text) != ""
 	if hasPrompt {
-		err := e.await(ctx, local, func(question string) {
-			e.mu.Lock()
-			r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its prompt waits", name, quote(question), name)
-			e.mu.Unlock()
-		})
-		switch {
-		case errors.Is(err, errNotReady):
-			e.mu.Lock()
-			r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
-			e.mu.Unlock()
-		case errors.Is(err, session.ErrSessionEnded):
-			e.endedEarly(r, m, local)
-			return nil
-		case err != nil:
-			return err
-		}
-		res, err := local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, BeforeEnter: func() {
-			e.mu.Lock()
-			m.markPrompted()
-			e.mu.Unlock()
-		}})
-		if err != nil {
+		var res session.SubmitResult
+		for {
+			err := e.await(ctx, local, func(question string) {
+				e.mu.Lock()
+				r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its prompt waits", name, quote(question), name)
+				e.mu.Unlock()
+			})
+			switch {
+			case errors.Is(err, errNotReady):
+				e.mu.Lock()
+				r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
+				e.mu.Unlock()
+			case errors.Is(err, session.ErrSessionEnded):
+				e.endedEarly(r, m, local)
+				return nil
+			case err != nil:
+				return err
+			}
+			res, err = local.Submit(ctx, session.Submission{Text: text, ByName: typedBy, Confirm: true, BeforeEnter: func() {
+				e.mu.Lock()
+				m.markPrompted()
+				e.mu.Unlock()
+			}})
+			if errors.Is(err, session.ErrTrustQuestion) || errors.Is(err, session.ErrQuestion) {
+				// A question the wait had not seen yet (a dialog Submit
+				// found on the screen) holds the prompt: nothing was
+				// typed, and it waits for the answer. The wait may find
+				// the session ready (a report of its own on show while the
+				// dialog is up), so it looks again a poll later.
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-local.Ended():
+					e.endedEarly(r, m, local)
+					return nil
+				case <-time.After(readyPoll):
+				}
+				continue
+			}
+			if err == nil {
+				break
+			}
 			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
 				e.endedEarly(r, m, local)
 				return nil
@@ -1490,14 +1512,15 @@ type readiness struct {
 }
 
 // readyAt says whether a session is ready for its prompt at now, in a wait
-// that began at start. A trust question on its screen holds the prompt (hold).
+// that began at start. A trust question on its screen holds the prompt (hold),
+// and so does a question asked during the work (source "question").
 // It is ready when its agent reports that it waits for input or is done, or
 // when its output has been quiet for readyQuiet and readyMin has passed, but
 // never while the program has turned bracketed paste on and then off again:
 // it is between screens (Claude Code while it starts), and what is typed then
 // loses its Enter. capped is the wait reaching readyCap.
 func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
-	if rd.state == session.AttentionNeedsInput && rd.source == session.SourceTrust {
+	if rd.state == session.AttentionNeedsInput && (rd.source == session.SourceTrust || rd.source == session.SourceQuestion) {
 		return false, false, true
 	}
 	if rd.state == session.AttentionNeedsInput || rd.state == session.AttentionDone {

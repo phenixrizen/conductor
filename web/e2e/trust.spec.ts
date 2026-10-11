@@ -134,14 +134,14 @@ test("the trust question's answers are choices on the page and in the chat; type
   await expect.poll(async () => member(await api.run(run.id), 'solo').needsInput === true, { timeout: 30_000, message: 'the member is held' }).toBe(true)
   const solo = member(await api.run(run.id), 'solo').sessionId ?? ''
   const session = await api.session(solo)
-  expect(session.attention?.options?.map((o) => o.label)).toEqual(['Yes, trust this folder', 'No, continue without'])
+  expect(session.attention?.options?.map((o) => o.label)).toEqual(['Yes, trust this folder', 'No, quit'])
   await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
   await page.goto(`/sessions/${encodeURIComponent(solo)}`)
   // The reply bar offers the answers and no text field.
   const bar = page.locator('[data-quick-reply]')
   await expect(bar).toBeVisible({ timeout: 30_000 })
   await expect(bar.getByRole('button', { name: /Yes, trust this folder/ })).toBeVisible()
-  await expect(bar.getByRole('button', { name: /No, continue without/ })).toBeVisible()
+  await expect(bar.getByRole('button', { name: /No, quit/ })).toBeVisible()
   await expect(bar.locator('input')).toHaveCount(0)
   // The chat has the question with the same two choices; a line typed to the agent is refused with the words, and the hold stays.
   await page.locator('[data-inspector] [data-chat-tab]').click()
@@ -245,12 +245,15 @@ test("Codex's background-server and update questions hold the member; their choi
     const bar = page.locator('[data-quick-reply]')
     await expect(bar).toBeVisible({ timeout: 30_000 })
     await bar.getByRole('button', { name: /Run without the daemon this time/ }).click()
-    await held('Update now')
+    // The update question's words are its heading, never the highlighted Update now, which read as if it had been the answer.
+    await held('^Update available 0\\.161\\.0 → 0\\.162\\.0$')
     expect(readFileSync(answers[0]!, 'utf8').trim()).toBe('1')
     expect(logged(await api.run(run.id), "typed solo's prompt")).toBe(false)
-    await bar.getByRole('button', { name: /Skip this update/ }).click()
+    expect((await api.session(solo)).attention?.options?.map((o) => o.label)).toEqual(['Skip this update', 'Skip until next version'])
+    await bar.getByRole('button', { name: /Skip until next version/ }).click()
     await expect.poll(async () => logged(await api.run(run.id), "typed solo's prompt"), { timeout: 30_000 }).toBe(true)
-    expect(readFileSync(answers[1]!, 'utf8').trim(), 'Update now must never be picked').toBe('skip')
+    expect(readFileSync(answers[1]!, 'utf8').trim(), 'Update now must never be picked').toBe('skip-version')
+    expect((await api.session(solo)).lastAnswer?.message, 'the answer names the question by its heading').toBe('Update available 0.161.0 → 0.162.0')
     await api.stopRun(run.id)
   } finally {
     for (const m of [...marks, ...answers]) rmSync(m, { force: true })

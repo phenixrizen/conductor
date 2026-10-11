@@ -103,7 +103,11 @@ type Options struct {
 	// Questions are the agent's other startup questions (the catalog's
 	// questions; round 13, G2c), held exactly as the trust question is:
 	// source "trust", their answers the choices, typed text refused while
-	// one shows. Codex's "Hooks need review" is one.
+	// one shows. Codex's "Hooks need review" is one. A question marked
+	// Anytime is one the agent asks during its work (Codex's command
+	// approval): it is watched for the session's whole life on a model of the
+	// screen (Screen), by a watcher of its own, with source "question"
+	// (fireAsked, missAsked).
 	Questions []StartupQuestion
 	// SubmitPause is the pause between a submission's text and its Enter;
 	// SubmitPause when zero.
@@ -179,14 +183,28 @@ type Local struct {
 	chat      chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
-	question       string
-	events         EventBucket // guarded by mu
-	dropped        atomic.Uint64
-	scanner        Scanner
-	pattern        *PatternWatcher   // nil without Options.Pattern
-	trust          *PatternWatcher   // nil without a startup question
-	questions      []StartupQuestion // Options.TrustPattern's, then Options.Questions
+	question  string
+	events    EventBucket // guarded by mu
+	dropped   atomic.Uint64
+	scanner   Scanner
+	pattern   *PatternWatcher   // nil without Options.Pattern
+	trust     *PatternWatcher   // nil without a startup question
+	questions []StartupQuestion // Options.TrustPattern's, then Options.Questions not marked Anytime
+	// asked watches the screen for the questions the agent asks during its
+	// work (Options.Questions marked Anytime, askedQuestions) until the
+	// session ends; nil without one. askedKeys are their answers' keys.
+	// typedAtAsked is the person who last typed into the session while one
+	// showed, and that question's Since (missAsked); guarded by mu.
+	asked          *PatternWatcher
+	askedQuestions []StartupQuestion
+	askedKeys      map[string]bool
+	typedAtAsked   *typedAt
 	lastBell       time.Time
+	// turnEnded says a done was reported and no Enter has been written
+	// since (Input, Submit): the turn it ended is still the last one, and a
+	// bell or OSC notification now is that turn's own (unlessTurnEnded).
+	// Guarded by mu.
+	turnEnded      bool
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -258,18 +276,27 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		s.questions = append(s.questions, StartupQuestion{Pattern: opts.TrustPattern, Answers: opts.TrustAnswers})
 	}
 	for _, q := range opts.Questions {
-		if q.Pattern != nil {
+		switch {
+		case q.Pattern == nil:
+		case q.Anytime:
+			s.askedQuestions = append(s.askedQuestions, q)
+		default:
 			s.questions = append(s.questions, q)
 		}
 	}
 	if len(s.questions) > 0 {
 		// One watcher for every question: its pattern is theirs together, and
 		// the fire tells which one shows.
-		parts := make([]string, len(s.questions))
-		for i, q := range s.questions {
-			parts[i] = "(?:" + q.Pattern.String() + ")"
+		s.trust = NewScreenWatcher(anyOf(s.questions), patternQuiet, s.fireTrust)
+	}
+	if len(s.askedQuestions) > 0 {
+		s.asked = NewScreenModelWatcher(anyOf(s.askedQuestions), patternQuiet, int(info.Cols), int(info.Rows), s.fireAsked, s.missAsked)
+		s.askedKeys = map[string]bool{}
+		for _, q := range s.askedQuestions {
+			for _, a := range q.Answers {
+				s.askedKeys[a.Input] = true
+			}
 		}
-		s.trust = NewScreenWatcher(regexp.MustCompile(strings.Join(parts, "|")), patternQuiet, s.fireTrust)
 	}
 	if opts.WatchGit && info.Cwd != "" {
 		s.gitSeenStart()
@@ -304,6 +331,9 @@ func (s *Local) pump() {
 			if s.trust != nil && !title {
 				s.trust.Feed(chunk)
 			}
+			if s.asked != nil && !title {
+				s.asked.Feed(chunk)
+			}
 		}
 		if err != nil {
 			break
@@ -333,6 +363,9 @@ func (s *Local) markEnded(status Status) {
 	}
 	if s.trust != nil {
 		s.trust.Stop()
+	}
+	if s.asked != nil {
+		s.asked.Stop()
 	}
 	s.mu.Lock()
 	if s.info.Status.Ended() {
@@ -472,6 +505,14 @@ func (s *Local) notifyChange() {
 // scanOutput looks for bell/OSC signals in a chunk of terminal output. A
 // burst of bells produces at most one change per 500 ms. They are the
 // session's own observations and spend no token of the event bucket.
+//
+// A bare bell says only that something waits: a session that waits already
+// keeps what it waits on (a question's words and choices, a hook's report),
+// which the bell would have replaced with "terminal bell" and no choice. An
+// OSC notification has words of its own and replaces a wait that has none
+// to answer it with, but never a question with its choices or one the
+// session holds (unlessChoices). Neither undoes a done until the next Enter
+// (unlessTurnEnded): it is the ended turn's own, as Codex's bell is.
 func (s *Local) scanOutput(chunk []byte) {
 	for _, ev := range s.scanner.Scan(chunk) {
 		s.mu.Lock()
@@ -481,11 +522,11 @@ func (s *Local) scanOutput(chunk []byte) {
 		}
 		s.lastBell = time.Now()
 		s.mu.Unlock()
-		msg := ev.Message
+		msg, rule := ev.Message, unlessChoices
 		if msg == "" {
-			msg = "terminal bell"
+			msg, rule = "terminal bell", unlessWaiting
 		}
-		s.SetAttention(AttentionNeedsInput, msg, ev.Source)
+		s.setAttention(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded)
 	}
 }
 
@@ -506,18 +547,123 @@ func (s *Local) firePattern(line string) {
 // already.
 func (s *Local) fireTrust(text string) {
 	for _, q := range s.questions {
-		if words := q.Pattern.FindString(text); words != "" {
+		if words := q.words(text); words != "" {
 			s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting)
 			return
 		}
 	}
 }
 
+// fireAsked is the fire of the watcher for the questions the agent asks
+// during its work (Options.Questions marked Anytime): one is on the screen,
+// text the screen's (Screen.Text). The session needs input with source
+// "question", the words of the first question found and its answers. It
+// takes the place of whatever the session shows but a startup question
+// (unlessStartup): the bell that rang for the dialog, an OSC notification,
+// a report, with choices of its own or none, a done, its own question with
+// other words (the next of a queue). The dialog on the screen is what the
+// program waits on now, and its choices are the only safe answer: typed
+// text, or another question's choice, would reach the dialog's keys.
+func (s *Local) fireAsked(text string) {
+	for _, q := range s.askedQuestions {
+		if words := q.words(text); words != "" {
+			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup)
+			return
+		}
+	}
+}
+
+// missAsked is the same watcher's look at a quiet screen that shows none of
+// the questions. A question asked during the work that is still held then
+// gives way, as answered, when a person typed into the session while a
+// question with the same words showed (asked again, as after a key the
+// program was slow to answer, it is the same dialog): the dialog went with
+// a key Conductor does not offer (d, a click) or one it did that the
+// program took late. Without such a key it stays: the dialog cannot have
+// been answered, and a held question keeps every Enter from the screen.
+func (s *Local) missAsked(string) {
+	s.mu.Lock()
+	att, typed := s.info.Attention, s.typedAtAsked
+	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.words == att.Message
+	s.mu.Unlock()
+	if gone {
+		s.answer(att.Since, typed.by, typed.name, true, true)
+	}
+}
+
+// heldSource reports whether a prompt of source src is a question the
+// session holds: the agent's trust or other startup question, or a
+// question it asks during its work. Typed text is refused while one shows
+// (Submit), and only its choice or an Enter answers it (Input).
+func heldSource(src string) bool { return src == SourceTrust || src == SourceQuestion }
+
+// anyOf is one pattern for the questions together: a watcher's, whose fire
+// tells which one shows.
+func anyOf(qs []StartupQuestion) *regexp.Regexp {
+	parts := make([]string, len(qs))
+	for i, q := range qs {
+		parts[i] = "(?:" + q.Pattern.String() + ")"
+	}
+	return regexp.MustCompile(strings.Join(parts, "|"))
+}
+
 // StartupQuestion is one question an agent asks as it starts (Options.Questions):
-// the pattern of its words on the screen and its answers as choices.
+// the pattern of its words on the screen and its answers as choices. One
+// marked Anytime is asked during the agent's work instead.
 type StartupQuestion struct {
 	Pattern *regexp.Regexp
+	// Anytime marks a question the agent can ask at any time in the
+	// session's life (the catalog's anytime): watched until the session
+	// ends, not only until the first submission.
+	Anytime bool
+	// Words, when set, picks the words a page shows out of the same text
+	// (the catalog's words): its last match's capturing groups joined by a
+	// space, or that whole match without a group. Without it, or when it
+	// matches nothing, the words are what Pattern matched.
+	Words   *regexp.Regexp
 	Answers []Option
+}
+
+// words returns the question's words when text shows it, "" when it does not.
+//
+// Each run of white space in them (a screen's line breaks and padding among
+// them) is one space, and words longer than a message can be are cut on a
+// character boundary with an ellipsis at their end, so that a long command
+// reads as cut rather than as all there is.
+func (q StartupQuestion) words(text string) string {
+	match := q.Pattern.FindString(text)
+	if match == "" {
+		return ""
+	}
+	words := match
+	if q.Words != nil {
+		if all := q.Words.FindAllStringSubmatch(text, -1); len(all) > 0 {
+			last := all[len(all)-1]
+			groups := last[1:]
+			if len(groups) == 0 {
+				groups = last[:1]
+			}
+			var parts []string
+			for _, g := range groups {
+				if g = strings.TrimSpace(g); g != "" {
+					parts = append(parts, g)
+				}
+			}
+			if len(parts) > 0 {
+				words = strings.Join(parts, " ")
+			}
+		}
+	}
+	words = strings.Join(strings.Fields(words), " ")
+	const more = "…"
+	if len(words) > MaxAttentionMessage {
+		cut := MaxAttentionMessage - len(more)
+		for cut > 0 && !utf8.RuneStart(words[cut]) {
+			cut--
+		}
+		words = words[:cut] + more
+	}
+	return words
 }
 
 // signalAttention wakes whoever waits for an attention change (Submit). The
@@ -585,6 +731,21 @@ const (
 	// spendToken spends a token of the event bucket before anything changes,
 	// and refuses the change with ErrRateLimited when there is none.
 	spendToken
+	// unlessChoices changes nothing when the session is needs_input on a
+	// prompt that has choices, or on a question it holds (heldSource): a
+	// wait without anything to answer it with gives way, one with its
+	// answers stays.
+	unlessChoices
+	// unlessTurnEnded changes nothing when the session shows done and no
+	// Enter has been written since (turnEnded): Codex rings the bell it is
+	// asked for as its turn ends, after or before its notify reports done,
+	// and the turn that ended asks nothing more. The next Enter, a person's
+	// or a submission's, starts the next turn, whose bell is a question
+	// again; so does any change of state (a working report, a question).
+	unlessTurnEnded
+	// unlessStartup changes nothing while the session holds a startup
+	// question (source trust): the program shows that one.
+	unlessStartup
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -614,9 +775,24 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 		return ErrRateLimited
 	}
 	cur := s.info.Attention
-	if rules&unlessWaiting != 0 && cur.State == AttentionNeedsInput {
+	waiting := cur.State == AttentionNeedsInput
+	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
+	// A report from outside that the session waits, with choices or
+	// without, does not hide a question asked during the work: the dialog
+	// on the screen is what answers go to (a hook that reports the same
+	// dialog late, say, or another question whose choices would land on
+	// it).
+	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
+	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
+	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
+	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup {
 		s.mu.Unlock()
 		return nil
+	}
+	if state == AttentionDone {
+		// Also a done that changes nothing shown (the same words as the
+		// last turn's): the turn it reports has ended.
+		s.turnEnded = true
 	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
@@ -859,7 +1035,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.sizer = id
 		if cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
-				s.info.Cols, s.info.Rows = cols, rows
+				s.sized(cols, rows)
 			}
 		}
 		s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: s.info.Cols, Rows: s.info.Rows, By: id}))
@@ -1030,10 +1206,24 @@ func (s *Local) Detach(sub *Subscription) {
 // Input forwards keystrokes from a controller, raw. They answer the
 // needs_input prompt that was showing as they were written, unless they are
 // only a terminal's own report (isTerminalReport: xterm answering a cursor
-// position query), which is written and answers nothing.
+// position query), which is written and answers nothing. While a question
+// asked during the work shows, a write of several keys with an Enter that
+// is not one of its choices is refused with ErrQuestion, nothing written.
 func (s *Local) Input(sub *Subscription, data []byte) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
+	}
+	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
+		// Several keys with an Enter (a page's choice, a paste): look at the
+		// screen first, so that a dialog drawn and not yet seen quiet is the
+		// question they are weighed against, not the one it replaced. Right
+		// after a key that answered a dialog the screen is not looked at yet
+		// (Hold): they wait for the look, refused meanwhile, since the key
+		// may have done nothing and left the dialog.
+		if s.asked.Held() {
+			return ErrQuestion
+		}
+		s.asked.CheckNow()
 	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
@@ -1053,6 +1243,14 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			break
 		}
 	}
+	// A question asked during the work is a dialog's numbered list: a digit
+	// picks a line at once and Ctrl+C cancels it (Codex 0.161's approval
+	// overlay), whether the choices offer those keys or not. A key that
+	// leaves the dialog where it was is answered all the same; the screen,
+	// looked at again, asks it again.
+	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && listKey(data) {
+		choice = true
+	}
 	enter := choice || bytes.IndexByte(data, '\r') >= 0
 	// The screen that showed a startup question is behind once it is
 	// answered: only a new question counts. It is cleared before the answer
@@ -1060,13 +1258,40 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	// first is answered (Codex's update question after its background-server
 	// one) can have drawn it before the write returns, and a clear after it
 	// took that question with it, unseen (round 14, the trust spec's flake).
-	answersQuestion := enter && s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceTrust && s.info.Attention.Since == promptSince
+	answersQuestion := enter && s.info.Attention.State == AttentionNeedsInput && heldSource(s.info.Attention.Source) && s.info.Attention.Since == promptSince
+	// More than one key with an Enter among them, while a question asked
+	// during the work shows, is no key of its dialog: a choice of the
+	// question it took the place of (a page's button clicked late), or a
+	// paste. Its Enter would pick the dialog's highlighted line.
+	stale := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && !choice && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data)
 	s.mu.Unlock()
 	if ended {
 		return ErrSessionEnded
 	}
+	if stale {
+		return ErrQuestion
+	}
 	if answersQuestion && s.trust != nil {
 		s.trust.Reset()
+	}
+	if enter {
+		s.nextTurn()
+	}
+	noted := false
+	if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
+		// A key that answers a dialog on the screen: the look before a
+		// submission does not ask the dialog again before the program draws
+		// what follows (the look at the end of a quiet period still does).
+		// The key is noted against the dialog, also one not yet asked: the
+		// dialog asked later, before the program took it away, gives way to
+		// it (missAsked).
+		if words := s.askedOnScreen(); words != "" {
+			s.mu.Lock()
+			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
+			s.mu.Unlock()
+			s.asked.Hold()
+			noted = true
+		}
 	}
 	if _, err := s.proc.Write(data); err != nil {
 		return err
@@ -1075,8 +1300,73 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		return nil
 	}
 	s.stampTyping(sub)
+	if s.asked != nil {
+		if !noted {
+			// The dialog the screen showed as the key was written, when
+			// there was one, says what it answers; the question shown is
+			// only the fallback (it can be one the screen has replaced).
+			s.noteTyped(promptSince, sub)
+		}
+		if enter || s.askedKeys[string(data)] {
+			// Look at the screen again even if the program draws nothing:
+			// a dialog the key did not take away is asked again.
+			s.asked.Poke()
+		}
+	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 	return nil
+}
+
+// askedOnScreen returns the words of the question asked during the work
+// that the screen shows now, "" when it shows none.
+func (s *Local) askedOnScreen() string {
+	text := s.asked.Text()
+	for _, q := range s.askedQuestions {
+		if words := q.words(text); words != "" {
+			return words
+		}
+	}
+	return ""
+}
+
+// typedAt is who typed into the session while a question asked during the
+// work showed, and that question's words.
+type typedAt struct {
+	words    string
+	by, name string
+}
+
+// noteTyped notes sub as the person who typed into the session while the
+// question asked during the work stamped promptSince was showing.
+func (s *Local) noteTyped(promptSince *time.Time, sub *Subscription) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if att := s.info.Attention; promptSince != nil && att.Since == promptSince && att.Source == SourceQuestion {
+		s.typedAtAsked = &typedAt{words: att.Message, by: sub.ID, name: sub.Name}
+	}
+}
+
+// sized records the PTY's new size, which the screen the questions asked
+// during the work are read from follows. The caller holds s.mu.
+func (s *Local) sized(cols, rows uint16) {
+	s.info.Cols, s.info.Rows = cols, rows
+	if s.asked != nil {
+		s.asked.Resize(int(cols), int(rows))
+	}
+}
+
+// listKey reports whether data is a key a dialog's list takes as an answer
+// of its own: a digit from 1 to 9, or Ctrl+C.
+func listKey(data []byte) bool {
+	return len(data) == 1 && (data[0] >= '1' && data[0] <= '9' || data[0] == 0x03)
+}
+
+// nextTurn says an Enter is about to be written: the turn a done ended is
+// behind, and a bell is a question again (unlessTurnEnded).
+func (s *Local) nextTurn() {
+	s.mu.Lock()
+	s.turnEnded = false
+	s.mu.Unlock()
 }
 
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
@@ -1096,16 +1386,18 @@ func (s *Local) stampTyping(sub *Subscription) {
 
 // answer settles the needs_input prompt a write answered: the one stamped
 // promptSince, when it is still showing, is cleared and recorded as answered
-// by by (a subscriber ID, "" for Conductor) and byName. A trust question is
-// answered only by a write with Enter in it (enter): an arrow key that moves
-// its selection leaves it showing, so that no prompt is typed into it. First
-// reply wins: the check, the answer and the clear share one critical
-// section, so two concurrent typists cannot both claim the prompt. With
-// record, an input entry with the question records the answer.
+// by by (a subscriber ID, "" for Conductor) and byName. A question the
+// session holds (a trust or other startup question, or one asked during the
+// work) is answered only by a write with Enter in it or one of its choices
+// (enter): an arrow key that moves its selection leaves it showing, so that
+// no prompt is typed into it. First reply wins: the check, the answer and
+// the clear share one critical section, so two concurrent typists cannot
+// both claim the prompt. With record, an input entry with the question
+// records the answer.
 func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter bool) {
 	s.mu.Lock()
 	att := s.info.Attention
-	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || att.Source != SourceTrust)
+	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || !heldSource(att.Source))
 	question := att.Message
 	var answered ChatMessage
 	var answeredID string
@@ -1168,7 +1460,7 @@ func (s *Local) ResizeWith(sub *Subscription, cols, rows uint16, take bool) erro
 		if err := s.proc.Resize(cols, rows); err != nil {
 			return err
 		}
-		s.info.Cols, s.info.Rows = cols, rows
+		s.sized(cols, rows)
 	}
 	s.hub.Broadcast(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: cols, Rows: rows, By: sub.ID}))
 	return nil
@@ -1190,7 +1482,7 @@ func (s *Local) handOverSize() {
 		s.sizer = next.ID
 		if cols, rows := next.want[0], next.want[1]; cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
-				s.info.Cols, s.info.Rows = cols, rows
+				s.sized(cols, rows)
 			}
 		}
 	}

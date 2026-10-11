@@ -16,10 +16,12 @@
 #                   Codex's agent-turn-complete with the thread id)
 #   STUB_CODEX_TITLE=1   a Codex title-thread turn is reported before the
 #                   answer, with a higher thread id, as Codex 0.159 does
-#   STUB_TRUST_DIALOG=1  "Trust this folder?" is drawn first and answered
-#                   by Enter alone, which writes the trust into
-#                   $HOME/.codex/config.toml; a launch with -c projects=…
-#                   (the yolo trust override) asks nothing
+#   STUB_TRUST_DIALOG=1  "Trust this folder?" is drawn first, as Codex
+#                   0.161 draws it (1. Trust and continue, 2. Quit), and
+#                   answered by Enter alone, which writes the trust into
+#                   $HOME/.codex/config.toml; Down then Enter, or Esc,
+#                   quits; a launch with -c projects=… (the yolo trust
+#                   override) asks nothing
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
@@ -32,15 +34,23 @@
 # $HOME/.codex/stub-background and $HOME/.codex/stub-update present: Codex
 # 0.161's "Background server has incompatible feature settings" (a digit
 # picks at once: 1 runs without the daemon, 3 cancels and exits) and then
-# its "Update available" (Update now highlighted; Enter would install, Esc
-# skips) are drawn at start, as seen beside a newer background server; the
-# answers are written to $HOME/.codex/stub-background-answer and
-# stub-update-answer.
+# its "Update available · 0.161.0 → 0.162.0" (Update now highlighted;
+# Enter or 1 would install, Esc or 2 skips, 3 skips until the next version)
+# are drawn at start, as seen beside a newer background server; the answers
+# are written to $HOME/.codex/stub-background-answer and stub-update-answer
+# (update, skip or skip-version).
 # A line that is exactly `stub tools codex`, `stub tools copilot`,
 # `stub tools agy` or `stub tools goose` makes the stub write stub-tools.txt and report, through
 # that agent's hook flag, the payloads a live run of it sends (round 13,
 # G2b): a shell `cat README.md` and the write of stub-tools.txt, in the
 # shapes captured in internal/notify/testdata.
+# A line `stub approve <command>` (letters, digits, spaces and ./:_-) makes
+# the stub ask, as Codex 0.161 does before a command outside its sandbox,
+# "Would you like to run the following command?" with its three choices
+# (y, p, Esc; the digits too; Enter picks Yes) before it answers the line;
+# the answer goes into the transcript as "approval: …". It is never run.
+# That turn ends as Codex's does while its terminal is not focused: a bell
+# after its done ("bell: after done" in the transcript).
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -93,6 +103,10 @@ git_id=(-c user.name=conductor-e2e -c user.email=e2e@conductor.invalid -c commit
 [[ $member =~ $member_re ]] || member=agent
 [[ $run =~ $run_re ]] || run=
 handed_off=
+# ring_at_end: the turn's approval was drawn as Codex draws it while its
+# terminal is not focused, and the turn ends the same way: a bell after the
+# done.
+ring_at_end=
 
 # The arguments: the session, the trust override, the yolo flags. Anything
 # else is taken and ignored, as a flag of the real agent would be.
@@ -210,6 +224,54 @@ tool_replay() {
 	printf '%s' "$write" | "$conductor" notify "--$1-hook" >/dev/null 2>&1 || true
 }
 
+# approval draws Codex 0.161's command approval for the command $1, as the
+# owner saw it in the rc.7 app (2026-10-11), with the bell first, as Codex
+# rings it while its terminal is not focused, on a cleared screen (the
+# overlay takes Codex's view, and goes with the answer), and waits for one
+# key: y or 1 approves, p or 2 approves and stops asking for commands that
+# start with it, 3 or Esc declines, Enter picks the highlighted Yes;
+# anything else (an arrow, a paste, whose letters are not keys) is
+# ignored. The answer goes into the
+# transcript as "approval: approved", "approval: approved-prefix" or
+# "approval: declined".
+approval() {
+	local cmd=$1 key seq answer= pasted
+	# The dialog takes the screen, as Codex's overlay takes its view, and
+	# goes with the answer.
+	printf '\a\e[2J\e[H  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: May I run this with network access? The sandboxed attempt failed.\n\n  $ %s\n\n› 1. Yes, proceed (y)\n  2. Yes, and don'"'"'t ask again for commands that start with `%s` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n' "$cmd" "$cmd"
+	while IFS= read -rsn1 key; do
+		case $key in
+		y | 1 | '' | $'\r') answer=approved ;;
+		p | 2) answer=approved-prefix ;;
+		3) answer=declined ;;
+		$'\e')
+			seq=''
+			IFS= read -rsn2 -t 0.2 seq || true
+			if [[ $seq == '[2' ]]; then
+				pasted=''
+				while IFS= read -rsn1 key; do
+					pasted+=$key
+					[[ $pasted == *$'\e[201~' ]] && break
+				done
+				continue
+			fi
+			[[ -n $seq ]] && continue
+			answer=declined
+			;;
+		*) continue ;;
+		esac
+		break
+	done
+	printf 'approval: %s\n' "$answer" >>"$transcript"
+	ring_at_end=1
+	printf '\e[2J\e[H'
+	if [[ $answer == declined ]]; then
+		printf '✗ You did not approve %s\n' "$cmd"
+	else
+		printf '✔ You approved codex to run %s\n' "$cmd"
+	fi
+}
+
 # report_done reports the answer $1 to the line $2.
 report_done() {
 	case $report_mode in
@@ -227,17 +289,19 @@ report_done() {
 # holds reports whether branch $1 has stub-$2.txt, the file member $2 commits.
 holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 
-# trust_dialog draws the folder-trust question and waits for Enter; arrows
-# move the selection and redraw, anything else is ignored. Enter writes the
-# trust the way Codex keeps it.
+# trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
+# and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
+# selection and redraw, Esc quits, anything else is ignored. Enter on the
+# first writes the trust the way Codex keeps it; on Quit the stub exits, as
+# Codex does.
 trust_dialog() {
 	local sel=0 key seq
 	draw() {
 		local y n
-		if ((sel == 0)); then y='>' n=' '; else y=' ' n='>'; fi
-		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2KTrust this folder? (Enter accepts, arrows move)\n  %s Yes, trust this folder\n  %s No, continue without\n' "$y" "$n"
+		if ((sel == 0)); then y='›' n=' '; else y=' ' n='›'; fi
+		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2KTrust this folder?\n%s 1. Trust and continue\n%s 2. Quit\nenter continue · esc quit\n' "$y" "$n"
 	}
-	printf 'Trust this folder? (Enter accepts, arrows move)\n  > Yes, trust this folder\n    No, continue without\n'
+	printf 'Trust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit\n'
 	while IFS= read -rsn1 key; do
 		if [[ -z $key || $key == $'\r' ]]; then
 			break
@@ -247,6 +311,7 @@ trust_dialog() {
 			IFS= read -rsn2 -t 0.2 seq || true
 			case $seq in
 			'[A' | '[B') sel=$((1 - sel)) ;;
+			'') sel=1 && break ;;
 			esac
 			draw
 		fi
@@ -256,7 +321,8 @@ trust_dialog() {
 		printf '[projects.%s]\ntrust_level = "trusted"\n' "$(json_str "$PWD")" >>"${HOME:-/tmp}/.codex/config.toml"
 		printf 'Trusted.\n'
 	else
-		printf 'Not trusted.\n'
+		printf 'Quit.\n'
+		exit 0
 	fi
 }
 
@@ -296,22 +362,26 @@ background_question() {
 	fi
 }
 
-# update_question draws Codex's update question: Enter installs (what must
-# never happen from a prompt), Esc skips.
+# update_question draws Codex's update question as Codex 0.161 does: Enter
+# installs (what must never happen from a prompt), 1 too; Esc and 2 skip;
+# 3 skips until the next version (it picks at once, as in Codex 0.161,
+# verified in a PTY on 2026-10-11).
 update_question() {
-	local key
-	printf 'Update available · 0.161.0 -> 0.162.0\n> 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\nenter continue · esc skip\n'
+	local key answer=
+	printf 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
 	while IFS= read -rsn1 key; do
-		if [[ -z $key || $key == $'\r' ]]; then
-			printf 'update\n' >"${HOME:-/tmp}/.codex/stub-update-answer"
-			printf 'Updating Codex...\n'
-			return
-		fi
-		if [[ $key == $'\e' ]]; then
-			printf 'skip\n' >"${HOME:-/tmp}/.codex/stub-update-answer"
-			return
-		fi
+		case $key in
+		'' | $'\r' | 1) answer=update ;;
+		$'\e' | 2) answer=skip ;;
+		3) answer=skip-version ;;
+		*) continue ;;
+		esac
+		break
 	done
+	printf '%s\n' "$answer" >"${HOME:-/tmp}/.codex/stub-update-answer"
+	if [[ $answer == update ]]; then
+		printf 'Updating Codex...\n'
+	fi
 }
 
 # answer answers one line.
@@ -323,6 +393,9 @@ answer() {
 	report_working
 	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy|goose)$ ]]; then
 		tool_replay "${BASH_REMATCH[1]}"
+	fi
+	if [[ $line =~ ^stub\ approve\ ([A-Za-z0-9\ ./:_-]{1,100})$ ]]; then
+		approval "${BASH_REMATCH[1]}"
 	fi
 	while [[ $rest =~ $target_re ]]; do
 		kind=${BASH_REMATCH[1]}
@@ -368,6 +441,14 @@ answer() {
 	printf 'stub: merged [%s] failed [%s]\n' "${merged[*]-}" "${failed[*]-}"
 	msg="got: ${line:0:100}; merged: ${merged[*]-none}; failed: ${failed[*]-none}"
 	report_done "$msg" "$line"
+	if [[ -n $ring_at_end ]]; then
+		# Codex rings the bell it is asked for (tui.notification_method="bel")
+		# as its turn ends, after notify has reported done (rc.7 app,
+		# 2026-10-11).
+		ring_at_end=
+		printf '\a'
+		printf 'bell: after done\n' >>"$transcript"
+	fi
 }
 
 printf 'conductor e2e stub: %s in run %s (%s, session %s%s%s)\n' "$member" "${run:-none}" "$identity" "$id" "${yolo:+, yolo}" "${trusted:+, trusted}"

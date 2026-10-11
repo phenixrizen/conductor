@@ -251,6 +251,9 @@ type PatternWatcher struct {
 	re    *regexp.Regexp
 	quiet time.Duration
 	fire  func(line string)
+	// miss, when set, runs as fire does for a quiet period whose text does
+	// not match (NewScreenModelWatcher).
+	miss func(text string)
 
 	// fireMu is held while fire runs; Stop takes it to wait for a fire in
 	// flight. It is always taken before mu.
@@ -263,6 +266,8 @@ type PatternWatcher struct {
 	feeds   uint64    // Feeds so far
 	checked uint64    // the value of feeds at the last check of the line
 	stopped bool
+	// held is Hold's: CheckNow finds nothing until output comes.
+	held bool
 }
 
 // NewPatternWatcher returns a watcher for re. fire runs on the timer's
@@ -278,6 +283,76 @@ func NewScreenWatcher(re *regexp.Regexp, quiet time.Duration, fire func(text str
 	return &PatternWatcher{re: re, quiet: quiet, fire: fire, tracker: &ScreenTail{}}
 }
 
+// NewScreenModelWatcher is NewPatternWatcher matching the whole screen as
+// the program drew it (Screen, cols by rows): fire gets its text when it
+// matches, miss when it does not. Its Reset changes nothing, and Resize
+// follows the terminal's size.
+func NewScreenModelWatcher(re *regexp.Regexp, quiet time.Duration, cols, rows int, fire, miss func(text string)) *PatternWatcher {
+	return &PatternWatcher{re: re, quiet: quiet, fire: fire, miss: miss, tracker: NewScreen(cols, rows)}
+}
+
+// Resize gives a screen watcher's screen the terminal's new size; nothing
+// for the others.
+func (w *PatternWatcher) Resize(cols, rows int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		sc.Resize(cols, rows)
+	}
+}
+
+// Poke starts a quiet period without output: the text is looked at once the
+// stream has been quiet for the watcher's time from now, as after a Feed.
+func (w *PatternWatcher) Poke() { w.Feed(nil) }
+
+// CheckNow looks at the text now, without waiting for the stream to go
+// quiet, fires when it matches and reports whether it did; it never calls
+// miss. The quiet period under way is left as it is: it still looks once
+// the stream is quiet, and calls miss then if nothing matches. After Hold,
+// until output comes, it finds nothing.
+func (w *PatternWatcher) CheckNow() bool {
+	w.fireMu.Lock()
+	defer w.fireMu.Unlock()
+	w.mu.Lock()
+	if w.stopped || w.held {
+		w.mu.Unlock()
+		return false
+	}
+	line := w.tracker.Last()
+	w.mu.Unlock()
+	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
+		w.fire(line)
+		return true
+	}
+	return false
+}
+
+// Hold makes CheckNow find nothing until the stream brings output or the
+// end of a quiet period has looked at the text (Held reports it): the text
+// is what was just answered, and the program has not drawn what follows the
+// answer yet. Neither is a sign that the answer took: a caller about to
+// write waits until Held is false. The looks at the end of a quiet period
+// are not held: a text still there then is what the program shows.
+func (w *PatternWatcher) Hold() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.held = true
+}
+
+// Held reports whether a Hold still waits for output or a quiet look.
+func (w *PatternWatcher) Held() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.held && !w.stopped
+}
+
+// Text returns the text the watcher matches now (its tracker's Last).
+func (w *PatternWatcher) Text() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.tracker.Last()
+}
+
 // Feed adds a chunk of the stream and restarts the quiet period. It never
 // waits for a fire.
 func (w *PatternWatcher) Feed(chunk []byte) {
@@ -287,6 +362,9 @@ func (w *PatternWatcher) Feed(chunk []byte) {
 		return
 	}
 	w.tracker.Write(chunk)
+	if len(chunk) > 0 {
+		w.held = false
+	}
 	w.last = time.Now()
 	w.feeds++
 	if w.timer == nil {
@@ -311,10 +389,13 @@ func (w *PatternWatcher) expire() {
 		return
 	}
 	w.checked = w.feeds
+	w.held = false // the screen after the answer has been looked at
 	line := w.tracker.Last()
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
+	} else if w.miss != nil {
+		w.miss(line)
 	}
 }
 

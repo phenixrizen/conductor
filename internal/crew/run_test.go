@@ -46,8 +46,10 @@ type fakeLauncher struct {
 	// engine does, on the goroutine that recorded it: it may hold the entry
 	// back, as a goroutine the scheduler leaves waiting would.
 	beforeActivity func(sessionID string, e session.ActivityEntry)
-	// trust, when set, is every session's trust prompt (Options.TrustPattern).
-	trust *regexp.Regexp
+	// trust, when set, is every session's trust prompt (Options.TrustPattern),
+	// and questions its other questions (Options.Questions).
+	trust     *regexp.Regexp
+	questions []session.StartupQuestion
 	// pause is every session's pause before an Enter; 5 ms when zero.
 	pause time.Duration
 
@@ -89,7 +91,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
-		SubmitPause: cmp.Or(f.pause, 5*time.Millisecond), TrustPattern: f.trust})
+		SubmitPause: cmp.Or(f.pause, 5*time.Millisecond), TrustPattern: f.trust, Questions: f.questions})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
 	f.mu.Unlock()
@@ -1023,6 +1025,7 @@ func TestReadiness(t *testing.T) {
 		{"between screens, but asking", readiness{state: needs, source: session.SourceAPI, pasteSeen: true}, at(s), true, false, false},
 		{"a trust question", readiness{state: needs, source: session.SourceTrust, lastOutput: at(0)}, at(5 * s), false, false, true},
 		{"a trust question past the cap", readiness{state: needs, source: session.SourceTrust}, at(90 * s), false, false, true},
+		{"a question asked during the work", readiness{state: needs, source: session.SourceQuestion, lastOutput: at(0)}, at(5 * s), false, false, true},
 	} {
 		ready, capped, hold := readyAt(tc.rd, start, tc.now)
 		if ready != tc.ready || capped != tc.capped || hold != tc.hold {

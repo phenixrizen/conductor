@@ -1010,8 +1010,8 @@ func TestOverlayInheritsProbe(t *testing.T) {
 
 // The trust question's answers: the built-in agents carry theirs (Claude
 // Code's trusting answer is Down then Enter, since it highlights "No, exit";
-// Codex's is Enter), a saved override inherits them, and a bad answer is
-// refused.
+// Codex's is Enter, and its other answer, Codex 0.161's "2. Quit", says it
+// quits), a saved override inherits them, and a bad answer is refused.
 func TestTrustAnswers(t *testing.T) {
 	c := Default()
 	claude, _ := c.Get("claude")
@@ -1019,7 +1019,7 @@ func TestTrustAnswers(t *testing.T) {
 		t.Fatalf("claude: %+v", claude.TrustAnswers)
 	}
 	codex, _ := c.Get("codex")
-	if len(codex.TrustAnswers) != 2 || codex.TrustAnswers[0].Input != "\r" || codex.TrustAnswers[1].Input != "\x1b[B\r" {
+	if len(codex.TrustAnswers) != 2 || codex.TrustAnswers[0].Input != "\r" || codex.TrustAnswers[1].Label != "No, quit" || codex.TrustAnswers[1].Input != "\x1b[B\r" {
 		t.Fatalf("codex: %+v", codex.TrustAnswers)
 	}
 	for id, a := range map[string]Agent{"claude": claude, "codex": codex} {
@@ -1060,7 +1060,7 @@ func TestTrustAnswers(t *testing.T) {
 func TestStartupQuestions(t *testing.T) {
 	c := Default()
 	codex, _ := c.Get("codex")
-	if len(codex.Questions) != 3 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+	if len(codex.Questions) != 7 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
 		t.Fatalf("codex: %+v", codex.Questions)
 	}
 	// The background-server question picks on a digit, and the update question skips on Escape: no answer
@@ -1080,6 +1080,24 @@ func TestStartupQuestions(t *testing.T) {
 	if up, _ := CompilePattern(codex.Questions[2].Prompt); up.MatchString("Update available! 0.161.0 -> 0.162.0 Run npm install -g @openai/codex to update.") {
 		t.Fatal("the update banner (no question) must not hold the session")
 	}
+	// The update question's words are its heading, as Codex 0.161 draws it (→) and as the e2e stub does (->);
+	// its answers are Escape (skip) and 3 (skip until the next version), which picks at once.
+	upd := codex.Questions[2]
+	words, err := CompilePattern(upd.Words)
+	if err != nil {
+		t.Fatalf("update words %q: %v", upd.Words, err)
+	}
+	for text, want := range map[string][]string{
+		"Update available · 0.161.0 → 0.162.1 Release notes: https://github.com/openai/codex/releases/latest › 1. Update now (runs `npm install -g @openai/codex`)": {"Update available", "0.161.0 → 0.162.1"},
+		"Update available · 0.161.0 -> 0.162.0 > 1. Update now (runs `npm install -g @openai/codex`)":                                                               {"Update available", "0.161.0 -> 0.162.0"},
+	} {
+		if m := words.FindStringSubmatch(text); len(m) != 3 || m[1] != want[0] || m[2] != want[1] {
+			t.Fatalf("update words in %q: %q", text, m)
+		}
+	}
+	if len(upd.Answers) != 2 || upd.Answers[0] != (Answer{Label: "Skip this update", Input: "\x1b"}) || upd.Answers[1] != (Answer{Label: "Skip until next version", Input: "3"}) {
+		t.Fatalf("update answers %+v", upd.Answers)
+	}
 	re, err := CompilePattern(codex.Questions[0].Prompt)
 	if err != nil || !re.MatchString("Hooks need review 7 hooks are new or changed") || !re.MatchString("Hooks  eed review") || re.MatchString("Trust this folder?") {
 		t.Fatalf("codex's pattern %q: %v", codex.Questions[0].Prompt, err)
@@ -1087,7 +1105,7 @@ func TestStartupQuestions(t *testing.T) {
 	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex, mine", Command: []string{"codex"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if mine, _ := c.Get("codex"); len(mine.Questions) != len(codex.Questions) || mine.Questions[0].Prompt != codex.Questions[0].Prompt {
+	if mine, _ := c.Get("codex"); len(mine.Questions) != len(codex.Questions) || mine.Questions[0].Prompt != codex.Questions[0].Prompt || mine.Questions[2].Words != codex.Questions[2].Words {
 		t.Fatalf("the override lost the questions: %+v", mine.Questions)
 	}
 	ok := Agent{ID: "x", Name: "X", Command: []string{"x"}}
@@ -1096,7 +1114,9 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "Ready\\?", Answers: []Answer{{Label: "", Input: "\r"}}}},
-		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}},
+		{{Prompt: "Ready\\?", Words: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
+		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
+		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}, {Prompt: "f"}, {Prompt: "g"}, {Prompt: "h"}, {Prompt: "i"}},
 	} {
 		a := ok
 		a.Questions = bad
@@ -1109,4 +1129,156 @@ func TestStartupQuestions(t *testing.T) {
 	if err := validate(good); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Codex's command approval (Codex 0.161, seen in the rc.7 app on 2026-10-11)
+// is a question asked at any time, not only at start: found by its choices'
+// keys, told by its heading and command, answered by y, p and Escape alone
+// (each picks at once; an Enter would pick the highlighted Yes). The dialog
+// without its "don't ask again" of a prefix is found by the second entry,
+// with Yes and No alone; neither is found on a screen that only mentions
+// the words.
+func TestCodexCommandApproval(t *testing.T) {
+	codex, _ := Default().Get("codex")
+	withP, deny, plain, other := codex.Questions[3], codex.Questions[4], codex.Questions[5], codex.Questions[6]
+	for _, q := range codex.Questions[3:] {
+		if !q.Anytime {
+			t.Fatalf("not asked at any time: %+v", q)
+		}
+	}
+	for _, q := range codex.Questions[:3] {
+		if q.Anytime {
+			t.Fatalf("a startup question marked anytime: %+v", q)
+		}
+	}
+	yes, dont, no := Answer{Label: "Yes, proceed", Input: "y"}, Answer{Label: "Yes, and don't ask again", Input: "p"}, Answer{Label: "No, tell Codex what to do differently", Input: "\x1b"}
+	if len(withP.Answers) != 3 || withP.Answers[0] != yes || withP.Answers[1] != dont || withP.Answers[2] != no {
+		t.Fatalf("answers %+v", withP.Answers)
+	}
+	if len(plain.Answers) != 2 || plain.Answers[0] != yes || plain.Answers[1] != no {
+		t.Fatalf("answers without the prefix %+v", plain.Answers)
+	}
+	if len(deny.Answers) != 3 || deny.Answers[0] != yes || deny.Answers[1] != (Answer{Label: "No, continue without running it", Input: "d"}) || deny.Answers[2].Input != "\x1b" {
+		t.Fatalf("answers of the accept-or-decline dialog %+v", deny.Answers)
+	}
+	if len(other.Answers) != 2 || other.Answers[0].Input != "y" || other.Answers[1].Input != "\x1b" {
+		t.Fatalf("answers of another approval %+v", other.Answers)
+	}
+	// The first pattern that matches gives the choices: each dialog finds its own.
+	which := func(text string) int {
+		t.Helper()
+		for i, q := range codex.Questions {
+			if re, err := CompilePattern(q.Prompt); err != nil {
+				t.Fatalf("%q: %v", q.Prompt, err)
+			} else if re.MatchString(text) {
+				return i
+			}
+		}
+		return -1
+	}
+	denyScreen := "  Would you like to run the following command?\n\n  $ git push --force\n\n› 1. Yes, proceed (y)\n  2. No, continue without running it (d)\n\n  Press enter to confirm or esc to cancel"
+	network := "  Do you want to approve network access to \"example.com\"?\n\n› 1. Yes, just this once (y)\n  2. Yes, and allow this host in the future (p)\n  3. No, and block this host in the future (d)\n\n  Press enter to confirm or esc to cancel"
+	if got := which(denyScreen); got != 4 {
+		t.Fatalf("the accept-or-decline dialog is question %d", got)
+	}
+	if got := which(network); got != 6 {
+		t.Fatalf("the network dialog is question %d", got)
+	}
+	if m := regexp.MustCompile(other.Words).FindStringSubmatch(network); len(m) != 3 || m[1] != `Do you want to approve network access to "example.com"?` {
+		t.Fatalf("the network dialog's words %q", m)
+	}
+	// The dialog as the session's Screen reads it: its rows joined by line breaks, the history above.
+	screen := strings.Join([]string{
+		"• Ran curl -sI https://example.com",
+		"  └ curl: (6) Could not resolve host: example.com",
+		"",
+		"  Would you like to run the following command?",
+		"",
+		"  Environment: local",
+		"",
+		"  Reason: May I rerun the curl command with network access? The sandboxed",
+		"  attempt failed to resolve the host.",
+		"",
+		"  $ curl -sI https://example.com",
+		"",
+		"› 1. Yes, proceed (y)",
+		"  2. Yes, and don't ask again for commands that start with `curl -sI",
+		"     https://example.com` (p)",
+		"  3. No, and tell Codex what to do differently (esc)",
+		"",
+		"  Press enter to confirm or esc to cancel",
+	}, "\n")
+	noPrefix := "  Would you like to run the following command?\n\n  $ rm -rf build\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
+	re := func(p string) *regexp.Regexp {
+		t.Helper()
+		r, err := CompilePattern(p)
+		if err != nil {
+			t.Fatalf("%q: %v", p, err)
+		}
+		return r
+	}
+	if !re(withP.Prompt).MatchString(screen) || re(withP.Prompt).MatchString(noPrefix) || !re(plain.Prompt).MatchString(noPrefix) {
+		t.Fatal("the approval's patterns do not tell the two dialogs apart")
+	}
+	// A key drawn in a style of its own reads with a space on each side.
+	if styled := strings.NewReplacer("(y)", "( y )", "(p)", "( p )", "(esc)", "( esc )").Replace(screen); !re(withP.Prompt).MatchString(styled) {
+		t.Fatalf("the styled keys are not found: %q", styled)
+	}
+	// Not the dialog: its words elsewhere, or the dialog's text above what Codex draws now (a file shown, a log).
+	for _, text := range []string{
+		"Codex would proceed (y) if you said so",
+		"  Would you like to run the following command?",
+		"› Ask Codex to do anything",
+		screen + "\n\n• Ran cat notes.txt\n  └ (the dialog above was in the file)\n\n› Ask Codex to do anything\n\n  ⏎ send   ⌃J newline   ⌃T transcript",
+	} {
+		if re(withP.Prompt).MatchString(text) || re(plain.Prompt).MatchString(text) {
+			t.Fatalf("%q held as the approval", text)
+		}
+	}
+	words := re(withP.Words)
+	if m := words.FindStringSubmatch(screen); len(m) != 3 || m[1] != "Would you like to run the following command?" || m[2] != "$ curl -sI https://example.com" {
+		t.Fatalf("words %q", m)
+	}
+	// The command is the first "$ " row's, whole: a "$ " inside it, or rows of it, stay in.
+	tricky := strings.Replace(screen, "  $ curl -sI https://example.com", "  $ rm -rf build; printf '$ done'\n  echo second row", 1)
+	if m := words.FindStringSubmatch(tricky); len(m) != 3 || m[2] != "$ rm -rf build; printf '$ done'\n  echo second row" {
+		t.Fatalf("words of a command with a $ in it %q", m)
+	}
+	if m := words.FindStringSubmatch("  Would you like to make the following edits?\n\n  src/a.go +1 -1\n\n› 1. Yes, proceed (y)"); len(m) != 3 || m[1] != "Would you like to make the following edits?" || m[2] != "" {
+		t.Fatalf("words without a command %q", m)
+	}
+	for _, a := range append(withP.Answers, plain.Answers...) {
+		if strings.ContainsAny(a.Input, "\r\n") {
+			t.Fatalf("answer %+v carries an Enter, which picks the highlighted Yes", a)
+		}
+	}
+}
+
+// The e2e suite's Codex (web/e2e/conductor.e2e.json, the stub with Codex's
+// recipes) carries the built-in entry's questions, so that what the specs
+// check is what ships.
+func TestTheE2ECodexCarriesTheBuiltInQuestions(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "e2e", "conductor.e2e.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Catalog struct {
+			Agents []Agent `json:"agents"`
+		} `json:"catalog"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	builtIn, _ := Default().Get("codex")
+	for _, a := range cfg.Catalog.Agents {
+		if a.ID != "codex" {
+			continue
+		}
+		if !reflect.DeepEqual(a.Questions, builtIn.Questions) {
+			t.Fatalf("the e2e Codex's questions differ from the built-in's:\n%+v\n%+v", a.Questions, builtIn.Questions)
+		}
+		return
+	}
+	t.Fatal("no codex in the e2e catalog")
 }

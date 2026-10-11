@@ -208,7 +208,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		if err != nil {
 			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
 		}
-		questions = append(questions, session.StartupQuestion{Pattern: re, Answers: trustAnswers(q.Answers)})
+		var words *regexp.Regexp
+		if q.Words != "" {
+			if words, err = catalog.CompilePattern(q.Words); err != nil {
+				return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
+			}
+		}
+		questions = append(questions, session.StartupQuestion{Pattern: re, Words: words, Anytime: q.Anytime, Answers: trustAnswers(q.Answers)})
 	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()

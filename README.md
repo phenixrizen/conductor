@@ -696,7 +696,10 @@ files choose the commands agents run.
 for its next line reports `done`, whatever its hooks call it: Codex's
 `agent-turn-complete` and Claude Code's `idle_prompt` notification (sent after
 a minute at rest) both do, as Claude Code's `Stop` does. Needs input is kept
-for a real question: a permission request, a dialog, the bell. A crew relies
+for a real question: a permission request, a dialog, the bell. The bell an
+agent rings as its turn ends (Codex rings the one Conductor asks it for right
+after reporting `done`) is that turn's own: it does not undo the `done` until
+the next Enter starts another turn. A crew relies
 on this: a handoff or a broadcast is typed only into a member that is not
 waiting on a question, and an idle member is not.
 
@@ -1009,9 +1012,21 @@ typed text is refused, and the choices are **Trust all and continue** and
 **Continue without trusting**. Two more are held too, seen when Codex runs
 beside a newer Codex background server: "Background server has incompatible
 feature settings" (**Run without the daemon this time**, or **Cancel**, which
-ends Codex) and "Update available" (**Skip this update**); an Enter typed
-there would have cancelled Codex or run `npm install -g` to update it. An agent's further startup questions are its
-`questions` in the catalog, each a `prompt` and its `answers`.
+ends Codex) and "Update available 0.161.0 → 0.162.1" (**Skip this update**,
+or **Skip until next version**); an Enter typed there would have cancelled
+Codex or run `npm install -g` to update it. An agent's further startup
+questions are its `questions` in the catalog, each a `prompt`, its `answers`
+and, when the words to show are not the ones that find it, its `words`.
+
+Codex also asks during its work, before a command it would run outside its
+sandbox: "Would you like to run the following command?" with the command and
+**Yes, proceed**, **Yes, and don't ask again** and **No, tell Codex what to
+do differently**. Conductor reads that dialog off the screen for the
+session's whole life, whatever Codex's hooks file holds and whether anyone
+watches: the member is in Needs you with the question, the command and the
+three choices, each of which types its own key (`y`, `p`, Esc); typed text
+is refused while it shows, since its letters are the dialog's keys and its
+Enter would approve. A catalog question marked `anytime` is held this way.
 
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch
