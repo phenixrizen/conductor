@@ -44,7 +44,7 @@ Client → owner:
 | `nvim_swap` | `id, choice` | Answers the swap file editor `id` found (round 13): `choice` is `edit` (leave read-only and edit), `recover` (read the swap file's text into the buffer, which is sent whole; the buffer is modified until written) or `delete` (remove that swap file, only a regular file named `*.sw?` that Neovim reported, and edit); `recover` and `delete` only once the process that wrote it is gone, else the editor's `message` of kind `emsg` says no; fixed choices mapped to fixed commands, never a command from the page. The switchyard drops it from view-role connections |
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended` |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member |
-| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile. The reply boxes use it; keys typed into the terminal stay INPUT |
+| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile, but not once its link is revoked or expires before its text is typed, and its carriage return is held back when that happens during the pause; on a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it; keys typed into the terminal stay INPUT |
 
 Owner → client:
 
@@ -252,6 +252,20 @@ it moves to the relay and attaches again), what waits is dropped, and does
 not count against the 8; the one being typed is finished. The viewer's `nvim_open`s start apart, at
 most 4 at once (the editors a connection may hold), past which the
 `nvim_event` error is `too_many_requests`.
+
+The host writes a viewer's INPUT off the loop that carries its frames (the
+relay's carries every relayed viewer's), in the order the viewer sent it and
+apart from its submissions: the keys sent before a `submit`, a `chat` to the
+agent or a `chat_send` are written (or refused) before it, and those sent
+after are not held back by its pause. Each INPUT frame has 10 s from its
+arrival for the program to take it: one still waiting then is refused
+(`error{input_failed}`) and never written. At most 256 frames and 128 KiB
+wait behind the one being written, per viewer; one more is refused with
+`error{too_many_requests}` (no `requestId`) and the connection stays. When
+the viewer goes, the keys that wait are dropped. The editor's `nvim_input`,
+`nvim_swap` and `nvim_close` likewise wait for Neovim off that loop, in the
+order sent, at most 400 behind the one Neovim handles (past them the
+`nvim_event` error is `too_many_requests`).
 
 ## Host control connection
 
@@ -603,6 +617,27 @@ and the text as `message`, cut to the 500 bytes of Events (the terminal gets
 all of it); a `submit` reply records the answer as a controller's input does.
 A handoff or a broadcast is never submitted while the session is
 `needs_input` (see Crew runs).
+
+What the session types into the program (a controller's INPUT, a
+submission's text and its carriage return) goes through one writer, in the
+order it came, and each write waits at most 10 s for the program to take
+it. A program that has stopped reading its terminal fills the terminal's
+buffer: a write not begun by then is never made, and its sender gets
+`error{input_failed}` (a submission ends there and gives the next its turn);
+one begun lands when the program reads again: a submission whose text has
+begun is accepted, with no error, and finished as the program reads (its
+carriage return after its pause, the session's turn held till then, so no
+later line joins it); so is one whose text is written and whose carriage
+return has no turn in time, and one whose carriage return has begun counts
+as entered. Once one write has waited its 10 s,
+the next are refused at once until the program takes it, rather than 10 s
+each. A controller's keys not yet written when its connection ends (a
+revoked link, a viewer that left) are never written. The other viewers and
+the output go on meanwhile. An `nvim_open` gives Neovim 15 s to start and
+show the file (one still busy then is ended, and its editor says `closed`),
+and one whose connection goes meanwhile ends the Neovim it started; a
+connection's editors end as it goes without holding it, each given 5 s to
+leave before it is ended, and a server or host that stops waits for them.
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
 run (see Crew runs), and no `crew` otherwise.
